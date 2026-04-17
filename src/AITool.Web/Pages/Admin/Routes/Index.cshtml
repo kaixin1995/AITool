@@ -1,0 +1,83 @@
+@page
+@model AITool.Web.Pages.Admin.Routes.IndexModel
+@{
+    ViewData["Title"] = "路由规则管理";
+}
+
+<h1>路由规则管理</h1>
+
+@if (Model.StatusMessage is not null)
+{
+    <div class="alert alert-@(Model.StatusSuccess ? "success" : "danger")">
+        @Model.StatusMessage
+    </div>
+}
+
+<form method="post" asp-page-handler="Create" class="mb-3">
+    <div class="row g-2 align-items-end">
+        <div class="col-auto">
+            <label class="form-label">外部模型名</label>
+            <input type="text" name="externalModelName" class="form-control" required />
+        </div>
+        <div class="col-auto">
+            <label class="form-label">目标站点</label>
+            <select name="siteId" class="form-select" required>
+                <option value="">选择站点</option>
+                @foreach (var site in Model.AvailableSites)
+                {
+                    <option value="@site.Id">@site.Name</option>
+                }
+            </select>
+        </div>
+        <div class="col-auto">
+            <label class="form-label">站点模型名</label>
+            <input type="text" name="siteModelName" class="form-control" required />
+        </div>
+        <div class="col-auto">
+            <label class="form-label">优先级</label>
+            <input type="number" name="priority" class="form-control" value="0" min="0" required />
+        </div>
+        <div class="col-auto">
+            <button type="submit" class="btn btn-primary">创建规则</button>
+        </div>
+    </div>
+</form>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>外部模型名</th>
+            <th>目标站点</th>
+            <th>站点模型名</th>
+            <th>优先级</th>
+            <th>状态</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var item in Model.Rules)
+        {
+            <tr>
+                <td><code>@item.ExternalModelName</code></td>
+                <td>@item.SiteName</td>
+                <td><code>@item.SiteModelName</code></td>
+                <td>@item.Priority</td>
+                <td>
+                    <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
+                        @(item.IsEnabled ? "启用" : "禁用")
+                    </span>
+                </td>
+                <td>
+                    <form method="post" asp-page-handler="Toggle" asp-route-ruleId="@item.RuleId" class="d-inline">
+                        <button type="submit" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")">
+                            @(item.IsEnabled ? "禁用" : "启用")
+                        </button>
+                    </form>
+                    <form method="post" asp-page-handler="Delete" asp-route-ruleId="@item.RuleId" class="d-inline">
+                        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该规则？')">删除</button>
+                    </form>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>

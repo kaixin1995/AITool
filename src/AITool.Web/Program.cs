@@ -1,7 +1,9 @@
 using AITool.Application.Detection;
+using AITool.Application.Routing;
 using AITool.Application.SiteCatalog;
 using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Routing;
 using AITool.Infrastructure.Scheduling;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
@@ -21,6 +23,9 @@ builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 
 // 注册模型探测服务，用于检测模型可用性
 builder.Services.AddHttpClient<IModelProbeService, OpenAiModelProbeService>();
+
+// 注册路由选择服务，用于根据优先级匹配代理路由
+builder.Services.AddScoped<IRouteSelectionService, RouteSelectionService>();
 
 // 注册 Hangfire 检测调度器
 builder.Services.AddSingleton<HangfireDetectionScheduler>();

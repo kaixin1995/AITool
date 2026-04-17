@@ -1,5 +1,6 @@
 using AITool.Domain.Detection;
 using AITool.Domain.Models;
+using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using Microsoft.EntityFrameworkCore;
@@ -28,6 +29,12 @@ public sealed class AppDbContext : DbContext
 
     // 检测任务执行记录数据集
     public DbSet<DetectionTaskExecution> DetectionTaskExecutions => Set<DetectionTaskExecution>();
+
+    // 代理路由规则数据集
+    public DbSet<ProxyRouteRule> ProxyRouteRules => Set<ProxyRouteRule>();
+
+    // 平台访问密钥数据集
+    public DbSet<ProxyAccessKey> ProxyAccessKeys => Set<ProxyAccessKey>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -83,6 +90,24 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
             entity.Property(e => e.Summary).HasMaxLength(2000);
             entity.HasIndex(e => e.StartedAt);
+        });
+
+        // 代理路由规则实体配置
+        modelBuilder.Entity<ProxyRouteRule>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.ExternalModelName).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.SiteModelName).IsRequired().HasMaxLength(200);
+            entity.HasIndex(e => e.ExternalModelName);
+        });
+
+        // 平台访问密钥实体配置
+        modelBuilder.Entity<ProxyAccessKey>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.KeyName).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.AccessKeyHash).IsRequired().HasMaxLength(500);
+            entity.Property(e => e.MaskedValue).IsRequired().HasMaxLength(100);
         });
 
         base.OnModelCreating(modelBuilder);
