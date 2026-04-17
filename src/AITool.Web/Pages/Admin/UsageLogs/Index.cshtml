@@ -1,0 +1,39 @@
+@page
+@model AITool.Web.Pages.Admin.UsageLogs.IndexModel
+@{
+    ViewData["Title"] = "调用日志";
+}
+
+<h1>调用日志</h1>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>时间</th>
+            <th>协议</th>
+            <th>模型</th>
+            <th>状态</th>
+            <th>输入 Tokens</th>
+            <th>输出 Tokens</th>
+            <th>总 Tokens</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var item in Model.Logs)
+        {
+            <tr>
+                <td>@item.RequestedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                <td><span class="badge bg-info">@item.ProtocolType</span></td>
+                <td><code>@item.RequestModel</code></td>
+                <td>
+                    <span class="badge bg-@(item.Status == "success" ? "success" : "danger")">
+                        @item.Status
+                    </span>
+                </td>
+                <td>@item.InputTokens</td>
+                <td>@item.OutputTokens</td>
+                <td>@item.TotalTokens</td>
+            </tr>
+        }
+    </tbody>
+</table>

@@ -36,6 +36,9 @@ public sealed class AppDbContext : DbContext
     // 平台访问密钥数据集
     public DbSet<ProxyAccessKey> ProxyAccessKeys => Set<ProxyAccessKey>();
 
+    // 代理使用日志数据集
+    public DbSet<ProxyUsageLog> ProxyUsageLogs => Set<ProxyUsageLog>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // 站点实体配置
@@ -108,6 +111,16 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.KeyName).IsRequired().HasMaxLength(200);
             entity.Property(e => e.AccessKeyHash).IsRequired().HasMaxLength(500);
             entity.Property(e => e.MaskedValue).IsRequired().HasMaxLength(100);
+        });
+
+        // 代理使用日志实体配置
+        modelBuilder.Entity<ProxyUsageLog>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.ProtocolType).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.RequestModel).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
+            entity.HasIndex(e => e.RequestedAt);
         });
 
         base.OnModelCreating(modelBuilder);

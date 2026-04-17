@@ -1,8 +1,11 @@
 using AITool.Application.Detection;
+using AITool.Application.Proxy;
 using AITool.Application.Routing;
 using AITool.Application.SiteCatalog;
+using AITool.Application.UsageLogs;
 using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Routing;
 using AITool.Infrastructure.Scheduling;
 using Hangfire;
@@ -12,6 +15,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 // 注册 Razor Pages，作为管理后台的页面框架
 builder.Services.AddRazorPages();
+
+// 注册 API 控制器，用于代理转发端点
+builder.Services.AddControllers();
 
 // 注册 EF Core SQLite 数据库上下文
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? "Data Source=aitool.db";
@@ -26,6 +32,12 @@ builder.Services.AddHttpClient<IModelProbeService, OpenAiModelProbeService>();
 
 // 注册路由选择服务，用于根据优先级匹配代理路由
 builder.Services.AddScoped<IRouteSelectionService, RouteSelectionService>();
+
+// 注册代理转发服务，使用 HttpClient 转发请求到上游站点
+builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
+
+// 注册使用日志服务，记录每次代理调用的 Token 用量
+builder.Services.AddScoped<IUsageLogService, UsageLogService>();
 
 // 注册 Hangfire 检测调度器
 builder.Services.AddSingleton<HangfireDetectionScheduler>();
@@ -66,6 +78,9 @@ app.UseHangfireDashboard("/hangfire");
 
 // 映射 Razor Pages 路由
 app.MapRazorPages();
+
+// 映射 API 控制器路由，用于代理转发端点
+app.MapControllers();
 
 app.Run();
 
