@@ -1,0 +1,35 @@
+@page
+@model AITool.Web.Pages.Admin.Sites.IndexModel
+@{
+    ViewData["Title"] = "站点管理";
+}
+
+<h1>站点管理</h1>
+
+<p>
+    <a asp-page="./Create" class="btn btn-primary">新增站点</a>
+</p>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>名称</th>
+            <th>根地址</th>
+            <th>协议类型</th>
+            <th>状态</th>
+            <th>创建时间</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var site in Model.Sites)
+        {
+            <tr>
+                <td>@site.Name</td>
+                <td>@site.BaseUrl</td>
+                <td>@site.ProtocolType</td>
+                <td>@(site.IsEnabled ? "启用" : "禁用")</td>
+                <td>@site.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
+            </tr>
+        }
+    </tbody>
+</table>
