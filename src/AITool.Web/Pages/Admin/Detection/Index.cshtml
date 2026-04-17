@@ -1,0 +1,48 @@
+@page
+@model AITool.Web.Pages.Admin.Detection.IndexModel
+@{
+    ViewData["Title"] = "模型检测";
+}
+
+<h1>模型检测</h1>
+
+@if (Model.ProbeMessage is not null)
+{
+    <div class="alert alert-@(Model.ProbeSuccess ? "success" : "danger")">
+        @Model.ProbeMessage
+    </div>
+}
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>站点名称</th>
+            <th>模型名称</th>
+            <th>最近状态</th>
+            <th>最近检测时间</th>
+            <th>耗时</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var item in Model.Mappings)
+        {
+            <tr>
+                <td>@item.SiteName</td>
+                <td>@item.ModelName</td>
+                <td>
+                    <span class="badge bg-@(item.LastStatus == "success" ? "success" : item.LastStatus == "fail" ? "danger" : "secondary")">
+                        @item.LastStatus
+                    </span>
+                </td>
+                <td>@(item.LastCheckedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-")</td>
+                <td>@(item.LastDurationMs.HasValue ? $"{item.LastDurationMs} ms" : "-")</td>
+                <td>
+                    <form method="post" asp-page-handler="Probe" asp-route-mappingId="@item.MappingId" class="d-inline">
+                        <button type="submit" class="btn btn-sm btn-primary">检测</button>
+                    </form>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>

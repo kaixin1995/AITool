@@ -1,3 +1,4 @@
+using AITool.Domain.Detection;
 using AITool.Domain.Models;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
@@ -18,6 +19,9 @@ public sealed class AppDbContext : DbContext
 
     // 站点模型映射数据集
     public DbSet<SiteModelMapping> SiteModelMappings => Set<SiteModelMapping>();
+
+    // 检测日志数据集
+    public DbSet<DetectionLog> DetectionLogs => Set<DetectionLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -47,6 +51,15 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.RemoteModelName).IsRequired().HasMaxLength(200);
             entity.Property(e => e.LastStatus).IsRequired().HasMaxLength(50);
             entity.HasIndex(e => new { e.SiteId, e.RemoteModelName }).IsUnique();
+        });
+
+        // 检测日志实体配置
+        modelBuilder.Entity<DetectionLog>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.ErrorMessage).HasMaxLength(2000);
+            entity.HasIndex(e => e.CheckedAt);
         });
 
         base.OnModelCreating(modelBuilder);

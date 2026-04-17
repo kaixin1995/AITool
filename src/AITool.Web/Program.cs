@@ -1,3 +1,4 @@
+using AITool.Application.Detection;
 using AITool.Application.SiteCatalog;
 using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Persistence;
@@ -16,6 +17,9 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 // 注册站点目录客户端，用于拉取远程站点模型列表
 builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
+
+// 注册模型探测服务，用于检测模型可用性
+builder.Services.AddHttpClient<IModelProbeService, OpenAiModelProbeService>();
 
 // 注册 Hangfire 内存存储与仪表盘
 builder.Services.AddHangfire(config => config
