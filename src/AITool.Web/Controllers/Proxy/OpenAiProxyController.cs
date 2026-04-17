@@ -5,12 +5,13 @@ using AITool.Application.Proxy;
 using AITool.Application.Routing;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Proxy;
 
-// OpenAI 协议兼容代理控制器，转发 chat completions 请求
+// OpenAI 协议兼容代理控制器，转发 chat completions 请求并集成熔断机制
 [ApiController]
 public sealed class OpenAiProxyController : ControllerBase
 {
@@ -18,20 +19,23 @@ public sealed class OpenAiProxyController : ControllerBase
     private readonly IProxyForwardService _forwardService;
     private readonly IUsageLogService _usageLogService;
     private readonly AppDbContext _dbContext;
+    private readonly RouteCircuitStateStore _circuitStore;
 
     public OpenAiProxyController(
         IRouteSelectionService routeService,
         IProxyForwardService forwardService,
         IUsageLogService usageLogService,
-        AppDbContext dbContext)
+        AppDbContext dbContext,
+        RouteCircuitStateStore circuitStore)
     {
         _routeService = routeService;
         _forwardService = forwardService;
         _usageLogService = usageLogService;
         _dbContext = dbContext;
+        _circuitStore = circuitStore;
     }
 
-    // 代理 OpenAI chat completions 请求
+    // 代理 OpenAI chat completions 请求，自动跳过熔断站点
     [HttpPost("/v1/chat/completions")]
     public async Task<IActionResult> ChatCompletions(CancellationToken cancellationToken)
     {
@@ -63,8 +67,9 @@ public sealed class OpenAiProxyController : ControllerBase
             return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
         }
 
-        // 选择路由
-        var routeResult = await _routeService.SelectRouteAsync(modelName, cancellationToken);
+        // 收集被熔断的站点，选择路由时跳过
+        var excludedSiteIds = GetBlockedSiteIds();
+        var routeResult = await _routeService.SelectRouteAsync(modelName, excludedSiteIds, cancellationToken);
         if (!routeResult.Found || routeResult.Route is null)
         {
             return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
@@ -90,6 +95,12 @@ public sealed class OpenAiProxyController : ControllerBase
         };
 
         var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+
+        // 转发失败时触发熔断
+        if (!result.Success)
+        {
+            _circuitStore.Block(site.Id);
+        }
 
         // 记录使用日志
         await _usageLogService.LogAsync(new UsageLogEntry
@@ -122,5 +133,14 @@ public sealed class OpenAiProxyController : ControllerBase
 
         return await _dbContext.ProxyAccessKeys
             .FirstOrDefaultAsync(k => k.AccessKeyHash == hash && k.IsEnabled, cancellationToken);
+    }
+
+    // 查询当前所有启用的站点，返回其中被熔断的站点 ID 集合
+    private HashSet<Guid> GetBlockedSiteIds()
+    {
+        return _dbContext.Sites
+            .Where(s => s.IsEnabled && _circuitStore.IsBlocked(s.Id))
+            .Select(s => s.Id)
+            .ToHashSet();
     }
 }

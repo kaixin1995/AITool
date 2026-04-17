@@ -20,8 +20,24 @@ public sealed class RouteSelectionService : IRouteSelectionService
         string externalModelName,
         CancellationToken cancellationToken = default)
     {
-        var route = await _dbContext.ProxyRouteRules
-            .Where(r => r.ExternalModelName == externalModelName && r.IsEnabled)
+        return await SelectRouteAsync(externalModelName, [], cancellationToken);
+    }
+
+    // 查询匹配的启用路由，排除指定站点集合（用于熔断跳过）
+    public async Task<RouteSelectionResult> SelectRouteAsync(
+        string externalModelName,
+        HashSet<Guid> excludedSiteIds,
+        CancellationToken cancellationToken = default)
+    {
+        var query = _dbContext.ProxyRouteRules
+            .Where(r => r.ExternalModelName == externalModelName && r.IsEnabled);
+
+        if (excludedSiteIds.Count > 0)
+        {
+            query = query.Where(r => !excludedSiteIds.Contains(r.SiteId));
+        }
+
+        var route = await query
             .OrderBy(r => r.Priority)
             .FirstOrDefaultAsync(cancellationToken);
 

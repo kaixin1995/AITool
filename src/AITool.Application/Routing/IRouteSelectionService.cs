@@ -19,4 +19,10 @@ public interface IRouteSelectionService
     Task<RouteSelectionResult> SelectRouteAsync(
         string externalModelName,
         CancellationToken cancellationToken = default);
+
+    // 根据外部模型名称选择路由，同时跳过被熔断屏蔽的站点
+    Task<RouteSelectionResult> SelectRouteAsync(
+        string externalModelName,
+        HashSet<Guid> excludedSiteIds,
+        CancellationToken cancellationToken = default);
 }

@@ -1,3 +1,4 @@
+using AITool.Application.Common;
 using AITool.Application.Detection;
 using AITool.Application.Proxy;
 using AITool.Application.Routing;
@@ -6,6 +7,7 @@ using AITool.Application.UsageLogs;
 using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
+using AITool.Infrastructure.Retention;
 using AITool.Infrastructure.Routing;
 using AITool.Infrastructure.Scheduling;
 using Hangfire;
@@ -38,6 +40,12 @@ builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
 
 // 注册使用日志服务，记录每次代理调用的 Token 用量
 builder.Services.AddScoped<IUsageLogService, UsageLogService>();
+
+// 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点
+builder.Services.AddSingleton<RouteCircuitStateStore>();
+
+// 注册日志保留策略服务，定时清理过期日志
+builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
 
 // 注册 Hangfire 检测调度器
 builder.Services.AddSingleton<HangfireDetectionScheduler>();
@@ -75,6 +83,12 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
 // 启用 Hangfire 仪表盘，仅限本地访问
 app.UseHangfireDashboard("/hangfire");
+
+// 注册日志清理定时任务，每天凌晨 3 点执行
+RecurringJob.AddOrUpdate<ILogRetentionService>(
+    "log-retention-prune",
+    svc => svc.PruneAsync(CancellationToken.None),
+    "0 3 * * *");
 
 // 映射 Razor Pages 路由
 app.MapRazorPages();
