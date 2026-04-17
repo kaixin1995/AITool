@@ -1,0 +1,12 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AITool.Application/AITool.Application.csproj" />
+    <Project Path="src/AITool.Domain/AITool.Domain.csproj" />
+    <Project Path="src/AITool.Infrastructure/AITool.Infrastructure.csproj" />
+    <Project Path="src/AITool.Web/AITool.Web.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AITool.ApplicationTests/AITool.ApplicationTests.csproj" />
+    <Project Path="tests/AITool.IntegrationTests/AITool.IntegrationTests.csproj" />
+  </Folder>
+</Solution>
