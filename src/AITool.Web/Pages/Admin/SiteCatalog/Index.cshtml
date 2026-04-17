@@ -1,0 +1,42 @@
+@page
+@model AITool.Web.Pages.Admin.SiteCatalog.IndexModel
+@{
+    ViewData["Title"] = "站点模型拉取";
+}
+
+<h1>站点模型拉取</h1>
+
+@if (Model.PullResult is not null)
+{
+    <div class="alert alert-success">
+        成功导入 @Model.PullResult.ImportedCount 个模型。
+    </div>
+}
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>站点名称</th>
+            <th>协议类型</th>
+            <th>已映射模型数</th>
+            <th>状态</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var item in Model.Sites)
+        {
+            <tr>
+                <td>@item.Name</td>
+                <td>@item.ProtocolType</td>
+                <td>@item.MappingCount</td>
+                <td>@(item.IsEnabled ? "启用" : "禁用")</td>
+                <td>
+                    <form method="post" asp-page-handler="Pull" asp-route-siteId="@item.SiteId" class="d-inline">
+                        <button type="submit" class="btn btn-sm btn-primary" @(item.IsEnabled ? "" : "disabled")>拉取模型</button>
+                    </form>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>

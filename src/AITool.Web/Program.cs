@@ -1,3 +1,5 @@
+using AITool.Application.SiteCatalog;
+using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Persistence;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
@@ -11,6 +13,9 @@ builder.Services.AddRazorPages();
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? "Data Source=aitool.db";
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(connectionString));
+
+// 注册站点目录客户端，用于拉取远程站点模型列表
+builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 
 // 注册 Hangfire 内存存储与仪表盘
 builder.Services.AddHangfire(config => config

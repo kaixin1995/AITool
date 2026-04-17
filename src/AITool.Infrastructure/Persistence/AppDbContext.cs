@@ -1,4 +1,5 @@
 using AITool.Domain.Models;
+using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using Microsoft.EntityFrameworkCore;
 
@@ -14,6 +15,9 @@ public sealed class AppDbContext : DbContext
 
     // 模型库数据集
     public DbSet<ModelLibraryItem> ModelLibraryItems => Set<ModelLibraryItem>();
+
+    // 站点模型映射数据集
+    public DbSet<SiteModelMapping> SiteModelMappings => Set<SiteModelMapping>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -34,6 +38,15 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.ModelName).IsRequired().HasMaxLength(200);
             entity.Property(e => e.DisplayName).HasMaxLength(200);
             entity.Property(e => e.ModelType).IsRequired().HasMaxLength(50);
+        });
+
+        // 站点模型映射实体配置
+        modelBuilder.Entity<SiteModelMapping>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.RemoteModelName).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.LastStatus).IsRequired().HasMaxLength(50);
+            entity.HasIndex(e => new { e.SiteId, e.RemoteModelName }).IsUnique();
         });
 
         base.OnModelCreating(modelBuilder);
