@@ -1,0 +1,35 @@
+@page
+@model AITool.Web.Pages.Admin.Models.IndexModel
+@{
+    ViewData["Title"] = "模型库管理";
+}
+
+<h1>模型库管理</h1>
+
+<p>
+    <a asp-page="./Create" class="btn btn-primary">新增模型</a>
+</p>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>模型名</th>
+            <th>显示名</th>
+            <th>类型</th>
+            <th>状态</th>
+            <th>创建时间</th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var item in Model.Models)
+        {
+            <tr>
+                <td>@item.ModelName</td>
+                <td>@item.DisplayName</td>
+                <td>@item.ModelType</td>
+                <td>@(item.IsEnabled ? "启用" : "禁用")</td>
+                <td>@item.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
+            </tr>
+        }
+    </tbody>
+</table>
