@@ -20,12 +20,40 @@ public class IndexModel : PageModel
     // 模型库列表数据
     public List<ModelLibraryItem> Models { get; set; } = [];
 
+    // 状态消息
+    public string? StatusMessage { get; set; }
+    public bool StatusSuccess { get; set; }
+
     // 加载模型列表
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         Models = await _dbContext.ModelLibraryItems
             .OrderBy(x => x.ModelName)
             .ToListAsync(cancellationToken);
+    }
+
+    // 切换模型启用/禁用状态
+    public async Task<IActionResult> OnPostToggleAsync(Guid modelId, CancellationToken cancellationToken)
+    {
+        var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
+        if (model is null) return RedirectToPage();
+        model.IsEnabled = !model.IsEnabled;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await OnGetAsync(cancellationToken);
+        return Page();
+    }
+
+    // 删除模型
+    public async Task<IActionResult> OnPostDeleteAsync(Guid modelId, CancellationToken cancellationToken)
+    {
+        var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
+        if (model is null) return RedirectToPage();
+        _dbContext.ModelLibraryItems.Remove(model);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        StatusMessage = "模型已删除";
+        StatusSuccess = true;
+        await OnGetAsync(cancellationToken);
+        return Page();
     }
 }
 

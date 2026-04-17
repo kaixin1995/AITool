@@ -20,12 +20,40 @@ public class IndexModel : PageModel
     // 站点列表数据
     public List<Site> Sites { get; set; } = [];
 
+    // 状态消息
+    public string? StatusMessage { get; set; }
+    public bool StatusSuccess { get; set; }
+
     // 加载站点列表
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         Sites = await _dbContext.Sites
             .OrderBy(x => x.Name)
             .ToListAsync(cancellationToken);
+    }
+
+    // 切换站点启用/禁用状态
+    public async Task<IActionResult> OnPostToggleAsync(Guid siteId, CancellationToken cancellationToken)
+    {
+        var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+        if (site is null) return RedirectToPage();
+        site.IsEnabled = !site.IsEnabled;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await OnGetAsync(cancellationToken);
+        return Page();
+    }
+
+    // 删除站点
+    public async Task<IActionResult> OnPostDeleteAsync(Guid siteId, CancellationToken cancellationToken)
+    {
+        var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+        if (site is null) return RedirectToPage();
+        _dbContext.Sites.Remove(site);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        StatusMessage = "站点已删除";
+        StatusSuccess = true;
+        await OnGetAsync(cancellationToken);
+        return Page();
     }
 }
 

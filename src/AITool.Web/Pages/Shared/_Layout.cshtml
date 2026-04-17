@@ -9,11 +9,37 @@
 <body>
     <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-3">
         <div class="container">
-            <a class="navbar-brand" href="/Admin/Sites">AI Tool</a>
-            <div class="navbar-nav">
-                <a class="nav-link text-white" href="/Admin/Sites">站点管理</a>
-                <a class="nav-link text-white" href="/Admin/Models">模型库</a>
-                <a class="nav-link text-white" href="/Admin/SiteCatalog">模型拉取</a>
+            <a class="navbar-brand" href="/">AI Tool</a>
+            <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#mainNav">
+                <span class="navbar-toggler-icon"></span>
+            </button>
+            <div class="collapse navbar-collapse" id="mainNav">
+                <ul class="navbar-nav me-auto">
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle text-white" href="#" data-bs-toggle="dropdown">资源管理</a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="/Admin/Sites">站点管理</a></li>
+                            <li><a class="dropdown-item" href="/Admin/Models">模型库</a></li>
+                            <li><a class="dropdown-item" href="/Admin/SiteCatalog">模型拉取</a></li>
+                        </ul>
+                    </li>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle text-white" href="#" data-bs-toggle="dropdown">代理配置</a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="/Admin/Routes">路由规则</a></li>
+                            <li><a class="dropdown-item" href="/Admin/AccessKeys">访问密钥</a></li>
+                        </ul>
+                    </li>
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle text-white" href="#" data-bs-toggle="dropdown">监控运维</a>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item" href="/Admin/Detection">模型检测</a></li>
+                            <li><a class="dropdown-item" href="/Admin/DetectionTasks">检测任务</a></li>
+                            <li><a class="dropdown-item" href="/Admin/UsageLogs">使用日志</a></li>
+                            <li><a class="dropdown-item" href="/Admin/Dashboard">状态看板</a></li>
+                        </ul>
+                    </li>
+                </ul>
             </div>
         </div>
     </nav>

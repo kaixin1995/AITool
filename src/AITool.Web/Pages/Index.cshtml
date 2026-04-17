@@ -1,5 +1,67 @@
 @page
+@model AITool.Web.Pages.IndexModel
 @{
-    // 根路径直接跳转到站点管理页面
-    Response.Redirect("/Admin/Sites");
+    ViewData["Title"] = "AI Tool 管理平台";
 }
+
+<div class="text-center mb-4">
+    <h1 class="display-5 fw-bold">AI Tool 管理平台</h1>
+    <p class="text-muted">统一管理站点、模型、代理路由与密钥</p>
+</div>
+
+<div class="row g-4">
+    <div class="col-md-4">
+        <div class="card text-center h-100">
+            <div class="card-body">
+                <h2 class="card-title text-primary">@Model.EnabledSiteCount</h2>
+                <p class="card-text text-muted">启用站点</p>
+                <a href="/Admin/Sites" class="btn btn-sm btn-outline-primary">管理站点</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-center h-100">
+            <div class="card-body">
+                <h2 class="card-title text-success">@Model.ModelCount</h2>
+                <p class="card-text text-muted">模型总数</p>
+                <a href="/Admin/Models" class="btn btn-sm btn-outline-success">管理模型</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-center h-100">
+            <div class="card-body">
+                <h2 class="card-title text-info">@Model.MappingCount</h2>
+                <p class="card-text text-muted">站点模型映射</p>
+                <a href="/Admin/SiteCatalog" class="btn btn-sm btn-outline-info">模型拉取</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-center h-100">
+            <div class="card-body">
+                <h2 class="card-title text-warning">@Model.RouteRuleCount</h2>
+                <p class="card-text text-muted">路由规则</p>
+                <a href="/Admin/Routes" class="btn btn-sm btn-outline-warning">管理路由</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-center h-100">
+            <div class="card-body">
+                <h2 class="card-title text-danger">@Model.EnabledKeyCount</h2>
+                <p class="card-text text-muted">启用密钥</p>
+                <a href="/Admin/AccessKeys" class="btn btn-sm btn-outline-danger">管理密钥</a>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card text-center h-100">
+            <div class="card-body">
+                <h2 class="card-title text-secondary">@Model.EnabledTaskCount</h2>
+                <p class="card-text text-muted">启用检测任务</p>
+                <a href="/Admin/DetectionTasks" class="btn btn-sm btn-outline-secondary">管理任务</a>
+            </div>
+        </div>
+    </div>
+</div>

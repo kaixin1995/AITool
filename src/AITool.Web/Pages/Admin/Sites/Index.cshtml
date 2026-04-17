@@ -18,6 +18,7 @@
             <th>协议类型</th>
             <th>状态</th>
             <th>创建时间</th>
+            <th>操作</th>
         </tr>
     </thead>
     <tbody>
@@ -29,6 +30,16 @@
                 <td>@site.ProtocolType</td>
                 <td>@(site.IsEnabled ? "启用" : "禁用")</td>
                 <td>@site.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
+                <td>
+                    <form method="post" asp-page-handler="Toggle" asp-route-siteId="@site.Id" class="d-inline">
+                        <button type="submit" class="btn btn-sm btn-outline-@(site.IsEnabled ? "warning" : "success")">
+                            @(site.IsEnabled ? "禁用" : "启用")
+                        </button>
+                    </form>
+                    <form method="post" asp-page-handler="Delete" asp-route-siteId="@site.Id" class="d-inline">
+                        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该站点？')">删除</button>
+                    </form>
+                </td>
             </tr>
         }
     </tbody>
