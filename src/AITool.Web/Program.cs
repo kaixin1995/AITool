@@ -2,6 +2,7 @@ using AITool.Application.Detection;
 using AITool.Application.SiteCatalog;
 using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Scheduling;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
 
@@ -21,6 +22,9 @@ builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 // 注册模型探测服务，用于检测模型可用性
 builder.Services.AddHttpClient<IModelProbeService, OpenAiModelProbeService>();
 
+// 注册 Hangfire 检测调度器
+builder.Services.AddSingleton<HangfireDetectionScheduler>();
+
 // 注册 Hangfire 内存存储与仪表盘
 builder.Services.AddHangfire(config => config
     .UseSimpleAssemblyNameTypeSerializer()
@@ -35,6 +39,18 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
+
+    // 启动时将已启用的检测任务注册到 Hangfire，首次运行或表不存在时跳过
+    try
+    {
+        var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
+        await scheduler.ScheduleAllAsync(default);
+    }
+    catch (Exception ex)
+    {
+        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        logger.LogWarning(ex, "启动时注册检测任务失败，将在下次启动时重试");
+    }
 }
 
 // 映射健康检查端点，作为集成测试的验证入口

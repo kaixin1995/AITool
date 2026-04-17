@@ -23,6 +23,12 @@ public sealed class AppDbContext : DbContext
     // 检测日志数据集
     public DbSet<DetectionLog> DetectionLogs => Set<DetectionLog>();
 
+    // 定时检测任务数据集
+    public DbSet<DetectionTask> DetectionTasks => Set<DetectionTask>();
+
+    // 检测任务执行记录数据集
+    public DbSet<DetectionTaskExecution> DetectionTaskExecutions => Set<DetectionTaskExecution>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // 站点实体配置
@@ -60,6 +66,23 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
             entity.Property(e => e.ErrorMessage).HasMaxLength(2000);
             entity.HasIndex(e => e.CheckedAt);
+        });
+
+        // 定时检测任务实体配置
+        modelBuilder.Entity<DetectionTask>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.CronExpression).IsRequired().HasMaxLength(100);
+        });
+
+        // 检测任务执行记录实体配置
+        modelBuilder.Entity<DetectionTaskExecution>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.Summary).HasMaxLength(2000);
+            entity.HasIndex(e => e.StartedAt);
         });
 
         base.OnModelCreating(modelBuilder);

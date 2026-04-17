@@ -1,0 +1,50 @@
+using AITool.Application.Dashboard;
+using AITool.Infrastructure.Persistence;
+using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.EntityFrameworkCore;
+
+namespace AITool.Web.Pages.Admin.Dashboard;
+
+// 状态看板页面模型，展示系统整体运行概览
+public class IndexModel : PageModel
+{
+    private readonly AppDbContext _dbContext;
+
+    public IndexModel(AppDbContext dbContext)
+    {
+        _dbContext = dbContext;
+    }
+
+    // 看板概览统计数据
+    public DashboardOverviewResult Overview { get; set; } = new();
+
+    // 加载看板概览数据
+    public async Task OnGetAsync(CancellationToken cancellationToken)
+    {
+        var enabledSiteCount = await _dbContext.Sites.CountAsync(s => s.IsEnabled, cancellationToken);
+        var modelCount = await _dbContext.ModelLibraryItems.CountAsync(cancellationToken);
+        var mappingCount = await _dbContext.SiteModelMappings.CountAsync(cancellationToken);
+        var enabledTaskCount = await _dbContext.DetectionTasks.CountAsync(t => t.IsEnabled, cancellationToken);
+
+        var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
+        var recentDetections = await _dbContext.DetectionLogs
+            .Where(d => d.CheckedAt >= cutoff)
+            .ToListAsync(cancellationToken);
+
+        var recentDetectionCount = recentDetections.Count;
+        var recentSuccessCount = recentDetections.Count(d => d.Status == "success");
+        var recentSuccessRate = recentDetectionCount > 0
+            ? (double)recentSuccessCount / recentDetectionCount
+            : 0;
+
+        Overview = new DashboardOverviewResult
+        {
+            EnabledSiteCount = enabledSiteCount,
+            ModelCount = modelCount,
+            MappingCount = mappingCount,
+            RecentDetectionCount = recentDetectionCount,
+            RecentSuccessRate = recentSuccessRate,
+            EnabledTaskCount = enabledTaskCount
+        };
+    }
+}

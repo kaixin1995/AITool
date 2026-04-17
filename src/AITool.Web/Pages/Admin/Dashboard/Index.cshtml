@@ -1,0 +1,58 @@
+@page
+@model AITool.Web.Pages.Admin.Dashboard.IndexModel
+@{
+    ViewData["Title"] = "状态看板";
+}
+
+<h1>状态看板</h1>
+
+<div class="row g-4 mb-4">
+    <div class="col-md-2">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">@Model.Overview.EnabledSiteCount</h5>
+                <p class="card-text text-muted">启用站点</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">@Model.Overview.ModelCount</h5>
+                <p class="card-text text-muted">模型总数</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">@Model.Overview.MappingCount</h5>
+                <p class="card-text text-muted">映射总数</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">@Model.Overview.RecentDetectionCount</h5>
+                <p class="card-text text-muted">24h 检测次数</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">@Model.Overview.RecentSuccessRate.ToString("P1")</h5>
+                <p class="card-text text-muted">24h 成功率</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-2">
+        <div class="card text-center">
+            <div class="card-body">
+                <h5 class="card-title">@Model.Overview.EnabledTaskCount</h5>
+                <p class="card-text text-muted">启用任务</p>
+            </div>
+        </div>
+    </div>
+</div>
