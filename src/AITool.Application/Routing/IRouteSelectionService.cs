@@ -25,4 +25,9 @@ public interface IRouteSelectionService
         string externalModelName,
         HashSet<Guid> excludedSiteIds,
         CancellationToken cancellationToken = default);
+
+    // 获取指定模型名称的所有启用路由，按优先级升序排列（用于失败重试）
+    Task<List<RouteSelectionResult>> SelectAllRoutesAsync(
+        string externalModelName,
+        CancellationToken cancellationToken = default);
 }

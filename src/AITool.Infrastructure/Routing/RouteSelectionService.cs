@@ -43,4 +43,17 @@ public sealed class RouteSelectionService : IRouteSelectionService
 
         return new RouteSelectionResult { Route = route };
     }
+
+    // 获取指定模型名称的所有启用路由，按优先级升序排列
+    public async Task<List<RouteSelectionResult>> SelectAllRoutesAsync(
+        string externalModelName,
+        CancellationToken cancellationToken = default)
+    {
+        var routes = await _dbContext.ProxyRouteRules
+            .Where(r => r.ExternalModelName == externalModelName && r.IsEnabled)
+            .OrderBy(r => r.Priority)
+            .ToListAsync(cancellationToken);
+
+        return routes.Select(r => new RouteSelectionResult { Route = r }).ToList();
+    }
 }

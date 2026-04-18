@@ -3,105 +3,398 @@
 @{
     ViewData["Title"] = "路由规则管理";
 }
-
 <!-- 页面标题 -->
 <div class="page-header">
     <div>
         <h2 class="page-title">路由规则管理</h2>
-        <p class="page-subtitle">配置外部模型请求到站点模型的转发规则</p>
+        <p class="page-subtitle">选择模型后自动发现站点，拖拽设置优先级，请求时按顺序尝试</p>
     </div>
 </div>
 
-<!-- 状态提示 -->
-@if (Model.StatusMessage is not null)
-{
-    <div class="alert alert-@(Model.StatusSuccess ? "success" : "danger")">
-        @Model.StatusMessage
-    </div>
-}
+<!-- 操作提示 -->
+<div id="statusMsg" class="alert" style="display:none;"></div>
 
-<!-- 内联创建表单 -->
+<!-- 模型选择 -->
 <div class="inline-form">
-    <form method="post" asp-page-handler="Create">
-        <div class="row g-2 align-items-end">
-            <div class="col-auto">
-                <label class="form-label">外部模型名</label>
-                <input type="text" name="externalModelName" class="form-control" required />
+    <div class="row g-2 align-items-end">
+        <div class="col-auto">
+            <label class="form-label">选择模型</label>
+            <select id="modelSelect" class="form-select" style="min-width:280px;">
+                <option value="">-- 加载中... --</option>
+            </select>
+        </div>
+        <div class="col-auto">
+            <button type="button" class="btn btn-secondary" onclick="loadModels()">刷新模型</button>
+        </div>
+    </div>
+</div>
+
+<!-- 站点排序编辑区 -->
+<div id="routeEditor" style="display:none; margin-top:16px;">
+    <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <span>站点优先级排序（拖拽调整，越靠前优先级越高）</span>
+            <button type="button" class="btn btn-primary btn-sm" onclick="saveRules()">保存排序</button>
+        </div>
+        <div class="card-body p-0">
+            <div id="routeList" class="route-sort-list">
+                <!-- 动态生成的站点行 -->
             </div>
-            <div class="col-auto">
-                <label class="form-label">目标站点</label>
-                <select name="siteId" class="form-select" required>
-                    <option value="">选择站点</option>
-                    @foreach (var site in Model.AvailableSites)
-                    {
-                        <option value="@site.Id">@site.Name</option>
-                    }
-                </select>
-            </div>
-            <div class="col-auto">
-                <label class="form-label">站点模型名</label>
-                <input type="text" name="siteModelName" class="form-control" required />
-            </div>
-            <div class="col-auto">
-                <label class="form-label">优先级</label>
-                <input type="number" name="priority" class="form-control" value="0" min="0" required />
-            </div>
-            <div class="col-auto">
-                <button type="submit" class="btn btn-primary">创建规则</button>
+            <div id="emptyTip" class="p-3 text-center text-secondary" style="display:none;">
+                该模型暂无可用站点，请先在模型检测中导入模型
             </div>
         </div>
-    </form>
+    </div>
 </div>
 
-<!-- 规则列表表格 -->
-<div class="table-wrapper">
-    <table class="table">
-        <thead>
-            <tr>
-                <th>外部模型名</th>
-                <th>目标站点</th>
-                <th>站点模型名</th>
-                <th>优先级</th>
-                <th>状态</th>
-                <th>操作</th>
-            </tr>
-        </thead>
-        <tbody>
-            @if (!Model.Rules.Any())
-            {
+<!-- 所有规则概览 -->
+<div style="margin-top:24px;">
+    <h5 style="margin-bottom:12px;">已配置的路由规则</h5>
+    <div class="table-wrapper">
+        <table class="table">
+            <thead>
                 <tr>
-                    <td colspan="6">
-                        <div class="table-empty">
-                            <div class="table-empty-icon">🔀</div>
-                            <div class="table-empty-text">暂无路由规则，请在上方创建</div>
-                        </div>
-                    </td>
+                    <th>外部模型名</th>
+                    <th>目标站点</th>
+                    <th>站点模型名</th>
+                    <th>优先级</th>
+                    <th>状态</th>
+                    <th>操作</th>
                 </tr>
-            }
-            @foreach (var item in Model.Rules)
-            {
-                <tr>
-                    <td><code>@item.ExternalModelName</code></td>
-                    <td><strong>@item.SiteName</strong></td>
-                    <td><code>@item.SiteModelName</code></td>
-                    <td><span class="badge bg-info">@item.Priority</span></td>
-                    <td>
-                        <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
-                            @(item.IsEnabled ? "启用" : "禁用")
-                        </span>
-                    </td>
-                    <td>
-                        <form method="post" asp-page-handler="Toggle" asp-route-ruleId="@item.RuleId" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")">
-                                @(item.IsEnabled ? "禁用" : "启用")
-                            </button>
-                        </form>
-                        <form method="post" asp-page-handler="Delete" asp-route-ruleId="@item.RuleId" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该规则？')">删除</button>
-                        </form>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
+            </thead>
+            <tbody id="allRulesBody">
+                <tr><td colspan="6"><div class="table-empty"><div class="table-empty-icon">🔀</div><div class="table-empty-text">暂无路由规则</div></div></td></tr>
+            </tbody>
+        </table>
+    </div>
 </div>
+
+<style>
+    .route-sort-list { min-height: 40px; }
+    .route-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 10px 16px;
+        border-bottom: 1px solid var(--border-color, #e9ecef);
+        cursor: grab;
+        user-select: none;
+        transition: background 0.15s;
+    }
+    .route-item:hover { background: var(--card-bg-alt, #f8f9fa); }
+    .route-item.dragging { opacity: 0.4; background: #e8f0fe; }
+    .route-item .drag-handle {
+        color: var(--text-secondary, #999);
+        font-size: 18px;
+        cursor: grab;
+        flex-shrink: 0;
+    }
+    .route-item .priority-num {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        background: #e8f0fe;
+        color: #0d6efd;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        font-weight: 600;
+        flex-shrink: 0;
+    }
+    .route-item .site-info {
+        flex: 1;
+    }
+    .route-item .site-name {
+        font-weight: 600;
+        font-size: 14px;
+    }
+    .route-item .remote-name {
+        font-size: 12px;
+        color: var(--text-secondary, #888);
+    }
+</style>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        loadModels();
+        loadAllRules();
+    });
+
+    // 当前编辑的站点列表
+    var _currentItems = [];
+
+    // 加载模型下拉列表
+    function loadModels() {
+        var select = document.getElementById('modelSelect');
+        select.innerHTML = '<option value="">-- 加载中... --</option>';
+
+        fetch('/api/admin/route-rules/models')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                select.innerHTML = '<option value="">-- 请选择模型 --</option>';
+                data.forEach(function(m) {
+                    var opt = document.createElement('option');
+                    opt.value = m.modelName;
+                    var tag = m.hasRouteRules ? ' ✅' : '';
+                    opt.textContent = m.displayName + ' (' + m.siteCount + ' 个站点)' + tag;
+                    select.appendChild(opt);
+                });
+                if (data.length === 0) {
+                    select.innerHTML = '<option value="">-- 暂无可用模型 --</option>';
+                }
+            })
+            .catch(function() {
+                select.innerHTML = '<option value="">-- 加载失败 --</option>';
+            });
+
+        // 选择模型时自动发现站点并加载已有规则
+        select.onchange = function() {
+            var modelName = select.value;
+            if (!modelName) {
+                document.getElementById('routeEditor').style.display = 'none';
+                return;
+            }
+            loadRouteEditor(modelName);
+        };
+    }
+
+    // 加载指定模型的站点排序编辑器
+    function loadRouteEditor(modelName) {
+        var editor = document.getElementById('routeEditor');
+        editor.style.display = 'block';
+
+        // 并行获取已有规则和自动发现站点
+        Promise.all([
+            fetch('/api/admin/route-rules/list?modelName=' + encodeURIComponent(modelName)).then(function(r) { return r.json(); }),
+            fetch('/api/admin/route-rules/discover-sites?modelName=' + encodeURIComponent(modelName)).then(function(r) { return r.json(); })
+        ]).then(function(results) {
+            var existingRules = results[0];
+            var discoveredSites = results[1];
+
+            // 合并：已有规则在前（保持顺序），发现的站点中不重复的追加在后
+            var usedSiteIds = new Set(existingRules.map(function(r) { return r.siteId; }));
+            var items = existingRules.map(function(r) {
+                return { siteId: r.siteId, siteName: r.siteName, siteModelName: r.siteModelName, source: 'rule' };
+            });
+
+            discoveredSites.forEach(function(s) {
+                if (!usedSiteIds.has(s.siteId)) {
+                    items.push({ siteId: s.siteId, siteName: s.siteName, siteModelName: s.remoteModelName, source: 'discover' });
+                }
+            });
+
+            _currentItems = items;
+            renderRouteList();
+        });
+    }
+
+    // 渲染站点排序列表
+    function renderRouteList() {
+        var list = document.getElementById('routeList');
+        var emptyTip = document.getElementById('emptyTip');
+
+        if (_currentItems.length === 0) {
+            list.innerHTML = '';
+            emptyTip.style.display = 'block';
+            return;
+        }
+        emptyTip.style.display = 'none';
+
+        list.innerHTML = '';
+        _currentItems.forEach(function(item, index) {
+            var row = document.createElement('div');
+            row.className = 'route-item';
+            row.draggable = true;
+            row.setAttribute('data-site-id', item.siteId);
+            row.setAttribute('data-site-model-name', item.siteModelName);
+            row.innerHTML =
+                '<span class="drag-handle">⠿</span>' +
+                '<span class="priority-num">' + (index + 1) + '</span>' +
+                '<div class="site-info">' +
+                    '<div class="site-name">' + escHtml(item.siteName) + '</div>' +
+                    '<div class="remote-name">模型：' + escHtml(item.siteModelName) + '</div>' +
+                '</div>' +
+                '<button type="button" class="btn btn-sm btn-outline-danger" onclick="removeItem(this)" title="移除">✕</button>';
+            list.appendChild(row);
+        });
+
+        initDragDrop();
+    }
+
+    // 初始化拖拽排序
+    function initDragDrop() {
+        var list = document.getElementById('routeList');
+        var draggedItem = null;
+
+        list.addEventListener('dragstart', function(e) {
+            draggedItem = e.target.closest('.route-item');
+            if (draggedItem) {
+                e.dataTransfer.effectAllowed = 'move';
+                setTimeout(function() { draggedItem.classList.add('dragging'); }, 0);
+            }
+        });
+
+        list.addEventListener('dragend', function() {
+            if (draggedItem) {
+                draggedItem.classList.remove('dragging');
+                draggedItem = null;
+                syncItemsFromDOM();
+                renderRouteList();
+            }
+        });
+
+        list.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            var target = e.target.closest('.route-item');
+            if (target && target !== draggedItem) {
+                var rect = target.getBoundingClientRect();
+                var mid = rect.top + rect.height / 2;
+                if (e.clientY < mid) {
+                    list.insertBefore(draggedItem, target);
+                } else {
+                    list.insertBefore(draggedItem, target.nextSibling);
+                }
+            }
+        });
+    }
+
+    // 从 DOM 同步回 _currentItems 数组
+    function syncItemsFromDOM() {
+        var rows = document.querySelectorAll('#routeList .route-item');
+        var newItems = [];
+        rows.forEach(function(row) {
+            var siteId = row.getAttribute('data-site-id');
+            var match = _currentItems.find(function(it) { return String(it.siteId) === String(siteId); });
+            if (match) newItems.push(match);
+        });
+        _currentItems = newItems;
+    }
+
+    // 移除站点
+    function removeItem(btn) {
+        var row = btn.closest('.route-item');
+        var siteId = row.getAttribute('data-site-id');
+        _currentItems = _currentItems.filter(function(it) { return String(it.siteId) !== String(siteId); });
+        renderRouteList();
+    }
+
+    // 保存路由规则
+    function saveRules() {
+        var modelName = document.getElementById('modelSelect').value;
+        if (!modelName) { showMsg('请先选择模型', false); return; }
+        if (_currentItems.length === 0) { showMsg('没有站点可保存', false); return; }
+
+        var rules = _currentItems.map(function(item) {
+            return { siteId: item.siteId, siteModelName: item.siteModelName };
+        });
+
+        fetch('/api/admin/route-rules/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ externalModelName: modelName, rules: rules })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.message === '保存成功') {
+                showMsg('路由规则已保存', true);
+                loadAllRules();
+                // 刷新模型下拉的 ✅ 标记
+                loadModels();
+            } else {
+                showMsg(data.message || '保存失败', false);
+            }
+        })
+        .catch(function(err) { showMsg('保存失败：' + err.message, false); });
+    }
+
+    // 加载所有已配置的路由规则概览
+    function loadAllRules() {
+        // 获取所有不重复的模型名
+        fetch('/api/admin/route-rules/models')
+            .then(function(r) { return r.json(); })
+            .then(function(models) {
+                var modelsWithRules = models.filter(function(m) { return m.hasRouteRules; });
+                if (modelsWithRules.length === 0) {
+                    document.getElementById('allRulesBody').innerHTML =
+                        '<tr><td colspan="6"><div class="table-empty"><div class="table-empty-icon">🔀</div><div class="table-empty-text">暂无路由规则</div></div></td></tr>';
+                    return;
+                }
+
+                // 逐个加载规则
+                var promises = modelsWithRules.map(function(m) {
+                    return fetch('/api/admin/route-rules/list?modelName=' + encodeURIComponent(m.modelName))
+                        .then(function(r) { return r.json(); })
+                        .then(function(rules) {
+                            return { modelName: m.modelName, rules: rules };
+                        });
+                });
+
+                Promise.all(promises).then(function(allData) {
+                    var tbody = document.getElementById('allRulesBody');
+                    tbody.innerHTML = '';
+                    var hasAny = false;
+
+                    allData.forEach(function(group) {
+                        group.rules.forEach(function(r) {
+                            hasAny = true;
+                            var tr = document.createElement('tr');
+                            tr.innerHTML =
+                                '<td><code>' + escHtml(group.modelName) + '</code></td>' +
+                                '<td><strong>' + escHtml(r.siteName) + '</strong></td>' +
+                                '<td><code>' + escHtml(r.siteModelName) + '</code></td>' +
+                                '<td><span class="badge bg-info">' + r.priority + '</span></td>' +
+                                '<td><span class="badge bg-' + (r.isEnabled ? 'success' : 'secondary') + '">' +
+                                    (r.isEnabled ? '启用' : '禁用') + '</span></td>' +
+                                '<td>' +
+                                    '<button class="btn btn-sm btn-outline-' + (r.isEnabled ? 'warning' : 'success') + '" onclick="toggleRule(\'' + r.ruleId + '\')">' +
+                                        (r.isEnabled ? '禁用' : '启用') +
+                                    '</button> ' +
+                                    '<button class="btn btn-sm btn-outline-danger" onclick="deleteRule(\'' + r.ruleId + '\')">删除</button>' +
+                                '</td>';
+                            tbody.appendChild(tr);
+                        });
+                    });
+
+                    if (!hasAny) {
+                        tbody.innerHTML =
+                            '<tr><td colspan="6"><div class="table-empty"><div class="table-empty-icon">🔀</div><div class="table-empty-text">暂无路由规则</div></div></td></tr>';
+                    }
+                });
+            });
+    }
+
+    // 切换规则启用/禁用
+    function toggleRule(ruleId) {
+        fetch('/api/admin/route-rules/toggle/' + ruleId, { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function() { loadAllRules(); })
+            .catch(function(err) { showMsg('操作失败：' + err.message, false); });
+    }
+
+    // 删除规则
+    function deleteRule(ruleId) {
+        if (!confirm('确认删除该规则？')) return;
+        fetch('/api/admin/route-rules/delete/' + ruleId, { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function() { loadAllRules(); })
+            .catch(function(err) { showMsg('操作失败：' + err.message, false); });
+    }
+
+    // 显示操作提示
+    function showMsg(msg, success) {
+        var el = document.getElementById('statusMsg');
+        el.textContent = msg;
+        el.className = 'alert alert-' + (success ? 'success' : 'danger');
+        el.style.display = 'block';
+        setTimeout(function() { el.style.display = 'none'; }, 3000);
+    }
+
+    // HTML 转义
+    function escHtml(str) {
+        var d = document.createElement('div');
+        d.textContent = str || '';
+        return d.innerHTML;
+    }
+</script>

@@ -66,60 +66,62 @@ public sealed class AnthropicProxyController : ControllerBase
             return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
         }
 
-        // 收集被熔断的站点，选择路由时跳过
-        var excludedSiteIds = GetBlockedSiteIds();
-        var routeResult = await _routeService.SelectRouteAsync(modelName, excludedSiteIds, cancellationToken);
-        if (!routeResult.Found || routeResult.Route is null)
-        {
+        // 收集被熔断的站点，获取所有启用的路由规则
+        var blockedSiteIds = GetBlockedSiteIds();
+        var allRoutes = await _routeService.SelectAllRoutesAsync(modelName, cancellationToken);
+
+        if (allRoutes.Count == 0)
             return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
-        }
 
-        var route = routeResult.Route;
+        // 按优先级逐个尝试路由，失败则熔断该站点并继续下一个
+        ProxyForwardResult? lastResult = null;
 
-        // 获取目标站点信息
-        var site = await _dbContext.Sites.FindAsync([route.SiteId], cancellationToken);
-        if (site is null || !site.IsEnabled)
+        foreach (var routeResult in allRoutes)
         {
-            return NotFound(new { error = new { message = "Target site not available" } });
-        }
+            var route = routeResult.Route!;
+            if (blockedSiteIds.Contains(route.SiteId))
+                continue;
 
-        // 转发请求
-        var forwardRequest = new ProxyForwardRequest
-        {
-            TargetBaseUrl = site.BaseUrl,
-            TargetApiKey = site.ApiKey,
-            ProtocolType = "Anthropic",
-            TargetModelName = route.SiteModelName,
-            RequestBody = requestBody
-        };
+            var site = await _dbContext.Sites.FindAsync([route.SiteId], cancellationToken);
+            if (site is null || !site.IsEnabled)
+                continue;
 
-        var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+            var forwardRequest = new ProxyForwardRequest
+            {
+                TargetBaseUrl = site.BaseUrl,
+                TargetApiKey = site.ApiKey,
+                ProtocolType = "Anthropic",
+                TargetModelName = route.SiteModelName,
+                RequestBody = requestBody
+            };
 
-        // 转发失败时触发熔断
-        if (!result.Success)
-        {
+            var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+
+            // 记录每次尝试的使用日志
+            await _usageLogService.LogAsync(new UsageLogEntry
+            {
+                AccessKeyId = accessKey.Id,
+                ProtocolType = "Anthropic",
+                RequestModel = modelName,
+                TargetSiteId = site.Id,
+                Status = result.Success ? "success" : "fail",
+                InputTokens = result.InputTokens,
+                OutputTokens = result.OutputTokens
+            }, cancellationToken);
+
+            if (result.Success)
+                return Content(result.ResponseBody, "application/json");
+
+            // 转发失败，熔断该站点并继续尝试下一个
             _circuitStore.Block(site.Id);
+            blockedSiteIds.Add(site.Id);
+            lastResult = result;
         }
 
-        // 记录使用日志
-        await _usageLogService.LogAsync(new UsageLogEntry
-        {
-            AccessKeyId = accessKey.Id,
-            ProtocolType = "Anthropic",
-            RequestModel = modelName,
-            TargetSiteId = site.Id,
-            Status = result.Success ? "success" : "fail",
-            InputTokens = result.InputTokens,
-            OutputTokens = result.OutputTokens
-        }, cancellationToken);
-
-        if (!result.Success)
-        {
-            return StatusCode(result.StatusCode > 0 ? result.StatusCode : 502,
-                new { error = new { message = result.ErrorMessage ?? "Upstream request failed" } });
-        }
-
-        return Content(result.ResponseBody, "application/json");
+        // 所有路由均失败
+        var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
+        return StatusCode(statusCode,
+            new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
     }
 
     // 验证访问密钥，比对 SHA256 哈希值
