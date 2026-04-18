@@ -1,0 +1,184 @@
+@page
+@model AITool.Web.Pages.Admin.Sites.ImportModel
+@{
+    ViewData["Title"] = "批量导入站点";
+}
+
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">批量导入站点</h2>
+        <p class="page-subtitle">从表格复制的文本批量创建站点，支持 TSV（Tab 分隔）格式</p>
+    </div>
+    <a asp-page="./Index" class="btn btn-secondary">返回列表</a>
+</div>
+
+<!-- 状态提示 -->
+@if (Model.StatusMessage is not null)
+{
+    <div class="alert @(Model.StatusSuccess ? "alert-success" : "alert-danger")">
+        @Model.StatusMessage
+    </div>
+}
+
+<!-- 粘贴区域 -->
+<div class="form-card">
+    <div class="form-section-title">粘贴数据</div>
+    <p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">
+        从 Excel / Google Sheets / 表格中复制数据后直接粘贴到下方文本框。<br>
+        格式：<code>站点名称[TAB]站点地址[TAB]密钥</code>，每行一条，首行为表头会自动跳过。
+    </p>
+    <textarea id="rawInput" class="form-control" rows="8" placeholder="site_name&#9;site_url&#9;Key&#10;示例站点&#9;https://api.example.com&#9;sk-xxxx"
+              style="font-family: monospace; font-size: 13px; resize: vertical;"></textarea>
+    <div class="mt-3 d-flex gap-2">
+        <button type="button" class="btn btn-outline-primary" onclick="parseInput()">解析预览</button>
+        <button type="button" class="btn btn-outline-secondary" onclick="clearAll()">清空</button>
+    </div>
+</div>
+
+<!-- 预览表格 -->
+<div id="previewSection" style="display:none;">
+    <div class="form-card" style="margin-top:20px;">
+        <div class="form-section-title">解析预览 <span id="previewCount" class="badge bg-primary" style="font-size:11px;"></span></div>
+        <div class="table-wrapper" style="box-shadow:none; border:none; border-radius:0;">
+            <table class="table" style="font-size:13px;">
+                <thead>
+                    <tr>
+                        <th style="width:40px;"><input type="checkbox" id="checkAll" checked onchange="toggleAll(this)"></th>
+                        <th>站点名称</th>
+                        <th>站点地址</th>
+                        <th>访问密钥</th>
+                        <th>协议类型</th>
+                    </tr>
+                </thead>
+                <tbody id="previewBody"></tbody>
+            </table>
+        </div>
+
+        <!-- 批量导入提交 -->
+        <div class="divider"></div>
+        <form method="post" id="importForm">
+            <input type="hidden" name="jsonData" id="jsonDataInput" />
+            <div class="d-flex gap-2">
+                <button type="submit" class="btn btn-primary" onclick="return prepareSubmit()">确认导入</button>
+                <a asp-page="./Index" class="btn btn-secondary">取消</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+    /* 已解析的站点数据 */
+    var parsedSites = [];
+
+    /* 从粘贴文本中解析站点数据 */
+    function parseInput() {
+        var raw = document.getElementById('rawInput').value.trim();
+        if (!raw) { alert('请先粘贴数据'); return; }
+
+        var lines = raw.split(/\r?\n/);
+        parsedSites = [];
+
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim();
+            if (!line) continue;
+
+            /* 按 Tab 分割列 */
+            var cols = line.split(/\t/);
+            if (cols.length < 3) continue;
+
+            var name = cols[0].trim();
+            var url = cols[1].trim();
+            var key = cols[2].trim();
+
+            /* 跳过表头行 */
+            if (i === 0 && (name.toLowerCase() === 'site_name' || name === '站点名称' || name.toLowerCase() === 'name')) continue;
+            if (!name || !url || !key) continue;
+
+            /* 自动推断协议类型 */
+            var protocol = 'OpenAI';
+            if (url.toLowerCase().includes('anthropic') || key.startsWith('sk-ant-')) {
+                protocol = 'Anthropic';
+            }
+
+            parsedSites.push({
+                name: name,
+                baseUrl: url,
+                apiKey: key,
+                protocolType: protocol,
+                selected: true
+            });
+        }
+
+        if (parsedSites.length === 0) {
+            alert('未能解析到有效数据，请检查格式');
+            return;
+        }
+
+        renderPreview();
+    }
+
+    /* 渲染预览表格 */
+    function renderPreview() {
+        var section = document.getElementById('previewSection');
+        var body = document.getElementById('previewBody');
+        var count = document.getElementById('previewCount');
+
+        section.style.display = 'block';
+        count.textContent = parsedSites.length + ' 条';
+
+        var html = '';
+        for (var i = 0; i < parsedSites.length; i++) {
+            var s = parsedSites[i];
+            html += '<tr>' +
+                '<td><input type="checkbox" class="site-check" data-index="' + i + '" ' + (s.selected ? 'checked' : '') + '></td>' +
+                '<td><strong>' + escapeHtml(s.name) + '</strong></td>' +
+                '<td><code>' + escapeHtml(s.baseUrl) + '</code></td>' +
+                '<td><code>' + escapeHtml(s.apiKey.substring(0, 8)) + '****</code></td>' +
+                '<td><span class="badge bg-info">' + s.protocolType + '</span></td>' +
+                '</tr>';
+        }
+        body.innerHTML = html;
+    }
+
+    /* 准备提交数据 */
+    function prepareSubmit() {
+        /* 根据复选框过滤选中项 */
+        var checks = document.querySelectorAll('.site-check');
+        var selected = [];
+        checks.forEach(function(cb) {
+            var idx = parseInt(cb.getAttribute('data-index'));
+            parsedSites[idx].selected = cb.checked;
+        });
+
+        var toImport = parsedSites.filter(function(s) { return s.selected; });
+        if (toImport.length === 0) {
+            alert('请至少选择一条数据');
+            return false;
+        }
+
+        document.getElementById('jsonDataInput').value = JSON.stringify(toImport);
+        return true;
+    }
+
+    /* 全选/全不选 */
+    function toggleAll(el) {
+        document.querySelectorAll('.site-check').forEach(function(cb) {
+            cb.checked = el.checked;
+        });
+    }
+
+    /* 清空 */
+    function clearAll() {
+        document.getElementById('rawInput').value = '';
+        document.getElementById('previewSection').style.display = 'none';
+        parsedSites = [];
+    }
+
+    /* HTML 转义 */
+    function escapeHtml(text) {
+        var d = document.createElement('div');
+        d.textContent = text;
+        return d.innerHTML;
+    }
+</script>

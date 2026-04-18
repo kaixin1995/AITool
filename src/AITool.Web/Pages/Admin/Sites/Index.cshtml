@@ -10,7 +10,11 @@
         <h2 class="page-title">站点管理</h2>
         <p class="page-subtitle">管理所有代理站点及其配置</p>
     </div>
-    <a asp-page="./Create" class="btn btn-primary">＋ 新增站点</a>
+    <div class="d-flex gap-2">
+        <a asp-page="./Import" class="btn btn-outline-primary">导入</a>
+        <a asp-page="./Export" class="btn btn-outline-success">导出</a>
+        <a asp-page="./Create" class="btn btn-primary">＋ 新增站点</a>
+    </div>
 </div>
 
 <!-- 状态提示 -->

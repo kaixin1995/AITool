@@ -1,0 +1,127 @@
+@page
+@model AITool.Web.Pages.Admin.Sites.ExportModel
+@{
+    ViewData["Title"] = "导出站点";
+}
+
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">导出站点</h2>
+        <p class="page-subtitle">将站点信息导出为 JSON 格式</p>
+    </div>
+    <a asp-page="./Index" class="btn btn-secondary">返回列表</a>
+</div>
+
+<!-- 导出操作 -->
+<div class="form-card">
+    <div class="form-section-title">导出内容</div>
+    <p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">
+        共 <strong>@Model.Sites.Count</strong> 个站点，导出包含站点名称、地址、密钥、协议类型。
+    </p>
+
+    <!-- 站点预览 -->
+    @if (Model.Sites.Any())
+    {
+        <div class="table-wrapper" style="margin-bottom:20px;">
+            <table class="table" style="font-size:13px;">
+                <thead>
+                    <tr>
+                        <th style="width:40px;"><input type="checkbox" id="checkAll" checked onchange="toggleAll(this)"></th>
+                        <th>站点名称</th>
+                        <th>站点地址</th>
+                        <th>密钥</th>
+                        <th>协议类型</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var site in Model.Sites)
+                    {
+                        <tr>
+                            <td><input type="checkbox" class="site-check" value="@site.Id" checked></td>
+                            <td><strong>@site.Name</strong></td>
+                            <td><code>@site.BaseUrl</code></td>
+                            <td><code>@(site.ApiKey.Length > 8 ? site.ApiKey.Substring(0, 8) + "****" : "****")</code></td>
+                            <td><span class="badge bg-info">@site.ProtocolType</span></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <div class="divider"></div>
+
+        <!-- JSON 预览区域 -->
+        <div class="mb-3">
+            <label class="form-label">JSON 预览</label>
+            <textarea id="jsonOutput" class="form-control" rows="10" readonly
+                      style="font-family: monospace; font-size: 12.5px; resize: vertical; background: var(--bg-page);"></textarea>
+        </div>
+
+        <div class="d-flex gap-2">
+            <button type="button" class="btn btn-primary" onclick="copyJson()">复制 JSON</button>
+            <button type="button" class="btn btn-outline-primary" onclick="downloadJson()">下载文件</button>
+        </div>
+    }
+    else
+    {
+        <div class="table-empty">
+            <div class="table-empty-icon">📭</div>
+            <div class="table-empty-text">暂无站点数据可导出</div>
+        </div>
+    }
+</div>
+
+<script>
+    /* 全量站点数据（由后端注入） */
+    var allSites = @Html.Raw(Model.JsonData);
+
+    /* 根据复选框筛选并生成 JSON */
+    function getSelectedJson() {
+        var checks = document.querySelectorAll('.site-check');
+        var ids = [];
+        checks.forEach(function(cb) {
+            if (cb.checked) ids.push(cb.value);
+        });
+        var selected = allSites.filter(function(s) { return ids.indexOf(s.id) >= 0; });
+        return JSON.stringify(selected, null, 2);
+    }
+
+    /* 初始化 JSON 预览 */
+    document.getElementById('jsonOutput').value = getSelectedJson();
+
+    /* 复选框变化时更新预览 */
+    document.querySelectorAll('.site-check, #checkAll').forEach(function(el) {
+        el.addEventListener('change', function() {
+            document.getElementById('jsonOutput').value = getSelectedJson();
+        });
+    });
+
+    /* 全选/全不选 */
+    function toggleAll(el) {
+        document.querySelectorAll('.site-check').forEach(function(cb) {
+            cb.checked = el.checked;
+        });
+        document.getElementById('jsonOutput').value = getSelectedJson();
+    }
+
+    /* 复制到剪贴板 */
+    function copyJson() {
+        var text = document.getElementById('jsonOutput').value;
+        navigator.clipboard.writeText(text).then(function() {
+            alert('已复制到剪贴板');
+        });
+    }
+
+    /* 下载为文件 */
+    function downloadJson() {
+        var text = document.getElementById('jsonOutput').value;
+        var blob = new Blob([text], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = url;
+        a.download = 'sites_export_' + new Date().toISOString().slice(0, 10) + '.json';
+        a.click();
+        URL.revokeObjectURL(url);
+    }
+</script>
