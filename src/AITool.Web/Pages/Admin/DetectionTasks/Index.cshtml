@@ -33,59 +33,107 @@
                 <input type="text" name="cronExpression" class="form-control" value="*/30 * * * *" required />
             </div>
             <div class="col-auto">
+                <label class="form-label">检测模型</label>
+                <select name="modelId" class="form-select">
+                    <option value="">全部模型</option>
+                    @foreach (var m in Model.AvailableModels)
+                    {
+                        <option value="@m.Id">@m.DisplayName</option>
+                    }
+                </select>
+            </div>
+            <div class="col-auto">
                 <button type="submit" class="btn btn-primary">创建任务</button>
             </div>
         </div>
     </form>
 </div>
 
-<!-- 任务列表表格 -->
-<div class="table-wrapper">
-    <table class="table">
-        <thead>
-            <tr>
-                <th>任务名称</th>
-                <th>Cron 表达式</th>
-                <th>状态</th>
-                <th>最近执行</th>
-                <th>操作</th>
-            </tr>
-        </thead>
-        <tbody>
-            @if (!Model.Tasks.Any())
-            {
-                <tr>
-                    <td colspan="5">
-                        <div class="table-empty">
-                            <div class="table-empty-icon">⏰</div>
-                            <div class="table-empty-text">暂无检测任务，请在上方创建</div>
-                        </div>
-                    </td>
-                </tr>
-            }
-            @foreach (var item in Model.Tasks)
-            {
-                <tr>
-                    <td><strong>@item.Name</strong></td>
-                    <td><code>@item.CronExpression</code></td>
-                    <td>
-                        <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
-                            @(item.IsEnabled ? "启用" : "禁用")
-                        </span>
-                    </td>
-                    <td>@(item.LastExecutionSummary ?? "-")</td>
-                    <td>
-                        <form method="post" asp-page-handler="Toggle" asp-route-taskId="@item.TaskId" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")">
-                                @(item.IsEnabled ? "禁用" : "启用")
-                            </button>
-                        </form>
-                        <form method="post" asp-page-handler="Execute" asp-route-taskId="@item.TaskId" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-primary">立即执行</button>
-                        </form>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
-</div>
+<!-- 任务列表 -->
+@if (!Model.Tasks.Any())
+{
+    <div class="table-wrapper">
+        <div class="table-empty">
+            <div class="table-empty-icon">⏰</div>
+            <div class="table-empty-text">暂无检测任务，请在上方创建</div>
+        </div>
+    </div>
+}
+
+@foreach (var item in Model.Tasks)
+{
+    <div class="detection-group">
+        <div class="detection-group-header">
+            <div>
+                <h3 class="detection-group-title">@item.Name</h3>
+                <span class="badge bg-light text-dark"><code>@item.CronExpression</code></span>
+                <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
+                    @(item.IsEnabled ? "启用" : "禁用")
+                </span>
+                @if (item.ModelName is not null)
+                {
+                    <span class="badge bg-info">@item.ModelName</span>
+                }
+                else
+                {
+                    <span class="badge bg-secondary">全部模型</span>
+                }
+            </div>
+            <div>
+                <form method="post" asp-page-handler="Toggle" asp-route-taskId="@item.TaskId" class="d-inline">
+                    <button type="submit" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")">
+                        @(item.IsEnabled ? "禁用" : "启用")
+                    </button>
+                </form>
+                <form method="post" asp-page-handler="Execute" asp-route-taskId="@item.TaskId" class="d-inline">
+                    <button type="submit" class="btn btn-sm btn-outline-primary">立即执行</button>
+                </form>
+            </div>
+        </div>
+
+        <!-- 执行历史 -->
+        @if (item.ExecutionHistory.Any())
+        {
+            <div class="table-wrapper" style="border: none; border-radius: 0; box-shadow: none;">
+                <table class="table" style="font-size: 12.5px;">
+                    <thead>
+                        <tr>
+                            <th>开始时间</th>
+                            <th>耗时</th>
+                            <th>状态</th>
+                            <th>结果摘要</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var exec in item.ExecutionHistory)
+                        {
+                            <tr>
+                                <td>@exec.StartedAt.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                                <td>
+                                    @if (exec.FinishedAt.HasValue)
+                                    {
+                                        <span>@((exec.FinishedAt.Value - exec.StartedAt).TotalSeconds.ToString("F1"))s</span>
+                                    }
+                                    else
+                                    {
+                                        <span>-</span>
+                                    }
+                                </td>
+                                <td>
+                                    <span class="badge bg-@(exec.Status == "completed" ? "success" : exec.Status == "failed" ? "danger" : "warning")">
+                                        @exec.Status
+                                    </span>
+                                </td>
+                                <td>@(exec.Summary ?? "-")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <div style="padding: 12px 20px; font-size: 12.5px; color: var(--text-muted);">暂无执行记录</div>
+        }
+    </div>
+}

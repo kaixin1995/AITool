@@ -8,8 +8,11 @@
 <div class="page-header">
     <div>
         <h2 class="page-title">模型检测</h2>
-        <p class="page-subtitle">手动检测各站点模型的可用性和响应状态</p>
+        <p class="page-subtitle">按模型分组查看各站点的可用性和响应状态</p>
     </div>
+    <form method="post" asp-page-handler="ProbeAll" class="d-inline">
+        <button type="submit" class="btn btn-primary">全部检测</button>
+    </form>
 </div>
 
 <!-- 检测结果提示 -->
@@ -20,50 +23,63 @@
     </div>
 }
 
-<!-- 检测列表表格 -->
-<div class="table-wrapper">
-    <table class="table">
-        <thead>
-            <tr>
-                <th>站点名称</th>
-                <th>模型名称</th>
-                <th>最近状态</th>
-                <th>最近检测时间</th>
-                <th>耗时</th>
-                <th>操作</th>
-            </tr>
-        </thead>
-        <tbody>
-            @if (!Model.Mappings.Any())
-            {
-                <tr>
-                    <td colspan="6">
-                        <div class="table-empty">
-                            <div class="table-empty-icon">🔍</div>
-                            <div class="table-empty-text">暂无映射数据，请先配置站点和模型</div>
-                        </div>
-                    </td>
-                </tr>
-            }
-            @foreach (var item in Model.Mappings)
-            {
-                <tr>
-                    <td><strong>@item.SiteName</strong></td>
-                    <td><code>@item.ModelName</code></td>
-                    <td>
-                        <span class="badge bg-@(item.LastStatus == "success" ? "success" : item.LastStatus == "fail" ? "danger" : "secondary")">
-                            @item.LastStatus
-                        </span>
-                    </td>
-                    <td>@(item.LastCheckedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-")</td>
-                    <td>@(item.LastDurationMs.HasValue ? $"{item.LastDurationMs} ms" : "-")</td>
-                    <td>
-                        <form method="post" asp-page-handler="Probe" asp-route-mappingId="@item.MappingId" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-primary">检测</button>
-                        </form>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
-</div>
+<!-- 按模型分组展示 -->
+@if (!Model.ModelGroups.Any())
+{
+    <div class="table-wrapper">
+        <div class="table-empty">
+            <div class="table-empty-icon">🔍</div>
+            <div class="table-empty-text">暂无映射数据，请先配置站点和模型</div>
+        </div>
+    </div>
+}
+
+@foreach (var group in Model.ModelGroups)
+{
+    <div class="detection-group">
+        <div class="detection-group-header">
+            <div>
+                <h3 class="detection-group-title">@group.DisplayName</h3>
+                <span class="badge bg-light text-dark"><code>@group.ModelName</code></span>
+            </div>
+            <form method="post" asp-page-handler="ProbeModel" asp-route-modelId="@group.ModelLibraryItemId" class="d-inline">
+                <button type="submit" class="btn btn-sm btn-outline-primary">检测该模型</button>
+            </form>
+        </div>
+        <div class="table-wrapper">
+            <table class="table">
+                <thead>
+                    <tr>
+                        <th>站点名称</th>
+                        <th>远程模型名</th>
+                        <th>最近状态</th>
+                        <th>最近检测时间</th>
+                        <th>耗时</th>
+                        <th>操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var site in group.Sites)
+                    {
+                        <tr>
+                            <td><strong>@site.SiteName</strong></td>
+                            <td><code>@site.RemoteModelName</code></td>
+                            <td>
+                                <span class="badge bg-@(site.LastStatus == "success" ? "success" : site.LastStatus == "fail" ? "danger" : "secondary")">
+                                    @site.LastStatus
+                                </span>
+                            </td>
+                            <td>@(site.LastCheckedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-")</td>
+                            <td>@(site.LastDurationMs.HasValue ? $"{site.LastDurationMs} ms" : "-")</td>
+                            <td>
+                                <form method="post" asp-page-handler="Probe" asp-route-mappingId="@site.MappingId" class="d-inline">
+                                    <button type="submit" class="btn btn-sm btn-primary">检测</button>
+                                </form>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}

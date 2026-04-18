@@ -1,0 +1,65 @@
+@page "{id:guid}"
+@model AITool.Web.Pages.Admin.Sites.EditModel
+@{
+    ViewData["Title"] = "编辑站点";
+}
+
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">编辑站点</h2>
+        <p class="page-subtitle">修改站点配置信息</p>
+    </div>
+</div>
+
+<!-- 状态提示 -->
+@if (!string.IsNullOrEmpty(Model.StatusMessage))
+{
+    <div class="alert @(Model.StatusSuccess ? "alert-success" : "alert-danger")">
+        @Model.StatusMessage
+    </div>
+}
+
+<!-- 编辑表单 -->
+<div class="form-card">
+    <form method="post">
+        <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
+
+        <div class="mb-3">
+            <label asp-for="Name" class="form-label">站点名称</label>
+            <input asp-for="Name" class="form-control" required />
+            <span asp-validation-for="Name" class="text-danger"></span>
+        </div>
+
+        <div class="mb-3">
+            <label asp-for="BaseUrl" class="form-label">根地址</label>
+            <input asp-for="BaseUrl" class="form-control" placeholder="https://api.example.com" required />
+            <span asp-validation-for="BaseUrl" class="text-danger"></span>
+        </div>
+
+        <div class="mb-3">
+            <label asp-for="ApiKey" class="form-label">访问密钥</label>
+            <input asp-for="ApiKey" class="form-control" type="password" required />
+            <span asp-validation-for="ApiKey" class="text-danger"></span>
+        </div>
+
+        <div class="mb-3">
+            <label asp-for="ProtocolType" class="form-label">协议类型</label>
+            <select asp-for="ProtocolType" class="form-select">
+                <option value="OpenAI">OpenAI</option>
+                <option value="Anthropic">Anthropic</option>
+            </select>
+        </div>
+
+        <div class="mb-3 form-check">
+            <input asp-for="IsEnabled" class="form-check-input" type="checkbox" />
+            <label asp-for="IsEnabled" class="form-check-label">启用</label>
+        </div>
+
+        <div class="divider"></div>
+        <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary">保存</button>
+            <a asp-page="./Index" class="btn btn-secondary">取消</a>
+        </div>
+    </form>
+</div>

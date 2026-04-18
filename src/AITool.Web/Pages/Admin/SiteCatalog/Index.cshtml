@@ -12,6 +12,14 @@
     </div>
 </div>
 
+<!-- 状态提示 -->
+@if (!string.IsNullOrEmpty(Model.StatusMessage))
+{
+    <div class="alert @(Model.StatusSuccess ? "alert-success" : "alert-danger")">
+        @Model.StatusMessage
+    </div>
+}
+
 <!-- 拉取结果提示 -->
 @if (Model.PullResult is not null)
 {

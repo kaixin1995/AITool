@@ -35,10 +35,20 @@ public class IndexModel : PageModel
     // 切换模型启用/禁用状态
     public async Task<IActionResult> OnPostToggleAsync(Guid modelId, CancellationToken cancellationToken)
     {
-        var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
-        if (model is null) return RedirectToPage();
-        model.IsEnabled = !model.IsEnabled;
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
+            if (model is null) return RedirectToPage();
+            model.IsEnabled = !model.IsEnabled;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            StatusMessage = "模型状态已切换";
+            StatusSuccess = true;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"操作失败：{ex.Message}";
+            StatusSuccess = false;
+        }
         await OnGetAsync(cancellationToken);
         return Page();
     }
@@ -46,12 +56,20 @@ public class IndexModel : PageModel
     // 删除模型
     public async Task<IActionResult> OnPostDeleteAsync(Guid modelId, CancellationToken cancellationToken)
     {
-        var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
-        if (model is null) return RedirectToPage();
-        _dbContext.ModelLibraryItems.Remove(model);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        StatusMessage = "模型已删除";
-        StatusSuccess = true;
+        try
+        {
+            var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
+            if (model is null) return RedirectToPage();
+            _dbContext.ModelLibraryItems.Remove(model);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            StatusMessage = "模型已删除";
+            StatusSuccess = true;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"操作失败：{ex.Message}";
+            StatusSuccess = false;
+        }
         await OnGetAsync(cancellationToken);
         return Page();
     }

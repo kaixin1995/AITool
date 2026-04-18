@@ -773,3 +773,130 @@ body {
 .confirm-delete {
     opacity: 0.8;
 }
+
+/* 检测页按模型分组样式 */
+.detection-group {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    margin-bottom: 20px;
+    overflow: hidden;
+    box-shadow: var(--shadow-sm);
+}
+
+.detection-group-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border-light);
+    background: var(--bg-page);
+}
+
+.detection-group-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    margin: 0 0 4px;
+}
+
+/* 模型健康看板样式 */
+.health-site-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius);
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: var(--shadow-sm);
+}
+
+.health-site-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.health-site-name {
+    font-size: 15px;
+    margin-right: 8px;
+}
+
+.health-site-meta {
+    font-size: 12.5px;
+    color: var(--text-secondary);
+}
+
+/* 成功率进度条 */
+.health-rate-bar {
+    margin-bottom: 14px;
+}
+
+.health-rate-label {
+    font-size: 12px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    font-weight: 500;
+}
+
+.health-rate-track {
+    height: 6px;
+    background: var(--border-light);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.health-rate-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.3s ease;
+}
+
+/* 检测历史条形图 */
+.health-timeline {
+    padding-top: 4px;
+}
+
+.health-timeline-label {
+    font-size: 12px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+}
+
+.health-bars {
+    display: flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 100px;
+    padding: 0 2px;
+}
+
+.health-bar-item {
+    flex: 1;
+    min-width: 6px;
+    max-width: 18px;
+    display: flex;
+    align-items: flex-end;
+    cursor: default;
+}
+
+.health-bar {
+    width: 100%;
+    border-radius: 2px 2px 0 0;
+    min-height: 4px;
+    transition: opacity 0.15s ease;
+}
+
+.health-bar-item:hover .health-bar {
+    opacity: 0.7;
+}
+
+.health-timeline-range {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 4px;
+}

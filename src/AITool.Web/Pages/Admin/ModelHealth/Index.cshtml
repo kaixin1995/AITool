@@ -1,0 +1,149 @@
+@page
+@model AITool.Web.Pages.Admin.ModelHealth.IndexModel
+@{
+    ViewData["Title"] = "模型健康看板";
+}
+
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">模型健康看板</h2>
+        <p class="page-subtitle">查看指定模型在各站点的健康状态和检测历史</p>
+    </div>
+</div>
+
+<!-- 模型选择器 -->
+<div class="inline-form">
+    <form method="get">
+        <div class="row g-2 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label">选择模型</label>
+                <select name="modelId" class="form-select" onchange="this.form.submit()">
+                    <option value="">-- 请选择模型 --</option>
+                    @foreach (var m in Model.Models)
+                    {
+                        <option value="@m.Id" selected="@(Model.SelectedModelId == m.Id)">
+                            @m.DisplayName (@m.ModelName)
+                        </option>
+                    }
+                </select>
+            </div>
+        </div>
+    </form>
+</div>
+
+<!-- 未选择模型时的提示 -->
+@if (Model.SelectedModelId is null)
+{
+    <div class="table-wrapper">
+        <div class="table-empty">
+            <div class="table-empty-icon">💊</div>
+            <div class="table-empty-text">请选择一个模型查看健康状态</div>
+        </div>
+    </div>
+}
+
+<!-- 模型健康概览 -->
+@if (Model.SelectedModelId is not null && Model.SiteHealths.Any())
+{
+    <!-- 健康摘要统计 -->
+    <div class="row g-3 mb-4">
+        <div class="col-md-3 col-sm-6">
+            <div class="stat-card">
+                <div class="stat-card-icon info">🌐</div>
+                <div class="stat-card-value">@Model.SiteHealths.Count</div>
+                <div class="stat-card-label">关联站点数</div>
+            </div>
+        </div>
+        <div class="col-md-3 col-sm-6">
+            <div class="stat-card">
+                <div class="stat-card-icon success">✅</div>
+                <div class="stat-card-value">@Model.SiteHealths.Count(s => s.LastStatus == "success")</div>
+                <div class="stat-card-label">正常站点</div>
+            </div>
+        </div>
+        <div class="col-md-3 col-sm-6">
+            <div class="stat-card">
+                <div class="stat-card-icon danger">❌</div>
+                <div class="stat-card-value">@Model.SiteHealths.Count(s => s.LastStatus == "fail")</div>
+                <div class="stat-card-label">异常站点</div>
+            </div>
+        </div>
+        <div class="col-md-3 col-sm-6">
+            <div class="stat-card">
+                <div class="stat-card-icon warning">📊</div>
+                <div class="stat-card-value">@((Model.SiteHealths.Average(s => s.SuccessRate) * 100).ToString("F1"))%</div>
+                <div class="stat-card-label">平均成功率</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 各站点健康状态 -->
+    @foreach (var site in Model.SiteHealths)
+    {
+        <div class="health-site-card">
+            <div class="health-site-header">
+                <div>
+                    <strong class="health-site-name">@site.SiteName</strong>
+                    <code>@site.RemoteModelName</code>
+                    <span class="badge bg-@(site.LastStatus == "success" ? "success" : site.LastStatus == "fail" ? "danger" : "secondary")">
+                        @(site.LastStatus == "success" ? "正常" : site.LastStatus == "fail" ? "异常" : site.LastStatus)
+                    </span>
+                </div>
+                <div class="health-site-meta">
+                    @(site.LastCheckedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "未检测")
+                    @if (site.LastDurationMs.HasValue)
+                    {
+                        <span class="text-secondary">· @site.LastDurationMs ms</span>
+                    }
+                </div>
+            </div>
+
+            <!-- 成功率条 -->
+            <div class="health-rate-bar">
+                <div class="health-rate-label">成功率 @((site.SuccessRate * 100).ToString("F1"))%</div>
+                <div class="health-rate-track">
+                    <div class="health-rate-fill" style="width: @((site.SuccessRate * 100).ToString("F1"))%;
+                        background: @(site.SuccessRate >= 0.8 ? "var(--success)" : site.SuccessRate >= 0.5 ? "var(--warning)" : "var(--danger)");"></div>
+                </div>
+            </div>
+
+            <!-- 检测历史时间线（CSS 条形图） -->
+            @if (site.RecentLogs.Any())
+            {
+                <div class="health-timeline">
+                    <div class="health-timeline-label">最近 @site.RecentLogs.Count 次检测</div>
+                    <div class="health-bars">
+                        @foreach (var log in site.RecentLogs.OrderBy(l => l.CheckedAt))
+                        {
+                            var barHeight = Math.Max(Math.Min(log.DurationMs / 10, 100), 8);
+                            var barColor = log.Status == "success" ? "var(--success)" : "var(--danger)";
+                            <div class="health-bar-item" title="@log.CheckedAt.ToString("MM-dd HH:mm") | @log.Status | @log.DurationMs ms@(log.ErrorMessage is not null ? " | " + log.ErrorMessage : "")">
+                                <div class="health-bar" style="height: @(barHeight)px; background: @barColor;"></div>
+                            </div>
+                        }
+                    </div>
+                    <div class="health-timeline-range">
+                        <span>@site.RecentLogs.OrderBy(l => l.CheckedAt).First().CheckedAt.ToString("MM-dd")</span>
+                        <span>@site.RecentLogs.OrderBy(l => l.CheckedAt).Last().CheckedAt.ToString("MM-dd")</span>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div class="text-secondary" style="font-size: 12.5px; padding: 8px 0;">暂无检测记录</div>
+            }
+        </div>
+    }
+}
+
+<!-- 选中模型但无映射数据 -->
+@if (Model.SelectedModelId is not null && !Model.SiteHealths.Any())
+{
+    <div class="table-wrapper">
+        <div class="table-empty">
+            <div class="table-empty-icon">📭</div>
+            <div class="table-empty-text">该模型暂无站点映射数据</div>
+        </div>
+    </div>
+}

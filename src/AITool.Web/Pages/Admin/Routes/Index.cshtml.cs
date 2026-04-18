@@ -75,27 +75,35 @@ public class IndexModel : PageModel
         string externalModelName, Guid siteId, string siteModelName, int priority,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(externalModelName) || siteId == Guid.Empty || string.IsNullOrWhiteSpace(siteModelName))
+        try
         {
-            StatusMessage = "外部模型名、目标站点和站点模型名不能为空";
-            StatusSuccess = false;
-            await OnGetAsync(cancellationToken);
-            return Page();
+            if (string.IsNullOrWhiteSpace(externalModelName) || siteId == Guid.Empty || string.IsNullOrWhiteSpace(siteModelName))
+            {
+                StatusMessage = "外部模型名、目标站点和站点模型名不能为空";
+                StatusSuccess = false;
+                await OnGetAsync(cancellationToken);
+                return Page();
+            }
+
+            var rule = new ProxyRouteRule
+            {
+                ExternalModelName = externalModelName,
+                SiteId = siteId,
+                SiteModelName = siteModelName,
+                Priority = priority,
+                IsEnabled = true
+            };
+            _dbContext.ProxyRouteRules.Add(rule);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            StatusMessage = $"路由规则 \"{externalModelName}\" 创建成功";
+            StatusSuccess = true;
         }
-
-        var rule = new ProxyRouteRule
+        catch (Exception ex)
         {
-            ExternalModelName = externalModelName,
-            SiteId = siteId,
-            SiteModelName = siteModelName,
-            Priority = priority,
-            IsEnabled = true
-        };
-        _dbContext.ProxyRouteRules.Add(rule);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-
-        StatusMessage = $"路由规则 \"{externalModelName}\" 创建成功";
-        StatusSuccess = true;
+            StatusMessage = $"操作失败：{ex.Message}";
+            StatusSuccess = false;
+        }
         await OnGetAsync(cancellationToken);
         return Page();
     }
@@ -103,12 +111,21 @@ public class IndexModel : PageModel
     // 切换路由规则启用/禁用状态
     public async Task<IActionResult> OnPostToggleAsync(Guid ruleId, CancellationToken cancellationToken)
     {
-        var rule = await _dbContext.ProxyRouteRules.FindAsync([ruleId], cancellationToken);
-        if (rule is null) return RedirectToPage();
+        try
+        {
+            var rule = await _dbContext.ProxyRouteRules.FindAsync([ruleId], cancellationToken);
+            if (rule is null) return RedirectToPage();
 
-        rule.IsEnabled = !rule.IsEnabled;
-        await _dbContext.SaveChangesAsync(cancellationToken);
-
+            rule.IsEnabled = !rule.IsEnabled;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            StatusMessage = "路由规则状态已切换";
+            StatusSuccess = true;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"操作失败：{ex.Message}";
+            StatusSuccess = false;
+        }
         await OnGetAsync(cancellationToken);
         return Page();
     }
@@ -116,14 +133,22 @@ public class IndexModel : PageModel
     // 删除路由规则
     public async Task<IActionResult> OnPostDeleteAsync(Guid ruleId, CancellationToken cancellationToken)
     {
-        var rule = await _dbContext.ProxyRouteRules.FindAsync([ruleId], cancellationToken);
-        if (rule is null) return RedirectToPage();
+        try
+        {
+            var rule = await _dbContext.ProxyRouteRules.FindAsync([ruleId], cancellationToken);
+            if (rule is null) return RedirectToPage();
 
-        _dbContext.ProxyRouteRules.Remove(rule);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+            _dbContext.ProxyRouteRules.Remove(rule);
+            await _dbContext.SaveChangesAsync(cancellationToken);
 
-        StatusMessage = "路由规则已删除";
-        StatusSuccess = true;
+            StatusMessage = "路由规则已删除";
+            StatusSuccess = true;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"操作失败：{ex.Message}";
+            StatusSuccess = false;
+        }
         await OnGetAsync(cancellationToken);
         return Page();
     }

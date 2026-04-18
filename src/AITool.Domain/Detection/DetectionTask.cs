@@ -14,4 +14,7 @@ public sealed class DetectionTask
 
     // 是否启用该任务
     public bool IsEnabled { get; set; } = true;
+
+    // 关联的模型 ID，null 表示检测所有模型
+    public Guid? ModelLibraryItemId { get; set; }
 }

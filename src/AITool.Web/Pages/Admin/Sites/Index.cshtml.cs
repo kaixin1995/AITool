@@ -35,10 +35,20 @@ public class IndexModel : PageModel
     // 切换站点启用/禁用状态
     public async Task<IActionResult> OnPostToggleAsync(Guid siteId, CancellationToken cancellationToken)
     {
-        var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
-        if (site is null) return RedirectToPage();
-        site.IsEnabled = !site.IsEnabled;
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        try
+        {
+            var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+            if (site is null) return RedirectToPage();
+            site.IsEnabled = !site.IsEnabled;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            StatusMessage = "站点状态已切换";
+            StatusSuccess = true;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"操作失败：{ex.Message}";
+            StatusSuccess = false;
+        }
         await OnGetAsync(cancellationToken);
         return Page();
     }
@@ -46,12 +56,20 @@ public class IndexModel : PageModel
     // 删除站点
     public async Task<IActionResult> OnPostDeleteAsync(Guid siteId, CancellationToken cancellationToken)
     {
-        var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
-        if (site is null) return RedirectToPage();
-        _dbContext.Sites.Remove(site);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        StatusMessage = "站点已删除";
-        StatusSuccess = true;
+        try
+        {
+            var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+            if (site is null) return RedirectToPage();
+            _dbContext.Sites.Remove(site);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            StatusMessage = "站点已删除";
+            StatusSuccess = true;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"操作失败：{ex.Message}";
+            StatusSuccess = false;
+        }
         await OnGetAsync(cancellationToken);
         return Page();
     }

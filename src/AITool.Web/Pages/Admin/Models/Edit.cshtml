@@ -1,0 +1,59 @@
+@page "{id:guid}"
+@model AITool.Web.Pages.Admin.Models.EditModel
+@{
+    ViewData["Title"] = "编辑模型";
+}
+
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">编辑模型</h2>
+        <p class="page-subtitle">修改模型配置信息</p>
+    </div>
+</div>
+
+<!-- 状态提示 -->
+@if (!string.IsNullOrEmpty(Model.StatusMessage))
+{
+    <div class="alert @(Model.StatusSuccess ? "alert-success" : "alert-danger")">
+        @Model.StatusMessage
+    </div>
+}
+
+<!-- 编辑表单 -->
+<div class="form-card">
+    <form method="post">
+        <div asp-validation-summary="ModelOnly" class="text-danger mb-3"></div>
+
+        <div class="mb-3">
+            <label asp-for="ModelName" class="form-label">模型名</label>
+            <input asp-for="ModelName" class="form-control" required />
+            <span asp-validation-for="ModelName" class="text-danger"></span>
+        </div>
+
+        <div class="mb-3">
+            <label asp-for="DisplayName" class="form-label">显示名</label>
+            <input asp-for="DisplayName" class="form-control" required />
+            <span asp-validation-for="DisplayName" class="text-danger"></span>
+        </div>
+
+        <div class="mb-3">
+            <label asp-for="ModelType" class="form-label">模型类型</label>
+            <select asp-for="ModelType" class="form-select">
+                <option value="chat">Chat</option>
+                <option value="embedding">Embedding</option>
+            </select>
+        </div>
+
+        <div class="mb-3 form-check">
+            <input asp-for="IsEnabled" class="form-check-input" type="checkbox" />
+            <label asp-for="IsEnabled" class="form-check-label">启用</label>
+        </div>
+
+        <div class="divider"></div>
+        <div class="d-flex gap-2">
+            <button type="submit" class="btn btn-primary">保存</button>
+            <a asp-page="./Index" class="btn btn-secondary">取消</a>
+        </div>
+    </form>
+</div>

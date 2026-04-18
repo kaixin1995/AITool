@@ -13,6 +13,14 @@
     <a asp-page="./Create" class="btn btn-primary">＋ 新增模型</a>
 </div>
 
+<!-- 状态提示 -->
+@if (!string.IsNullOrEmpty(Model.StatusMessage))
+{
+    <div class="alert @(Model.StatusSuccess ? "alert-success" : "alert-danger")">
+        @Model.StatusMessage
+    </div>
+}
+
 <!-- 模型列表表格 -->
 <div class="table-wrapper">
     <table class="table">
@@ -56,6 +64,7 @@
                                 @(item.IsEnabled ? "禁用" : "启用")
                             </button>
                         </form>
+                        <a asp-page="./Edit" asp-route-id="@item.Id" class="btn btn-sm btn-outline-primary">编辑</a>
                         <form method="post" asp-page-handler="Delete" asp-route-modelId="@item.Id" class="d-inline">
                             <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该模型？')">删除</button>
                         </form>

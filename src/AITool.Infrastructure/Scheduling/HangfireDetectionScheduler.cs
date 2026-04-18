@@ -60,7 +60,15 @@ public sealed class HangfireDetectionScheduler
         dbContext.DetectionTaskExecutions.Add(execution);
         await dbContext.SaveChangesAsync(cancellationToken);
 
-        var mappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+        var query = dbContext.SiteModelMappings.AsQueryable();
+
+        // 如果任务指定了模型，只检测该模型的映射
+        if (detectionTask.ModelLibraryItemId.HasValue)
+        {
+            query = query.Where(m => m.ModelLibraryItemId == detectionTask.ModelLibraryItemId.Value);
+        }
+
+        var mappings = await query.ToListAsync(cancellationToken);
         var successCount = 0;
         var failCount = 0;
 

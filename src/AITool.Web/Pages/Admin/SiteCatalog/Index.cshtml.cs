@@ -35,6 +35,10 @@ public class IndexModel : PageModel
     // 拉取结果，用于显示成功提示
     public PullSiteModelsResult? PullResult { get; set; }
 
+    // 异常兜底提示
+    public string? StatusMessage { get; set; }
+    public bool StatusSuccess { get; set; }
+
     // 加载站点列表与映射计数
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
@@ -63,47 +67,54 @@ public class IndexModel : PageModel
     // 执行站点模型拉取
     public async Task<IActionResult> OnPostPullAsync(Guid siteId, CancellationToken cancellationToken)
     {
-        var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
-        if (site is null) return RedirectToPage();
-
-        var remoteModels = await _catalogClient.GetModelsAsync(site, cancellationToken);
-
-        var existingMappings = await _dbContext.SiteModelMappings
-            .Where(m => m.SiteId == siteId)
-            .ToListAsync(cancellationToken);
-
-        var importedCount = 0;
-        foreach (var remoteName in remoteModels)
+        try
         {
-            if (existingMappings.Any(m => m.RemoteModelName == remoteName)) continue;
+            var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+            if (site is null) return RedirectToPage();
 
-            var modelItem = await _dbContext.ModelLibraryItems
-                .FirstOrDefaultAsync(m => m.ModelName == remoteName, cancellationToken);
+            var remoteModels = await _catalogClient.GetModelsAsync(site, cancellationToken);
 
-            if (modelItem is null)
+            var existingMappings = await _dbContext.SiteModelMappings
+                .Where(m => m.SiteId == siteId)
+                .ToListAsync(cancellationToken);
+
+            var importedCount = 0;
+            foreach (var remoteName in remoteModels)
             {
-                modelItem = new Domain.Models.ModelLibraryItem
+                if (existingMappings.Any(m => m.RemoteModelName == remoteName)) continue;
+
+                var modelItem = await _dbContext.ModelLibraryItems
+                    .FirstOrDefaultAsync(m => m.ModelName == remoteName, cancellationToken);
+
+                if (modelItem is null)
                 {
-                    ModelName = remoteName,
-                    DisplayName = remoteName
-                };
-                _dbContext.ModelLibraryItems.Add(modelItem);
+                    modelItem = new Domain.Models.ModelLibraryItem
+                    {
+                        ModelName = remoteName,
+                        DisplayName = remoteName
+                    };
+                    _dbContext.ModelLibraryItems.Add(modelItem);
+                }
+
+                _dbContext.SiteModelMappings.Add(new SiteModelMapping
+                {
+                    SiteId = siteId,
+                    ModelLibraryItemId = modelItem.Id,
+                    RemoteModelName = remoteName,
+                    LastStatus = "imported"
+                });
+
+                importedCount++;
             }
 
-            _dbContext.SiteModelMappings.Add(new SiteModelMapping
-            {
-                SiteId = siteId,
-                ModelLibraryItemId = modelItem.Id,
-                RemoteModelName = remoteName,
-                LastStatus = "imported"
-            });
-
-            importedCount++;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            PullResult = new PullSiteModelsResult { ImportedCount = importedCount };
         }
-
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        PullResult = new PullSiteModelsResult { ImportedCount = importedCount };
-
+        catch (Exception ex)
+        {
+            StatusMessage = $"拉取失败：{ex.Message}";
+            StatusSuccess = false;
+        }
         await OnGetAsync(cancellationToken);
         return Page();
     }
