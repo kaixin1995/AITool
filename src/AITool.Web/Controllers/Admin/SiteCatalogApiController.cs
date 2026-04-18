@@ -48,14 +48,16 @@ public sealed class SiteCatalogApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly ISiteCatalogClient _catalogClient;
+    private readonly IServiceScopeFactory _scopeFactory;
 
     // 全局进度存储，按任务ID索引
     private static readonly ConcurrentDictionary<string, PullAllProgress> _progressStore = new();
 
-    public SiteCatalogApiController(AppDbContext dbContext, ISiteCatalogClient catalogClient)
+    public SiteCatalogApiController(AppDbContext dbContext, ISiteCatalogClient catalogClient, IServiceScopeFactory scopeFactory)
     {
         _dbContext = dbContext;
         _catalogClient = catalogClient;
+        _scopeFactory = scopeFactory;
     }
 
     // 启动异步并发拉取全部站点任务
@@ -123,11 +125,12 @@ public sealed class SiteCatalogApiController : ControllerBase
 
         try
         {
-            var remoteModels = await _catalogClient.GetModelsAsync(site, cancellationToken);
-
-            // 使用独立的 DbContext 实例处理并发写入
-            using var scope = HttpContext.RequestServices.CreateScope();
+            // 使用独立作用域解析服务和 DbContext，避免请求作用域释放后 SSL 连接失败
+            using var scope = _scopeFactory.CreateScope();
+            var catalogClient = scope.ServiceProvider.GetRequiredService<ISiteCatalogClient>();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+            var remoteModels = await catalogClient.GetModelsAsync(site, cancellationToken);
 
             var existingMappings = await db.SiteModelMappings
                 .Where(m => m.SiteId == site.Id)
@@ -136,7 +139,14 @@ public sealed class SiteCatalogApiController : ControllerBase
             var importedCount = 0;
             foreach (var remoteName in remoteModels)
             {
-                if (existingMappings.Any(m => m.RemoteModelName == remoteName)) continue;
+                var existing = existingMappings.FirstOrDefault(m => m.RemoteModelName == remoteName);
+                if (existing is not null)
+                {
+                    // 重复拉取时更新已有映射状态
+                    existing.LastStatus = "updated";
+                    importedCount++;
+                    continue;
+                }
 
                 var modelItem = await db.ModelLibraryItems
                     .FirstOrDefaultAsync(m => m.ModelName == remoteName, cancellationToken);
@@ -162,7 +172,39 @@ public sealed class SiteCatalogApiController : ControllerBase
                 importedCount++;
             }
 
-            await db.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await db.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // 并发写入唯一索引冲突时，重新查询已存在的模型并重试保存
+                var entries = db.ChangeTracker.Entries()
+                    .Where(e => e.State == EntityState.Added)
+                    .ToList();
+
+                foreach (var entry in entries)
+                {
+                    if (entry.Entity is ModelLibraryItem conflictItem)
+                    {
+                        var existingItem = await db.ModelLibraryItems
+                            .FirstOrDefaultAsync(m => m.ModelName == conflictItem.ModelName, cancellationToken);
+                        if (existingItem is not null)
+                        {
+                            // 替换冲突的映射引用
+                            var mappingsToAdd = db.SiteModelMappings.Local
+                                .Where(sm => sm.ModelLibraryItemId == conflictItem.Id)
+                                .ToList();
+                            foreach (var mapping in mappingsToAdd)
+                            {
+                                mapping.ModelLibraryItemId = existingItem.Id;
+                            }
+                            db.Entry(conflictItem).State = EntityState.Detached;
+                        }
+                    }
+                }
+                await db.SaveChangesAsync(cancellationToken);
+            }
 
             progress.Sites[siteIndex].Status = "success";
             progress.Sites[siteIndex].ImportedCount = importedCount;

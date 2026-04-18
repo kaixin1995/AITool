@@ -7,6 +7,19 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.Models;
 
+// 模型库视图模型，包含关联站点数
+public class ModelWithSiteCount
+{
+    public Guid Id { get; set; }
+    public string ModelName { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string ModelType { get; set; } = string.Empty;
+    public bool IsEnabled { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    // 关联的站点数量
+    public int SiteCount { get; set; }
+}
+
 // 模型库列表页模型
 public class IndexModel : PageModel
 {
@@ -18,18 +31,38 @@ public class IndexModel : PageModel
     }
 
     // 模型库列表数据
-    public List<ModelLibraryItem> Models { get; set; } = [];
+    public List<ModelWithSiteCount> Models { get; set; } = [];
 
     // 状态消息
     public string? StatusMessage { get; set; }
     public bool StatusSuccess { get; set; }
 
-    // 加载模型列表
+    // 加载模型列表，包含每个模型关联的站点数量
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
+        var siteCounts = await _dbContext.SiteModelMappings
+            .GroupBy(m => m.ModelLibraryItemId)
+            .Select(g => new { ModelId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.ModelId, x => x.Count, cancellationToken);
+
         Models = await _dbContext.ModelLibraryItems
             .OrderBy(x => x.ModelName)
+            .Select(x => new ModelWithSiteCount
+            {
+                Id = x.Id,
+                ModelName = x.ModelName,
+                DisplayName = x.DisplayName,
+                ModelType = x.ModelType,
+                IsEnabled = x.IsEnabled,
+                CreatedAt = x.CreatedAt
+            })
             .ToListAsync(cancellationToken);
+
+        // 填充关联站点数
+        foreach (var model in Models)
+        {
+            model.SiteCount = siteCounts.GetValueOrDefault(model.Id);
+        }
     }
 
     // 切换模型启用/禁用状态

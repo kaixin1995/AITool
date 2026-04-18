@@ -81,7 +81,14 @@ public class IndexModel : PageModel
             var importedCount = 0;
             foreach (var remoteName in remoteModels)
             {
-                if (existingMappings.Any(m => m.RemoteModelName == remoteName)) continue;
+                var existing = existingMappings.FirstOrDefault(m => m.RemoteModelName == remoteName);
+                if (existing is not null)
+                {
+                    // 重复拉取时更新已有映射状态
+                    existing.LastStatus = "updated";
+                    importedCount++;
+                    continue;
+                }
 
                 var modelItem = await _dbContext.ModelLibraryItems
                     .FirstOrDefaultAsync(m => m.ModelName == remoteName, cancellationToken);

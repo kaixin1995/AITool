@@ -85,8 +85,8 @@
                     @foreach (var site in group.Sites)
                     {
                         <tr>
-                            <td><strong>@site.SiteName</strong></td>
-                            <td><code>@site.RemoteModelName</code></td>
+                            <td style="max-width:15%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@site.SiteName"><strong>@site.SiteName</strong></td>
+                            <td style="max-width:20%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="@site.RemoteModelName"><code>@site.RemoteModelName</code></td>
                             <td>
                                 <span class="badge bg-@(site.LastStatus == "success" ? "success" : site.LastStatus == "fail" ? "danger" : "secondary")">
                                     @site.LastStatus

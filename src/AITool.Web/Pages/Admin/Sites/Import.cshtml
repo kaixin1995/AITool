@@ -8,7 +8,7 @@
 <div class="page-header">
     <div>
         <h2 class="page-title">批量导入站点</h2>
-        <p class="page-subtitle">从表格复制的文本批量创建站点，支持 TSV（Tab 分隔）格式</p>
+        <p class="page-subtitle">支持 TSV 粘贴和 JSON 文件导入</p>
     </div>
     <a asp-page="./Index" class="btn btn-secondary">返回列表</a>
 </div>
@@ -26,7 +26,8 @@
     <div class="form-section-title">粘贴数据</div>
     <p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">
         从 Excel / Google Sheets / 表格中复制数据后直接粘贴到下方文本框。<br>
-        格式：<code>站点名称[TAB]站点地址[TAB]密钥</code>，每行一条，首行为表头会自动跳过。
+        格式：<code>站点名称[TAB]站点地址[TAB]密钥</code>，每行一条，首行为表头会自动跳过。<br>
+        也支持直接粘贴 JSON 数组格式。
     </p>
     <textarea id="rawInput" class="form-control" rows="8" placeholder="site_name&#9;site_url&#9;Key&#10;示例站点&#9;https://api.example.com&#9;sk-xxxx"
               style="font-family: monospace; font-size: 13px; resize: vertical;"></textarea>
@@ -34,6 +35,15 @@
         <button type="button" class="btn btn-outline-primary" onclick="parseInput()">解析预览</button>
         <button type="button" class="btn btn-outline-secondary" onclick="clearAll()">清空</button>
     </div>
+</div>
+
+<!-- JSON 文件上传区域 -->
+<div class="form-card" style="margin-top:20px;">
+    <div class="form-section-title">上传 JSON 文件</div>
+    <p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">
+        选择从导出页下载的 JSON 文件，自动解析并导入。
+    </p>
+    <input type="file" id="jsonFileInput" accept=".json" class="form-control" onchange="handleJsonFile(event)" />
 </div>
 
 <!-- 预览表格 -->
@@ -71,10 +81,16 @@
     /* 已解析的站点数据 */
     var parsedSites = [];
 
-    /* 从粘贴文本中解析站点数据 */
+    /* 从粘贴文本中解析站点数据，自动检测 TSV 或 JSON 格式 */
     function parseInput() {
         var raw = document.getElementById('rawInput').value.trim();
         if (!raw) { alert('请先粘贴数据'); return; }
+
+        /* 自动检测是否为 JSON 格式 */
+        if (raw.charAt(0) === '[') {
+            parseJsonText(raw);
+            return;
+        }
 
         var lines = raw.split(/\r?\n/);
         parsedSites = [];
@@ -173,6 +189,47 @@
         document.getElementById('rawInput').value = '';
         document.getElementById('previewSection').style.display = 'none';
         parsedSites = [];
+    }
+
+    /* 解析 JSON 文本为站点列表 */
+    function parseJsonText(jsonText) {
+        try {
+            var data = JSON.parse(jsonText);
+            if (!Array.isArray(data)) {
+                alert('JSON 格式错误：需要一个数组');
+                return;
+            }
+            parsedSites = [];
+            for (var i = 0; i < data.length; i++) {
+                var item = data[i];
+                if (!item.name || !item.baseUrl || !item.apiKey) continue;
+                parsedSites.push({
+                    name: item.name,
+                    baseUrl: item.baseUrl,
+                    apiKey: item.apiKey,
+                    protocolType: item.protocolType || 'OpenAI',
+                    selected: true
+                });
+            }
+            if (parsedSites.length === 0) {
+                alert('未解析到有效站点数据，请检查 JSON 格式');
+                return;
+            }
+            renderPreview();
+        } catch (e) {
+            alert('JSON 解析失败：' + e.message);
+        }
+    }
+
+    /* 处理 JSON 文件上传 */
+    function handleJsonFile(event) {
+        var file = event.target.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function (e) {
+            parseJsonText(e.target.result);
+        };
+        reader.readAsText(file);
     }
 
     /* HTML 转义 */

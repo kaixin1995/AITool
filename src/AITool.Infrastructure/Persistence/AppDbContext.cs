@@ -61,6 +61,8 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.ModelName).IsRequired().HasMaxLength(200);
             entity.Property(e => e.DisplayName).HasMaxLength(200);
             entity.Property(e => e.ModelType).IsRequired().HasMaxLength(50);
+            // 模型名称唯一索引，防止重复模型
+            entity.HasIndex(e => e.ModelName).IsUnique();
         });
 
         // 站点模型映射实体配置

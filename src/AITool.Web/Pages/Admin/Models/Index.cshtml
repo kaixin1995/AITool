@@ -29,6 +29,7 @@
                 <th>模型名</th>
                 <th>显示名</th>
                 <th>类型</th>
+                <th>关联站点数</th>
                 <th>状态</th>
                 <th>创建时间</th>
                 <th>操作</th>
@@ -38,7 +39,7 @@
             @if (!Model.Models.Any())
             {
                 <tr>
-                    <td colspan="6">
+                    <td colspan="7">
                         <div class="table-empty">
                             <div class="table-empty-icon">🧠</div>
                             <div class="table-empty-text">暂无模型，点击上方按钮新增</div>
@@ -52,6 +53,7 @@
                     <td><code>@item.ModelName</code></td>
                     <td><strong>@item.DisplayName</strong></td>
                     <td><span class="badge bg-primary">@item.ModelType</span></td>
+                    <td><span class="badge bg-info">@item.SiteCount</span></td>
                     <td>
                         <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
                             @(item.IsEnabled ? "启用" : "禁用")
