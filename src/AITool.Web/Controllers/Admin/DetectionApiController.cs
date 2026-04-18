@@ -34,7 +34,10 @@ public sealed class ProbeProgress
     public int Total { get; set; }
     public int Completed { get; set; }
     public bool IsCompleted { get; set; }
-    public List<ProbeResultItem> Results { get; set; } = [];
+    // 所有已完成结果（完整列表）
+    public List<ProbeResultItem> AllResults { get; set; } = [];
+    // 上次被查询时已完成的数量
+    public int LastReportedCount { get; set; }
 }
 
 // 模型检测 API，提供 AJAX 检测与进度查询
@@ -142,7 +145,7 @@ public sealed class DetectionApiController : ControllerBase
 
                     if (_progressStore.TryGetValue(taskId, out var p))
                     {
-                        p.Results.Add(new ProbeResultItem
+                        p.AllResults.Add(new ProbeResultItem
                         {
                             MappingId = mapping.Id,
                             SiteName = site.Name,
@@ -158,7 +161,7 @@ public sealed class DetectionApiController : ControllerBase
                 {
                     if (_progressStore.TryGetValue(taskId, out var p))
                     {
-                        p.Results.Add(new ProbeResultItem
+                        p.AllResults.Add(new ProbeResultItem
                         {
                             MappingId = mapping.Id,
                             Status = "fail",
@@ -229,7 +232,7 @@ public sealed class DetectionApiController : ControllerBase
 
                     if (_progressStore.TryGetValue(taskId, out var p))
                     {
-                        p.Results.Add(new ProbeResultItem
+                        p.AllResults.Add(new ProbeResultItem
                         {
                             MappingId = mapping.Id,
                             SiteName = site.Name,
@@ -245,7 +248,7 @@ public sealed class DetectionApiController : ControllerBase
                 {
                     if (_progressStore.TryGetValue(taskId, out var p))
                     {
-                        p.Results.Add(new ProbeResultItem
+                        p.AllResults.Add(new ProbeResultItem
                         {
                             MappingId = mapping.Id,
                             Status = "fail",
@@ -267,7 +270,7 @@ public sealed class DetectionApiController : ControllerBase
         return Ok(new { taskId });
     }
 
-    // 查询检测进度
+    // 查询检测进度，返回自上次查询以来的新增结果
     [HttpGet("progress/{taskId}")]
     public IActionResult GetProgress(string taskId)
     {
@@ -275,6 +278,18 @@ public sealed class DetectionApiController : ControllerBase
         {
             return NotFound(new { message = "任务不存在" });
         }
-        return Ok(progress);
+
+        // 取出上次报告后新增的结果
+        var newResults = progress.AllResults.Skip(progress.LastReportedCount).ToList();
+        progress.LastReportedCount = progress.AllResults.Count;
+
+        return Ok(new
+        {
+            progress.TaskId,
+            progress.Total,
+            progress.Completed,
+            progress.IsCompleted,
+            NewResults = newResults
+        });
     }
 }

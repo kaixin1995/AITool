@@ -194,27 +194,34 @@ public sealed class SiteCatalogApiController : ControllerBase
     {
         var importedCount = 0;
 
+        // 预加载所有相关映射，减少数据库查询
+        var allSiteIds = request.Selections.Select(s => s.SiteId).Distinct().ToList();
+        var allExistingMappings = await _dbContext.SiteModelMappings
+            .Where(m => allSiteIds.Contains(m.SiteId))
+            .ToListAsync(cancellationToken);
+
+        // 预加载所有涉及到的远程模型名对应的模型库条目
+        var allRemoteNames = request.Selections.Where(s => s.Selected).Select(s => s.RemoteModelName).Distinct().ToList();
+        var existingModelItems = await _dbContext.ModelLibraryItems
+            .Where(m => allRemoteNames.Contains(m.ModelName))
+            .ToDictionaryAsync(m => m.ModelName, m => m, cancellationToken);
+
         // 按站点分组处理
         var siteGroups = request.Selections.GroupBy(s => s.SiteId);
 
         foreach (var group in siteGroups)
         {
             var siteId = group.Key;
-            var existingMappings = await _dbContext.SiteModelMappings
-                .Where(m => m.SiteId == siteId)
-                .ToListAsync(cancellationToken);
+            var siteMappings = allExistingMappings.Where(m => m.SiteId == siteId).ToList();
 
             foreach (var item in group)
             {
-                var mapping = existingMappings.FirstOrDefault(m => m.RemoteModelName == item.RemoteModelName);
+                var mapping = siteMappings.FirstOrDefault(m => m.RemoteModelName == item.RemoteModelName);
 
                 if (item.Selected)
                 {
-                    // 查找或创建模型库条目
-                    var modelItem = await _dbContext.ModelLibraryItems
-                        .FirstOrDefaultAsync(m => m.ModelName == item.RemoteModelName, cancellationToken);
-
-                    if (modelItem is null)
+                    // 用字典查找或创建模型库条目，避免重复插入同名模型
+                    if (!existingModelItems.TryGetValue(item.RemoteModelName, out var modelItem))
                     {
                         modelItem = new ModelLibraryItem
                         {
@@ -222,6 +229,8 @@ public sealed class SiteCatalogApiController : ControllerBase
                             DisplayName = string.IsNullOrWhiteSpace(item.DisplayName) ? item.RemoteModelName : item.DisplayName
                         };
                         _dbContext.ModelLibraryItems.Add(modelItem);
+                        // 加入字典，后续同名的远程模型直接复用
+                        existingModelItems[item.RemoteModelName] = modelItem;
                     }
                     else if (!string.IsNullOrWhiteSpace(item.DisplayName) && item.DisplayName != modelItem.DisplayName)
                     {
@@ -259,38 +268,7 @@ public sealed class SiteCatalogApiController : ControllerBase
             }
         }
 
-        // 捕获并发唯一索引冲突
-        try
-        {
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        }
-        catch (DbUpdateException) when (!cancellationToken.IsCancellationRequested)
-        {
-            var entries = _dbContext.ChangeTracker.Entries()
-                .Where(e => e.State == EntityState.Added)
-                .ToList();
-
-            foreach (var entry in entries)
-            {
-                if (entry.Entity is ModelLibraryItem conflictItem)
-                {
-                    var existingItem = await _dbContext.ModelLibraryItems
-                        .FirstOrDefaultAsync(m => m.ModelName == conflictItem.ModelName, cancellationToken);
-                    if (existingItem is not null)
-                    {
-                        var mappingsToAdd = _dbContext.SiteModelMappings.Local
-                            .Where(sm => sm.ModelLibraryItemId == conflictItem.Id)
-                            .ToList();
-                        foreach (var m in mappingsToAdd)
-                        {
-                            m.ModelLibraryItemId = existingItem.Id;
-                        }
-                        _dbContext.Entry(conflictItem).State = EntityState.Detached;
-                    }
-                }
-            }
-            await _dbContext.SaveChangesAsync(cancellationToken);
-        }
+        await _dbContext.SaveChangesAsync(cancellationToken);
 
         return Ok(new { importedCount });
     }

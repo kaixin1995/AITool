@@ -161,28 +161,35 @@
     });
 
     /* 轮询检测进度 */
+    var _totalSuccess = 0;
+    var _totalFail = 0;
+
     function pollProbeProgress(taskId, triggerBtn, btnText) {
         var alert = document.getElementById('probeAlert');
         var alertText = document.getElementById('probeAlertText');
         alert.style.display = '';
         alert.className = 'alert alert-info';
+        _totalSuccess = 0;
+        _totalFail = 0;
 
         function poll() {
             fetch('/api/admin/detection/progress/' + taskId)
                 .then(function(r) { return r.json(); })
                 .then(function(data) {
                     alertText.textContent = '正在检测... (' + data.completed + '/' + data.total + ')';
-                    /* 实时更新已完成的行 */
-                    data.results.forEach(function(r) {
-                        var row = document.querySelector('tr[data-mapping-id="' + r.mappingId + '"]');
-                        if (row) updateRow(row, r);
-                    });
+                    /* 只更新本轮新增的结果，避免重复刷新已更新的行 */
+                    if (data.newResults) {
+                        data.newResults.forEach(function(r) {
+                            var row = document.querySelector('tr[data-mapping-id="' + r.mappingId + '"]');
+                            if (row) updateRow(row, r);
+                            if (r.status === 'success') _totalSuccess++;
+                            else _totalFail++;
+                        });
+                    }
 
                     if (data.isCompleted) {
-                        var sc = data.results.filter(function(r) { return r.status === 'success'; }).length;
-                        var fc = data.results.filter(function(r) { return r.status === 'fail'; }).length;
                         alert.className = 'alert alert-success';
-                        alertText.textContent = '检测完成：' + sc + ' 成功，' + fc + ' 失败';
+                        alertText.textContent = '检测完成：' + _totalSuccess + ' 成功，' + _totalFail + ' 失败';
                         if (triggerBtn) {
                             triggerBtn.disabled = false;
                             triggerBtn.textContent = btnText || '全部检测';
