@@ -10,16 +10,52 @@
         <h2 class="page-title">模型库管理</h2>
         <p class="page-subtitle">管理所有可用模型及其类型</p>
     </div>
-    <a asp-page="./Create" class="btn btn-primary">＋ 新增模型</a>
+    <div class="d-flex gap-2">
+        <a asp-page="./Create" class="btn btn-primary">＋ 新增模型</a>
+        <button type="button" id="btnClearAll" class="btn btn-outline-danger" onclick="clearAllModels()">清空模型</button>
+    </div>
 </div>
 
 <!-- 状态提示 -->
-@if (!string.IsNullOrEmpty(Model.StatusMessage))
-{
-    <div class="alert @(Model.StatusSuccess ? "alert-success" : "alert-danger")">
-        @Model.StatusMessage
-    </div>
-}
+<div id="statusAlert" style="display:none;" class="alert">
+    <span id="statusText"></span>
+</div>
+
+<script>
+    // 显示操作提示
+    function showMsg(msg, success) {
+        var alert = document.getElementById('statusAlert');
+        var text = document.getElementById('statusText');
+        alert.style.display = '';
+        alert.className = 'alert ' + (success ? 'alert-success' : 'alert-danger');
+        text.textContent = msg;
+    }
+
+    // 清空全部模型
+    function clearAllModels() {
+        if (!confirm('确认清空所有模型？此操作将同时删除所有站点映射、检测日志和健康监控数据，不可恢复！')) return;
+        var btn = document.getElementById('btnClearAll');
+        btn.disabled = true;
+        btn.textContent = '清空中...';
+
+        fetch('/api/admin/models/clear-all', { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                btn.disabled = false;
+                btn.textContent = '清空模型';
+                if (data.message) { showMsg(data.message, false); return; }
+                showMsg('已清空 ' + data.deletedModels + ' 个模型、' + data.deletedMappings + ' 条映射、' + data.deletedLogs + ' 条检测日志、' + data.deletedMonitors + ' 条监控', true);
+                // 清空表格
+                var tbody = document.querySelector('.table tbody');
+                tbody.innerHTML = '<tr><td colspan="7"><div class="table-empty"><div class="table-empty-icon">🧠</div><div class="table-empty-text">暂无模型，点击上方按钮新增</div></div></td></tr>';
+            })
+            .catch(function(err) {
+                btn.disabled = false;
+                btn.textContent = '清空模型';
+                showMsg('清空失败：' + err.message, false);
+            });
+    }
+</script>
 
 <!-- 模型列表表格 -->
 <div class="table-wrapper">
