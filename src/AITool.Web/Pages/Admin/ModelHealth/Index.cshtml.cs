@@ -78,6 +78,21 @@ public class IndexModel : PageModel
     // 加载已监控模型及其健康数据
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
+        try
+        {
+            await LoadDataAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // 加载失败时保证页面不崩溃，显示错误提示
+            StatusMessage = "加载数据时出错：" + ex.Message;
+            StatusSuccess = false;
+        }
+    }
+
+    // 实际的数据加载逻辑
+    private async Task LoadDataAsync(CancellationToken cancellationToken)
+    {
         /* 加载已监控的模型列表 */
         var monitors = await _dbContext.ModelHealthMonitors.ToListAsync(cancellationToken);
         var monitoredModelIds = monitors.Select(m => m.ModelLibraryItemId).ToList();
@@ -123,9 +138,11 @@ public class IndexModel : PageModel
                 .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
             var recentCutoff = DateTimeOffset.UtcNow.AddDays(-7);
-            var allLogs = await _dbContext.DetectionLogs
+            // 先全量加载到内存，再用 C# 过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
+            var allLogs = await _dbContext.DetectionLogs.ToListAsync(cancellationToken);
+            allLogs = allLogs
                 .Where(d => monitoredModelIds.Contains(d.ModelLibraryItemId) && d.CheckedAt >= recentCutoff)
-                .ToListAsync(cancellationToken);
+                .ToList();
 
             /* 按模型分组 */
             foreach (var modelId in monitoredModelIds)
@@ -189,10 +206,18 @@ public class IndexModel : PageModel
         }
         catch (Exception ex)
         {
-            StatusMessage = $"添加监控失败：{ex.Message}";
+            StatusMessage = "添加监控失败：" + ex.Message;
             StatusSuccess = false;
         }
-        await OnGetAsync(cancellationToken);
+        try
+        {
+            await LoadDataAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = (StatusMessage ?? "") + " 加载数据出错：" + ex.Message;
+            StatusSuccess = false;
+        }
         return Page();
     }
 
@@ -211,10 +236,18 @@ public class IndexModel : PageModel
         }
         catch (Exception ex)
         {
-            StatusMessage = $"移除监控失败：{ex.Message}";
+            StatusMessage = "移除监控失败：" + ex.Message;
             StatusSuccess = false;
         }
-        await OnGetAsync(cancellationToken);
+        try
+        {
+            await LoadDataAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = (StatusMessage ?? "") + " 加载数据出错：" + ex.Message;
+            StatusSuccess = false;
+        }
         return Page();
     }
 }

@@ -40,6 +40,19 @@
     </form>
 </div>
 
+<!-- 搜索过滤 -->
+@if (Model.MonitoredModels.Any())
+{
+    <div class="form-card" style="margin-bottom:20px;">
+        <div class="row g-2 align-items-end">
+            <div class="col-md-4">
+                <label class="form-label">搜索模型</label>
+                <input type="text" id="healthSearch" class="form-control" placeholder="输入模型名称过滤..." oninput="filterHealthModels()" />
+            </div>
+        </div>
+    </div>
+}
+
 <!-- 未监控任何模型时的提示 -->
 @if (!Model.MonitoredModels.Any())
 {
@@ -56,7 +69,7 @@
 {
     var healths = Model.HealthData.GetValueOrDefault(monitored.ModelLibraryItemId) ?? [];
 
-    <div class="detection-group">
+    <div class="detection-group health-model-group" data-display-name="@monitored.DisplayName">
         <div class="detection-group-header">
             <div>
                 <h3 class="detection-group-title">@monitored.DisplayName</h3>
@@ -169,3 +182,14 @@
         }
     </div>
 }
+
+<script>
+    /* 按模型名搜索过滤健康看板 */
+    function filterHealthModels() {
+        var keyword = document.getElementById('healthSearch').value.toLowerCase();
+        document.querySelectorAll('.health-model-group').forEach(function(g) {
+            var name = g.getAttribute('data-display-name').toLowerCase();
+            g.style.display = name.indexOf(keyword) >= 0 ? '' : 'none';
+        });
+    }
+</script>

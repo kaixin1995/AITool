@@ -161,7 +161,7 @@
             var keyword = this.value.toLowerCase();
             document.querySelectorAll('.model-row').forEach(function(row) {
                 var name = row.getAttribute('data-model-name').toLowerCase();
-                row.style.display = name.indexOf(keyword) >= 0 ? '' : 'none';
+                row.style.display = name.indexOf(keyword) >= 0 ? 'flex' : 'none';
             });
             updateSelectAllState();
         });
@@ -294,7 +294,8 @@
         var fragment = document.createDocumentFragment();
         currentModels.forEach(function(m, index) {
             var row = document.createElement('div');
-            row.className = 'd-flex align-items-center gap-2 py-2 border-bottom model-row';
+            row.className = 'align-items-center gap-2 py-2 border-bottom model-row';
+            row.style.display = 'flex';
             row.setAttribute('data-model-name', m.remoteModelName);
             row.setAttribute('data-site-id', m.siteId);
             row.setAttribute('data-index', index);

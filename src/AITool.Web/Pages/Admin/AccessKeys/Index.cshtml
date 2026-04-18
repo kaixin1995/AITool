@@ -12,31 +12,31 @@
     </div>
 </div>
 
-<!-- 状态提示 -->
-@if (Model.StatusMessage is not null)
-{
-    <div class="alert alert-@(Model.StatusSuccess ? "success" : "danger")">
-        @Model.StatusMessage
+<!-- 操作提示 -->
+<div id="statusAlert" style="display:none;" class="alert">
+    <span id="statusText"></span>
+</div>
+
+<!-- 新建密钥明文展示区域（创建后仅显示一次） -->
+<div id="plainKeyBox" style="display:none;" class="alert alert-warning">
+    <div><strong>请立即复制并妥善保存密钥，关闭后将无法再次查看：</strong></div>
+    <div class="d-flex align-items-center gap-2 mt-2">
+        <code id="plainKeyValue" style="font-size:14px;word-break:break-all;"></code>
+        <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('plainKeyValue').textContent)">复制</button>
     </div>
-}
+</div>
 
 <!-- 内联创建表单 -->
 <div class="inline-form">
-    <form method="post" asp-page-handler="Create">
-        <div class="row g-2 align-items-end">
-            <div class="col-auto">
-                <label class="form-label">密钥名称</label>
-                <input type="text" name="keyName" class="form-control" required />
-            </div>
-            <div class="col-auto">
-                <label class="form-label">密钥值</label>
-                <input type="text" name="accessKey" class="form-control" required />
-            </div>
-            <div class="col-auto">
-                <button type="submit" class="btn btn-primary">创建密钥</button>
-            </div>
+    <div class="row g-2 align-items-end">
+        <div class="col-auto">
+            <label class="form-label">密钥名称</label>
+            <input type="text" id="inputKeyName" class="form-control" placeholder="输入密钥名称" />
         </div>
-    </form>
+        <div class="col-auto">
+            <button type="button" id="btnCreate" class="btn btn-primary" onclick="createKey()">创建密钥</button>
+        </div>
+    </div>
 </div>
 
 <!-- 密钥列表表格 -->
@@ -50,10 +50,10 @@
                 <th>操作</th>
             </tr>
         </thead>
-        <tbody>
+        <tbody id="keyTableBody">
             @if (!Model.Keys.Any())
             {
-                <tr>
+                <tr id="emptyRow">
                     <td colspan="4">
                         <div class="table-empty">
                             <div class="table-empty-icon">🔑</div>
@@ -64,26 +64,178 @@
             }
             @foreach (var item in Model.Keys)
             {
-                <tr>
+                <tr data-key-id="@item.KeyId">
                     <td><strong>@item.KeyName</strong></td>
-                    <td><code>@item.MaskedValue</code></td>
+                    <td><code class="masked-value">@item.MaskedValue</code></td>
                     <td>
                         <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
                             @(item.IsEnabled ? "启用" : "禁用")
                         </span>
                     </td>
                     <td>
-                        <form method="post" asp-page-handler="Toggle" asp-route-keyId="@item.KeyId" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")">
-                                @(item.IsEnabled ? "禁用" : "启用")
-                            </button>
-                        </form>
-                        <form method="post" asp-page-handler="Delete" asp-route-keyId="@item.KeyId" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该密钥？')">删除</button>
-                        </form>
+                        <button type="button" class="btn btn-sm btn-outline-primary btn-copy"
+                                data-masked="@item.MaskedValue" onclick="copyMasked(this)" title="复制掩码值">
+                            复制
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")"
+                                onclick="toggleKey('@item.KeyId', this)">
+                            @(item.IsEnabled ? "禁用" : "启用")
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-danger"
+                                onclick="deleteKey('@item.KeyId', this)">
+                            删除
+                        </button>
                     </td>
                 </tr>
             }
         </tbody>
     </table>
 </div>
+
+<script>
+    // 显示操作提示
+    function showStatus(msg, success) {
+        var alert = document.getElementById('statusAlert');
+        var text = document.getElementById('statusText');
+        alert.style.display = '';
+        alert.className = 'alert ' + (success ? 'alert-success' : 'alert-danger');
+        text.textContent = msg;
+    }
+
+    // 创建密钥
+    function createKey() {
+        var nameInput = document.getElementById('inputKeyName');
+        var name = nameInput.value.trim();
+        if (!name) { showStatus('请输入密钥名称', false); return; }
+
+        var btn = document.getElementById('btnCreate');
+        btn.disabled = true;
+        btn.textContent = '创建中...';
+
+        fetch('/api/admin/access-keys/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ keyName: name })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.disabled = false;
+            btn.textContent = '创建密钥';
+            nameInput.value = '';
+
+            if (data.message) { showStatus(data.message, false); return; }
+
+            // 显示明文密钥
+            document.getElementById('plainKeyBox').style.display = '';
+            document.getElementById('plainKeyValue').textContent = data.plainKey;
+
+            // 移除空行提示
+            var emptyRow = document.getElementById('emptyRow');
+            if (emptyRow) emptyRow.remove();
+
+            // 在表格中插入新行
+            var tbody = document.getElementById('keyTableBody');
+            var tr = document.createElement('tr');
+            tr.setAttribute('data-key-id', data.keyId);
+            tr.innerHTML = '<td><strong>' + escapeHtml(data.keyName) + '</strong></td>'
+                + '<td><code class="masked-value">' + escapeHtml(data.maskedValue) + '</code></td>'
+                + '<td><span class="badge bg-success">启用</span></td>'
+                + '<td>'
+                + '<button type="button" class="btn btn-sm btn-outline-primary btn-copy" data-masked="' + escapeHtml(data.maskedValue) + '" onclick="copyMasked(this)" title="复制掩码值">复制</button> '
+                + '<button type="button" class="btn btn-sm btn-outline-warning" onclick="toggleKey(\'' + data.keyId + '\', this)">禁用</button> '
+                + '<button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteKey(\'' + data.keyId + '\', this)">删除</button>'
+                + '</td>';
+            tbody.appendChild(tr);
+
+            showStatus('密钥创建成功，请立即复制保存明文密钥', true);
+        })
+        .catch(function(err) {
+            btn.disabled = false;
+            btn.textContent = '创建密钥';
+            showStatus('创建失败：' + err.message, false);
+        });
+    }
+
+    // 切换启用/禁用
+    function toggleKey(keyId, btn) {
+        btn.disabled = true;
+        fetch('/api/admin/access-keys/toggle/' + keyId, { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.message) { showStatus(data.message, false); btn.disabled = false; return; }
+            var row = btn.closest('tr');
+            var badge = row.querySelector('.badge');
+            badge.className = 'badge bg-' + (data.isEnabled ? 'success' : 'secondary');
+            badge.textContent = data.isEnabled ? '启用' : '禁用';
+            btn.className = 'btn btn-sm btn-outline-' + (data.isEnabled ? 'warning' : 'success');
+            btn.textContent = data.isEnabled ? '禁用' : '启用';
+            btn.disabled = false;
+        })
+        .catch(function(err) {
+            showStatus('操作失败：' + err.message, false);
+            btn.disabled = false;
+        });
+    }
+
+    // 删除密钥
+    function deleteKey(keyId, btn) {
+        if (!confirm('确认删除该密钥？')) return;
+        btn.disabled = true;
+        fetch('/api/admin/access-keys/delete/' + keyId, { method: 'POST' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.message) { showStatus(data.message, false); btn.disabled = false; return; }
+            var row = btn.closest('tr');
+            row.remove();
+            showStatus('密钥已删除', true);
+        })
+        .catch(function(err) {
+            showStatus('删除失败：' + err.message, false);
+            btn.disabled = false;
+        });
+    }
+
+    // 复制密钥掩码值
+    function copyMasked(btn) {
+        var masked = btn.getAttribute('data-masked');
+        copyText(masked);
+    }
+
+    // 通用复制函数，兼容 HTTP 环境
+    function copyText(text) {
+        // 优先使用 Clipboard API
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(function() {
+                showStatus('已复制到剪贴板', true);
+            }).catch(function() {
+                fallbackCopy(text);
+            });
+        } else {
+            fallbackCopy(text);
+        }
+    }
+
+    // HTTP 环境下的降级复制方案
+    function fallbackCopy(text) {
+        var textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
+            showStatus('已复制到剪贴板', true);
+        } catch (e) {
+            showStatus('复制失败，请手动复制', false);
+        }
+        document.body.removeChild(textarea);
+    }
+
+    // HTML 转义，防止 XSS
+    function escapeHtml(str) {
+        var div = document.createElement('div');
+        div.appendChild(document.createTextNode(str));
+        return div.innerHTML;
+    }
+</script>
