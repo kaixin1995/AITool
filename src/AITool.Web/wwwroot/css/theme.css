@@ -1,31 +1,30 @@
-/* AI Tool 管理后台 - 现代 SaaS 风格主题 */
-
+/* 小清新配色：浅色侧边栏 + 柔和主色调 */
 :root {
-    --primary: #6366F1;
-    --primary-hover: #5558E6;
-    --primary-light: #EEF2FF;
-    --primary-50: rgba(99, 102, 241, 0.08);
-    --success: #22C55E;
-    --success-light: #F0FDF4;
-    --warning: #F59E0B;
+    --primary: #6C9EFF;
+    --primary-hover: #5A8EF5;
+    --primary-light: #EEF4FF;
+    --primary-50: rgba(108, 158, 255, 0.07);
+    --success: #34D399;
+    --success-light: #ECFDF5;
+    --warning: #FBBF24;
     --warning-light: #FFFBEB;
-    --danger: #EF4444;
+    --danger: #F87171;
     --danger-light: #FEF2F2;
-    --info: #3B82F6;
+    --info: #60A5FA;
     --info-light: #EFF6FF;
-    --bg-page: #F5F7FB;
+    --bg-page: #F8FAFC;
     --bg-card: #FFFFFF;
-    --text-primary: #111827;
-    --text-secondary: #6B7280;
-    --text-muted: #9CA3AF;
-    --border-color: #E5E7EB;
-    --border-light: #F3F4F6;
+    --text-primary: #1E293B;
+    --text-secondary: #64748B;
+    --text-muted: #94A3B8;
+    --border-color: #E2E8F0;
+    --border-light: #F1F5F9;
     --radius: 12px;
     --radius-sm: 8px;
     --radius-xs: 6px;
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
-    --shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.06), 0 2px 4px -2px rgba(0, 0, 0, 0.04);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.03);
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
     --sidebar-width: 260px;
 }
 
@@ -49,8 +48,9 @@ body {
 
 .app-sidebar {
     width: var(--sidebar-width);
-    background: linear-gradient(180deg, #1E1B4B 0%, #312E81 100%);
-    color: #fff;
+    background: #FFFFFF;
+    border-right: 1px solid var(--border-color);
+    color: var(--text-primary);
     position: fixed;
     top: 0;
     left: 0;
@@ -65,7 +65,7 @@ body {
 }
 
 .app-sidebar::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.2);
+    background: rgba(0, 0, 0, 0.08);
     border-radius: 2px;
 }
 
@@ -74,13 +74,13 @@ body {
     display: flex;
     align-items: center;
     gap: 12px;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid var(--border-light);
 }
 
 .sidebar-brand-icon {
     width: 36px;
     height: 36px;
-    background: var(--primary);
+    background: linear-gradient(135deg, var(--primary) 0%, #A5B4FC 100%);
     border-radius: 10px;
     display: flex;
     align-items: center;
@@ -88,17 +88,19 @@ body {
     font-size: 18px;
     font-weight: 700;
     flex-shrink: 0;
+    color: #fff;
 }
 
 .sidebar-brand-text {
     font-size: 18px;
     font-weight: 600;
     letter-spacing: -0.3px;
+    color: var(--text-primary);
 }
 
 .sidebar-brand-sub {
     font-size: 11px;
-    opacity: 0.5;
+    color: var(--text-muted);
     margin-top: 2px;
 }
 
@@ -114,7 +116,7 @@ body {
     font-size: 11px;
     text-transform: uppercase;
     letter-spacing: 0.8px;
-    color: rgba(255, 255, 255, 0.35);
+    color: var(--text-muted);
     padding: 12px 12px 6px;
     font-weight: 600;
 }
@@ -125,7 +127,7 @@ body {
     gap: 10px;
     padding: 9px 12px;
     border-radius: var(--radius-sm);
-    color: rgba(255, 255, 255, 0.65);
+    color: var(--text-secondary);
     text-decoration: none;
     font-size: 13.5px;
     font-weight: 500;
@@ -134,13 +136,13 @@ body {
 }
 
 .sidebar-link:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: #fff;
+    background: var(--primary-50);
+    color: var(--primary);
 }
 
 .sidebar-link.active {
-    background: rgba(99, 102, 241, 0.25);
-    color: #fff;
+    background: var(--primary-light);
+    color: var(--primary);
 }
 
 .sidebar-link-icon {
@@ -275,7 +277,7 @@ body {
 .stat-card-icon.warning { background: var(--warning-light); color: var(--warning); }
 .stat-card-icon.danger { background: var(--danger-light); color: var(--danger); }
 .stat-card-icon.info { background: var(--info-light); color: var(--info); }
-.stat-card-icon.purple { background: #FAF5FF; color: #9333EA; }
+.stat-card-icon.purple { background: #F0EBFF; color: #8B5CF6; }
 
 .stat-card-value {
     font-size: 28px;
@@ -424,7 +426,7 @@ body {
 .btn-primary:hover {
     background: var(--primary-hover);
     color: #fff;
-    box-shadow: 0 2px 8px rgba(99, 102, 241, 0.3);
+    box-shadow: 0 2px 8px rgba(108, 158, 255, 0.3);
 }
 
 .btn-secondary {
@@ -539,7 +541,7 @@ body {
 .form-control:focus,
 .form-select:focus {
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+    box-shadow: 0 0 0 3px rgba(108, 158, 255, 0.12);
     outline: none;
 }
 
@@ -560,7 +562,7 @@ body {
 }
 
 .form-check-input:focus {
-    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+    box-shadow: 0 0 0 3px rgba(108, 158, 255, 0.12);
     border-color: var(--primary);
 }
 
@@ -633,7 +635,7 @@ body {
 
 /* 欢迎横幅 */
 .welcome-banner {
-    background: linear-gradient(135deg, var(--primary) 0%, #8B5CF6 100%);
+    background: linear-gradient(135deg, var(--primary) 0%, #A5B4FC 100%);
     border-radius: var(--radius);
     padding: 32px;
     color: #fff;
