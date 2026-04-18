@@ -27,6 +27,13 @@ public class DetectionSiteStatusViewModel
     public int? LastDurationMs { get; set; }
 }
 
+// 搜索过滤用的模型项
+public class DetectionFilterModelItem
+{
+    public Guid Id { get; set; }
+    public string DisplayName { get; set; } = string.Empty;
+}
+
 // 模型检测页面模型，按模型分组展示各站点检测状态
 public class IndexModel : PageModel
 {
@@ -41,6 +48,9 @@ public class IndexModel : PageModel
 
     // 按模型分组的检测数据
     public List<DetectionModelGroupViewModel> ModelGroups { get; set; } = [];
+
+    // 用于搜索过滤的模型下拉列表
+    public List<DetectionFilterModelItem> FilterModels { get; set; } = [];
 
     // 检测结果提示信息
     public string? ProbeMessage { get; set; }
@@ -96,6 +106,16 @@ public class IndexModel : PageModel
                 };
             })
             .OrderBy(g => g.DisplayName)
+            .ToList();
+
+        // 构建搜索过滤下拉数据
+        FilterModels = ModelGroups
+            .Select(g => new DetectionFilterModelItem
+            {
+                Id = g.ModelLibraryItemId,
+                DisplayName = g.DisplayName
+            })
+            .OrderBy(m => m.DisplayName)
             .ToList();
     }
 
@@ -183,6 +203,91 @@ public class IndexModel : PageModel
             await _dbContext.SaveChangesAsync(cancellationToken);
             ProbeSuccess = failCount == 0;
             ProbeMessage = $"模型检测完成：{successCount} 成功，{failCount} 失败";
+        }
+        catch (Exception ex)
+        {
+            ProbeMessage = $"检测异常：{ex.Message}";
+            ProbeSuccess = false;
+        }
+        await OnGetAsync(cancellationToken);
+        return Page();
+    }
+
+    // 检测指定模型在所有站点（含无映射的站点），自动创建映射并检测
+    public async Task<IActionResult> OnPostProbeModelAllSitesAsync(Guid modelId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
+            if (model is null)
+            {
+                ProbeMessage = "模型不存在";
+                ProbeSuccess = false;
+                await OnGetAsync(cancellationToken);
+                return Page();
+            }
+
+            /* 获取所有启用站点 */
+            var allSites = await _dbContext.Sites
+                .Where(s => s.IsEnabled)
+                .ToListAsync(cancellationToken);
+
+            /* 获取该模型已有映射 */
+            var existingMappings = await _dbContext.SiteModelMappings
+                .Where(m => m.ModelLibraryItemId == modelId)
+                .ToListAsync(cancellationToken);
+
+            var successCount = 0;
+            var failCount = 0;
+
+            foreach (var site in allSites)
+            {
+                /* 若无映射则自动创建 */
+                var mapping = existingMappings.FirstOrDefault(m => m.SiteId == site.Id);
+                if (mapping is null)
+                {
+                    mapping = new Domain.SiteCatalog.SiteModelMapping
+                    {
+                        SiteId = site.Id,
+                        ModelLibraryItemId = modelId,
+                        RemoteModelName = model.ModelName,
+                        LastStatus = "pending"
+                    };
+                    _dbContext.SiteModelMappings.Add(mapping);
+                    existingMappings.Add(mapping);
+                }
+
+                /* 执行检测，失败自动跳过不影响后续 */
+                try
+                {
+                    var result = await _probeService.ProbeAsync(site, model, cancellationToken);
+
+                    var log = new Domain.Detection.DetectionLog
+                    {
+                        SiteId = site.Id,
+                        ModelLibraryItemId = modelId,
+                        Status = result.Success ? "success" : "fail",
+                        DurationMs = result.DurationMs,
+                        ErrorMessage = result.ErrorMessage,
+                        CheckedAt = DateTimeOffset.UtcNow
+                    };
+                    _dbContext.DetectionLogs.Add(log);
+                    mapping.LastStatus = result.Success ? "success" : "fail";
+
+                    if (result.Success) successCount++;
+                    else failCount++;
+                }
+                catch
+                {
+                    /* 单个站点检测异常跳过 */
+                    mapping.LastStatus = "error";
+                    failCount++;
+                }
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            ProbeSuccess = failCount == 0;
+            ProbeMessage = $"所有站点检测完成：共 {allSites.Count} 个站点，{successCount} 成功，{failCount} 失败";
         }
         catch (Exception ex)
         {

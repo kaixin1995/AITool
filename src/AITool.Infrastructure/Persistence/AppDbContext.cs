@@ -39,6 +39,9 @@ public sealed class AppDbContext : DbContext
     // 代理使用日志数据集
     public DbSet<ProxyUsageLog> ProxyUsageLogs => Set<ProxyUsageLog>();
 
+    // 模型健康监控配置数据集
+    public DbSet<ModelHealthMonitor> ModelHealthMonitors => Set<ModelHealthMonitor>();
+
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // 站点实体配置
@@ -122,6 +125,13 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.RequestModel).IsRequired().HasMaxLength(200);
             entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
             entity.HasIndex(e => e.RequestedAt);
+        });
+
+        // 模型健康监控配置实体配置
+        modelBuilder.Entity<ModelHealthMonitor>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => e.ModelLibraryItemId).IsUnique();
         });
 
         base.OnModelCreating(modelBuilder);

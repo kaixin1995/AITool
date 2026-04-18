@@ -22,7 +22,9 @@ builder.Services.AddRazorPages();
 builder.Services.AddControllers();
 
 // 注册 EF Core SQLite 数据库上下文
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? "Data Source=aitool.db";
+// 数据库文件放在软件根目录（解决方案目录）下
+var dbPath = Path.Combine(builder.Environment.ContentRootPath, "..", "..", "aitool.db");
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(connectionString));
 

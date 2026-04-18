@@ -10,9 +10,11 @@
         <h2 class="page-title">模型检测</h2>
         <p class="page-subtitle">按模型分组查看各站点的可用性和响应状态</p>
     </div>
-    <form method="post" asp-page-handler="ProbeAll" class="d-inline">
-        <button type="submit" class="btn btn-primary">全部检测</button>
-    </form>
+    <div class="d-flex gap-2">
+        <form method="post" asp-page-handler="ProbeAll" class="d-inline">
+            <button type="submit" class="btn btn-primary">全部检测</button>
+        </form>
+    </div>
 </div>
 
 <!-- 检测结果提示 -->
@@ -22,6 +24,22 @@
         @Model.ProbeMessage
     </div>
 }
+
+<!-- 模型搜索过滤 -->
+<div class="form-card" style="margin-bottom:20px;">
+    <div class="row g-2 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label">按模型过滤</label>
+            <select id="modelFilter" class="form-select" onchange="filterModels()">
+                <option value="">全部模型</option>
+                @foreach (var m in Model.FilterModels)
+                {
+                    <option value="@m.Id">@m.DisplayName</option>
+                }
+            </select>
+        </div>
+    </div>
+</div>
 
 <!-- 按模型分组展示 -->
 @if (!Model.ModelGroups.Any())
@@ -36,15 +54,20 @@
 
 @foreach (var group in Model.ModelGroups)
 {
-    <div class="detection-group">
+    <div class="detection-group" data-model-id="@group.ModelLibraryItemId">
         <div class="detection-group-header">
             <div>
                 <h3 class="detection-group-title">@group.DisplayName</h3>
                 <span class="badge bg-light text-dark"><code>@group.ModelName</code></span>
             </div>
-            <form method="post" asp-page-handler="ProbeModel" asp-route-modelId="@group.ModelLibraryItemId" class="d-inline">
-                <button type="submit" class="btn btn-sm btn-outline-primary">检测该模型</button>
-            </form>
+            <div class="d-flex gap-2">
+                <form method="post" asp-page-handler="ProbeModelAllSites" asp-route-modelId="@group.ModelLibraryItemId" class="d-inline">
+                    <button type="submit" class="btn btn-sm btn-outline-success">检测所有站点</button>
+                </form>
+                <form method="post" asp-page-handler="ProbeModel" asp-route-modelId="@group.ModelLibraryItemId" class="d-inline">
+                    <button type="submit" class="btn btn-sm btn-outline-primary">检测该模型</button>
+                </form>
+            </div>
         </div>
         <div class="table-wrapper">
             <table class="table">
@@ -83,3 +106,18 @@
         </div>
     </div>
 }
+
+<script>
+    /* 按模型 ID 过滤显示分组 */
+    function filterModels() {
+        var selected = document.getElementById('modelFilter').value;
+        var groups = document.querySelectorAll('.detection-group');
+        groups.forEach(function(g) {
+            if (!selected || g.getAttribute('data-model-id') === selected) {
+                g.style.display = '';
+            } else {
+                g.style.display = 'none';
+            }
+        });
+    }
+</script>
