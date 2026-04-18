@@ -11,6 +11,9 @@ public class UsageLogViewModel
     public string ProtocolType { get; set; } = string.Empty;
     public string RequestModel { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public string Source { get; set; } = string.Empty;
+    public string SiteName { get; set; } = string.Empty;
+    public int RetryCount { get; set; }
     public int InputTokens { get; set; }
     public int OutputTokens { get; set; }
     public int TotalTokens { get; set; }
@@ -33,6 +36,9 @@ public class IndexModel : PageModel
     // 加载最近的使用日志
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
+        // 加载站点字典用于显示站点名称
+        var sites = await _dbContext.Sites.ToDictionaryAsync(s => s.Id, s => s.Name, cancellationToken);
+
         // 先加载全部记录再客户端排序（SQLite 不支持 DateTimeOffset 的 ORDER BY）
         var logs = await _dbContext.ProxyUsageLogs
             .ToListAsync(cancellationToken);
@@ -46,6 +52,9 @@ public class IndexModel : PageModel
                 ProtocolType = l.ProtocolType,
                 RequestModel = l.RequestModel,
                 Status = l.Status,
+                Source = l.Source,
+                SiteName = sites.TryGetValue(l.TargetSiteId, out var name) ? name : "-",
+                RetryCount = l.RetryCount,
                 InputTokens = l.InputTokens,
                 OutputTokens = l.OutputTokens,
                 TotalTokens = l.TotalTokens,

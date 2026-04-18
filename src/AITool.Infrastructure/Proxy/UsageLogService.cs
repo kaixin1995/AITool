@@ -24,6 +24,8 @@ public sealed class UsageLogService : IUsageLogService
             RequestModel = entry.RequestModel,
             TargetSiteId = entry.TargetSiteId,
             Status = entry.Status,
+            Source = entry.Source,
+            RetryCount = entry.RetryCount,
             InputTokens = entry.InputTokens,
             OutputTokens = entry.OutputTokens,
             TotalTokens = entry.InputTokens + entry.OutputTokens

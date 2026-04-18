@@ -21,6 +21,12 @@ public sealed class ProxyUsageLog
     // 请求处理状态
     public string Status { get; set; } = string.Empty;
 
+    // 请求来源，例如 "proxy" 或 "chat"
+    public string Source { get; set; } = "proxy";
+
+    // 尝试的路由数量（重试次数）
+    public int RetryCount { get; set; }
+
     // 输入 Token 数
     public int InputTokens { get; set; }
 

@@ -76,6 +76,7 @@ public sealed class OpenAiProxyController : ControllerBase
 
         // 按优先级逐个尝试路由，失败则熔断该站点并继续下一个
         ProxyForwardResult? lastResult = null;
+        int retryCount = 0;
 
         foreach (var routeResult in allRoutes)
         {
@@ -98,26 +99,43 @@ public sealed class OpenAiProxyController : ControllerBase
 
             var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
 
-            // 记录每次尝试的使用日志
-            await _usageLogService.LogAsync(new UsageLogEntry
-            {
-                AccessKeyId = accessKey.Id,
-                ProtocolType = "OpenAI",
-                RequestModel = modelName,
-                TargetSiteId = site.Id,
-                Status = result.Success ? "success" : "fail",
-                InputTokens = result.InputTokens,
-                OutputTokens = result.OutputTokens
-            }, cancellationToken);
-
             if (result.Success)
+            {
+                // 记录成功的调用日志（含重试次数）
+                await _usageLogService.LogAsync(new UsageLogEntry
+                {
+                    AccessKeyId = accessKey.Id,
+                    ProtocolType = "OpenAI",
+                    RequestModel = modelName,
+                    TargetSiteId = site.Id,
+                    Status = "success",
+                    Source = "proxy",
+                    RetryCount = retryCount,
+                    InputTokens = result.InputTokens,
+                    OutputTokens = result.OutputTokens
+                }, cancellationToken);
+                // 成功时清除该站点的连续失败计数
+                _circuitStore.Succeed(site.Id);
                 return Content(result.ResponseBody, "application/json");
+            }
 
             // 转发失败，熔断该站点并继续尝试下一个
             _circuitStore.Block(site.Id);
             blockedSiteIds.Add(site.Id);
             lastResult = result;
+            retryCount++;
         }
+
+        // 所有路由均失败，记录最终失败的日志
+        await _usageLogService.LogAsync(new UsageLogEntry
+        {
+            AccessKeyId = accessKey.Id,
+            ProtocolType = "OpenAI",
+            RequestModel = modelName,
+            Status = "fail",
+            Source = "proxy",
+            RetryCount = retryCount
+        }, cancellationToken);
 
         // 所有路由均失败
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;

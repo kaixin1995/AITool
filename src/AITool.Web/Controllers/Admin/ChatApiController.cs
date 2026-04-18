@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
 using AITool.Application.Routing;
+using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
@@ -52,17 +53,20 @@ public sealed class ChatApiController : ControllerBase
     private readonly IProxyForwardService _forwardService;
     private readonly IRouteSelectionService _routeService;
     private readonly RouteCircuitStateStore _circuitStore;
+    private readonly IUsageLogService _usageLogService;
 
     public ChatApiController(
         AppDbContext dbContext,
         IProxyForwardService forwardService,
         IRouteSelectionService routeService,
-        RouteCircuitStateStore circuitStore)
+        RouteCircuitStateStore circuitStore,
+        IUsageLogService usageLogService)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
         _routeService = routeService;
         _circuitStore = circuitStore;
+        _usageLogService = usageLogService;
     }
 
     // 获取可用于对话测试的模型列表
@@ -131,6 +135,9 @@ public sealed class ChatApiController : ControllerBase
             var blockedSiteIds = new HashSet<Guid>(
                 allSiteIds.Where(id => _circuitStore.IsBlocked(id)));
 
+            // 记录尝试的路由数量
+            int retryCount = 0;
+
             foreach (var routeResult in allRoutes)
             {
                 var route = routeResult.Route!;
@@ -164,6 +171,18 @@ public sealed class ChatApiController : ControllerBase
                 if (forwardResult.Success)
                 {
                     sw.Stop();
+                    // 记录成功的调用日志
+                    await _usageLogService.LogAsync(new UsageLogEntry
+                    {
+                        ProtocolType = site.ProtocolType,
+                        RequestModel = model.ModelName,
+                        TargetSiteId = site.Id,
+                        Status = "success",
+                        Source = "chat",
+                        RetryCount = retryCount,
+                        InputTokens = forwardResult.InputTokens,
+                        OutputTokens = forwardResult.OutputTokens
+                    }, cancellationToken);
                     var content = ExtractContent(forwardResult.ResponseBody, site.ProtocolType);
                     return Ok(new ChatSendResult
                     {
@@ -173,12 +192,20 @@ public sealed class ChatApiController : ControllerBase
                     });
                 }
 
-                // 转发失败，熔断该站点并继续尝试下一个
-                _circuitStore.Block(site.Id);
-                blockedSiteIds.Add(site.Id);
+                // 转发失败，继续尝试下一个（Chat 测试不触发熔断）
+                retryCount++;
             }
 
             sw.Stop();
+            // 记录最终失败的调用日志
+            await _usageLogService.LogAsync(new UsageLogEntry
+            {
+                ProtocolType = "OpenAI",
+                RequestModel = model.ModelName,
+                Status = "fail",
+                Source = "chat",
+                RetryCount = retryCount
+            }, cancellationToken);
             return Ok(new ChatSendResult
             {
                 Success = false,
@@ -227,6 +254,19 @@ public sealed class ChatApiController : ControllerBase
         }, cancellationToken);
 
         sw.Stop();
+
+        // 记录回退方式的调用日志
+        await _usageLogService.LogAsync(new UsageLogEntry
+        {
+            ProtocolType = site.ProtocolType,
+            RequestModel = model.ModelName,
+            TargetSiteId = site.Id,
+            Status = forwardResult.Success ? "success" : "fail",
+            Source = "chat",
+            RetryCount = 0,
+            InputTokens = forwardResult.InputTokens,
+            OutputTokens = forwardResult.OutputTokens
+        }, cancellationToken);
 
         if (!forwardResult.Success)
         {
