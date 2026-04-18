@@ -367,3 +367,6 @@ FodyWeavers.xsd
 /src/AITool.Web/aitool.db
 /src/AITool.Web/aitool.db-wal
 /src/AITool.Web/aitool.db-shm
+/aitool.db
+/aitool.db-shm
+/aitool.db-wal
