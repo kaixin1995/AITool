@@ -4,43 +4,64 @@
     ViewData["Title"] = "站点管理";
 }
 
-<h1>站点管理</h1>
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">站点管理</h2>
+        <p class="page-subtitle">管理所有代理站点及其配置</p>
+    </div>
+    <a asp-page="./Create" class="btn btn-primary">＋ 新增站点</a>
+</div>
 
-<p>
-    <a asp-page="./Create" class="btn btn-primary">新增站点</a>
-</p>
-
-<table class="table table-striped">
-    <thead>
-        <tr>
-            <th>名称</th>
-            <th>根地址</th>
-            <th>协议类型</th>
-            <th>状态</th>
-            <th>创建时间</th>
-            <th>操作</th>
-        </tr>
-    </thead>
-    <tbody>
-        @foreach (var site in Model.Sites)
-        {
+<!-- 站点列表表格 -->
+<div class="table-wrapper">
+    <table class="table">
+        <thead>
             <tr>
-                <td>@site.Name</td>
-                <td>@site.BaseUrl</td>
-                <td>@site.ProtocolType</td>
-                <td>@(site.IsEnabled ? "启用" : "禁用")</td>
-                <td>@site.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
-                <td>
-                    <form method="post" asp-page-handler="Toggle" asp-route-siteId="@site.Id" class="d-inline">
-                        <button type="submit" class="btn btn-sm btn-outline-@(site.IsEnabled ? "warning" : "success")">
-                            @(site.IsEnabled ? "禁用" : "启用")
-                        </button>
-                    </form>
-                    <form method="post" asp-page-handler="Delete" asp-route-siteId="@site.Id" class="d-inline">
-                        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该站点？')">删除</button>
-                    </form>
-                </td>
+                <th>名称</th>
+                <th>根地址</th>
+                <th>协议类型</th>
+                <th>状态</th>
+                <th>创建时间</th>
+                <th>操作</th>
             </tr>
-        }
-    </tbody>
-</table>
+        </thead>
+        <tbody>
+            @if (!Model.Sites.Any())
+            {
+                <tr>
+                    <td colspan="6">
+                        <div class="table-empty">
+                            <div class="table-empty-icon">🌐</div>
+                            <div class="table-empty-text">暂无站点，点击上方按钮新增</div>
+                        </div>
+                    </td>
+                </tr>
+            }
+            @foreach (var site in Model.Sites)
+            {
+                <tr>
+                    <td><strong>@site.Name</strong></td>
+                    <td><code>@site.BaseUrl</code></td>
+                    <td><span class="badge bg-info">@site.ProtocolType</span></td>
+                    <td>
+                        <span class="badge bg-@(site.IsEnabled ? "success" : "secondary")">
+                            @(site.IsEnabled ? "启用" : "禁用")
+                        </span>
+                    </td>
+                    <td>@site.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>
+                        <form method="post" asp-page-handler="Toggle" asp-route-siteId="@site.Id" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-outline-@(site.IsEnabled ? "warning" : "success")">
+                                @(site.IsEnabled ? "禁用" : "启用")
+                            </button>
+                        </form>
+                        <form method="post" asp-page-handler="Delete" asp-route-siteId="@site.Id" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该站点？')">删除</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>

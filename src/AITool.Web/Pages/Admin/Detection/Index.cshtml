@@ -4,8 +4,15 @@
     ViewData["Title"] = "模型检测";
 }
 
-<h1>模型检测</h1>
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">模型检测</h2>
+        <p class="page-subtitle">手动检测各站点模型的可用性和响应状态</p>
+    </div>
+</div>
 
+<!-- 检测结果提示 -->
 @if (Model.ProbeMessage is not null)
 {
     <div class="alert alert-@(Model.ProbeSuccess ? "success" : "danger")">
@@ -13,36 +20,50 @@
     </div>
 }
 
-<table class="table table-striped">
-    <thead>
-        <tr>
-            <th>站点名称</th>
-            <th>模型名称</th>
-            <th>最近状态</th>
-            <th>最近检测时间</th>
-            <th>耗时</th>
-            <th>操作</th>
-        </tr>
-    </thead>
-    <tbody>
-        @foreach (var item in Model.Mappings)
-        {
+<!-- 检测列表表格 -->
+<div class="table-wrapper">
+    <table class="table">
+        <thead>
             <tr>
-                <td>@item.SiteName</td>
-                <td>@item.ModelName</td>
-                <td>
-                    <span class="badge bg-@(item.LastStatus == "success" ? "success" : item.LastStatus == "fail" ? "danger" : "secondary")">
-                        @item.LastStatus
-                    </span>
-                </td>
-                <td>@(item.LastCheckedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-")</td>
-                <td>@(item.LastDurationMs.HasValue ? $"{item.LastDurationMs} ms" : "-")</td>
-                <td>
-                    <form method="post" asp-page-handler="Probe" asp-route-mappingId="@item.MappingId" class="d-inline">
-                        <button type="submit" class="btn btn-sm btn-primary">检测</button>
-                    </form>
-                </td>
+                <th>站点名称</th>
+                <th>模型名称</th>
+                <th>最近状态</th>
+                <th>最近检测时间</th>
+                <th>耗时</th>
+                <th>操作</th>
             </tr>
-        }
-    </tbody>
-</table>
+        </thead>
+        <tbody>
+            @if (!Model.Mappings.Any())
+            {
+                <tr>
+                    <td colspan="6">
+                        <div class="table-empty">
+                            <div class="table-empty-icon">🔍</div>
+                            <div class="table-empty-text">暂无映射数据，请先配置站点和模型</div>
+                        </div>
+                    </td>
+                </tr>
+            }
+            @foreach (var item in Model.Mappings)
+            {
+                <tr>
+                    <td><strong>@item.SiteName</strong></td>
+                    <td><code>@item.ModelName</code></td>
+                    <td>
+                        <span class="badge bg-@(item.LastStatus == "success" ? "success" : item.LastStatus == "fail" ? "danger" : "secondary")">
+                            @item.LastStatus
+                        </span>
+                    </td>
+                    <td>@(item.LastCheckedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "-")</td>
+                    <td>@(item.LastDurationMs.HasValue ? $"{item.LastDurationMs} ms" : "-")</td>
+                    <td>
+                        <form method="post" asp-page-handler="Probe" asp-route-mappingId="@item.MappingId" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-primary">检测</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>

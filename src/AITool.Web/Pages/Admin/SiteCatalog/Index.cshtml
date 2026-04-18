@@ -4,8 +4,15 @@
     ViewData["Title"] = "站点模型拉取";
 }
 
-<h1>站点模型拉取</h1>
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">站点模型拉取</h2>
+        <p class="page-subtitle">从各站点自动拉取可用模型并导入模型库</p>
+    </div>
+</div>
 
+<!-- 拉取结果提示 -->
 @if (Model.PullResult is not null)
 {
     <div class="alert alert-success">
@@ -13,30 +20,48 @@
     </div>
 }
 
-<table class="table table-striped">
-    <thead>
-        <tr>
-            <th>站点名称</th>
-            <th>协议类型</th>
-            <th>已映射模型数</th>
-            <th>状态</th>
-            <th>操作</th>
-        </tr>
-    </thead>
-    <tbody>
-        @foreach (var item in Model.Sites)
-        {
+<!-- 站点列表表格 -->
+<div class="table-wrapper">
+    <table class="table">
+        <thead>
             <tr>
-                <td>@item.Name</td>
-                <td>@item.ProtocolType</td>
-                <td>@item.MappingCount</td>
-                <td>@(item.IsEnabled ? "启用" : "禁用")</td>
-                <td>
-                    <form method="post" asp-page-handler="Pull" asp-route-siteId="@item.SiteId" class="d-inline">
-                        <button type="submit" class="btn btn-sm btn-primary" @(item.IsEnabled ? "" : "disabled")>拉取模型</button>
-                    </form>
-                </td>
+                <th>站点名称</th>
+                <th>协议类型</th>
+                <th>已映射模型数</th>
+                <th>状态</th>
+                <th>操作</th>
             </tr>
-        }
-    </tbody>
-</table>
+        </thead>
+        <tbody>
+            @if (!Model.Sites.Any())
+            {
+                <tr>
+                    <td colspan="5">
+                        <div class="table-empty">
+                            <div class="table-empty-icon">📥</div>
+                            <div class="table-empty-text">暂无站点数据，请先配置站点</div>
+                        </div>
+                    </td>
+                </tr>
+            }
+            @foreach (var item in Model.Sites)
+            {
+                <tr>
+                    <td><strong>@item.Name</strong></td>
+                    <td><span class="badge bg-info">@item.ProtocolType</span></td>
+                    <td><span class="badge bg-primary">@item.MappingCount</span></td>
+                    <td>
+                        <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
+                            @(item.IsEnabled ? "启用" : "禁用")
+                        </span>
+                    </td>
+                    <td>
+                        <form method="post" asp-page-handler="Pull" asp-route-siteId="@item.SiteId" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-primary" @(item.IsEnabled ? "" : "disabled")>拉取模型</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>

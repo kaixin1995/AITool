@@ -4,36 +4,56 @@
     ViewData["Title"] = "调用日志";
 }
 
-<h1>调用日志</h1>
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">调用日志</h2>
+        <p class="page-subtitle">查看代理服务的调用记录和 Token 用量</p>
+    </div>
+</div>
 
-<table class="table table-striped">
-    <thead>
-        <tr>
-            <th>时间</th>
-            <th>协议</th>
-            <th>模型</th>
-            <th>状态</th>
-            <th>输入 Tokens</th>
-            <th>输出 Tokens</th>
-            <th>总 Tokens</th>
-        </tr>
-    </thead>
-    <tbody>
-        @foreach (var item in Model.Logs)
-        {
+<!-- 日志列表表格 -->
+<div class="table-wrapper">
+    <table class="table">
+        <thead>
             <tr>
-                <td>@item.RequestedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</td>
-                <td><span class="badge bg-info">@item.ProtocolType</span></td>
-                <td><code>@item.RequestModel</code></td>
-                <td>
-                    <span class="badge bg-@(item.Status == "success" ? "success" : "danger")">
-                        @item.Status
-                    </span>
-                </td>
-                <td>@item.InputTokens</td>
-                <td>@item.OutputTokens</td>
-                <td>@item.TotalTokens</td>
+                <th>时间</th>
+                <th>协议</th>
+                <th>模型</th>
+                <th>状态</th>
+                <th>输入 Tokens</th>
+                <th>输出 Tokens</th>
+                <th>总 Tokens</th>
             </tr>
-        }
-    </tbody>
-</table>
+        </thead>
+        <tbody>
+            @if (!Model.Logs.Any())
+            {
+                <tr>
+                    <td colspan="7">
+                        <div class="table-empty">
+                            <div class="table-empty-icon">📋</div>
+                            <div class="table-empty-text">暂无调用日志</div>
+                        </div>
+                    </td>
+                </tr>
+            }
+            @foreach (var item in Model.Logs)
+            {
+                <tr>
+                    <td>@item.RequestedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</td>
+                    <td><span class="badge bg-info">@item.ProtocolType</span></td>
+                    <td><code>@item.RequestModel</code></td>
+                    <td>
+                        <span class="badge bg-@(item.Status == "success" ? "success" : "danger")">
+                            @item.Status
+                        </span>
+                    </td>
+                    <td>@item.InputTokens</td>
+                    <td>@item.OutputTokens</td>
+                    <td><strong>@item.TotalTokens</strong></td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>

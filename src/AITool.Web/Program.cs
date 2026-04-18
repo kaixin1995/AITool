@@ -78,6 +78,9 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+// 启用静态文件服务，提供 wwwroot 下的 CSS/JS 等资源
+app.UseStaticFiles();
+
 // 映射健康检查端点，作为集成测试的验证入口
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 

@@ -1,67 +1,88 @@
 @page
 @model AITool.Web.Pages.IndexModel
 @{
-    ViewData["Title"] = "AI Tool 管理平台";
+    ViewData["Title"] = "仪表盘";
 }
 
-<div class="text-center mb-4">
-    <h1 class="display-5 fw-bold">AI Tool 管理平台</h1>
-    <p class="text-muted">统一管理站点、模型、代理路由与密钥</p>
+<!-- 欢迎横幅 -->
+<div class="welcome-banner">
+    <h1>欢迎使用 AI Tool 管理平台</h1>
+    <p>统一管理站点、模型、代理路由与密钥</p>
 </div>
 
-<div class="row g-4">
-    <div class="col-md-4">
-        <div class="card text-center h-100">
-            <div class="card-body">
-                <h2 class="card-title text-primary">@Model.EnabledSiteCount</h2>
-                <p class="card-text text-muted">启用站点</p>
-                <a href="/Admin/Sites" class="btn btn-sm btn-outline-primary">管理站点</a>
-            </div>
-        </div>
+<!-- 统计卡片 -->
+<div class="row g-4 mb-4">
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/Sites" class="stat-card">
+            <div class="stat-card-icon primary">🌐</div>
+            <div class="stat-card-value">@Model.EnabledSiteCount</div>
+            <div class="stat-card-label">启用站点</div>
+        </a>
     </div>
-    <div class="col-md-4">
-        <div class="card text-center h-100">
-            <div class="card-body">
-                <h2 class="card-title text-success">@Model.ModelCount</h2>
-                <p class="card-text text-muted">模型总数</p>
-                <a href="/Admin/Models" class="btn btn-sm btn-outline-success">管理模型</a>
-            </div>
-        </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/Models" class="stat-card">
+            <div class="stat-card-icon success">🧠</div>
+            <div class="stat-card-value">@Model.ModelCount</div>
+            <div class="stat-card-label">模型总数</div>
+        </a>
     </div>
-    <div class="col-md-4">
-        <div class="card text-center h-100">
-            <div class="card-body">
-                <h2 class="card-title text-info">@Model.MappingCount</h2>
-                <p class="card-text text-muted">站点模型映射</p>
-                <a href="/Admin/SiteCatalog" class="btn btn-sm btn-outline-info">模型拉取</a>
-            </div>
-        </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/SiteCatalog" class="stat-card">
+            <div class="stat-card-icon info">📋</div>
+            <div class="stat-card-value">@Model.MappingCount</div>
+            <div class="stat-card-label">站点模型映射</div>
+        </a>
     </div>
-    <div class="col-md-4">
-        <div class="card text-center h-100">
-            <div class="card-body">
-                <h2 class="card-title text-warning">@Model.RouteRuleCount</h2>
-                <p class="card-text text-muted">路由规则</p>
-                <a href="/Admin/Routes" class="btn btn-sm btn-outline-warning">管理路由</a>
-            </div>
-        </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/Routes" class="stat-card">
+            <div class="stat-card-icon warning">🔀</div>
+            <div class="stat-card-value">@Model.RouteRuleCount</div>
+            <div class="stat-card-label">路由规则</div>
+        </a>
     </div>
-    <div class="col-md-4">
-        <div class="card text-center h-100">
-            <div class="card-body">
-                <h2 class="card-title text-danger">@Model.EnabledKeyCount</h2>
-                <p class="card-text text-muted">启用密钥</p>
-                <a href="/Admin/AccessKeys" class="btn btn-sm btn-outline-danger">管理密钥</a>
-            </div>
-        </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/AccessKeys" class="stat-card">
+            <div class="stat-card-icon danger">🔑</div>
+            <div class="stat-card-value">@Model.EnabledKeyCount</div>
+            <div class="stat-card-label">启用密钥</div>
+        </a>
     </div>
-    <div class="col-md-4">
-        <div class="card text-center h-100">
-            <div class="card-body">
-                <h2 class="card-title text-secondary">@Model.EnabledTaskCount</h2>
-                <p class="card-text text-muted">启用检测任务</p>
-                <a href="/Admin/DetectionTasks" class="btn btn-sm btn-outline-secondary">管理任务</a>
-            </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/DetectionTasks" class="stat-card">
+            <div class="stat-card-icon purple">⏰</div>
+            <div class="stat-card-value">@Model.EnabledTaskCount</div>
+            <div class="stat-card-label">启用检测任务</div>
+        </a>
+    </div>
+</div>
+
+<!-- 快捷操作 -->
+<div class="quick-actions">
+    <h6 style="font-weight:600; margin-bottom:16px; font-size:14px;">快捷操作</h6>
+    <div class="row g-2">
+        <div class="col-lg-3 col-md-4 col-sm-6">
+            <a href="/Admin/Sites/Create" class="quick-action-link">
+                <span class="quick-action-icon" style="background:var(--primary-light);color:var(--primary);">＋</span>
+                <span>新增站点</span>
+            </a>
+        </div>
+        <div class="col-lg-3 col-md-4 col-sm-6">
+            <a href="/Admin/Models/Create" class="quick-action-link">
+                <span class="quick-action-icon" style="background:var(--success-light);color:var(--success);">＋</span>
+                <span>新增模型</span>
+            </a>
+        </div>
+        <div class="col-lg-3 col-md-4 col-sm-6">
+            <a href="/Admin/Routes" class="quick-action-link">
+                <span class="quick-action-icon" style="background:var(--warning-light);color:var(--warning);">🔀</span>
+                <span>配置路由</span>
+            </a>
+        </div>
+        <div class="col-lg-3 col-md-4 col-sm-6">
+            <a href="/Admin/UsageLogs" class="quick-action-link">
+                <span class="quick-action-icon" style="background:var(--info-light);color:var(--info);">📋</span>
+                <span>查看日志</span>
+            </a>
         </div>
     </div>
 </div>

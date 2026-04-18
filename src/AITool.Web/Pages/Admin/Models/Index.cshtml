@@ -4,43 +4,64 @@
     ViewData["Title"] = "模型库管理";
 }
 
-<h1>模型库管理</h1>
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">模型库管理</h2>
+        <p class="page-subtitle">管理所有可用模型及其类型</p>
+    </div>
+    <a asp-page="./Create" class="btn btn-primary">＋ 新增模型</a>
+</div>
 
-<p>
-    <a asp-page="./Create" class="btn btn-primary">新增模型</a>
-</p>
-
-<table class="table table-striped">
-    <thead>
-        <tr>
-            <th>模型名</th>
-            <th>显示名</th>
-            <th>类型</th>
-            <th>状态</th>
-            <th>创建时间</th>
-            <th>操作</th>
-        </tr>
-    </thead>
-    <tbody>
-        @foreach (var item in Model.Models)
-        {
+<!-- 模型列表表格 -->
+<div class="table-wrapper">
+    <table class="table">
+        <thead>
             <tr>
-                <td>@item.ModelName</td>
-                <td>@item.DisplayName</td>
-                <td>@item.ModelType</td>
-                <td>@(item.IsEnabled ? "启用" : "禁用")</td>
-                <td>@item.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
-                <td>
-                    <form method="post" asp-page-handler="Toggle" asp-route-modelId="@item.Id" class="d-inline">
-                        <button type="submit" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")">
-                            @(item.IsEnabled ? "禁用" : "启用")
-                        </button>
-                    </form>
-                    <form method="post" asp-page-handler="Delete" asp-route-modelId="@item.Id" class="d-inline">
-                        <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该模型？')">删除</button>
-                    </form>
-                </td>
+                <th>模型名</th>
+                <th>显示名</th>
+                <th>类型</th>
+                <th>状态</th>
+                <th>创建时间</th>
+                <th>操作</th>
             </tr>
-        }
-    </tbody>
-</table>
+        </thead>
+        <tbody>
+            @if (!Model.Models.Any())
+            {
+                <tr>
+                    <td colspan="6">
+                        <div class="table-empty">
+                            <div class="table-empty-icon">🧠</div>
+                            <div class="table-empty-text">暂无模型，点击上方按钮新增</div>
+                        </div>
+                    </td>
+                </tr>
+            }
+            @foreach (var item in Model.Models)
+            {
+                <tr>
+                    <td><code>@item.ModelName</code></td>
+                    <td><strong>@item.DisplayName</strong></td>
+                    <td><span class="badge bg-primary">@item.ModelType</span></td>
+                    <td>
+                        <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
+                            @(item.IsEnabled ? "启用" : "禁用")
+                        </span>
+                    </td>
+                    <td>@item.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
+                    <td>
+                        <form method="post" asp-page-handler="Toggle" asp-route-modelId="@item.Id" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")">
+                                @(item.IsEnabled ? "禁用" : "启用")
+                            </button>
+                        </form>
+                        <form method="post" asp-page-handler="Delete" asp-route-modelId="@item.Id" class="d-inline">
+                            <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该模型？')">删除</button>
+                        </form>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>

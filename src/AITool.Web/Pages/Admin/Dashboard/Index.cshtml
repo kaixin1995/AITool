@@ -4,55 +4,56 @@
     ViewData["Title"] = "状态看板";
 }
 
-<h1>状态看板</h1>
+<!-- 页面标题 -->
+<div class="page-header">
+    <div>
+        <h2 class="page-title">状态看板</h2>
+        <p class="page-subtitle">系统运行状态概览</p>
+    </div>
+</div>
 
+<!-- 统计卡片 -->
 <div class="row g-4 mb-4">
-    <div class="col-md-2">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title">@Model.Overview.EnabledSiteCount</h5>
-                <p class="card-text text-muted">启用站点</p>
-            </div>
-        </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/Sites" class="stat-card">
+            <div class="stat-card-icon primary">🌐</div>
+            <div class="stat-card-value">@Model.Overview.EnabledSiteCount</div>
+            <div class="stat-card-label">启用站点</div>
+        </a>
     </div>
-    <div class="col-md-2">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title">@Model.Overview.ModelCount</h5>
-                <p class="card-text text-muted">模型总数</p>
-            </div>
-        </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/Models" class="stat-card">
+            <div class="stat-card-icon success">🧠</div>
+            <div class="stat-card-value">@Model.Overview.ModelCount</div>
+            <div class="stat-card-label">模型总数</div>
+        </a>
     </div>
-    <div class="col-md-2">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title">@Model.Overview.MappingCount</h5>
-                <p class="card-text text-muted">映射总数</p>
-            </div>
-        </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/SiteCatalog" class="stat-card">
+            <div class="stat-card-icon info">📋</div>
+            <div class="stat-card-value">@Model.Overview.MappingCount</div>
+            <div class="stat-card-label">映射总数</div>
+        </a>
     </div>
-    <div class="col-md-2">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title">@Model.Overview.RecentDetectionCount</h5>
-                <p class="card-text text-muted">24h 检测次数</p>
-            </div>
-        </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/Detection" class="stat-card">
+            <div class="stat-card-icon warning">🔍</div>
+            <div class="stat-card-value">@Model.Overview.RecentDetectionCount</div>
+            <div class="stat-card-label">24h 检测次数</div>
+        </a>
     </div>
-    <div class="col-md-2">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title">@Model.Overview.RecentSuccessRate.ToString("P1")</h5>
-                <p class="card-text text-muted">24h 成功率</p>
-            </div>
-        </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/Detection" class="stat-card">
+            <div class="stat-card-icon success">✅</div>
+            <div class="stat-card-value">@Model.Overview.RecentSuccessRate.ToString("P1")</div>
+            <div class="stat-card-label">24h 成功率</div>
+        </a>
     </div>
-    <div class="col-md-2">
-        <div class="card text-center">
-            <div class="card-body">
-                <h5 class="card-title">@Model.Overview.EnabledTaskCount</h5>
-                <p class="card-text text-muted">启用任务</p>
-            </div>
-        </div>
+    <div class="col-xl-2 col-lg-4 col-md-4 col-sm-6">
+        <a href="/Admin/DetectionTasks" class="stat-card">
+            <div class="stat-card-icon purple">⏰</div>
+            <div class="stat-card-value">@Model.Overview.EnabledTaskCount</div>
+            <div class="stat-card-label">启用任务</div>
+        </a>
     </div>
 </div>
