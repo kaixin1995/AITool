@@ -39,10 +39,13 @@ public class IndexModel : PageModel
     // 加载检测任务列表及最近执行记录
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        var latestExecutions = await _dbContext.DetectionTaskExecutions
+        // 先加载全部执行记录，客户端分组取最新（SQLite 不支持 DateTimeOffset 的 ORDER BY）
+        var allExecutions = await _dbContext.DetectionTaskExecutions.ToListAsync(cancellationToken);
+        var latestExecutions = allExecutions
             .GroupBy(e => e.DetectionTaskId)
-            .Select(g => g.OrderByDescending(e => e.StartedAt).First())
-            .ToDictionaryAsync(x => x.DetectionTaskId, x => x, cancellationToken);
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(e => e.StartedAt).First());
 
         Tasks = await _dbContext.DetectionTasks
             .OrderByDescending(t => t.IsEnabled)

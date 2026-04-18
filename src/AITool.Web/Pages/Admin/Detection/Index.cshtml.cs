@@ -40,14 +40,13 @@ public class IndexModel : PageModel
     // 加载所有映射及其最新检测状态
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        // 获取每条映射的最新检测日志
-        var latestLogs = await _dbContext.DetectionLogs
-            .GroupBy(d => new { d.SiteId, d.ModelLibraryItemId })
-            .Select(g => g.OrderByDescending(d => d.CheckedAt).First())
-            .ToDictionaryAsync(
-                x => (x.SiteId, x.ModelLibraryItemId),
-                x => x,
-                cancellationToken);
+        // 先加载全部检测日志，客户端分组取最新记录（SQLite 不支持 DateTimeOffset 的 ORDER BY）
+        var allLogs = await _dbContext.DetectionLogs.ToListAsync(cancellationToken);
+        var latestLogs = allLogs
+            .GroupBy(d => (d.SiteId, d.ModelLibraryItemId))
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(d => d.CheckedAt).First());
 
         var mappings = await _dbContext.SiteModelMappings
             .ToListAsync(cancellationToken);

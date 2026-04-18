@@ -27,9 +27,11 @@ public class IndexModel : PageModel
         var enabledTaskCount = await _dbContext.DetectionTasks.CountAsync(t => t.IsEnabled, cancellationToken);
 
         var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
-        var recentDetections = await _dbContext.DetectionLogs
+        // 先加载全部再客户端过滤（SQLite 不支持 DateTimeOffset 的 WHERE 比较）
+        var allDetections = await _dbContext.DetectionLogs.ToListAsync(cancellationToken);
+        var recentDetections = allDetections
             .Where(d => d.CheckedAt >= cutoff)
-            .ToListAsync(cancellationToken);
+            .ToList();
 
         var recentDetectionCount = recentDetections.Count;
         var recentSuccessCount = recentDetections.Count(d => d.Status == "success");

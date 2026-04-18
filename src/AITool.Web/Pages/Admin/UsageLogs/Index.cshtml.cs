@@ -33,7 +33,11 @@ public class IndexModel : PageModel
     // 加载最近的使用日志
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        Logs = await _dbContext.ProxyUsageLogs
+        // 先加载全部记录再客户端排序（SQLite 不支持 DateTimeOffset 的 ORDER BY）
+        var logs = await _dbContext.ProxyUsageLogs
+            .ToListAsync(cancellationToken);
+
+        Logs = logs
             .OrderByDescending(l => l.RequestedAt)
             .Take(200)
             .Select(l => new UsageLogViewModel
@@ -47,6 +51,6 @@ public class IndexModel : PageModel
                 TotalTokens = l.TotalTokens,
                 RequestedAt = l.RequestedAt
             })
-            .ToListAsync(cancellationToken);
+            .ToList();
     }
 }
