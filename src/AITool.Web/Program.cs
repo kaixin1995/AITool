@@ -67,6 +67,26 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
 
+    // 补丁：为已有数据库添加 SiteModelMapping.IsEnabled 列
+    try
+    {
+        var conn = db.Database.GetDbConnection();
+        conn.Open();
+        using var cmd = conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM pragma_table_info('SiteModelMappings') WHERE name='IsEnabled'";
+        var count = Convert.ToInt64(cmd.ExecuteScalar());
+        if (count == 0)
+        {
+            cmd.CommandText = "ALTER TABLE SiteModelMappings ADD COLUMN IsEnabled INTEGER NOT NULL DEFAULT 1";
+            cmd.ExecuteNonQuery();
+        }
+    }
+    catch (Exception ex)
+    {
+        var patchLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
+        patchLogger.LogWarning(ex, "修补 SiteModelMapping.IsEnabled 列失败");
+    }
+
     // 启动时将已启用的检测任务注册到 Hangfire，首次运行或表不存在时跳过
     try
     {

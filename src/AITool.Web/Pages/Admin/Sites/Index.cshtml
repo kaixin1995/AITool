@@ -11,6 +11,7 @@
         <p class="page-subtitle">管理所有代理站点及其配置</p>
     </div>
     <div class="d-flex gap-2">
+        <button type="button" id="btnPullAll" class="btn btn-success">一键拉取全部</button>
         <a asp-page="./Import" class="btn btn-outline-primary">导入</a>
         <a asp-page="./Export" class="btn btn-outline-success">导出</a>
         <a asp-page="./Create" class="btn btn-primary">＋ 新增站点</a>
@@ -63,6 +64,11 @@
                     </td>
                     <td>@site.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
                     <td>
+                        <button type="button" class="btn btn-sm btn-primary btn-pull-site"
+                                data-site-id="@site.Id" data-site-name="@site.Name"
+                                @(!site.IsEnabled ? "disabled" : "")>
+                            拉取
+                        </button>
                         <form method="post" asp-page-handler="Toggle" asp-route-siteId="@site.Id" class="d-inline">
                             <button type="submit" class="btn btn-sm btn-outline-@(site.IsEnabled ? "warning" : "success")">
                                 @(site.IsEnabled ? "禁用" : "启用")
@@ -78,3 +84,330 @@
         </tbody>
     </table>
 </div>
+
+<!-- 模型选择模态框 -->
+<div class="modal fade" id="modelSelectModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="modalTitle">选择要导入的模型</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <!-- 加载中提示 -->
+                <div id="modalLoading" class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <p class="mt-2 text-secondary" id="loadingText">正在拉取模型列表...</p>
+                </div>
+                <!-- 搜索与全选工具栏 -->
+                <div id="modalToolbar" style="display:none;">
+                    <div class="d-flex gap-2 align-items-center mb-3">
+                        <input type="text" id="modalSearch" class="form-control form-control-sm" placeholder="搜索模型名称..." style="max-width:300px;" />
+                        <span id="modalSelectedCount" class="text-secondary" style="font-size:13px;white-space:nowrap;">已选 0 个</span>
+                        <div class="form-check ms-auto">
+                            <input type="checkbox" id="modalSelectAll" class="form-check-input" />
+                            <label for="modalSelectAll" class="form-check-label" style="font-size:13px;">全选</label>
+                        </div>
+                    </div>
+                    <!-- 表头 -->
+                    <div class="d-flex align-items-center gap-2 py-1 border-bottom" style="font-size:12px;color:var(--text-secondary);font-weight:600;">
+                        <div style="width:30px;"></div>
+                        <div id="colSiteName" style="width:120px;">站点</div>
+                        <div style="flex:1;">远程模型名</div>
+                        <div style="width:200px;">显示别名</div>
+                    </div>
+                </div>
+                <!-- 模型列表容器 -->
+                <div id="modelListContainer"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" id="btnImportSelected" class="btn btn-primary">导入选中模型</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    /* 当前模态框中的模型数据，供提交时使用 */
+    var currentModels = [];
+    /* 是否为全部拉取模式 */
+    var isPullAllMode = false;
+
+    /* 初始化 Bootstrap 模态框 */
+    var bsModal = null;
+
+    document.addEventListener('DOMContentLoaded', function() {
+        bsModal = new bootstrap.Modal(document.getElementById('modelSelectModal'));
+
+        /* 单站点拉取按钮 */
+        document.querySelectorAll('.btn-pull-site').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                var siteId = this.getAttribute('data-site-id');
+                var siteName = this.getAttribute('data-site-name');
+                isPullAllMode = false;
+                openModalForSingleSite(siteId, siteName);
+            });
+        });
+
+        /* 一键拉取全部按钮 */
+        document.getElementById('btnPullAll').addEventListener('click', function() {
+            isPullAllMode = true;
+            openModalForAllSites();
+        });
+
+        /* 搜索过滤 */
+        document.getElementById('modalSearch').addEventListener('input', function() {
+            var keyword = this.value.toLowerCase();
+            document.querySelectorAll('.model-row').forEach(function(row) {
+                var name = row.getAttribute('data-model-name').toLowerCase();
+                row.style.display = name.indexOf(keyword) >= 0 ? '' : 'none';
+            });
+            updateSelectAllState();
+        });
+
+        /* 全选/取消 */
+        document.getElementById('modalSelectAll').addEventListener('change', function() {
+            var checked = this.checked;
+            document.querySelectorAll('.model-row').forEach(function(row) {
+                if (row.style.display !== 'none') {
+                    row.querySelector('.model-check').checked = checked;
+                }
+            });
+            updateSelectedCount();
+        });
+
+        /* 导入按钮 */
+        document.getElementById('btnImportSelected').addEventListener('click', function() {
+            submitImport();
+        });
+    });
+
+    /* 打开模态框拉取单站点 */
+    function openModalForSingleSite(siteId, siteName) {
+        document.getElementById('modalTitle').textContent = '拉取模型 - ' + siteName;
+        document.getElementById('colSiteName').style.display = 'none';
+        showLoading('正在拉取模型列表...');
+        bsModal.show();
+
+        fetch('/api/admin/site-catalog/fetch-models/' + siteId)
+            .then(function(r) { return r.json(); })
+            .then(function(models) {
+                currentModels = [];
+                models.forEach(function(m) {
+                    currentModels.push({
+                        siteId: siteId,
+                        siteName: siteName,
+                        remoteModelName: m.remoteModelName,
+                        existingMappingId: m.existingMappingId,
+                        isEnabled: m.isEnabled,
+                        existingDisplayName: m.existingDisplayName
+                    });
+                });
+                renderModelList(false);
+            })
+            .catch(function(err) {
+                alert('拉取失败：' + err.message);
+                bsModal.hide();
+            });
+    }
+
+    /* 打开模态框拉取全部站点 */
+    function openModalForAllSites() {
+        document.getElementById('modalTitle').textContent = '一键拉取全部站点';
+        document.getElementById('colSiteName').style.display = '';
+        showLoading('正在拉取全部站点模型...');
+        bsModal.show();
+
+        fetch('/api/admin/site-catalog/fetch-all-models', { method: 'POST' })
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                if (!data.taskId) {
+                    alert(data.message || '没有启用的站点');
+                    bsModal.hide();
+                    return;
+                }
+                pollFetchProgress(data.taskId);
+            })
+            .catch(function(err) {
+                alert('启动拉取失败：' + err.message);
+                bsModal.hide();
+            });
+    }
+
+    /* 轮询全部拉取进度 */
+    function pollFetchProgress(taskId) {
+        fetch('/api/admin/site-catalog/fetch-all-progress/' + taskId)
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                document.getElementById('loadingText').textContent =
+                    '正在拉取模型列表... (' + data.completedSites + '/' + data.totalSites + ' 站点)';
+
+                if (data.isCompleted) {
+                    currentModels = [];
+                    data.sites.forEach(function(site) {
+                        if (site.status === 'success' && site.models) {
+                            site.models.forEach(function(m) {
+                                currentModels.push({
+                                    siteId: site.siteId,
+                                    siteName: site.siteName,
+                                    remoteModelName: m.remoteModelName,
+                                    existingMappingId: m.existingMappingId,
+                                    isEnabled: m.isEnabled,
+                                    existingDisplayName: m.existingDisplayName
+                                });
+                            });
+                        }
+                    });
+                    renderModelList(true);
+                } else {
+                    setTimeout(function() { pollFetchProgress(taskId); }, 1000);
+                }
+            })
+            .catch(function() {
+                setTimeout(function() { pollFetchProgress(taskId); }, 2000);
+            });
+    }
+
+    /* 显示加载状态 */
+    function showLoading(text) {
+        document.getElementById('modalLoading').style.display = '';
+        document.getElementById('loadingText').textContent = text;
+        document.getElementById('modalToolbar').style.display = 'none';
+        document.getElementById('modelListContainer').innerHTML = '';
+    }
+
+    /* 渲染模型列表 */
+    function renderModelList(showSiteName) {
+        document.getElementById('modalLoading').style.display = 'none';
+        document.getElementById('modalToolbar').style.display = '';
+        document.getElementById('modalSearch').value = '';
+
+        var container = document.getElementById('modelListContainer');
+        container.innerHTML = '';
+
+        if (currentModels.length === 0) {
+            container.innerHTML = '<div class="text-center text-secondary py-3">未拉取到任何模型</div>';
+            return;
+        }
+
+        var fragment = document.createDocumentFragment();
+        currentModels.forEach(function(m, index) {
+            var row = document.createElement('div');
+            row.className = 'd-flex align-items-center gap-2 py-2 border-bottom model-row';
+            row.setAttribute('data-model-name', m.remoteModelName);
+            row.setAttribute('data-site-id', m.siteId);
+            row.setAttribute('data-index', index);
+
+            // 复选框：新模型默认勾选，已有映射按当前状态
+            var checked = m.existingMappingId ? m.isEnabled : true;
+
+            var checkbox = '<input type="checkbox" class="model-check" ' + (checked ? 'checked' : '') + ' onchange="updateSelectedCount()" style="width:30px;flex-shrink:0;">';
+
+            var siteCol = '';
+            if (showSiteName) {
+                siteCol = '<span class="text-secondary" style="width:120px;font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0;" title="' + escapeHtml(m.siteName) + '">' + escapeHtml(m.siteName) + '</span>';
+            }
+
+            var displayName = m.existingDisplayName || m.remoteModelName;
+
+            var nameCol = '<code style="flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(m.remoteModelName) + '">' + escapeHtml(m.remoteModelName) + '</code>';
+
+            var aliasCol = '<input type="text" class="form-control form-control-sm alias-input" value="' + escapeHtml(displayName) + '" style="width:200px;flex-shrink:0;" placeholder="显示别名">';
+
+            var badge = '';
+            if (m.existingMappingId) {
+                badge = '<span class="badge ' + (m.isEnabled ? 'bg-success' : 'bg-secondary') + '" style="font-size:10px;flex-shrink:0;">' + (m.isEnabled ? '已启用' : '已禁用') + '</span>';
+            } else {
+                badge = '<span class="badge bg-light text-dark" style="font-size:10px;flex-shrink:0;">新</span>';
+            }
+
+            row.innerHTML = checkbox + siteCol + nameCol + aliasCol + badge;
+            fragment.appendChild(row);
+        });
+
+        container.appendChild(fragment);
+        updateSelectedCount();
+    }
+
+    /* 更新已选计数 */
+    function updateSelectedCount() {
+        var total = document.querySelectorAll('.model-row .model-check').length;
+        var checked = document.querySelectorAll('.model-row .model-check:checked').length;
+        document.getElementById('modalSelectedCount').textContent = '已选 ' + checked + ' / ' + total + ' 个';
+        updateSelectAllState();
+    }
+
+    /* 更新全选框状态 */
+    function updateSelectAllState() {
+        var visibleChecks = [];
+        document.querySelectorAll('.model-row').forEach(function(row) {
+            if (row.style.display !== 'none') {
+                var cb = row.querySelector('.model-check');
+                if (cb) visibleChecks.push(cb);
+            }
+        });
+
+        var selectAll = document.getElementById('modalSelectAll');
+        if (visibleChecks.length === 0) {
+            selectAll.checked = false;
+            selectAll.indeterminate = false;
+        } else {
+            var checkedCount = visibleChecks.filter(function(c) { return c.checked; }).length;
+            selectAll.checked = checkedCount === visibleChecks.length;
+            selectAll.indeterminate = checkedCount > 0 && checkedCount < visibleChecks.length;
+        }
+    }
+
+    /* 提交导入 */
+    function submitImport() {
+        var selections = [];
+        document.querySelectorAll('.model-row').forEach(function(row) {
+            var index = parseInt(row.getAttribute('data-index'));
+            var m = currentModels[index];
+            var checked = row.querySelector('.model-check').checked;
+            var alias = row.querySelector('.alias-input').value.trim() || m.remoteModelName;
+
+            selections.push({
+                siteId: m.siteId,
+                remoteModelName: m.remoteModelName,
+                displayName: alias,
+                selected: checked
+            });
+        });
+
+        if (selections.filter(function(s) { return s.selected; }).length === 0) {
+            alert('请至少选择一个模型');
+            return;
+        }
+
+        document.getElementById('btnImportSelected').disabled = true;
+        document.getElementById('btnImportSelected').textContent = '导入中...';
+
+        fetch('/api/admin/site-catalog/import-selected', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ selections: selections })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            bsModal.hide();
+            alert('导入完成，共导入 ' + data.importedCount + ' 个模型');
+            window.location.reload();
+        })
+        .catch(function(err) {
+            alert('导入失败：' + err.message);
+        })
+        .finally(function() {
+            document.getElementById('btnImportSelected').disabled = false;
+            document.getElementById('btnImportSelected').textContent = '导入选中模型';
+        });
+    }
+
+    /* HTML 转义 */
+    function escapeHtml(text) {
+        var d = document.createElement('div');
+        d.textContent = text;
+        return d.innerHTML;
+    }
+</script>

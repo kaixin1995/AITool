@@ -17,4 +17,7 @@ public sealed class SiteModelMapping
 
     // 最近一次拉取状态
     public string LastStatus { get; set; } = "unknown";
+
+    // 该站点是否启用此模型，用于按站点单独控制模型开关
+    public bool IsEnabled { get; set; } = true;
 }
