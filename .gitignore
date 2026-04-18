@@ -364,3 +364,6 @@ FodyWeavers.xsd
 
 # Git worktree 隔离目录
 .worktrees/
+/src/AITool.Web/aitool.db
+/src/AITool.Web/aitool.db-wal
+/src/AITool.Web/aitool.db-shm
