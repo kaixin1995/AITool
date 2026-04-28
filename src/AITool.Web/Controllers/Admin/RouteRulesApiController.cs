@@ -31,6 +31,21 @@ public sealed class DiscoveredSiteItem
     public bool SiteEnabled { get; set; }
 }
 
+// 可直接追加到候选队列的站点实例
+public sealed class SiteInstanceItem
+{
+    // 站点ID
+    public Guid SiteId { get; set; }
+    // 站点名称
+    public string SiteName { get; set; } = string.Empty;
+    // 上游模型组名称
+    public string UpstreamModelName { get; set; } = string.Empty;
+    // 站点模型名称
+    public string SiteModelName { get; set; } = string.Empty;
+    // 站点协议类型
+    public string ProtocolType { get; set; } = string.Empty;
+}
+
 // 路由规则列表项
 public sealed class RouteRuleListItem
 {
@@ -86,7 +101,7 @@ public sealed class RouteRulesApiController : ControllerBase
         _dbContext = dbContext;
     }
 
-    // 获取所有有站点映射的模型名称列表，用于下拉选择
+    // 获取所有路由入口模型名称列表，用于下拉选择
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
@@ -107,54 +122,73 @@ public sealed class RouteRulesApiController : ControllerBase
             })
             .ToListAsync(cancellationToken);
 
-        // 统计每个模型的站点数量
-        var siteCounts = enabledMappings
-            .GroupBy(m => m.ModelLibraryItemId)
-            .ToDictionary(g => g.Key, g => g.Count());
-
         // 查询已配置路由规则的模型名称
         var routedModels = await _dbContext.ProxyRouteRules
             .Select(r => r.ExternalModelName)
             .Distinct()
-            .ToHashSetAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
 
-        // 通过 ModelName 关联
-        var modelNames = models.Select(m => m.ModelName).ToHashSet();
-
-        foreach (var model in models)
+        // 已存在的逻辑入口名也应出现在管理列表中，即使它不在模型库里
+        foreach (var routedModelName in routedModels)
         {
-            var modelId = enabledMappings
-                .FirstOrDefault(m => m.ModelLibraryItemId != Guid.Empty)?
-                .ModelLibraryItemId ?? Guid.Empty;
-
-            model.SiteCount = enabledMappings
-                .Count(m => modelNames.Contains(model.ModelName));
-
-            // 检查该模型名是否有路由规则
-            model.HasRouteRules = routedModels.Contains(model.ModelName);
+            if (models.All(m => !string.Equals(m.ModelName, routedModelName, StringComparison.Ordinal)))
+            {
+                models.Add(new RouteModelItem
+                {
+                    ModelName = routedModelName,
+                    DisplayName = routedModelName
+                });
+            }
         }
 
-        // 填充站点数量
+        models = models
+            .OrderBy(m => m.DisplayName)
+            .ToList();
+
+        // 填充站点数量与规则标记
         var modelItems = await _dbContext.ModelLibraryItems
             .Where(m => modelIds.Contains(m.Id))
             .ToDictionaryAsync(m => m.Id, m => m, cancellationToken);
 
         foreach (var model in models)
         {
-            var matchingIds = enabledMappings
-                .Where(em => modelItems.TryGetValue(em.ModelLibraryItemId, out var item)
-                    && item.ModelName == model.ModelName)
-                .Select(em => em.ModelLibraryItemId)
-                .Distinct()
-                .Count();
-
             model.SiteCount = enabledMappings
                 .Where(em => modelItems.TryGetValue(em.ModelLibraryItemId, out var item)
                     && item.ModelName == model.ModelName)
                 .Count();
+
+            model.HasRouteRules = routedModels.Contains(model.ModelName);
         }
 
         return Ok(models);
+    }
+
+    // 获取所有可直接追加的站点实例，支持按站点实例维护候选队列
+    [HttpGet("site-instances")]
+    public async Task<IActionResult> GetSiteInstances(CancellationToken cancellationToken)
+    {
+        var sites = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
+
+        var mappings = await _dbContext.SiteModelMappings
+            .Where(m => m.IsEnabled)
+            .OrderBy(m => m.RemoteModelName)
+            .ToListAsync(cancellationToken);
+
+        var results = mappings
+            .Where(m => sites.ContainsKey(m.SiteId))
+            .Select(m => new SiteInstanceItem
+            {
+                SiteId = m.SiteId,
+                SiteName = sites[m.SiteId].Name,
+                UpstreamModelName = m.RemoteModelName,
+                SiteModelName = m.RemoteModelName,
+                ProtocolType = sites[m.SiteId].ProtocolType
+            })
+            .ToList();
+
+        return Ok(results);
     }
 
     // 根据模型名称自动发现拥有该模型的站点

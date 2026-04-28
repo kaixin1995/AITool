@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
 using AITool.Domain.Proxy;
+using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
@@ -19,6 +20,70 @@ namespace AITool.IntegrationTests.Proxy;
 // 代理回退链路集成测试，验证按顺序 fallback 并记录每次尝试日志
 public sealed class ProxyFallbackFlowTests
 {
+    [Fact]
+    public async Task Get_route_page_contains_logic_entry_input_and_site_instance_picker()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/Routes");
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("id=\"externalModelInput\"");
+        html.Should().Contain("id=\"siteInstanceSelect\"");
+    }
+
+    [Fact]
+    public async Task Get_site_instances_returns_enabled_site_model_candidates()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/admin/route-rules/site-instances");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        body.Should().Contain("\"siteName\":\"Primary OpenAI\"");
+        body.Should().Contain("\"siteModelName\":\"gpt-5.5-a\"");
+    }
+
+    [Fact]
+    public async Task Get_route_models_includes_existing_logic_entry_from_saved_rules()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/admin/route-rules/models");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        body.Should().Contain("\"modelName\":\"chat-prod\"");
+    }
+
+    [Fact]
+    public async Task Get_route_page_shows_editor_when_adding_site_instance_directly()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/Routes");
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var functionStart = html.IndexOf("function appendSiteInstance() {", StringComparison.Ordinal);
+        functionStart.Should().BeGreaterThanOrEqualTo(0);
+
+        var functionEnd = html.IndexOf("function initDragDrop() {", functionStart, StringComparison.Ordinal);
+        functionEnd.Should().BeGreaterThan(functionStart);
+
+        var functionBody = html.Substring(functionStart, functionEnd - functionStart);
+        functionBody.Should().Contain("var editor = document.getElementById('routeEditor');");
+        functionBody.Should().Contain("editor.style.display = 'block';");
+        functionBody.Should().Contain("renderRouteList();");
+    }
+
     [Fact]
     public async Task Save_route_rules_accepts_multiple_upstream_model_groups()
     {
@@ -175,6 +240,46 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
             IsEnabled = true
         };
 
+        var modelLibraryItems = new[]
+        {
+            new AITool.Domain.Models.ModelLibraryItem
+            {
+                Id = Guid.Parse("44444444-4444-4444-4444-444444444444"),
+                ModelName = "gpt-5.5",
+                DisplayName = "GPT 5.5",
+                ModelType = "chat",
+                IsEnabled = true
+            },
+            new AITool.Domain.Models.ModelLibraryItem
+            {
+                Id = Guid.Parse("55555555-5555-5555-5555-555555555555"),
+                ModelName = "glm-5.1",
+                DisplayName = "GLM 5.1",
+                ModelType = "chat",
+                IsEnabled = true
+            }
+        };
+
+        var siteModelMappings = new[]
+        {
+            new SiteModelMapping
+            {
+                Id = Guid.Parse("66666666-6666-6666-6666-666666666666"),
+                SiteId = firstSite.Id,
+                ModelLibraryItemId = modelLibraryItems[0].Id,
+                RemoteModelName = "gpt-5.5-a",
+                IsEnabled = true
+            },
+            new SiteModelMapping
+            {
+                Id = Guid.Parse("77777777-7777-7777-7777-777777777777"),
+                SiteId = secondSite.Id,
+                ModelLibraryItemId = modelLibraryItems[1].Id,
+                RemoteModelName = "glm-5.1-a",
+                IsEnabled = true
+            }
+        };
+
         var routeRules = new[]
         {
             new ProxyRouteRule
@@ -202,6 +307,8 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
         };
 
         db.Sites.AddRange(firstSite, secondSite);
+        db.ModelLibraryItems.AddRange(modelLibraryItems);
+        db.SiteModelMappings.AddRange(siteModelMappings);
         db.ProxyAccessKeys.Add(proxyAccessKey);
         db.ProxyRouteRules.AddRange(routeRules);
         db.SystemRuntimeSettings.Add(new AITool.Domain.Operations.SystemRuntimeSettings
