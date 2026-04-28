@@ -19,51 +19,100 @@ public sealed class ProxyForwardService : IProxyForwardService
     // 将请求转发到目标站点并解析响应中的 Token 用量
     public async Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
-        try
+        var attempts = Math.Max(0, request.RetryCount) + 1;
+
+        for (var attempt = 0; attempt < attempts; attempt++)
         {
-            var targetUrl = request.ProtocolType == "Anthropic"
-                ? $"{request.TargetBaseUrl.TrimEnd('/')}/v1/messages"
-                : $"{request.TargetBaseUrl.TrimEnd('/')}/v1/chat/completions";
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, request.RequestTimeoutSeconds)));
 
-            var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
+            try
             {
-                Content = new StringContent(ModifyRequestBody(request), Encoding.UTF8, "application/json")
-            };
+                using var httpRequest = BuildRequestMessage(request);
+                var response = await _httpClient.SendAsync(httpRequest, timeoutCts.Token);
+                var responseBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
 
-            // 根据协议类型设置认证头
-            if (request.ProtocolType == "Anthropic")
-            {
-                httpRequest.Headers.Add("x-api-key", request.TargetApiKey);
-                httpRequest.Headers.Add("anthropic-version", "2023-06-01");
+                // 从响应中提取 Token 用量
+                var (inputTokens, outputTokens) = ExtractTokenUsage(responseBody, request.ProtocolType);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    return new ProxyForwardResult
+                    {
+                        Success = true,
+                        StatusCode = (int)response.StatusCode,
+                        ResponseBody = responseBody,
+                        InputTokens = inputTokens,
+                        OutputTokens = outputTokens
+                    };
+                }
+
+                if (attempt == attempts - 1)
+                {
+                    return new ProxyForwardResult
+                    {
+                        Success = false,
+                        StatusCode = (int)response.StatusCode,
+                        ResponseBody = responseBody,
+                        ErrorMessage = responseBody
+                    };
+                }
             }
-            else
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
-                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.TargetApiKey);
+                if (attempt == attempts - 1)
+                {
+                    return new ProxyForwardResult
+                    {
+                        Success = false,
+                        ErrorMessage = $"Request timed out after {request.RequestTimeoutSeconds}s: {ex.Message}"
+                    };
+                }
             }
-
-            var response = await _httpClient.SendAsync(httpRequest, cancellationToken);
-            var responseBody = await response.Content.ReadAsStringAsync(cancellationToken);
-
-            // 从响应中提取 Token 用量
-            var (inputTokens, outputTokens) = ExtractTokenUsage(responseBody, request.ProtocolType);
-
-            return new ProxyForwardResult
+            catch (Exception ex)
             {
-                Success = response.IsSuccessStatusCode,
-                StatusCode = (int)response.StatusCode,
-                ResponseBody = responseBody,
-                InputTokens = inputTokens,
-                OutputTokens = outputTokens
-            };
+                if (attempt == attempts - 1)
+                {
+                    return new ProxyForwardResult
+                    {
+                        Success = false,
+                        ErrorMessage = ex.Message
+                    };
+                }
+            }
         }
-        catch (Exception ex)
+
+        return new ProxyForwardResult
         {
-            return new ProxyForwardResult
-            {
-                Success = false,
-                ErrorMessage = ex.Message
-            };
+            Success = false,
+            ErrorMessage = "Unknown proxy forwarding error"
+        };
+    }
+
+    // 构建发送到上游的 HTTP 请求对象
+    private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request)
+    {
+        var targetUrl = request.ProtocolType == "Anthropic"
+            ? $"{request.TargetBaseUrl.TrimEnd('/')}/v1/messages"
+            : $"{request.TargetBaseUrl.TrimEnd('/')}/v1/chat/completions";
+
+        var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
+        {
+            Content = new StringContent(ModifyRequestBody(request), Encoding.UTF8, "application/json")
+        };
+
+        // 根据协议类型设置认证头
+        if (request.ProtocolType == "Anthropic")
+        {
+            httpRequest.Headers.Add("x-api-key", request.TargetApiKey);
+            httpRequest.Headers.Add("anthropic-version", "2023-06-01");
         }
+        else
+        {
+            httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.TargetApiKey);
+        }
+
+        return httpRequest;
     }
 
     // 替换请求体中的模型名称为目标站点的模型名称

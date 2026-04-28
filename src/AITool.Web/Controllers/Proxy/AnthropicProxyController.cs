@@ -8,6 +8,7 @@ using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace AITool.Web.Controllers.Proxy;
 
@@ -20,19 +21,22 @@ public sealed class AnthropicProxyController : ControllerBase
     private readonly IUsageLogService _usageLogService;
     private readonly AppDbContext _dbContext;
     private readonly RouteCircuitStateStore _circuitStore;
+    private readonly ProxyForwardingOptions _forwardingOptions;
 
     public AnthropicProxyController(
         IRouteSelectionService routeService,
         IProxyForwardService forwardService,
         IUsageLogService usageLogService,
         AppDbContext dbContext,
-        RouteCircuitStateStore circuitStore)
+        RouteCircuitStateStore circuitStore,
+        IOptions<ProxyForwardingOptions> forwardingOptions)
     {
         _routeService = routeService;
         _forwardService = forwardService;
         _usageLogService = usageLogService;
         _dbContext = dbContext;
         _circuitStore = circuitStore;
+        _forwardingOptions = forwardingOptions.Value;
     }
 
     // 代理 Anthropic messages 请求
@@ -67,7 +71,7 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         // 收集被熔断的站点，获取所有启用的路由规则
-        var blockedSiteIds = GetBlockedSiteIds();
+        var blockedSiteIds = await GetBlockedSiteIdsAsync(cancellationToken);
         var allRoutes = await _routeService.SelectAllRoutesAsync(modelName, cancellationToken);
 
         if (allRoutes.Count == 0)
@@ -75,7 +79,8 @@ public sealed class AnthropicProxyController : ControllerBase
 
         // 按优先级逐个尝试路由，失败则熔断该站点并继续下一个
         ProxyForwardResult? lastResult = null;
-        int retryCount = 0;
+        var requestId = Guid.NewGuid();
+        var attemptIndex = 0;
 
         foreach (var routeResult in allRoutes)
         {
@@ -87,32 +92,41 @@ public sealed class AnthropicProxyController : ControllerBase
             if (site is null || !site.IsEnabled)
                 continue;
 
+            attemptIndex++;
             var forwardRequest = new ProxyForwardRequest
             {
                 TargetBaseUrl = site.BaseUrl,
                 TargetApiKey = site.ApiKey,
                 ProtocolType = "Anthropic",
                 TargetModelName = route.SiteModelName,
-                RequestBody = requestBody
+                RequestBody = requestBody,
+                RequestTimeoutSeconds = _forwardingOptions.RequestTimeoutSeconds,
+                RetryCount = _forwardingOptions.RetryCount
             };
 
             var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
 
+            await _usageLogService.LogAsync(new UsageLogEntry
+            {
+                RequestId = requestId,
+                AccessKeyId = accessKey.Id,
+                ProtocolType = "Anthropic",
+                RequestModel = modelName,
+                AttemptedModel = route.UpstreamModelName,
+                TargetSiteId = site.Id,
+                Status = result.Success ? "success" : "fail",
+                Source = "proxy",
+                RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
+                AttemptIndex = attemptIndex,
+                IsFinalResult = result.Success,
+                FallbackTriggered = !result.Success,
+                ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty),
+                InputTokens = result.InputTokens,
+                OutputTokens = result.OutputTokens
+            }, cancellationToken);
+
             if (result.Success)
             {
-                // 记录成功的调用日志（含重试次数）
-                await _usageLogService.LogAsync(new UsageLogEntry
-                {
-                    AccessKeyId = accessKey.Id,
-                    ProtocolType = "Anthropic",
-                    RequestModel = modelName,
-                    TargetSiteId = site.Id,
-                    Status = "success",
-                    Source = "proxy",
-                    RetryCount = retryCount,
-                    InputTokens = result.InputTokens,
-                    OutputTokens = result.OutputTokens
-                }, cancellationToken);
                 // 成功时清除该站点的连续失败计数
                 _circuitStore.Succeed(site.Id);
                 return Content(result.ResponseBody, "application/json");
@@ -122,19 +136,7 @@ public sealed class AnthropicProxyController : ControllerBase
             _circuitStore.Block(site.Id);
             blockedSiteIds.Add(site.Id);
             lastResult = result;
-            retryCount++;
         }
-
-        // 所有路由均失败，记录最终失败的日志
-        await _usageLogService.LogAsync(new UsageLogEntry
-        {
-            AccessKeyId = accessKey.Id,
-            ProtocolType = "Anthropic",
-            RequestModel = modelName,
-            Status = "fail",
-            Source = "proxy",
-            RetryCount = retryCount
-        }, cancellationToken);
 
         // 所有路由均失败
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
@@ -155,11 +157,13 @@ public sealed class AnthropicProxyController : ControllerBase
     }
 
     // 查询当前所有启用的站点，返回其中被熔断的站点 ID 集合
-    private HashSet<Guid> GetBlockedSiteIds()
+    private async Task<HashSet<Guid>> GetBlockedSiteIdsAsync(CancellationToken cancellationToken)
     {
-        return _dbContext.Sites
-            .Where(s => s.IsEnabled && _circuitStore.IsBlocked(s.Id))
+        var siteIds = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
             .Select(s => s.Id)
-            .ToHashSet();
+            .ToListAsync(cancellationToken);
+
+        return new HashSet<Guid>(siteIds.Where(id => _circuitStore.IsBlocked(id)));
     }
 }

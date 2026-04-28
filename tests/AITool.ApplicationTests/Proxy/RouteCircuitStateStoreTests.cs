@@ -3,15 +3,18 @@ using FluentAssertions;
 
 namespace AITool.ApplicationTests.Proxy;
 
-// 熔断状态存储测试，验证屏蔽与过期自动恢复机制
+// 熔断状态存储测试，验证连续失败阈值、过期恢复与成功清零逻辑
 public sealed class RouteCircuitStateStoreTests
 {
-    // 站点被屏蔽后应在窗口期内处于熔断状态
+    // 连续失败达到阈值后站点应进入熔断状态
     [Fact]
-    public void IsBlocked_returns_true_within_block_window()
+    public void IsBlocked_returns_true_when_failure_threshold_is_reached()
     {
-        var store = new RouteCircuitStateStore(TimeSpan.FromMinutes(2));
+        var store = new RouteCircuitStateStore(TimeSpan.FromMinutes(2), failThreshold: 2);
         var siteId = Guid.NewGuid();
+
+        store.Block(siteId);
+        store.IsBlocked(siteId).Should().BeFalse();
 
         store.Block(siteId);
 
@@ -22,7 +25,7 @@ public sealed class RouteCircuitStateStoreTests
     [Fact]
     public void IsBlocked_returns_false_after_block_expires()
     {
-        var store = new RouteCircuitStateStore(TimeSpan.FromMilliseconds(100));
+        var store = new RouteCircuitStateStore(TimeSpan.FromMilliseconds(100), failThreshold: 1);
         var siteId = Guid.NewGuid();
 
         store.Block(siteId);
@@ -41,19 +44,32 @@ public sealed class RouteCircuitStateStoreTests
         store.IsBlocked(siteId).Should().BeFalse();
     }
 
-    // 多次屏蔽同一站点应刷新过期时间
+    // 成功后应清除连续失败计数，后续失败需重新累计到阈值
     [Fact]
-    public void Block_refreshes_expiration_on_repeated_calls()
+    public void Succeed_clears_failure_count_before_threshold_is_reached_again()
     {
-        var store = new RouteCircuitStateStore(TimeSpan.FromMilliseconds(200));
+        var store = new RouteCircuitStateStore(TimeSpan.FromMinutes(2), failThreshold: 2);
         var siteId = Guid.NewGuid();
 
         store.Block(siteId);
-        Thread.Sleep(100);
+        store.Succeed(siteId);
         store.Block(siteId);
-        Thread.Sleep(120);
 
-        // 第二次 Block 刷新了窗口，仍然应处于熔断状态
-        store.IsBlocked(siteId).Should().BeTrue();
+        store.IsBlocked(siteId).Should().BeFalse();
+    }
+
+    // 已熔断时重复失败不应刷新过期时间
+    [Fact]
+    public void Block_does_not_refresh_expiration_for_already_blocked_site()
+    {
+        var store = new RouteCircuitStateStore(TimeSpan.FromMilliseconds(100), failThreshold: 1);
+        var siteId = Guid.NewGuid();
+
+        store.Block(siteId);
+        Thread.Sleep(50);
+        store.Block(siteId);
+        Thread.Sleep(70);
+
+        store.IsBlocked(siteId).Should().BeFalse();
     }
 }

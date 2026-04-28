@@ -38,7 +38,9 @@ public sealed class RouteSelectionService : IRouteSelectionService
         }
 
         var route = await query
-            .OrderBy(r => r.Priority)
+            .OrderBy(r => r.ModelPriority)
+            .ThenBy(r => r.InstancePriority)
+            .ThenBy(r => r.Priority)
             .FirstOrDefaultAsync(cancellationToken);
 
         return new RouteSelectionResult { Route = route };
@@ -51,7 +53,9 @@ public sealed class RouteSelectionService : IRouteSelectionService
     {
         var routes = await _dbContext.ProxyRouteRules
             .Where(r => r.ExternalModelName == externalModelName && r.IsEnabled)
-            .OrderBy(r => r.Priority)
+            .OrderBy(r => r.ModelPriority)
+            .ThenBy(r => r.InstancePriority)
+            .ThenBy(r => r.Priority)
             .ToListAsync(cancellationToken);
 
         return routes.Select(r => new RouteSelectionResult { Route = r }).ToList();
