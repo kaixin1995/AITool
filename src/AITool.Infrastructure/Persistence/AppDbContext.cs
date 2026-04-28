@@ -1,5 +1,6 @@
 using AITool.Domain.Detection;
 using AITool.Domain.Models;
+using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
@@ -41,6 +42,9 @@ public sealed class AppDbContext : DbContext
 
     // 模型健康监控配置数据集
     public DbSet<ModelHealthMonitor> ModelHealthMonitors => Set<ModelHealthMonitor>();
+
+    // 系统运行时设置数据集
+    public DbSet<SystemRuntimeSettings> SystemRuntimeSettings => Set<SystemRuntimeSettings>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -139,6 +143,13 @@ public sealed class AppDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.HasIndex(e => e.ModelLibraryItemId).IsUnique();
+        });
+
+        // 系统运行时设置实体配置
+        modelBuilder.Entity<SystemRuntimeSettings>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Id).ValueGeneratedNever();
         });
 
         base.OnModelCreating(modelBuilder);

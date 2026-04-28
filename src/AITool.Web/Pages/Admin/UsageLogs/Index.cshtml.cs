@@ -4,23 +4,14 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.UsageLogs;
 
-// 使用日志视图模型
-public class UsageLogViewModel
+// 页面初始化所需的站点筛选项
+public sealed class UsageLogSiteFilterItem
 {
     public Guid Id { get; set; }
-    public string ProtocolType { get; set; } = string.Empty;
-    public string RequestModel { get; set; } = string.Empty;
-    public string Status { get; set; } = string.Empty;
-    public string Source { get; set; } = string.Empty;
-    public string SiteName { get; set; } = string.Empty;
-    public int RetryCount { get; set; }
-    public int InputTokens { get; set; }
-    public int OutputTokens { get; set; }
-    public int TotalTokens { get; set; }
-    public DateTimeOffset RequestedAt { get; set; }
+    public string Name { get; set; } = string.Empty;
 }
 
-// 调用日志查询页面模型
+// 调用日志页面模型，仅提供前端初始化数据
 public class IndexModel : PageModel
 {
     private readonly AppDbContext _dbContext;
@@ -30,36 +21,18 @@ public class IndexModel : PageModel
         _dbContext = dbContext;
     }
 
-    // 使用日志列表
-    public List<UsageLogViewModel> Logs { get; set; } = [];
+    // 站点筛选下拉选项
+    public List<UsageLogSiteFilterItem> SiteFilters { get; set; } = [];
 
-    // 加载最近的使用日志
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        // 加载站点字典用于显示站点名称
-        var sites = await _dbContext.Sites.ToDictionaryAsync(s => s.Id, s => s.Name, cancellationToken);
-
-        // 先加载全部记录再客户端排序（SQLite 不支持 DateTimeOffset 的 ORDER BY）
-        var logs = await _dbContext.ProxyUsageLogs
-            .ToListAsync(cancellationToken);
-
-        Logs = logs
-            .OrderByDescending(l => l.RequestedAt)
-            .Take(200)
-            .Select(l => new UsageLogViewModel
+        SiteFilters = await _dbContext.Sites
+            .OrderBy(s => s.Name)
+            .Select(s => new UsageLogSiteFilterItem
             {
-                Id = l.Id,
-                ProtocolType = l.ProtocolType,
-                RequestModel = l.RequestModel,
-                Status = l.Status,
-                Source = l.Source,
-                SiteName = sites.TryGetValue(l.TargetSiteId, out var name) ? name : "-",
-                RetryCount = l.RetryCount,
-                InputTokens = l.InputTokens,
-                OutputTokens = l.OutputTokens,
-                TotalTokens = l.TotalTokens,
-                RequestedAt = l.RequestedAt
+                Id = s.Id,
+                Name = s.Name
             })
-            .ToList();
+            .ToListAsync(cancellationToken);
     }
 }
