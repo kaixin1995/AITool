@@ -1,10 +1,12 @@
 using AITool.Application.Common;
 using AITool.Application.Detection;
+using AITool.Application.Operations;
 using AITool.Application.Proxy;
 using AITool.Application.Routing;
 using AITool.Application.SiteCatalog;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.OpenAI;
+using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
@@ -53,6 +55,9 @@ builder.Services.AddSingleton<RouteCircuitStateStore>();
 // 注册日志保留策略服务，定时清理过期日志
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
 
+// 注册系统运行时设置服务，统一管理持久化的超时、重试和日志保留配置
+builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
+
 // 注册 Hangfire 检测调度器
 builder.Services.AddSingleton<HangfireDetectionScheduler>();
 
@@ -88,6 +93,18 @@ using (var scope = app.Services.CreateScope())
         EnsureColumn(cmd, "ProxyUsageLogs", "IsFinalResult", "ALTER TABLE ProxyUsageLogs ADD COLUMN IsFinalResult INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "FallbackTriggered", "ALTER TABLE ProxyUsageLogs ADD COLUMN FallbackTriggered INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "ErrorMessage", "ALTER TABLE ProxyUsageLogs ADD COLUMN ErrorMessage TEXT NOT NULL DEFAULT ''");
+
+        if (TableExists(cmd, "SystemRuntimeSettings"))
+        {
+            EnsureColumn(cmd, "SystemRuntimeSettings", "ProxyRequestTimeoutSeconds", "ALTER TABLE SystemRuntimeSettings ADD COLUMN ProxyRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "ProxyRetryCount", "ALTER TABLE SystemRuntimeSettings ADD COLUMN ProxyRetryCount INTEGER NOT NULL DEFAULT 1");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "UsageLogRetentionDays", "ALTER TABLE SystemRuntimeSettings ADD COLUMN UsageLogRetentionDays INTEGER NOT NULL DEFAULT 7");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "DetectionLogRetentionDays", "ALTER TABLE SystemRuntimeSettings ADD COLUMN DetectionLogRetentionDays INTEGER NOT NULL DEFAULT 7");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "LastUsageLogPrunedAt", "ALTER TABLE SystemRuntimeSettings ADD COLUMN LastUsageLogPrunedAt TEXT NULL");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "LastUsageLogPrunedCount", "ALTER TABLE SystemRuntimeSettings ADD COLUMN LastUsageLogPrunedCount INTEGER NOT NULL DEFAULT 0");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "LastDetectionLogPrunedAt", "ALTER TABLE SystemRuntimeSettings ADD COLUMN LastDetectionLogPrunedAt TEXT NULL");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "LastDetectionLogPrunedCount", "ALTER TABLE SystemRuntimeSettings ADD COLUMN LastDetectionLogPrunedCount INTEGER NOT NULL DEFAULT 0");
+        }
     }
     catch (Exception ex)
     {
@@ -130,6 +147,12 @@ app.MapRazorPages();
 app.MapControllers();
 
 app.Run();
+
+static bool TableExists(System.Data.Common.DbCommand command, string tableName)
+{
+    command.CommandText = $"SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='{tableName}'";
+    return Convert.ToInt64(command.ExecuteScalar()) > 0;
+}
 
 static void EnsureColumn(System.Data.Common.DbCommand command, string tableName, string columnName, string alterSql)
 {

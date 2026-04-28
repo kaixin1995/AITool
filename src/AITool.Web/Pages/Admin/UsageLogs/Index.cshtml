@@ -4,7 +4,6 @@
     ViewData["Title"] = "调用日志";
 }
 
-<!-- 页面标题 -->
 <div class="page-header">
     <div>
         <h2 class="page-title">调用日志</h2>
@@ -12,7 +11,77 @@
     </div>
 </div>
 
-<!-- 日志列表表格 -->
+<div id="usageLogsStatus" class="alert" style="display:none;"></div>
+
+<div class="card mb-3">
+    <div class="card-body">
+        <div class="row g-3 align-items-end">
+            <div class="col-md-3">
+                <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" id="autoRefreshToggle">
+                    <label class="form-check-label" for="autoRefreshToggle">自动刷新</label>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label" for="refreshIntervalSelect">刷新间隔</label>
+                <select id="refreshIntervalSelect" class="form-select">
+                    <option value="5">5 秒</option>
+                    <option value="10" selected>10 秒</option>
+                    <option value="30">30 秒</option>
+                </select>
+            </div>
+            <div class="col-md-4">
+                <label class="form-label" for="siteFilterSelect">站点筛选</label>
+                <select id="siteFilterSelect" class="form-select">
+                    <option value="">全部站点</option>
+                    @foreach (var site in Model.SiteFilters)
+                    {
+                        <option value="@site.Id">@site.Name</option>
+                    }
+                </select>
+            </div>
+            <div class="col-md-2 d-flex gap-2">
+                <button type="button" class="btn btn-primary flex-fill" onclick="loadUsageLogsPage()">刷新</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row g-3 mb-3">
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-secondary small">总请求</div>
+                <div id="summaryTotalRequests" class="fs-4 fw-semibold">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-secondary small">成功率</div>
+                <div id="summarySuccessRate" class="fs-4 fw-semibold">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-secondary small">总 Tokens</div>
+                <div id="summaryTotalTokens" class="fs-4 fw-semibold">-</div>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card h-100">
+            <div class="card-body">
+                <div class="text-secondary small">失败请求</div>
+                <div id="summaryFailedRequests" class="fs-4 fw-semibold">-</div>
+            </div>
+        </div>
+    </div>
+</div>
+
 <div class="table-wrapper">
     <table class="table">
         <thead>
@@ -23,56 +92,279 @@
                 <th>模型</th>
                 <th>目标站点</th>
                 <th>状态</th>
-                <th>重试次数</th>
-                <th>输入 Tokens</th>
-                <th>输出 Tokens</th>
                 <th>总 Tokens</th>
+                <th>操作</th>
             </tr>
         </thead>
-        <tbody>
-            @if (!Model.Logs.Any())
-            {
-                <tr>
-                    <td colspan="10">
-                        <div class="table-empty">
-                            <div class="table-empty-icon">📋</div>
-                            <div class="table-empty-text">暂无调用日志</div>
-                        </div>
-                    </td>
-                </tr>
-            }
-            @foreach (var item in Model.Logs)
-            {
-                <tr>
-                    <td>@item.RequestedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss")</td>
-                    <td>
-                        <span class="badge bg-@(item.Source == "chat" ? "primary" : "secondary")">
-                            @(item.Source == "chat" ? "对话测试" : "代理")
-                        </span>
-                    </td>
-                    <td><span class="badge bg-info">@item.ProtocolType</span></td>
-                    <td><code>@item.RequestModel</code></td>
-                    <td>@item.SiteName</td>
-                    <td>
-                        <span class="badge bg-@(item.Status == "success" ? "success" : "danger")">
-                            @(item.Status == "success" ? "成功" : "失败")
-                        </span>
-                    </td>
-                    <td>
-                        @if (item.RetryCount > 0)
-                        {
-                            <span class="badge bg-warning text-dark">@item.RetryCount</span>
-                        }
-                        else
-                        {
-                            <span class="text-secondary">0</span>
-                        }
-                    </td>
-                    <td>@item.InputTokens</td>
-                    <td>@item.OutputTokens</td>
-                    <td><strong>@item.TotalTokens</strong></td>
-                </tr>
-            }
+        <tbody id="usageLogsTableBody">
+            <tr>
+                <td colspan="8">
+                    <div class="table-empty">
+                        <div class="table-empty-text">加载中...</div>
+                    </div>
+                </td>
+            </tr>
         </tbody>
     </table>
 </div>
+
+<div class="offcanvas offcanvas-end" tabindex="-1" id="requestDetailDrawer" aria-labelledby="requestDetailDrawerLabel">
+    <div class="offcanvas-header">
+        <h5 id="requestDetailDrawerLabel" class="offcanvas-title">请求链路详情</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="关闭"></button>
+    </div>
+    <div class="offcanvas-body">
+        <div id="requestDetailMeta" class="small text-secondary mb-3">请选择一条记录查看链路</div>
+        <div id="requestDetailContent" class="d-flex flex-column gap-3">
+            <div class="text-secondary">暂无详情</div>
+        </div>
+    </div>
+</div>
+
+<script>
+    var usageLogsRefreshTimer = null;
+    var usageLogsDetailDrawer = null;
+
+    document.addEventListener('DOMContentLoaded', function() {
+        usageLogsDetailDrawer = new bootstrap.Offcanvas(document.getElementById('requestDetailDrawer'));
+        document.getElementById('autoRefreshToggle').addEventListener('change', syncAutoRefresh);
+        document.getElementById('refreshIntervalSelect').addEventListener('change', syncAutoRefresh);
+        document.getElementById('siteFilterSelect').addEventListener('change', loadUsageLogsPage);
+        loadUsageLogsPage();
+    });
+
+    function loadUsageLogsPage() {
+        syncAutoRefresh();
+        Promise.all([
+            loadUsageLogSummary(),
+            loadUsageLogList()
+        ]).catch(function(error) {
+            showUsageLogsStatus('加载失败：' + error.message, false);
+        });
+    }
+
+    function syncAutoRefresh() {
+        if (usageLogsRefreshTimer) {
+            clearInterval(usageLogsRefreshTimer);
+            usageLogsRefreshTimer = null;
+        }
+
+        if (!document.getElementById('autoRefreshToggle').checked) {
+            return;
+        }
+
+        var seconds = parseInt(document.getElementById('refreshIntervalSelect').value || '10', 10);
+        usageLogsRefreshTimer = window.setInterval(function() {
+            loadUsageLogSummary();
+            loadUsageLogList();
+        }, seconds * 1000);
+    }
+
+    function getUsageLogQuery() {
+        var query = new URLSearchParams();
+        var siteId = document.getElementById('siteFilterSelect').value;
+        if (siteId) {
+            query.set('siteId', siteId);
+        }
+        return query.toString();
+    }
+
+    async function loadUsageLogSummary() {
+        var url = '/api/admin/usage-logs/summary';
+        var query = getUsageLogQuery();
+        if (query) {
+            url += '?' + query;
+        }
+
+        var response = await fetch(url);
+        if (!response.ok) {
+            throw new Error('无法加载汇总数据');
+        }
+
+        var data = await response.json();
+        document.getElementById('summaryTotalRequests').textContent = formatNumber(readValue(data, ['totalRequests', 'requestCount', 'totalCount']) || 0);
+        document.getElementById('summarySuccessRate').textContent = formatPercent(readValue(data, ['successRate']) || 0);
+        document.getElementById('summaryTotalTokens').textContent = formatNumber(readValue(data, ['totalTokens']) || 0);
+        document.getElementById('summaryFailedRequests').textContent = formatNumber(readValue(data, ['failedRequests', 'failureCount']) || 0);
+    }
+
+    async function loadUsageLogList() {
+        var url = '/api/admin/usage-logs/list';
+        var query = getUsageLogQuery();
+        if (query) {
+            url += '?' + query;
+        }
+
+        var response = await fetch(url);
+        if (!response.ok) {
+            throw new Error('无法加载日志列表');
+        }
+
+        var data = await response.json();
+        var items = Array.isArray(data) ? data : (data.items || data.logs || []);
+        renderUsageLogRows(items);
+    }
+
+    function renderUsageLogRows(items) {
+        var tbody = document.getElementById('usageLogsTableBody');
+        if (!items.length) {
+            tbody.innerHTML = '<tr><td colspan="8"><div class="table-empty"><div class="table-empty-icon">📋</div><div class="table-empty-text">暂无调用日志</div></div></td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = '';
+        items.forEach(function(item) {
+            var status = readValue(item, ['status']) || '-';
+            var source = readValue(item, ['source']) || '-';
+            var requestId = readValue(item, ['requestId']) || readValue(item, ['id']) || '';
+            var row = document.createElement('tr');
+            row.innerHTML =
+                '<td>' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</td>' +
+                '<td>' + renderSourceBadge(source) + '</td>' +
+                '<td><span class="badge bg-info">' + escHtml(readValue(item, ['protocolType']) || '-') + '</span></td>' +
+                '<td><code>' + escHtml(readValue(item, ['requestModel', 'attemptedModel']) || '-') + '</code></td>' +
+                '<td>' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</td>' +
+                '<td>' + renderStatusBadge(status) + '</td>' +
+                '<td><strong>' + escHtml(formatNumber(readValue(item, ['totalTokens']) || 0)) + '</strong></td>' +
+                '<td><button type="button" class="btn btn-sm btn-outline-primary" onclick="openRequestDetail(\'' + escJs(requestId) + '\')">查看链路</button></td>';
+            tbody.appendChild(row);
+        });
+    }
+
+    async function openRequestDetail(requestId) {
+        if (!requestId) {
+            showUsageLogsStatus('当前记录缺少 requestId，无法查看链路', false);
+            return;
+        }
+
+        document.getElementById('requestDetailMeta').textContent = '正在加载请求 ' + requestId + ' 的链路详情';
+        document.getElementById('requestDetailContent').innerHTML = '<div class="text-secondary">加载中...</div>';
+        usageLogsDetailDrawer.show();
+
+        try {
+            var response = await fetch('/api/admin/usage-logs/request-detail/' + encodeURIComponent(requestId));
+            if (!response.ok) {
+                throw new Error('无法加载链路详情');
+            }
+
+            var data = await response.json();
+            renderRequestDetail(requestId, data);
+        } catch (error) {
+            document.getElementById('requestDetailMeta').textContent = '请求链路详情加载失败';
+            document.getElementById('requestDetailContent').innerHTML = '<div class="alert alert-danger mb-0">' + escHtml(error.message) + '</div>';
+        }
+    }
+
+    function renderRequestDetail(requestId, data) {
+        var attempts = readValue(data, ['attempts', 'logs', 'items']) || [];
+        document.getElementById('requestDetailMeta').textContent = 'RequestId: ' + requestId;
+
+        if (!Array.isArray(attempts) || !attempts.length) {
+            document.getElementById('requestDetailContent').innerHTML = '<div class="text-secondary">暂无链路数据</div>';
+            return;
+        }
+
+        var html = attempts.map(function(item, index) {
+            var status = readValue(item, ['status']) || '-';
+            var attemptedModel = readValue(item, ['attemptedModel', 'requestModel']) || '-';
+            var errorMessage = readValue(item, ['errorMessage']) || '';
+            return '' +
+                '<div class="card">' +
+                    '<div class="card-body">' +
+                        '<div class="d-flex justify-content-between align-items-start gap-3 mb-2">' +
+                            '<div>' +
+                                '<div class="fw-semibold">第 ' + (index + 1) + ' 次尝试</div>' +
+                                '<div class="small text-secondary">模型：' + escHtml(attemptedModel) + '</div>' +
+                            '</div>' +
+                            renderStatusBadge(status) +
+                        '</div>' +
+                        '<div class="small text-secondary mb-1">站点：' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</div>' +
+                        '<div class="small text-secondary mb-1">时间：' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</div>' +
+                        '<div class="small text-secondary mb-1">Tokens：' + escHtml(formatNumber(readValue(item, ['totalTokens']) || 0)) + '</div>' +
+                        '<div class="small text-secondary">错误：' + escHtml(errorMessage || '-') + '</div>' +
+                    '</div>' +
+                '</div>';
+        }).join('');
+
+        document.getElementById('requestDetailContent').innerHTML = html;
+    }
+
+    function renderStatusBadge(status) {
+        var normalized = String(status || '').toLowerCase();
+        var success = normalized === 'success' || normalized === 'ok';
+        return '<span class="badge bg-' + (success ? 'success' : 'danger') + '">' + escHtml(success ? '成功' : (status || '失败')) + '</span>';
+    }
+
+    function renderSourceBadge(source) {
+        var isChat = String(source || '').toLowerCase() === 'chat';
+        return '<span class="badge bg-' + (isChat ? 'primary' : 'secondary') + '">' + escHtml(isChat ? '对话测试' : (source || '代理')) + '</span>';
+    }
+
+    function showUsageLogsStatus(message, success) {
+        var el = document.getElementById('usageLogsStatus');
+        el.textContent = message;
+        el.className = 'alert alert-' + (success ? 'success' : 'danger');
+        el.style.display = 'block';
+    }
+
+    function readValue(source, keys) {
+        for (var i = 0; i < keys.length; i++) {
+            var value = source ? source[keys[i]] : null;
+            if (value !== undefined && value !== null) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    function formatDateTime(value) {
+        if (!value) {
+            return '-';
+        }
+
+        var date = new Date(value);
+        if (isNaN(date.getTime())) {
+            return String(value);
+        }
+
+        return date.getFullYear() + '-' +
+            String(date.getMonth() + 1).padStart(2, '0') + '-' +
+            String(date.getDate()).padStart(2, '0') + ' ' +
+            String(date.getHours()).padStart(2, '0') + ':' +
+            String(date.getMinutes()).padStart(2, '0') + ':' +
+            String(date.getSeconds()).padStart(2, '0');
+    }
+
+    function formatPercent(value) {
+        var number = Number(value || 0);
+        if (!isFinite(number)) {
+            return '-';
+        }
+
+        if (number <= 1) {
+            number = number * 100;
+        }
+
+        return number.toFixed(1) + '%';
+    }
+
+    function formatNumber(value) {
+        var number = Number(value || 0);
+        if (!isFinite(number)) {
+            return '-';
+        }
+        return number.toLocaleString('zh-CN');
+    }
+
+    function escHtml(str) {
+        var d = document.createElement('div');
+        d.textContent = str == null ? '' : String(str);
+        return d.innerHTML;
+    }
+
+    function escJs(str) {
+        return String(str == null ? '' : str)
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'");
+    }
+</script>

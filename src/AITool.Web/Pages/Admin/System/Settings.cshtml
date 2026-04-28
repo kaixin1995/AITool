@@ -1,0 +1,58 @@
+@page
+@model AITool.Web.Pages.Admin.System.SettingsModel
+@{
+    ViewData["Title"] = "系统设置";
+}
+
+<div class="page-header">
+    <div>
+        <h2 class="page-title">系统设置</h2>
+        <p class="page-subtitle">配置代理运行参数与日志保留策略</p>
+    </div>
+</div>
+
+<form method="post" class="d-flex flex-column gap-3">
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">代理运行参数</h5>
+            <div class="row g-3 mt-1">
+                <div class="col-md-6">
+                    <label asp-for="Input.ProxyRequestTimeoutSeconds" class="form-label">全局请求超时秒数</label>
+                    <input asp-for="Input.ProxyRequestTimeoutSeconds" class="form-control" type="number" min="1" />
+                </div>
+                <div class="col-md-6">
+                    <label asp-for="Input.ProxyRetryCount" class="form-label">全局单路由重试次数</label>
+                    <input asp-for="Input.ProxyRetryCount" class="form-control" type="number" min="0" />
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">日志保留策略</h5>
+            <div class="row g-3 mt-1">
+                <div class="col-md-6">
+                    <label asp-for="Input.UsageLogRetentionDays" class="form-label">使用日志保留天数</label>
+                    <input asp-for="Input.UsageLogRetentionDays" class="form-control" type="number" min="1" />
+                </div>
+                <div class="col-md-6">
+                    <label asp-for="Input.DetectionLogRetentionDays" class="form-label">检测日志保留天数</label>
+                    <input asp-for="Input.DetectionLogRetentionDays" class="form-control" type="number" min="1" />
+                </div>
+            </div>
+            <div class="row g-3 mt-1">
+                <div class="col-md-6">
+                    <div class="form-text">最近一次使用日志清理数量：@Model.LastUsageLogPrunedCount</div>
+                </div>
+                <div class="col-md-6">
+                    <div class="form-text">最近一次检测日志清理数量：@Model.LastDetectionLogPrunedCount</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div>
+        <button type="submit" class="btn btn-primary">保存设置</button>
+    </div>
+</form>
