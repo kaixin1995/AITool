@@ -17,6 +17,12 @@ public sealed class ProxyForwardRequest
 
     // 原始请求体（JSON 字符串）
     public string RequestBody { get; set; } = string.Empty;
+
+    // 单次请求超时时间（秒）
+    public int RequestTimeoutSeconds { get; set; }
+
+    // 单路由内部失败重试次数
+    public int RetryCount { get; set; }
 }
 
 // 代理转发结果

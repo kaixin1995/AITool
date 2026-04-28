@@ -8,6 +8,7 @@ using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace AITool.Web.Controllers.Admin;
 
@@ -54,19 +55,22 @@ public sealed class ChatApiController : ControllerBase
     private readonly IRouteSelectionService _routeService;
     private readonly RouteCircuitStateStore _circuitStore;
     private readonly IUsageLogService _usageLogService;
+    private readonly ProxyForwardingOptions _forwardingOptions;
 
     public ChatApiController(
         AppDbContext dbContext,
         IProxyForwardService forwardService,
         IRouteSelectionService routeService,
         RouteCircuitStateStore circuitStore,
-        IUsageLogService usageLogService)
+        IUsageLogService usageLogService,
+        IOptions<ProxyForwardingOptions> forwardingOptions)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
         _routeService = routeService;
         _circuitStore = circuitStore;
         _usageLogService = usageLogService;
+        _forwardingOptions = forwardingOptions.Value;
     }
 
     // 获取可用于对话测试的模型列表
@@ -135,8 +139,8 @@ public sealed class ChatApiController : ControllerBase
             var blockedSiteIds = new HashSet<Guid>(
                 allSiteIds.Where(id => _circuitStore.IsBlocked(id)));
 
-            // 记录尝试的路由数量
-            int retryCount = 0;
+            var requestId = Guid.NewGuid();
+            var attemptIndex = 0;
 
             foreach (var routeResult in allRoutes)
             {
@@ -159,30 +163,39 @@ public sealed class ChatApiController : ControllerBase
                     max_tokens = 4096
                 });
 
+                attemptIndex++;
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = site.BaseUrl,
                     TargetApiKey = site.ApiKey,
                     ProtocolType = site.ProtocolType,
                     TargetModelName = route.SiteModelName,
-                    RequestBody = requestBody
+                    RequestBody = requestBody,
+                    RequestTimeoutSeconds = _forwardingOptions.RequestTimeoutSeconds,
+                    RetryCount = _forwardingOptions.RetryCount
+                }, cancellationToken);
+
+                await _usageLogService.LogAsync(new UsageLogEntry
+                {
+                    RequestId = requestId,
+                    ProtocolType = site.ProtocolType,
+                    RequestModel = model.ModelName,
+                    AttemptedModel = route.UpstreamModelName,
+                    TargetSiteId = site.Id,
+                    Status = forwardResult.Success ? "success" : "fail",
+                    Source = "chat",
+                    RetryCount = forwardResult.Success ? attemptIndex - 1 : attemptIndex,
+                    AttemptIndex = attemptIndex,
+                    IsFinalResult = forwardResult.Success,
+                    FallbackTriggered = !forwardResult.Success,
+                    ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+                    InputTokens = forwardResult.InputTokens,
+                    OutputTokens = forwardResult.OutputTokens
                 }, cancellationToken);
 
                 if (forwardResult.Success)
                 {
                     sw.Stop();
-                    // 记录成功的调用日志
-                    await _usageLogService.LogAsync(new UsageLogEntry
-                    {
-                        ProtocolType = site.ProtocolType,
-                        RequestModel = model.ModelName,
-                        TargetSiteId = site.Id,
-                        Status = "success",
-                        Source = "chat",
-                        RetryCount = retryCount,
-                        InputTokens = forwardResult.InputTokens,
-                        OutputTokens = forwardResult.OutputTokens
-                    }, cancellationToken);
                     var content = ExtractContent(forwardResult.ResponseBody, site.ProtocolType);
                     return Ok(new ChatSendResult
                     {
@@ -191,21 +204,9 @@ public sealed class ChatApiController : ControllerBase
                         DurationMs = sw.ElapsedMilliseconds
                     });
                 }
-
-                // 转发失败，继续尝试下一个（Chat 测试不触发熔断）
-                retryCount++;
             }
 
             sw.Stop();
-            // 记录最终失败的调用日志
-            await _usageLogService.LogAsync(new UsageLogEntry
-            {
-                ProtocolType = "OpenAI",
-                RequestModel = model.ModelName,
-                Status = "fail",
-                Source = "chat",
-                RetryCount = retryCount
-            }, cancellationToken);
             return Ok(new ChatSendResult
             {
                 Success = false,
@@ -244,13 +245,16 @@ public sealed class ChatApiController : ControllerBase
             max_tokens = 4096
         });
 
+        var requestId = Guid.NewGuid();
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = site.BaseUrl,
             TargetApiKey = site.ApiKey,
             ProtocolType = site.ProtocolType,
             TargetModelName = mapping.RemoteModelName,
-            RequestBody = requestBody
+            RequestBody = requestBody,
+            RequestTimeoutSeconds = _forwardingOptions.RequestTimeoutSeconds,
+            RetryCount = _forwardingOptions.RetryCount
         }, cancellationToken);
 
         sw.Stop();
@@ -258,12 +262,18 @@ public sealed class ChatApiController : ControllerBase
         // 记录回退方式的调用日志
         await _usageLogService.LogAsync(new UsageLogEntry
         {
+            RequestId = requestId,
             ProtocolType = site.ProtocolType,
             RequestModel = model.ModelName,
+            AttemptedModel = mapping.RemoteModelName,
             TargetSiteId = site.Id,
             Status = forwardResult.Success ? "success" : "fail",
             Source = "chat",
             RetryCount = 0,
+            AttemptIndex = 1,
+            IsFinalResult = true,
+            FallbackTriggered = false,
+            ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
             InputTokens = forwardResult.InputTokens,
             OutputTokens = forwardResult.OutputTokens
         }, cancellationToken);

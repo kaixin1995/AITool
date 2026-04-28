@@ -28,6 +28,10 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(connectionString));
 
+// 注册代理转发配置，统一控制单路由超时和失败重试策略
+builder.Services.Configure<ProxyForwardingOptions>(
+    builder.Configuration.GetSection(ProxyForwardingOptions.SectionName));
+
 // 注册站点目录客户端，用于拉取远程站点模型列表
 builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 
@@ -67,24 +71,28 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
 
-    // 补丁：为已有数据库添加 SiteModelMapping.IsEnabled 列
+    // 补丁：为已有数据库添加缺失列，兼容历史 SQLite 文件
     try
     {
         var conn = db.Database.GetDbConnection();
         conn.Open();
         using var cmd = conn.CreateCommand();
-        cmd.CommandText = "SELECT COUNT(*) FROM pragma_table_info('SiteModelMappings') WHERE name='IsEnabled'";
-        var count = Convert.ToInt64(cmd.ExecuteScalar());
-        if (count == 0)
-        {
-            cmd.CommandText = "ALTER TABLE SiteModelMappings ADD COLUMN IsEnabled INTEGER NOT NULL DEFAULT 1";
-            cmd.ExecuteNonQuery();
-        }
+
+        EnsureColumn(cmd, "SiteModelMappings", "IsEnabled", "ALTER TABLE SiteModelMappings ADD COLUMN IsEnabled INTEGER NOT NULL DEFAULT 1");
+        EnsureColumn(cmd, "ProxyRouteRules", "UpstreamModelName", "ALTER TABLE ProxyRouteRules ADD COLUMN UpstreamModelName TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(cmd, "ProxyRouteRules", "ModelPriority", "ALTER TABLE ProxyRouteRules ADD COLUMN ModelPriority INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(cmd, "ProxyRouteRules", "InstancePriority", "ALTER TABLE ProxyRouteRules ADD COLUMN InstancePriority INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(cmd, "ProxyUsageLogs", "RequestId", "ALTER TABLE ProxyUsageLogs ADD COLUMN RequestId TEXT NOT NULL DEFAULT '00000000-0000-0000-0000-000000000000'");
+        EnsureColumn(cmd, "ProxyUsageLogs", "AttemptedModel", "ALTER TABLE ProxyUsageLogs ADD COLUMN AttemptedModel TEXT NOT NULL DEFAULT ''");
+        EnsureColumn(cmd, "ProxyUsageLogs", "AttemptIndex", "ALTER TABLE ProxyUsageLogs ADD COLUMN AttemptIndex INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(cmd, "ProxyUsageLogs", "IsFinalResult", "ALTER TABLE ProxyUsageLogs ADD COLUMN IsFinalResult INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(cmd, "ProxyUsageLogs", "FallbackTriggered", "ALTER TABLE ProxyUsageLogs ADD COLUMN FallbackTriggered INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(cmd, "ProxyUsageLogs", "ErrorMessage", "ALTER TABLE ProxyUsageLogs ADD COLUMN ErrorMessage TEXT NOT NULL DEFAULT ''");
     }
     catch (Exception ex)
     {
         var patchLogger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-        patchLogger.LogWarning(ex, "修补 SiteModelMapping.IsEnabled 列失败");
+        patchLogger.LogWarning(ex, "修补 SQLite 缺失列失败");
     }
 
     // 启动时将已启用的检测任务注册到 Hangfire，首次运行或表不存在时跳过
@@ -122,6 +130,17 @@ app.MapRazorPages();
 app.MapControllers();
 
 app.Run();
+
+static void EnsureColumn(System.Data.Common.DbCommand command, string tableName, string columnName, string alterSql)
+{
+    command.CommandText = $"SELECT COUNT(*) FROM pragma_table_info('{tableName}') WHERE name='{columnName}'";
+    var count = Convert.ToInt64(command.ExecuteScalar());
+    if (count == 0)
+    {
+        command.CommandText = alterSql;
+        command.ExecuteNonQuery();
+    }
+}
 
 // 暴露 Program 类供集成测试引用
 public partial class Program;

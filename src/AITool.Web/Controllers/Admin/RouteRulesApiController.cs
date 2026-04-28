@@ -40,10 +40,16 @@ public sealed class RouteRuleListItem
     public Guid SiteId { get; set; }
     // 站点名称
     public string SiteName { get; set; } = string.Empty;
+    // 上游模型名称
+    public string UpstreamModelName { get; set; } = string.Empty;
     // 站点模型名称
     public string SiteModelName { get; set; } = string.Empty;
-    // 优先级
+    // 全局优先级
     public int Priority { get; set; }
+    // 上游模型组优先级
+    public int ModelPriority { get; set; }
+    // 组内实例优先级
+    public int InstancePriority { get; set; }
     // 是否启用
     public bool IsEnabled { get; set; }
 }
@@ -60,6 +66,8 @@ public sealed class SaveRouteRulesRequest
 // 单条规则条目
 public sealed class SaveRouteRuleEntry
 {
+    // 上游模型名称
+    public string UpstreamModelName { get; set; } = string.Empty;
     // 目标站点ID
     public Guid SiteId { get; set; }
     // 站点上的模型名称
@@ -159,17 +167,18 @@ public sealed class RouteRulesApiController : ControllerBase
             return Ok(new List<DiscoveredSiteItem>());
 
         var sites = await _dbContext.Sites.ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
-
-        // 通过模型库查找关联的站点映射
-        var model = await _dbContext.ModelLibraryItems
-            .FirstOrDefaultAsync(m => m.ModelName == modelName, cancellationToken);
-
+        var normalizedModelName = modelName.Trim();
         List<DiscoveredSiteItem> results = [];
 
-        if (model is not null)
+        var libraryModelIds = await _dbContext.ModelLibraryItems
+            .Where(m => m.ModelName == normalizedModelName && m.IsEnabled)
+            .Select(m => m.Id)
+            .ToListAsync(cancellationToken);
+
+        if (libraryModelIds.Count > 0)
         {
             var mappings = await _dbContext.SiteModelMappings
-                .Where(m => m.ModelLibraryItemId == model.Id && m.IsEnabled)
+                .Where(m => libraryModelIds.Contains(m.ModelLibraryItemId) && m.IsEnabled)
                 .ToListAsync(cancellationToken);
 
             foreach (var mapping in mappings)
@@ -187,25 +196,22 @@ public sealed class RouteRulesApiController : ControllerBase
             }
         }
 
-        // 如果模型库没找到，尝试直接匹配 RemoteModelName
-        if (results.Count == 0)
-        {
-            var directMappings = await _dbContext.SiteModelMappings
-                .Where(m => m.RemoteModelName == modelName && m.IsEnabled)
-                .ToListAsync(cancellationToken);
+        var directMappings = await _dbContext.SiteModelMappings
+            .Where(m => m.RemoteModelName == normalizedModelName && m.IsEnabled)
+            .ToListAsync(cancellationToken);
 
-            foreach (var mapping in directMappings)
+        foreach (var mapping in directMappings)
+        {
+            var exists = results.Any(x => x.SiteId == mapping.SiteId && x.RemoteModelName == mapping.RemoteModelName);
+            if (!exists && sites.TryGetValue(mapping.SiteId, out var site))
             {
-                if (sites.TryGetValue(mapping.SiteId, out var site))
+                results.Add(new DiscoveredSiteItem
                 {
-                    results.Add(new DiscoveredSiteItem
-                    {
-                        SiteId = site.Id,
-                        SiteName = site.Name,
-                        RemoteModelName = mapping.RemoteModelName,
-                        SiteEnabled = site.IsEnabled
-                    });
-                }
+                    SiteId = site.Id,
+                    SiteName = site.Name,
+                    RemoteModelName = mapping.RemoteModelName,
+                    SiteEnabled = site.IsEnabled
+                });
             }
         }
 
@@ -233,8 +239,11 @@ public sealed class RouteRulesApiController : ControllerBase
             RuleId = r.Id,
             SiteId = r.SiteId,
             SiteName = sites.TryGetValue(r.SiteId, out var s) ? s.Name : "(未知站点)",
+            UpstreamModelName = r.UpstreamModelName,
             SiteModelName = r.SiteModelName,
             Priority = r.Priority,
+            ModelPriority = r.ModelPriority,
+            InstancePriority = r.InstancePriority,
             IsEnabled = r.IsEnabled
         }).ToList();
 
@@ -256,16 +265,41 @@ public sealed class RouteRulesApiController : ControllerBase
             .ToListAsync(cancellationToken);
         _dbContext.ProxyRouteRules.RemoveRange(existingRules);
 
-        // 按列表顺序创建新规则，Priority = 索引
+        // 按列表顺序创建新规则，Priority = 全局顺序，ModelPriority/InstancePriority = 分组顺序
+        var upstreamOrder = request.Rules
+            .Select(r => r.UpstreamModelName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct()
+            .ToList();
+
         for (int i = 0; i < request.Rules.Count; i++)
         {
             var entry = request.Rules[i];
+            var normalizedUpstreamModelName = string.IsNullOrWhiteSpace(entry.UpstreamModelName)
+                ? entry.SiteModelName
+                : entry.UpstreamModelName.Trim();
+            var sameModelEarlierCount = request.Rules
+                .Take(i)
+                .Count(x => string.Equals(
+                    string.IsNullOrWhiteSpace(x.UpstreamModelName) ? x.SiteModelName : x.UpstreamModelName.Trim(),
+                    normalizedUpstreamModelName,
+                    StringComparison.Ordinal));
+            var modelPriority = upstreamOrder.IndexOf(normalizedUpstreamModelName);
+            if (modelPriority < 0)
+            {
+                modelPriority = upstreamOrder.Count;
+                upstreamOrder.Add(normalizedUpstreamModelName);
+            }
+
             _dbContext.ProxyRouteRules.Add(new ProxyRouteRule
             {
                 ExternalModelName = request.ExternalModelName,
+                UpstreamModelName = normalizedUpstreamModelName,
                 SiteId = entry.SiteId,
                 SiteModelName = entry.SiteModelName,
                 Priority = i,
+                ModelPriority = modelPriority,
+                InstancePriority = sameModelEarlierCount,
                 IsEnabled = true
             });
         }

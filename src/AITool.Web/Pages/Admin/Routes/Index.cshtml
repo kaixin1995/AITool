@@ -17,14 +17,23 @@
 <!-- 模型选择 -->
 <div class="inline-form">
     <div class="row g-2 align-items-end">
-        <div class="col-auto">
-            <label class="form-label">选择模型</label>
-            <select id="modelSelect" class="form-select" style="min-width:280px;">
+        <div class="col-md-4">
+            <label class="form-label">对外模型</label>
+            <select id="modelSelect" class="form-select">
                 <option value="">-- 加载中... --</option>
+            </select>
+        </div>
+        <div class="col-md-4">
+            <label class="form-label">追加上游模型组</label>
+            <select id="upstreamModelSelect" class="form-select">
+                <option value="">-- 请选择上游模型 --</option>
             </select>
         </div>
         <div class="col-auto">
             <button type="button" class="btn btn-secondary" onclick="loadModels()">刷新模型</button>
+        </div>
+        <div class="col-auto">
+            <button type="button" class="btn btn-outline-primary" onclick="appendUpstreamModel()">添加候选实例</button>
         </div>
     </div>
 </div>
@@ -123,29 +132,42 @@
 
     // 当前编辑的站点列表
     var _currentItems = [];
+    // 当前可选的上游模型列表
+    var _availableModels = [];
 
     // 加载模型下拉列表
     function loadModels() {
         var select = document.getElementById('modelSelect');
+        var upstreamSelect = document.getElementById('upstreamModelSelect');
         select.innerHTML = '<option value="">-- 加载中... --</option>';
+        upstreamSelect.innerHTML = '<option value="">-- 加载中... --</option>';
 
         fetch('/api/admin/route-rules/models')
             .then(function(r) { return r.json(); })
             .then(function(data) {
+                _availableModels = data || [];
                 select.innerHTML = '<option value="">-- 请选择模型 --</option>';
+                upstreamSelect.innerHTML = '<option value="">-- 请选择上游模型 --</option>';
                 data.forEach(function(m) {
                     var opt = document.createElement('option');
                     opt.value = m.modelName;
                     var tag = m.hasRouteRules ? ' ✅' : '';
                     opt.textContent = m.displayName + ' (' + m.siteCount + ' 个站点)' + tag;
                     select.appendChild(opt);
+
+                    var upstreamOpt = document.createElement('option');
+                    upstreamOpt.value = m.modelName;
+                    upstreamOpt.textContent = m.displayName + ' (' + m.modelName + ')';
+                    upstreamSelect.appendChild(upstreamOpt);
                 });
                 if (data.length === 0) {
                     select.innerHTML = '<option value="">-- 暂无可用模型 --</option>';
+                    upstreamSelect.innerHTML = '<option value="">-- 暂无可用模型 --</option>';
                 }
             })
             .catch(function() {
                 select.innerHTML = '<option value="">-- 加载失败 --</option>';
+                upstreamSelect.innerHTML = '<option value="">-- 加载失败 --</option>';
             });
 
         // 选择模型时自动发现站点并加载已有规则
@@ -173,14 +195,27 @@
             var discoveredSites = results[1];
 
             // 合并：已有规则在前（保持顺序），发现的站点中不重复的追加在后
-            var usedSiteIds = new Set(existingRules.map(function(r) { return r.siteId; }));
+            var usedKeys = new Set(existingRules.map(function(r) { return String(r.siteId) + '|' + r.siteModelName; }));
             var items = existingRules.map(function(r) {
-                return { siteId: r.siteId, siteName: r.siteName, siteModelName: r.siteModelName, source: 'rule' };
+                return {
+                    siteId: r.siteId,
+                    siteName: r.siteName,
+                    upstreamModelName: r.upstreamModelName || r.siteModelName,
+                    siteModelName: r.siteModelName,
+                    source: 'rule'
+                };
             });
 
             discoveredSites.forEach(function(s) {
-                if (!usedSiteIds.has(s.siteId)) {
-                    items.push({ siteId: s.siteId, siteName: s.siteName, siteModelName: s.remoteModelName, source: 'discover' });
+                var itemKey = String(s.siteId) + '|' + s.remoteModelName;
+                if (!usedKeys.has(itemKey)) {
+                    items.push({
+                        siteId: s.siteId,
+                        siteName: s.siteName,
+                        upstreamModelName: modelName,
+                        siteModelName: s.remoteModelName,
+                        source: 'discover'
+                    });
                 }
             });
 
@@ -208,18 +243,57 @@
             row.draggable = true;
             row.setAttribute('data-site-id', item.siteId);
             row.setAttribute('data-site-model-name', item.siteModelName);
+            row.setAttribute('data-upstream-model-name', item.upstreamModelName);
             row.innerHTML =
                 '<span class="drag-handle">⠿</span>' +
                 '<span class="priority-num">' + (index + 1) + '</span>' +
                 '<div class="site-info">' +
                     '<div class="site-name">' + escHtml(item.siteName) + '</div>' +
-                    '<div class="remote-name">模型：' + escHtml(item.siteModelName) + '</div>' +
+                    '<div class="remote-name">上游模型组：' + escHtml(item.upstreamModelName) + '</div>' +
+                    '<div class="remote-name">站点模型：' + escHtml(item.siteModelName) + '</div>' +
                 '</div>' +
                 '<button type="button" class="btn btn-sm btn-outline-danger" onclick="removeItem(this)" title="移除">✕</button>';
             list.appendChild(row);
         });
 
         initDragDrop();
+    }
+
+    // 追加指定上游模型的候选实例
+    function appendUpstreamModel() {
+        var upstreamModelName = document.getElementById('upstreamModelSelect').value;
+        if (!upstreamModelName) {
+            showMsg('请先选择要追加的上游模型', false);
+            return;
+        }
+
+        fetch('/api/admin/route-rules/discover-sites?modelName=' + encodeURIComponent(upstreamModelName))
+            .then(function(r) { return r.json(); })
+            .then(function(discoveredSites) {
+                var addedCount = 0;
+                discoveredSites.forEach(function(site) {
+                    var exists = _currentItems.some(function(item) {
+                        return String(item.siteId) === String(site.siteId) && item.siteModelName === site.remoteModelName;
+                    });
+
+                    if (!exists) {
+                        _currentItems.push({
+                            siteId: site.siteId,
+                            siteName: site.siteName,
+                            upstreamModelName: upstreamModelName,
+                            siteModelName: site.remoteModelName,
+                            source: 'append'
+                        });
+                        addedCount++;
+                    }
+                });
+
+                renderRouteList();
+                showMsg(addedCount > 0 ? '已追加候选实例' : '没有可追加的新实例', addedCount > 0);
+            })
+            .catch(function(err) {
+                showMsg('追加失败：' + err.message, false);
+            });
     }
 
     // 初始化拖拽排序
@@ -266,7 +340,10 @@
         var newItems = [];
         rows.forEach(function(row) {
             var siteId = row.getAttribute('data-site-id');
-            var match = _currentItems.find(function(it) { return String(it.siteId) === String(siteId); });
+            var siteModelName = row.getAttribute('data-site-model-name');
+            var match = _currentItems.find(function(it) {
+                return String(it.siteId) === String(siteId) && it.siteModelName === siteModelName;
+            });
             if (match) newItems.push(match);
         });
         _currentItems = newItems;
@@ -276,7 +353,10 @@
     function removeItem(btn) {
         var row = btn.closest('.route-item');
         var siteId = row.getAttribute('data-site-id');
-        _currentItems = _currentItems.filter(function(it) { return String(it.siteId) !== String(siteId); });
+        var siteModelName = row.getAttribute('data-site-model-name');
+        _currentItems = _currentItems.filter(function(it) {
+            return !(String(it.siteId) === String(siteId) && it.siteModelName === siteModelName);
+        });
         renderRouteList();
     }
 
@@ -287,7 +367,11 @@
         if (_currentItems.length === 0) { showMsg('没有站点可保存', false); return; }
 
         var rules = _currentItems.map(function(item) {
-            return { siteId: item.siteId, siteModelName: item.siteModelName };
+            return {
+                upstreamModelName: item.upstreamModelName,
+                siteId: item.siteId,
+                siteModelName: item.siteModelName
+            };
         });
 
         fetch('/api/admin/route-rules/save', {
@@ -343,8 +427,8 @@
                             tr.innerHTML =
                                 '<td><code>' + escHtml(group.modelName) + '</code></td>' +
                                 '<td><strong>' + escHtml(r.siteName) + '</strong></td>' +
-                                '<td><code>' + escHtml(r.siteModelName) + '</code></td>' +
-                                '<td><span class="badge bg-info">' + r.priority + '</span></td>' +
+                                '<td><div><code>' + escHtml(r.upstreamModelName || '') + '</code></div><div class="text-secondary small">' + escHtml(r.siteModelName) + '</div></td>' +
+                                '<td><span class="badge bg-info">全局 ' + r.priority + '</span><div class="small text-secondary">组 ' + r.modelPriority + ' / 实例 ' + r.instancePriority + '</div></td>' +
                                 '<td><span class="badge bg-' + (r.isEnabled ? 'success' : 'secondary') + '">' +
                                     (r.isEnabled ? '启用' : '禁用') + '</span></td>' +
                                 '<td>' +

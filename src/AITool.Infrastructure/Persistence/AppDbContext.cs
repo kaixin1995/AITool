@@ -107,8 +107,9 @@ public sealed class AppDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.ExternalModelName).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.UpstreamModelName).IsRequired().HasMaxLength(200);
             entity.Property(e => e.SiteModelName).IsRequired().HasMaxLength(200);
-            entity.HasIndex(e => e.ExternalModelName);
+            entity.HasIndex(e => new { e.ExternalModelName, e.Priority });
         });
 
         // 平台访问密钥实体配置
@@ -126,8 +127,11 @@ public sealed class AppDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.ProtocolType).IsRequired().HasMaxLength(50);
             entity.Property(e => e.RequestModel).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.AttemptedModel).IsRequired().HasMaxLength(200);
             entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.ErrorMessage).IsRequired().HasMaxLength(2000);
             entity.HasIndex(e => e.RequestedAt);
+            entity.HasIndex(e => e.RequestId);
         });
 
         // 模型健康监控配置实体配置

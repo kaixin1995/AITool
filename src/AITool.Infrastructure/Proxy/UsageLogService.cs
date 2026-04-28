@@ -19,13 +19,19 @@ public sealed class UsageLogService : IUsageLogService
     {
         var log = new ProxyUsageLog
         {
+            RequestId = entry.RequestId,
             AccessKeyId = entry.AccessKeyId,
             ProtocolType = entry.ProtocolType,
             RequestModel = entry.RequestModel,
+            AttemptedModel = entry.AttemptedModel,
             TargetSiteId = entry.TargetSiteId,
             Status = entry.Status,
             Source = entry.Source,
             RetryCount = entry.RetryCount,
+            AttemptIndex = entry.AttemptIndex,
+            IsFinalResult = entry.IsFinalResult,
+            FallbackTriggered = entry.FallbackTriggered,
+            ErrorMessage = entry.ErrorMessage,
             InputTokens = entry.InputTokens,
             OutputTokens = entry.OutputTokens,
             TotalTokens = entry.InputTokens + entry.OutputTokens
