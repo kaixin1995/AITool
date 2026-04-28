@@ -27,63 +27,75 @@
 }
 
 <!-- 站点列表表格 -->
-<div class="table-wrapper">
-    <table class="table">
-        <thead>
-            <tr>
-                <th>名称</th>
-                <th>根地址</th>
-                <th>协议类型</th>
-                <th>状态</th>
-                <th>创建时间</th>
-                <th>操作</th>
-            </tr>
-        </thead>
-        <tbody>
-            @if (!Model.Sites.Any())
-            {
+<form method="post" asp-page-handler="BulkDelete">
+    <div class="table-wrapper">
+        <table class="table">
+            <thead>
                 <tr>
-                    <td colspan="6">
-                        <div class="table-empty">
-                            <div class="table-empty-icon">🌐</div>
-                            <div class="table-empty-text">暂无站点，点击上方按钮新增</div>
-                        </div>
-                    </td>
+                    <th style="width:36px;">
+                        <input type="checkbox" id="selectAllSites" class="form-check-input" />
+                    </th>
+                    <th>名称</th>
+                    <th>根地址</th>
+                    <th>协议类型</th>
+                    <th>状态</th>
+                    <th>创建时间</th>
+                    <th>操作</th>
                 </tr>
-            }
-            @foreach (var site in Model.Sites)
-            {
-                <tr>
-                    <td><strong>@site.Name</strong></td>
-                    <td><code>@site.BaseUrl</code></td>
-                    <td><span class="badge bg-info">@site.ProtocolType</span></td>
-                    <td>
-                        <span class="badge bg-@(site.IsEnabled ? "success" : "secondary")">
-                            @(site.IsEnabled ? "启用" : "禁用")
-                        </span>
-                    </td>
-                    <td>@site.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
-                    <td>
-                        <button type="button" class="btn btn-sm btn-primary btn-pull-site"
-                                data-site-id="@site.Id" data-site-name="@site.Name"
-                                @(!site.IsEnabled ? "disabled" : "")>
-                            拉取
-                        </button>
-                        <form method="post" asp-page-handler="Toggle" asp-route-siteId="@site.Id" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-@(site.IsEnabled ? "warning" : "success")">
-                                @(site.IsEnabled ? "禁用" : "启用")
+            </thead>
+            <tbody>
+                @if (!Model.Sites.Any())
+                {
+                    <tr>
+                        <td colspan="7">
+                            <div class="table-empty">
+                                <div class="table-empty-icon">🌐</div>
+                                <div class="table-empty-text">暂无站点，点击上方按钮新增</div>
+                            </div>
+                        </td>
+                    </tr>
+                }
+                @foreach (var site in Model.Sites)
+                {
+                    <tr>
+                        <td>
+                            <input type="checkbox" name="SelectedSiteIds" value="@site.Id" class="form-check-input site-check" />
+                        </td>
+                        <td><strong>@site.Name</strong></td>
+                        <td><code>@site.BaseUrl</code></td>
+                        <td><span class="badge bg-info">@site.ProtocolType</span></td>
+                        <td>
+                            <span class="badge bg-@(site.IsEnabled ? "success" : "secondary")">
+                                @(site.IsEnabled ? "启用" : "禁用")
+                            </span>
+                        </td>
+                        <td>@site.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
+                        <td>
+                            <button type="button" class="btn btn-sm btn-primary btn-pull-site"
+                                    data-site-id="@site.Id" data-site-name="@site.Name"
+                                    @(!site.IsEnabled ? "disabled" : "")>
+                                拉取
                             </button>
-                        </form>
-                        <a asp-page="./Edit" asp-route-id="@site.Id" class="btn btn-sm btn-outline-primary">编辑</a>
-                        <form method="post" asp-page-handler="Delete" asp-route-siteId="@site.Id" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该站点？')">删除</button>
-                        </form>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
-</div>
+                            <form method="post" asp-page-handler="Toggle" asp-route-siteId="@site.Id" class="d-inline">
+                                <button type="submit" class="btn btn-sm btn-outline-@(site.IsEnabled ? "warning" : "success")">
+                                    @(site.IsEnabled ? "禁用" : "启用")
+                                </button>
+                            </form>
+                            <a asp-page="./Edit" asp-route-id="@site.Id" class="btn btn-sm btn-outline-primary">编辑</a>
+                            <form method="post" asp-page-handler="Delete" asp-route-siteId="@site.Id" class="d-inline">
+                                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该站点？')">删除</button>
+                            </form>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    <div class="mt-3 d-flex align-items-center gap-2">
+        <button type="submit" class="btn btn-outline-danger" onclick="return confirm('确认批量删除选中的站点？将同时删除关联站点映射。')">批量删除选中</button>
+        <span class="text-secondary" style="font-size:13px;">支持同时删除多个站点，并清理关联映射</span>
+    </div>
+</form>
 
 <!-- 模型选择模态框 -->
 <div class="modal fade" id="modelSelectModal" tabindex="-1">
@@ -139,6 +151,16 @@
 
     document.addEventListener('DOMContentLoaded', function() {
         bsModal = new bootstrap.Modal(document.getElementById('modelSelectModal'));
+
+        /* 站点列表全选 */
+        var selectAllSites = document.getElementById('selectAllSites');
+        if (selectAllSites) {
+            selectAllSites.addEventListener('change', function() {
+                document.querySelectorAll('.site-check').forEach(function(checkbox) {
+                    checkbox.checked = selectAllSites.checked;
+                });
+            });
+        }
 
         /* 单站点拉取按钮 */
         document.querySelectorAll('.btn-pull-site').forEach(function(btn) {

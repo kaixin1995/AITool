@@ -20,6 +20,10 @@ public class IndexModel : PageModel
     // 站点列表数据
     public List<Site> Sites { get; set; } = [];
 
+    // 批量删除选择的站点 ID
+    [BindProperty]
+    public List<Guid> SelectedSiteIds { get; set; } = [];
+
     // 状态消息
     public string? StatusMessage { get; set; }
     public bool StatusSuccess { get; set; }
@@ -49,6 +53,44 @@ public class IndexModel : PageModel
             StatusMessage = $"操作失败：{ex.Message}";
             StatusSuccess = false;
         }
+        await OnGetAsync(cancellationToken);
+        return Page();
+    }
+
+    // 批量删除站点，并同步清理关联映射
+    public async Task<IActionResult> OnPostBulkDeleteAsync(CancellationToken cancellationToken)
+    {
+        if (SelectedSiteIds.Count == 0)
+        {
+            StatusMessage = "请先选择要删除的站点";
+            StatusSuccess = false;
+            await OnGetAsync(cancellationToken);
+            return Page();
+        }
+
+        try
+        {
+            var sites = await _dbContext.Sites
+                .Where(x => SelectedSiteIds.Contains(x.Id))
+                .ToListAsync(cancellationToken);
+            if (sites.Count == 0) return RedirectToPage();
+
+            var mappings = await _dbContext.SiteModelMappings
+                .Where(x => SelectedSiteIds.Contains(x.SiteId))
+                .ToListAsync(cancellationToken);
+
+            _dbContext.SiteModelMappings.RemoveRange(mappings);
+            _dbContext.Sites.RemoveRange(sites);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            StatusMessage = $"已批量删除 {sites.Count} 个站点";
+            StatusSuccess = true;
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"操作失败：{ex.Message}";
+            StatusSuccess = false;
+        }
+
         await OnGetAsync(cancellationToken);
         return Page();
     }
