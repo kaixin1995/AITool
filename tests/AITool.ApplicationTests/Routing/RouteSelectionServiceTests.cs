@@ -128,7 +128,7 @@ public sealed class ProxyForwardServiceTests
             },
             new HttpResponseMessage(HttpStatusCode.OK)
             {
-                Content = new StringContent("{\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}")
+                Content = new StringContent("{\"choices\":[{\"message\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}")
             });
 
         var httpClient = new HttpClient(handler);
@@ -149,6 +149,41 @@ public sealed class ProxyForwardServiceTests
         handler.CallCount.Should().Be(2);
         result.InputTokens.Should().Be(1);
         result.OutputTokens.Should().Be(2);
+    }
+
+    // HTTP 成功但响应体为空时，应视为失败并继续后续重试
+    [Fact]
+    public async Task ForwardAsync_treats_empty_response_body_as_failure_and_retries_next_attempt()
+    {
+        var handler = new SequenceHandler(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(string.Empty)
+            },
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("{\"choices\":[{\"message\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":4}}")
+            });
+
+        var httpClient = new HttpClient(handler);
+        var service = new ProxyForwardService(httpClient);
+
+        var result = await service.ForwardAsync(new ProxyForwardRequest
+        {
+            TargetBaseUrl = "https://unit.test",
+            TargetApiKey = "token",
+            ProtocolType = "OpenAI",
+            TargetModelName = "gpt-5.5-a",
+            RequestBody = "{\"model\":\"chat-prod\"}",
+            RetryCount = 1,
+            RequestTimeoutSeconds = 5
+        });
+
+        result.Success.Should().BeTrue();
+        handler.CallCount.Should().Be(2);
+        result.ResponseBody.Should().Contain("\"content\":\"ok\"");
+        result.InputTokens.Should().Be(3);
+        result.OutputTokens.Should().Be(4);
     }
 }
 

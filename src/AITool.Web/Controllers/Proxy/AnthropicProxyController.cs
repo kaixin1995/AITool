@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AITool.Application.Operations;
 using AITool.Application.Proxy;
 using AITool.Application.Routing;
 using AITool.Application.UsageLogs;
@@ -8,7 +9,6 @@ using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 
 namespace AITool.Web.Controllers.Proxy;
 
@@ -21,7 +21,7 @@ public sealed class AnthropicProxyController : ControllerBase
     private readonly IUsageLogService _usageLogService;
     private readonly AppDbContext _dbContext;
     private readonly RouteCircuitStateStore _circuitStore;
-    private readonly ProxyForwardingOptions _forwardingOptions;
+    private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
 
     public AnthropicProxyController(
         IRouteSelectionService routeService,
@@ -29,14 +29,14 @@ public sealed class AnthropicProxyController : ControllerBase
         IUsageLogService usageLogService,
         AppDbContext dbContext,
         RouteCircuitStateStore circuitStore,
-        IOptions<ProxyForwardingOptions> forwardingOptions)
+        ISystemRuntimeSettingsService systemRuntimeSettingsService)
     {
         _routeService = routeService;
         _forwardService = forwardService;
         _usageLogService = usageLogService;
         _dbContext = dbContext;
         _circuitStore = circuitStore;
-        _forwardingOptions = forwardingOptions.Value;
+        _systemRuntimeSettingsService = systemRuntimeSettingsService;
     }
 
     // 代理 Anthropic messages 请求
@@ -70,6 +70,9 @@ public sealed class AnthropicProxyController : ControllerBase
             return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
         }
 
+        // 读取当前持久化运行时设置，确保后台修改可立即影响代理执行
+        var runtimeSettings = await _systemRuntimeSettingsService.GetOrCreateAsync(cancellationToken);
+
         // 收集被熔断的站点，获取所有启用的路由规则
         var blockedSiteIds = await GetBlockedSiteIdsAsync(cancellationToken);
         var allRoutes = await _routeService.SelectAllRoutesAsync(modelName, cancellationToken);
@@ -100,8 +103,8 @@ public sealed class AnthropicProxyController : ControllerBase
                 ProtocolType = "Anthropic",
                 TargetModelName = route.SiteModelName,
                 RequestBody = requestBody,
-                RequestTimeoutSeconds = _forwardingOptions.RequestTimeoutSeconds,
-                RetryCount = _forwardingOptions.RetryCount
+                RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
+                RetryCount = runtimeSettings.ProxyRetryCount
             };
 
             var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);

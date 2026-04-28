@@ -80,11 +80,44 @@ public sealed class ProxyFallbackFlowTests
         logs[1].Status.Should().Be("success");
         logs[1].IsFinalResult.Should().BeTrue();
     }
+    [Fact]
+    public async Task Post_chat_completions_uses_runtime_settings_for_forward_request()
+    {
+        var fakeForwardService = new FakeProxyForwardService();
+        await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"chat-prod\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+
+        var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        fakeForwardService.Requests.Should().HaveCount(2);
+        fakeForwardService.Requests[0].RequestTimeoutSeconds.Should().Be(9);
+        fakeForwardService.Requests[0].RetryCount.Should().Be(2);
+        fakeForwardService.Requests[1].RequestTimeoutSeconds.Should().Be(9);
+        fakeForwardService.Requests[1].RetryCount.Should().Be(2);
+    }
 }
 
 internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-proxy-fallback-{Guid.NewGuid():N}.db");
+    private readonly FakeProxyForwardService _fakeForwardService;
+
+    public ProxyFallbackWebApplicationFactory()
+        : this(new FakeProxyForwardService())
+    {
+    }
+
+    public ProxyFallbackWebApplicationFactory(FakeProxyForwardService fakeForwardService)
+    {
+        _fakeForwardService = fakeForwardService;
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -95,7 +128,7 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
             services.RemoveAll<AppDbContext>();
             services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
             services.RemoveAll<IProxyForwardService>();
-            services.AddSingleton<IProxyForwardService>(new FakeProxyForwardService());
+            services.AddSingleton<IProxyForwardService>(_fakeForwardService);
         });
     }
 
@@ -171,6 +204,14 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
         db.Sites.AddRange(firstSite, secondSite);
         db.ProxyAccessKeys.Add(proxyAccessKey);
         db.ProxyRouteRules.AddRange(routeRules);
+        db.SystemRuntimeSettings.Add(new AITool.Domain.Operations.SystemRuntimeSettings
+        {
+            Id = 1,
+            ProxyRequestTimeoutSeconds = 9,
+            ProxyRetryCount = 2,
+            UsageLogRetentionDays = 7,
+            DetectionLogRetentionDays = 7
+        });
         await db.SaveChangesAsync();
     }
 
@@ -184,9 +225,22 @@ internal sealed class FakeProxyForwardService : IProxyForwardService
 {
     private int _attemptCount;
 
+    public List<ProxyForwardRequest> Requests { get; } = new();
+
     // 使用固定的两次结果模拟主路由失败、备路由成功的回退链路
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
+        Requests.Add(new ProxyForwardRequest
+        {
+            TargetBaseUrl = request.TargetBaseUrl,
+            TargetApiKey = request.TargetApiKey,
+            ProtocolType = request.ProtocolType,
+            TargetModelName = request.TargetModelName,
+            RequestBody = request.RequestBody,
+            RequestTimeoutSeconds = request.RequestTimeoutSeconds,
+            RetryCount = request.RetryCount
+        });
+
         _attemptCount++;
         if (_attemptCount == 1)
         {

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
+using AITool.Application.Operations;
 using AITool.Application.Proxy;
 using AITool.Application.Routing;
 using AITool.Application.UsageLogs;
@@ -8,7 +9,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Options;
 
 namespace AITool.Web.Controllers.Admin;
 
@@ -55,7 +55,7 @@ public sealed class ChatApiController : ControllerBase
     private readonly IRouteSelectionService _routeService;
     private readonly RouteCircuitStateStore _circuitStore;
     private readonly IUsageLogService _usageLogService;
-    private readonly ProxyForwardingOptions _forwardingOptions;
+    private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
 
     public ChatApiController(
         AppDbContext dbContext,
@@ -63,14 +63,14 @@ public sealed class ChatApiController : ControllerBase
         IRouteSelectionService routeService,
         RouteCircuitStateStore circuitStore,
         IUsageLogService usageLogService,
-        IOptions<ProxyForwardingOptions> forwardingOptions)
+        ISystemRuntimeSettingsService systemRuntimeSettingsService)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
         _routeService = routeService;
         _circuitStore = circuitStore;
         _usageLogService = usageLogService;
-        _forwardingOptions = forwardingOptions.Value;
+        _systemRuntimeSettingsService = systemRuntimeSettingsService;
     }
 
     // 获取可用于对话测试的模型列表
@@ -126,6 +126,9 @@ public sealed class ChatApiController : ControllerBase
         if (model is null || !model.IsEnabled)
             return Ok(new ChatSendResult { Success = false, Error = "模型不存在或已禁用" });
 
+        // 读取当前持久化运行时设置，确保后台修改可立即影响代理执行
+        var runtimeSettings = await _systemRuntimeSettingsService.GetOrCreateAsync(cancellationToken);
+
         // 尝试通过路由规则发送（支持失败重试）
         var allRoutes = await _routeService.SelectAllRoutesAsync(model.ModelName, cancellationToken);
 
@@ -171,8 +174,8 @@ public sealed class ChatApiController : ControllerBase
                     ProtocolType = site.ProtocolType,
                     TargetModelName = route.SiteModelName,
                     RequestBody = requestBody,
-                    RequestTimeoutSeconds = _forwardingOptions.RequestTimeoutSeconds,
-                    RetryCount = _forwardingOptions.RetryCount
+                    RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
+                    RetryCount = runtimeSettings.ProxyRetryCount
                 }, cancellationToken);
 
                 await _usageLogService.LogAsync(new UsageLogEntry
@@ -216,14 +219,17 @@ public sealed class ChatApiController : ControllerBase
         }
 
         // 没有路由规则时，回退到旧的 SiteModelMapping 直接查询逻辑
-        return await SendFallback(request, model, sw, cancellationToken);
+        return await SendFallback(request, model, runtimeSettings, cancellationToken);
     }
 
     // 回退逻辑：没有路由规则时直接通过站点映射发送
     private async Task<IActionResult> SendFallback(
-        ChatSendRequest request, Domain.Models.ModelLibraryItem model,
-        Stopwatch sw, CancellationToken cancellationToken)
+        ChatSendRequest request,
+        Domain.Models.ModelLibraryItem model,
+        AITool.Domain.Operations.SystemRuntimeSettings runtimeSettings,
+        CancellationToken cancellationToken)
     {
+        var sw = Stopwatch.StartNew();
         var mapping = await _dbContext.SiteModelMappings
             .FirstOrDefaultAsync(m => m.ModelLibraryItemId == request.ModelId && m.IsEnabled, cancellationToken);
 
@@ -253,8 +259,8 @@ public sealed class ChatApiController : ControllerBase
             ProtocolType = site.ProtocolType,
             TargetModelName = mapping.RemoteModelName,
             RequestBody = requestBody,
-            RequestTimeoutSeconds = _forwardingOptions.RequestTimeoutSeconds,
-            RetryCount = _forwardingOptions.RetryCount
+            RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
+            RetryCount = runtimeSettings.ProxyRetryCount
         }, cancellationToken);
 
         sw.Stop();

@@ -35,7 +35,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 // 从响应中提取 Token 用量
                 var (inputTokens, outputTokens) = ExtractTokenUsage(responseBody, request.ProtocolType);
 
-                if (response.IsSuccessStatusCode)
+                if (response.IsSuccessStatusCode && HasUsableResponse(responseBody, request.ProtocolType))
                 {
                     return new ProxyForwardResult
                     {
@@ -54,7 +54,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                         Success = false,
                         StatusCode = (int)response.StatusCode,
                         ResponseBody = responseBody,
-                        ErrorMessage = responseBody
+                        ErrorMessage = BuildFailureMessage(response, responseBody, request.ProtocolType)
                     };
                 }
             }
@@ -140,6 +140,76 @@ public sealed class ProxyForwardService : IProxyForwardService
         {
             return request.RequestBody;
         }
+    }
+
+    // 根据响应内容判断当前候选是否真正返回了可用结果
+    private static bool HasUsableResponse(string responseBody, string protocolType)
+    {
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("error", out _))
+            {
+                return false;
+            }
+
+            if (protocolType == "Anthropic")
+            {
+                return root.TryGetProperty("content", out var content)
+                    && content.ValueKind == JsonValueKind.Array
+                    && content.GetArrayLength() > 0;
+            }
+
+            return root.TryGetProperty("choices", out var choices)
+                && choices.ValueKind == JsonValueKind.Array
+                && choices.GetArrayLength() > 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // 为最终失败结果构造更明确的错误信息
+    private static string BuildFailureMessage(HttpResponseMessage response, string responseBody, string protocolType)
+    {
+        if (!response.IsSuccessStatusCode)
+        {
+            return responseBody;
+        }
+
+        if (string.IsNullOrWhiteSpace(responseBody))
+        {
+            return "Upstream returned an empty response body.";
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("error", out var error))
+            {
+                return error.ValueKind == JsonValueKind.String
+                    ? error.GetString() ?? responseBody
+                    : error.GetRawText();
+            }
+        }
+        catch
+        {
+            return "Upstream returned an unreadable response body.";
+        }
+
+        return protocolType == "Anthropic"
+            ? "Upstream returned no usable content blocks."
+            : "Upstream returned no usable choices.";
     }
 
     // 从响应体中提取 Token 用量信息
