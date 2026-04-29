@@ -88,17 +88,21 @@
             <tr>
                 <th>时间</th>
                 <th>来源</th>
-                <th>协议</th>
                 <th>模型</th>
                 <th>目标站点</th>
                 <th>状态</th>
-                <th>总 Tokens</th>
+                <th>总耗时</th>
+                <th>用时/首字</th>
+                <th>输入</th>
+                <th>缓存</th>
+                <th>输出</th>
+                <th>总Token数</th>
                 <th>操作</th>
             </tr>
         </thead>
         <tbody id="usageLogsTableBody">
             <tr>
-                <td colspan="8">
+                <td colspan="12">
                     <div class="table-empty">
                         <div class="table-empty-text">加载中...</div>
                     </div>
@@ -120,6 +124,36 @@
         </div>
     </div>
 </div>
+
+<style>
+    .usage-log-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 24px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1;
+        white-space: nowrap;
+    }
+
+    .usage-log-chip-total {
+        background: #e8f7ea;
+        color: #2e7d32;
+    }
+
+    .usage-log-chip-first {
+        background: #fff1e0;
+        color: #c77800;
+    }
+
+    .usage-log-chip-stream {
+        background: #e8f0ff;
+        color: #3366cc;
+    }
+</style>
 
 <script>
     var usageLogsRefreshTimer = null;
@@ -208,7 +242,7 @@
     function renderUsageLogRows(items) {
         var tbody = document.getElementById('usageLogsTableBody');
         if (!items.length) {
-            tbody.innerHTML = '<tr><td colspan="8"><div class="table-empty"><div class="table-empty-icon">📋</div><div class="table-empty-text">暂无调用日志</div></div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="11"><div class="table-empty"><div class="table-empty-icon">📋</div><div class="table-empty-text">暂无调用日志</div></div></td></tr>';
             return;
         }
 
@@ -221,10 +255,14 @@
             row.innerHTML =
                 '<td>' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</td>' +
                 '<td>' + renderSourceBadge(source) + '</td>' +
-                '<td><span class="badge bg-info">' + escHtml(readValue(item, ['protocolType']) || '-') + '</span></td>' +
                 '<td><code>' + escHtml(readValue(item, ['requestModel', 'attemptedModel']) || '-') + '</code></td>' +
                 '<td>' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</td>' +
                 '<td>' + renderStatusBadge(status) + '</td>' +
+                '<td><strong>' + escHtml(formatDuration(readValue(item, ['totalDurationMs']) || 0)) + '</strong></td>' +
+                '<td>' + renderLatencyBadges(item) + '</td>' +
+                '<td>' + escHtml(formatNumber(readValue(item, ['inputTokens']) || 0)) + '</td>' +
+                '<td>' + escHtml(formatNumber(readValue(item, ['cachedTokens']) || 0)) + '</td>' +
+                '<td>' + escHtml(formatNumber(readValue(item, ['outputTokens']) || 0)) + '</td>' +
                 '<td><strong>' + escHtml(formatNumber(readValue(item, ['totalTokens']) || 0)) + '</strong></td>' +
                 '<td><button type="button" class="btn btn-sm btn-outline-primary" onclick="openRequestDetail(\'' + escJs(requestId) + '\')">查看链路</button></td>';
             tbody.appendChild(row);
@@ -346,6 +384,33 @@
         }
 
         return number.toFixed(1) + '%';
+    }
+
+    function renderLatencyBadges(item) {
+        var totalMs = Number(readValue(item, ['totalDurationMs']) || 0);
+        var firstMs = Number(readValue(item, ['firstTokenLatencyMs']) || 0);
+        var isStreaming = !!readValue(item, ['isStreaming']);
+        var firstLabel = isStreaming ? formatDuration(firstMs) : '-';
+        return '' +
+            '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">' +
+                '<span class="usage-log-chip usage-log-chip-total">' + escHtml(formatDuration(totalMs)) + '</span>' +
+                '<span class="usage-log-chip usage-log-chip-first">' + escHtml(firstLabel) + '</span>' +
+                '<span class="usage-log-chip usage-log-chip-stream">' + escHtml(isStreaming ? '流' : '非流') + '</span>' +
+            '</div>';
+    }
+
+    function formatDuration(value) {
+        var number = Number(value || 0);
+        if (!isFinite(number) || number <= 0) {
+            return '-';
+        }
+
+        if (number >= 1000) {
+            var seconds = number / 1000;
+            return (Math.abs(seconds - Math.round(seconds)) < 0.05 ? Math.round(seconds).toString() : seconds.toFixed(1)) + 's';
+        }
+
+        return number + 'ms';
     }
 
     function formatNumber(value) {

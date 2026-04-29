@@ -126,7 +126,12 @@ public sealed class OpenAiProxyController : ControllerBase
                 FallbackTriggered = !result.Success,
                 ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty),
                 InputTokens = result.InputTokens,
-                OutputTokens = result.OutputTokens
+                CachedTokens = result.CachedTokens,
+                OutputTokens = result.OutputTokens,
+                IsStreaming = result.IsStreaming,
+                FirstTokenLatencyMs = result.FirstTokenLatencyMs,
+                StreamDurationMs = result.StreamDurationMs,
+                TotalDurationMs = result.TotalDurationMs
             }, cancellationToken);
 
             if (result.Success)

@@ -35,6 +35,11 @@ public sealed class UsageLogsApiTests
 
         items.Should().HaveCount(4);
         latestItem.GetProperty("requestModel").GetString().Should().Be("summary-model");
+        latestItem.GetProperty("cachedTokens").GetInt32().Should().Be(8704);
+        latestItem.GetProperty("isStreaming").GetBoolean().Should().BeTrue();
+        latestItem.GetProperty("firstTokenLatencyMs").GetInt32().Should().Be(5400);
+        latestItem.GetProperty("totalDurationMs").GetInt32().Should().Be(8000);
+        latestItem.GetProperty("streamDurationMs").GetInt32().Should().Be(2600);
         fallbackAttemptItem.GetProperty("requestModel").GetString().Should().Be("chat-prod");
         fallbackAttemptItem.GetProperty("attemptedModel").GetString().Should().Be("gpt-5.5");
         fallbackAttemptItem.GetProperty("siteModelName").GetString().Should().Be("gpt-5.5-a");
@@ -99,7 +104,7 @@ public sealed class UsageLogsApiTests
         document.RootElement.GetProperty("totalRequests").GetInt32().Should().Be(3);
         document.RootElement.GetProperty("failedRequests").GetInt32().Should().Be(1);
         document.RootElement.GetProperty("successRate").GetDouble().Should().BeApproximately(66.67d, 0.01d);
-        document.RootElement.GetProperty("totalTokens").GetInt32().Should().Be(90);
+        document.RootElement.GetProperty("totalTokens").GetInt32().Should().Be(8870);
         document.RootElement.GetProperty("maxDurationMs").GetInt32().Should().Be(3200);
     }
 
@@ -118,7 +123,7 @@ public sealed class UsageLogsApiTests
         document.RootElement.GetProperty("totalRequests").GetInt32().Should().Be(2);
         document.RootElement.GetProperty("failedRequests").GetInt32().Should().Be(1);
         document.RootElement.GetProperty("successRate").GetDouble().Should().BeApproximately(50d, 0.01d);
-        document.RootElement.GetProperty("totalTokens").GetInt32().Should().Be(30);
+        document.RootElement.GetProperty("totalTokens").GetInt32().Should().Be(106);
         document.RootElement.GetProperty("maxDurationMs").GetInt32().Should().Be(3200);
     }
 
@@ -134,7 +139,10 @@ public sealed class UsageLogsApiTests
         html.Should().Contain("自动刷新");
         html.Should().Contain("查看链路");
         html.Should().Contain("成功率");
-        html.Should().Contain("总 Tokens");
+        html.Should().Contain("总Token数");
+        html.Should().Contain("总耗时");
+        html.Should().Contain("用时/首字");
+        html.Should().Contain("缓存");
     }
 }
 
@@ -231,9 +239,14 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 IsFinalResult = false,
                 FallbackTriggered = true,
                 ErrorMessage = "upstream timeout",
-                InputTokens = 0,
+                InputTokens = 90548,
+                CachedTokens = 8704,
                 OutputTokens = 0,
-                TotalTokens = 0,
+                TotalTokens = 99252,
+                IsStreaming = true,
+                FirstTokenLatencyMs = 5400,
+                StreamDurationMs = 2600,
+                TotalDurationMs = 8000,
                 RequestedAt = new DateTimeOffset(2026, 4, 28, 10, 0, 0, TimeSpan.Zero)
             },
             new ProxyUsageLog
@@ -252,8 +265,13 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 FallbackTriggered = false,
                 ErrorMessage = string.Empty,
                 InputTokens = 20,
-                OutputTokens = 10,
-                TotalTokens = 30,
+                CachedTokens = 0,
+                OutputTokens = 86,
+                TotalTokens = 106,
+                IsStreaming = true,
+                FirstTokenLatencyMs = 1200,
+                StreamDurationMs = 600,
+                TotalDurationMs = 1800,
                 RequestedAt = new DateTimeOffset(2026, 4, 28, 10, 0, 3, 200, TimeSpan.Zero)
             },
             new ProxyUsageLog
@@ -272,8 +290,13 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 FallbackTriggered = false,
                 ErrorMessage = string.Empty,
                 InputTokens = 40,
+                CachedTokens = 8704,
                 OutputTokens = 20,
-                TotalTokens = 60,
+                TotalTokens = 8764,
+                IsStreaming = true,
+                FirstTokenLatencyMs = 5400,
+                StreamDurationMs = 2600,
+                TotalDurationMs = 8000,
                 RequestedAt = new DateTimeOffset(2026, 4, 28, 10, 1, 0, TimeSpan.Zero)
             },
             new ProxyUsageLog
@@ -292,8 +315,13 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 FallbackTriggered = false,
                 ErrorMessage = "rate limit",
                 InputTokens = 0,
+                CachedTokens = 0,
                 OutputTokens = 0,
                 TotalTokens = 0,
+                IsStreaming = false,
+                FirstTokenLatencyMs = 0,
+                StreamDurationMs = 0,
+                TotalDurationMs = 3200,
                 RequestedAt = new DateTimeOffset(2026, 4, 28, 9, 59, 0, TimeSpan.Zero)
             });
 

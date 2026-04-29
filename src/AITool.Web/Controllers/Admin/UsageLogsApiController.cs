@@ -20,8 +20,13 @@ public sealed class UsageLogListItemDto
     public bool IsFinalResult { get; set; }
     public bool FallbackTriggered { get; set; }
     public int InputTokens { get; set; }
+    public int CachedTokens { get; set; }
     public int OutputTokens { get; set; }
     public int TotalTokens { get; set; }
+    public bool IsStreaming { get; set; }
+    public int FirstTokenLatencyMs { get; set; }
+    public int StreamDurationMs { get; set; }
+    public int TotalDurationMs { get; set; }
     public DateTimeOffset RequestedAt { get; set; }
 }
 
@@ -36,7 +41,14 @@ public sealed class UsageLogAttemptDto
     public bool IsFinalResult { get; set; }
     public bool FallbackTriggered { get; set; }
     public string ErrorMessage { get; set; } = string.Empty;
+    public int InputTokens { get; set; }
+    public int CachedTokens { get; set; }
+    public int OutputTokens { get; set; }
     public int TotalTokens { get; set; }
+    public bool IsStreaming { get; set; }
+    public int FirstTokenLatencyMs { get; set; }
+    public int StreamDurationMs { get; set; }
+    public int TotalDurationMs { get; set; }
     public DateTimeOffset RequestedAt { get; set; }
 }
 
@@ -97,8 +109,13 @@ public sealed class UsageLogsApiController : ControllerBase
                 IsFinalResult = x.IsFinalResult,
                 FallbackTriggered = x.FallbackTriggered,
                 InputTokens = x.InputTokens,
+                CachedTokens = x.CachedTokens,
                 OutputTokens = x.OutputTokens,
                 TotalTokens = x.TotalTokens,
+                IsStreaming = x.IsStreaming,
+                FirstTokenLatencyMs = x.FirstTokenLatencyMs,
+                StreamDurationMs = x.StreamDurationMs,
+                TotalDurationMs = x.TotalDurationMs,
                 RequestedAt = x.RequestedAt
             })
             .ToList();
@@ -142,7 +159,14 @@ public sealed class UsageLogsApiController : ControllerBase
                     IsFinalResult = x.IsFinalResult,
                     FallbackTriggered = x.FallbackTriggered,
                     ErrorMessage = x.ErrorMessage,
+                    InputTokens = x.InputTokens,
+                    CachedTokens = x.CachedTokens,
+                    OutputTokens = x.OutputTokens,
                     TotalTokens = x.TotalTokens,
+                    IsStreaming = x.IsStreaming,
+                    FirstTokenLatencyMs = x.FirstTokenLatencyMs,
+                    StreamDurationMs = x.StreamDurationMs,
+                    TotalDurationMs = x.TotalDurationMs,
                     RequestedAt = x.RequestedAt
                 })
                 .ToList()

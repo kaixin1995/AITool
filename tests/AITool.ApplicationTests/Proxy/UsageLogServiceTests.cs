@@ -22,7 +22,7 @@ public sealed class UsageLogServiceTests : IDisposable
         _service = new UsageLogService(_dbContext);
     }
 
-    // 正常日志写入后应能查到记录且 TotalTokens 为 Input + Output
+    // 正常日志写入后应能查到记录且 TotalTokens 为 Input + Cached + Output
     [Fact]
     public async Task LogAsync_persists_entry_with_correct_total_tokens()
     {
@@ -34,7 +34,12 @@ public sealed class UsageLogServiceTests : IDisposable
             TargetSiteId = Guid.NewGuid(),
             Status = "success",
             InputTokens = 100,
-            OutputTokens = 50
+            CachedTokens = 25,
+            OutputTokens = 50,
+            IsStreaming = true,
+            FirstTokenLatencyMs = 5400,
+            StreamDurationMs = 2600,
+            TotalDurationMs = 8000
         };
 
         await _service.LogAsync(entry);
@@ -43,7 +48,11 @@ public sealed class UsageLogServiceTests : IDisposable
         log.ProtocolType.Should().Be("OpenAI");
         log.RequestModel.Should().Be("gpt-5");
         log.Status.Should().Be("success");
-        log.TotalTokens.Should().Be(150);
+        log.CachedTokens.Should().Be(25);
+        log.TotalTokens.Should().Be(175);
+        log.IsStreaming.Should().BeTrue();
+        log.FirstTokenLatencyMs.Should().Be(5400);
+        log.TotalDurationMs.Should().Be(8000);
     }
 
     // 回退流程日志应完整保存尝试链路元数据
@@ -67,7 +76,12 @@ public sealed class UsageLogServiceTests : IDisposable
             RequestId = requestId,
             ErrorMessage = "upstream timeout",
             InputTokens = 0,
-            OutputTokens = 0
+            CachedTokens = 8704,
+            OutputTokens = 0,
+            IsStreaming = false,
+            FirstTokenLatencyMs = 0,
+            StreamDurationMs = 0,
+            TotalDurationMs = 8000
         };
 
         await _service.LogAsync(entry);

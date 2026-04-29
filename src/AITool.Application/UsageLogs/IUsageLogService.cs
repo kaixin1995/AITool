@@ -52,6 +52,21 @@ public sealed class UsageLogEntry
     // 输入 Token 数
     public int InputTokens { get; set; }
 
+    // 缓存 Token 数
+    public int CachedTokens { get; set; }
+
     // 输出 Token 数
     public int OutputTokens { get; set; }
+
+    // 是否为流式请求
+    public bool IsStreaming { get; set; }
+
+    // 首字耗时（毫秒）
+    public int FirstTokenLatencyMs { get; set; }
+
+    // 首字后的后续耗时（毫秒）
+    public int StreamDurationMs { get; set; }
+
+    // 请求总耗时（毫秒）
+    public int TotalDurationMs { get; set; }
 }

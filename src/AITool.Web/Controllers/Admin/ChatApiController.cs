@@ -193,7 +193,12 @@ public sealed class ChatApiController : ControllerBase
                     FallbackTriggered = !forwardResult.Success,
                     ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
                     InputTokens = forwardResult.InputTokens,
-                    OutputTokens = forwardResult.OutputTokens
+                    CachedTokens = forwardResult.CachedTokens,
+                    OutputTokens = forwardResult.OutputTokens,
+                    IsStreaming = forwardResult.IsStreaming,
+                    FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
+                    StreamDurationMs = forwardResult.StreamDurationMs,
+                    TotalDurationMs = forwardResult.TotalDurationMs
                 }, cancellationToken);
 
                 if (forwardResult.Success)
@@ -281,7 +286,12 @@ public sealed class ChatApiController : ControllerBase
             FallbackTriggered = false,
             ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
             InputTokens = forwardResult.InputTokens,
-            OutputTokens = forwardResult.OutputTokens
+            CachedTokens = forwardResult.CachedTokens,
+            OutputTokens = forwardResult.OutputTokens,
+            IsStreaming = forwardResult.IsStreaming,
+            FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
+            StreamDurationMs = forwardResult.StreamDurationMs,
+            TotalDurationMs = forwardResult.TotalDurationMs
         }, cancellationToken);
 
         if (!forwardResult.Success)

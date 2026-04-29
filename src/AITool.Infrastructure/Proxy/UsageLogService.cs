@@ -33,8 +33,13 @@ public sealed class UsageLogService : IUsageLogService
             FallbackTriggered = entry.FallbackTriggered,
             ErrorMessage = entry.ErrorMessage,
             InputTokens = entry.InputTokens,
+            CachedTokens = entry.CachedTokens,
             OutputTokens = entry.OutputTokens,
-            TotalTokens = entry.InputTokens + entry.OutputTokens
+            TotalTokens = entry.InputTokens + entry.CachedTokens + entry.OutputTokens,
+            IsStreaming = entry.IsStreaming,
+            FirstTokenLatencyMs = entry.FirstTokenLatencyMs,
+            StreamDurationMs = entry.StreamDurationMs,
+            TotalDurationMs = entry.TotalDurationMs
         };
 
         _dbContext.ProxyUsageLogs.Add(log);
