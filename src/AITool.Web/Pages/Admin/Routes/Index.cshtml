@@ -53,7 +53,11 @@
         <div id="queueEditor" style="display:none;">
             <div class="route-add-box">
                 <div class="row g-2 align-items-end">
-                    <div class="col-md-6">
+                    <div class="col-md-4">
+                        <label class="form-label" for="siteInstanceSearchInput">搜索候选实例</label>
+                        <input id="siteInstanceSearchInput" type="text" class="form-control" placeholder="搜索站点或模型" oninput="renderSiteInstanceSelect()" />
+                    </div>
+                    <div class="col-md-4">
                         <label class="form-label" for="siteInstanceSelect">添加候选实例</label>
                         <select id="siteInstanceSelect" class="form-select">
                             <option value="">-- 请选择站点实例 --</option>
@@ -449,17 +453,26 @@
 
     function renderSiteInstanceSelect() {
         var select = document.getElementById('siteInstanceSelect');
+        var keyword = (document.getElementById('siteInstanceSearchInput').value || '').trim().toLowerCase();
         select.innerHTML = '<option value="">-- 请选择站点实例 --</option>';
 
         _siteInstances.forEach(function(item, index) {
+            var label = item.siteName + ' / ' + item.siteModelName;
+            if (keyword && label.toLowerCase().indexOf(keyword) < 0) {
+                return;
+            }
+
             var opt = document.createElement('option');
             opt.value = String(index);
-            opt.textContent = item.siteName + ' / ' + item.siteModelName + ' / ' + item.protocolType;
+            opt.textContent = label;
             select.appendChild(opt);
         });
 
-        if (_siteInstances.length === 0) {
-            select.innerHTML = '<option value="">-- 暂无可用实例 --</option>';
+        if (select.options.length === 1) {
+            select.innerHTML = '<option value="">-- 暂无匹配实例 --</option>';
+            if (_siteInstances.length === 0) {
+                select.innerHTML = '<option value="">-- 暂无可用实例 --</option>';
+            }
         }
     }
 

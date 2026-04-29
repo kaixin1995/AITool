@@ -104,6 +104,20 @@ public sealed class ProxyFallbackFlowTests
     }
 
     [Fact]
+    public async Task Get_routes_page_contains_search_box_and_hides_protocol_rendering_text()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/Routes");
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("搜索站点或模型");
+        html.Should().NotContain("item.protocolType");
+    }
+
+    [Fact]
     public async Task Post_chat_completions_falls_back_to_next_route_and_persists_attempt_logs()
     {
         await using var factory = new ProxyFallbackWebApplicationFactory();

@@ -18,7 +18,11 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 // 注册 Razor Pages，作为管理后台的页面框架
-builder.Services.AddRazorPages();
+builder.Services.AddRazorPages(options =>
+{
+    // 兼容旧入口，站点目录页复用站点管理页
+    options.Conventions.AddPageRoute("/Admin/Sites/Index", "/Admin/SiteCatalog");
+});
 
 // 注册 API 控制器，用于代理转发端点
 builder.Services.AddControllers();

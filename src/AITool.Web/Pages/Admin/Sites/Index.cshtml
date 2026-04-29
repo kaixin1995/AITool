@@ -76,15 +76,18 @@
                                     @(!site.IsEnabled ? "disabled" : "")>
                                 拉取
                             </button>
-                            <form method="post" asp-page-handler="Toggle" asp-route-siteId="@site.Id" class="d-inline">
-                                <button type="submit" class="btn btn-sm btn-outline-@(site.IsEnabled ? "warning" : "success")">
-                                    @(site.IsEnabled ? "禁用" : "启用")
-                                </button>
-                            </form>
+                            <button type="submit"
+                                    formaction="?handler=Toggle&siteId=@site.Id"
+                                    formmethod="post"
+                                    class="btn btn-sm btn-outline-@(site.IsEnabled ? "warning" : "success")">
+                                @(site.IsEnabled ? "禁用" : "启用")
+                            </button>
                             <a asp-page="./Edit" asp-route-id="@site.Id" class="btn btn-sm btn-outline-primary">编辑</a>
-                            <form method="post" asp-page-handler="Delete" asp-route-siteId="@site.Id" class="d-inline">
-                                <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该站点？')">删除</button>
-                            </form>
+                            <button type="submit"
+                                    formaction="?handler=Delete&siteId=@site.Id"
+                                    formmethod="post"
+                                    class="btn btn-sm btn-outline-danger"
+                                    onclick="return confirm('确认删除该站点？')">删除</button>
                         </td>
                     </tr>
                 }
