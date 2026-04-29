@@ -18,6 +18,42 @@ public sealed class RouteModelItem
     public bool HasRouteRules { get; set; }
 }
 
+// 主入口列表项
+public sealed class RouteEntryListItem
+{
+    // 主入口名称
+    public string EntryName { get; set; } = string.Empty;
+    // 当前候选数量
+    public int CandidateCount { get; set; }
+}
+
+// 创建主入口请求
+public sealed class CreateRouteEntryRequest
+{
+    // 主入口名称
+    public string EntryName { get; set; } = string.Empty;
+}
+
+// 删除主入口请求
+public sealed class DeleteRouteEntryRequest
+{
+    // 主入口名称
+    public string EntryName { get; set; } = string.Empty;
+}
+
+// 可添加的站点实例项
+public sealed class SiteInstanceItem
+{
+    // 站点ID
+    public Guid SiteId { get; set; }
+    // 站点名称
+    public string SiteName { get; set; } = string.Empty;
+    // 上游模型实例名称
+    public string SiteModelName { get; set; } = string.Empty;
+    // 站点协议类型
+    public string ProtocolType { get; set; } = string.Empty;
+}
+
 // 自动发现的站点信息
 public sealed class DiscoveredSiteItem
 {
@@ -29,21 +65,6 @@ public sealed class DiscoveredSiteItem
     public string RemoteModelName { get; set; } = string.Empty;
     // 站点是否启用
     public bool SiteEnabled { get; set; }
-}
-
-// 可直接追加到候选队列的站点实例
-public sealed class SiteInstanceItem
-{
-    // 站点ID
-    public Guid SiteId { get; set; }
-    // 站点名称
-    public string SiteName { get; set; } = string.Empty;
-    // 上游模型组名称
-    public string UpstreamModelName { get; set; } = string.Empty;
-    // 站点模型名称
-    public string SiteModelName { get; set; } = string.Empty;
-    // 站点协议类型
-    public string ProtocolType { get; set; } = string.Empty;
 }
 
 // 路由规则列表项
@@ -101,7 +122,125 @@ public sealed class RouteRulesApiController : ControllerBase
         _dbContext = dbContext;
     }
 
-    // 获取所有路由入口模型名称列表，用于下拉选择
+    // 获取主入口列表，包含当前候选数量
+    [HttpGet("entries")]
+    public async Task<IActionResult> GetEntries(CancellationToken cancellationToken)
+    {
+        var candidateCounts = await _dbContext.ProxyRouteRules
+            .GroupBy(x => x.ExternalModelName)
+            .Select(g => new { EntryName = g.Key, CandidateCount = g.Count() })
+            .ToListAsync(cancellationToken);
+
+        var storedEntries = await _dbContext.ProxyRouteEntries
+            .OrderBy(x => x.EntryName)
+            .Select(x => x.EntryName)
+            .ToListAsync(cancellationToken);
+
+        var countsByName = candidateCounts.ToDictionary(x => x.EntryName, x => x.CandidateCount, StringComparer.Ordinal);
+        var mergedNames = storedEntries
+            .Concat(candidateCounts.Select(x => x.EntryName))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToList();
+
+        var result = mergedNames.Select(entryName => new RouteEntryListItem
+        {
+            EntryName = entryName,
+            CandidateCount = countsByName.GetValueOrDefault(entryName, 0)
+        }).ToList();
+
+        return Ok(result);
+    }
+
+    // 创建可独立存在的主入口
+    [HttpPost("entries")]
+    public async Task<IActionResult> CreateEntry(
+        [FromBody] CreateRouteEntryRequest request,
+        CancellationToken cancellationToken)
+    {
+        var entryName = (request.EntryName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(entryName))
+            return BadRequest(new { message = "主入口名称不能为空" });
+
+        var existsInEntries = await _dbContext.ProxyRouteEntries
+            .AnyAsync(x => x.EntryName == entryName, cancellationToken);
+        var existsInRules = await _dbContext.ProxyRouteRules
+            .AnyAsync(x => x.ExternalModelName == entryName, cancellationToken);
+        if (existsInEntries || existsInRules)
+            return BadRequest(new { message = "主入口已存在" });
+
+        _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
+        {
+            EntryName = entryName
+        });
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        return Ok(new { message = "创建成功" });
+    }
+
+    // 删除主入口及其下所有候选规则
+    [HttpPost("entries/delete")]
+    public async Task<IActionResult> DeleteEntry(
+        [FromBody] DeleteRouteEntryRequest request,
+        CancellationToken cancellationToken)
+    {
+        var entryName = (request.EntryName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(entryName))
+            return BadRequest(new { message = "主入口名称不能为空" });
+
+        var entry = await _dbContext.ProxyRouteEntries
+            .FirstOrDefaultAsync(x => x.EntryName == entryName, cancellationToken);
+        var rules = await _dbContext.ProxyRouteRules
+            .Where(x => x.ExternalModelName == entryName)
+            .ToListAsync(cancellationToken);
+
+        if (entry is null && rules.Count == 0)
+            return NotFound(new { message = "主入口不存在" });
+
+        if (entry is not null)
+        {
+            _dbContext.ProxyRouteEntries.Remove(entry);
+        }
+
+        if (rules.Count > 0)
+        {
+            _dbContext.ProxyRouteRules.RemoveRange(rules);
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        return Ok(new { message = "删除成功" });
+    }
+
+    // 返回全部可供追加的站点模型实例
+    [HttpGet("site-instances")]
+    public async Task<IActionResult> GetSiteInstances(CancellationToken cancellationToken)
+    {
+        var sites = await _dbContext.Sites
+            .Where(x => x.IsEnabled)
+            .OrderBy(x => x.Name)
+            .ToDictionaryAsync(x => x.Id, x => x, cancellationToken);
+
+        var items = await _dbContext.SiteModelMappings
+            .Where(x => x.IsEnabled)
+            .OrderBy(x => x.RemoteModelName)
+            .ToListAsync(cancellationToken);
+
+        var result = items
+            .Where(x => sites.ContainsKey(x.SiteId))
+            .Select(x => new SiteInstanceItem
+            {
+                SiteId = x.SiteId,
+                SiteName = sites[x.SiteId].Name,
+                SiteModelName = x.RemoteModelName,
+                ProtocolType = sites[x.SiteId].ProtocolType
+            })
+            .ToList();
+
+        return Ok(result);
+    }
+
+    // 获取所有有站点映射的模型名称列表，用于下拉选择
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
@@ -122,73 +261,54 @@ public sealed class RouteRulesApiController : ControllerBase
             })
             .ToListAsync(cancellationToken);
 
+        // 统计每个模型的站点数量
+        var siteCounts = enabledMappings
+            .GroupBy(m => m.ModelLibraryItemId)
+            .ToDictionary(g => g.Key, g => g.Count());
+
         // 查询已配置路由规则的模型名称
         var routedModels = await _dbContext.ProxyRouteRules
             .Select(r => r.ExternalModelName)
             .Distinct()
-            .ToListAsync(cancellationToken);
+            .ToHashSetAsync(cancellationToken);
 
-        // 已存在的逻辑入口名也应出现在管理列表中，即使它不在模型库里
-        foreach (var routedModelName in routedModels)
+        // 通过 ModelName 关联
+        var modelNames = models.Select(m => m.ModelName).ToHashSet();
+
+        foreach (var model in models)
         {
-            if (models.All(m => !string.Equals(m.ModelName, routedModelName, StringComparison.Ordinal)))
-            {
-                models.Add(new RouteModelItem
-                {
-                    ModelName = routedModelName,
-                    DisplayName = routedModelName
-                });
-            }
+            var modelId = enabledMappings
+                .FirstOrDefault(m => m.ModelLibraryItemId != Guid.Empty)?
+                .ModelLibraryItemId ?? Guid.Empty;
+
+            model.SiteCount = enabledMappings
+                .Count(m => modelNames.Contains(model.ModelName));
+
+            // 检查该模型名是否有路由规则
+            model.HasRouteRules = routedModels.Contains(model.ModelName);
         }
 
-        models = models
-            .OrderBy(m => m.DisplayName)
-            .ToList();
-
-        // 填充站点数量与规则标记
+        // 填充站点数量
         var modelItems = await _dbContext.ModelLibraryItems
             .Where(m => modelIds.Contains(m.Id))
             .ToDictionaryAsync(m => m.Id, m => m, cancellationToken);
 
         foreach (var model in models)
         {
+            var matchingIds = enabledMappings
+                .Where(em => modelItems.TryGetValue(em.ModelLibraryItemId, out var item)
+                    && item.ModelName == model.ModelName)
+                .Select(em => em.ModelLibraryItemId)
+                .Distinct()
+                .Count();
+
             model.SiteCount = enabledMappings
                 .Where(em => modelItems.TryGetValue(em.ModelLibraryItemId, out var item)
                     && item.ModelName == model.ModelName)
                 .Count();
-
-            model.HasRouteRules = routedModels.Contains(model.ModelName);
         }
 
         return Ok(models);
-    }
-
-    // 获取所有可直接追加的站点实例，支持按站点实例维护候选队列
-    [HttpGet("site-instances")]
-    public async Task<IActionResult> GetSiteInstances(CancellationToken cancellationToken)
-    {
-        var sites = await _dbContext.Sites
-            .Where(s => s.IsEnabled)
-            .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
-
-        var mappings = await _dbContext.SiteModelMappings
-            .Where(m => m.IsEnabled)
-            .OrderBy(m => m.RemoteModelName)
-            .ToListAsync(cancellationToken);
-
-        var results = mappings
-            .Where(m => sites.ContainsKey(m.SiteId))
-            .Select(m => new SiteInstanceItem
-            {
-                SiteId = m.SiteId,
-                SiteName = sites[m.SiteId].Name,
-                UpstreamModelName = m.RemoteModelName,
-                SiteModelName = m.RemoteModelName,
-                ProtocolType = sites[m.SiteId].ProtocolType
-            })
-            .ToList();
-
-        return Ok(results);
     }
 
     // 根据模型名称自动发现拥有该模型的站点
@@ -290,12 +410,23 @@ public sealed class RouteRulesApiController : ControllerBase
         [FromBody] SaveRouteRulesRequest request,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(request.ExternalModelName))
+        var entryName = (request.ExternalModelName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(entryName))
             return BadRequest(new { message = "模型名称不能为空" });
+
+        var existingEntry = await _dbContext.ProxyRouteEntries
+            .FirstOrDefaultAsync(x => x.EntryName == entryName, cancellationToken);
+        if (existingEntry is null)
+        {
+            _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
+            {
+                EntryName = entryName
+            });
+        }
 
         // 删除该模型的所有旧规则
         var existingRules = await _dbContext.ProxyRouteRules
-            .Where(r => r.ExternalModelName == request.ExternalModelName)
+            .Where(r => r.ExternalModelName == entryName)
             .ToListAsync(cancellationToken);
         _dbContext.ProxyRouteRules.RemoveRange(existingRules);
 
@@ -327,7 +458,7 @@ public sealed class RouteRulesApiController : ControllerBase
 
             _dbContext.ProxyRouteRules.Add(new ProxyRouteRule
             {
-                ExternalModelName = request.ExternalModelName,
+                ExternalModelName = entryName,
                 UpstreamModelName = normalizedUpstreamModelName,
                 SiteId = entry.SiteId,
                 SiteModelName = entry.SiteModelName,

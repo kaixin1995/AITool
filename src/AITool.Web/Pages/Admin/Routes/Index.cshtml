@@ -3,104 +3,222 @@
 @{
     ViewData["Title"] = "路由规则管理";
 }
-<!-- 页面标题 -->
 <div class="page-header">
     <div>
         <h2 class="page-title">路由规则管理</h2>
-        <p class="page-subtitle">维护本地逻辑入口到候选站点实例的有序队列，请求时按顺序尝试并在成功后停止</p>
+        <p class="page-subtitle">主入口绑定有序候选实例队列，请求时按顺序失败切换、成功即停止</p>
     </div>
 </div>
 
-<!-- 操作提示 -->
 <div id="statusMsg" class="alert" style="display:none;"></div>
 
-<!-- 模型选择 -->
-<div class="inline-form">
-    <div class="row g-2 align-items-end">
-        <div class="col-md-4">
-            <label class="form-label">对外模型</label>
-            <input id="externalModelInput" class="form-control" list="modelOptions" placeholder="输入或选择逻辑入口名，例如 auto" />
-            <datalist id="modelOptions"></datalist>
-        </div>
-        <div class="col-md-4">
-            <label class="form-label">追加站点实例</label>
-            <select id="siteInstanceSelect" class="form-select">
-                <option value="">-- 请选择站点实例 --</option>
-            </select>
-        </div>
-        <div class="col-auto">
-            <button type="button" class="btn btn-secondary" onclick="loadModels()">刷新模型</button>
-        </div>
-        <div class="col-auto">
-            <button type="button" class="btn btn-outline-primary" onclick="openRouteEditor()">加载规则</button>
-        </div>
-        <div class="col-auto">
-            <button type="button" class="btn btn-outline-primary" onclick="appendSiteInstance()">添加候选实例</button>
-        </div>
-    </div>
-</div>
-
-<!-- 站点排序编辑区 -->
-<div id="routeEditor" style="display:none; margin-top:16px;">
-    <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <span>站点优先级排序（拖拽调整，越靠前优先级越高）</span>
-            <button type="button" class="btn btn-primary btn-sm" onclick="saveRules()">保存排序</button>
-        </div>
-        <div class="card-body p-0">
-            <div id="routeList" class="route-sort-list">
-                <!-- 动态生成的站点行 -->
-            </div>
-            <div id="emptyTip" class="p-3 text-center text-secondary" style="display:none;">
-                该模型暂无可用站点，请先在模型检测中导入模型
+<div class="route-layout">
+    <section class="route-panel route-panel-left">
+        <div class="route-panel-header">
+            <div>
+                <h5 class="route-panel-title">主入口</h5>
+                <div class="route-panel-subtitle">管理对外暴露的本地路由入口</div>
             </div>
         </div>
-    </div>
-</div>
 
-<!-- 所有规则概览 -->
-<div style="margin-top:24px;">
-    <h5 style="margin-bottom:12px;">已配置的路由规则</h5>
-    <div class="table-wrapper">
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>外部模型名</th>
-                    <th>目标站点</th>
-                    <th>站点模型名</th>
-                    <th>优先级</th>
-                    <th>状态</th>
-                    <th>操作</th>
-                </tr>
-            </thead>
-            <tbody id="allRulesBody">
-                <tr><td colspan="6"><div class="table-empty"><div class="table-empty-icon">🔀</div><div class="table-empty-text">暂无路由规则</div></div></td></tr>
-            </tbody>
-        </table>
-    </div>
+        <div class="route-create-box">
+            <label class="form-label" for="entryNameInput">新建主入口</label>
+            <div class="input-group">
+                <input id="entryNameInput" type="text" class="form-control" placeholder="例如 auto" />
+                <button type="button" class="btn btn-primary" onclick="createEntry()">创建</button>
+            </div>
+        </div>
+
+        <div id="entryEmptyState" class="route-empty-state" style="display:none;">
+            暂无主入口，请先创建
+        </div>
+        <div id="entryList" class="entry-list"></div>
+    </section>
+
+    <section class="route-panel route-panel-right">
+        <div class="route-panel-header route-panel-header-stack">
+            <div>
+                <h5 class="route-panel-title">候选实例队列</h5>
+                <div id="currentEntryLabel" class="route-panel-subtitle">请选择或创建一个主入口</div>
+            </div>
+            <div id="entryDangerZone" style="display:none;">
+                <button type="button" class="btn btn-outline-danger btn-sm" onclick="deleteCurrentEntry()">删除当前主入口</button>
+            </div>
+        </div>
+
+        <div id="queueEmptyState" class="route-empty-state">
+            请选择或创建一个主入口
+        </div>
+
+        <div id="queueEditor" style="display:none;">
+            <div class="route-add-box">
+                <div class="row g-2 align-items-end">
+                    <div class="col-md-6">
+                        <label class="form-label" for="siteInstanceSelect">添加候选实例</label>
+                        <select id="siteInstanceSelect" class="form-select">
+                            <option value="">-- 请选择站点实例 --</option>
+                        </select>
+                    </div>
+                    <div class="col-auto">
+                        <button type="button" class="btn btn-outline-primary" onclick="appendSiteInstance()">追加到队列末尾</button>
+                    </div>
+                    <div class="col-auto">
+                        <button type="button" class="btn btn-secondary" onclick="loadSiteInstances()">刷新实例池</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="queue-card">
+                <div class="queue-card-header">
+                    <span>拖拽调整顺序，修改后立即保存生效</span>
+                </div>
+                <div class="queue-card-body">
+                    <div id="routeList" class="route-sort-list"></div>
+                    <div id="queueListEmptyState" class="route-empty-state" style="display:none;">
+                        当前主入口暂无候选实例，请先添加
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
 </div>
 
 <style>
-    .route-sort-list { min-height: 40px; }
+    .route-layout {
+        display: grid;
+        grid-template-columns: 320px 1fr;
+        gap: 20px;
+        align-items: start;
+    }
+
+    .route-panel {
+        border: 1px solid var(--border-color, #e9ecef);
+        border-radius: 12px;
+        background: var(--card-bg, #fff);
+        overflow: hidden;
+    }
+
+    .route-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--border-color, #e9ecef);
+        background: var(--card-bg-alt, #f8f9fa);
+    }
+
+    .route-panel-header-stack {
+        align-items: flex-start;
+        gap: 12px;
+    }
+
+    .route-panel-title {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 700;
+    }
+
+    .route-panel-subtitle {
+        margin-top: 4px;
+        color: var(--text-secondary, #6c757d);
+        font-size: 13px;
+    }
+
+    .route-create-box,
+    .route-add-box {
+        padding: 16px 18px;
+        border-bottom: 1px solid var(--border-color, #e9ecef);
+    }
+
+    .entry-list {
+        padding: 10px;
+    }
+
+    .entry-item {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 12px 14px;
+        margin-bottom: 8px;
+        border: 1px solid var(--border-color, #e9ecef);
+        border-radius: 10px;
+        background: #fff;
+        cursor: pointer;
+        transition: border-color 0.15s, background 0.15s;
+    }
+
+    .entry-item:hover {
+        border-color: #b6d4fe;
+        background: #f8fbff;
+    }
+
+    .entry-item.active {
+        border-color: #0d6efd;
+        background: #e8f0fe;
+    }
+
+    .entry-name {
+        font-weight: 600;
+        font-size: 14px;
+    }
+
+    .entry-count {
+        color: var(--text-secondary, #6c757d);
+        font-size: 12px;
+    }
+
+    .route-empty-state {
+        padding: 28px 18px;
+        color: var(--text-secondary, #6c757d);
+        text-align: center;
+    }
+
+    .queue-card-header {
+        padding: 14px 18px;
+        border-bottom: 1px solid var(--border-color, #e9ecef);
+        background: var(--card-bg-alt, #f8f9fa);
+        color: var(--text-secondary, #6c757d);
+        font-size: 13px;
+    }
+
+    .queue-card-body {
+        min-height: 240px;
+    }
+
+    .route-sort-list {
+        min-height: 48px;
+    }
+
     .route-item {
         display: flex;
         align-items: center;
         gap: 12px;
-        padding: 10px 16px;
+        padding: 12px 16px;
         border-bottom: 1px solid var(--border-color, #e9ecef);
         cursor: grab;
         user-select: none;
         transition: background 0.15s;
     }
-    .route-item:hover { background: var(--card-bg-alt, #f8f9fa); }
-    .route-item.dragging { opacity: 0.4; background: #e8f0fe; }
-    .route-item .drag-handle {
+
+    .route-item:hover {
+        background: var(--card-bg-alt, #f8f9fa);
+    }
+
+    .route-item.dragging {
+        opacity: 0.4;
+        background: #e8f0fe;
+    }
+
+    .drag-handle {
         color: var(--text-secondary, #999);
         font-size: 18px;
         cursor: grab;
         flex-shrink: 0;
     }
-    .route-item .priority-num {
+
+    .priority-num {
         width: 28px;
         height: 28px;
         border-radius: 50%;
@@ -113,98 +231,189 @@
         font-weight: 600;
         flex-shrink: 0;
     }
-    .route-item .site-info {
+
+    .site-info {
         flex: 1;
+        min-width: 0;
     }
-    .route-item .site-name {
+
+    .site-name {
         font-weight: 600;
         font-size: 14px;
     }
-    .route-item .remote-name {
+
+    .remote-name {
         font-size: 12px;
         color: var(--text-secondary, #888);
+        margin-top: 2px;
+    }
+
+    @@media (max-width: 991px) {
+        .route-layout {
+            grid-template-columns: 1fr;
+        }
     }
 </style>
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {
-        loadModels();
-        loadAllRules();
+        loadSiteInstances();
+        loadEntries();
     });
 
-    // 当前编辑的站点列表
+    var _entries = [];
+    var _currentEntryName = '';
     var _currentItems = [];
-    // 当前可选的逻辑入口模型列表
-    var _availableModels = [];
-    // 当前可直接追加的站点实例列表
     var _siteInstances = [];
 
-    // 加载模型下拉列表
-    function loadModels() {
-        var modelOptions = document.getElementById('modelOptions');
-        var siteInstanceSelect = document.getElementById('siteInstanceSelect');
-        modelOptions.innerHTML = '';
-        siteInstanceSelect.innerHTML = '<option value="">-- 加载中... --</option>';
+    function loadEntries(preferredEntryName) {
+        fetch('/api/admin/route-rules/entries')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                _entries = data || [];
+                renderEntryList();
 
-        Promise.all([
-            fetch('/api/admin/route-rules/models').then(function(r) { return r.json(); }),
-            fetch('/api/admin/route-rules/site-instances').then(function(r) { return r.json(); })
-        ])
-            .then(function(results) {
-                var models = results[0] || [];
-                var siteInstances = results[1] || [];
-                _availableModels = models;
-                _siteInstances = siteInstances;
+                if (_entries.length === 0) {
+                    setCurrentEntry('');
+                    return;
+                }
 
-                models.forEach(function(m) {
-                    var opt = document.createElement('option');
-                    opt.value = m.modelName;
-                    modelOptions.appendChild(opt);
-                });
+                var targetEntryName = preferredEntryName || _currentEntryName;
+                var exists = _entries.some(function(item) { return item.entryName === targetEntryName; });
+                if (!exists) {
+                    targetEntryName = _entries[0].entryName;
+                }
 
-                renderSiteInstanceOptions();
+                setCurrentEntry(targetEntryName);
             })
-            .catch(function() {
-                siteInstanceSelect.innerHTML = '<option value="">-- 加载失败 --</option>';
+            .catch(function(err) {
+                showMsg('加载主入口失败：' + err.message, false);
             });
     }
 
-    function renderSiteInstanceOptions() {
-        var siteInstanceSelect = document.getElementById('siteInstanceSelect');
-        siteInstanceSelect.innerHTML = '<option value="">-- 请选择站点实例 --</option>';
+    function renderEntryList() {
+        var list = document.getElementById('entryList');
+        var emptyState = document.getElementById('entryEmptyState');
 
-        _siteInstances.forEach(function(item, index) {
-            var opt = document.createElement('option');
-            opt.value = String(index);
-            opt.textContent = item.siteName + ' / ' + item.siteModelName + ' / ' + item.upstreamModelName;
-            siteInstanceSelect.appendChild(opt);
-        });
-
-        if (_siteInstances.length === 0) {
-            siteInstanceSelect.innerHTML = '<option value="">-- 暂无可用站点实例 --</option>';
-        }
-    }
-
-    function openRouteEditor() {
-        var modelName = getExternalModelName();
-        if (!modelName) {
-            showMsg('请先输入对外模型名', false);
+        if (_entries.length === 0) {
+            list.innerHTML = '';
+            emptyState.style.display = 'block';
             return;
         }
 
-        loadRouteEditor(modelName);
+        emptyState.style.display = 'none';
+        list.innerHTML = '';
+
+        _entries.forEach(function(entry) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'entry-item' + (entry.entryName === _currentEntryName ? ' active' : '');
+            button.onclick = function() { setCurrentEntry(entry.entryName); };
+            button.innerHTML =
+                '<div>' +
+                    '<div class="entry-name">' + escHtml(entry.entryName) + '</div>' +
+                    '<div class="entry-count">' + entry.candidateCount + ' 个候选</div>' +
+                '</div>' +
+                '<span class="text-secondary">›</span>';
+            list.appendChild(button);
+        });
     }
 
-    function getExternalModelName() {
-        return (document.getElementById('externalModelInput').value || '').trim();
+    function setCurrentEntry(entryName) {
+        _currentEntryName = entryName || '';
+        renderEntryList();
+        updateQueuePanelState();
+
+        if (!_currentEntryName) {
+            _currentItems = [];
+            renderRouteList();
+            return;
+        }
+
+        loadRouteEditor(_currentEntryName);
     }
 
-    // 加载指定逻辑入口的候选实例编辑器
-    function loadRouteEditor(modelName) {
-        var editor = document.getElementById('routeEditor');
-        editor.style.display = 'block';
+    function updateQueuePanelState() {
+        var currentEntryLabel = document.getElementById('currentEntryLabel');
+        var queueEmptyState = document.getElementById('queueEmptyState');
+        var queueEditor = document.getElementById('queueEditor');
+        var dangerZone = document.getElementById('entryDangerZone');
 
-        fetch('/api/admin/route-rules/list?modelName=' + encodeURIComponent(modelName))
+        if (!_currentEntryName) {
+            currentEntryLabel.textContent = '请选择或创建一个主入口';
+            queueEmptyState.textContent = '请选择或创建一个主入口';
+            queueEmptyState.style.display = 'block';
+            queueEditor.style.display = 'none';
+            dangerZone.style.display = 'none';
+            return;
+        }
+
+        currentEntryLabel.textContent = '当前主入口：' + _currentEntryName;
+        queueEmptyState.style.display = 'none';
+        queueEditor.style.display = 'block';
+        dangerZone.style.display = 'block';
+    }
+
+    function createEntry() {
+        var input = document.getElementById('entryNameInput');
+        var entryName = (input.value || '').trim();
+        if (!entryName) {
+            showMsg('请输入主入口名称', false);
+            return;
+        }
+
+        fetch('/api/admin/route-rules/entries', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entryName: entryName })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.message === '创建成功') {
+                input.value = '';
+                showMsg('主入口已创建', true);
+                loadEntries(entryName);
+            } else {
+                showMsg(data.message || '创建失败', false);
+            }
+        })
+        .catch(function(err) {
+            showMsg('创建失败：' + err.message, false);
+        });
+    }
+
+    function deleteCurrentEntry() {
+        if (!_currentEntryName) {
+            return;
+        }
+
+        if (!confirm('确认删除主入口 ' + _currentEntryName + ' 及其候选队列？')) {
+            return;
+        }
+
+        fetch('/api/admin/route-rules/entries/delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entryName: _currentEntryName })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (data.message === '删除成功') {
+                showMsg('主入口已删除', true);
+                _currentEntryName = '';
+                _currentItems = [];
+                loadEntries();
+            } else {
+                showMsg(data.message || '删除失败', false);
+            }
+        })
+        .catch(function(err) {
+            showMsg('删除失败：' + err.message, false);
+        });
+    }
+
+    function loadRouteEditor(entryName) {
+        fetch('/api/admin/route-rules/list?modelName=' + encodeURIComponent(entryName))
             .then(function(r) { return r.json(); })
             .then(function(existingRules) {
                 _currentItems = (existingRules || []).map(function(r) {
@@ -212,152 +421,173 @@
                         siteId: r.siteId,
                         siteName: r.siteName,
                         upstreamModelName: r.upstreamModelName || r.siteModelName,
-                        siteModelName: r.siteModelName,
-                        source: 'rule'
+                        siteModelName: r.siteModelName
                     };
                 });
                 renderRouteList();
             })
             .catch(function(err) {
-                _currentItems = [];
-                renderRouteList();
-                showMsg('加载规则失败：' + err.message, false);
+                showMsg('加载候选队列失败：' + err.message, false);
             });
     }
 
-    // 渲染站点排序列表
+    function loadSiteInstances() {
+        var select = document.getElementById('siteInstanceSelect');
+        select.innerHTML = '<option value="">-- 加载中... --</option>';
+
+        fetch('/api/admin/route-rules/site-instances')
+            .then(function(r) { return r.json(); })
+            .then(function(data) {
+                _siteInstances = data || [];
+                renderSiteInstanceSelect();
+            })
+            .catch(function(err) {
+                select.innerHTML = '<option value="">-- 加载失败 --</option>';
+                showMsg('加载实例池失败：' + err.message, false);
+            });
+    }
+
+    function renderSiteInstanceSelect() {
+        var select = document.getElementById('siteInstanceSelect');
+        select.innerHTML = '<option value="">-- 请选择站点实例 --</option>';
+
+        _siteInstances.forEach(function(item, index) {
+            var opt = document.createElement('option');
+            opt.value = String(index);
+            opt.textContent = item.siteName + ' / ' + item.siteModelName + ' / ' + item.protocolType;
+            select.appendChild(opt);
+        });
+
+        if (_siteInstances.length === 0) {
+            select.innerHTML = '<option value="">-- 暂无可用实例 --</option>';
+        }
+    }
+
+    function appendSiteInstance() {
+        if (!_currentEntryName) {
+            showMsg('请先选择或创建主入口', false);
+            return;
+        }
+
+        var selectedIndex = document.getElementById('siteInstanceSelect').value;
+        if (selectedIndex === '') {
+            showMsg('请先选择站点实例', false);
+            return;
+        }
+
+        var selectedItem = _siteInstances[Number(selectedIndex)];
+        if (!selectedItem) {
+            showMsg('未找到对应站点实例', false);
+            return;
+        }
+
+        _currentItems.push({
+            siteId: selectedItem.siteId,
+            siteName: selectedItem.siteName,
+            upstreamModelName: selectedItem.siteModelName,
+            siteModelName: selectedItem.siteModelName
+        });
+
+        persistCurrentQueue('已追加候选实例');
+    }
+
     function renderRouteList() {
         var list = document.getElementById('routeList');
-        var emptyTip = document.getElementById('emptyTip');
+        var emptyState = document.getElementById('queueListEmptyState');
 
         if (_currentItems.length === 0) {
             list.innerHTML = '';
-            emptyTip.style.display = 'block';
+            emptyState.style.display = _currentEntryName ? 'block' : 'none';
             return;
         }
-        emptyTip.style.display = 'none';
 
+        emptyState.style.display = 'none';
         list.innerHTML = '';
+
         _currentItems.forEach(function(item, index) {
             var row = document.createElement('div');
             row.className = 'route-item';
             row.draggable = true;
-            row.setAttribute('data-site-id', item.siteId);
-            row.setAttribute('data-site-model-name', item.siteModelName);
-            row.setAttribute('data-upstream-model-name', item.upstreamModelName);
+            row.setAttribute('data-index', String(index));
             row.innerHTML =
                 '<span class="drag-handle">⠿</span>' +
                 '<span class="priority-num">' + (index + 1) + '</span>' +
                 '<div class="site-info">' +
                     '<div class="site-name">' + escHtml(item.siteName) + '</div>' +
-                    '<div class="remote-name">上游模型组：' + escHtml(item.upstreamModelName) + '</div>' +
-                    '<div class="remote-name">站点模型：' + escHtml(item.siteModelName) + '</div>' +
+                    '<div class="remote-name">上游模型：' + escHtml(item.upstreamModelName) + '</div>' +
+                    '<div class="remote-name">站点实例：' + escHtml(item.siteModelName) + '</div>' +
                 '</div>' +
-                '<button type="button" class="btn btn-sm btn-outline-danger" onclick="removeItem(this)" title="移除">✕</button>';
+                '<button type="button" class="btn btn-sm btn-outline-danger" onclick="removeItem(' + index + ')">移除</button>';
             list.appendChild(row);
         });
 
         initDragDrop();
     }
 
-    // 追加指定站点实例到候选队列
-    function appendSiteInstance() {
-        var selectedIndex = document.getElementById('siteInstanceSelect').value;
-        if (selectedIndex === '') {
-            showMsg('请先选择要追加的站点实例', false);
-            return;
-        }
-
-        var selectedItem = _siteInstances[parseInt(selectedIndex, 10)];
-        if (!selectedItem) {
-            showMsg('所选站点实例不存在', false);
-            return;
-        }
-
-        var editor = document.getElementById('routeEditor');
-        editor.style.display = 'block';
-
-        _currentItems.push({
-            siteId: selectedItem.siteId,
-            siteName: selectedItem.siteName,
-            upstreamModelName: selectedItem.upstreamModelName || selectedItem.siteModelName,
-            siteModelName: selectedItem.siteModelName,
-            source: 'append'
-        });
-
-        renderRouteList();
-        showMsg('已追加候选实例', true);
-    }
-
-    // 初始化拖拽排序
     function initDragDrop() {
         var list = document.getElementById('routeList');
         var draggedItem = null;
 
-        list.addEventListener('dragstart', function(e) {
+        list.ondragstart = function(e) {
             draggedItem = e.target.closest('.route-item');
             if (draggedItem) {
                 e.dataTransfer.effectAllowed = 'move';
                 setTimeout(function() { draggedItem.classList.add('dragging'); }, 0);
             }
-        });
+        };
 
-        list.addEventListener('dragend', function() {
-            if (draggedItem) {
-                draggedItem.classList.remove('dragging');
-                draggedItem = null;
-                syncItemsFromDOM();
-                renderRouteList();
+        list.ondragend = function() {
+            if (!draggedItem) {
+                return;
             }
-        });
 
-        list.addEventListener('dragover', function(e) {
+            draggedItem.classList.remove('dragging');
+            draggedItem = null;
+            syncItemsFromDOM();
+            renderRouteList();
+            persistCurrentQueue('顺序已更新');
+        };
+
+        list.ondragover = function(e) {
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             var target = e.target.closest('.route-item');
-            if (target && target !== draggedItem) {
-                var rect = target.getBoundingClientRect();
-                var mid = rect.top + rect.height / 2;
-                if (e.clientY < mid) {
-                    list.insertBefore(draggedItem, target);
-                } else {
-                    list.insertBefore(draggedItem, target.nextSibling);
-                }
+            if (!draggedItem || !target || target === draggedItem) {
+                return;
             }
-        });
+
+            var rect = target.getBoundingClientRect();
+            var mid = rect.top + rect.height / 2;
+            if (e.clientY < mid) {
+                list.insertBefore(draggedItem, target);
+            } else {
+                list.insertBefore(draggedItem, target.nextSibling);
+            }
+        };
     }
 
-    // 从 DOM 同步回 _currentItems 数组
     function syncItemsFromDOM() {
         var rows = document.querySelectorAll('#routeList .route-item');
-        var newItems = [];
+        var reordered = [];
         rows.forEach(function(row) {
-            var siteId = row.getAttribute('data-site-id');
-            var siteModelName = row.getAttribute('data-site-model-name');
-            var match = _currentItems.find(function(it) {
-                return String(it.siteId) === String(siteId) && it.siteModelName === siteModelName;
-            });
-            if (match) newItems.push(match);
+            var index = Number(row.getAttribute('data-index'));
+            if (!Number.isNaN(index) && _currentItems[index]) {
+                reordered.push(_currentItems[index]);
+            }
         });
-        _currentItems = newItems;
+        _currentItems = reordered;
     }
 
-    // 移除站点
-    function removeItem(btn) {
-        var row = btn.closest('.route-item');
-        var siteId = row.getAttribute('data-site-id');
-        var siteModelName = row.getAttribute('data-site-model-name');
-        _currentItems = _currentItems.filter(function(it) {
-            return !(String(it.siteId) === String(siteId) && it.siteModelName === siteModelName);
-        });
+    function removeItem(index) {
+        _currentItems.splice(index, 1);
         renderRouteList();
+        persistCurrentQueue('已移除候选实例');
     }
 
-    // 保存当前逻辑入口的候选实例排序
-    function saveRules() {
-        var modelName = getExternalModelName();
-        if (!modelName) { showMsg('请先输入对外模型名', false); return; }
-        if (_currentItems.length === 0) { showMsg('没有站点可保存', false); return; }
+    function persistCurrentQueue(successMessage) {
+        if (!_currentEntryName) {
+            return;
+        }
 
         var rules = _currentItems.map(function(item) {
             return {
@@ -370,96 +600,23 @@
         fetch('/api/admin/route-rules/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ externalModelName: modelName, rules: rules })
+            body: JSON.stringify({ externalModelName: _currentEntryName, rules: rules })
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data.message === '保存成功') {
-                showMsg('路由规则已保存', true);
-                loadAllRules();
-                loadModels();
-                loadRouteEditor(modelName);
+                showMsg(successMessage, true);
+                loadEntries(_currentEntryName);
+                loadRouteEditor(_currentEntryName);
             } else {
                 showMsg(data.message || '保存失败', false);
             }
         })
-        .catch(function(err) { showMsg('保存失败：' + err.message, false); });
+        .catch(function(err) {
+            showMsg('保存失败：' + err.message, false);
+        });
     }
 
-    // 加载所有已配置的路由规则概览
-    function loadAllRules() {
-        // 获取所有不重复的模型名
-        fetch('/api/admin/route-rules/models')
-            .then(function(r) { return r.json(); })
-            .then(function(models) {
-                var modelsWithRules = models.filter(function(m) { return m.hasRouteRules; });
-                if (modelsWithRules.length === 0) {
-                    document.getElementById('allRulesBody').innerHTML =
-                        '<tr><td colspan="6"><div class="table-empty"><div class="table-empty-icon">🔀</div><div class="table-empty-text">暂无路由规则</div></div></td></tr>';
-                    return;
-                }
-
-                // 逐个加载规则
-                var promises = modelsWithRules.map(function(m) {
-                    return fetch('/api/admin/route-rules/list?modelName=' + encodeURIComponent(m.modelName))
-                        .then(function(r) { return r.json(); })
-                        .then(function(rules) {
-                            return { modelName: m.modelName, rules: rules };
-                        });
-                });
-
-                Promise.all(promises).then(function(allData) {
-                    var tbody = document.getElementById('allRulesBody');
-                    tbody.innerHTML = '';
-                    var hasAny = false;
-
-                    allData.forEach(function(group) {
-                        group.rules.forEach(function(r) {
-                            hasAny = true;
-                            var tr = document.createElement('tr');
-                            tr.innerHTML =
-                                '<td><code>' + escHtml(group.modelName) + '</code></td>' +
-                                '<td><strong>' + escHtml(r.siteName) + '</strong></td>' +
-                                '<td><div><code>' + escHtml(r.upstreamModelName || '') + '</code></div><div class="text-secondary small">' + escHtml(r.siteModelName) + '</div></td>' +
-                                '<td><span class="badge bg-info">全局 ' + r.priority + '</span><div class="small text-secondary">组 ' + r.modelPriority + ' / 实例 ' + r.instancePriority + '</div></td>' +
-                                '<td><span class="badge bg-' + (r.isEnabled ? 'success' : 'secondary') + '">' +
-                                    (r.isEnabled ? '启用' : '禁用') + '</span></td>' +
-                                '<td>' +
-                                    '<button class="btn btn-sm btn-outline-' + (r.isEnabled ? 'warning' : 'success') + '" onclick="toggleRule(\'' + r.ruleId + '\')">' +
-                                        (r.isEnabled ? '禁用' : '启用') +
-                                    '</button> ' +
-                                    '<button class="btn btn-sm btn-outline-danger" onclick="deleteRule(\'' + r.ruleId + '\')">删除</button>' +
-                                '</td>';
-                            tbody.appendChild(tr);
-                        });
-                    });
-
-                    if (!hasAny) {
-                        tbody.innerHTML =
-                            '<tr><td colspan="6"><div class="table-empty"><div class="table-empty-icon">🔀</div><div class="table-empty-text">暂无路由规则</div></div></td></tr>';
-                    }
-                });
-            });
-    }
-
-    // 切换规则启用/禁用
-    function toggleRule(ruleId) {
-        fetch('/api/admin/route-rules/toggle/' + ruleId, { method: 'POST' })
-            .then(function(r) { return r.json(); })
-            .then(function() { loadAllRules(); })
-            .catch(function(err) { showMsg('操作失败：' + err.message, false); });
-    }
-
-    // 删除规则
-    function deleteRule(ruleId) {
-        if (!confirm('确认删除该规则？')) return;
-        fetch('/api/admin/route-rules/delete/' + ruleId, { method: 'POST' })
-            .then(function(r) { return r.json(); })
-            .then(function() { loadAllRules(); })
-            .catch(function(err) { showMsg('操作失败：' + err.message, false); });
-    }
-
-    // 显示操作提示
     function showMsg(msg, success) {
         var el = document.getElementById('statusMsg');
         el.textContent = msg;
@@ -468,7 +625,6 @@
         setTimeout(function() { el.style.display = 'none'; }, 3000);
     }
 
-    // HTML 转义
     function escHtml(str) {
         var d = document.createElement('div');
         d.textContent = str || '';

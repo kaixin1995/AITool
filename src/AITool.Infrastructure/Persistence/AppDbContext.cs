@@ -31,6 +31,9 @@ public sealed class AppDbContext : DbContext
     // 检测任务执行记录数据集
     public DbSet<DetectionTaskExecution> DetectionTaskExecutions => Set<DetectionTaskExecution>();
 
+    // 代理主入口数据集
+    public DbSet<ProxyRouteEntry> ProxyRouteEntries => Set<ProxyRouteEntry>();
+
     // 代理路由规则数据集
     public DbSet<ProxyRouteRule> ProxyRouteRules => Set<ProxyRouteRule>();
 
@@ -104,6 +107,14 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
             entity.Property(e => e.Summary).HasMaxLength(2000);
             entity.HasIndex(e => e.StartedAt);
+        });
+
+        // 代理主入口实体配置
+        modelBuilder.Entity<ProxyRouteEntry>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.EntryName).IsRequired().HasMaxLength(200);
+            entity.HasIndex(e => e.EntryName).IsUnique();
         });
 
         // 代理路由规则实体配置

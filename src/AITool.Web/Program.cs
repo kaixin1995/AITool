@@ -94,6 +94,14 @@ using (var scope = app.Services.CreateScope())
         EnsureColumn(cmd, "ProxyUsageLogs", "FallbackTriggered", "ALTER TABLE ProxyUsageLogs ADD COLUMN FallbackTriggered INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "ErrorMessage", "ALTER TABLE ProxyUsageLogs ADD COLUMN ErrorMessage TEXT NOT NULL DEFAULT ''");
 
+        if (!TableExists(cmd, "ProxyRouteEntries"))
+        {
+            cmd.CommandText = "CREATE TABLE ProxyRouteEntries (Id TEXT NOT NULL CONSTRAINT PK_ProxyRouteEntries PRIMARY KEY, EntryName TEXT NOT NULL, CreatedAt TEXT NOT NULL)";
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "CREATE UNIQUE INDEX IX_ProxyRouteEntries_EntryName ON ProxyRouteEntries (EntryName)";
+            cmd.ExecuteNonQuery();
+        }
+
         if (TableExists(cmd, "SystemRuntimeSettings"))
         {
             EnsureColumn(cmd, "SystemRuntimeSettings", "ProxyRequestTimeoutSeconds", "ALTER TABLE SystemRuntimeSettings ADD COLUMN ProxyRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60");
