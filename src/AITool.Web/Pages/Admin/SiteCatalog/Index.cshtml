@@ -1,0 +1,88 @@
+@page
+@model AITool.Web.Pages.Admin.SiteCatalog.IndexModel
+@{
+    ViewData["Title"] = "站点模型发现";
+}
+
+<div class="page-header">
+    <div>
+        <h2 class="page-title">站点模型发现</h2>
+        <p class="page-subtitle">查看各站点已接入的远程模型，以及当前是否已映射到模型库</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a href="/Admin/Models" class="btn btn-outline-primary">前往模型映射</a>
+        <a href="/Admin/Sites" class="btn btn-primary">前往站点管理</a>
+    </div>
+</div>
+
+<div class="form-card" style="margin-bottom:20px;">
+    <div class="row g-2 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label" for="siteCatalogSearch">搜索模型</label>
+            <input type="text" id="siteCatalogSearch" class="form-control" placeholder="输入站点名或远程模型名过滤..." oninput="filterSiteCatalogRows()" />
+        </div>
+    </div>
+</div>
+
+<div class="table-wrapper">
+    <table class="table">
+        <thead>
+            <tr>
+                <th>站点名称</th>
+                <th>远程模型名</th>
+                <th>协议类型</th>
+                <th>映射状态</th>
+                <th>映射到本地模型</th>
+                <th>启用状态</th>
+                <th>最近状态</th>
+                <th>操作</th>
+            </tr>
+        </thead>
+        <tbody>
+            @if (!Model.Items.Any())
+            {
+                <tr>
+                    <td colspan="8">
+                        <div class="table-empty">
+                            <div class="table-empty-icon">🧭</div>
+                            <div class="table-empty-text">暂无站点模型数据，请先到站点管理页拉取模型</div>
+                        </div>
+                    </td>
+                </tr>
+            }
+            @foreach (var item in Model.Items)
+            {
+                <tr data-site-catalog-row="true" data-search-text="@(string.Join(' ', new[] { item.SiteName, item.RemoteModelName, item.DisplayName ?? string.Empty }).ToLowerInvariant())">
+                    <td><strong>@item.SiteName</strong></td>
+                    <td><code>@item.RemoteModelName</code></td>
+                    <td><span class="badge bg-info">@item.ProtocolType</span></td>
+                    <td>
+                        <span class="badge bg-@(item.IsMapped ? "success" : "secondary")">
+                            @(item.IsMapped ? "已映射" : "未映射")
+                        </span>
+                    </td>
+                    <td>@(string.IsNullOrWhiteSpace(item.DisplayName) ? "-" : item.DisplayName)</td>
+                    <td>
+                        <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
+                            @(item.IsEnabled ? "启用" : "禁用")
+                        </span>
+                    </td>
+                    <td><span class="badge bg-light text-dark">@item.LastStatus</span></td>
+                    <td>
+                        <a href="/Admin/Models" class="btn btn-sm btn-outline-primary">去模型映射</a>
+                    </td>
+                </tr>
+            }
+        </tbody>
+    </table>
+</div>
+
+<script>
+    function filterSiteCatalogRows() {
+        var keyword = (document.getElementById('siteCatalogSearch').value || '').trim().toLowerCase();
+        document.querySelectorAll('tr[data-site-catalog-row="true"]').forEach(function(row) {
+            var searchText = row.getAttribute('data-search-text') || '';
+            row.style.display = !keyword || searchText.indexOf(keyword) >= 0 ? '' : 'none';
+        });
+    }
+</script>

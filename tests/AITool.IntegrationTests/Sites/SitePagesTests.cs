@@ -38,7 +38,11 @@ public sealed class SitePagesTests
         var html = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        html.Should().Contain("站点管理");
+        html.Should().Contain("站点模型发现");
+        html.Should().Contain("去模型映射");
+        html.Should().Contain("Site A");
+        html.Should().Contain("gpt-a");
+        html.Should().NotContain("<h2 class=\"page-title\">站点管理</h2>");
     }
 }
 
@@ -102,11 +106,32 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Pro
                 IsEnabled = true
             });
 
+        var firstModelId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var secondModelId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+
+        db.ModelLibraryItems.AddRange(
+            new AITool.Domain.Models.ModelLibraryItem
+            {
+                Id = firstModelId,
+                ModelName = "gpt-a",
+                DisplayName = "GPT A",
+                ModelType = "chat",
+                IsEnabled = true
+            },
+            new AITool.Domain.Models.ModelLibraryItem
+            {
+                Id = secondModelId,
+                ModelName = "gpt-b",
+                DisplayName = "GPT B",
+                ModelType = "chat",
+                IsEnabled = true
+            });
+
         db.SiteModelMappings.AddRange(
             new AITool.Domain.SiteCatalog.SiteModelMapping
             {
                 SiteId = FirstSiteId,
-                ModelLibraryItemId = Guid.NewGuid(),
+                ModelLibraryItemId = firstModelId,
                 RemoteModelName = "gpt-a",
                 LastStatus = "ok",
                 IsEnabled = true
@@ -114,7 +139,7 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Pro
             new AITool.Domain.SiteCatalog.SiteModelMapping
             {
                 SiteId = SecondSiteId,
-                ModelLibraryItemId = Guid.NewGuid(),
+                ModelLibraryItemId = secondModelId,
                 RemoteModelName = "gpt-b",
                 LastStatus = "ok",
                 IsEnabled = true
@@ -124,8 +149,8 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Pro
                 SiteId = ThirdSiteId,
                 ModelLibraryItemId = Guid.NewGuid(),
                 RemoteModelName = "gpt-c",
-                LastStatus = "ok",
-                IsEnabled = true
+                LastStatus = "unknown",
+                IsEnabled = false
             });
 
         await db.SaveChangesAsync();
