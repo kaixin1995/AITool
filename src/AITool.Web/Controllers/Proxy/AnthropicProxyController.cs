@@ -73,14 +73,13 @@ public sealed class AnthropicProxyController : ControllerBase
         // 读取当前持久化运行时设置，确保后台修改可立即影响代理执行
         var runtimeSettings = await _systemRuntimeSettingsService.GetOrCreateAsync(cancellationToken);
 
-        // 收集被熔断的站点，获取所有启用的路由规则
-        var blockedSiteIds = await GetBlockedSiteIdsAsync(cancellationToken);
+        // 获取所有启用的路由规则，逐个尝试直到成功
         var allRoutes = await _routeService.SelectAllRoutesAsync(modelName, cancellationToken);
 
         if (allRoutes.Count == 0)
             return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
 
-        // 按优先级逐个尝试路由，失败则熔断该站点并继续下一个
+        // 按优先级逐个尝试路由，失败则通知熔断器并继续下一个
         ProxyForwardResult? lastResult = null;
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
@@ -88,7 +87,8 @@ public sealed class AnthropicProxyController : ControllerBase
         foreach (var routeResult in allRoutes)
         {
             var route = routeResult.Route!;
-            if (blockedSiteIds.Contains(route.SiteId))
+            // 跳过已被熔断器屏蔽的路由
+            if (_circuitStore.IsBlocked(route.Id))
                 continue;
 
             var site = await _dbContext.Sites.FindAsync([route.SiteId], cancellationToken);
@@ -135,16 +135,15 @@ public sealed class AnthropicProxyController : ControllerBase
 
             if (result.Success)
             {
-                // 成功时清除该站点的连续失败计数
-                _circuitStore.Succeed(site.Id);
+                // 成功时清除该路由的连续失败计数
+                _circuitStore.Succeed(route.Id);
                 // 流式响应以 SSE 格式返回，使用 text/event-stream 内容类型
                 var contentType = result.IsStreaming ? "text/event-stream" : "application/json";
                 return Content(result.ResponseBody, contentType);
             }
 
-            // 转发失败，熔断该站点并继续尝试下一个
-            _circuitStore.Block(site.Id);
-            blockedSiteIds.Add(site.Id);
+            // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
+            _circuitStore.Block(route.Id);
             lastResult = result;
         }
 
@@ -164,16 +163,5 @@ public sealed class AnthropicProxyController : ControllerBase
 
         return await _dbContext.ProxyAccessKeys
             .FirstOrDefaultAsync(k => k.AccessKeyHash == hash && k.IsEnabled, cancellationToken);
-    }
-
-    // 查询当前所有启用的站点，返回其中被熔断的站点 ID 集合
-    private async Task<HashSet<Guid>> GetBlockedSiteIdsAsync(CancellationToken cancellationToken)
-    {
-        var siteIds = await _dbContext.Sites
-            .Where(s => s.IsEnabled)
-            .Select(s => s.Id)
-            .ToListAsync(cancellationToken);
-
-        return new HashSet<Guid>(siteIds.Where(id => _circuitStore.IsBlocked(id)));
     }
 }
