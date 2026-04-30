@@ -214,7 +214,7 @@ public sealed class ChatApiController : ControllerBase
                     TargetApiKey = site.ApiKey,
                     ProtocolType = site.ProtocolType,
                     TargetModelName = route.SiteModelName,
-                    RequestBody = BuildChatRequestBody(route.SiteModelName, request.Message, request.EnableReasoning, false),
+                    RequestBody = BuildChatRequestBody(site.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false),
                     EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                     RetryCount = runtimeSettings.ProxyRetryCount
@@ -303,7 +303,7 @@ public sealed class ChatApiController : ControllerBase
         var allRoutes = await _routeService.SelectAllRoutesAsync(model.ModelName, cancellationToken);
         if (allRoutes.Count == 0)
         {
-            await WriteSseEventAsync("error", new { message = "没有可用路由" }, cancellationToken);
+            await SendStreamFallbackAsync(request, model, runtimeSettings, cancellationToken);
             return;
         }
 
@@ -438,7 +438,7 @@ public sealed class ChatApiController : ControllerBase
             TargetApiKey = site.ApiKey,
             ProtocolType = site.ProtocolType,
             TargetModelName = mapping.RemoteModelName,
-            RequestBody = BuildChatRequestBody(mapping.RemoteModelName, request.Message, request.EnableReasoning, false),
+            RequestBody = BuildChatRequestBody(site.ProtocolType, mapping.RemoteModelName, request.Message, request.EnableReasoning, false),
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount
@@ -492,6 +492,111 @@ public sealed class ChatApiController : ControllerBase
         return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
     }
 
+    // 流式回退逻辑：没有路由规则时直接通过站点映射流式发送。
+    private async Task SendStreamFallbackAsync(
+        ChatSendRequest request,
+        Domain.Models.ModelLibraryItem model,
+        AITool.Domain.Operations.SystemRuntimeSettings runtimeSettings,
+        CancellationToken cancellationToken)
+    {
+        var mapping = await _dbContext.SiteModelMappings
+            .FirstOrDefaultAsync(m => m.ModelLibraryItemId == request.ModelId && m.IsEnabled, cancellationToken);
+
+        if (mapping is null)
+        {
+            await WriteSseEventAsync("error", new { message = "该模型没有可用的站点映射" }, cancellationToken);
+            return;
+        }
+
+        var site = await _dbContext.Sites.FindAsync([mapping.SiteId], cancellationToken);
+        if (site is null || !site.IsEnabled)
+        {
+            await WriteSseEventAsync("error", new { message = "目标站点不可用" }, cancellationToken);
+            return;
+        }
+
+        var requestId = Guid.NewGuid();
+        var streamResult = await ForwardStreamAsync(
+            site,
+            mapping.RemoteModelName,
+            request.Message,
+            request.EnableReasoning,
+            async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
+            async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
+            runtimeSettings.ProxyRequestTimeoutSeconds,
+            cancellationToken);
+
+        var attemptResult = BuildAttemptResult(
+            1,
+            site.Name,
+            mapping.RemoteModelName,
+            mapping.RemoteModelName,
+            new ProxyForwardResult
+            {
+                Success = streamResult.Success,
+                InputTokens = streamResult.InputTokens,
+                CachedTokens = streamResult.CachedTokens,
+                OutputTokens = streamResult.OutputTokens,
+                IsStreaming = true,
+                FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+                TotalDurationMs = streamResult.TotalDurationMs,
+                ErrorMessage = streamResult.ErrorMessage,
+                StatusCode = streamResult.StatusCode
+            },
+            true);
+        var attempts = new List<ChatAttemptResult> { attemptResult };
+
+        await _usageLogService.LogAsync(new UsageLogEntry
+        {
+            RequestId = requestId,
+            ProtocolType = site.ProtocolType,
+            RequestModel = model.ModelName,
+            AttemptedModel = mapping.RemoteModelName,
+            TargetSiteId = site.Id,
+            Status = streamResult.Success ? "success" : "fail",
+            Source = "chat",
+            RetryCount = 0,
+            AttemptIndex = 1,
+            IsFinalResult = true,
+            FallbackTriggered = false,
+            ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+            InputTokens = streamResult.InputTokens,
+            CachedTokens = streamResult.CachedTokens,
+            OutputTokens = streamResult.OutputTokens,
+            IsStreaming = true,
+            FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+            StreamDurationMs = 0,
+            TotalDurationMs = streamResult.TotalDurationMs
+        }, cancellationToken);
+
+        if (!streamResult.Success)
+        {
+            await WriteSseEventAsync("error", new { message = streamResult.ErrorMessage ?? "上游请求失败", attempts }, cancellationToken);
+            return;
+        }
+
+        var finalResult = new ChatSendResult
+        {
+            Success = true,
+            RequestId = requestId,
+            Content = streamResult.Content,
+            ReasoningContent = streamResult.ReasoningContent,
+            DurationMs = streamResult.TotalDurationMs,
+            ReasoningEnabled = request.EnableReasoning,
+            IsStreaming = true,
+            InputTokens = streamResult.InputTokens,
+            CachedTokens = streamResult.CachedTokens,
+            OutputTokens = streamResult.OutputTokens,
+            TotalTokens = streamResult.InputTokens + streamResult.CachedTokens + streamResult.OutputTokens,
+            FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+            TotalDurationMs = streamResult.TotalDurationMs,
+            Attempts = attempts
+        };
+
+        await WriteSseEventAsync("meta", finalResult, cancellationToken);
+        await WriteSseEventAsync("done", new { requestId }, cancellationToken);
+    }
+
     // 使用 HttpClient 按 SSE 方式读取上游响应，并实时转发到前端。
     private async Task<ChatStreamForwardResult> ForwardStreamAsync(
         Domain.Sites.Site site,
@@ -515,7 +620,7 @@ public sealed class ChatApiController : ControllerBase
                 : $"{site.BaseUrl.TrimEnd('/')}/v1/chat/completions";
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
             {
-                Content = new StringContent(BuildChatRequestBody(targetModelName, message, enableReasoning, true), Encoding.UTF8, "application/json")
+                Content = new StringContent(BuildChatRequestBody(site.ProtocolType, targetModelName, message, enableReasoning, true), Encoding.UTF8, "application/json")
             };
 
             if (site.ProtocolType == "Anthropic")
@@ -698,8 +803,38 @@ public sealed class ChatApiController : ControllerBase
         };
     }
 
-    private static string BuildChatRequestBody(string modelName, string message, bool enableReasoning, bool enableStreaming)
+    private static string BuildChatRequestBody(string protocolType, string modelName, string message, bool enableReasoning, bool enableStreaming)
     {
+        if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            var anthropicPayload = new Dictionary<string, object?>
+            {
+                ["model"] = modelName,
+                ["messages"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = message
+                    }
+                },
+                ["stream"] = enableStreaming,
+                ["max_tokens"] = 4096
+            };
+
+            if (enableReasoning)
+            {
+                // Anthropic 需要显式开启 thinking 配置，否则不会返回思考内容。
+                anthropicPayload["thinking"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "enabled",
+                    ["budget_tokens"] = 2048
+                };
+            }
+
+            return JsonSerializer.Serialize(anthropicPayload);
+        }
+
         var payload = new Dictionary<string, object?>
         {
             ["model"] = modelName,
@@ -725,6 +860,7 @@ public sealed class ChatApiController : ControllerBase
 
         if (enableReasoning)
         {
+            // OpenAI 兼容协议继续沿用 reasoning_effort 开关。
             payload["reasoning_effort"] = "high";
         }
 
@@ -824,7 +960,7 @@ public sealed class ChatApiController : ControllerBase
             var first = choices[0];
             if (first.TryGetProperty("delta", out var delta))
             {
-                var reasoningChunk = ExtractElementText(delta, "reasoning_content", "reasoning", "thinking");
+                var reasoningChunk = ExtractReasoningText(delta);
                 if (!string.IsNullOrWhiteSpace(reasoningChunk))
                 {
                     if (state.FirstTokenLatencyMs == 0)
@@ -885,7 +1021,7 @@ public sealed class ChatApiController : ControllerBase
                 var first = choices[0];
                 if (first.TryGetProperty("message", out var message))
                 {
-                    AppendIfNotEmpty(reasoningParts, ExtractElementText(message, "reasoning_content", "reasoning", "thinking"));
+                    AppendIfNotEmpty(reasoningParts, ExtractReasoningText(message));
 
                     if (message.TryGetProperty("content", out var content))
                     {
@@ -901,7 +1037,7 @@ public sealed class ChatApiController : ControllerBase
                                 if (string.Equals(itemType, "reasoning", StringComparison.OrdinalIgnoreCase) ||
                                     string.Equals(itemType, "thinking", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    AppendIfNotEmpty(reasoningParts, ExtractElementText(item, "text", "content", "reasoning_content"));
+                                    AppendIfNotEmpty(reasoningParts, ExtractReasoningText(item));
                                     continue;
                                 }
 
@@ -973,6 +1109,36 @@ public sealed class ChatApiController : ControllerBase
                     AppendIfNotEmpty(parts, ExtractElementText(item, "text", "content"));
                 }
                 return string.Join(string.Empty, parts);
+            }
+        }
+
+        return string.Empty;
+    }
+
+    // 兼容不同 OpenAI 风格上游的思考字段，优先提取可直接展示的文本。
+    private static string ExtractReasoningText(JsonElement element)
+    {
+        var directText = ExtractElementText(element, "reasoning_content", "reasoning", "thinking", "summary_text", "output_text", "text");
+        if (!string.IsNullOrWhiteSpace(directText))
+        {
+            return directText;
+        }
+
+        if (element.TryGetProperty("reasoning_details", out var reasoningDetails))
+        {
+            var detailText = ExtractElementText(reasoningDetails, "text", "content", "value", "summary_text", "output_text");
+            if (!string.IsNullOrWhiteSpace(detailText))
+            {
+                return detailText;
+            }
+        }
+
+        if (element.TryGetProperty("summary", out var summary))
+        {
+            var summaryText = ExtractElementText(summary, "text", "content", "value", "summary_text", "output_text");
+            if (!string.IsNullOrWhiteSpace(summaryText))
+            {
+                return summaryText;
             }
         }
 
