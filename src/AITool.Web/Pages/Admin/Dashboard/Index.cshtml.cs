@@ -23,7 +23,6 @@ public class IndexModel : PageModel
     {
         var enabledSiteCount = await _dbContext.Sites.CountAsync(s => s.IsEnabled, cancellationToken);
         var modelCount = await _dbContext.ModelLibraryItems.CountAsync(cancellationToken);
-        var mappingCount = await _dbContext.SiteModelMappings.CountAsync(cancellationToken);
         var enabledTaskCount = await _dbContext.DetectionTasks.CountAsync(t => t.IsEnabled, cancellationToken);
 
         var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
@@ -43,7 +42,6 @@ public class IndexModel : PageModel
         {
             EnabledSiteCount = enabledSiteCount,
             ModelCount = modelCount,
-            MappingCount = mappingCount,
             RecentDetectionCount = recentDetectionCount,
             RecentSuccessRate = recentSuccessRate,
             EnabledTaskCount = enabledTaskCount

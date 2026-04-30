@@ -109,12 +109,10 @@
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <!-- 加载中提示 -->
                 <div id="modalLoading" class="text-center py-4">
                     <div class="spinner-border text-primary" role="status"></div>
                     <p class="mt-2 text-secondary" id="loadingText">正在拉取模型列表...</p>
                 </div>
-                <!-- 搜索与全选工具栏 -->
                 <div id="modalToolbar" style="display:none;">
                     <div class="d-flex gap-2 align-items-center mb-3">
                         <input type="text" id="modalSearch" class="form-control form-control-sm" placeholder="搜索模型名称..." style="max-width:300px;" />
@@ -124,7 +122,6 @@
                             <label for="modalSelectAll" class="form-check-label" style="font-size:13px;">全选</label>
                         </div>
                     </div>
-                    <!-- 表头 -->
                     <div class="d-flex align-items-center gap-2 py-1 border-bottom" style="font-size:12px;color:var(--text-secondary);font-weight:600;">
                         <div style="width:30px;"></div>
                         <div id="colSiteName" style="width:120px;">站点</div>
@@ -132,7 +129,6 @@
                         <div style="width:200px;">显示别名</div>
                     </div>
                 </div>
-                <!-- 模型列表容器 -->
                 <div id="modelListContainer"></div>
             </div>
             <div class="modal-footer">
@@ -144,57 +140,56 @@
 </div>
 
 <script>
-    /* 当前模态框中的模型数据，供提交时使用 */
     var currentModels = [];
-    /* 是否为全部拉取模式 */
-    var isPullAllMode = false;
-
-    /* 初始化 Bootstrap 模态框 */
     var bsModal = null;
 
-    document.addEventListener('DOMContentLoaded', function() {
+    document.addEventListener('DOMContentLoaded', function () {
         bsModal = new bootstrap.Modal(document.getElementById('modelSelectModal'));
 
-        /* 站点列表全选 */
         var selectAllSites = document.getElementById('selectAllSites');
+        var siteChecks = Array.from(document.querySelectorAll('.site-check'));
+
         if (selectAllSites) {
-            selectAllSites.addEventListener('change', function() {
-                document.querySelectorAll('.site-check').forEach(function(checkbox) {
+            selectAllSites.addEventListener('change', function () {
+                siteChecks.forEach(function (checkbox) {
                     checkbox.checked = selectAllSites.checked;
+                });
+            });
+
+            siteChecks.forEach(function (checkbox) {
+                checkbox.addEventListener('change', function () {
+                    selectAllSites.checked = siteChecks.length > 0 && siteChecks.every(function (item) {
+                        return item.checked;
+                    });
                 });
             });
         }
 
-        /* 单站点拉取按钮 */
-        document.querySelectorAll('.btn-pull-site').forEach(function(btn) {
-            btn.addEventListener('click', function() {
-                var siteId = this.getAttribute('data-site-id');
-                var siteName = this.getAttribute('data-site-name');
-                isPullAllMode = false;
-                openModalForSingleSite(siteId, siteName);
+        document.querySelectorAll('.btn-pull-site').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                openModalForSingleSite(this.getAttribute('data-site-id'), this.getAttribute('data-site-name'));
             });
         });
 
-        /* 一键拉取全部按钮 */
-        document.getElementById('btnPullAll').addEventListener('click', function() {
-            isPullAllMode = true;
-            openModalForAllSites();
-        });
+        var btnPullAll = document.getElementById('btnPullAll');
+        if (btnPullAll) {
+            btnPullAll.addEventListener('click', function () {
+                openModalForAllSites();
+            });
+        }
 
-        /* 搜索过滤 */
-        document.getElementById('modalSearch').addEventListener('input', function() {
+        document.getElementById('modalSearch').addEventListener('input', function () {
             var keyword = this.value.toLowerCase();
-            document.querySelectorAll('.model-row').forEach(function(row) {
+            document.querySelectorAll('.model-row').forEach(function (row) {
                 var name = row.getAttribute('data-model-name').toLowerCase();
                 row.style.display = name.indexOf(keyword) >= 0 ? 'flex' : 'none';
             });
             updateSelectAllState();
         });
 
-        /* 全选/取消 */
-        document.getElementById('modalSelectAll').addEventListener('change', function() {
+        document.getElementById('modalSelectAll').addEventListener('change', function () {
             var checked = this.checked;
-            document.querySelectorAll('.model-row').forEach(function(row) {
+            document.querySelectorAll('.model-row').forEach(function (row) {
                 if (row.style.display !== 'none') {
                     row.querySelector('.model-check').checked = checked;
                 }
@@ -202,13 +197,11 @@
             updateSelectedCount();
         });
 
-        /* 导入按钮 */
-        document.getElementById('btnImportSelected').addEventListener('click', function() {
+        document.getElementById('btnImportSelected').addEventListener('click', function () {
             submitImport();
         });
     });
 
-    /* 打开模态框拉取单站点 */
     function openModalForSingleSite(siteId, siteName) {
         document.getElementById('modalTitle').textContent = '拉取模型 - ' + siteName;
         document.getElementById('colSiteName').style.display = 'none';
@@ -216,10 +209,10 @@
         bsModal.show();
 
         fetch('/api/admin/site-catalog/fetch-models/' + siteId)
-            .then(function(r) { return r.json(); })
-            .then(function(models) {
+            .then(function (r) { return r.json(); })
+            .then(function (models) {
                 currentModels = [];
-                models.forEach(function(m) {
+                models.forEach(function (m) {
                     currentModels.push({
                         siteId: siteId,
                         siteName: siteName,
@@ -231,13 +224,12 @@
                 });
                 renderModelList(false);
             })
-            .catch(function(err) {
+            .catch(function (err) {
                 alert('拉取失败：' + err.message);
                 bsModal.hide();
             });
     }
 
-    /* 打开模态框拉取全部站点 */
     function openModalForAllSites() {
         document.getElementById('modalTitle').textContent = '一键拉取全部站点';
         document.getElementById('colSiteName').style.display = '';
@@ -245,8 +237,8 @@
         bsModal.show();
 
         fetch('/api/admin/site-catalog/fetch-all-models', { method: 'POST' })
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
                 if (!data.taskId) {
                     alert(data.message || '没有启用的站点');
                     bsModal.hide();
@@ -254,25 +246,24 @@
                 }
                 pollFetchProgress(data.taskId);
             })
-            .catch(function(err) {
+            .catch(function (err) {
                 alert('启动拉取失败：' + err.message);
                 bsModal.hide();
             });
     }
 
-    /* 轮询全部拉取进度 */
     function pollFetchProgress(taskId) {
         fetch('/api/admin/site-catalog/fetch-all-progress/' + taskId)
-            .then(function(r) { return r.json(); })
-            .then(function(data) {
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
                 document.getElementById('loadingText').textContent =
                     '正在拉取模型列表... (' + data.completedSites + '/' + data.totalSites + ' 站点)';
 
                 if (data.isCompleted) {
                     currentModels = [];
-                    data.sites.forEach(function(site) {
+                    data.sites.forEach(function (site) {
                         if (site.status === 'success' && site.models) {
-                            site.models.forEach(function(m) {
+                            site.models.forEach(function (m) {
                                 currentModels.push({
                                     siteId: site.siteId,
                                     siteName: site.siteName,
@@ -286,15 +277,14 @@
                     });
                     renderModelList(true);
                 } else {
-                    setTimeout(function() { pollFetchProgress(taskId); }, 1000);
+                    setTimeout(function () { pollFetchProgress(taskId); }, 1000);
                 }
             })
-            .catch(function() {
-                setTimeout(function() { pollFetchProgress(taskId); }, 2000);
+            .catch(function () {
+                setTimeout(function () { pollFetchProgress(taskId); }, 2000);
             });
     }
 
-    /* 显示加载状态 */
     function showLoading(text) {
         document.getElementById('modalLoading').style.display = '';
         document.getElementById('loadingText').textContent = text;
@@ -302,7 +292,6 @@
         document.getElementById('modelListContainer').innerHTML = '';
     }
 
-    /* 渲染模型列表 */
     function renderModelList(showSiteName) {
         document.getElementById('modalLoading').style.display = 'none';
         document.getElementById('modalToolbar').style.display = '';
@@ -313,11 +302,12 @@
 
         if (currentModels.length === 0) {
             container.innerHTML = '<div class="text-center text-secondary py-3">未拉取到任何模型</div>';
+            updateSelectedCount();
             return;
         }
 
         var fragment = document.createDocumentFragment();
-        currentModels.forEach(function(m, index) {
+        currentModels.forEach(function (m, index) {
             var row = document.createElement('div');
             row.className = 'align-items-center gap-2 py-2 border-bottom model-row';
             row.style.display = 'flex';
@@ -325,9 +315,7 @@
             row.setAttribute('data-site-id', m.siteId);
             row.setAttribute('data-index', index);
 
-            // 复选框：新模型默认勾选，已有映射按当前状态
             var checked = m.existingMappingId ? m.isEnabled : true;
-
             var checkbox = '<input type="checkbox" class="model-check" ' + (checked ? 'checked' : '') + ' onchange="updateSelectedCount()" style="width:30px;flex-shrink:0;">';
 
             var siteCol = '';
@@ -336,9 +324,7 @@
             }
 
             var displayName = m.existingDisplayName || m.remoteModelName;
-
             var nameCol = '<code style="flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escapeHtml(m.remoteModelName) + '">' + escapeHtml(m.remoteModelName) + '</code>';
-
             var aliasCol = '<input type="text" class="form-control form-control-sm alias-input" value="' + escapeHtml(displayName) + '" style="width:200px;flex-shrink:0;" placeholder="显示别名">';
 
             var badge = '';
@@ -356,7 +342,6 @@
         updateSelectedCount();
     }
 
-    /* 更新已选计数 */
     function updateSelectedCount() {
         var total = document.querySelectorAll('.model-row .model-check').length;
         var checked = document.querySelectorAll('.model-row .model-check:checked').length;
@@ -364,13 +349,14 @@
         updateSelectAllState();
     }
 
-    /* 更新全选框状态 */
     function updateSelectAllState() {
         var visibleChecks = [];
-        document.querySelectorAll('.model-row').forEach(function(row) {
+        document.querySelectorAll('.model-row').forEach(function (row) {
             if (row.style.display !== 'none') {
-                var cb = row.querySelector('.model-check');
-                if (cb) visibleChecks.push(cb);
+                var checkbox = row.querySelector('.model-check');
+                if (checkbox) {
+                    visibleChecks.push(checkbox);
+                }
             }
         });
 
@@ -378,62 +364,62 @@
         if (visibleChecks.length === 0) {
             selectAll.checked = false;
             selectAll.indeterminate = false;
-        } else {
-            var checkedCount = visibleChecks.filter(function(c) { return c.checked; }).length;
-            selectAll.checked = checkedCount === visibleChecks.length;
-            selectAll.indeterminate = checkedCount > 0 && checkedCount < visibleChecks.length;
+            return;
         }
+
+        var checkedCount = visibleChecks.filter(function (checkbox) { return checkbox.checked; }).length;
+        selectAll.checked = checkedCount === visibleChecks.length;
+        selectAll.indeterminate = checkedCount > 0 && checkedCount < visibleChecks.length;
     }
 
-    /* 提交导入 */
     function submitImport() {
         var selections = [];
-        document.querySelectorAll('.model-row').forEach(function(row) {
+        document.querySelectorAll('.model-row').forEach(function (row) {
             var index = parseInt(row.getAttribute('data-index'));
-            var m = currentModels[index];
+            var model = currentModels[index];
             var checked = row.querySelector('.model-check').checked;
-            var alias = row.querySelector('.alias-input').value.trim() || m.remoteModelName;
+            var alias = row.querySelector('.alias-input').value.trim() || model.remoteModelName;
 
             selections.push({
-                siteId: m.siteId,
-                remoteModelName: m.remoteModelName,
+                siteId: model.siteId,
+                remoteModelName: model.remoteModelName,
                 displayName: alias,
                 selected: checked
             });
         });
 
-        if (selections.filter(function(s) { return s.selected; }).length === 0) {
+        if (selections.filter(function (item) { return item.selected; }).length === 0) {
             alert('请至少选择一个模型');
             return;
         }
 
-        document.getElementById('btnImportSelected').disabled = true;
-        document.getElementById('btnImportSelected').textContent = '导入中...';
+        var importButton = document.getElementById('btnImportSelected');
+        importButton.disabled = true;
+        importButton.textContent = '导入中...';
 
         fetch('/api/admin/site-catalog/import-selected', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ selections: selections })
         })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            bsModal.hide();
-            alert('导入完成，共导入 ' + data.importedCount + ' 个模型');
-            window.location.reload();
-        })
-        .catch(function(err) {
-            alert('导入失败：' + err.message);
-        })
-        .finally(function() {
-            document.getElementById('btnImportSelected').disabled = false;
-            document.getElementById('btnImportSelected').textContent = '导入选中模型';
-        });
+            .then(function (r) { return r.json(); })
+            .then(function (data) {
+                bsModal.hide();
+                alert('导入完成，共导入 ' + data.importedCount + ' 个模型');
+                window.location.reload();
+            })
+            .catch(function (err) {
+                alert('导入失败：' + err.message);
+            })
+            .finally(function () {
+                importButton.disabled = false;
+                importButton.textContent = '导入选中模型';
+            });
     }
 
-    /* HTML 转义 */
     function escapeHtml(text) {
-        var d = document.createElement('div');
-        d.textContent = text;
-        return d.innerHTML;
+        var element = document.createElement('div');
+        element.textContent = text;
+        return element.innerHTML;
     }
 </script>

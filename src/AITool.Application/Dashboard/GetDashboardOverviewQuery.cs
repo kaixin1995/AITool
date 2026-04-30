@@ -12,9 +12,6 @@ public sealed class DashboardOverviewResult
     // 模型总数
     public int ModelCount { get; init; }
 
-    // 站点模型映射总数
-    public int MappingCount { get; init; }
-
     // 最近24小时检测次数
     public int RecentDetectionCount { get; init; }
 

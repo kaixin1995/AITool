@@ -20,7 +20,7 @@ public sealed class OpenAiSiteCatalogClient : ISiteCatalogClient
         var request = new HttpRequestMessage(HttpMethod.Get, $"{site.BaseUrl.TrimEnd('/')}/v1/models");
         request.Headers.Add("Authorization", $"Bearer {site.ApiKey}");
 
-        var response = await _httpClient.SendAsync(request, cancellationToken);
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
         response.EnsureSuccessStatusCode();
 
         var result = await response.Content.ReadFromJsonAsync<OpenAiModelsResponse>(cancellationToken);

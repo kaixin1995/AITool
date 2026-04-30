@@ -24,26 +24,16 @@ public sealed class SitePagesTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         html.Should().Contain("handler=Toggle");
         html.Should().Contain("handler=Delete");
+        html.Should().Contain("btnPullAll");
+        html.Should().Contain("btn-pull-site");
+        html.Should().Contain("modelSelectModal");
+        html.Should().Contain("/api/admin/site-catalog/fetch-models/");
+        html.Should().Contain("/api/admin/site-catalog/fetch-all-models");
+        html.Should().Contain("/api/admin/site-catalog/import-selected");
         html.Should().NotContain("<form method=\"post\" asp-page-handler=\"Toggle\"");
         html.Should().NotContain("<form method=\"post\" asp-page-handler=\"Delete\"");
     }
 
-    [Fact]
-    public async Task Get_site_catalog_page_returns_ok()
-    {
-        await using var factory = new SitePagesWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var response = await client.GetAsync("/Admin/SiteCatalog");
-        var html = await response.Content.ReadAsStringAsync();
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        html.Should().Contain("站点模型发现");
-        html.Should().Contain("去模型映射");
-        html.Should().Contain("Site A");
-        html.Should().Contain("gpt-a");
-        html.Should().NotContain("<h2 class=\"page-title\">站点管理</h2>");
-    }
 }
 
 internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Program>

@@ -24,8 +24,6 @@ public class IndexModel : PageModel
     public int EnabledKeyCount { get; set; }
     // 启用检测任务数
     public int EnabledTaskCount { get; set; }
-    // 映射总数
-    public int MappingCount { get; set; }
 
     // 加载概览统计数据
     public async Task OnGetAsync(CancellationToken cancellationToken)
@@ -35,6 +33,5 @@ public class IndexModel : PageModel
         RouteRuleCount = await _dbContext.ProxyRouteRules.CountAsync(cancellationToken);
         EnabledKeyCount = await _dbContext.ProxyAccessKeys.CountAsync(k => k.IsEnabled, cancellationToken);
         EnabledTaskCount = await _dbContext.DetectionTasks.CountAsync(t => t.IsEnabled, cancellationToken);
-        MappingCount = await _dbContext.SiteModelMappings.CountAsync(cancellationToken);
     }
 }
