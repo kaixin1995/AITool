@@ -14,10 +14,10 @@
 </div>
 
 <div class="client-simulator-page">
+    <!-- 顶部配置区 -->
     <div class="card simulator-config-card">
         <div class="card-body">
             <div id="simulatorStatus" class="alert" style="display:none;"></div>
-
             <div class="row g-3">
                 <div class="col-xl-6">
                     <label class="form-label" for="baseUrlInput">代理根地址</label>
@@ -36,7 +36,7 @@
                     <datalist id="modelOptions">
                         @foreach (var item in Model.Models)
                         {
-                            <option value="@item.ModelName">@item.DisplayName (@item.AvailableSiteCount)</option>
+                            <option value="@item.ModelName">@item.ModelName (@item.RouteCount 条路由)</option>
                         }
                     </datalist>
                 </div>
@@ -48,106 +48,92 @@
         </div>
     </div>
 
-    <div class="simulator-main-grid">
-        <div class="card simulator-card">
-            <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-                <span class="fw-semibold">模型列表 · OpenAI</span>
-                <button type="button" class="btn btn-sm btn-outline-secondary" id="btnLoadModels" onclick="loadOpenAiModels()">拉取 /v1/models</button>
-            </div>
-            <div class="card-body simulator-card-body">
-                <div class="simulator-endpoint-bar">
-                    <code id="openAiModelsUrl"></code>
-                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('openAiModelsUrl').textContent)">复制 URL</button>
-                </div>
-                <div class="simulator-panel-grid">
-                    <div>
-                        <div class="simulator-section-title">请求示例</div>
-                        <pre id="openAiModelsRequest" class="simulator-pre"></pre>
-                    </div>
-                    <div>
-                        <div class="simulator-section-title">响应结果</div>
-                        <pre id="openAiModelsResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
-                    </div>
-                </div>
-            </div>
+    <!-- 选项卡区域 -->
+    <div class="card">
+        <div class="card-header p-0">
+            <ul class="nav nav-tabs" role="tablist">
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tabModels" type="button" role="tab">模型列表</button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabOpenAi" type="button" role="tab">OpenAI 聊天</button>
+                </li>
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabAnthropic" type="button" role="tab">Anthropic 聊天</button>
+                </li>
+            </ul>
         </div>
+        <div class="card-body">
+            <div class="tab-content">
+                <!-- 模型列表选项卡 -->
+                <div class="tab-pane fade show active" id="tabModels" role="tabpanel">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <code id="openAiModelsUrl" class="simulator-endpoint-code"></code>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('openAiModelsUrl').textContent)">复制 URL</button>
+                            <button type="button" class="btn btn-sm btn-primary" id="btnLoadModels" onclick="loadOpenAiModels()">拉取模型</button>
+                        </div>
+                    </div>
+                    <div class="simulator-panel-grid">
+                        <div>
+                            <div class="simulator-section-title">请求示例</div>
+                            <pre id="openAiModelsRequest" class="simulator-pre"></pre>
+                        </div>
+                        <div>
+                            <div class="simulator-section-title">响应结果</div>
+                            <pre id="openAiModelsResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                        </div>
+                    </div>
+                </div>
 
-        <div class="card simulator-card">
-            <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-                <span class="fw-semibold">聊天调用 · OpenAI</span>
-                <div class="d-flex align-items-center gap-2 flex-wrap">
-                    <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" id="openAiStreamToggle">
-                        <label class="form-check-label" for="openAiStreamToggle">流式</label>
+                <!-- OpenAI 聊天选项卡 -->
+                <div class="tab-pane fade" id="tabOpenAi" role="tabpanel">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <code id="openAiChatUrl" class="simulator-endpoint-code"></code>
+                        <div class="d-flex gap-2 align-items-center">
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" id="openAiStreamToggle">
+                                <label class="form-check-label" for="openAiStreamToggle">流式</label>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('openAiChatUrl').textContent)">复制 URL</button>
+                            <button type="button" class="btn btn-sm btn-primary" id="btnOpenAiChat" onclick="sendOpenAiChat()">发送请求</button>
+                        </div>
                     </div>
-                    <button type="button" class="btn btn-sm btn-primary" id="btnOpenAiChat" onclick="sendOpenAiChat()">调用 /v1/chat/completions</button>
-                </div>
-            </div>
-            <div class="card-body simulator-card-body">
-                <div class="simulator-endpoint-bar">
-                    <code id="openAiChatUrl"></code>
-                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('openAiChatUrl').textContent)">复制 URL</button>
-                </div>
-                <div class="simulator-panel-grid">
-                    <div>
-                        <div class="simulator-section-title">请求示例</div>
-                        <pre id="openAiChatRequest" class="simulator-pre"></pre>
-                    </div>
-                    <div>
-                        <div class="simulator-section-title">响应结果</div>
-                        <pre id="openAiChatResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                    <div class="simulator-panel-grid">
+                        <div>
+                            <div class="simulator-section-title">请求示例</div>
+                            <pre id="openAiChatRequest" class="simulator-pre"></pre>
+                        </div>
+                        <div>
+                            <div class="simulator-section-title">响应结果</div>
+                            <pre id="openAiChatResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                        </div>
                     </div>
                 </div>
-            </div>
-        </div>
 
-        <div class="card simulator-card">
-            <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
-                <span class="fw-semibold">聊天调用 · Anthropic</span>
-                <div class="d-flex align-items-center gap-2 flex-wrap">
-                    <div class="form-check form-switch">
-                        <input class="form-check-input" type="checkbox" id="anthropicStreamToggle">
-                        <label class="form-check-label" for="anthropicStreamToggle">流式</label>
+                <!-- Anthropic 聊天选项卡 -->
+                <div class="tab-pane fade" id="tabAnthropic" role="tabpanel">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <code id="anthropicChatUrl" class="simulator-endpoint-code"></code>
+                        <div class="d-flex gap-2 align-items-center">
+                            <div class="form-check form-switch mb-0">
+                                <input class="form-check-input" type="checkbox" id="anthropicStreamToggle">
+                                <label class="form-check-label" for="anthropicStreamToggle">流式</label>
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('anthropicChatUrl').textContent)">复制 URL</button>
+                            <button type="button" class="btn btn-sm btn-primary" id="btnAnthropicChat" onclick="sendAnthropicChat()">发送请求</button>
+                        </div>
                     </div>
-                    <button type="button" class="btn btn-sm btn-primary" id="btnAnthropicChat" onclick="sendAnthropicChat()">调用 /v1/messages</button>
-                </div>
-            </div>
-            <div class="card-body simulator-card-body">
-                <div class="simulator-endpoint-bar">
-                    <code id="anthropicChatUrl"></code>
-                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('anthropicChatUrl').textContent)">复制 URL</button>
-                </div>
-                <div class="simulator-panel-grid">
-                    <div>
-                        <div class="simulator-section-title">请求示例</div>
-                        <pre id="anthropicChatRequest" class="simulator-pre"></pre>
+                    <div class="simulator-panel-grid">
+                        <div>
+                            <div class="simulator-section-title">请求示例</div>
+                            <pre id="anthropicChatRequest" class="simulator-pre"></pre>
+                        </div>
+                        <div>
+                            <div class="simulator-section-title">响应结果</div>
+                            <pre id="anthropicChatResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                        </div>
                     </div>
-                    <div>
-                        <div class="simulator-section-title">响应结果</div>
-                        <pre id="anthropicChatResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="card simulator-card">
-            <div class="card-header fw-semibold">可用模型参考</div>
-            <div class="card-body simulator-card-body">
-                <div class="simulator-model-list">
-                    @if (!Model.Models.Any())
-                    {
-                        <div class="text-secondary small">当前没有可用模型，请先完成模型映射与启用。</div>
-                    }
-                    else
-                    {
-                        @foreach (var item in Model.Models)
-                        {
-                            <button type="button" class="btn btn-sm btn-outline-secondary simulator-model-chip" onclick="selectModel('@item.ModelName')">
-                                @item.DisplayName
-                                <span class="text-secondary">(@item.ModelName)</span>
-                            </button>
-                        }
-                    }
                 </div>
             </div>
         </div>
@@ -161,37 +147,11 @@
         gap: 16px;
     }
 
-    .simulator-main-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 16px;
-        align-items: start;
-    }
-
-    .simulator-card,
     .simulator-config-card {
         min-width: 0;
     }
 
-    .simulator-card-body {
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
-    }
-
-    .simulator-endpoint-bar {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 12px;
-        flex-wrap: wrap;
-        padding: 10px 12px;
-        border: 1px solid #e5e7eb;
-        border-radius: 10px;
-        background: #f8fafc;
-    }
-
-    .simulator-endpoint-bar code {
+    .simulator-endpoint-code {
         font-size: 13px;
         word-break: break-all;
     }
@@ -211,7 +171,7 @@
     }
 
     .simulator-pre {
-        min-height: 220px;
+        min-height: 320px;
         margin: 0;
         padding: 12px;
         border: 1px solid #e5e7eb;
@@ -229,18 +189,7 @@
         background: #111827;
     }
 
-    .simulator-model-list {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-    }
-
-    .simulator-model-chip {
-        text-align: left;
-    }
-
-    @@media (max-width: 1399.98px) {
-        .simulator-main-grid,
+    @@media (max-width: 991.98px) {
         .simulator-panel-grid {
             grid-template-columns: minmax(0, 1fr);
         }
@@ -248,8 +197,6 @@
 </style>
 
 <script>
-    var initialModels = @Html.Raw(JsonSerializer.Serialize(Model.Models));
-
     function getBaseUrl() {
         return (document.getElementById('baseUrlInput').value || '').trim().replace(/\/$/, '');
     }
@@ -344,11 +291,6 @@
         alert.textContent = '';
     }
 
-    function selectModel(modelName) {
-        document.getElementById('modelInput').value = modelName;
-        renderAllExamples();
-    }
-
     function validateInputs(requireMessage, requireModel) {
         if (requireModel === undefined) {
             requireModel = true;
@@ -395,10 +337,10 @@
 
             var text = await response.text();
             output.textContent = formatResponseText(text);
-            showStatus(response.ok ? 'OpenAI 模型拉取完成' : 'OpenAI 模型拉取失败', response.ok);
+            showStatus(response.ok ? '模型列表拉取完成' : '模型列表拉取失败', response.ok);
         } catch (error) {
             output.textContent = error.message;
-            showStatus('OpenAI 模型拉取失败：' + error.message, false);
+            showStatus('模型列表拉取失败：' + error.message, false);
         } finally {
             btn.disabled = false;
         }
