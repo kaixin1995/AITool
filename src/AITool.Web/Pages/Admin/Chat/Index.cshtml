@@ -2,323 +2,1020 @@
 @model AITool.Web.Pages.Admin.Chat.IndexModel
 @{
     ViewData["Title"] = "对话测试";
-    Layout = null;
 }
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>@ViewData["Title"] - AI Tool</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
-    <link href="~/css/theme.css" rel="stylesheet" />
-    <style>
-        html, body { margin:0; padding:0; height:100%; overflow:hidden; }
-        .chat-page {
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-        }
-        /* 顶栏 */
-        .chat-topbar {
-            flex-shrink: 0;
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            padding: 12px 20px;
-            border-bottom: 1px solid var(--border-color, #e0e0e0);
-            background: var(--card-bg, #fff);
-        }
-        .chat-topbar-title {
-            font-size: 18px;
-            font-weight: 600;
-            white-space: nowrap;
-        }
-        .chat-topbar select {
-            min-width: 260px;
-        }
-        .chat-topbar .btn { white-space: nowrap; }
-        /* 消息区域 */
-        .chat-messages {
-            flex: 1;
-            overflow-y: auto;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 12px;
-        }
-        .chat-empty {
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            flex: 1;
-            color: var(--text-secondary, #888);
-        }
-        .chat-bubble {
-            max-width: 80%;
-            padding: 10px 14px;
-            border-radius: 12px;
-            font-size: 14px;
-            line-height: 1.6;
-            word-break: break-word;
-            white-space: pre-wrap;
-        }
-        .chat-bubble-user {
-            align-self: flex-end;
-            background: #0d6efd;
-            color: #fff;
-            border-bottom-right-radius: 4px;
-        }
-        .chat-bubble-ai {
-            align-self: flex-start;
-            background: var(--card-bg-alt, #f5f5f5);
-            color: var(--text-primary, #333);
-            border-bottom-left-radius: 4px;
-        }
-        .chat-bubble-error {
-            align-self: flex-start;
-            background: #f8d7da;
-            color: #842029;
-            border-bottom-left-radius: 4px;
-        }
-        .chat-bubble-meta {
-            font-size: 11px;
-            color: var(--text-secondary, #999);
-            margin-top: 4px;
-        }
-        .chat-bubble-user .chat-bubble-meta {
-            color: rgba(255,255,255,0.7);
-        }
-        .chat-thinking {
-            align-self: flex-start;
-            color: var(--text-secondary, #888);
-            font-style: italic;
-            padding: 10px 14px;
-        }
-        .chat-thinking-dots::after {
-            content: '';
-            animation: dots 1.5s infinite;
-        }
-        @@keyframes dots {
-            0% { content: ''; }
-            25% { content: '.'; }
-            50% { content: '..'; }
-            75% { content: '...'; }
-        }
-        /* 输入区域 */
-        .chat-input-area {
-            flex-shrink: 0;
-            border-top: 1px solid var(--border-color, #e0e0e0);
-            padding: 12px 20px;
-            background: var(--card-bg, #fff);
-        }
-        .chat-input-wrapper {
-            display: flex;
-            gap: 8px;
-            align-items: flex-end;
-        }
-        .chat-input {
-            flex: 1;
-            border: 1px solid var(--border-color, #ddd);
-            border-radius: 8px;
-            padding: 10px 12px;
-            font-size: 14px;
-            resize: none;
-            min-height: 80px;
-            max-height: 160px;
-            line-height: 1.5;
-            font-family: inherit;
-        }
-        .chat-input:focus {
-            outline: none;
-            border-color: #0d6efd;
-        }
-        .chat-send-btn {
-            white-space: nowrap;
-            min-width: 70px;
-            height: 80px;
-        }
-    </style>
-</head>
-<body>
-    <div class="chat-page">
-        <!-- 顶栏：标题 + 模型选择 -->
-        <div class="chat-topbar">
-            <a href="/" class="btn btn-sm btn-outline-secondary" title="返回">← 返回</a>
-            <span class="chat-topbar-title">💬 对话测试</span>
-            <select id="modelSelect" class="form-select">
-                <option value="">-- 加载中... --</option>
-            </select>
-            <button type="button" class="btn btn-sm btn-outline-secondary" onclick="loadModels()">刷新模型</button>
-        </div>
 
-        <!-- 消息列表 -->
-        <div id="chatMessages" class="chat-messages">
-            <div class="chat-empty">
-                <div style="font-size:32px;margin-bottom:8px;">💬</div>
-                <div>选择模型后输入问题开始对话</div>
+<div class="page-header mb-3">
+    <div>
+        <h2 class="page-title">对话测试</h2>
+        <p class="page-subtitle">在后台页面内直接测试模型响应、思考内容与调用过程</p>
+    </div>
+</div>
+
+<div class="chat-admin-page">
+    <div class="chat-admin-main">
+        <div class="card chat-card">
+            <div class="card-body chat-toolbar">
+                <div class="row g-3 align-items-end">
+                    <div class="col-xl-4 col-lg-5">
+                        <label class="form-label" for="modelSelect">测试模型</label>
+                        <select id="modelSelect" class="form-select">
+                            <option value="">-- 加载中... --</option>
+                        </select>
+                    </div>
+                    <div class="col-xl-2 col-lg-3 col-md-4">
+                        <div class="form-check form-switch mt-md-4 pt-md-2">
+                            <input class="form-check-input" type="checkbox" id="streamingToggle">
+                            <label class="form-check-label" for="streamingToggle">启用流式</label>
+                        </div>
+                    </div>
+                    <div class="col-xl-2 col-lg-3 col-md-4">
+                        <div class="form-check form-switch mt-md-4 pt-md-2">
+                            <input class="form-check-input" type="checkbox" id="reasoningToggle">
+                            <label class="form-check-label" for="reasoningToggle">开启思考模式</label>
+                        </div>
+                    </div>
+                    <div class="col-xl-2 col-lg-2 col-md-4">
+                        <button type="button" class="btn btn-outline-secondary w-100" onclick="loadModels()">刷新模型</button>
+                    </div>
+                    <div class="col-xl-2 col-lg-12">
+                        <div id="chatStatus" class="small text-secondary text-xl-end">请选择模型并输入问题</div>
+                    </div>
+                </div>
             </div>
-        </div>
 
-        <!-- 输入区域 -->
-        <div class="chat-input-area">
-            <div class="chat-input-wrapper">
-                <textarea id="chatInput" class="chat-input" placeholder="输入消息...（Enter 发送，Shift+Enter 换行）"
-                          onkeydown="handleKeyDown(event)"></textarea>
-                <button type="button" id="btnSend" class="btn btn-primary chat-send-btn" onclick="sendMessage()">
-                    发送
-                </button>
+            <div id="chatMessages" class="chat-messages">
+                <div class="chat-empty">
+                    <div class="chat-empty-icon">💬</div>
+                    <div>选择模型后输入问题开始对话</div>
+                </div>
+            </div>
+
+            <div class="card-footer chat-input-area">
+                <div class="chat-input-wrapper">
+                    <textarea id="chatInput" class="chat-input" placeholder="输入消息...（Enter 发送，Shift+Enter 换行）"
+                              onkeydown="handleKeyDown(event)"></textarea>
+                    <button type="button" id="btnSend" class="btn btn-primary chat-send-btn" onclick="sendMessage()">
+                        发送
+                    </button>
+                </div>
             </div>
         </div>
     </div>
 
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            loadModels();
+    <div class="chat-admin-side d-flex flex-column gap-3">
+        <div class="card">
+            <div class="card-header fw-semibold">本次调用概览</div>
+            <div class="card-body">
+                <div id="chatMetaEmpty" class="text-secondary small">发送一条消息后显示流式、Token 与耗时信息</div>
+                <div id="chatMetaPanel" class="d-none">
+                    <div class="chat-chip-row mb-3">
+                        <span id="metaStreamChip" class="chat-chip chat-chip-stream">-</span>
+                        <span id="metaReasoningChip" class="chat-chip chat-chip-reasoning">-</span>
+                    </div>
+                    <div class="chat-meta-grid">
+                        <div>
+                            <div class="chat-meta-label">总耗时</div>
+                            <div id="metaTotalDuration" class="chat-meta-value">-</div>
+                        </div>
+                        <div>
+                            <div class="chat-meta-label">首字耗时</div>
+                            <div id="metaFirstToken" class="chat-meta-value">-</div>
+                        </div>
+                        <div>
+                            <div class="chat-meta-label">输入</div>
+                            <div id="metaInputTokens" class="chat-meta-value">-</div>
+                        </div>
+                        <div>
+                            <div class="chat-meta-label">缓存</div>
+                            <div id="metaCachedTokens" class="chat-meta-value">-</div>
+                        </div>
+                        <div>
+                            <div class="chat-meta-label">输出</div>
+                            <div id="metaOutputTokens" class="chat-meta-value">-</div>
+                        </div>
+                        <div>
+                            <div class="chat-meta-label">总Token数</div>
+                            <div id="metaTotalTokens" class="chat-meta-value">-</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-header fw-semibold">思考内容</div>
+            <div class="card-body">
+                <div id="chatReasoningEmpty" class="text-secondary small">开启思考模式并且上游返回思考内容后，这里会展示。</div>
+                <pre id="chatReasoningContent" class="chat-side-pre d-none"></pre>
+            </div>
+        </div>
+
+        <div class="card flex-fill">
+            <div class="card-header fw-semibold">调用详细过程</div>
+            <div class="card-body">
+                <div id="chatAttemptsEmpty" class="text-secondary small">发送一条消息后显示本次请求的每次尝试。</div>
+                <div id="chatAttemptsList" class="d-flex flex-column gap-2"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .chat-admin-page {
+        display: grid;
+        grid-template-columns: minmax(0, 1.8fr) minmax(300px, 1fr);
+        gap: 16px;
+        align-items: stretch;
+        height: calc(100vh - 180px);
+        min-height: 620px;
+        overflow: hidden;
+    }
+
+    .chat-admin-main,
+    .chat-admin-side,
+    .chat-card {
+        min-height: 0;
+    }
+
+    .chat-admin-main {
+        overflow: hidden;
+    }
+
+    .chat-admin-side {
+        overflow: hidden;
+    }
+
+    .chat-admin-side > .card {
+        min-height: 0;
+    }
+
+    .chat-admin-side > .card:last-child {
+        flex: 1;
+        overflow: hidden;
+    }
+
+    .chat-admin-side > .card:last-child .card-body {
+        min-height: 0;
+        overflow: auto;
+    }
+
+    .chat-card {
+        height: 100%;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    .chat-toolbar {
+        border-bottom: 1px solid var(--border-color, #e5e7eb);
+        flex-shrink: 0;
+    }
+
+    .chat-messages {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        background: var(--card-bg, #fff);
+        position: relative;
+    }
+
+    .chat-empty {
+        position: absolute;
+        inset: 20px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        color: var(--text-secondary, #888);
+        pointer-events: none;
+    }
+
+    .chat-empty-icon {
+        font-size: 32px;
+        margin-bottom: 8px;
+    }
+
+    .chat-bubble {
+        max-width: 82%;
+        padding: 12px 14px;
+        border-radius: 14px;
+        font-size: 14px;
+        line-height: 1.7;
+        word-break: break-word;
+        white-space: pre-wrap;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+    }
+
+    .chat-bubble-user {
+        align-self: flex-end;
+        background: #0d6efd;
+        color: #fff;
+        border-bottom-right-radius: 4px;
+    }
+
+    .chat-bubble-ai {
+        align-self: flex-start;
+        background: #f8fafc;
+        color: #1f2937;
+        border: 1px solid #e5e7eb;
+        border-bottom-left-radius: 4px;
+    }
+
+    .chat-bubble-error {
+        align-self: flex-start;
+        background: #fff1f2;
+        color: #be123c;
+        border: 1px solid #fecdd3;
+        border-bottom-left-radius: 4px;
+    }
+
+    .chat-bubble-meta {
+        font-size: 11px;
+        color: var(--text-secondary, #94a3b8);
+        margin-top: 6px;
+    }
+
+    .chat-bubble-user .chat-bubble-meta {
+        color: rgba(255,255,255,0.75);
+    }
+
+    .chat-thinking {
+        align-self: flex-start;
+        color: var(--text-secondary, #888);
+        font-style: italic;
+        padding: 10px 14px;
+    }
+
+    .chat-thinking-dots::after {
+        content: '';
+        animation: dots 1.5s infinite;
+    }
+
+    @@keyframes dots {
+        0% { content: ''; }
+        25% { content: '.'; }
+        50% { content: '..'; }
+        75% { content: '...'; }
+    }
+
+    .chat-input-area {
+        background: var(--card-bg, #fff);
+        flex-shrink: 0;
+    }
+
+    .chat-input-wrapper {
+        display: flex;
+        gap: 8px;
+        align-items: flex-end;
+    }
+
+    .chat-input {
+        flex: 1;
+        border: 1px solid var(--border-color, #ddd);
+        border-radius: 10px;
+        padding: 10px 12px;
+        font-size: 14px;
+        resize: none;
+        min-height: 88px;
+        max-height: 180px;
+        line-height: 1.5;
+        font-family: inherit;
+    }
+
+    .chat-input:focus {
+        outline: none;
+        border-color: #0d6efd;
+        box-shadow: 0 0 0 3px rgba(13, 110, 253, 0.12);
+    }
+
+    .chat-send-btn {
+        white-space: nowrap;
+        min-width: 82px;
+        height: 88px;
+    }
+
+    .chat-chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    .chat-chip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 28px;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1;
+        white-space: nowrap;
+    }
+
+    .chat-chip-stream {
+        background: #e0f2fe;
+        color: #0369a1;
+    }
+
+    .chat-chip-reasoning {
+        background: #fef3c7;
+        color: #b45309;
+    }
+
+    .chat-meta-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+    }
+
+    .chat-meta-label {
+        font-size: 12px;
+        color: #64748b;
+        margin-bottom: 4px;
+    }
+
+    .chat-meta-value {
+        font-size: 16px;
+        font-weight: 600;
+        color: #0f172a;
+    }
+
+    .chat-side-pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin: 0;
+        font-size: 13px;
+        line-height: 1.65;
+        max-height: 260px;
+        overflow: auto;
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 12px;
+    }
+
+    .chat-attempt-card {
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        padding: 12px;
+        background: #fff;
+    }
+
+    .chat-attempt-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: center;
+        margin-bottom: 8px;
+    }
+
+    .chat-attempt-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #0f172a;
+    }
+
+    .chat-attempt-meta {
+        font-size: 12px;
+        color: #64748b;
+        line-height: 1.7;
+    }
+
+    .chat-attempt-status {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 52px;
+        min-height: 24px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+    }
+
+    .chat-attempt-status-success {
+        background: #dcfce7;
+        color: #166534;
+    }
+
+    .chat-attempt-status-fail {
+        background: #fee2e2;
+        color: #b91c1c;
+    }
+
+    .chat-attempt-tokens {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+    }
+
+    .chat-attempt-token-chip {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 8px;
+        border-radius: 999px;
+        background: #f1f5f9;
+        color: #334155;
+        font-size: 12px;
+    }
+
+    .chat-attempt-error {
+        margin-top: 8px;
+        font-size: 12px;
+        line-height: 1.6;
+        color: #b91c1c;
+        background: #fff1f2;
+        border-radius: 8px;
+        padding: 8px 10px;
+    }
+
+    @@media (max-width: 1400px) {
+        .chat-admin-page {
+            grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);
+        }
+    }
+
+    @@media (max-width: 1200px) {
+        .chat-admin-page {
+            grid-template-columns: 1fr;
+            height: auto;
+            min-height: 0;
+            overflow: visible;
+        }
+
+        .chat-admin-main,
+        .chat-admin-side,
+        .chat-card,
+        .chat-admin-side > .card:last-child {
+            overflow: visible;
+        }
+
+        .chat-card {
+            min-height: 640px;
+        }
+
+        .chat-admin-side > .card:last-child .card-body,
+        .chat-messages {
+            overflow: visible;
+        }
+    }
+
+    @@media (max-width: 768px) {
+        .chat-admin-page {
+            gap: 12px;
+        }
+
+        .chat-bubble {
+            max-width: 100%;
+        }
+
+        .chat-input-wrapper {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .chat-send-btn {
+            width: 100%;
+            height: 44px;
+        }
+
+        .chat-input {
+            min-height: 72px;
+        }
+
+        .chat-meta-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
+<script>
+    let currentStreamState = null;
+
+    document.addEventListener('DOMContentLoaded', function() {
+        loadModels();
+        var chatInput = document.getElementById('chatInput');
+        chatInput.addEventListener('input', function() {
+            this.style.height = '88px';
+            this.style.height = Math.min(this.scrollHeight, 180) + 'px';
         });
+    });
 
-        // 加载可用模型列表
-        function loadModels() {
-            var select = document.getElementById('modelSelect');
-            select.innerHTML = '<option value="">-- 加载中... --</option>';
+    function loadModels() {
+        var select = document.getElementById('modelSelect');
+        select.innerHTML = '<option value="">-- 加载中... --</option>';
 
-            fetch('/api/admin/chat/models')
-                .then(function(r) { return r.json(); })
-                .then(function(data) {
-                    select.innerHTML = '<option value="">-- 请选择模型 --</option>';
-                    data.forEach(function(m) {
-                        var opt = document.createElement('option');
-                        opt.value = m.modelId;
-                        opt.textContent = m.displayName + ' (' + m.availableSiteCount + ' 个站点)';
-                        select.appendChild(opt);
-                    });
-                    if (data.length === 0) {
-                        select.innerHTML = '<option value="">-- 暂无可用模型 --</option>';
-                    }
-                })
-                .catch(function() {
-                    select.innerHTML = '<option value="">-- 加载失败 --</option>';
-                });
-        }
-
-        // Enter 发送，Shift+Enter 换行
-        function handleKeyDown(e) {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                sendMessage();
-            }
-        }
-
-        // 发送消息
-        function sendMessage() {
-            var modelId = document.getElementById('modelSelect').value;
-            var input = document.getElementById('chatInput');
-            var message = input.value.trim();
-
-            if (!modelId) { alert('请先选择模型'); return; }
-            if (!message) return;
-
-            // 移除空提示
-            var empty = document.querySelector('.chat-empty');
-            if (empty) empty.remove();
-
-            // 显示用户消息
-            appendMessage('user', message);
-
-            // 清空并重置输入框
-            input.value = '';
-            input.style.height = '80px';
-
-            setSending(true);
-
-            // 显示思考中
-            var thinking = document.createElement('div');
-            thinking.className = 'chat-thinking chat-thinking-dots';
-            thinking.id = 'thinkingIndicator';
-            thinking.textContent = '思考中';
-            document.getElementById('chatMessages').appendChild(thinking);
-            scrollToBottom();
-
-            fetch('/api/admin/chat/send', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ modelId: modelId, message: message })
-            })
+        fetch('/api/admin/chat/models')
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                var t = document.getElementById('thinkingIndicator');
-                if (t) t.remove();
-
-                if (data.success) {
-                    appendMessage('ai', data.content, data.durationMs);
-                } else {
-                    appendMessage('error', data.error || '请求失败', data.durationMs);
+                select.innerHTML = '<option value="">-- 请选择模型 --</option>';
+                data.forEach(function(m) {
+                    var opt = document.createElement('option');
+                    opt.value = m.modelId;
+                    opt.textContent = m.displayName + ' (' + m.availableSiteCount + ' 个站点)';
+                    select.appendChild(opt);
+                });
+                if (data.length === 0) {
+                    select.innerHTML = '<option value="">-- 暂无可用模型 --</option>';
                 }
             })
-            .catch(function(err) {
-                var t = document.getElementById('thinkingIndicator');
-                if (t) t.remove();
-                appendMessage('error', '网络错误：' + err.message);
-            })
-            .finally(function() {
-                setSending(false);
+            .catch(function() {
+                select.innerHTML = '<option value="">-- 加载失败 --</option>';
+            });
+    }
+
+    function handleKeyDown(e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    }
+
+    async function sendMessage() {
+        var modelId = document.getElementById('modelSelect').value;
+        var enableReasoning = document.getElementById('reasoningToggle').checked;
+        var enableStreaming = document.getElementById('streamingToggle').checked;
+        var input = document.getElementById('chatInput');
+        var message = input.value.trim();
+
+        if (!modelId) { alert('请先选择模型'); return; }
+        if (!message) return;
+
+        var empty = document.querySelector('.chat-empty');
+        if (empty) empty.remove();
+
+        appendMessage('user', message);
+        input.value = '';
+        input.style.height = '88px';
+        setSending(true);
+        clearChatPanels();
+        setChatStatus(enableStreaming ? '正在建立流式连接...' : '正在发送请求...');
+
+        if (enableStreaming) {
+            await sendStreamingMessage(modelId, message, enableReasoning);
+            return;
+        }
+
+        var thinking = document.createElement('div');
+        thinking.className = 'chat-thinking chat-thinking-dots';
+        thinking.id = 'thinkingIndicator';
+        thinking.textContent = enableReasoning ? '思考中' : '请求中';
+        document.getElementById('chatMessages').appendChild(thinking);
+        scrollToBottom();
+
+        fetch('/api/admin/chat/send', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ modelId: modelId, message: message, enableReasoning: enableReasoning, enableStreaming: false })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            removeThinkingIndicator();
+            renderChatMeta(data);
+            renderReasoning(data.reasoningContent || '');
+            renderAttempts(data.attempts || []);
+
+            if (data.success) {
+                appendMessage('ai', data.content, data);
+                setChatStatus('请求完成');
+            } else {
+                appendMessage('error', data.error || '请求失败', data);
+                setChatStatus('请求失败');
+            }
+        })
+        .catch(function(err) {
+            removeThinkingIndicator();
+            appendMessage('error', '网络错误：' + err.message);
+            clearChatPanels();
+            setChatStatus('网络错误');
+        })
+        .finally(function() {
+            setSending(false);
+        });
+    }
+
+    async function sendStreamingMessage(modelId, message, enableReasoning) {
+        var aiBubble = createStreamingMessageBubble(enableReasoning);
+        var abortController = new AbortController();
+        currentStreamState = {
+            aiBubble: aiBubble,
+            abortController: abortController,
+            content: '',
+            reasoning: '',
+            meta: null,
+            done: false,
+            enableReasoning: enableReasoning
+        };
+
+        try {
+            var response = await fetch('/api/admin/chat/send-stream', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+                body: JSON.stringify({ modelId: modelId, message: message, enableReasoning: enableReasoning, enableStreaming: true }),
+                signal: abortController.signal
+            });
+
+            if (!response.ok || !response.body) {
+                throw new Error('流式请求失败');
+            }
+
+            await readSseStream(response.body);
+
+            if (!currentStreamState.done) {
+                finalizeStreamingError('流式连接已结束，但未收到完成标记');
+            }
+        } catch (err) {
+            if (currentStreamState) {
+                finalizeStreamingError('网络错误：' + (err && err.message ? err.message : '流式请求失败'));
+            }
+        } finally {
+            currentStreamState = null;
+            setSending(false);
+        }
+    }
+
+    async function readSseStream(body) {
+        var reader = body.getReader();
+        var decoder = new TextDecoder('utf-8');
+        var buffer = '';
+
+        while (true) {
+            var result = await reader.read();
+            if (result.done) {
+                break;
+            }
+
+            buffer += decoder.decode(result.value, { stream: true });
+            var blocks = buffer.split('\n\n');
+            buffer = blocks.pop() || '';
+
+            blocks.forEach(function(block) {
+                handleSseBlock(block);
             });
         }
 
-        // 追加消息气泡
-        function appendMessage(type, content, durationMs) {
-            var container = document.getElementById('chatMessages');
-            var bubble = document.createElement('div');
+        buffer += decoder.decode();
+        if (buffer.trim()) {
+            handleSseBlock(buffer);
+        }
+    }
 
-            var cssClass = type === 'user' ? 'chat-bubble chat-bubble-user'
-                : type === 'error' ? 'chat-bubble chat-bubble-error'
-                : 'chat-bubble chat-bubble-ai';
+    function handleSseBlock(block) {
+        if (!currentStreamState || !block) {
+            return;
+        }
 
-            bubble.className = cssClass;
+        var lines = block.split(/\r?\n/);
+        var eventName = 'message';
+        var dataLines = [];
 
-            var textDiv = document.createElement('div');
-            textDiv.textContent = content;
-            bubble.appendChild(textDiv);
-
-            if (type !== 'user' || durationMs) {
-                var meta = document.createElement('div');
-                meta.className = 'chat-bubble-meta';
-                var now = new Date();
-                var timeStr = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
-                meta.textContent = timeStr;
-                if (durationMs) meta.textContent += ' · ' + durationMs + ' ms';
-                bubble.appendChild(meta);
+        lines.forEach(function(line) {
+            if (line.startsWith('event:')) {
+                eventName = line.substring(6).trim();
+                return;
             }
 
-            container.appendChild(bubble);
-            scrollToBottom();
-        }
-
-        function scrollToBottom() {
-            var container = document.getElementById('chatMessages');
-            container.scrollTop = container.scrollHeight;
-        }
-
-        function setSending(sending) {
-            var btn = document.getElementById('btnSend');
-            var input = document.getElementById('chatInput');
-            btn.disabled = sending;
-            input.disabled = sending;
-            if (sending) {
-                btn.textContent = '发送中...';
-            } else {
-                btn.textContent = '发送';
-                input.focus();
+            if (line.startsWith('data:')) {
+                dataLines.push(line.substring(5).trimStart());
             }
-        }
-
-        // 输入框自动调整高度
-        var chatInput = document.getElementById('chatInput');
-        chatInput.addEventListener('input', function() {
-            this.style.height = '80px';
-            this.style.height = Math.min(this.scrollHeight, 160) + 'px';
         });
-    </script>
-</body>
-</html>
+
+        if (!dataLines.length) {
+            return;
+        }
+
+        var dataText = dataLines.join('\n');
+        var payload = null;
+        try {
+            payload = JSON.parse(dataText);
+        } catch {
+            return;
+        }
+
+        if (eventName === 'token') {
+            currentStreamState.content += payload.content || '';
+            updateStreamingBubble();
+            setChatStatus('正在流式接收内容...');
+            return;
+        }
+
+        if (eventName === 'reasoning') {
+            currentStreamState.reasoning += payload.content || '';
+            renderReasoning(currentStreamState.reasoning);
+            if (!currentStreamState.content) {
+                updateStreamingBubble('思考中...');
+            }
+            setChatStatus('正在流式接收思考内容...');
+            return;
+        }
+
+        if (eventName === 'meta') {
+            currentStreamState.meta = payload;
+            renderChatMeta(payload);
+            renderAttempts(payload.attempts || []);
+            if (currentStreamState.content) {
+                updateStreamingBubble();
+            }
+            return;
+        }
+
+        if (eventName === 'done') {
+            finalizeStreamingSuccess();
+            return;
+        }
+
+        if (eventName === 'error') {
+            finalizeStreamingError(payload.message || '流式请求失败', payload.attempts || []);
+        }
+    }
+
+    function createStreamingMessageBubble(enableReasoning) {
+        var container = document.getElementById('chatMessages');
+        var bubble = document.createElement('div');
+        bubble.className = 'chat-bubble chat-bubble-ai';
+
+        var textDiv = document.createElement('div');
+        textDiv.className = 'chat-stream-content';
+        textDiv.textContent = '正在等待响应...';
+        bubble.appendChild(textDiv);
+
+        var meta = document.createElement('div');
+        meta.className = 'chat-bubble-meta';
+        meta.textContent = buildBubbleMetaText({ isStreaming: true, reasoningEnabled: enableReasoning }, true);
+        bubble.appendChild(meta);
+
+        container.appendChild(bubble);
+        scrollToBottom();
+        return bubble;
+    }
+
+    function updateStreamingBubble(placeholder) {
+        if (!currentStreamState || !currentStreamState.aiBubble) {
+            return;
+        }
+
+        var textDiv = currentStreamState.aiBubble.querySelector('.chat-stream-content');
+        if (!textDiv) {
+            return;
+        }
+
+        textDiv.textContent = currentStreamState.content || placeholder || '正在等待响应...';
+        updateBubbleMeta(currentStreamState.aiBubble, currentStreamState.meta || { isStreaming: true, reasoningEnabled: currentStreamState.enableReasoning });
+        scrollToBottom();
+    }
+
+    function finalizeStreamingSuccess() {
+        if (!currentStreamState) {
+            return;
+        }
+
+        currentStreamState.done = true;
+        renderReasoning(currentStreamState.reasoning || '');
+        updateStreamingBubble();
+        if (currentStreamState.meta) {
+            updateBubbleMeta(currentStreamState.aiBubble, currentStreamState.meta);
+        }
+        setChatStatus('流式请求完成');
+    }
+
+    function finalizeStreamingError(message, attempts) {
+        if (!currentStreamState) {
+            return;
+        }
+
+        var hasContent = !!currentStreamState.content;
+        currentStreamState.done = true;
+
+        if (attempts && attempts.length) {
+            renderAttempts(attempts);
+        }
+
+        if (hasContent) {
+            updateStreamingBubble();
+        } else {
+            currentStreamState.aiBubble.className = 'chat-bubble chat-bubble-error';
+            var textDiv = currentStreamState.aiBubble.querySelector('.chat-stream-content');
+            if (textDiv) {
+                textDiv.textContent = message;
+            }
+        }
+
+        if (currentStreamState.meta) {
+            updateBubbleMeta(currentStreamState.aiBubble, currentStreamState.meta);
+        }
+
+        setChatStatus('流式请求失败');
+        if (!hasContent) {
+            clearChatMetaOnly();
+            renderReasoning('');
+        }
+    }
+    function appendMessage(type, content, result) {
+        var container = document.getElementById('chatMessages');
+        var bubble = document.createElement('div');
+
+        var cssClass = type === 'user' ? 'chat-bubble chat-bubble-user'
+            : type === 'error' ? 'chat-bubble chat-bubble-error'
+            : 'chat-bubble chat-bubble-ai';
+
+        bubble.className = cssClass;
+
+        var textDiv = document.createElement('div');
+        textDiv.textContent = content;
+        bubble.appendChild(textDiv);
+
+        var meta = document.createElement('div');
+        meta.className = 'chat-bubble-meta';
+        meta.textContent = buildBubbleMetaText(result, type !== 'user');
+
+        bubble.appendChild(meta);
+        container.appendChild(bubble);
+        scrollToBottom();
+    }
+
+    function buildBubbleMetaText(result, includeResultMeta) {
+        var now = new Date();
+        var timeStr = String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0');
+        if (!includeResultMeta || !result) {
+            return timeStr;
+        }
+
+        var parts = [timeStr];
+        parts.push(formatDuration(result.durationMs || result.totalDurationMs || 0));
+        parts.push(result.isStreaming ? '流式' : '非流');
+        parts.push(result.reasoningEnabled ? '思考模式开' : '思考模式关');
+        return parts.join(' · ');
+    }
+
+    function updateBubbleMeta(bubble, result) {
+        if (!bubble) {
+            return;
+        }
+
+        var meta = bubble.querySelector('.chat-bubble-meta');
+        if (!meta) {
+            return;
+        }
+
+        meta.textContent = buildBubbleMetaText(result, true);
+    }
+
+    function clearChatPanels() {
+        clearChatMetaOnly();
+        renderReasoning('');
+        renderAttempts([]);
+    }
+
+    function clearChatMetaOnly() {
+        renderChatMeta(null);
+    }
+
+    function renderChatMeta(data) {
+        var empty = document.getElementById('chatMetaEmpty');
+        var panel = document.getElementById('chatMetaPanel');
+        if (!data) {
+            empty.classList.remove('d-none');
+            panel.classList.add('d-none');
+            return;
+        }
+
+        empty.classList.add('d-none');
+        panel.classList.remove('d-none');
+        document.getElementById('metaStreamChip').textContent = data.isStreaming ? '流式调用' : '非流式调用';
+        document.getElementById('metaReasoningChip').textContent = data.reasoningEnabled ? '思考模式开启' : '思考模式关闭';
+        document.getElementById('metaTotalDuration').textContent = formatDuration(data.totalDurationMs || data.durationMs || 0);
+        document.getElementById('metaFirstToken').textContent = formatDuration(data.firstTokenLatencyMs || 0);
+        document.getElementById('metaInputTokens').textContent = formatNumber(data.inputTokens || 0);
+        document.getElementById('metaCachedTokens').textContent = formatNumber(data.cachedTokens || 0);
+        document.getElementById('metaOutputTokens').textContent = formatNumber(data.outputTokens || 0);
+        document.getElementById('metaTotalTokens').textContent = formatNumber(data.totalTokens || 0);
+    }
+
+    function renderReasoning(reasoningContent) {
+        var empty = document.getElementById('chatReasoningEmpty');
+        var content = document.getElementById('chatReasoningContent');
+        if (!reasoningContent) {
+            empty.classList.remove('d-none');
+            content.classList.add('d-none');
+            content.textContent = '';
+            return;
+        }
+
+        empty.classList.add('d-none');
+        content.classList.remove('d-none');
+        content.textContent = reasoningContent;
+    }
+
+    function renderAttempts(attempts) {
+        var empty = document.getElementById('chatAttemptsEmpty');
+        var list = document.getElementById('chatAttemptsList');
+        list.innerHTML = '';
+
+        if (!attempts || !attempts.length) {
+            empty.classList.remove('d-none');
+            return;
+        }
+
+        empty.classList.add('d-none');
+        attempts.forEach(function(attempt) {
+            var card = document.createElement('div');
+            card.className = 'chat-attempt-card';
+
+            var statusClass = attempt.status && attempt.status.toLowerCase() === 'success'
+                ? 'chat-attempt-status chat-attempt-status-success'
+                : 'chat-attempt-status chat-attempt-status-fail';
+
+            var html = '' +
+                '<div class="chat-attempt-head">' +
+                    '<div>' +
+                        '<div class="chat-attempt-title">第 ' + attempt.attemptIndex + ' 次尝试</div>' +
+                        '<div class="chat-attempt-meta">站点：' + escHtml(attempt.siteName || '-') + '</div>' +
+                        '<div class="chat-attempt-meta">模型：' + escHtml(attempt.attemptedModel || '-') + '</div>' +
+                        '<div class="chat-attempt-meta">站点模型：' + escHtml(attempt.siteModelName || '-') + '</div>' +
+                        '<div class="chat-attempt-meta">总耗时：' + escHtml(formatDuration(attempt.totalDurationMs || 0)) + ' · 首字：' + escHtml(formatDuration(attempt.firstTokenLatencyMs || 0)) + '</div>' +
+                    '</div>' +
+                    '<span class="' + statusClass + '">' + escHtml(attempt.status === 'success' ? '成功' : '失败') + '</span>' +
+                '</div>' +
+                '<div class="chat-attempt-tokens">' +
+                    '<span class="chat-attempt-token-chip">流式：' + escHtml(attempt.isStreaming ? '是' : '否') + '</span>' +
+                    '<span class="chat-attempt-token-chip">输入：' + escHtml(formatNumber(attempt.inputTokens || 0)) + '</span>' +
+                    '<span class="chat-attempt-token-chip">缓存：' + escHtml(formatNumber(attempt.cachedTokens || 0)) + '</span>' +
+                    '<span class="chat-attempt-token-chip">输出：' + escHtml(formatNumber(attempt.outputTokens || 0)) + '</span>' +
+                    '<span class="chat-attempt-token-chip">总Token：' + escHtml(formatNumber(attempt.totalTokens || 0)) + '</span>' +
+                '</div>';
+
+            if (attempt.errorMessage) {
+                html += '<div class="chat-attempt-error">错误：' + escHtml(attempt.errorMessage) + '</div>';
+            }
+
+            card.innerHTML = html;
+            list.appendChild(card);
+        });
+    }
+
+    function removeThinkingIndicator() {
+        var t = document.getElementById('thinkingIndicator');
+        if (t) t.remove();
+    }
+
+    function setChatStatus(text) {
+        document.getElementById('chatStatus').textContent = text;
+    }
+
+    function scrollToBottom() {
+        var container = document.getElementById('chatMessages');
+        container.scrollTop = container.scrollHeight;
+    }
+
+    function setSending(sending) {
+        var btn = document.getElementById('btnSend');
+        var input = document.getElementById('chatInput');
+        var modelSelect = document.getElementById('modelSelect');
+        var reasoningToggle = document.getElementById('reasoningToggle');
+        var streamingToggle = document.getElementById('streamingToggle');
+        btn.disabled = sending;
+        input.disabled = sending;
+        modelSelect.disabled = sending;
+        reasoningToggle.disabled = sending;
+        streamingToggle.disabled = sending;
+        if (sending) {
+            btn.textContent = '发送中...';
+        } else {
+            btn.textContent = '发送';
+            input.focus();
+        }
+    }
+
+    function formatDuration(value) {
+        var number = Number(value || 0);
+        if (!isFinite(number) || number <= 0) {
+            return '-';
+        }
+        if (number >= 1000) {
+            var seconds = number / 1000;
+            return (Math.abs(seconds - Math.round(seconds)) < 0.05 ? Math.round(seconds).toString() : seconds.toFixed(1)) + 's';
+        }
+        return number + 'ms';
+    }
+
+    function formatNumber(value) {
+        var number = Number(value || 0);
+        if (!isFinite(number)) {
+            return '-';
+        }
+        return number.toLocaleString('zh-CN');
+    }
+
+    function escHtml(str) {
+        var d = document.createElement('div');
+        d.textContent = str == null ? '' : String(str);
+        return d.innerHTML;
+    }
+</script>

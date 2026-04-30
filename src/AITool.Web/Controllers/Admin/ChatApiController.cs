@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Operations;
@@ -23,6 +24,25 @@ public sealed class ChatModelItem
     public int AvailableSiteCount { get; set; }
 }
 
+// 对话测试的单次尝试明细
+public sealed class ChatAttemptResult
+{
+    public int AttemptIndex { get; set; }
+    public string SiteName { get; set; } = string.Empty;
+    public string AttemptedModel { get; set; } = string.Empty;
+    public string SiteModelName { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string ErrorMessage { get; set; } = string.Empty;
+    public bool IsFinalResult { get; set; }
+    public bool IsStreaming { get; set; }
+    public int InputTokens { get; set; }
+    public int CachedTokens { get; set; }
+    public int OutputTokens { get; set; }
+    public int TotalTokens { get; set; }
+    public int FirstTokenLatencyMs { get; set; }
+    public int TotalDurationMs { get; set; }
+}
+
 // 发送消息的请求体
 public sealed class ChatSendRequest
 {
@@ -30,6 +50,10 @@ public sealed class ChatSendRequest
     public Guid ModelId { get; set; }
     // 用户消息内容
     public string Message { get; set; } = string.Empty;
+    // 是否开启思考模式
+    public bool EnableReasoning { get; set; }
+    // 是否启用流式
+    public bool EnableStreaming { get; set; }
 }
 
 // 发送消息的返回结果
@@ -37,15 +61,53 @@ public sealed class ChatSendResult
 {
     // 是否成功
     public bool Success { get; set; }
+    // 请求ID
+    public Guid? RequestId { get; set; }
     // AI 回复内容
     public string Content { get; set; } = string.Empty;
+    // 思考内容
+    public string ReasoningContent { get; set; } = string.Empty;
     // 错误信息
     public string? Error { get; set; }
     // 请求耗时（毫秒）
     public long DurationMs { get; set; }
+    // 是否开启思考模式
+    public bool ReasoningEnabled { get; set; }
+    // 是否流式
+    public bool IsStreaming { get; set; }
+    // 输入 Token 数
+    public int InputTokens { get; set; }
+    // 缓存 Token 数
+    public int CachedTokens { get; set; }
+    // 输出 Token 数
+    public int OutputTokens { get; set; }
+    // 总 Token 数
+    public int TotalTokens { get; set; }
+    // 首字耗时（毫秒）
+    public int FirstTokenLatencyMs { get; set; }
+    // 总耗时（毫秒）
+    public int TotalDurationMs { get; set; }
+    // 调用尝试明细
+    public List<ChatAttemptResult> Attempts { get; set; } = [];
 }
 
-// 对话测试 API，提供模型选择和消息发送功能，支持路由规则失败重试
+// 聊天页流式转发的中间结果
+internal sealed class ChatStreamForwardResult
+{
+    public bool Success { get; set; }
+    public bool HadAnyContent { get; set; }
+    public string Content { get; set; } = string.Empty;
+    public string ReasoningContent { get; set; } = string.Empty;
+    public int InputTokens { get; set; }
+    public int CachedTokens { get; set; }
+    public int OutputTokens { get; set; }
+    public int FirstTokenLatencyMs { get; set; }
+    public int TotalDurationMs { get; set; }
+    public string ErrorMessage { get; set; } = string.Empty;
+    public int StatusCode { get; set; }
+}
+
+// 对话测试 API，提供模型选择、普通发送和流式发送功能
 [ApiController]
 [Route("api/admin/chat")]
 public sealed class ChatApiController : ControllerBase
@@ -56,6 +118,7 @@ public sealed class ChatApiController : ControllerBase
     private readonly RouteCircuitStateStore _circuitStore;
     private readonly IUsageLogService _usageLogService;
     private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
+    private readonly IHttpClientFactory _httpClientFactory;
 
     public ChatApiController(
         AppDbContext dbContext,
@@ -63,7 +126,8 @@ public sealed class ChatApiController : ControllerBase
         IRouteSelectionService routeService,
         RouteCircuitStateStore circuitStore,
         IUsageLogService usageLogService,
-        ISystemRuntimeSettingsService systemRuntimeSettingsService)
+        ISystemRuntimeSettingsService systemRuntimeSettingsService,
+        IHttpClientFactory httpClientFactory)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
@@ -71,13 +135,13 @@ public sealed class ChatApiController : ControllerBase
         _circuitStore = circuitStore;
         _usageLogService = usageLogService;
         _systemRuntimeSettingsService = systemRuntimeSettingsService;
+        _httpClientFactory = httpClientFactory;
     }
 
     // 获取可用于对话测试的模型列表
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
-        // 查询有可用映射的启用模型
         var enabledMappings = await _dbContext.SiteModelMappings
             .Where(m => m.IsEnabled)
             .ToListAsync(cancellationToken);
@@ -94,7 +158,6 @@ public sealed class ChatApiController : ControllerBase
             })
             .ToListAsync(cancellationToken);
 
-        // 填充每个模型的可用站点数
         var siteCounts = enabledMappings
             .GroupBy(m => m.ModelLibraryItemId)
             .ToDictionary(g => g.Key, g => g.Count());
@@ -107,7 +170,7 @@ public sealed class ChatApiController : ControllerBase
         return Ok(models);
     }
 
-    // 发送消息到指定模型，按路由规则优先级逐个尝试，全部失败才返回错误
+    // 非流式发送，返回完整 JSON 结果
     [HttpPost("send")]
     public async Task<IActionResult> Send([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
     {
@@ -118,32 +181,21 @@ public sealed class ChatApiController : ControllerBase
             return BadRequest(new { message = "请选择模型" });
 
         var sw = Stopwatch.StartNew();
-
-        // 查找模型信息
         var model = await _dbContext.ModelLibraryItems
             .FirstOrDefaultAsync(m => m.Id == request.ModelId, cancellationToken);
 
         if (model is null || !model.IsEnabled)
-            return Ok(new ChatSendResult { Success = false, Error = "模型不存在或已禁用" });
+            return Ok(new ChatSendResult { Success = false, Error = "模型不存在或已禁用", ReasoningEnabled = request.EnableReasoning });
 
-        // 读取当前持久化运行时设置，确保后台修改可立即影响代理执行
         var runtimeSettings = await _systemRuntimeSettingsService.GetOrCreateAsync(cancellationToken);
-
-        // 尝试通过路由规则发送（支持失败重试）
         var allRoutes = await _routeService.SelectAllRoutesAsync(model.ModelName, cancellationToken);
 
         if (allRoutes.Count > 0)
         {
-            // 收集被熔断的站点（先加载到内存再过滤）
-            var allSiteIds = await _dbContext.Sites
-                .Where(s => s.IsEnabled)
-                .Select(s => s.Id)
-                .ToListAsync(cancellationToken);
-            var blockedSiteIds = new HashSet<Guid>(
-                allSiteIds.Where(id => _circuitStore.IsBlocked(id)));
-
+            var blockedSiteIds = await GetBlockedSiteIdsAsync(cancellationToken);
             var requestId = Guid.NewGuid();
             var attemptIndex = 0;
+            var attempts = new List<ChatAttemptResult>();
 
             foreach (var routeResult in allRoutes)
             {
@@ -155,17 +207,6 @@ public sealed class ChatApiController : ControllerBase
                 if (site is null || !site.IsEnabled)
                     continue;
 
-                var requestBody = JsonSerializer.Serialize(new
-                {
-                    model = route.SiteModelName,
-                    messages = new[]
-                    {
-                        new { role = "user", content = request.Message }
-                    },
-                    stream = false,
-                    max_tokens = 4096
-                });
-
                 attemptIndex++;
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
@@ -173,10 +214,13 @@ public sealed class ChatApiController : ControllerBase
                     TargetApiKey = site.ApiKey,
                     ProtocolType = site.ProtocolType,
                     TargetModelName = route.SiteModelName,
-                    RequestBody = requestBody,
+                    RequestBody = BuildChatRequestBody(route.SiteModelName, request.Message, request.EnableReasoning, false),
+                    EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                     RetryCount = runtimeSettings.ProxyRetryCount
                 }, cancellationToken);
+
+                attempts.Add(BuildAttemptResult(attemptIndex, site.Name, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success));
 
                 await _usageLogService.LogAsync(new UsageLogEntry
                 {
@@ -195,7 +239,7 @@ public sealed class ChatApiController : ControllerBase
                     InputTokens = forwardResult.InputTokens,
                     CachedTokens = forwardResult.CachedTokens,
                     OutputTokens = forwardResult.OutputTokens,
-                    IsStreaming = forwardResult.IsStreaming,
+                    IsStreaming = false,
                     FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
                     StreamDurationMs = forwardResult.StreamDurationMs,
                     TotalDurationMs = forwardResult.TotalDurationMs
@@ -204,13 +248,8 @@ public sealed class ChatApiController : ControllerBase
                 if (forwardResult.Success)
                 {
                     sw.Stop();
-                    var content = ExtractContent(forwardResult.ResponseBody, site.ProtocolType);
-                    return Ok(new ChatSendResult
-                    {
-                        Success = true,
-                        Content = content,
-                        DurationMs = sw.ElapsedMilliseconds
-                    });
+                    var payload = ExtractChatPayload(forwardResult.ResponseBody, site.ProtocolType);
+                    return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
                 }
             }
 
@@ -218,13 +257,160 @@ public sealed class ChatApiController : ControllerBase
             return Ok(new ChatSendResult
             {
                 Success = false,
+                RequestId = requestId,
                 Error = "所有路由站点均请求失败",
-                DurationMs = sw.ElapsedMilliseconds
+                DurationMs = sw.ElapsedMilliseconds,
+                ReasoningEnabled = request.EnableReasoning,
+                IsStreaming = false,
+                Attempts = attempts
             });
         }
 
-        // 没有路由规则时，回退到旧的 SiteModelMapping 直接查询逻辑
         return await SendFallback(request, model, runtimeSettings, cancellationToken);
+    }
+
+    // 流式发送，使用 SSE 将上游内容逐步推给前端。
+    [HttpPost("send-stream")]
+    public async Task SendStream([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
+    {
+        Response.StatusCode = 200;
+        Response.ContentType = "text/event-stream";
+        Response.Headers.CacheControl = "no-cache";
+        Response.Headers["X-Accel-Buffering"] = "no";
+
+        if (string.IsNullOrWhiteSpace(request.Message))
+        {
+            await WriteSseEventAsync("error", new { message = "消息不能为空" }, cancellationToken);
+            return;
+        }
+
+        if (request.ModelId == Guid.Empty)
+        {
+            await WriteSseEventAsync("error", new { message = "请选择模型" }, cancellationToken);
+            return;
+        }
+
+        var model = await _dbContext.ModelLibraryItems
+            .FirstOrDefaultAsync(m => m.Id == request.ModelId, cancellationToken);
+
+        if (model is null || !model.IsEnabled)
+        {
+            await WriteSseEventAsync("error", new { message = "模型不存在或已禁用" }, cancellationToken);
+            return;
+        }
+
+        var runtimeSettings = await _systemRuntimeSettingsService.GetOrCreateAsync(cancellationToken);
+        var allRoutes = await _routeService.SelectAllRoutesAsync(model.ModelName, cancellationToken);
+        if (allRoutes.Count == 0)
+        {
+            await WriteSseEventAsync("error", new { message = "没有可用路由" }, cancellationToken);
+            return;
+        }
+
+        var blockedSiteIds = await GetBlockedSiteIdsAsync(cancellationToken);
+        var requestId = Guid.NewGuid();
+        var attemptIndex = 0;
+        var attempts = new List<ChatAttemptResult>();
+
+        foreach (var routeResult in allRoutes)
+        {
+            var route = routeResult.Route!;
+            if (blockedSiteIds.Contains(route.SiteId))
+                continue;
+
+            var site = await _dbContext.Sites.FindAsync([route.SiteId], cancellationToken);
+            if (site is null || !site.IsEnabled)
+                continue;
+
+            attemptIndex++;
+            var streamResult = await ForwardStreamAsync(
+                site,
+                route.SiteModelName,
+                request.Message,
+                request.EnableReasoning,
+                async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
+                async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
+                runtimeSettings.ProxyRequestTimeoutSeconds,
+                cancellationToken);
+
+            var attemptResult = BuildAttemptResult(
+                attemptIndex,
+                site.Name,
+                route.UpstreamModelName,
+                route.SiteModelName,
+                new ProxyForwardResult
+                {
+                    Success = streamResult.Success,
+                    InputTokens = streamResult.InputTokens,
+                    CachedTokens = streamResult.CachedTokens,
+                    OutputTokens = streamResult.OutputTokens,
+                    IsStreaming = true,
+                    FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+                    TotalDurationMs = streamResult.TotalDurationMs,
+                    ErrorMessage = streamResult.ErrorMessage,
+                    StatusCode = streamResult.StatusCode
+                },
+                streamResult.Success);
+            attempts.Add(attemptResult);
+
+            await _usageLogService.LogAsync(new UsageLogEntry
+            {
+                RequestId = requestId,
+                ProtocolType = site.ProtocolType,
+                RequestModel = model.ModelName,
+                AttemptedModel = route.UpstreamModelName,
+                TargetSiteId = site.Id,
+                Status = streamResult.Success ? "success" : "fail",
+                Source = "chat",
+                RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
+                AttemptIndex = attemptIndex,
+                IsFinalResult = streamResult.Success,
+                FallbackTriggered = !streamResult.Success,
+                ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+                InputTokens = streamResult.InputTokens,
+                CachedTokens = streamResult.CachedTokens,
+                OutputTokens = streamResult.OutputTokens,
+                IsStreaming = true,
+                FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+                StreamDurationMs = 0,
+                TotalDurationMs = streamResult.TotalDurationMs
+            }, cancellationToken);
+
+            if (streamResult.Success)
+            {
+                var finalResult = new ChatSendResult
+                {
+                    Success = true,
+                    RequestId = requestId,
+                    Content = streamResult.Content,
+                    ReasoningContent = streamResult.ReasoningContent,
+                    DurationMs = streamResult.TotalDurationMs,
+                    ReasoningEnabled = request.EnableReasoning,
+                    IsStreaming = true,
+                    InputTokens = streamResult.InputTokens,
+                    CachedTokens = streamResult.CachedTokens,
+                    OutputTokens = streamResult.OutputTokens,
+                    TotalTokens = streamResult.InputTokens + streamResult.CachedTokens + streamResult.OutputTokens,
+                    FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+                    TotalDurationMs = streamResult.TotalDurationMs,
+                    Attempts = attempts
+                };
+                await WriteSseEventAsync("meta", finalResult, cancellationToken);
+                await WriteSseEventAsync("done", new { requestId }, cancellationToken);
+                _circuitStore.Succeed(site.Id);
+                return;
+            }
+
+            _circuitStore.Block(site.Id);
+            blockedSiteIds.Add(site.Id);
+            if (streamResult.HadAnyContent)
+            {
+                await WriteSseEventAsync("error", new { message = streamResult.ErrorMessage }, cancellationToken);
+                return;
+            }
+        }
+
+        await WriteSseEventAsync("error", new { message = "所有路由站点均请求失败", attempts }, cancellationToken);
     }
 
     // 回退逻辑：没有路由规则时直接通过站点映射发送
@@ -239,22 +425,11 @@ public sealed class ChatApiController : ControllerBase
             .FirstOrDefaultAsync(m => m.ModelLibraryItemId == request.ModelId && m.IsEnabled, cancellationToken);
 
         if (mapping is null)
-            return Ok(new ChatSendResult { Success = false, Error = "该模型没有可用的站点映射" });
+            return Ok(new ChatSendResult { Success = false, Error = "该模型没有可用的站点映射", ReasoningEnabled = request.EnableReasoning });
 
         var site = await _dbContext.Sites.FindAsync([mapping.SiteId], cancellationToken);
         if (site is null || !site.IsEnabled)
-            return Ok(new ChatSendResult { Success = false, Error = "目标站点不可用" });
-
-        var requestBody = JsonSerializer.Serialize(new
-        {
-            model = mapping.RemoteModelName,
-            messages = new[]
-            {
-                new { role = "user", content = request.Message }
-            },
-            stream = false,
-            max_tokens = 4096
-        });
+            return Ok(new ChatSendResult { Success = false, Error = "目标站点不可用", ReasoningEnabled = request.EnableReasoning });
 
         var requestId = Guid.NewGuid();
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
@@ -263,14 +438,14 @@ public sealed class ChatApiController : ControllerBase
             TargetApiKey = site.ApiKey,
             ProtocolType = site.ProtocolType,
             TargetModelName = mapping.RemoteModelName,
-            RequestBody = requestBody,
+            RequestBody = BuildChatRequestBody(mapping.RemoteModelName, request.Message, request.EnableReasoning, false),
+            EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount
         }, cancellationToken);
 
         sw.Stop();
 
-        // 记录回退方式的调用日志
         await _usageLogService.LogAsync(new UsageLogEntry
         {
             RequestId = requestId,
@@ -288,67 +463,567 @@ public sealed class ChatApiController : ControllerBase
             InputTokens = forwardResult.InputTokens,
             CachedTokens = forwardResult.CachedTokens,
             OutputTokens = forwardResult.OutputTokens,
-            IsStreaming = forwardResult.IsStreaming,
+            IsStreaming = false,
             FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
             StreamDurationMs = forwardResult.StreamDurationMs,
             TotalDurationMs = forwardResult.TotalDurationMs
         }, cancellationToken);
+
+        var attempts = new List<ChatAttemptResult>
+        {
+            BuildAttemptResult(1, site.Name, mapping.RemoteModelName, mapping.RemoteModelName, forwardResult, true)
+        };
 
         if (!forwardResult.Success)
         {
             return Ok(new ChatSendResult
             {
                 Success = false,
+                RequestId = requestId,
                 Error = forwardResult.ErrorMessage ?? "上游请求失败",
-                DurationMs = sw.ElapsedMilliseconds
+                DurationMs = sw.ElapsedMilliseconds,
+                ReasoningEnabled = request.EnableReasoning,
+                IsStreaming = false,
+                Attempts = attempts
             });
         }
 
-        var content = ExtractContent(forwardResult.ResponseBody, site.ProtocolType);
-
-        return Ok(new ChatSendResult
-        {
-            Success = true,
-            Content = content,
-            DurationMs = sw.ElapsedMilliseconds
-        });
+        var payload = ExtractChatPayload(forwardResult.ResponseBody, site.ProtocolType);
+        return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
     }
 
-    // 从上游响应 JSON 中提取 AI 回复文本
-    private static string ExtractContent(string responseBody, string protocolType)
+    // 使用 HttpClient 按 SSE 方式读取上游响应，并实时转发到前端。
+    private async Task<ChatStreamForwardResult> ForwardStreamAsync(
+        Domain.Sites.Site site,
+        string targetModelName,
+        string message,
+        bool enableReasoning,
+        Func<string, Task> onContentChunk,
+        Func<string, Task> onReasoningChunk,
+        int requestTimeoutSeconds,
+        CancellationToken cancellationToken)
+    {
+        var client = _httpClientFactory.CreateClient();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, requestTimeoutSeconds)));
+        var stopwatch = Stopwatch.StartNew();
+
+        try
+        {
+            var targetUrl = site.ProtocolType == "Anthropic"
+                ? $"{site.BaseUrl.TrimEnd('/')}/v1/messages"
+                : $"{site.BaseUrl.TrimEnd('/')}/v1/chat/completions";
+            using var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
+            {
+                Content = new StringContent(BuildChatRequestBody(targetModelName, message, enableReasoning, true), Encoding.UTF8, "application/json")
+            };
+
+            if (site.ProtocolType == "Anthropic")
+            {
+                httpRequest.Headers.Add("x-api-key", site.ApiKey);
+                httpRequest.Headers.Add("anthropic-version", "2023-06-01");
+            }
+            else
+            {
+                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", site.ApiKey);
+            }
+
+            using var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            if (!response.IsSuccessStatusCode)
+            {
+                stopwatch.Stop();
+                var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                return new ChatStreamForwardResult
+                {
+                    Success = false,
+                    StatusCode = (int)response.StatusCode,
+                    TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                    ErrorMessage = string.IsNullOrWhiteSpace(errorBody) ? $"上游返回 {(int)response.StatusCode}" : errorBody
+                };
+            }
+
+            await using var stream = await response.Content.ReadAsStreamAsync(timeoutCts.Token);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var contentBuilder = new StringBuilder();
+            var reasoningBuilder = new StringBuilder();
+            var dataLines = new List<string>();
+            var currentEvent = string.Empty;
+            var state = new SseBlockProcessState();
+            var done = false;
+
+            while (!reader.EndOfStream && !done)
+            {
+                var line = await reader.ReadLineAsync(timeoutCts.Token);
+                if (line is null)
+                {
+                    break;
+                }
+
+                if (line.Length == 0)
+                {
+                    done = await ProcessSseBlockAsync(
+                        site.ProtocolType,
+                        currentEvent,
+                        dataLines,
+                        stopwatch,
+                        onContentChunk,
+                        onReasoningChunk,
+                        contentBuilder,
+                        reasoningBuilder,
+                        state,
+                        timeoutCts.Token);
+                    currentEvent = string.Empty;
+                    dataLines.Clear();
+                    continue;
+                }
+
+                if (line.StartsWith("event:", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentEvent = line[6..].Trim();
+                    continue;
+                }
+
+                if (line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    dataLines.Add(line[5..].TrimStart());
+                }
+            }
+
+            if (!done && dataLines.Count > 0)
+            {
+                await ProcessSseBlockAsync(
+                    site.ProtocolType,
+                    currentEvent,
+                    dataLines,
+                    stopwatch,
+                    onContentChunk,
+                    onReasoningChunk,
+                    contentBuilder,
+                    reasoningBuilder,
+                    state,
+                    timeoutCts.Token);
+            }
+
+            stopwatch.Stop();
+            return new ChatStreamForwardResult
+            {
+                Success = state.HadAnyContent || contentBuilder.Length > 0 || reasoningBuilder.Length > 0,
+                HadAnyContent = state.HadAnyContent,
+                Content = contentBuilder.ToString(),
+                ReasoningContent = reasoningBuilder.ToString(),
+                InputTokens = state.InputTokens,
+                CachedTokens = state.CachedTokens,
+                OutputTokens = state.OutputTokens,
+                FirstTokenLatencyMs = state.FirstTokenLatencyMs,
+                TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                StatusCode = (int)response.StatusCode,
+                ErrorMessage = state.HadAnyContent ? string.Empty : "上游未返回可用内容"
+            };
+        }
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            stopwatch.Stop();
+            return new ChatStreamForwardResult
+            {
+                Success = false,
+                TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                ErrorMessage = $"Request timed out after {requestTimeoutSeconds}s: {ex.Message}"
+            };
+        }
+        catch (Exception ex)
+        {
+            stopwatch.Stop();
+            return new ChatStreamForwardResult
+            {
+                Success = false,
+                TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                ErrorMessage = ex.Message
+            };
+        }
+    }
+
+    private static ChatSendResult BuildSuccessResult(
+        Guid requestId,
+        string content,
+        string reasoningContent,
+        bool reasoningEnabled,
+        bool isStreaming,
+        ProxyForwardResult forwardResult,
+        List<ChatAttemptResult> attempts,
+        long durationMs)
+    {
+        return new ChatSendResult
+        {
+            Success = true,
+            RequestId = requestId,
+            Content = content,
+            ReasoningContent = reasoningContent,
+            DurationMs = durationMs,
+            ReasoningEnabled = reasoningEnabled,
+            IsStreaming = isStreaming,
+            InputTokens = forwardResult.InputTokens,
+            CachedTokens = forwardResult.CachedTokens,
+            OutputTokens = forwardResult.OutputTokens,
+            TotalTokens = forwardResult.InputTokens + forwardResult.CachedTokens + forwardResult.OutputTokens,
+            FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
+            TotalDurationMs = forwardResult.TotalDurationMs,
+            Attempts = attempts
+        };
+    }
+
+    private static ChatAttemptResult BuildAttemptResult(
+        int attemptIndex,
+        string siteName,
+        string attemptedModel,
+        string siteModelName,
+        ProxyForwardResult forwardResult,
+        bool isFinalResult)
+    {
+        return new ChatAttemptResult
+        {
+            AttemptIndex = attemptIndex,
+            SiteName = siteName,
+            AttemptedModel = attemptedModel,
+            SiteModelName = siteModelName,
+            Status = forwardResult.Success ? "success" : "fail",
+            ErrorMessage = forwardResult.ErrorMessage ?? string.Empty,
+            IsFinalResult = isFinalResult,
+            IsStreaming = forwardResult.IsStreaming,
+            InputTokens = forwardResult.InputTokens,
+            CachedTokens = forwardResult.CachedTokens,
+            OutputTokens = forwardResult.OutputTokens,
+            TotalTokens = forwardResult.InputTokens + forwardResult.CachedTokens + forwardResult.OutputTokens,
+            FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
+            TotalDurationMs = forwardResult.TotalDurationMs
+        };
+    }
+
+    private static string BuildChatRequestBody(string modelName, string message, bool enableReasoning, bool enableStreaming)
+    {
+        var payload = new Dictionary<string, object?>
+        {
+            ["model"] = modelName,
+            ["messages"] = new[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["role"] = "user",
+                    ["content"] = message
+                }
+            },
+            ["stream"] = enableStreaming,
+            ["max_tokens"] = 4096
+        };
+
+        if (enableStreaming)
+        {
+            payload["stream_options"] = new Dictionary<string, object?>
+            {
+                ["include_usage"] = true
+            };
+        }
+
+        if (enableReasoning)
+        {
+            payload["reasoning_effort"] = "high";
+        }
+
+        return JsonSerializer.Serialize(payload);
+    }
+
+    private sealed class SseBlockProcessState
+    {
+        public int FirstTokenLatencyMs { get; set; }
+        public int InputTokens { get; set; }
+        public int CachedTokens { get; set; }
+        public int OutputTokens { get; set; }
+        public bool HadAnyContent { get; set; }
+    }
+
+    // 处理单个 SSE block，并抽取内容、思考与 usage。
+    private static async Task<bool> ProcessSseBlockAsync(
+        string protocolType,
+        string eventName,
+        List<string> dataLines,
+        Stopwatch stopwatch,
+        Func<string, Task> onContentChunk,
+        Func<string, Task> onReasoningChunk,
+        StringBuilder contentBuilder,
+        StringBuilder reasoningBuilder,
+        SseBlockProcessState state,
+        CancellationToken cancellationToken)
+    {
+        if (dataLines.Count == 0)
+        {
+            return false;
+        }
+
+        var data = string.Join("\n", dataLines);
+        if (data == "[DONE]")
+        {
+            return true;
+        }
+
+        using var doc = JsonDocument.Parse(data);
+        var root = doc.RootElement;
+
+        if (protocolType == "Anthropic")
+        {
+            if (eventName == "message_start" && root.TryGetProperty("message", out var message) && message.TryGetProperty("usage", out var usage))
+            {
+                state.InputTokens = usage.TryGetProperty("input_tokens", out var input) ? input.GetInt32() : state.InputTokens;
+                state.OutputTokens = usage.TryGetProperty("output_tokens", out var output) ? output.GetInt32() : state.OutputTokens;
+            }
+            else if (eventName == "message_delta" && root.TryGetProperty("usage", out var deltaUsage))
+            {
+                state.OutputTokens = deltaUsage.TryGetProperty("output_tokens", out var output) ? output.GetInt32() : state.OutputTokens;
+            }
+            else if (eventName == "content_block_delta" && root.TryGetProperty("delta", out var delta))
+            {
+                var deltaType = delta.TryGetProperty("type", out var typeValue) ? typeValue.GetString() : string.Empty;
+                if (string.Equals(deltaType, "thinking_delta", StringComparison.OrdinalIgnoreCase))
+                {
+                    var reasoningChunk = ExtractElementText(delta, "thinking", "text", "content");
+                    if (!string.IsNullOrWhiteSpace(reasoningChunk))
+                    {
+                        if (state.FirstTokenLatencyMs == 0)
+                        {
+                            state.FirstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+                        }
+                        reasoningBuilder.Append(reasoningChunk);
+                        state.HadAnyContent = true;
+                        await onReasoningChunk(reasoningChunk);
+                    }
+                }
+                else
+                {
+                    var contentChunk = ExtractElementText(delta, "text", "content");
+                    if (!string.IsNullOrWhiteSpace(contentChunk))
+                    {
+                        if (state.FirstTokenLatencyMs == 0)
+                        {
+                            state.FirstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+                        }
+                        contentBuilder.Append(contentChunk);
+                        state.HadAnyContent = true;
+                        await onContentChunk(contentChunk);
+                    }
+                }
+            }
+
+            return false;
+        }
+
+        if (root.TryGetProperty("usage", out var rootUsage))
+        {
+            (state.InputTokens, state.CachedTokens, state.OutputTokens) = ExtractUsageMetrics(rootUsage, state.InputTokens, state.CachedTokens, state.OutputTokens);
+        }
+
+        if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
+        {
+            var first = choices[0];
+            if (first.TryGetProperty("delta", out var delta))
+            {
+                var reasoningChunk = ExtractElementText(delta, "reasoning_content", "reasoning", "thinking");
+                if (!string.IsNullOrWhiteSpace(reasoningChunk))
+                {
+                    if (state.FirstTokenLatencyMs == 0)
+                    {
+                        state.FirstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+                    }
+                    reasoningBuilder.Append(reasoningChunk);
+                    state.HadAnyContent = true;
+                    await onReasoningChunk(reasoningChunk);
+                }
+
+                var contentChunk = ExtractDeltaContent(delta);
+                if (!string.IsNullOrWhiteSpace(contentChunk))
+                {
+                    if (state.FirstTokenLatencyMs == 0)
+                    {
+                        state.FirstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+                    }
+                    contentBuilder.Append(contentChunk);
+                    state.HadAnyContent = true;
+                    await onContentChunk(contentChunk);
+                }
+            }
+        }
+
+        return false;
+    }
+
+    // 尽量兼容不同上游返回格式，同时提取正常回答和思考内容。
+    private static (string Content, string ReasoningContent) ExtractChatPayload(string responseBody, string protocolType)
     {
         try
         {
             using var doc = JsonDocument.Parse(responseBody);
             var root = doc.RootElement;
+            var contentParts = new List<string>();
+            var reasoningParts = new List<string>();
 
             if (protocolType == "Anthropic")
             {
-                // Anthropic 格式：content[0].text
-                if (root.TryGetProperty("content", out var contentArr) && contentArr.GetArrayLength() > 0)
+                if (root.TryGetProperty("content", out var contentArr) && contentArr.ValueKind == JsonValueKind.Array)
                 {
-                    var first = contentArr[0];
-                    if (first.TryGetProperty("text", out var text))
-                        return text.GetString() ?? string.Empty;
+                    foreach (var item in contentArr.EnumerateArray())
+                    {
+                        var type = item.TryGetProperty("type", out var typeValue) ? typeValue.GetString() : string.Empty;
+                        if (string.Equals(type, "thinking", StringComparison.OrdinalIgnoreCase))
+                        {
+                            AppendIfNotEmpty(reasoningParts, ExtractElementText(item, "thinking", "text", "content"));
+                            continue;
+                        }
+
+                        AppendIfNotEmpty(contentParts, ExtractElementText(item, "text", "content"));
+                    }
                 }
             }
-            else
+            else if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
             {
-                // OpenAI 格式：choices[0].message.content
-                if (root.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
+                var first = choices[0];
+                if (first.TryGetProperty("message", out var message))
                 {
-                    var first = choices[0];
-                    if (first.TryGetProperty("message", out var msg) &&
-                        msg.TryGetProperty("content", out var content))
-                        return content.GetString() ?? string.Empty;
+                    AppendIfNotEmpty(reasoningParts, ExtractElementText(message, "reasoning_content", "reasoning", "thinking"));
+
+                    if (message.TryGetProperty("content", out var content))
+                    {
+                        if (content.ValueKind == JsonValueKind.String)
+                        {
+                            AppendIfNotEmpty(contentParts, content.GetString());
+                        }
+                        else if (content.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var item in content.EnumerateArray())
+                            {
+                                var itemType = item.TryGetProperty("type", out var typeValue) ? typeValue.GetString() : string.Empty;
+                                if (string.Equals(itemType, "reasoning", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(itemType, "thinking", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    AppendIfNotEmpty(reasoningParts, ExtractElementText(item, "text", "content", "reasoning_content"));
+                                    continue;
+                                }
+
+                                AppendIfNotEmpty(contentParts, ExtractElementText(item, "text", "content"));
+                            }
+                        }
+                    }
                 }
             }
+
+            var contentText = string.Join("\n", contentParts.Where(x => !string.IsNullOrWhiteSpace(x))).Trim();
+            var reasoningText = string.Join("\n", reasoningParts.Where(x => !string.IsNullOrWhiteSpace(x))).Trim();
+            return (string.IsNullOrWhiteSpace(contentText) ? responseBody : contentText, reasoningText);
         }
         catch
         {
-            // JSON 解析失败时返回原始响应
         }
 
-        return responseBody;
+        return (responseBody, string.Empty);
+    }
+
+    private async Task<HashSet<Guid>> GetBlockedSiteIdsAsync(CancellationToken cancellationToken)
+    {
+        var siteIds = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .Select(s => s.Id)
+            .ToListAsync(cancellationToken);
+
+        return new HashSet<Guid>(siteIds.Where(id => _circuitStore.IsBlocked(id)));
+    }
+
+    private async Task WriteSseEventAsync(string eventName, object payload, CancellationToken cancellationToken)
+    {
+        await Response.WriteAsync($"event: {eventName}\n", cancellationToken);
+        await Response.WriteAsync($"data: {JsonSerializer.Serialize(payload)}\n\n", cancellationToken);
+        await Response.Body.FlushAsync(cancellationToken);
+    }
+
+    private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageMetrics(JsonElement usage, int currentInput, int currentCached, int currentOutput)
+    {
+        var inputTokens = usage.TryGetProperty("prompt_tokens", out var promptTokens) ? promptTokens.GetInt32() : currentInput;
+        var outputTokens = usage.TryGetProperty("completion_tokens", out var completionTokens) ? completionTokens.GetInt32() : currentOutput;
+        var cachedTokens = currentCached;
+
+        if (usage.TryGetProperty("prompt_tokens_details", out var promptDetails) &&
+            promptDetails.ValueKind == JsonValueKind.Object &&
+            promptDetails.TryGetProperty("cached_tokens", out var cached))
+        {
+            cachedTokens = cached.GetInt32();
+        }
+
+        return (inputTokens, cachedTokens, outputTokens);
+    }
+
+    private static string ExtractDeltaContent(JsonElement delta)
+    {
+        if (delta.TryGetProperty("content", out var content))
+        {
+            if (content.ValueKind == JsonValueKind.String)
+            {
+                return content.GetString() ?? string.Empty;
+            }
+
+            if (content.ValueKind == JsonValueKind.Array)
+            {
+                var parts = new List<string>();
+                foreach (var item in content.EnumerateArray())
+                {
+                    AppendIfNotEmpty(parts, ExtractElementText(item, "text", "content"));
+                }
+                return string.Join(string.Empty, parts);
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static string ExtractElementText(JsonElement element, params string[] propertyNames)
+    {
+        foreach (var propertyName in propertyNames)
+        {
+            if (!element.TryGetProperty(propertyName, out var value))
+            {
+                continue;
+            }
+
+            if (value.ValueKind == JsonValueKind.String)
+            {
+                return value.GetString() ?? string.Empty;
+            }
+
+            if (value.ValueKind == JsonValueKind.Array)
+            {
+                var parts = new List<string>();
+                foreach (var item in value.EnumerateArray())
+                {
+                    AppendIfNotEmpty(parts, ExtractElementText(item, "text", "content", "value"));
+                }
+                if (parts.Count > 0)
+                {
+                    return string.Join("\n", parts);
+                }
+            }
+
+            if (value.ValueKind == JsonValueKind.Object)
+            {
+                var nested = ExtractElementText(value, "text", "content", "value");
+                if (!string.IsNullOrWhiteSpace(nested))
+                {
+                    return nested;
+                }
+            }
+        }
+
+        return string.Empty;
+    }
+
+    private static void AppendIfNotEmpty(List<string> values, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value))
+        {
+            values.Add(value.Trim());
+        }
     }
 }

@@ -18,6 +18,9 @@ public sealed class ProxyForwardRequest
     // 原始请求体（JSON 字符串）
     public string RequestBody { get; set; } = string.Empty;
 
+    // 是否启用流式
+    public bool EnableStreaming { get; set; }
+
     // 单次请求超时时间（秒）
     public int RequestTimeoutSeconds { get; set; }
 
