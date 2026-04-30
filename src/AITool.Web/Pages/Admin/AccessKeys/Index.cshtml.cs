@@ -9,7 +9,7 @@ public class AccessKeyViewModel
 {
     public Guid KeyId { get; set; }
     public string KeyName { get; set; } = string.Empty;
-    public string MaskedValue { get; set; } = string.Empty;
+    public string PlainKey { get; set; } = string.Empty;
     public bool IsEnabled { get; set; }
 }
 
@@ -35,7 +35,7 @@ public class IndexModel : PageModel
             {
                 KeyId = k.Id,
                 KeyName = k.KeyName,
-                MaskedValue = k.MaskedValue,
+                PlainKey = k.PlainKey,
                 IsEnabled = k.IsEnabled
             })
             .ToListAsync(cancellationToken);

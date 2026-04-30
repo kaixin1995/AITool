@@ -132,6 +132,7 @@ public sealed class AppDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.KeyName).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.PlainKey).IsRequired().HasMaxLength(500);
             entity.Property(e => e.AccessKeyHash).IsRequired().HasMaxLength(500);
             entity.Property(e => e.MaskedValue).IsRequired().HasMaxLength(100);
         });

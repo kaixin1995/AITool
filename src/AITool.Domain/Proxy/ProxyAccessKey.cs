@@ -9,10 +9,13 @@ public sealed class ProxyAccessKey
     // 密钥名称，便于管理区分
     public string KeyName { get; set; } = string.Empty;
 
-    // 密钥哈希值，存储时只保存哈希
+    // 明文密钥值
+    public string PlainKey { get; set; } = string.Empty;
+
+    // 密钥哈希值，兼容历史数据
     public string AccessKeyHash { get; set; } = string.Empty;
 
-    // 掩码显示值，用于界面展示部分内容
+    // 掩码显示值，兼容历史数据
     public string MaskedValue { get; set; } = string.Empty;
 
     // 是否启用该密钥

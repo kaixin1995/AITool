@@ -41,16 +41,18 @@ public sealed class LogRetentionService : ILogRetentionService
         var usageCutoff = now.AddDays(-settings.UsageLogRetentionDays);
         var detectionCutoff = now.AddDays(-settings.DetectionLogRetentionDays);
 
-        // 按使用日志保留天数清理过期的代理使用日志
-        var oldUsageLogs = await _dbContext.ProxyUsageLogs
+        // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
+        var allUsageLogs = await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken);
+        var oldUsageLogs = allUsageLogs
             .Where(l => l.RequestedAt < usageCutoff)
-            .ToListAsync(cancellationToken);
+            .ToList();
         _dbContext.ProxyUsageLogs.RemoveRange(oldUsageLogs);
 
-        // 按检测日志保留天数清理过期的检测日志
-        var oldDetectionLogs = await _dbContext.DetectionLogs
+        // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
+        var allDetectionLogs = await _dbContext.DetectionLogs.ToListAsync(cancellationToken);
+        var oldDetectionLogs = allDetectionLogs
             .Where(l => l.CheckedAt < detectionCutoff)
-            .ToListAsync(cancellationToken);
+            .ToList();
         _dbContext.DetectionLogs.RemoveRange(oldDetectionLogs);
 
         var prunedAt = now;

@@ -17,9 +17,9 @@
     <span id="statusText"></span>
 </div>
 
-<!-- 新建密钥明文展示区域（创建后仅显示一次） -->
+<!-- 新建密钥明文展示区域 -->
 <div id="plainKeyBox" style="display:none;" class="alert alert-warning">
-    <div><strong>请立即复制并妥善保存密钥，关闭后将无法再次查看：</strong></div>
+    <div><strong>请立即复制并妥善保存密钥：</strong></div>
     <div class="d-flex align-items-center gap-2 mt-2">
         <code id="plainKeyValue" style="font-size:14px;word-break:break-all;"></code>
         <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('plainKeyValue').textContent)">复制</button>
@@ -66,7 +66,16 @@
             {
                 <tr data-key-id="@item.KeyId">
                     <td><strong>@item.KeyName</strong></td>
-                    <td><code class="masked-value">@item.MaskedValue</code></td>
+                    <td>
+                        @if (string.IsNullOrEmpty(item.PlainKey))
+                        {
+                            <span class="text-muted">历史数据无明文</span>
+                        }
+                        else
+                        {
+                            <code class="plain-value">@item.PlainKey</code>
+                        }
+                    </td>
                     <td>
                         <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
                             @(item.IsEnabled ? "启用" : "禁用")
@@ -74,7 +83,7 @@
                     </td>
                     <td>
                         <button type="button" class="btn btn-sm btn-outline-primary btn-copy"
-                                data-masked="@item.MaskedValue" onclick="copyMasked(this)" title="复制掩码值">
+                                data-plain-key="@item.PlainKey" onclick="copyKey(this)" title="复制真实密钥" @(string.IsNullOrEmpty(item.PlainKey) ? "disabled" : null)>
                             复制
                         </button>
                         <button type="button" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")"
@@ -138,16 +147,16 @@
             var tr = document.createElement('tr');
             tr.setAttribute('data-key-id', data.keyId);
             tr.innerHTML = '<td><strong>' + escapeHtml(data.keyName) + '</strong></td>'
-                + '<td><code class="masked-value">' + escapeHtml(data.maskedValue) + '</code></td>'
+                + '<td><code class="plain-value">' + escapeHtml(data.plainKey) + '</code></td>'
                 + '<td><span class="badge bg-success">启用</span></td>'
                 + '<td>'
-                + '<button type="button" class="btn btn-sm btn-outline-primary btn-copy" data-masked="' + escapeHtml(data.maskedValue) + '" onclick="copyMasked(this)" title="复制掩码值">复制</button> '
+                + '<button type="button" class="btn btn-sm btn-outline-primary btn-copy" data-plain-key="' + escapeHtml(data.plainKey) + '" onclick="copyKey(this)" title="复制真实密钥">复制</button> '
                 + '<button type="button" class="btn btn-sm btn-outline-warning" onclick="toggleKey(\'' + data.keyId + '\', this)">禁用</button> '
                 + '<button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteKey(\'' + data.keyId + '\', this)">删除</button>'
                 + '</td>';
             tbody.appendChild(tr);
 
-            showStatus('密钥创建成功，请立即复制保存明文密钥', true);
+            showStatus('密钥创建成功', true);
         })
         .catch(function(err) {
             btn.disabled = false;
@@ -195,10 +204,10 @@
         });
     }
 
-    // 复制密钥掩码值
-    function copyMasked(btn) {
-        var masked = btn.getAttribute('data-masked');
-        copyText(masked);
+    // 复制真实密钥
+    function copyKey(btn) {
+        var plainKey = btn.getAttribute('data-plain-key');
+        copyText(plainKey);
     }
 
     // 通用复制函数，兼容 HTTP 环境

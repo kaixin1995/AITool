@@ -1,0 +1,529 @@
+@page
+@model AITool.Web.Pages.Admin.ClientSimulator.IndexModel
+@using global::System.Text.Json
+@{
+    ViewData["Title"] = "客户端模拟";
+    var defaultModel = Model.Models.FirstOrDefault()?.ModelName ?? string.Empty;
+}
+
+<div class="page-header mb-3">
+    <div>
+        <h2 class="page-title">客户端模拟</h2>
+        <p class="page-subtitle">按真实代理 URL 链路模拟 OpenAI 与 Anthropic 客户端调用，自动带入本机地址与访问密钥</p>
+    </div>
+</div>
+
+<div class="client-simulator-page">
+    <div class="card simulator-config-card">
+        <div class="card-body">
+            <div id="simulatorStatus" class="alert" style="display:none;"></div>
+
+            <div class="row g-3">
+                <div class="col-xl-6">
+                    <label class="form-label" for="baseUrlInput">代理根地址</label>
+                    <input type="text" id="baseUrlInput" class="form-control" value="@Model.DefaultBaseUrl" />
+                </div>
+                <div class="col-xl-6">
+                    <label class="form-label" for="accessKeyInput">访问密钥</label>
+                    <div class="input-group">
+                        <input type="text" id="accessKeyInput" class="form-control" value="@Model.DefaultAccessKey" />
+                        <button type="button" class="btn btn-outline-primary" onclick="copyFieldValue('accessKeyInput')">复制</button>
+                    </div>
+                </div>
+                <div class="col-xl-6">
+                    <label class="form-label" for="modelInput">模型名</label>
+                    <input type="text" id="modelInput" class="form-control" list="modelOptions" value="@defaultModel" placeholder="输入对外模型名" />
+                    <datalist id="modelOptions">
+                        @foreach (var item in Model.Models)
+                        {
+                            <option value="@item.ModelName">@item.DisplayName (@item.AvailableSiteCount)</option>
+                        }
+                    </datalist>
+                </div>
+                <div class="col-xl-6">
+                    <label class="form-label" for="messageInput">测试消息</label>
+                    <textarea id="messageInput" class="form-control" rows="3" placeholder="输入测试消息...">你好，请简单介绍一下你自己。</textarea>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="simulator-main-grid">
+        <div class="card simulator-card">
+            <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                <span class="fw-semibold">模型列表 · OpenAI</span>
+                <button type="button" class="btn btn-sm btn-outline-secondary" id="btnLoadModels" onclick="loadOpenAiModels()">拉取 /v1/models</button>
+            </div>
+            <div class="card-body simulator-card-body">
+                <div class="simulator-endpoint-bar">
+                    <code id="openAiModelsUrl"></code>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('openAiModelsUrl').textContent)">复制 URL</button>
+                </div>
+                <div class="simulator-panel-grid">
+                    <div>
+                        <div class="simulator-section-title">请求示例</div>
+                        <pre id="openAiModelsRequest" class="simulator-pre"></pre>
+                    </div>
+                    <div>
+                        <div class="simulator-section-title">响应结果</div>
+                        <pre id="openAiModelsResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card simulator-card">
+            <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                <span class="fw-semibold">聊天调用 · OpenAI</span>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="openAiStreamToggle">
+                        <label class="form-check-label" for="openAiStreamToggle">流式</label>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-primary" id="btnOpenAiChat" onclick="sendOpenAiChat()">调用 /v1/chat/completions</button>
+                </div>
+            </div>
+            <div class="card-body simulator-card-body">
+                <div class="simulator-endpoint-bar">
+                    <code id="openAiChatUrl"></code>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('openAiChatUrl').textContent)">复制 URL</button>
+                </div>
+                <div class="simulator-panel-grid">
+                    <div>
+                        <div class="simulator-section-title">请求示例</div>
+                        <pre id="openAiChatRequest" class="simulator-pre"></pre>
+                    </div>
+                    <div>
+                        <div class="simulator-section-title">响应结果</div>
+                        <pre id="openAiChatResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card simulator-card">
+            <div class="card-header d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                <span class="fw-semibold">聊天调用 · Anthropic</span>
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <div class="form-check form-switch">
+                        <input class="form-check-input" type="checkbox" id="anthropicStreamToggle">
+                        <label class="form-check-label" for="anthropicStreamToggle">流式</label>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-primary" id="btnAnthropicChat" onclick="sendAnthropicChat()">调用 /v1/messages</button>
+                </div>
+            </div>
+            <div class="card-body simulator-card-body">
+                <div class="simulator-endpoint-bar">
+                    <code id="anthropicChatUrl"></code>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('anthropicChatUrl').textContent)">复制 URL</button>
+                </div>
+                <div class="simulator-panel-grid">
+                    <div>
+                        <div class="simulator-section-title">请求示例</div>
+                        <pre id="anthropicChatRequest" class="simulator-pre"></pre>
+                    </div>
+                    <div>
+                        <div class="simulator-section-title">响应结果</div>
+                        <pre id="anthropicChatResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card simulator-card">
+            <div class="card-header fw-semibold">可用模型参考</div>
+            <div class="card-body simulator-card-body">
+                <div class="simulator-model-list">
+                    @if (!Model.Models.Any())
+                    {
+                        <div class="text-secondary small">当前没有可用模型，请先完成模型映射与启用。</div>
+                    }
+                    else
+                    {
+                        @foreach (var item in Model.Models)
+                        {
+                            <button type="button" class="btn btn-sm btn-outline-secondary simulator-model-chip" onclick="selectModel('@item.ModelName')">
+                                @item.DisplayName
+                                <span class="text-secondary">(@item.ModelName)</span>
+                            </button>
+                        }
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .client-simulator-page {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+    }
+
+    .simulator-main-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        align-items: start;
+    }
+
+    .simulator-card,
+    .simulator-config-card {
+        min-width: 0;
+    }
+
+    .simulator-card-body {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+    }
+
+    .simulator-endpoint-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        padding: 10px 12px;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #f8fafc;
+    }
+
+    .simulator-endpoint-bar code {
+        font-size: 13px;
+        word-break: break-all;
+    }
+
+    .simulator-panel-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 14px;
+        min-width: 0;
+    }
+
+    .simulator-section-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: #475569;
+        margin-bottom: 8px;
+    }
+
+    .simulator-pre {
+        min-height: 220px;
+        margin: 0;
+        padding: 12px;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #0f172a;
+        color: #e2e8f0;
+        font-size: 12px;
+        line-height: 1.65;
+        white-space: pre-wrap;
+        word-break: break-word;
+        overflow: auto;
+    }
+
+    .simulator-result-pre {
+        background: #111827;
+    }
+
+    .simulator-model-list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+    }
+
+    .simulator-model-chip {
+        text-align: left;
+    }
+
+    @@media (max-width: 1399.98px) {
+        .simulator-main-grid,
+        .simulator-panel-grid {
+            grid-template-columns: minmax(0, 1fr);
+        }
+    }
+</style>
+
+<script>
+    var initialModels = @Html.Raw(JsonSerializer.Serialize(Model.Models));
+
+    function getBaseUrl() {
+        return (document.getElementById('baseUrlInput').value || '').trim().replace(/\/$/, '');
+    }
+
+    function getAccessKey() {
+        return (document.getElementById('accessKeyInput').value || '').trim();
+    }
+
+    function getModelName() {
+        return (document.getElementById('modelInput').value || '').trim();
+    }
+
+    function getMessage() {
+        return (document.getElementById('messageInput').value || '').trim();
+    }
+
+    function updateEndpointTexts() {
+        var baseUrl = getBaseUrl();
+        document.getElementById('openAiModelsUrl').textContent = baseUrl ? baseUrl + '/v1/models' : '/v1/models';
+        document.getElementById('openAiChatUrl').textContent = baseUrl ? baseUrl + '/v1/chat/completions' : '/v1/chat/completions';
+        document.getElementById('anthropicChatUrl').textContent = baseUrl ? baseUrl + '/v1/messages' : '/v1/messages';
+    }
+
+    function renderRequestExamples() {
+        var modelName = getModelName();
+        var message = getMessage();
+        var accessKey = getAccessKey();
+        var openAiStream = document.getElementById('openAiStreamToggle').checked;
+        var anthropicStream = document.getElementById('anthropicStreamToggle').checked;
+
+        var openAiModelsExample = {
+            method: 'GET',
+            url: document.getElementById('openAiModelsUrl').textContent,
+            headers: {
+                Authorization: 'Bearer ' + accessKey
+            }
+        };
+
+        var openAiChatExample = {
+            method: 'POST',
+            url: document.getElementById('openAiChatUrl').textContent,
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: 'Bearer ' + accessKey
+            },
+            body: {
+                model: modelName,
+                messages: [
+                    { role: 'user', content: message }
+                ],
+                stream: openAiStream
+            }
+        };
+
+        var anthropicChatExample = {
+            method: 'POST',
+            url: document.getElementById('anthropicChatUrl').textContent,
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': accessKey,
+                'anthropic-version': '2023-06-01'
+            },
+            body: {
+                model: modelName,
+                max_tokens: 1024,
+                messages: [
+                    { role: 'user', content: message }
+                ],
+                stream: anthropicStream
+            }
+        };
+
+        document.getElementById('openAiModelsRequest').textContent = prettyJson(openAiModelsExample);
+        document.getElementById('openAiChatRequest').textContent = prettyJson(openAiChatExample);
+        document.getElementById('anthropicChatRequest').textContent = prettyJson(anthropicChatExample);
+    }
+
+    function prettyJson(value) {
+        return JSON.stringify(value, null, 2);
+    }
+
+    function showStatus(message, success) {
+        var alert = document.getElementById('simulatorStatus');
+        alert.style.display = '';
+        alert.className = 'alert ' + (success ? 'alert-success' : 'alert-danger');
+        alert.textContent = message;
+    }
+
+    function clearStatus() {
+        var alert = document.getElementById('simulatorStatus');
+        alert.style.display = 'none';
+        alert.textContent = '';
+    }
+
+    function selectModel(modelName) {
+        document.getElementById('modelInput').value = modelName;
+        renderAllExamples();
+    }
+
+    function validateInputs(requireMessage, requireModel) {
+        if (requireModel === undefined) {
+            requireModel = true;
+        }
+        if (!getBaseUrl()) {
+            showStatus('请先填写代理根地址', false);
+            return false;
+        }
+
+        if (!getAccessKey()) {
+            showStatus('请先填写访问密钥', false);
+            return false;
+        }
+
+        if (requireModel && !getModelName()) {
+            showStatus('请先填写模型名', false);
+            return false;
+        }
+
+        if (requireMessage && !getMessage()) {
+            showStatus('请输入测试消息', false);
+            return false;
+        }
+
+        clearStatus();
+        return true;
+    }
+
+    async function loadOpenAiModels() {
+        if (!validateInputs(false, false)) return;
+
+        var btn = document.getElementById('btnLoadModels');
+        var output = document.getElementById('openAiModelsResponse');
+        btn.disabled = true;
+        output.textContent = '请求中...';
+
+        try {
+            var response = await fetch('/v1/models', {
+                method: 'GET',
+                headers: {
+                    Authorization: 'Bearer ' + getAccessKey()
+                }
+            });
+
+            var text = await response.text();
+            output.textContent = formatResponseText(text);
+            showStatus(response.ok ? 'OpenAI 模型拉取完成' : 'OpenAI 模型拉取失败', response.ok);
+        } catch (error) {
+            output.textContent = error.message;
+            showStatus('OpenAI 模型拉取失败：' + error.message, false);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    async function sendOpenAiChat() {
+        if (!validateInputs(true)) return;
+        await sendJsonRequest({
+            buttonId: 'btnOpenAiChat',
+            outputId: 'openAiChatResponse',
+            path: '/v1/chat/completions',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: 'Bearer ' + getAccessKey()
+            },
+            body: {
+                model: getModelName(),
+                messages: [
+                    { role: 'user', content: getMessage() }
+                ],
+                stream: document.getElementById('openAiStreamToggle').checked
+            },
+            protocolName: 'OpenAI'
+        });
+    }
+
+    async function sendAnthropicChat() {
+        if (!validateInputs(true)) return;
+        await sendJsonRequest({
+            buttonId: 'btnAnthropicChat',
+            outputId: 'anthropicChatResponse',
+            path: '/v1/messages',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': getAccessKey(),
+                'anthropic-version': '2023-06-01'
+            },
+            body: {
+                model: getModelName(),
+                max_tokens: 1024,
+                messages: [
+                    { role: 'user', content: getMessage() }
+                ],
+                stream: document.getElementById('anthropicStreamToggle').checked
+            },
+            protocolName: 'Anthropic'
+        });
+    }
+
+    async function sendJsonRequest(options) {
+        var btn = document.getElementById(options.buttonId);
+        var output = document.getElementById(options.outputId);
+        btn.disabled = true;
+        output.textContent = '请求中...';
+
+        try {
+            var response = await fetch(options.path, {
+                method: 'POST',
+                headers: options.headers,
+                body: JSON.stringify(options.body)
+            });
+
+            var text = await response.text();
+            output.textContent = formatResponseText(text);
+            showStatus(response.ok ? options.protocolName + ' 调用完成' : options.protocolName + ' 调用失败', response.ok);
+        } catch (error) {
+            output.textContent = error.message;
+            showStatus(options.protocolName + ' 调用失败：' + error.message, false);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    function formatResponseText(text) {
+        if (!text) return '';
+        try {
+            return JSON.stringify(JSON.parse(text), null, 2);
+        } catch {
+            return text;
+        }
+    }
+
+    function copyFieldValue(id) {
+        copyText(document.getElementById(id).value || '');
+    }
+
+    function copyText(text) {
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(function() {
+                showStatus('已复制到剪贴板', true);
+            }).catch(function() {
+                fallbackCopy(text);
+            });
+        } else {
+            fallbackCopy(text);
+        }
+    }
+
+    function fallbackCopy(text) {
+        var textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        try {
+            document.execCommand('copy');
+            showStatus('已复制到剪贴板', true);
+        } catch (e) {
+            showStatus('复制失败，请手动复制', false);
+        }
+        document.body.removeChild(textarea);
+    }
+
+    function renderAllExamples() {
+        updateEndpointTexts();
+        renderRequestExamples();
+    }
+
+    document.getElementById('baseUrlInput').addEventListener('input', renderAllExamples);
+    document.getElementById('accessKeyInput').addEventListener('input', renderAllExamples);
+    document.getElementById('modelInput').addEventListener('input', renderAllExamples);
+    document.getElementById('messageInput').addEventListener('input', renderAllExamples);
+    document.getElementById('openAiStreamToggle').addEventListener('change', renderAllExamples);
+    document.getElementById('anthropicStreamToggle').addEventListener('change', renderAllExamples);
+
+    renderAllExamples();
+</script>

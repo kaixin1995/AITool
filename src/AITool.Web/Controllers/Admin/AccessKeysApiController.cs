@@ -21,10 +21,8 @@ public sealed class CreateAccessKeyResult
     public Guid KeyId { get; set; }
     // 密钥名称
     public string KeyName { get; set; } = string.Empty;
-    // 原始密钥值（仅创建时返回一次）
+    // 原始密钥值
     public string PlainKey { get; set; } = string.Empty;
-    // 掩码显示值
-    public string MaskedValue { get; set; } = string.Empty;
     // 是否启用
     public bool IsEnabled { get; set; }
 }
@@ -36,8 +34,8 @@ public sealed class AccessKeyListItem
     public Guid KeyId { get; set; }
     // 密钥名称
     public string KeyName { get; set; } = string.Empty;
-    // 掩码显示值
-    public string MaskedValue { get; set; } = string.Empty;
+    // 原始密钥值
+    public string PlainKey { get; set; } = string.Empty;
     // 是否启用
     public bool IsEnabled { get; set; }
 }
@@ -64,14 +62,14 @@ public sealed class AccessKeysApiController : ControllerBase
             {
                 KeyId = k.Id,
                 KeyName = k.KeyName,
-                MaskedValue = k.MaskedValue,
+                PlainKey = k.PlainKey,
                 IsEnabled = k.IsEnabled
             })
             .ToListAsync(cancellationToken);
         return Ok(keys);
     }
 
-    // 创建密钥，自动生成密钥值并返回明文（仅此一次）
+    // 创建密钥，自动生成密钥值并返回明文
     [HttpPost("create")]
     public async Task<IActionResult> Create([FromBody] CreateAccessKeyRequest request, CancellationToken cancellationToken)
     {
@@ -81,16 +79,17 @@ public sealed class AccessKeysApiController : ControllerBase
         // 生成随机密钥：sk-前缀 + 32位随机十六进制字符串
         var plainKey = "sk-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
 
-        // SHA256 哈希存储
+        // 同步保留哈希值，兼容现有校验逻辑
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(plainKey));
         var hash = Convert.ToHexString(hashBytes);
 
-        // 生成掩码显示值，保留前6位和后4位
+        // 同步保留掩码值，兼容历史字段
         var masked = $"{plainKey[..6]}...{plainKey[^4..]}";
 
         var key = new ProxyAccessKey
         {
             KeyName = request.KeyName,
+            PlainKey = plainKey,
             AccessKeyHash = hash,
             MaskedValue = masked,
             IsEnabled = true
@@ -102,8 +101,7 @@ public sealed class AccessKeysApiController : ControllerBase
         {
             KeyId = key.Id,
             KeyName = key.KeyName,
-            PlainKey = plainKey,
-            MaskedValue = masked,
+            PlainKey = key.PlainKey,
             IsEnabled = true
         });
     }

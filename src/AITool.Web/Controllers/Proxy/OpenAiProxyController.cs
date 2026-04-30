@@ -39,6 +39,47 @@ public sealed class OpenAiProxyController : ControllerBase
         _systemRuntimeSettingsService = systemRuntimeSettingsService;
     }
 
+    // 返回当前代理对外暴露的模型列表，供客户端按真实 OpenAI URL 拉取模型
+    [HttpGet("/v1/models")]
+    public async Task<IActionResult> Models(CancellationToken cancellationToken)
+    {
+        var authHeader = Request.Headers.Authorization.ToString();
+        var accessToken = authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+            ? authHeader[7..]
+            : string.Empty;
+
+        var accessKey = await ValidateAccessKeyAsync(accessToken, cancellationToken);
+        if (accessKey is null)
+        {
+            return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
+        }
+
+        var enabledSiteIds = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .Select(s => s.Id)
+            .ToListAsync(cancellationToken);
+
+        var modelIds = await _dbContext.ProxyRouteRules
+            .Where(r => r.IsEnabled && enabledSiteIds.Contains(r.SiteId))
+            .OrderBy(r => r.ExternalModelName)
+            .Select(r => r.ExternalModelName)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        return Ok(new
+        {
+            @object = "list",
+            data = modelIds.Select(modelId => new
+            {
+                id = modelId,
+                @object = "model",
+                created = now,
+                owned_by = "aitool"
+            })
+        });
+    }
+
     // 代理 OpenAI chat completions 请求，自动跳过熔断站点
     [HttpPost("/v1/chat/completions")]
     public async Task<IActionResult> ChatCompletions(CancellationToken cancellationToken)
