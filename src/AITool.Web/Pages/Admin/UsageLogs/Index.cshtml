@@ -91,7 +91,6 @@
                 <th>模型</th>
                 <th>目标站点</th>
                 <th>状态</th>
-                <th>总耗时</th>
                 <th>用时/首字</th>
                 <th>输入</th>
                 <th>缓存</th>
@@ -102,7 +101,7 @@
         </thead>
         <tbody id="usageLogsTableBody">
             <tr>
-                <td colspan="12">
+                <td colspan="11">
                     <div class="table-empty">
                         <div class="table-empty-text">加载中...</div>
                     </div>
@@ -255,10 +254,9 @@
             row.innerHTML =
                 '<td>' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</td>' +
                 '<td>' + renderSourceBadge(source) + '</td>' +
-                '<td><code>' + escHtml(readValue(item, ['requestModel', 'attemptedModel']) || '-') + '</code></td>' +
+                '<td><code>' + escHtml(readValue(item, ['attemptedModel', 'requestModel']) || '-') + '</code></td>' +
                 '<td>' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</td>' +
                 '<td>' + renderStatusBadge(status) + '</td>' +
-                '<td><strong>' + escHtml(formatDuration(readValue(item, ['totalDurationMs']) || 0)) + '</strong></td>' +
                 '<td>' + renderLatencyBadges(item) + '</td>' +
                 '<td>' + escHtml(formatNumber(readValue(item, ['inputTokens']) || 0)) + '</td>' +
                 '<td>' + escHtml(formatNumber(readValue(item, ['cachedTokens']) || 0)) + '</td>' +

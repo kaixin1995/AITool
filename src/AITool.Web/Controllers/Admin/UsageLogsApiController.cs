@@ -182,23 +182,23 @@ public sealed class UsageLogsApiController : ControllerBase
         var logs = allLogs
             .Where(x => !siteId.HasValue || x.TargetSiteId == siteId.Value)
             .ToList();
-        var finalLogs = logs.Where(x => x.IsFinalResult).ToList();
-        var requestIds = finalLogs.Select(x => x.RequestId).Distinct().ToHashSet();
-        var requestStartLookup = allLogs
-            .Where(x => requestIds.Contains(x.RequestId))
+
+        // 按 RequestId 分组，每组取最后一条记录作为该请求的最终状态
+        var finalLogs = logs
             .GroupBy(x => x.RequestId)
-            .ToDictionary(g => g.Key, g => g.Min(x => x.RequestedAt));
+            .Select(g => g.OrderByDescending(x => x.AttemptIndex).First())
+            .ToList();
 
         var totalRequests = finalLogs.Count;
         var successRequests = finalLogs.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase));
-        var failedRequests = finalLogs.Count - successRequests;
+        var failedRequests = totalRequests - successRequests;
         var successRate = totalRequests == 0
             ? 0d
             : Math.Round(successRequests * 100d / totalRequests, 2, MidpointRounding.AwayFromZero);
         var totalTokens = finalLogs.Sum(x => x.TotalTokens);
         var maxDurationMs = finalLogs.Count == 0
             ? 0
-            : finalLogs.Max(x => (int)Math.Max(0, (x.RequestedAt - requestStartLookup[x.RequestId]).TotalMilliseconds));
+            : finalLogs.Max(x => x.TotalDurationMs);
 
         return Ok(new UsageLogSummaryDto
         {

@@ -31,18 +31,43 @@ public sealed class ProxyForwardService : IProxyForwardService
             try
             {
                 using var httpRequest = BuildRequestMessage(request);
-                var response = await _httpClient.SendAsync(httpRequest, timeoutCts.Token);
+                var isStreaming = IsStreamingRequest(request.RequestBody);
+                var response = await _httpClient.SendAsync(
+                    httpRequest,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    timeoutCts.Token);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    stopwatch.Stop();
+                    var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                    if (attempt == attempts - 1)
+                    {
+                        return new ProxyForwardResult
+                        {
+                            Success = false,
+                            StatusCode = (int)response.StatusCode,
+                            ResponseBody = errorBody,
+                            TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                            IsStreaming = isStreaming,
+                            ErrorMessage = errorBody
+                        };
+                    }
+                    continue;
+                }
+
+                if (isStreaming)
+                {
+                    return await ProcessStreamingResponseAsync(response, stopwatch, request, isStreaming, cancellationToken);
+                }
+
                 var responseBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
                 stopwatch.Stop();
 
-                // 从响应中提取 Token 与流式指标
                 var usage = ExtractUsageMetrics(responseBody, request.ProtocolType);
-                var isStreaming = IsStreamingRequest(request.RequestBody);
                 var totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
-                var firstTokenLatencyMs = response.IsSuccessStatusCode && isStreaming ? totalDurationMs : 0;
-                var streamDurationMs = 0;
 
-                if (response.IsSuccessStatusCode && HasUsableResponse(responseBody, request.ProtocolType))
+                if (HasUsableResponse(responseBody, request.ProtocolType))
                 {
                     return new ProxyForwardResult
                     {
@@ -52,9 +77,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                         InputTokens = usage.InputTokens,
                         CachedTokens = usage.CachedTokens,
                         OutputTokens = usage.OutputTokens,
-                        IsStreaming = isStreaming,
-                        FirstTokenLatencyMs = firstTokenLatencyMs,
-                        StreamDurationMs = streamDurationMs,
+                        IsStreaming = false,
                         TotalDurationMs = totalDurationMs
                     };
                 }
@@ -69,11 +92,9 @@ public sealed class ProxyForwardService : IProxyForwardService
                         InputTokens = usage.InputTokens,
                         CachedTokens = usage.CachedTokens,
                         OutputTokens = usage.OutputTokens,
-                        IsStreaming = isStreaming,
-                        FirstTokenLatencyMs = firstTokenLatencyMs,
-                        StreamDurationMs = streamDurationMs,
+                        IsStreaming = false,
                         TotalDurationMs = totalDurationMs,
-                        ErrorMessage = BuildFailureMessage(response, responseBody, request.ProtocolType)
+                        ErrorMessage = BuildFailureMessage(responseBody, request.ProtocolType)
                     };
                 }
             }
@@ -109,6 +130,92 @@ public sealed class ProxyForwardService : IProxyForwardService
         {
             Success = false,
             ErrorMessage = "Unknown proxy forwarding error"
+        };
+    }
+
+    // 逐行读取 SSE 流，追踪首字延迟并提取 Token 用量
+    private async Task<ProxyForwardResult> ProcessStreamingResponseAsync(
+        HttpResponseMessage response, Stopwatch stopwatch, ProxyForwardRequest request, bool isStreaming, CancellationToken cancellationToken)
+    {
+        var totalDurationMs = 0;
+        var firstTokenLatencyMs = 0;
+        var inputTokens = 0;
+        var cachedTokens = 0;
+        var outputTokens = 0;
+        var hasFirstContent = false;
+
+        var sb = new StringBuilder();
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+
+        while (!reader.EndOfStream)
+        {
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (line == null) break;
+
+            sb.AppendLine(line);
+
+            // 跳过空行和注释行
+            if (string.IsNullOrWhiteSpace(line) || line.StartsWith(':')) continue;
+
+            // SSE 格式：data: {...}
+            if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase)) continue;
+
+            var jsonText = line["data: ".Length..];
+            if (string.Equals(jsonText, "[DONE]", StringComparison.OrdinalIgnoreCase)) continue;
+
+            // 首次收到有效内容时记录首字延迟
+            if (!hasFirstContent)
+            {
+                hasFirstContent = true;
+                firstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+            }
+
+            // 从 SSE 数据块中提取 usage 和 token 信息
+            try
+            {
+                using var doc = JsonDocument.Parse(jsonText);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("usage", out var usage))
+                {
+                    var extracted = ExtractUsageFromElement(usage, request.ProtocolType);
+                    if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
+                    if (extracted.CachedTokens > 0) cachedTokens = extracted.CachedTokens;
+                    if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
+                }
+
+                // Anthropic message_start 事件中的 usage 嵌套在 message 里
+                if (request.ProtocolType == "Anthropic"
+                    && root.TryGetProperty("message", out var message)
+                    && message.TryGetProperty("usage", out var msgUsage))
+                {
+                    var extracted = ExtractUsageFromElement(msgUsage, request.ProtocolType);
+                    if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
+                    if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
+                }
+            }
+            catch
+            {
+                // 非 JSON 的 data 行忽略
+            }
+        }
+
+        stopwatch.Stop();
+        totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+
+        return new ProxyForwardResult
+        {
+            Success = true,
+            StatusCode = (int)response.StatusCode,
+            ResponseBody = sb.ToString(),
+            InputTokens = inputTokens,
+            CachedTokens = cachedTokens,
+            OutputTokens = outputTokens,
+            IsStreaming = isStreaming,
+            FirstTokenLatencyMs = firstTokenLatencyMs,
+            StreamDurationMs = totalDurationMs - firstTokenLatencyMs,
+            TotalDurationMs = totalDurationMs
         };
     }
 
@@ -181,7 +288,7 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
     }
 
-    // 根据响应内容判断当前候选是否真正返回了可用结果
+    // 根据响应内容判断非流式响应是否真正返回了可用结果
     private static bool HasUsableResponse(string responseBody, string protocolType)
     {
         if (string.IsNullOrWhiteSpace(responseBody))
@@ -216,14 +323,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
     }
 
-    // 为最终失败结果构造更明确的错误信息
-    private static string BuildFailureMessage(HttpResponseMessage response, string responseBody, string protocolType)
+    // 为非流式失败结果构造更明确的错误信息
+    private static string BuildFailureMessage(string responseBody, string protocolType)
     {
-        if (!response.IsSuccessStatusCode)
-        {
-            return responseBody;
-        }
-
         if (string.IsNullOrWhiteSpace(responseBody))
         {
             return "Upstream returned an empty response body.";
@@ -251,7 +353,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             : "Upstream returned no usable choices.";
     }
 
-    // 从响应体中提取 Token 用量信息
+    // 从响应体中提取 Token 用量信息（非流式响应）
     private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageMetrics(string responseBody, string protocolType)
     {
         try
@@ -264,29 +366,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 return (0, 0, 0);
             }
 
-            if (protocolType == "Anthropic")
-            {
-                var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
-                var cached = 0;
-                if (usage.TryGetProperty("cache_read_input_tokens", out var readCache))
-                {
-                    cached += readCache.GetInt32();
-                }
-                if (usage.TryGetProperty("cache_creation_input_tokens", out var createCache))
-                {
-                    cached += createCache.GetInt32();
-                }
-                var output = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
-                return (input, cached, output);
-            }
-
-            var prompt = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
-            var promptDetails = usage.TryGetProperty("prompt_tokens_details", out var ptd) ? ptd : default;
-            var cachedTokens = promptDetails.ValueKind == JsonValueKind.Object && promptDetails.TryGetProperty("cached_tokens", out var ct)
-                ? ct.GetInt32()
-                : 0;
-            var completion = usage.TryGetProperty("completion_tokens", out var completionTokens) ? completionTokens.GetInt32() : 0;
-            return (prompt, cachedTokens, completion);
+            return ExtractUsageFromElement(usage, protocolType);
         }
         catch
         {
@@ -294,5 +374,33 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
 
         return (0, 0, 0);
+    }
+
+    // 从 usage JSON 元素中提取 Token 用量
+    private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
+    {
+        if (protocolType == "Anthropic")
+        {
+            var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
+            var cached = 0;
+            if (usage.TryGetProperty("cache_read_input_tokens", out var readCache))
+            {
+                cached += readCache.GetInt32();
+            }
+            if (usage.TryGetProperty("cache_creation_input_tokens", out var createCache))
+            {
+                cached += createCache.GetInt32();
+            }
+            var output = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
+            return (input, cached, output);
+        }
+
+        var prompt = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
+        var promptDetails = usage.TryGetProperty("prompt_tokens_details", out var ptd) ? ptd : default;
+        var cachedTokens = promptDetails.ValueKind == JsonValueKind.Object && promptDetails.TryGetProperty("cached_tokens", out var ct)
+            ? ct.GetInt32()
+            : 0;
+        var completion = usage.TryGetProperty("completion_tokens", out var completionTokens) ? completionTokens.GetInt32() : 0;
+        return (prompt, cachedTokens, completion);
     }
 }

@@ -137,7 +137,9 @@ public sealed class AnthropicProxyController : ControllerBase
             {
                 // 成功时清除该站点的连续失败计数
                 _circuitStore.Succeed(site.Id);
-                return Content(result.ResponseBody, "application/json");
+                // 流式响应以 SSE 格式返回，使用 text/event-stream 内容类型
+                var contentType = result.IsStreaming ? "text/event-stream" : "application/json";
+                return Content(result.ResponseBody, contentType);
             }
 
             // 转发失败，熔断该站点并继续尝试下一个
