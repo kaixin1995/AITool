@@ -2,12 +2,11 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using AITool.Application.Operations;
 using AITool.Application.Proxy;
-using AITool.Application.Routing;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
+using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -114,27 +113,24 @@ public sealed class ChatApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly IProxyForwardService _forwardService;
-    private readonly IRouteSelectionService _routeService;
     private readonly RouteCircuitStateStore _circuitStore;
     private readonly IUsageLogService _usageLogService;
-    private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
+    private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly IHttpClientFactory _httpClientFactory;
 
     public ChatApiController(
         AppDbContext dbContext,
         IProxyForwardService forwardService,
-        IRouteSelectionService routeService,
         RouteCircuitStateStore circuitStore,
         IUsageLogService usageLogService,
-        ISystemRuntimeSettingsService systemRuntimeSettingsService,
+        ProxyRequestMetadataCache metadataCache,
         IHttpClientFactory httpClientFactory)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
-        _routeService = routeService;
         _circuitStore = circuitStore;
         _usageLogService = usageLogService;
-        _systemRuntimeSettingsService = systemRuntimeSettingsService;
+        _metadataCache = metadataCache;
         _httpClientFactory = httpClientFactory;
     }
 
@@ -142,31 +138,7 @@ public sealed class ChatApiController : ControllerBase
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
-        var enabledMappings = await _dbContext.SiteModelMappings
-            .Where(m => m.IsEnabled)
-            .ToListAsync(cancellationToken);
-
-        var modelIds = enabledMappings.Select(m => m.ModelLibraryItemId).Distinct().ToList();
-
-        var models = await _dbContext.ModelLibraryItems
-            .Where(m => modelIds.Contains(m.Id) && m.IsEnabled)
-            .OrderBy(m => m.DisplayName)
-            .Select(m => new ChatModelItem
-            {
-                ModelId = m.Id,
-                DisplayName = m.DisplayName
-            })
-            .ToListAsync(cancellationToken);
-
-        var siteCounts = enabledMappings
-            .GroupBy(m => m.ModelLibraryItemId)
-            .ToDictionary(g => g.Key, g => g.Count());
-
-        foreach (var model in models)
-        {
-            model.AvailableSiteCount = siteCounts.GetValueOrDefault(model.ModelId);
-        }
-
+        var models = await _metadataCache.GetChatModelsAsync(cancellationToken);
         return Ok(models);
     }
 
@@ -181,54 +153,49 @@ public sealed class ChatApiController : ControllerBase
             return BadRequest(new { message = "请选择模型" });
 
         var sw = Stopwatch.StartNew();
-        var model = await _dbContext.ModelLibraryItems
-            .FirstOrDefaultAsync(m => m.Id == request.ModelId, cancellationToken);
+        var model = await _metadataCache.GetEnabledModelAsync(request.ModelId, cancellationToken);
 
-        if (model is null || !model.IsEnabled)
+        if (model is null)
             return Ok(new ChatSendResult { Success = false, Error = "模型不存在或已禁用", ReasoningEnabled = request.EnableReasoning });
 
-        var runtimeSettings = await _systemRuntimeSettingsService.GetOrCreateAsync(cancellationToken);
-        var allRoutes = await _routeService.SelectAllRoutesAsync(model.ModelName, cancellationToken);
+        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
 
         if (allRoutes.Count > 0)
         {
-            var blockedSiteIds = await GetBlockedSiteIdsAsync(cancellationToken);
             var requestId = Guid.NewGuid();
             var attemptIndex = 0;
             var attempts = new List<ChatAttemptResult>();
 
-            foreach (var routeResult in allRoutes)
+            foreach (var route in allRoutes)
             {
-                var route = routeResult.Route!;
-                if (blockedSiteIds.Contains(route.SiteId))
-                    continue;
-
-                var site = await _dbContext.Sites.FindAsync([route.SiteId], cancellationToken);
-                if (site is null || !site.IsEnabled)
+                if (_circuitStore.IsBlocked(route.RouteId))
                     continue;
 
                 attemptIndex++;
+                var requestBody = BuildChatRequestBody("OpenAI", route.SiteModelName, request.Message, request.EnableReasoning, false);
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
-                    TargetBaseUrl = site.BaseUrl,
-                    TargetApiKey = site.ApiKey,
-                    ProtocolType = site.ProtocolType,
+                    TargetBaseUrl = route.BaseUrl,
+                    TargetApiKey = route.ApiKey,
+                    ProtocolType = "OpenAI",
                     TargetModelName = route.SiteModelName,
-                    RequestBody = BuildChatRequestBody(site.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false),
+                    RequestBody = requestBody,
+                    PreparedRequestBody = requestBody,
                     EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                     RetryCount = runtimeSettings.ProxyRetryCount
                 }, cancellationToken);
 
-                attempts.Add(BuildAttemptResult(attemptIndex, site.Name, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success));
+                attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success));
 
                 await _usageLogService.LogAsync(new UsageLogEntry
                 {
                     RequestId = requestId,
-                    ProtocolType = site.ProtocolType,
+                    ProtocolType = route.ProtocolType,
                     RequestModel = model.ModelName,
                     AttemptedModel = route.UpstreamModelName,
-                    TargetSiteId = site.Id,
+                    TargetSiteId = route.SiteId,
                     Status = forwardResult.Success ? "success" : "fail",
                     Source = "chat",
                     RetryCount = forwardResult.Success ? attemptIndex - 1 : attemptIndex,
@@ -248,9 +215,12 @@ public sealed class ChatApiController : ControllerBase
                 if (forwardResult.Success)
                 {
                     sw.Stop();
-                    var payload = ExtractChatPayload(forwardResult.ResponseBody, site.ProtocolType);
+                    _circuitStore.Succeed(route.RouteId);
+                    var payload = ExtractChatPayload(forwardResult.ResponseBody, route.ProtocolType);
                     return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
                 }
+
+                _circuitStore.Block(route.RouteId);
             }
 
             sw.Stop();
@@ -290,41 +260,36 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        var model = await _dbContext.ModelLibraryItems
-            .FirstOrDefaultAsync(m => m.Id == request.ModelId, cancellationToken);
+        var model = await _metadataCache.GetEnabledModelAsync(request.ModelId, cancellationToken);
 
-        if (model is null || !model.IsEnabled)
+        if (model is null)
         {
             await WriteSseEventAsync("error", new { message = "模型不存在或已禁用" }, cancellationToken);
             return;
         }
 
-        var runtimeSettings = await _systemRuntimeSettingsService.GetOrCreateAsync(cancellationToken);
-        var allRoutes = await _routeService.SelectAllRoutesAsync(model.ModelName, cancellationToken);
+        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
         if (allRoutes.Count == 0)
         {
             await SendStreamFallbackAsync(request, model, runtimeSettings, cancellationToken);
             return;
         }
 
-        var blockedSiteIds = await GetBlockedSiteIdsAsync(cancellationToken);
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
         var attempts = new List<ChatAttemptResult>();
 
-        foreach (var routeResult in allRoutes)
+        foreach (var route in allRoutes)
         {
-            var route = routeResult.Route!;
-            if (blockedSiteIds.Contains(route.SiteId))
-                continue;
-
-            var site = await _dbContext.Sites.FindAsync([route.SiteId], cancellationToken);
-            if (site is null || !site.IsEnabled)
+            if (_circuitStore.IsBlocked(route.RouteId))
                 continue;
 
             attemptIndex++;
             var streamResult = await ForwardStreamAsync(
-                site,
+                route.ProtocolType,
+                route.BaseUrl,
+                route.ApiKey,
                 route.SiteModelName,
                 request.Message,
                 request.EnableReasoning,
@@ -335,7 +300,7 @@ public sealed class ChatApiController : ControllerBase
 
             var attemptResult = BuildAttemptResult(
                 attemptIndex,
-                site.Name,
+                route.SiteName,
                 route.UpstreamModelName,
                 route.SiteModelName,
                 new ProxyForwardResult
@@ -356,10 +321,10 @@ public sealed class ChatApiController : ControllerBase
             await _usageLogService.LogAsync(new UsageLogEntry
             {
                 RequestId = requestId,
-                ProtocolType = site.ProtocolType,
+                ProtocolType = route.ProtocolType,
                 RequestModel = model.ModelName,
                 AttemptedModel = route.UpstreamModelName,
-                TargetSiteId = site.Id,
+                TargetSiteId = route.SiteId,
                 Status = streamResult.Success ? "success" : "fail",
                 Source = "chat",
                 RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
@@ -397,12 +362,11 @@ public sealed class ChatApiController : ControllerBase
                 };
                 await WriteSseEventAsync("meta", finalResult, cancellationToken);
                 await WriteSseEventAsync("done", new { requestId }, cancellationToken);
-                _circuitStore.Succeed(site.Id);
+                _circuitStore.Succeed(route.RouteId);
                 return;
             }
 
-            _circuitStore.Block(site.Id);
-            blockedSiteIds.Add(site.Id);
+            _circuitStore.Block(route.RouteId);
             if (streamResult.HadAnyContent)
             {
                 await WriteSseEventAsync("error", new { message = streamResult.ErrorMessage }, cancellationToken);
@@ -416,29 +380,26 @@ public sealed class ChatApiController : ControllerBase
     // 回退逻辑：没有路由规则时直接通过站点映射发送
     private async Task<IActionResult> SendFallback(
         ChatSendRequest request,
-        Domain.Models.ModelLibraryItem model,
-        AITool.Domain.Operations.SystemRuntimeSettings runtimeSettings,
+        CachedEnabledModel model,
+        CachedProxyRuntimeSettings runtimeSettings,
         CancellationToken cancellationToken)
     {
         var sw = Stopwatch.StartNew();
-        var mapping = await _dbContext.SiteModelMappings
-            .FirstOrDefaultAsync(m => m.ModelLibraryItemId == request.ModelId && m.IsEnabled, cancellationToken);
+        var mapping = await _metadataCache.GetFallbackTargetAsync(request.ModelId, cancellationToken);
 
         if (mapping is null)
             return Ok(new ChatSendResult { Success = false, Error = "该模型没有可用的站点映射", ReasoningEnabled = request.EnableReasoning });
 
-        var site = await _dbContext.Sites.FindAsync([mapping.SiteId], cancellationToken);
-        if (site is null || !site.IsEnabled)
-            return Ok(new ChatSendResult { Success = false, Error = "目标站点不可用", ReasoningEnabled = request.EnableReasoning });
-
         var requestId = Guid.NewGuid();
+        var requestBody = BuildChatRequestBody(mapping.ProtocolType, mapping.SiteModelName, request.Message, request.EnableReasoning, false);
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
-            TargetBaseUrl = site.BaseUrl,
-            TargetApiKey = site.ApiKey,
-            ProtocolType = site.ProtocolType,
-            TargetModelName = mapping.RemoteModelName,
-            RequestBody = BuildChatRequestBody(site.ProtocolType, mapping.RemoteModelName, request.Message, request.EnableReasoning, false),
+            TargetBaseUrl = mapping.BaseUrl,
+            TargetApiKey = mapping.ApiKey,
+            ProtocolType = mapping.ProtocolType,
+            TargetModelName = mapping.SiteModelName,
+            RequestBody = requestBody,
+            PreparedRequestBody = requestBody,
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount
@@ -449,10 +410,10 @@ public sealed class ChatApiController : ControllerBase
         await _usageLogService.LogAsync(new UsageLogEntry
         {
             RequestId = requestId,
-            ProtocolType = site.ProtocolType,
+            ProtocolType = mapping.ProtocolType,
             RequestModel = model.ModelName,
-            AttemptedModel = mapping.RemoteModelName,
-            TargetSiteId = site.Id,
+            AttemptedModel = mapping.SiteModelName,
+            TargetSiteId = mapping.SiteId,
             Status = forwardResult.Success ? "success" : "fail",
             Source = "chat",
             RetryCount = 0,
@@ -471,7 +432,7 @@ public sealed class ChatApiController : ControllerBase
 
         var attempts = new List<ChatAttemptResult>
         {
-            BuildAttemptResult(1, site.Name, mapping.RemoteModelName, mapping.RemoteModelName, forwardResult, true)
+            BuildAttemptResult(1, mapping.SiteName, mapping.SiteModelName, mapping.SiteModelName, forwardResult, true)
         };
 
         if (!forwardResult.Success)
@@ -488,19 +449,18 @@ public sealed class ChatApiController : ControllerBase
             });
         }
 
-        var payload = ExtractChatPayload(forwardResult.ResponseBody, site.ProtocolType);
+        var payload = ExtractChatPayload(forwardResult.ResponseBody, mapping.ProtocolType);
         return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
     }
 
     // 流式回退逻辑：没有路由规则时直接通过站点映射流式发送。
     private async Task SendStreamFallbackAsync(
         ChatSendRequest request,
-        Domain.Models.ModelLibraryItem model,
-        AITool.Domain.Operations.SystemRuntimeSettings runtimeSettings,
+        CachedEnabledModel model,
+        CachedProxyRuntimeSettings runtimeSettings,
         CancellationToken cancellationToken)
     {
-        var mapping = await _dbContext.SiteModelMappings
-            .FirstOrDefaultAsync(m => m.ModelLibraryItemId == request.ModelId && m.IsEnabled, cancellationToken);
+        var mapping = await _metadataCache.GetFallbackTargetAsync(request.ModelId, cancellationToken);
 
         if (mapping is null)
         {
@@ -508,17 +468,12 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        var site = await _dbContext.Sites.FindAsync([mapping.SiteId], cancellationToken);
-        if (site is null || !site.IsEnabled)
-        {
-            await WriteSseEventAsync("error", new { message = "目标站点不可用" }, cancellationToken);
-            return;
-        }
-
         var requestId = Guid.NewGuid();
         var streamResult = await ForwardStreamAsync(
-            site,
-            mapping.RemoteModelName,
+            mapping.ProtocolType,
+            mapping.BaseUrl,
+            mapping.ApiKey,
+            mapping.SiteModelName,
             request.Message,
             request.EnableReasoning,
             async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
@@ -528,9 +483,9 @@ public sealed class ChatApiController : ControllerBase
 
         var attemptResult = BuildAttemptResult(
             1,
-            site.Name,
-            mapping.RemoteModelName,
-            mapping.RemoteModelName,
+            mapping.SiteName,
+            mapping.SiteModelName,
+            mapping.SiteModelName,
             new ProxyForwardResult
             {
                 Success = streamResult.Success,
@@ -549,10 +504,10 @@ public sealed class ChatApiController : ControllerBase
         await _usageLogService.LogAsync(new UsageLogEntry
         {
             RequestId = requestId,
-            ProtocolType = site.ProtocolType,
+            ProtocolType = mapping.ProtocolType,
             RequestModel = model.ModelName,
-            AttemptedModel = mapping.RemoteModelName,
-            TargetSiteId = site.Id,
+            AttemptedModel = mapping.SiteModelName,
+            TargetSiteId = mapping.SiteId,
             Status = streamResult.Success ? "success" : "fail",
             Source = "chat",
             RetryCount = 0,
@@ -599,7 +554,9 @@ public sealed class ChatApiController : ControllerBase
 
     // 使用 HttpClient 按 SSE 方式读取上游响应，并实时转发到前端。
     private async Task<ChatStreamForwardResult> ForwardStreamAsync(
-        Domain.Sites.Site site,
+        string protocolType,
+        string baseUrl,
+        string apiKey,
         string targetModelName,
         string message,
         bool enableReasoning,
@@ -615,22 +572,22 @@ public sealed class ChatApiController : ControllerBase
 
         try
         {
-            var targetUrl = site.ProtocolType == "Anthropic"
-                ? $"{site.BaseUrl.TrimEnd('/')}/v1/messages"
-                : $"{site.BaseUrl.TrimEnd('/')}/v1/chat/completions";
+            var targetUrl = protocolType == "Anthropic"
+                ? $"{baseUrl.TrimEnd('/')}/v1/messages"
+                : $"{baseUrl.TrimEnd('/')}/v1/chat/completions";
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
             {
-                Content = new StringContent(BuildChatRequestBody(site.ProtocolType, targetModelName, message, enableReasoning, true), Encoding.UTF8, "application/json")
+                Content = new StringContent(BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true), Encoding.UTF8, "application/json")
             };
 
-            if (site.ProtocolType == "Anthropic")
+            if (protocolType == "Anthropic")
             {
-                httpRequest.Headers.Add("x-api-key", site.ApiKey);
+                httpRequest.Headers.Add("x-api-key", apiKey);
                 httpRequest.Headers.Add("anthropic-version", "2023-06-01");
             }
             else
             {
-                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", site.ApiKey);
+                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             }
 
             using var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
@@ -667,7 +624,7 @@ public sealed class ChatApiController : ControllerBase
                 if (line.Length == 0)
                 {
                     done = await ProcessSseBlockAsync(
-                        site.ProtocolType,
+                        protocolType,
                         currentEvent,
                         dataLines,
                         stopwatch,
@@ -697,7 +654,7 @@ public sealed class ChatApiController : ControllerBase
             if (!done && dataLines.Count > 0)
             {
                 await ProcessSseBlockAsync(
-                    site.ProtocolType,
+                    protocolType,
                     currentEvent,
                     dataLines,
                     stopwatch,
@@ -1057,16 +1014,6 @@ public sealed class ChatApiController : ControllerBase
         }
 
         return (responseBody, string.Empty);
-    }
-
-    private async Task<HashSet<Guid>> GetBlockedSiteIdsAsync(CancellationToken cancellationToken)
-    {
-        var siteIds = await _dbContext.Sites
-            .Where(s => s.IsEnabled)
-            .Select(s => s.Id)
-            .ToListAsync(cancellationToken);
-
-        return new HashSet<Guid>(siteIds.Where(id => _circuitStore.IsBlocked(id)));
     }
 
     private async Task WriteSseEventAsync(string eventName, object payload, CancellationToken cancellationToken)

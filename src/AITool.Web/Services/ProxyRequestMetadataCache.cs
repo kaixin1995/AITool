@@ -13,6 +13,9 @@ public sealed class ProxyRequestMetadataCache
     private const string AccessKeyCacheKey = "proxy-access-keys";
     private const string RuntimeSettingsCacheKey = "proxy-runtime-settings";
     private const string RouteTargetsCacheKeyPrefix = "proxy-route-targets:";
+    private const string ChatModelsCacheKey = "chat-models";
+    private const string EnabledModelsCacheKey = "enabled-models";
+    private const string FallbackMappingsCacheKey = "fallback-mappings";
     private readonly IMemoryCache _memoryCache;
     private readonly IServiceScopeFactory _scopeFactory;
 
@@ -89,6 +92,70 @@ public sealed class ProxyRequestMetadataCache
             .ToList();
     }
 
+    // 聊天测试页需要跨协议候选列表，因此单独提供不按协议过滤的入口。
+    public async Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsForModelAsync(
+        string externalModelName,
+        CancellationToken cancellationToken)
+    {
+        var routes = await GetRouteTargetsAsync(cancellationToken);
+        return routes
+            .Where(x => string.Equals(x.ExternalModelName, externalModelName, StringComparison.Ordinal))
+            .OrderBy(x => x.ModelPriority)
+            .ThenBy(x => x.InstancePriority)
+            .ThenBy(x => x.Priority)
+            .ToList();
+    }
+
+    // 聊天页模型列表走缓存，减少站点映射和模型表的组合查询。
+    public async Task<IReadOnlyList<CachedChatModel>> GetChatModelsAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                ChatModelsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                    var models = await (
+                            from model in dbContext.ModelLibraryItems.AsNoTracking()
+                            join mapping in dbContext.SiteModelMappings.AsNoTracking() on model.Id equals mapping.ModelLibraryItemId
+                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
+                            where model.IsEnabled && mapping.IsEnabled && site.IsEnabled
+                            group site by new { model.Id, model.DisplayName } into grouped
+                            orderby grouped.Key.DisplayName
+                            select new CachedChatModel
+                            {
+                                ModelId = grouped.Key.Id,
+                                DisplayName = grouped.Key.DisplayName,
+                                AvailableSiteCount = grouped.Count()
+                            })
+                        .ToListAsync(cancellationToken);
+
+                    return models;
+                })
+            ?? [];
+    }
+
+    // 按模型读取启用状态和主信息，供聊天页快速校验选择项。
+    public async Task<CachedEnabledModel?> GetEnabledModelAsync(Guid modelId, CancellationToken cancellationToken)
+    {
+        var models = await GetEnabledModelsAsync(cancellationToken);
+        return models.TryGetValue(modelId, out var model)
+            ? model
+            : null;
+    }
+
+    // 读取无路由规则时的 fallback 站点映射快照。
+    public async Task<CachedFallbackTarget?> GetFallbackTargetAsync(Guid modelId, CancellationToken cancellationToken)
+    {
+        var mappings = await GetFallbackMappingsAsync(cancellationToken);
+        return mappings.TryGetValue(modelId, out var mapping)
+            ? mapping
+            : null;
+    }
+
     // 后台修改密钥后主动清理缓存，避免继续使用旧快照。
     public void InvalidateAccessKeys()
     {
@@ -106,6 +173,18 @@ public sealed class ProxyRequestMetadataCache
     {
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "OpenAI");
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "Anthropic");
+        _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "all");
+        _memoryCache.Remove(ChatModelsCacheKey);
+        _memoryCache.Remove(FallbackMappingsCacheKey);
+        _memoryCache.Remove(EnabledModelsCacheKey);
+    }
+
+    // 后台变更模型库或映射后主动清理聊天相关缓存。
+    public void InvalidateModelMetadata()
+    {
+        _memoryCache.Remove(ChatModelsCacheKey);
+        _memoryCache.Remove(FallbackMappingsCacheKey);
+        _memoryCache.Remove(EnabledModelsCacheKey);
     }
 
     private async Task<Dictionary<string, CachedProxyAccessKey>> GetAccessKeysAsync(CancellationToken cancellationToken)
@@ -155,6 +234,8 @@ public sealed class ProxyRequestMetadataCache
                             {
                                 RouteId = route.Id,
                                 SiteId = site.Id,
+                                SiteName = site.Name,
+                                ProtocolType = site.ProtocolType,
                                 ExternalModelName = route.ExternalModelName,
                                 UpstreamModelName = route.UpstreamModelName,
                                 SiteModelName = route.SiteModelName,
@@ -165,6 +246,104 @@ public sealed class ProxyRequestMetadataCache
                                 Priority = route.Priority
                             })
                         .ToListAsync(cancellationToken);
+                })
+            ?? [];
+    }
+
+    private async Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                RouteTargetsCacheKeyPrefix + "all",
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                    return await (
+                            from route in dbContext.ProxyRouteRules.AsNoTracking()
+                            join site in dbContext.Sites.AsNoTracking() on route.SiteId equals site.Id
+                            where route.IsEnabled && site.IsEnabled
+                            select new CachedProxyRouteTarget
+                            {
+                                RouteId = route.Id,
+                                SiteId = site.Id,
+                                SiteName = site.Name,
+                                ProtocolType = site.ProtocolType,
+                                ExternalModelName = route.ExternalModelName,
+                                UpstreamModelName = route.UpstreamModelName,
+                                SiteModelName = route.SiteModelName,
+                                BaseUrl = site.BaseUrl,
+                                ApiKey = site.ApiKey,
+                                ModelPriority = route.ModelPriority,
+                                InstancePriority = route.InstancePriority,
+                                Priority = route.Priority
+                            })
+                        .ToListAsync(cancellationToken);
+                })
+            ?? [];
+    }
+
+    private async Task<Dictionary<Guid, CachedEnabledModel>> GetEnabledModelsAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                EnabledModelsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                    var models = await dbContext.ModelLibraryItems
+                        .AsNoTracking()
+                        .Where(x => x.IsEnabled)
+                        .Select(x => new CachedEnabledModel
+                        {
+                            ModelId = x.Id,
+                            ModelName = x.ModelName,
+                            DisplayName = x.DisplayName
+                        })
+                        .ToListAsync(cancellationToken);
+
+                    return models.ToDictionary(x => x.ModelId, x => x);
+                })
+            ?? [];
+    }
+
+    private async Task<Dictionary<Guid, CachedFallbackTarget>> GetFallbackMappingsAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                FallbackMappingsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                    var mappings = await (
+                            from mapping in dbContext.SiteModelMappings.AsNoTracking()
+                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
+                            join model in dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
+                            where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
+                            group new { mapping, site, model } by model.Id into grouped
+                            let first = grouped.OrderBy(x => x.site.Name).First()
+                            select new CachedFallbackTarget
+                            {
+                                ModelId = grouped.Key,
+                                ModelName = first.model.ModelName,
+                                SiteId = first.site.Id,
+                                SiteName = first.site.Name,
+                                ProtocolType = first.site.ProtocolType,
+                                BaseUrl = first.site.BaseUrl,
+                                ApiKey = first.site.ApiKey,
+                                SiteModelName = first.mapping.RemoteModelName
+                            })
+                        .ToListAsync(cancellationToken);
+
+                    return mappings.ToDictionary(x => x.ModelId, x => x);
                 })
             ?? [];
     }
@@ -186,6 +365,8 @@ public sealed class CachedProxyRouteTarget
 {
     public Guid RouteId { get; set; }
     public Guid SiteId { get; set; }
+    public string SiteName { get; set; } = string.Empty;
+    public string ProtocolType { get; set; } = string.Empty;
     public string ExternalModelName { get; set; } = string.Empty;
     public string UpstreamModelName { get; set; } = string.Empty;
     public string SiteModelName { get; set; } = string.Empty;
@@ -194,4 +375,30 @@ public sealed class CachedProxyRouteTarget
     public int ModelPriority { get; set; }
     public int InstancePriority { get; set; }
     public int Priority { get; set; }
+}
+
+public sealed class CachedChatModel
+{
+    public Guid ModelId { get; set; }
+    public string DisplayName { get; set; } = string.Empty;
+    public int AvailableSiteCount { get; set; }
+}
+
+public sealed class CachedEnabledModel
+{
+    public Guid ModelId { get; set; }
+    public string ModelName { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+}
+
+public sealed class CachedFallbackTarget
+{
+    public Guid ModelId { get; set; }
+    public string ModelName { get; set; } = string.Empty;
+    public Guid SiteId { get; set; }
+    public string SiteName { get; set; } = string.Empty;
+    public string ProtocolType { get; set; } = string.Empty;
+    public string BaseUrl { get; set; } = string.Empty;
+    public string ApiKey { get; set; } = string.Empty;
+    public string SiteModelName { get; set; } = string.Empty;
 }

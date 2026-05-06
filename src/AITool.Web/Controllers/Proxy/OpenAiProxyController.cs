@@ -70,10 +70,14 @@ public sealed class OpenAiProxyController : ControllerBase
 
         // 解析请求中的模型名称
         string modelName;
+        var enableStreaming = false;
         try
         {
             using var doc = JsonDocument.Parse(requestBody);
             modelName = doc.RootElement.GetProperty("model").GetString() ?? string.Empty;
+            enableStreaming = doc.RootElement.TryGetProperty("stream", out var streamValue)
+                && streamValue.ValueKind is JsonValueKind.True or JsonValueKind.False
+                && streamValue.GetBoolean();
         }
         catch
         {
@@ -120,6 +124,7 @@ public sealed class OpenAiProxyController : ControllerBase
                 ProtocolType = "OpenAI",
                 TargetModelName = route.SiteModelName,
                 RequestBody = requestBody,
+                EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount
             };

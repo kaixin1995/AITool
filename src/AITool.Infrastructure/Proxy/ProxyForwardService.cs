@@ -21,6 +21,10 @@ public sealed class ProxyForwardService : IProxyForwardService
     public async Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         var attempts = Math.Max(0, request.RetryCount) + 1;
+        var requestBody = string.IsNullOrWhiteSpace(request.PreparedRequestBody)
+            ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
+            : request.PreparedRequestBody;
+        var isStreaming = request.EnableStreaming || IsStreamingRequest(request.RequestBody);
 
         for (var attempt = 0; attempt < attempts; attempt++)
         {
@@ -30,8 +34,7 @@ public sealed class ProxyForwardService : IProxyForwardService
 
             try
             {
-                using var httpRequest = BuildRequestMessage(request);
-                var isStreaming = IsStreamingRequest(request.RequestBody);
+                using var httpRequest = BuildRequestMessage(request, requestBody);
                 var response = await _httpClient.SendAsync(
                     httpRequest,
                     HttpCompletionOption.ResponseHeadersRead,
@@ -251,7 +254,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     // 构建发送到上游的 HTTP 请求对象
-    private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request)
+    private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request, string requestBody)
     {
         var targetUrl = request.ProtocolType == "Anthropic"
             ? $"{request.TargetBaseUrl.TrimEnd('/')}/v1/messages"
@@ -259,7 +262,7 @@ public sealed class ProxyForwardService : IProxyForwardService
 
         var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
         {
-            Content = new StringContent(ModifyRequestBody(request), Encoding.UTF8, "application/json")
+            Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
         };
 
         // 根据协议类型设置认证头
@@ -277,18 +280,18 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     // 替换请求体中的模型名称为目标站点的模型名称
-    private static string ModifyRequestBody(ProxyForwardRequest request)
+    private static string ModifyRequestBody(string requestBody, string targetModelName)
     {
         try
         {
-            using var doc = JsonDocument.Parse(request.RequestBody);
+            using var doc = JsonDocument.Parse(requestBody);
             var root = doc.RootElement;
             var dict = new Dictionary<string, object>();
             foreach (var prop in root.EnumerateObject())
             {
                 if (prop.NameEquals("model"))
                 {
-                    dict["model"] = request.TargetModelName;
+                    dict["model"] = targetModelName;
                 }
                 else
                 {
@@ -299,7 +302,7 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
         catch
         {
-            return request.RequestBody;
+            return requestBody;
         }
     }
 

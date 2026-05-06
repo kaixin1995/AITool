@@ -1,4 +1,5 @@
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -10,10 +11,12 @@ namespace AITool.Web.Controllers.Admin;
 public sealed class ModelsApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
-    public ModelsApiController(AppDbContext dbContext)
+    public ModelsApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
+        _metadataCache = metadataCache;
     }
 
     // 清空所有模型及关联数据（映射、检测日志、健康监控）
@@ -32,6 +35,8 @@ public sealed class ModelsApiController : ControllerBase
         _dbContext.ModelLibraryItems.RemoveRange(_dbContext.ModelLibraryItems);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new
         {

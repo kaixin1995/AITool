@@ -4,6 +4,7 @@ using AITool.Domain.Models;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -60,14 +61,16 @@ public sealed class SiteCatalogApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
     // 全局拉取进度存储
     private static readonly ConcurrentDictionary<string, FetchAllProgress> ProgressStore = new();
 
-    public SiteCatalogApiController(AppDbContext dbContext, IServiceScopeFactory scopeFactory)
+    public SiteCatalogApiController(AppDbContext dbContext, IServiceScopeFactory scopeFactory, ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
         _scopeFactory = scopeFactory;
+        _metadataCache = metadataCache;
     }
 
     // 拉取单个站点的远程模型列表
@@ -248,6 +251,8 @@ public sealed class SiteCatalogApiController : ControllerBase
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateRouteTargets();
         return Ok(new { importedCount });
     }
 

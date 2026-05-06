@@ -18,6 +18,9 @@ public sealed class ProxyForwardRequest
     // 原始请求体（JSON 字符串）
     public string RequestBody { get; set; } = string.Empty;
 
+    // 预先替换目标模型后的请求体，供转发层复用，避免重复解析原始 JSON。
+    public string? PreparedRequestBody { get; set; }
+
     // 是否启用流式
     public bool EnableStreaming { get; set; }
 
