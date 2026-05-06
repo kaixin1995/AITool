@@ -12,6 +12,7 @@ using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
 using AITool.Infrastructure.Routing;
 using AITool.Infrastructure.Scheduling;
+using AITool.Web.Services;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,6 +23,7 @@ builder.Services.AddRazorPages();
 
 // 注册 API 控制器，用于代理转发端点
 builder.Services.AddControllers();
+builder.Services.AddMemoryCache();
 
 // 注册 EF Core SQLite 数据库上下文
 // 数据库文件放在软件根目录下
@@ -60,6 +62,7 @@ builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsS
 
 // 注册 Hangfire 检测调度器
 builder.Services.AddSingleton<HangfireDetectionScheduler>();
+builder.Services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
 
 // 注册 Hangfire 内存存储与仪表盘
 builder.Services.AddHangfire(config => config

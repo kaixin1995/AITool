@@ -1,0 +1,848 @@
+@page
+@model AITool.Web.Pages.Admin.Analytics.IndexModel
+@{
+    ViewData["Title"] = "可视化分析";
+}
+
+<div class="page-header analytics-header">
+    <div>
+        <h2 class="page-title">可视化分析</h2>
+        <p class="page-subtitle">聚合请求量、成功率、tokens 用量、耗时与路由分布，面向日常观察和排障</p>
+    </div>
+    <button type="button" class="btn btn-primary" id="refreshBtn">刷新数据</button>
+</div>
+
+<section class="analytics-filter card mb-4">
+    <div class="card-body">
+        <div class="row g-3 align-items-end">
+            <div class="col-xl-2 col-md-4">
+                <label class="form-label" for="rangeType">时间范围</label>
+                <select id="rangeType" class="form-select">
+                    <option value="day">按天</option>
+                    <option value="week" selected>按周</option>
+                    <option value="month">按月</option>
+                    <option value="all">全部</option>
+                    <option value="custom">指定时间范围</option>
+                </select>
+            </div>
+            <div class="col-xl-2 col-md-4">
+                <label class="form-label" for="bucketType">统计粒度</label>
+                <select id="bucketType" class="form-select">
+                    <option value="auto" selected>自动</option>
+                    <option value="day">按天</option>
+                    <option value="week">按周</option>
+                    <option value="month">按月</option>
+                </select>
+            </div>
+            <div class="col-xl-2 col-md-4">
+                <label class="form-label" for="protocolType">协议类型</label>
+                <select id="protocolType" class="form-select">
+                    <option value="all" selected>全部</option>
+                    <option value="OpenAI">OpenAI</option>
+                    <option value="Anthropic">Anthropic</option>
+                </select>
+            </div>
+            <div class="col-xl-2 col-md-4">
+                <label class="form-label" for="modelName">模型</label>
+                <select id="modelName" class="form-select">
+                    <option value="all" selected>全部模型</option>
+                </select>
+            </div>
+            <div class="col-xl-2 col-md-4">
+                <label class="form-label" for="siteId">站点</label>
+                <select id="siteId" class="form-select">
+                    <option value="" selected>全部站点</option>
+                </select>
+            </div>
+            <div class="col-xl-2 col-md-4">
+                <label class="form-label" for="streamType">流式类型</label>
+                <select id="streamType" class="form-select">
+                    <option value="all" selected>全部</option>
+                    <option value="stream">仅流式</option>
+                    <option value="nonstream">仅非流式</option>
+                </select>
+            </div>
+            <div class="col-xl-2 col-md-4 custom-range-field" style="display:none;">
+                <label class="form-label" for="startTime">开始时间</label>
+                <input id="startTime" type="date" class="form-control" />
+            </div>
+            <div class="col-xl-2 col-md-4 custom-range-field" style="display:none;">
+                <label class="form-label" for="endTime">结束时间</label>
+                <input id="endTime" type="date" class="form-control" />
+            </div>
+            <div class="col-xl-2 col-md-4">
+                <div class="analytics-filter-meta" id="filterSummary">正在准备筛选条件</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<section id="allRangeNotice" class="analytics-wait-card card mb-4" style="display:none;">
+    <div class="card-body d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3">
+        <div>
+            <div class="analytics-wait-title">已切换到“全部”范围</div>
+            <div class="analytics-wait-text">全量统计会扫描更多日志。为了不立刻触发重查询，需要你手动确认是否开始加载。</div>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            <button type="button" class="btn btn-primary" id="loadAllBtn">开始加载全部数据</button>
+            <button type="button" class="btn btn-outline-secondary" id="backToWeekBtn">切回按周</button>
+        </div>
+    </div>
+</section>
+
+<section class="analytics-kpi-grid mb-4">
+    <article class="analytics-kpi-card">
+        <span class="analytics-kpi-label">总请求数</span>
+        <strong class="analytics-kpi-value" id="kpiTotalRequests">0</strong>
+    </article>
+    <article class="analytics-kpi-card">
+        <span class="analytics-kpi-label">成功率</span>
+        <strong class="analytics-kpi-value success" id="kpiSuccessRate">0%</strong>
+    </article>
+    <article class="analytics-kpi-card">
+        <span class="analytics-kpi-label">失败率</span>
+        <strong class="analytics-kpi-value danger" id="kpiFailureRate">0%</strong>
+    </article>
+    <article class="analytics-kpi-card">
+        <span class="analytics-kpi-label">总 Tokens</span>
+        <strong class="analytics-kpi-value" id="kpiTotalTokens">0</strong>
+    </article>
+    <article class="analytics-kpi-card">
+        <span class="analytics-kpi-label">平均总耗时</span>
+        <strong class="analytics-kpi-value" id="kpiAvgDuration">0 ms</strong>
+    </article>
+    <article class="analytics-kpi-card">
+        <span class="analytics-kpi-label">平均首字耗时</span>
+        <strong class="analytics-kpi-value" id="kpiAvgFirstToken">0 ms</strong>
+    </article>
+    <article class="analytics-kpi-card">
+        <span class="analytics-kpi-label">回退触发数</span>
+        <strong class="analytics-kpi-value warning" id="kpiFallbackCount">0</strong>
+    </article>
+    <article class="analytics-kpi-card">
+        <span class="analytics-kpi-label">输入 / 输出 Tokens</span>
+        <strong class="analytics-kpi-value" id="kpiTokenSplit">0 / 0</strong>
+    </article>
+</section>
+
+<div class="analytics-grid">
+    <section class="analytics-panel analytics-panel-wide card">
+        <div class="analytics-panel-header">
+            <div>
+                <h5 class="analytics-panel-title">请求量趋势</h5>
+                <div class="analytics-panel-subtitle">按时间桶观察请求量波动</div>
+            </div>
+        </div>
+        <div class="analytics-chart-body">
+            <canvas id="requestTrendChart"></canvas>
+        </div>
+    </section>
+
+    <section class="analytics-panel card">
+        <div class="analytics-panel-header">
+            <div>
+                <h5 class="analytics-panel-title">成功 / 失败趋势</h5>
+                <div class="analytics-panel-subtitle">同时展示数量与比率</div>
+            </div>
+        </div>
+        <div class="analytics-chart-body">
+            <canvas id="resultTrendChart"></canvas>
+        </div>
+    </section>
+
+    <section class="analytics-panel card">
+        <div class="analytics-panel-header">
+            <div>
+                <h5 class="analytics-panel-title">Tokens 用量趋势</h5>
+                <div class="analytics-panel-subtitle">输入、输出、缓存三条趋势线，总量保留在顶部汇总卡片</div>
+            </div>
+        </div>
+        <div class="analytics-chart-body">
+            <canvas id="tokenTrendChart"></canvas>
+        </div>
+    </section>
+
+    <section class="analytics-panel card">
+        <div class="analytics-panel-header">
+            <div>
+                <h5 class="analytics-panel-title">平均耗时趋势</h5>
+                <div class="analytics-panel-subtitle">总耗时与首字耗时双指标</div>
+            </div>
+        </div>
+        <div class="analytics-chart-body">
+            <canvas id="durationTrendChart"></canvas>
+        </div>
+    </section>
+
+    <section class="analytics-panel card">
+        <div class="analytics-panel-header">
+            <div>
+                <h5 class="analytics-panel-title">回退触发趋势</h5>
+                <div class="analytics-panel-subtitle">观察 fallback 频率和占比</div>
+            </div>
+        </div>
+        <div class="analytics-chart-body">
+            <canvas id="fallbackTrendChart"></canvas>
+        </div>
+    </section>
+
+    <section class="analytics-panel card">
+        <div class="analytics-panel-header">
+            <div>
+                <h5 class="analytics-panel-title">站点请求分布</h5>
+                <div class="analytics-panel-subtitle">各站点请求量对比</div>
+            </div>
+        </div>
+        <div class="analytics-chart-body">
+            <canvas id="siteDistributionChart"></canvas>
+        </div>
+    </section>
+
+    <section class="analytics-panel card">
+        <div class="analytics-panel-header">
+            <div>
+                <h5 class="analytics-panel-title">模型调用分布</h5>
+                <div class="analytics-panel-subtitle">Top 模型调用热度与用量</div>
+            </div>
+        </div>
+        <div class="analytics-chart-body">
+            <canvas id="modelDistributionChart"></canvas>
+        </div>
+    </section>
+</div>
+
+<div id="analyticsEmptyState" class="analytics-empty card mt-4" style="display:none;">
+    <div class="card-body">
+        当前筛选条件下暂无可视化数据。
+    </div>
+</div>
+
+<section id="slowLoadingNotice" class="analytics-wait-card card mt-4" style="display:none;">
+    <div class="card-body d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3">
+        <div>
+            <div class="analytics-wait-title">统计仍在加载中</div>
+            <div class="analytics-wait-text">当前筛选条件的数据量较大。你可以继续等待，或取消本次查询，避免一直占着页面。</div>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            <button type="button" class="btn btn-primary" id="continueWaitBtn">继续等待</button>
+            <button type="button" class="btn btn-outline-danger" id="cancelWaitBtn">取消本次加载</button>
+        </div>
+    </div>
+</section>
+
+<style>
+    .analytics-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+    }
+
+    .analytics-filter {
+        border-radius: 18px;
+    }
+
+    .analytics-filter-meta {
+        min-height: 38px;
+        display: flex;
+        align-items: center;
+        color: var(--text-secondary);
+        font-size: 13px;
+    }
+
+    .analytics-kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 16px;
+    }
+
+    .analytics-kpi-card {
+        background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+        border: 1px solid var(--border-color);
+        border-radius: 18px;
+        padding: 18px 20px;
+        box-shadow: var(--shadow-sm);
+    }
+
+    .analytics-kpi-label {
+        display: block;
+        color: var(--text-secondary);
+        font-size: 13px;
+        margin-bottom: 8px;
+    }
+
+    .analytics-kpi-value {
+        display: block;
+        font-size: 28px;
+        line-height: 1.1;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+
+    .analytics-kpi-value.success {
+        color: #099268;
+    }
+
+    .analytics-kpi-value.danger {
+        color: #e03131;
+    }
+
+    .analytics-kpi-value.warning {
+        color: #d97706;
+    }
+
+    .analytics-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 18px;
+    }
+
+    .analytics-panel {
+        border-radius: 18px;
+        overflow: hidden;
+    }
+
+    .analytics-panel-wide {
+        grid-column: span 2;
+    }
+
+    .analytics-panel-header {
+        padding: 18px 20px 0;
+    }
+
+    .analytics-panel-title {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 700;
+    }
+
+    .analytics-panel-subtitle {
+        margin-top: 4px;
+        color: var(--text-secondary);
+        font-size: 13px;
+    }
+
+    .analytics-chart-body {
+        padding: 12px 16px 16px;
+        height: 320px;
+    }
+
+    .analytics-empty {
+        border-radius: 18px;
+        text-align: center;
+        color: var(--text-secondary);
+    }
+
+    .analytics-wait-card {
+        border-radius: 18px;
+        border-style: dashed;
+        background: linear-gradient(180deg, #fffdf6 0%, #ffffff 100%);
+    }
+
+    .analytics-wait-title {
+        font-size: 15px;
+        font-weight: 700;
+        color: var(--text-primary);
+    }
+
+    .analytics-wait-text {
+        margin-top: 4px;
+        color: var(--text-secondary);
+        font-size: 13px;
+    }
+
+    @@media (max-width: 1200px) {
+        .analytics-kpi-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+    }
+
+    @@media (max-width: 991px) {
+        .analytics-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .analytics-panel-wide {
+            grid-column: auto;
+        }
+    }
+
+    @@media (max-width: 767px) {
+        .analytics-header {
+            flex-direction: column;
+        }
+
+        .analytics-kpi-grid {
+            grid-template-columns: 1fr;
+        }
+
+        .analytics-chart-body {
+            height: 280px;
+        }
+    }
+</style>
+
+@section Scripts {
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <script>
+        (() => {
+            const charts = {};
+            const optionsEndpoint = '/api/admin/analytics/options';
+            const dashboardEndpoint = '/api/admin/analytics/dashboard';
+            const palette = {
+                blue: '#3b82f6',
+                green: '#10b981',
+                red: '#ef4444',
+                amber: '#f59e0b',
+                cyan: '#06b6d4',
+                indigo: '#6366f1',
+                slate: '#64748b'
+            };
+
+            const rangeTypeEl = document.getElementById('rangeType');
+            const bucketTypeEl = document.getElementById('bucketType');
+            const protocolTypeEl = document.getElementById('protocolType');
+            const modelNameEl = document.getElementById('modelName');
+            const siteIdEl = document.getElementById('siteId');
+            const streamTypeEl = document.getElementById('streamType');
+            const startTimeEl = document.getElementById('startTime');
+            const endTimeEl = document.getElementById('endTime');
+            const refreshBtn = document.getElementById('refreshBtn');
+            const customRangeFields = Array.from(document.querySelectorAll('.custom-range-field'));
+            const emptyStateEl = document.getElementById('analyticsEmptyState');
+            const filterSummaryEl = document.getElementById('filterSummary');
+            const allRangeNoticeEl = document.getElementById('allRangeNotice');
+            const slowLoadingNoticeEl = document.getElementById('slowLoadingNotice');
+            const loadAllBtn = document.getElementById('loadAllBtn');
+            const backToWeekBtn = document.getElementById('backToWeekBtn');
+            const continueWaitBtn = document.getElementById('continueWaitBtn');
+            const cancelWaitBtn = document.getElementById('cancelWaitBtn');
+            let activeController = null;
+            let slowLoadingTimer = null;
+
+            function buildQueryString() {
+                const params = new URLSearchParams();
+                params.set('rangeType', rangeTypeEl.value);
+                params.set('bucketType', bucketTypeEl.value);
+                params.set('protocolType', protocolTypeEl.value);
+                params.set('modelName', modelNameEl.value);
+                params.set('streamType', streamTypeEl.value);
+                if (siteIdEl.value) {
+                    params.set('siteId', siteIdEl.value);
+                }
+                if (rangeTypeEl.value === 'custom') {
+                    if (startTimeEl.value) {
+                        params.set('startTime', startTimeEl.value);
+                    }
+                    if (endTimeEl.value) {
+                        params.set('endTime', endTimeEl.value);
+                    }
+                }
+                return params.toString();
+            }
+
+            function toggleCustomRange() {
+                const visible = rangeTypeEl.value === 'custom';
+                customRangeFields.forEach(x => x.style.display = visible ? '' : 'none');
+            }
+
+            function hideAllRangeNotice() {
+                allRangeNoticeEl.style.display = 'none';
+            }
+
+            function showAllRangeNotice() {
+                allRangeNoticeEl.style.display = '';
+            }
+
+            function hideSlowLoadingNotice() {
+                slowLoadingNoticeEl.style.display = 'none';
+            }
+
+            function showSlowLoadingNotice() {
+                slowLoadingNoticeEl.style.display = '';
+            }
+
+            function fillOptions(selectEl, items, formatter, includeAllLabel) {
+                const currentValue = selectEl.value;
+                selectEl.innerHTML = includeAllLabel ? `<option value="all">${includeAllLabel}</option>` : '<option value="">全部站点</option>';
+                items.forEach(item => {
+                    const option = document.createElement('option');
+                    option.value = formatter(item).value;
+                    option.textContent = formatter(item).label;
+                    selectEl.appendChild(option);
+                });
+                if ([...selectEl.options].some(x => x.value === currentValue)) {
+                    selectEl.value = currentValue;
+                }
+            }
+
+            async function loadOptions() {
+                const response = await fetch(optionsEndpoint);
+                const data = await response.json();
+                fillOptions(modelNameEl, data.models || [], item => ({ value: item.modelName, label: item.modelName }), '全部模型');
+                fillOptions(siteIdEl, data.sites || [], item => ({ value: item.siteId, label: item.siteName }), null);
+            }
+
+            function setKpi(id, value) {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.textContent = value;
+                }
+            }
+
+            function baseChartOptions() {
+                return {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: {
+                                display: false
+                            }
+                        },
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                };
+            }
+
+            function renderChart(id, config) {
+                if (charts[id]) {
+                    charts[id].destroy();
+                }
+                const ctx = document.getElementById(id);
+                charts[id] = new Chart(ctx, config);
+            }
+
+            function renderDashboard(data) {
+                const summary = data.summary || {};
+                const requestTrend = data.requestTrend || [];
+                const resultTrend = data.resultTrend || [];
+                const tokenTrend = data.tokenTrend || [];
+                const durationTrend = data.durationTrend || [];
+                const fallbackTrend = data.fallbackTrend || [];
+                const siteDistribution = data.siteDistribution || [];
+                const modelDistribution = data.modelDistribution || [];
+                const labels = requestTrend.map(x => x.label);
+                const hasData = summary.totalRequests > 0;
+
+                emptyStateEl.style.display = hasData ? 'none' : '';
+                setKpi('kpiTotalRequests', String(summary.totalRequests || 0));
+                setKpi('kpiSuccessRate', `${Number(summary.successRate || 0).toFixed(2)}%`);
+                setKpi('kpiFailureRate', `${Number(summary.failureRate || 0).toFixed(2)}%`);
+                setKpi('kpiTotalTokens', formatNumber(summary.totalTokens || 0));
+                setKpi('kpiAvgDuration', `${Number(summary.averageTotalDurationMs || 0).toFixed(2)} ms`);
+                setKpi('kpiAvgFirstToken', `${Number(summary.averageFirstTokenLatencyMs || 0).toFixed(2)} ms`);
+                setKpi('kpiFallbackCount', formatNumber(summary.fallbackRequestCount || 0));
+                setKpi('kpiTokenSplit', `${formatNumber(summary.totalInputTokens || 0)} / ${formatNumber(summary.totalOutputTokens || 0)}`);
+
+                const applied = data.appliedFilter || {};
+                filterSummaryEl.textContent = `范围：${applied.startTime ? applied.startTime.slice(0, 10) : '-'} 至 ${applied.endTime ? applied.endTime.slice(0, 10) : '-'}，粒度：${applied.bucketType || '-'}`;
+
+                renderChart('requestTrendChart', {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: '请求量',
+                            data: requestTrend.map(x => x.requestCount),
+                            borderColor: palette.blue,
+                            backgroundColor: 'rgba(59,130,246,0.15)',
+                            fill: true,
+                            tension: 0.28
+                        }]
+                    },
+                    options: baseChartOptions()
+                });
+
+                renderChart('resultTrendChart', {
+                    type: 'bar',
+                    data: {
+                        labels: resultTrend.map(x => x.label),
+                        datasets: [
+                            {
+                                label: '成功数',
+                                data: resultTrend.map(x => x.successCount),
+                                backgroundColor: 'rgba(16,185,129,0.75)'
+                            },
+                            {
+                                label: '失败数',
+                                data: resultTrend.map(x => x.failCount),
+                                backgroundColor: 'rgba(239,68,68,0.75)'
+                            },
+                            {
+                                label: '成功率 %',
+                                data: resultTrend.map(x => x.successRate),
+                                type: 'line',
+                                borderColor: palette.indigo,
+                                backgroundColor: palette.indigo,
+                                yAxisID: 'y1',
+                                tension: 0.25
+                            }
+                        ]
+                    },
+                    options: {
+                        ...baseChartOptions(),
+                        scales: {
+                            x: { grid: { display: false } },
+                            y: { beginAtZero: true },
+                            y1: {
+                                beginAtZero: true,
+                                position: 'right',
+                                max: 100,
+                                grid: { drawOnChartArea: false }
+                            }
+                        }
+                    }
+                });
+
+                renderChart('tokenTrendChart', {
+                    type: 'line',
+                    data: {
+                        labels: tokenTrend.map(x => x.label),
+                        datasets: [
+                            {
+                                label: '输入',
+                                data: tokenTrend.map(x => x.inputTokens),
+                                borderColor: palette.blue,
+                                backgroundColor: 'rgba(59,130,246,0.12)',
+                                fill: false,
+                                tension: 0.25
+                            },
+                            {
+                                label: '输出',
+                                data: tokenTrend.map(x => x.outputTokens),
+                                borderColor: palette.green,
+                                backgroundColor: 'rgba(16,185,129,0.12)',
+                                fill: false,
+                                tension: 0.25
+                            },
+                            {
+                                label: '缓存',
+                                data: tokenTrend.map(x => x.cachedTokens),
+                                borderColor: palette.cyan,
+                                backgroundColor: 'rgba(6,182,212,0.12)',
+                                fill: false,
+                                tension: 0.25
+                            }
+                        ]
+                    },
+                    options: {
+                        ...baseChartOptions(),
+                        plugins: {
+                            ...baseChartOptions().plugins,
+                            tooltip: {
+                                callbacks: {
+                                    footer: function(items) {
+                                        if (!items.length) {
+                                            return '';
+                                        }
+                                        const index = items[0].dataIndex;
+                                        const point = tokenTrend[index];
+                                        return `总量: ${formatNumber(point.totalTokens || 0)}`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                renderChart('durationTrendChart', {
+                    type: 'line',
+                    data: {
+                        labels: durationTrend.map(x => x.label),
+                        datasets: [
+                            {
+                                label: '平均总耗时',
+                                data: durationTrend.map(x => x.averageTotalDurationMs),
+                                borderColor: palette.amber,
+                                backgroundColor: 'rgba(245,158,11,0.15)',
+                                fill: true,
+                                tension: 0.28
+                            },
+                            {
+                                label: '平均首字耗时',
+                                data: durationTrend.map(x => x.averageFirstTokenLatencyMs),
+                                borderColor: palette.cyan,
+                                backgroundColor: 'rgba(6,182,212,0.15)',
+                                fill: false,
+                                tension: 0.28
+                            }
+                        ]
+                    },
+                    options: baseChartOptions()
+                });
+
+                renderChart('fallbackTrendChart', {
+                    type: 'bar',
+                    data: {
+                        labels: fallbackTrend.map(x => x.label),
+                        datasets: [
+                            {
+                                label: '回退次数',
+                                data: fallbackTrend.map(x => x.fallbackCount),
+                                backgroundColor: 'rgba(245,158,11,0.75)'
+                            },
+                            {
+                                label: '回退率 %',
+                                data: fallbackTrend.map(x => x.fallbackRate),
+                                type: 'line',
+                                borderColor: palette.red,
+                                backgroundColor: palette.red,
+                                yAxisID: 'y1',
+                                tension: 0.25
+                            }
+                        ]
+                    },
+                    options: {
+                        ...baseChartOptions(),
+                        scales: {
+                            x: { grid: { display: false } },
+                            y: { beginAtZero: true },
+                            y1: {
+                                beginAtZero: true,
+                                position: 'right',
+                                max: 100,
+                                grid: { drawOnChartArea: false }
+                            }
+                        }
+                    }
+                });
+
+                renderChart('siteDistributionChart', {
+                    type: 'bar',
+                    data: {
+                        labels: siteDistribution.map(x => x.label),
+                        datasets: [{
+                            label: '请求量',
+                            data: siteDistribution.map(x => x.requestCount),
+                            backgroundColor: 'rgba(99,102,241,0.75)'
+                        }]
+                    },
+                    options: {
+                        ...baseChartOptions(),
+                        indexAxis: 'y'
+                    }
+                });
+
+                renderChart('modelDistributionChart', {
+                    type: 'bar',
+                    data: {
+                        labels: modelDistribution.map(x => x.label),
+                        datasets: [{
+                            label: '请求量',
+                            data: modelDistribution.map(x => x.requestCount),
+                            backgroundColor: 'rgba(59,130,246,0.75)'
+                        }, {
+                            label: '总 Tokens',
+                            data: modelDistribution.map(x => x.totalTokens),
+                            backgroundColor: 'rgba(16,185,129,0.75)'
+                        }]
+                    },
+                    options: baseChartOptions()
+                });
+            }
+
+            async function loadDashboard(forceLoadAll) {
+                if (!forceLoadAll && rangeTypeEl.value === 'all') {
+                    showAllRangeNotice();
+                    filterSummaryEl.textContent = '全部范围已就绪，点击“开始加载全部数据”后再执行全量统计';
+                    return;
+                }
+
+                hideAllRangeNotice();
+                hideSlowLoadingNotice();
+                if (activeController) {
+                    activeController.abort();
+                }
+                activeController = new AbortController();
+                clearTimeout(slowLoadingTimer);
+                slowLoadingTimer = window.setTimeout(() => {
+                    if (activeController) {
+                        showSlowLoadingNotice();
+                    }
+                }, 1200);
+                refreshBtn.disabled = true;
+                refreshBtn.textContent = '加载中...';
+                try {
+                    const response = await fetch(`${dashboardEndpoint}?${buildQueryString()}`, {
+                        signal: activeController.signal
+                    });
+                    const data = await response.json();
+                    renderDashboard(data);
+                } catch (error) {
+                    if (error.name === 'AbortError') {
+                        filterSummaryEl.textContent = '已取消本次统计加载';
+                        return;
+                    }
+                    throw error;
+                } finally {
+                    clearTimeout(slowLoadingTimer);
+                    hideSlowLoadingNotice();
+                    activeController = null;
+                    refreshBtn.disabled = false;
+                    refreshBtn.textContent = '刷新数据';
+                }
+            }
+
+            function formatNumber(value) {
+                return Number(value || 0).toLocaleString('zh-CN');
+            }
+
+            function bindEvents() {
+                [rangeTypeEl, bucketTypeEl, protocolTypeEl, modelNameEl, siteIdEl, streamTypeEl].forEach(el => {
+                    el.addEventListener('change', async () => {
+                        toggleCustomRange();
+                        await loadDashboard(false);
+                    });
+                });
+                [startTimeEl, endTimeEl].forEach(el => {
+                    el.addEventListener('change', async () => {
+                        if (rangeTypeEl.value === 'custom') {
+                            await loadDashboard(false);
+                        }
+                    });
+                });
+                refreshBtn.addEventListener('click', () => loadDashboard(true));
+                loadAllBtn.addEventListener('click', () => loadDashboard(true));
+                backToWeekBtn.addEventListener('click', async () => {
+                    rangeTypeEl.value = 'week';
+                    toggleCustomRange();
+                    hideAllRangeNotice();
+                    await loadDashboard(false);
+                });
+                continueWaitBtn.addEventListener('click', hideSlowLoadingNotice);
+                cancelWaitBtn.addEventListener('click', () => {
+                    if (activeController) {
+                        activeController.abort();
+                    }
+                    hideSlowLoadingNotice();
+                });
+            }
+
+            async function init() {
+                const today = new Date();
+                const sevenDaysAgo = new Date();
+                sevenDaysAgo.setDate(today.getDate() - 6);
+                startTimeEl.value = sevenDaysAgo.toISOString().slice(0, 10);
+                endTimeEl.value = today.toISOString().slice(0, 10);
+                toggleCustomRange();
+                await loadOptions();
+                bindEvents();
+                await loadDashboard(false);
+            }
+
+            init();
+        })();
+    </script>
+}
