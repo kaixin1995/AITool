@@ -261,27 +261,17 @@ public sealed class AnalyticsApiController : ControllerBase
             .Where(x => MatchesStreamFilter(x.IsStreaming, query.StreamType))
             .ToList();
 
-        var finalLogs = baseLogs
+        // 站点筛选按“命中过该站点的尝试”统计，避免回退成功后把失败站点整条请求吞掉。
+        var scopedLogs = query.SiteId.HasValue
+            ? baseLogs.Where(x => x.TargetSiteId == query.SiteId.Value).ToList()
+            : baseLogs;
+
+        var finalLogs = scopedLogs
             .GroupBy(x => x.RequestId)
             .Select(g => g
                 .OrderByDescending(x => x.AttemptIndex)
                 .ThenByDescending(x => x.RequestedAt)
                 .First())
-            .ToList();
-
-        if (query.SiteId.HasValue)
-        {
-            finalLogs = finalLogs
-                .Where(x => x.TargetSiteId == query.SiteId.Value)
-                .ToList();
-        }
-
-        var finalRequestIds = finalLogs
-            .Select(x => x.RequestId)
-            .ToHashSet();
-
-        var scopedLogs = baseLogs
-            .Where(x => finalRequestIds.Contains(x.RequestId))
             .ToList();
 
         var fallbackRequestIds = scopedLogs

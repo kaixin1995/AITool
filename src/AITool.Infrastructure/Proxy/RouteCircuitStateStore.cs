@@ -43,6 +43,7 @@ public sealed class RouteCircuitStateStore
         {
             if (until > DateTimeOffset.UtcNow) return true;
             _blockedRoutes.TryRemove(routeId, out _);
+            _failCounts.TryRemove(routeId, out _);
         }
         return false;
     }

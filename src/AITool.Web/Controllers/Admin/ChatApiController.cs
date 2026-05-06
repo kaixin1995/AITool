@@ -173,12 +173,12 @@ public sealed class ChatApiController : ControllerBase
                     continue;
 
                 attemptIndex++;
-                var requestBody = BuildChatRequestBody("OpenAI", route.SiteModelName, request.Message, request.EnableReasoning, false);
+                var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false);
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = route.BaseUrl,
                     TargetApiKey = route.ApiKey,
-                    ProtocolType = "OpenAI",
+                    ProtocolType = route.ProtocolType,
                     TargetModelName = route.SiteModelName,
                     RequestBody = requestBody,
                     PreparedRequestBody = requestBody,
