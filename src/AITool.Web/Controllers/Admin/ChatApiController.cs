@@ -656,7 +656,7 @@ public sealed class ChatApiController : ControllerBase
             var state = new SseBlockProcessState();
             var done = false;
 
-            while (!reader.EndOfStream && !done)
+            while (!done)
             {
                 var line = await reader.ReadLineAsync(timeoutCts.Token);
                 if (line is null)

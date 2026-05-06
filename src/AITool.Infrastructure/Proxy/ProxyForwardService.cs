@@ -151,7 +151,7 @@ public sealed class ProxyForwardService : IProxyForwardService
 
         try
         {
-            while (!reader.EndOfStream)
+            while (true)
             {
                 var line = await reader.ReadLineAsync(cancellationToken);
                 if (line == null) break;
