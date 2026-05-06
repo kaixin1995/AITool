@@ -72,4 +72,22 @@ public sealed class RouteCircuitStateStoreTests
 
         store.IsBlocked(siteId).Should().BeFalse();
     }
+
+    // 熔断过期后应清空失败计数，后续失败需要重新累计。
+    [Fact]
+    public void Block_requires_a_new_failure_streak_after_block_expires()
+    {
+        var store = new RouteCircuitStateStore(TimeSpan.FromMilliseconds(100), failThreshold: 2);
+        var siteId = Guid.NewGuid();
+
+        store.Block(siteId);
+        store.Block(siteId);
+        Thread.Sleep(150);
+
+        store.IsBlocked(siteId).Should().BeFalse();
+
+        store.Block(siteId);
+
+        store.IsBlocked(siteId).Should().BeFalse();
+    }
 }

@@ -51,10 +51,36 @@ public sealed class AnalyticsPageTests
         root.GetProperty("siteDistribution").GetArrayLength().Should().Be(2);
         root.GetProperty("modelDistribution").GetArrayLength().Should().Be(2);
     }
+
+    [Fact]
+    public async Task Get_dashboard_filters_site_by_attempt_scope_instead_of_final_result_scope()
+    {
+        await using var factory = new AnalyticsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/api/admin/analytics/dashboard?rangeType=all&bucketType=day&siteId={AnalyticsWebApplicationFactory.FirstSiteId}");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        using var document = JsonDocument.Parse(body);
+        var summary = document.RootElement.GetProperty("summary");
+        summary.GetProperty("totalRequests").GetInt32().Should().Be(2);
+        summary.GetProperty("successRequests").GetInt32().Should().Be(0);
+        summary.GetProperty("failedRequests").GetInt32().Should().Be(2);
+        summary.GetProperty("totalTokens").GetInt32().Should().Be(50);
+        summary.GetProperty("fallbackRequestCount").GetInt32().Should().Be(1);
+
+        var siteDistribution = document.RootElement.GetProperty("siteDistribution").EnumerateArray().ToList();
+        siteDistribution.Should().HaveCount(1);
+        siteDistribution[0].GetProperty("label").GetString().Should().Be("Alpha");
+    }
 }
 
 internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Program>
 {
+    internal static readonly Guid FirstSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    internal static readonly Guid SecondSiteId = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-analytics-{Guid.NewGuid():N}.db");
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -81,13 +107,10 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
 
-        var firstSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
-        var secondSiteId = Guid.Parse("22222222-2222-2222-2222-222222222222");
-
         db.Sites.AddRange(
             new AITool.Domain.Sites.Site
             {
-                Id = firstSiteId,
+                Id = FirstSiteId,
                 Name = "Alpha",
                 BaseUrl = "https://alpha.example.com",
                 ApiKey = "alpha-key",
@@ -96,7 +119,7 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
             },
             new AITool.Domain.Sites.Site
             {
-                Id = secondSiteId,
+                Id = SecondSiteId,
                 Name = "Beta",
                 BaseUrl = "https://beta.example.com",
                 ApiKey = "beta-key",
@@ -133,7 +156,7 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
                 ProtocolType = "OpenAI",
                 RequestModel = "chat-prod",
                 AttemptedModel = "gpt-5.5",
-                TargetSiteId = firstSiteId,
+                TargetSiteId = FirstSiteId,
                 Status = "fail",
                 Source = "proxy",
                 RetryCount = 1,
@@ -154,7 +177,7 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
                 ProtocolType = "OpenAI",
                 RequestModel = "chat-prod",
                 AttemptedModel = "glm-5.1",
-                TargetSiteId = secondSiteId,
+                TargetSiteId = SecondSiteId,
                 Status = "success",
                 Source = "proxy",
                 RetryCount = 1,
@@ -177,7 +200,7 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
                 ProtocolType = "OpenAI",
                 RequestModel = "reason-prod",
                 AttemptedModel = "deepseek-r1",
-                TargetSiteId = firstSiteId,
+                TargetSiteId = FirstSiteId,
                 Status = "fail",
                 Source = "proxy",
                 RetryCount = 1,

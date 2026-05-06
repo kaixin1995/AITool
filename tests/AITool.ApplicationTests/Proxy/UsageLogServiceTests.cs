@@ -4,6 +4,10 @@ using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AITool.ApplicationTests.Proxy;
 
@@ -11,6 +15,7 @@ namespace AITool.ApplicationTests.Proxy;
 public sealed class UsageLogServiceTests : IDisposable
 {
     private readonly AppDbContext _dbContext;
+    private readonly ServiceProvider _serviceProvider;
     private readonly UsageLogService _service;
 
     public UsageLogServiceTests()
@@ -18,8 +23,18 @@ public sealed class UsageLogServiceTests : IDisposable
         var options = new DbContextOptionsBuilder<AppDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
-        _dbContext = new AppDbContext(options);
-        _service = new UsageLogService(_dbContext);
+
+        var services = new ServiceCollection();
+        services.AddSingleton(options);
+        services.AddDbContext<AppDbContext>(dbOptions => dbOptions.UseInMemoryDatabase(Guid.NewGuid().ToString()));
+        _serviceProvider = services.BuildServiceProvider();
+        _dbContext = _serviceProvider.GetRequiredService<AppDbContext>();
+
+        var batchWriter = new ProxyUsageLogBatchWriter(
+            _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<ProxyUsageLogBatchWriter>.Instance,
+            new TestHostEnvironment());
+        _service = new UsageLogService(batchWriter);
     }
 
     // 正常日志写入后应能查到记录且 TotalTokens 为 Input + Cached + Output
@@ -117,5 +132,17 @@ public sealed class UsageLogServiceTests : IDisposable
         logs.Should().HaveCount(3);
     }
 
-    public void Dispose() => _dbContext.Dispose();
+    public void Dispose()
+    {
+        _dbContext.Dispose();
+        _serviceProvider.Dispose();
+    }
+
+    private sealed class TestHostEnvironment : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = "Testing";
+        public string ApplicationName { get; set; } = "AITool.ApplicationTests";
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
 }

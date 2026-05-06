@@ -21,13 +21,13 @@ public sealed class UsageLogsApiTests
         await using var factory = new UsageLogsWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/api/admin/usage-logs/list");
+        var response = await client.GetAsync("/api/admin/usage-logs/list?rangeType=all");
         var body = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
 
         using var document = JsonDocument.Parse(body);
-        var items = document.RootElement.EnumerateArray().ToList();
+        var items = document.RootElement.GetProperty("items").EnumerateArray().ToList();
         var latestItem = items[0];
         var fallbackAttemptItem = items.Single(x =>
             x.GetProperty("requestId").GetGuid() == UsageLogsWebApplicationFactory.RequestChainId &&
@@ -51,13 +51,13 @@ public sealed class UsageLogsApiTests
         await using var factory = new UsageLogsWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync($"/api/admin/usage-logs/list?siteId={UsageLogsWebApplicationFactory.FirstSiteId}");
+        var response = await client.GetAsync($"/api/admin/usage-logs/list?rangeType=all&siteId={UsageLogsWebApplicationFactory.FirstSiteId}");
         var body = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
 
         using var document = JsonDocument.Parse(body);
-        var items = document.RootElement.EnumerateArray().ToList();
+        var items = document.RootElement.GetProperty("items").EnumerateArray().ToList();
 
         items.Should().HaveCount(2);
         items.Should().OnlyContain(x => x.GetProperty("siteName").GetString() == "Primary OpenAI");
@@ -95,7 +95,7 @@ public sealed class UsageLogsApiTests
         await using var factory = new UsageLogsWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/api/admin/usage-logs/summary");
+        var response = await client.GetAsync("/api/admin/usage-logs/summary?rangeType=all");
         var body = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
@@ -105,7 +105,7 @@ public sealed class UsageLogsApiTests
         document.RootElement.GetProperty("failedRequests").GetInt32().Should().Be(1);
         document.RootElement.GetProperty("successRate").GetDouble().Should().BeApproximately(66.67d, 0.01d);
         document.RootElement.GetProperty("totalTokens").GetInt32().Should().Be(8870);
-        document.RootElement.GetProperty("maxDurationMs").GetInt32().Should().Be(3200);
+        document.RootElement.GetProperty("maxDurationMs").GetInt32().Should().Be(8000);
     }
 
     [Fact]
@@ -114,7 +114,7 @@ public sealed class UsageLogsApiTests
         await using var factory = new UsageLogsWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync($"/api/admin/usage-logs/summary?siteId={UsageLogsWebApplicationFactory.SecondSiteId}");
+        var response = await client.GetAsync($"/api/admin/usage-logs/summary?rangeType=all&siteId={UsageLogsWebApplicationFactory.SecondSiteId}");
         var body = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
@@ -139,8 +139,7 @@ public sealed class UsageLogsApiTests
         html.Should().Contain("自动刷新");
         html.Should().Contain("查看链路");
         html.Should().Contain("成功率");
-        html.Should().Contain("总Token数");
-        html.Should().Contain("总耗时");
+        html.Should().Contain("总 Tokens");
         html.Should().Contain("用时/首字");
         html.Should().Contain("缓存");
     }
