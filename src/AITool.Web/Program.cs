@@ -49,10 +49,13 @@ builder.Services.AddScoped<IRouteSelectionService, RouteSelectionService>();
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
 
 // 注册使用日志服务，记录每次代理调用的 Token 用量
-builder.Services.AddScoped<IUsageLogService, UsageLogService>();
+builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
+builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 
 // 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点
 builder.Services.AddSingleton<RouteCircuitStateStore>();
+builder.Services.AddSingleton<ProxyRequestMetadataCache>();
 
 // 注册日志保留策略服务，定时清理过期日志
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
@@ -63,6 +66,7 @@ builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsS
 // 注册 Hangfire 检测调度器
 builder.Services.AddSingleton<HangfireDetectionScheduler>();
 builder.Services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AnalyticsBackgroundQueryExecutor>());
 
 // 注册 Hangfire 内存存储与仪表盘
 builder.Services.AddHangfire(config => config
@@ -103,6 +107,8 @@ using (var scope = app.Services.CreateScope())
         EnsureColumn(cmd, "ProxyUsageLogs", "FirstTokenLatencyMs", "ALTER TABLE ProxyUsageLogs ADD COLUMN FirstTokenLatencyMs INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "StreamDurationMs", "ALTER TABLE ProxyUsageLogs ADD COLUMN StreamDurationMs INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "TotalDurationMs", "ALTER TABLE ProxyUsageLogs ADD COLUMN TotalDurationMs INTEGER NOT NULL DEFAULT 0");
+        EnsureIndex(cmd, "IX_ProxyAccessKeys_AccessKeyHash_IsEnabled", "CREATE INDEX IX_ProxyAccessKeys_AccessKeyHash_IsEnabled ON ProxyAccessKeys (AccessKeyHash, IsEnabled)");
+        EnsureIndex(cmd, "IX_ProxyRouteRules_ExternalModelName_IsEnabled_ModelPriority_InstancePriority_Priority", "CREATE INDEX IX_ProxyRouteRules_ExternalModelName_IsEnabled_ModelPriority_InstancePriority_Priority ON ProxyRouteRules (ExternalModelName, IsEnabled, ModelPriority, InstancePriority, Priority)");
 
         if (!TableExists(cmd, "ProxyRouteEntries"))
         {
@@ -179,6 +185,17 @@ static void EnsureColumn(System.Data.Common.DbCommand command, string tableName,
     if (count == 0)
     {
         command.CommandText = alterSql;
+        command.ExecuteNonQuery();
+    }
+}
+
+static void EnsureIndex(System.Data.Common.DbCommand command, string indexName, string createSql)
+{
+    command.CommandText = $"SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='{indexName}'";
+    var count = Convert.ToInt64(command.ExecuteScalar());
+    if (count == 0)
+    {
+        command.CommandText = createSql;
         command.ExecuteNonQuery();
     }
 }

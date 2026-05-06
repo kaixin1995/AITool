@@ -6,9 +6,9 @@ public sealed class RouteCircuitStateStore
     private readonly TimeSpan _blockDuration;
     private readonly int _failThreshold;
     // 路由连续失败次数记录
-    private readonly Dictionary<Guid, int> _failCounts = [];
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, int> _failCounts = [];
     // 被熔断的路由及其解除时间
-    private readonly Dictionary<Guid, DateTimeOffset> _blockedRoutes = [];
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, DateTimeOffset> _blockedRoutes = [];
 
     public RouteCircuitStateStore(TimeSpan? blockDuration = null, int failThreshold = 5)
     {
@@ -22,8 +22,7 @@ public sealed class RouteCircuitStateStore
         // 如果已经被熔断，不再重复计数
         if (IsBlocked(routeId)) return;
 
-        var count = _failCounts.GetValueOrDefault(routeId) + 1;
-        _failCounts[routeId] = count;
+        var count = _failCounts.AddOrUpdate(routeId, 1, (_, current) => current + 1);
 
         if (count >= _failThreshold)
         {
@@ -34,7 +33,7 @@ public sealed class RouteCircuitStateStore
     // 记录一次成功，清除该路由的连续失败计数
     public void Succeed(Guid routeId)
     {
-        _failCounts.Remove(routeId);
+        _failCounts.TryRemove(routeId, out _);
     }
 
     // 判断路由当前是否仍处于熔断窗口内
@@ -43,7 +42,7 @@ public sealed class RouteCircuitStateStore
         if (_blockedRoutes.TryGetValue(routeId, out var until))
         {
             if (until > DateTimeOffset.UtcNow) return true;
-            _blockedRoutes.Remove(routeId);
+            _blockedRoutes.TryRemove(routeId, out _);
         }
         return false;
     }

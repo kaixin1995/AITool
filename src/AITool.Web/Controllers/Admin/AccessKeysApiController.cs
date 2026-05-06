@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using AITool.Web.Services;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
@@ -46,10 +47,12 @@ public sealed class AccessKeyListItem
 public sealed class AccessKeysApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
-    public AccessKeysApiController(AppDbContext dbContext)
+    public AccessKeysApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
+        _metadataCache = metadataCache;
     }
 
     // 获取所有密钥列表
@@ -96,6 +99,7 @@ public sealed class AccessKeysApiController : ControllerBase
         };
         _dbContext.ProxyAccessKeys.Add(key);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateAccessKeys();
 
         return Ok(new CreateAccessKeyResult
         {
@@ -115,6 +119,7 @@ public sealed class AccessKeysApiController : ControllerBase
 
         key.IsEnabled = !key.IsEnabled;
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateAccessKeys();
 
         return Ok(new { keyId, isEnabled = key.IsEnabled });
     }
@@ -128,6 +133,7 @@ public sealed class AccessKeysApiController : ControllerBase
 
         _dbContext.ProxyAccessKeys.Remove(key);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateAccessKeys();
 
         return Ok(new { keyId });
     }

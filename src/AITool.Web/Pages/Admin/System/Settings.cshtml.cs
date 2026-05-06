@@ -1,4 +1,5 @@
 using AITool.Application.Operations;
+using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
@@ -8,10 +9,12 @@ namespace AITool.Web.Pages.Admin.System;
 public class SettingsModel : PageModel
 {
     private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
-    public SettingsModel(ISystemRuntimeSettingsService systemRuntimeSettingsService)
+    public SettingsModel(ISystemRuntimeSettingsService systemRuntimeSettingsService, ProxyRequestMetadataCache metadataCache)
     {
         _systemRuntimeSettingsService = systemRuntimeSettingsService;
+        _metadataCache = metadataCache;
     }
 
     [BindProperty]
@@ -46,6 +49,7 @@ public class SettingsModel : PageModel
         }
 
         await _systemRuntimeSettingsService.UpdateAsync(Input, cancellationToken);
+        _metadataCache.InvalidateRuntimeSettings();
         return RedirectToPage();
     }
 }

@@ -125,6 +125,7 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.UpstreamModelName).IsRequired().HasMaxLength(200);
             entity.Property(e => e.SiteModelName).IsRequired().HasMaxLength(200);
             entity.HasIndex(e => new { e.ExternalModelName, e.Priority });
+            entity.HasIndex(e => new { e.ExternalModelName, e.IsEnabled, e.ModelPriority, e.InstancePriority, e.Priority });
         });
 
         // 平台访问密钥实体配置
@@ -135,6 +136,7 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.PlainKey).IsRequired().HasMaxLength(500);
             entity.Property(e => e.AccessKeyHash).IsRequired().HasMaxLength(500);
             entity.Property(e => e.MaskedValue).IsRequired().HasMaxLength(100);
+            entity.HasIndex(e => new { e.AccessKeyHash, e.IsEnabled });
         });
 
         // 代理使用日志实体配置

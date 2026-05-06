@@ -1,6 +1,8 @@
 using System.Text.Json;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
@@ -19,6 +21,14 @@ public class ImportSiteItem
 public class ImportModel : PageModel
 {
     private readonly AppDbContext _dbContext;
+    private readonly ProxyRequestMetadataCache? _metadataCache;
+
+    [ActivatorUtilitiesConstructor]
+    public ImportModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    {
+        _dbContext = dbContext;
+        _metadataCache = metadataCache;
+    }
 
     public ImportModel(AppDbContext dbContext)
     {
@@ -73,6 +83,7 @@ public class ImportModel : PageModel
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);
+            _metadataCache?.InvalidateRouteTargets();
             StatusMessage = $"成功导入 {created} 个站点";
             StatusSuccess = true;
         }

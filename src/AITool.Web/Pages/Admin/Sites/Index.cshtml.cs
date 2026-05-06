@@ -1,6 +1,8 @@
 using AITool.Application.Sites;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -11,6 +13,14 @@ namespace AITool.Web.Pages.Admin.Sites;
 public class IndexModel : PageModel
 {
     private readonly AppDbContext _dbContext;
+    private readonly ProxyRequestMetadataCache? _metadataCache;
+
+    [ActivatorUtilitiesConstructor]
+    public IndexModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    {
+        _dbContext = dbContext;
+        _metadataCache = metadataCache;
+    }
 
     public IndexModel(AppDbContext dbContext)
     {
@@ -45,6 +55,7 @@ public class IndexModel : PageModel
             if (site is null) return RedirectToPage();
             site.IsEnabled = !site.IsEnabled;
             await _dbContext.SaveChangesAsync(cancellationToken);
+            _metadataCache?.InvalidateRouteTargets();
             StatusMessage = "站点状态已切换";
             StatusSuccess = true;
         }
@@ -82,6 +93,7 @@ public class IndexModel : PageModel
             _dbContext.SiteModelMappings.RemoveRange(mappings);
             _dbContext.Sites.RemoveRange(sites);
             await _dbContext.SaveChangesAsync(cancellationToken);
+            _metadataCache?.InvalidateRouteTargets();
             StatusMessage = $"已批量删除 {sites.Count} 个站点";
             StatusSuccess = true;
         }
@@ -104,6 +116,7 @@ public class IndexModel : PageModel
             if (site is null) return RedirectToPage();
             _dbContext.Sites.Remove(site);
             await _dbContext.SaveChangesAsync(cancellationToken);
+            _metadataCache?.InvalidateRouteTargets();
             StatusMessage = "站点已删除";
             StatusSuccess = true;
         }
@@ -121,6 +134,14 @@ public class IndexModel : PageModel
 public class CreateModel : PageModel
 {
     private readonly AppDbContext _dbContext;
+    private readonly ProxyRequestMetadataCache? _metadataCache;
+
+    [ActivatorUtilitiesConstructor]
+    public CreateModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    {
+        _dbContext = dbContext;
+        _metadataCache = metadataCache;
+    }
 
     public CreateModel(AppDbContext dbContext)
     {
@@ -149,6 +170,7 @@ public class CreateModel : PageModel
         });
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache?.InvalidateRouteTargets();
         return RedirectToPage("./Index");
     }
 }

@@ -1,14 +1,10 @@
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using AITool.Application.Operations;
 using AITool.Application.Proxy;
-using AITool.Application.Routing;
 using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
+using AITool.Web.Services;
 
 namespace AITool.Web.Controllers.Proxy;
 
@@ -16,27 +12,21 @@ namespace AITool.Web.Controllers.Proxy;
 [ApiController]
 public sealed class OpenAiProxyController : ControllerBase
 {
-    private readonly IRouteSelectionService _routeService;
     private readonly IProxyForwardService _forwardService;
     private readonly IUsageLogService _usageLogService;
-    private readonly AppDbContext _dbContext;
     private readonly RouteCircuitStateStore _circuitStore;
-    private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
     public OpenAiProxyController(
-        IRouteSelectionService routeService,
         IProxyForwardService forwardService,
         IUsageLogService usageLogService,
-        AppDbContext dbContext,
         RouteCircuitStateStore circuitStore,
-        ISystemRuntimeSettingsService systemRuntimeSettingsService)
+        ProxyRequestMetadataCache metadataCache)
     {
-        _routeService = routeService;
         _forwardService = forwardService;
         _usageLogService = usageLogService;
-        _dbContext = dbContext;
         _circuitStore = circuitStore;
-        _systemRuntimeSettingsService = systemRuntimeSettingsService;
+        _metadataCache = metadataCache;
     }
 
     // 返回当前代理对外暴露的模型列表，供客户端按真实 OpenAI URL 拉取模型
@@ -48,23 +38,13 @@ public sealed class OpenAiProxyController : ControllerBase
             ? authHeader[7..]
             : string.Empty;
 
-        var accessKey = await ValidateAccessKeyAsync(accessToken, cancellationToken);
+        var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
         if (accessKey is null)
         {
             return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
         }
 
-        var enabledSiteIds = await _dbContext.Sites
-            .Where(s => s.IsEnabled)
-            .Select(s => s.Id)
-            .ToListAsync(cancellationToken);
-
-        var modelIds = await _dbContext.ProxyRouteRules
-            .Where(r => r.IsEnabled && enabledSiteIds.Contains(r.SiteId))
-            .OrderBy(r => r.ExternalModelName)
-            .Select(r => r.ExternalModelName)
-            .Distinct()
-            .ToListAsync(cancellationToken);
+        var modelIds = await _metadataCache.GetEnabledModelNamesAsync("OpenAI", cancellationToken);
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         return Ok(new
@@ -106,17 +86,17 @@ public sealed class OpenAiProxyController : ControllerBase
             ? authHeader[7..]
             : string.Empty;
 
-        var accessKey = await ValidateAccessKeyAsync(accessToken, cancellationToken);
+        var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
         if (accessKey is null)
         {
             return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
         }
 
-        // 读取当前持久化运行时设置，确保后台修改可立即影响代理执行
-        var runtimeSettings = await _systemRuntimeSettingsService.GetOrCreateAsync(cancellationToken);
+        // 读取运行时设置缓存，后台修改后会在短时间内刷新。
+        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
 
-        // 获取所有启用的路由规则，逐个尝试直到成功
-        var allRoutes = await _routeService.SelectAllRoutesAsync(modelName, cancellationToken);
+        // 获取已经和站点信息合并后的候选路由，避免 N+1 查询站点。
+        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
 
         if (allRoutes.Count == 0)
             return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
@@ -126,22 +106,17 @@ public sealed class OpenAiProxyController : ControllerBase
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
 
-        foreach (var routeResult in allRoutes)
+        foreach (var route in allRoutes)
         {
-            var route = routeResult.Route!;
             // 跳过已被熔断器屏蔽的路由
-            if (_circuitStore.IsBlocked(route.Id))
-                continue;
-
-            var site = await _dbContext.Sites.FindAsync([route.SiteId], cancellationToken);
-            if (site is null || !site.IsEnabled)
+            if (_circuitStore.IsBlocked(route.RouteId))
                 continue;
 
             attemptIndex++;
             var forwardRequest = new ProxyForwardRequest
             {
-                TargetBaseUrl = site.BaseUrl,
-                TargetApiKey = site.ApiKey,
+                TargetBaseUrl = route.BaseUrl,
+                TargetApiKey = route.ApiKey,
                 ProtocolType = "OpenAI",
                 TargetModelName = route.SiteModelName,
                 RequestBody = requestBody,
@@ -158,7 +133,7 @@ public sealed class OpenAiProxyController : ControllerBase
                 ProtocolType = "OpenAI",
                 RequestModel = modelName,
                 AttemptedModel = route.UpstreamModelName,
-                TargetSiteId = site.Id,
+                TargetSiteId = route.SiteId,
                 Status = result.Success ? "success" : "fail",
                 Source = "proxy",
                 RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
@@ -179,14 +154,14 @@ public sealed class OpenAiProxyController : ControllerBase
             if (result.Success)
             {
                 // 成功时清除该路由的连续失败计数
-                _circuitStore.Succeed(route.Id);
+                _circuitStore.Succeed(route.RouteId);
                 // 流式响应以 SSE 格式返回，使用 text/event-stream 内容类型
                 var contentType = result.IsStreaming ? "text/event-stream" : "application/json";
                 return Content(result.ResponseBody, contentType);
             }
 
             // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
-            _circuitStore.Block(route.Id);
+            _circuitStore.Block(route.RouteId);
             lastResult = result;
         }
 
@@ -194,17 +169,5 @@ public sealed class OpenAiProxyController : ControllerBase
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
         return StatusCode(statusCode,
             new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
-    }
-
-    // 验证访问密钥，比对 SHA256 哈希值
-    private async Task<Domain.Proxy.ProxyAccessKey?> ValidateAccessKeyAsync(string accessToken, CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrEmpty(accessToken)) return null;
-
-        var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(accessToken));
-        var hash = Convert.ToHexString(hashBytes);
-
-        return await _dbContext.ProxyAccessKeys
-            .FirstOrDefaultAsync(k => k.AccessKeyHash == hash && k.IsEnabled, cancellationToken);
     }
 }

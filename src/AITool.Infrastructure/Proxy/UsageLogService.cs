@@ -1,49 +1,20 @@
 using AITool.Application.UsageLogs;
-using AITool.Domain.Proxy;
-using AITool.Infrastructure.Persistence;
 
 namespace AITool.Infrastructure.Proxy;
 
-// 使用日志服务实现，将代理请求使用情况写入数据库
+// 使用日志服务实现，将代理请求使用情况投递到后台批量写入队列。
 public sealed class UsageLogService : IUsageLogService
 {
-    private readonly AppDbContext _dbContext;
+    private readonly ProxyUsageLogBatchWriter _batchWriter;
 
-    public UsageLogService(AppDbContext dbContext)
+    public UsageLogService(ProxyUsageLogBatchWriter batchWriter)
     {
-        _dbContext = dbContext;
+        _batchWriter = batchWriter;
     }
 
-    // 将使用日志条目持久化到数据库
+    // 主链路只负责入队，不在请求线程里同步等待 SQLite 写入完成。
     public async Task LogAsync(UsageLogEntry entry, CancellationToken cancellationToken = default)
     {
-        var log = new ProxyUsageLog
-        {
-            RequestId = entry.RequestId,
-            AccessKeyId = entry.AccessKeyId,
-            ProtocolType = entry.ProtocolType,
-            RequestModel = entry.RequestModel,
-            AttemptedModel = entry.AttemptedModel,
-            TargetSiteId = entry.TargetSiteId,
-            Status = entry.Status,
-            Source = entry.Source,
-            RetryCount = entry.RetryCount,
-            AttemptIndex = entry.AttemptIndex,
-            IsFinalResult = entry.IsFinalResult,
-            FallbackTriggered = entry.FallbackTriggered,
-            ErrorMessage = entry.ErrorMessage,
-            InputTokens = entry.InputTokens,
-            CachedTokens = entry.CachedTokens,
-            OutputTokens = entry.OutputTokens,
-            TotalTokens = entry.InputTokens + entry.CachedTokens + entry.OutputTokens,
-            IsStreaming = entry.IsStreaming,
-            IsStreamInterrupted = entry.IsStreamInterrupted,
-            FirstTokenLatencyMs = entry.FirstTokenLatencyMs,
-            StreamDurationMs = entry.StreamDurationMs,
-            TotalDurationMs = entry.TotalDurationMs
-        };
-
-        _dbContext.ProxyUsageLogs.Add(log);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _batchWriter.EnqueueAsync(entry, cancellationToken);
     }
 }

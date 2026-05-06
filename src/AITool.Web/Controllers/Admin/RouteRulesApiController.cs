@@ -1,5 +1,6 @@
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -116,10 +117,12 @@ public sealed class SaveRouteRuleEntry
 public sealed class RouteRulesApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
-    public RouteRulesApiController(AppDbContext dbContext)
+    public RouteRulesApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
+        _metadataCache = metadataCache;
     }
 
     // 获取主入口列表，包含当前候选数量
@@ -208,6 +211,7 @@ public sealed class RouteRulesApiController : ControllerBase
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "删除成功" });
     }
@@ -470,6 +474,7 @@ public sealed class RouteRulesApiController : ControllerBase
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "保存成功" });
     }
@@ -484,6 +489,7 @@ public sealed class RouteRulesApiController : ControllerBase
 
         rule.IsEnabled = !rule.IsEnabled;
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "状态已切换", isEnabled = rule.IsEnabled });
     }
@@ -498,6 +504,7 @@ public sealed class RouteRulesApiController : ControllerBase
 
         _dbContext.ProxyRouteRules.Remove(rule);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "规则已删除" });
     }

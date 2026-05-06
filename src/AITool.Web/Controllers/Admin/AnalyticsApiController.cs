@@ -131,15 +131,18 @@ public sealed class AnalyticsApiController : ControllerBase
     private readonly AppDbContext _dbContext;
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly AnalyticsBackgroundQueryExecutor _queryExecutor;
+    private readonly IHostEnvironment _hostEnvironment;
 
     public AnalyticsApiController(
         AppDbContext dbContext,
         IServiceScopeFactory scopeFactory,
-        AnalyticsBackgroundQueryExecutor queryExecutor)
+        AnalyticsBackgroundQueryExecutor queryExecutor,
+        IHostEnvironment hostEnvironment)
     {
         _dbContext = dbContext;
         _scopeFactory = scopeFactory;
         _queryExecutor = queryExecutor;
+        _hostEnvironment = hostEnvironment;
     }
 
     // 返回筛选器所需的站点和模型列表。
@@ -176,7 +179,8 @@ public sealed class AnalyticsApiController : ControllerBase
     public async Task<ActionResult<AnalyticsDashboardResponseDto>> GetDashboard([FromQuery] AnalyticsQueryDto query, CancellationToken cancellationToken)
     {
         var cacheKey = BuildCacheKey(query);
-        var response = await _queryExecutor.ExecuteAsync(
+        var waitBudget = ResolveWaitBudget(query.RangeType, _hostEnvironment);
+        var queued = await _queryExecutor.EnqueueOrGetAsync(
             cacheKey,
             async innerCancellationToken =>
             {
@@ -184,9 +188,25 @@ public sealed class AnalyticsApiController : ControllerBase
                 var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                 return await BuildDashboardResponseAsync(dbContext, query, innerCancellationToken);
             },
+            waitBudget,
             cancellationToken);
 
-        return Ok(response);
+        return queued.Status switch
+        {
+            AnalyticsQueueStatus.Ready when queued.Result is not null => Ok(queued.Result),
+            AnalyticsQueueStatus.QueueFull => StatusCode(StatusCodes.Status429TooManyRequests, new
+            {
+                status = "busy",
+                retryAfterMs = 2000,
+                message = "统计队列繁忙，请稍后重试"
+            }),
+            _ => Accepted(new
+            {
+                status = "pending",
+                retryAfterMs = 1200,
+                message = "统计任务已进入后台队列"
+            })
+        };
     }
 
     // 统计聚合实际在后台长任务线程里执行，并使用独立作用域的 DbContext。
@@ -627,6 +647,20 @@ public sealed class AnalyticsApiController : ControllerBase
             query.ModelName ?? "all",
             query.SiteId?.ToString() ?? "-",
             query.StreamType ?? "all");
+    }
+
+    // 全量范围默认不在请求线程等待，普通范围也只给极短预算。
+    private static TimeSpan ResolveWaitBudget(string? rangeType, IHostEnvironment hostEnvironment)
+    {
+        if (hostEnvironment.IsEnvironment("Testing"))
+        {
+            return TimeSpan.FromSeconds(5);
+        }
+
+        var normalized = string.IsNullOrWhiteSpace(rangeType) ? "week" : rangeType.Trim().ToLowerInvariant();
+        return normalized == "all"
+            ? TimeSpan.Zero
+            : TimeSpan.FromMilliseconds(120);
     }
 
     private sealed class AnalyticsBucket

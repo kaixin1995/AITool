@@ -1,4 +1,6 @@
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -9,6 +11,14 @@ namespace AITool.Web.Pages.Admin.Sites;
 public class EditModel : PageModel
 {
     private readonly AppDbContext _dbContext;
+    private readonly ProxyRequestMetadataCache? _metadataCache;
+
+    [ActivatorUtilitiesConstructor]
+    public EditModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    {
+        _dbContext = dbContext;
+        _metadataCache = metadataCache;
+    }
 
     public EditModel(AppDbContext dbContext)
     {
@@ -66,6 +76,7 @@ public class EditModel : PageModel
             site.IsEnabled = IsEnabled;
 
             await _dbContext.SaveChangesAsync(cancellationToken);
+            _metadataCache?.InvalidateRouteTargets();
             StatusMessage = "站点已更新";
             StatusSuccess = true;
         }

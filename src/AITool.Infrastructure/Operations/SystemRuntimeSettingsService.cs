@@ -46,7 +46,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         return settings;
     }
 
-    // 兼容旧 SQLite 库缺少 SystemRuntimeSettings 表的情况
+    // 系统设置页与测试仍可能在缺表场景下调用该服务，因此保留兼容逻辑。
     private async Task EnsureTableAsync(CancellationToken cancellationToken)
     {
         var connection = _dbContext.Database.GetDbConnection();

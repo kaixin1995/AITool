@@ -419,6 +419,8 @@
             const cancelWaitBtn = document.getElementById('cancelWaitBtn');
             let activeController = null;
             let slowLoadingTimer = null;
+            let pendingRetryTimer = null;
+            let lastForcedLoad = false;
 
             function buildQueryString() {
                 const params = new URLSearchParams();
@@ -460,6 +462,13 @@
 
             function showSlowLoadingNotice() {
                 slowLoadingNoticeEl.style.display = '';
+            }
+
+            function clearPendingRetry() {
+                if (pendingRetryTimer) {
+                    clearTimeout(pendingRetryTimer);
+                    pendingRetryTimer = null;
+                }
             }
 
             function fillOptions(selectEl, items, formatter, includeAllLabel) {
@@ -754,6 +763,8 @@
             }
 
             async function loadDashboard(forceLoadAll) {
+                lastForcedLoad = !!forceLoadAll;
+                clearPendingRetry();
                 if (!forceLoadAll && rangeTypeEl.value === 'all') {
                     showAllRangeNotice();
                     filterSummaryEl.textContent = '全部范围已就绪，点击“开始加载全部数据”后再执行全量统计';
@@ -779,6 +790,18 @@
                         signal: activeController.signal
                     });
                     const data = await response.json();
+                    if (response.status === 202) {
+                        showSlowLoadingNotice();
+                        filterSummaryEl.textContent = data.message || '统计任务正在后台处理中';
+                        scheduleRetry(data.retryAfterMs || 1200);
+                        return;
+                    }
+                    if (response.status === 429) {
+                        showSlowLoadingNotice();
+                        filterSummaryEl.textContent = data.message || '统计队列繁忙，请稍后重试';
+                        scheduleRetry(data.retryAfterMs || 2000);
+                        return;
+                    }
                     renderDashboard(data);
                 } catch (error) {
                     if (error.name === 'AbortError') {
@@ -788,11 +811,17 @@
                     throw error;
                 } finally {
                     clearTimeout(slowLoadingTimer);
-                    hideSlowLoadingNotice();
                     activeController = null;
                     refreshBtn.disabled = false;
                     refreshBtn.textContent = '刷新数据';
                 }
+            }
+
+            function scheduleRetry(delayMs) {
+                clearPendingRetry();
+                pendingRetryTimer = window.setTimeout(() => {
+                    loadDashboard(true);
+                }, delayMs);
             }
 
             function formatNumber(value) {
@@ -826,6 +855,7 @@
                     if (activeController) {
                         activeController.abort();
                     }
+                    clearPendingRetry();
                     hideSlowLoadingNotice();
                 });
             }
