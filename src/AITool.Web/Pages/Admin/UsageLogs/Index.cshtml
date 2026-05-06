@@ -17,20 +17,24 @@
     <div class="card-body">
         <div class="row g-3 align-items-end">
             <div class="col-md-3">
-                <div class="form-check form-switch">
-                    <input class="form-check-input" type="checkbox" id="autoRefreshToggle">
-                    <label class="form-check-label" for="autoRefreshToggle">自动刷新</label>
-                </div>
-            </div>
-            <div class="col-md-3">
-                <label class="form-label" for="refreshIntervalSelect">刷新间隔</label>
-                <select id="refreshIntervalSelect" class="form-select">
-                    <option value="5">5 秒</option>
-                    <option value="10" selected>10 秒</option>
-                    <option value="30">30 秒</option>
+                <label class="form-label" for="rangeTypeSelect">时间范围</label>
+                <select id="rangeTypeSelect" class="form-select">
+                    <option value="day" selected>按天</option>
+                    <option value="week">按周</option>
+                    <option value="month">按月</option>
+                    <option value="all">全部</option>
+                    <option value="custom">指定时间范围</option>
                 </select>
             </div>
-            <div class="col-md-4">
+            <div class="col-md-3 custom-range-field" style="display:none;">
+                <label class="form-label" for="startTimeInput">开始时间</label>
+                <input id="startTimeInput" type="datetime-local" class="form-control">
+            </div>
+            <div class="col-md-3 custom-range-field" style="display:none;">
+                <label class="form-label" for="endTimeInput">结束时间</label>
+                <input id="endTimeInput" type="datetime-local" class="form-control">
+            </div>
+            <div class="col-md-3">
                 <label class="form-label" for="siteFilterSelect">站点筛选</label>
                 <select id="siteFilterSelect" class="form-select">
                     <option value="">全部站点</option>
@@ -40,8 +44,12 @@
                     }
                 </select>
             </div>
-            <div class="col-md-2 d-flex gap-2">
-                <button type="button" class="btn btn-primary flex-fill" onclick="loadUsageLogsPage()">刷新</button>
+            <div class="col-md-3">
+                <div class="form-check form-switch mb-2">
+                    <input class="form-check-input" type="checkbox" id="autoRefreshToggle">
+                    <label class="form-check-label" for="autoRefreshToggle">自动刷新（固定 5 秒）</label>
+                </div>
+                <button type="button" class="btn btn-primary w-100" onclick="loadUsageLogsPage(1)">刷新</button>
             </div>
         </div>
     </div>
@@ -111,6 +119,15 @@
     </table>
 </div>
 
+<div class="d-flex justify-content-between align-items-center mt-3 gap-3 flex-wrap">
+    <div id="usageLogsPaginationSummary" class="text-secondary small">-</div>
+    <div class="d-flex align-items-center gap-2">
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="prevPageButton">上一页</button>
+        <span id="usageLogsPaginationInfo" class="small text-secondary">-</span>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="nextPageButton">下一页</button>
+    </div>
+</div>
+
 <div class="offcanvas offcanvas-end" tabindex="-1" id="requestDetailDrawer" aria-labelledby="requestDetailDrawerLabel">
     <div class="offcanvas-header">
         <h5 id="requestDetailDrawerLabel" class="offcanvas-title">请求链路详情</h5>
@@ -170,16 +187,57 @@
 <script>
     var usageLogsRefreshTimer = null;
     var usageLogsDetailDrawer = null;
+    var usageLogsCurrentPage = 1;
+    var usageLogsPageSize = 20;
+    var usageLogsTotalPages = 0;
+    var usageLogsTotalCount = 0;
 
     document.addEventListener('DOMContentLoaded', function() {
         usageLogsDetailDrawer = new bootstrap.Offcanvas(document.getElementById('requestDetailDrawer'));
         document.getElementById('autoRefreshToggle').addEventListener('change', syncAutoRefresh);
-        document.getElementById('refreshIntervalSelect').addEventListener('change', syncAutoRefresh);
-        document.getElementById('siteFilterSelect').addEventListener('change', loadUsageLogsPage);
-        loadUsageLogsPage();
+        document.getElementById('rangeTypeSelect').addEventListener('change', function() {
+            syncCustomRangeVisibility();
+            loadUsageLogsPage(1);
+        });
+        document.getElementById('startTimeInput').addEventListener('change', function() {
+            if (document.getElementById('rangeTypeSelect').value === 'custom') {
+                loadUsageLogsPage(1);
+            }
+        });
+        document.getElementById('siteFilterSelect').addEventListener('change', function() {
+            loadUsageLogsPage(1);
+        });
+        document.getElementById('prevPageButton').addEventListener('click', function() {
+            if (usageLogsCurrentPage > 1) {
+                loadUsageLogsPage(usageLogsCurrentPage - 1);
+            }
+        });
+        document.getElementById('nextPageButton').addEventListener('click', function() {
+            if (usageLogsCurrentPage < usageLogsTotalPages) {
+                loadUsageLogsPage(usageLogsCurrentPage + 1);
+            }
+        });
+        initializeCustomRange();
+        syncCustomRangeVisibility();
+        loadUsageLogsPage(1);
     });
 
-    function loadUsageLogsPage() {
+    function initializeCustomRange() {
+        var now = new Date();
+        var start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+        document.getElementById('startTimeInput').value = formatDateTimeInputValue(start);
+        document.getElementById('endTimeInput').value = formatDateTimeInputValue(now);
+    }
+
+    function syncCustomRangeVisibility() {
+        var isCustom = document.getElementById('rangeTypeSelect').value === 'custom';
+        document.querySelectorAll('.custom-range-field').forEach(function(element) {
+            element.style.display = isCustom ? '' : 'none';
+        });
+    }
+
+    function loadUsageLogsPage(page) {
+        usageLogsCurrentPage = page || 1;
         syncAutoRefresh();
         Promise.all([
             loadUsageLogSummary(),
@@ -199,29 +257,40 @@
             return;
         }
 
-        var seconds = parseInt(document.getElementById('refreshIntervalSelect').value || '10', 10);
         usageLogsRefreshTimer = window.setInterval(function() {
             loadUsageLogSummary();
             loadUsageLogList();
-        }, seconds * 1000);
+        }, 5000);
     }
 
     function getUsageLogQuery() {
         var query = new URLSearchParams();
+        query.set('page', usageLogsCurrentPage);
+        query.set('pageSize', usageLogsPageSize);
+        var rangeType = document.getElementById('rangeTypeSelect').value || 'day';
+        query.set('rangeType', rangeType);
+
+        if (rangeType === 'custom') {
+            var startTime = document.getElementById('startTimeInput').value;
+            var endTime = document.getElementById('endTimeInput').value;
+            if (startTime) {
+                query.set('startTime', new Date(startTime).toISOString());
+            }
+            if (endTime) {
+                query.set('endTime', new Date(endTime).toISOString());
+            }
+        }
+
         var siteId = document.getElementById('siteFilterSelect').value;
         if (siteId) {
             query.set('siteId', siteId);
         }
+
         return query.toString();
     }
 
     async function loadUsageLogSummary() {
-        var url = '/api/admin/usage-logs/summary';
-        var query = getUsageLogQuery();
-        if (query) {
-            url += '?' + query;
-        }
-
+        var url = '/api/admin/usage-logs/summary?' + getUsageLogQuery();
         var response = await fetch(url);
         if (!response.ok) {
             throw new Error('无法加载汇总数据');
@@ -235,12 +304,7 @@
     }
 
     async function loadUsageLogList() {
-        var url = '/api/admin/usage-logs/list';
-        var query = getUsageLogQuery();
-        if (query) {
-            url += '?' + query;
-        }
-
+        var url = '/api/admin/usage-logs/list?' + getUsageLogQuery();
         var response = await fetch(url);
         if (!response.ok) {
             throw new Error('无法加载日志列表');
@@ -248,7 +312,12 @@
 
         var data = await response.json();
         var items = Array.isArray(data) ? data : (data.items || data.logs || []);
+        usageLogsCurrentPage = Number(readValue(data, ['page']) || usageLogsCurrentPage);
+        usageLogsPageSize = Number(readValue(data, ['pageSize']) || usageLogsPageSize);
+        usageLogsTotalPages = Number(readValue(data, ['totalPages']) || 0);
+        usageLogsTotalCount = Number(readValue(data, ['totalCount']) || items.length);
         renderUsageLogRows(items);
+        renderPagination();
     }
 
     function renderUsageLogRows(items) {
@@ -278,6 +347,28 @@
                 '<td><button type="button" class="btn btn-sm btn-outline-primary" onclick="openRequestDetail(\'' + escJs(requestId) + '\')">查看链路</button></td>';
             tbody.appendChild(row);
         });
+    }
+
+    function renderPagination() {
+        var summary = document.getElementById('usageLogsPaginationSummary');
+        var info = document.getElementById('usageLogsPaginationInfo');
+        var prevButton = document.getElementById('prevPageButton');
+        var nextButton = document.getElementById('nextPageButton');
+
+        if (usageLogsTotalCount <= 0) {
+            summary.textContent = '共 0 条';
+            info.textContent = '第 0 / 0 页';
+            prevButton.disabled = true;
+            nextButton.disabled = true;
+            return;
+        }
+
+        var start = (usageLogsCurrentPage - 1) * usageLogsPageSize + 1;
+        var end = Math.min(usageLogsCurrentPage * usageLogsPageSize, usageLogsTotalCount);
+        summary.textContent = '显示第 ' + formatNumber(start) + ' - ' + formatNumber(end) + ' 条，共 ' + formatNumber(usageLogsTotalCount) + ' 条';
+        info.textContent = '第 ' + usageLogsCurrentPage + ' / ' + usageLogsTotalPages + ' 页';
+        prevButton.disabled = usageLogsCurrentPage <= 1;
+        nextButton.disabled = usageLogsCurrentPage >= usageLogsTotalPages;
     }
 
     async function openRequestDetail(requestId) {
@@ -382,6 +473,14 @@
             String(date.getHours()).padStart(2, '0') + ':' +
             String(date.getMinutes()).padStart(2, '0') + ':' +
             String(date.getSeconds()).padStart(2, '0');
+    }
+
+    function formatDateTimeInputValue(date) {
+        return date.getFullYear() + '-' +
+            String(date.getMonth() + 1).padStart(2, '0') + '-' +
+            String(date.getDate()).padStart(2, '0') + 'T' +
+            String(date.getHours()).padStart(2, '0') + ':' +
+            String(date.getMinutes()).padStart(2, '0');
     }
 
     function formatPercent(value) {

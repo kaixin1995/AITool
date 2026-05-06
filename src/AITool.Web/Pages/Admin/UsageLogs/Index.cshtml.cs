@@ -11,7 +11,7 @@ public sealed class UsageLogSiteFilterItem
     public string Name { get; set; } = string.Empty;
 }
 
-// 调用日志页面模型，仅提供前端初始化数据
+// 调用日志页面模型，提供站点筛选初始化数据
 public class IndexModel : PageModel
 {
     private readonly AppDbContext _dbContext;
@@ -21,7 +21,6 @@ public class IndexModel : PageModel
         _dbContext = dbContext;
     }
 
-    // 站点筛选下拉选项
     public List<UsageLogSiteFilterItem> SiteFilters { get; set; } = [];
 
     public async Task OnGetAsync(CancellationToken cancellationToken)

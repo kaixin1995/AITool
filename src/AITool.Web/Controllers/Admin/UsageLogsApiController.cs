@@ -4,6 +4,25 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
+public sealed class UsageLogListQueryDto
+{
+    public int Page { get; set; } = 1;
+    public int PageSize { get; set; } = 20;
+    public string RangeType { get; set; } = "day";
+    public DateTimeOffset? StartTime { get; set; }
+    public DateTimeOffset? EndTime { get; set; }
+    public Guid? SiteId { get; set; }
+}
+
+public sealed class UsageLogListResponseDto
+{
+    public int Page { get; set; }
+    public int PageSize { get; set; }
+    public int TotalCount { get; set; }
+    public int TotalPages { get; set; }
+    public List<UsageLogListItemDto> Items { get; set; } = [];
+}
+
 public sealed class UsageLogListItemDto
 {
     public Guid Id { get; set; }
@@ -84,17 +103,26 @@ public sealed class UsageLogsApiController : ControllerBase
     }
 
     [HttpGet("list")]
-    public async Task<ActionResult<List<UsageLogListItemDto>>> GetList([FromQuery] Guid? siteId, CancellationToken cancellationToken)
+    public async Task<ActionResult<UsageLogListResponseDto>> GetList([FromQuery] UsageLogListQueryDto query, CancellationToken cancellationToken)
     {
         var sites = await _dbContext.Sites.ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
-        var logs = await _dbContext.ProxyUsageLogs
-            .Where(x => !siteId.HasValue || x.TargetSiteId == siteId.Value)
-            .ToListAsync(cancellationToken);
+        var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
+        var page = Math.Max(1, query.Page);
+        var pageSize = Math.Clamp(query.PageSize, 1, 100);
 
-        var items = logs
+        // 先加载到内存再按时间过滤和排序，避免 SQLite 无法翻译 DateTimeOffset 比较与排序
+        var filteredLogs = (await _dbContext.ProxyUsageLogs
+                .ToListAsync(cancellationToken))
+            .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
+            .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
             .OrderByDescending(x => x.RequestedAt)
-            .Take(200)
+            .ToList();
+
+        var totalCount = filteredLogs.Count;
+        var items = filteredLogs
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
             .Select(x => new UsageLogListItemDto
             {
                 Id = x.Id,
@@ -123,7 +151,14 @@ public sealed class UsageLogsApiController : ControllerBase
             })
             .ToList();
 
-        return Ok(items);
+        return Ok(new UsageLogListResponseDto
+        {
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = totalCount,
+            TotalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize),
+            Items = items
+        });
     }
 
     [HttpGet("request-detail/{requestId:guid}")]
@@ -180,11 +215,14 @@ public sealed class UsageLogsApiController : ControllerBase
     }
 
     [HttpGet("summary")]
-    public async Task<ActionResult<UsageLogSummaryDto>> GetSummary([FromQuery] Guid? siteId, CancellationToken cancellationToken)
+    public async Task<ActionResult<UsageLogSummaryDto>> GetSummary([FromQuery] UsageLogListQueryDto query, CancellationToken cancellationToken)
     {
-        var allLogs = await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken);
-        var logs = allLogs
-            .Where(x => !siteId.HasValue || x.TargetSiteId == siteId.Value)
+        var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
+
+        // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
+        var logs = (await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken))
+            .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
+            .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
             .ToList();
 
         // 按 RequestId 分组，每组取最后一条记录作为该请求的最终状态
@@ -212,6 +250,33 @@ public sealed class UsageLogsApiController : ControllerBase
             TotalTokens = totalTokens,
             MaxDurationMs = maxDurationMs
         });
+    }
+
+    // 根据预设范围或指定起止时间生成过滤区间。
+    private static (DateTimeOffset StartTime, DateTimeOffset EndTime) ResolveTimeRange(string? rangeType, DateTimeOffset? startTime, DateTimeOffset? endTime)
+    {
+        var now = DateTimeOffset.Now;
+        var normalized = string.IsNullOrWhiteSpace(rangeType) ? "day" : rangeType.Trim().ToLowerInvariant();
+
+        if (normalized == "custom")
+        {
+            var customStart = startTime ?? now.Date;
+            var customEnd = endTime ?? now;
+            if (customEnd <= customStart)
+            {
+                customEnd = customStart.AddDays(1);
+            }
+
+            return (customStart, customEnd);
+        }
+
+        return normalized switch
+        {
+            "week" => (now.Date.AddDays(-(int)now.DayOfWeek), now),
+            "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), now),
+            "all" => (DateTimeOffset.MinValue, DateTimeOffset.MaxValue),
+            _ => (now.Date, now)
+        };
     }
 
     // 使用路由规则反查站点实际命中的站点模型名，便于前端展示尝试链路。
