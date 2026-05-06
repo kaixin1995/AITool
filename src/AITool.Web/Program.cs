@@ -96,6 +96,7 @@ using (var scope = app.Services.CreateScope())
         EnsureColumn(cmd, "ProxyUsageLogs", "ErrorMessage", "ALTER TABLE ProxyUsageLogs ADD COLUMN ErrorMessage TEXT NOT NULL DEFAULT ''");
         EnsureColumn(cmd, "ProxyUsageLogs", "CachedTokens", "ALTER TABLE ProxyUsageLogs ADD COLUMN CachedTokens INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "IsStreaming", "ALTER TABLE ProxyUsageLogs ADD COLUMN IsStreaming INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(cmd, "ProxyUsageLogs", "IsStreamInterrupted", "ALTER TABLE ProxyUsageLogs ADD COLUMN IsStreamInterrupted INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "FirstTokenLatencyMs", "ALTER TABLE ProxyUsageLogs ADD COLUMN FirstTokenLatencyMs INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "StreamDurationMs", "ALTER TABLE ProxyUsageLogs ADD COLUMN StreamDurationMs INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "TotalDurationMs", "ALTER TABLE ProxyUsageLogs ADD COLUMN TotalDurationMs INTEGER NOT NULL DEFAULT 0");

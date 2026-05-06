@@ -37,6 +37,7 @@ public sealed class UsageLogService : IUsageLogService
             OutputTokens = entry.OutputTokens,
             TotalTokens = entry.InputTokens + entry.CachedTokens + entry.OutputTokens,
             IsStreaming = entry.IsStreaming,
+            IsStreamInterrupted = entry.IsStreamInterrupted,
             FirstTokenLatencyMs = entry.FirstTokenLatencyMs,
             StreamDurationMs = entry.StreamDurationMs,
             TotalDurationMs = entry.TotalDurationMs

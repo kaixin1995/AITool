@@ -24,6 +24,7 @@ public sealed class UsageLogListItemDto
     public int OutputTokens { get; set; }
     public int TotalTokens { get; set; }
     public bool IsStreaming { get; set; }
+    public bool IsStreamInterrupted { get; set; }
     public int FirstTokenLatencyMs { get; set; }
     public int StreamDurationMs { get; set; }
     public int TotalDurationMs { get; set; }
@@ -46,6 +47,7 @@ public sealed class UsageLogAttemptDto
     public int OutputTokens { get; set; }
     public int TotalTokens { get; set; }
     public bool IsStreaming { get; set; }
+    public bool IsStreamInterrupted { get; set; }
     public int FirstTokenLatencyMs { get; set; }
     public int StreamDurationMs { get; set; }
     public int TotalDurationMs { get; set; }
@@ -113,6 +115,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 OutputTokens = x.OutputTokens,
                 TotalTokens = x.TotalTokens,
                 IsStreaming = x.IsStreaming,
+                IsStreamInterrupted = x.IsStreamInterrupted,
                 FirstTokenLatencyMs = x.FirstTokenLatencyMs,
                 StreamDurationMs = x.StreamDurationMs,
                 TotalDurationMs = x.TotalDurationMs,
@@ -164,6 +167,7 @@ public sealed class UsageLogsApiController : ControllerBase
                     OutputTokens = x.OutputTokens,
                     TotalTokens = x.TotalTokens,
                     IsStreaming = x.IsStreaming,
+                    IsStreamInterrupted = x.IsStreamInterrupted,
                     FirstTokenLatencyMs = x.FirstTokenLatencyMs,
                     StreamDurationMs = x.StreamDurationMs,
                     TotalDurationMs = x.TotalDurationMs,

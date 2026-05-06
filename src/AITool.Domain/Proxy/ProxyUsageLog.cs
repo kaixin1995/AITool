@@ -57,8 +57,11 @@ public sealed class ProxyUsageLog
     // 总 Token 数
     public int TotalTokens { get; set; }
 
-    // 是否为流式请求
+    // 是否为流式响应
     public bool IsStreaming { get; set; }
+
+    // 是否发生流式异常中断
+    public bool IsStreamInterrupted { get; set; }
 
     // 首字耗时（毫秒）
     public int FirstTokenLatencyMs { get; set; }

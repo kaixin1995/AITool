@@ -52,6 +52,9 @@ public sealed class ProxyForwardResult
     // 是否为流式请求
     public bool IsStreaming { get; set; }
 
+    // 是否发生流式异常中断
+    public bool IsStreamInterrupted { get; set; }
+
     // 首字耗时（毫秒）
     public int FirstTokenLatencyMs { get; set; }
 

@@ -128,6 +128,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 CachedTokens = result.CachedTokens,
                 OutputTokens = result.OutputTokens,
                 IsStreaming = result.IsStreaming,
+                IsStreamInterrupted = result.IsStreamInterrupted,
                 FirstTokenLatencyMs = result.FirstTokenLatencyMs,
                 StreamDurationMs = result.StreamDurationMs,
                 TotalDurationMs = result.TotalDurationMs

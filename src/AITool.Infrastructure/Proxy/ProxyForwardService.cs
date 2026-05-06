@@ -143,62 +143,91 @@ public sealed class ProxyForwardService : IProxyForwardService
         var cachedTokens = 0;
         var outputTokens = 0;
         var hasFirstContent = false;
+        var receivedDoneEvent = false;
 
         var sb = new StringBuilder();
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream, Encoding.UTF8);
 
-        while (!reader.EndOfStream)
+        try
         {
-            var line = await reader.ReadLineAsync(cancellationToken);
-            if (line == null) break;
-
-            sb.AppendLine(line);
-
-            // 跳过空行和注释行
-            if (string.IsNullOrWhiteSpace(line) || line.StartsWith(':')) continue;
-
-            // SSE 格式：data: {...}
-            if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase)) continue;
-
-            var jsonText = line["data: ".Length..];
-            if (string.Equals(jsonText, "[DONE]", StringComparison.OrdinalIgnoreCase)) continue;
-
-            // 首次收到有效内容时记录首字延迟
-            if (!hasFirstContent)
+            while (!reader.EndOfStream)
             {
-                hasFirstContent = true;
-                firstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
-            }
+                var line = await reader.ReadLineAsync(cancellationToken);
+                if (line == null) break;
 
-            // 从 SSE 数据块中提取 usage 和 token 信息
-            try
-            {
-                using var doc = JsonDocument.Parse(jsonText);
-                var root = doc.RootElement;
+                sb.AppendLine(line);
 
-                if (root.TryGetProperty("usage", out var usage))
+                // 跳过空行和注释行
+                if (string.IsNullOrWhiteSpace(line) || line.StartsWith(':')) continue;
+
+                // SSE 格式：data: {...}
+                if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase)) continue;
+
+                var jsonText = line["data: ".Length..];
+                if (string.Equals(jsonText, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 {
-                    var extracted = ExtractUsageFromElement(usage, request.ProtocolType);
-                    if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
-                    if (extracted.CachedTokens > 0) cachedTokens = extracted.CachedTokens;
-                    if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
+                    receivedDoneEvent = true;
+                    continue;
                 }
 
-                // Anthropic message_start 事件中的 usage 嵌套在 message 里
-                if (request.ProtocolType == "Anthropic"
-                    && root.TryGetProperty("message", out var message)
-                    && message.TryGetProperty("usage", out var msgUsage))
+                // 首次收到有效内容时记录首字延迟
+                if (!hasFirstContent)
                 {
-                    var extracted = ExtractUsageFromElement(msgUsage, request.ProtocolType);
-                    if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
-                    if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
+                    hasFirstContent = true;
+                    firstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+                }
+
+                // 从 SSE 数据块中提取 usage 和 token 信息
+                try
+                {
+                    using var doc = JsonDocument.Parse(jsonText);
+                    var root = doc.RootElement;
+
+                    if (root.TryGetProperty("usage", out var usage))
+                    {
+                        var extracted = ExtractUsageFromElement(usage, request.ProtocolType);
+                        if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
+                        if (extracted.CachedTokens > 0) cachedTokens = extracted.CachedTokens;
+                        if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
+                    }
+
+                    // Anthropic message_start 事件中的 usage 嵌套在 message 里
+                    if (request.ProtocolType == "Anthropic"
+                        && root.TryGetProperty("message", out var message)
+                        && message.TryGetProperty("usage", out var msgUsage))
+                    {
+                        var extracted = ExtractUsageFromElement(msgUsage, request.ProtocolType);
+                        if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
+                        if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
+                    }
+                }
+                catch
+                {
+                    // 非 JSON 的 data 行忽略
                 }
             }
-            catch
+        }
+        catch (Exception ex) when (hasFirstContent)
+        {
+            stopwatch.Stop();
+            totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+
+            return new ProxyForwardResult
             {
-                // 非 JSON 的 data 行忽略
-            }
+                Success = true,
+                StatusCode = (int)response.StatusCode,
+                ResponseBody = sb.ToString(),
+                InputTokens = inputTokens,
+                CachedTokens = cachedTokens,
+                OutputTokens = outputTokens,
+                IsStreaming = isStreaming,
+                IsStreamInterrupted = true,
+                FirstTokenLatencyMs = firstTokenLatencyMs,
+                StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
+                TotalDurationMs = totalDurationMs,
+                ErrorMessage = ex.Message
+            };
         }
 
         stopwatch.Stop();
@@ -213,9 +242,11 @@ public sealed class ProxyForwardService : IProxyForwardService
             CachedTokens = cachedTokens,
             OutputTokens = outputTokens,
             IsStreaming = isStreaming,
+            IsStreamInterrupted = hasFirstContent && !receivedDoneEvent,
             FirstTokenLatencyMs = firstTokenLatencyMs,
-            StreamDurationMs = totalDurationMs - firstTokenLatencyMs,
-            TotalDurationMs = totalDurationMs
+            StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
+            TotalDurationMs = totalDurationMs,
+            ErrorMessage = hasFirstContent && !receivedDoneEvent ? "stream interrupted before DONE" : null
         };
     }
 

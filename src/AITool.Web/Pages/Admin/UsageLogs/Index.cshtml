@@ -149,8 +149,21 @@
     }
 
     .usage-log-chip-stream {
+        position: relative;
         background: #e8f0ff;
         color: #3366cc;
+    }
+
+    .usage-log-chip-stream-interrupted::after {
+        content: '';
+        position: absolute;
+        top: 3px;
+        right: 3px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #dc3545;
+        box-shadow: 0 0 0 2px #fff;
     }
 </style>
 
@@ -256,7 +269,7 @@
                 '<td>' + renderSourceBadge(source) + '</td>' +
                 '<td><code>' + escHtml(readValue(item, ['attemptedModel', 'requestModel']) || '-') + '</code></td>' +
                 '<td>' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</td>' +
-                '<td>' + renderStatusBadge(status) + '</td>' +
+                '<td>' + renderStatusBadge(status, item) + '</td>' +
                 '<td>' + renderLatencyBadges(item) + '</td>' +
                 '<td>' + escHtml(formatNumber(readValue(item, ['inputTokens']) || 0)) + '</td>' +
                 '<td>' + escHtml(formatNumber(readValue(item, ['cachedTokens']) || 0)) + '</td>' +
@@ -312,7 +325,7 @@
                                 '<div class="fw-semibold">第 ' + (index + 1) + ' 次尝试</div>' +
                                 '<div class="small text-secondary">模型：' + escHtml(attemptedModel) + '</div>' +
                             '</div>' +
-                            renderStatusBadge(status) +
+                            renderStatusBadge(status, item) +
                         '</div>' +
                         '<div class="small text-secondary mb-1">站点：' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</div>' +
                         '<div class="small text-secondary mb-1">时间：' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</div>' +
@@ -325,7 +338,7 @@
         document.getElementById('requestDetailContent').innerHTML = html;
     }
 
-    function renderStatusBadge(status) {
+    function renderStatusBadge(status, item) {
         var normalized = String(status || '').toLowerCase();
         var success = normalized === 'success' || normalized === 'ok';
         return '<span class="badge bg-' + (success ? 'success' : 'danger') + '">' + escHtml(success ? '成功' : (status || '失败')) + '</span>';
@@ -388,12 +401,14 @@
         var totalMs = Number(readValue(item, ['totalDurationMs']) || 0);
         var firstMs = Number(readValue(item, ['firstTokenLatencyMs']) || 0);
         var isStreaming = !!readValue(item, ['isStreaming']);
+        var isInterrupted = !!readValue(item, ['isStreamInterrupted']);
         var firstLabel = isStreaming ? formatDuration(firstMs) : '-';
+        var streamClass = 'usage-log-chip usage-log-chip-stream' + (isInterrupted ? ' usage-log-chip-stream-interrupted' : '');
         return '' +
             '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">' +
                 '<span class="usage-log-chip usage-log-chip-total">' + escHtml(formatDuration(totalMs)) + '</span>' +
                 '<span class="usage-log-chip usage-log-chip-first">' + escHtml(firstLabel) + '</span>' +
-                '<span class="usage-log-chip usage-log-chip-stream">' + escHtml(isStreaming ? '流' : '非流') + '</span>' +
+                '<span class="' + streamClass + '">' + escHtml(isStreaming ? '流' : '非流') + '</span>' +
             '</div>';
     }
 
