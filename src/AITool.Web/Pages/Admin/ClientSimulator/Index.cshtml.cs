@@ -8,6 +8,8 @@ public sealed class ClientSimulatorModelItemViewModel
 {
     public string ModelName { get; set; } = string.Empty;
     public int RouteCount { get; set; }
+    public bool SupportsOpenAi { get; set; }
+    public bool SupportsAnthropic { get; set; }
 }
 
 public sealed class IndexModel : PageModel
@@ -21,6 +23,8 @@ public sealed class IndexModel : PageModel
 
     public string DefaultBaseUrl { get; private set; } = string.Empty;
     public string DefaultAccessKey { get; private set; } = string.Empty;
+    public string DefaultOpenAiModel { get; private set; } = string.Empty;
+    public string DefaultAnthropicModel { get; private set; } = string.Empty;
     public List<ClientSimulatorModelItemViewModel> Models { get; private set; } = [];
 
     public async Task OnGetAsync(CancellationToken cancellationToken)
@@ -39,17 +43,24 @@ public sealed class IndexModel : PageModel
             .Select(s => s.Id)
             .ToListAsync(cancellationToken);
 
-        var routeModels = await _dbContext.ProxyRouteRules
-            .Where(r => r.IsEnabled && enabledSiteIds.Contains(r.SiteId))
-            .GroupBy(r => r.ExternalModelName)
-            .Select(g => new ClientSimulatorModelItemViewModel
-            {
-                ModelName = g.Key,
-                RouteCount = g.Count()
-            })
+        // 按协议汇总模型能力，避免模拟器把仅支持 OpenAI 的模型误发到 Anthropic 链路。
+        var routeModels = await (
+                from rule in _dbContext.ProxyRouteRules
+                join site in _dbContext.Sites on rule.SiteId equals site.Id
+                where rule.IsEnabled && site.IsEnabled && enabledSiteIds.Contains(rule.SiteId)
+                group site by rule.ExternalModelName into g
+                select new ClientSimulatorModelItemViewModel
+                {
+                    ModelName = g.Key,
+                    RouteCount = g.Count(),
+                    SupportsOpenAi = g.Any(x => x.ProtocolType == "OpenAI"),
+                    SupportsAnthropic = g.Any(x => x.ProtocolType == "Anthropic")
+                })
             .OrderBy(m => m.ModelName)
             .ToListAsync(cancellationToken);
 
         Models = routeModels;
+        DefaultOpenAiModel = routeModels.FirstOrDefault(x => x.SupportsOpenAi)?.ModelName ?? string.Empty;
+        DefaultAnthropicModel = routeModels.FirstOrDefault(x => x.SupportsAnthropic)?.ModelName ?? string.Empty;
     }
 }

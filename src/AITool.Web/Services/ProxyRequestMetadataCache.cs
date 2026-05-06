@@ -77,6 +77,17 @@ public sealed class ProxyRequestMetadataCache
             .ToList();
     }
 
+    // 协议中转场景下需要暴露全部外部模型，避免模型列表只显示单一协议候选。
+    public async Task<IReadOnlyList<string>> GetEnabledModelNamesAsync(CancellationToken cancellationToken)
+    {
+        var routes = await GetRouteTargetsAsync(cancellationToken);
+        return routes
+            .Select(x => x.ExternalModelName)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToList();
+    }
+
     // 读取指定模型的候选路由快照，避免控制器再做 N+1 站点查询。
     public async Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsForModelAsync(
         string protocolType,
@@ -323,25 +334,45 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    var mappings = await (
+                    var rawMappings = await (
                             from mapping in dbContext.SiteModelMappings.AsNoTracking()
                             join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
                             join model in dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
                             where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
-                            group new { mapping, site, model } by model.Id into grouped
-                            let first = grouped.OrderBy(x => x.site.Name).First()
-                            select new CachedFallbackTarget
+                            select new
                             {
-                                ModelId = grouped.Key,
-                                ModelName = first.model.ModelName,
-                                SiteId = first.site.Id,
-                                SiteName = first.site.Name,
-                                ProtocolType = first.site.ProtocolType,
-                                BaseUrl = first.site.BaseUrl,
-                                ApiKey = first.site.ApiKey,
-                                SiteModelName = first.mapping.RemoteModelName
+                                ModelId = model.Id,
+                                model.ModelName,
+                                SiteId = site.Id,
+                                SiteName = site.Name,
+                                site.ProtocolType,
+                                site.BaseUrl,
+                                site.ApiKey,
+                                SiteModelName = mapping.RemoteModelName
                             })
                         .ToListAsync(cancellationToken);
+
+                    var mappings = rawMappings
+                        .GroupBy(x => x.ModelId)
+                        .Select(grouped =>
+                        {
+                            var first = grouped
+                                .OrderBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
+                                .First();
+
+                            return new CachedFallbackTarget
+                            {
+                                ModelId = grouped.Key,
+                                ModelName = first.ModelName,
+                                SiteId = first.SiteId,
+                                SiteName = first.SiteName,
+                                ProtocolType = first.ProtocolType,
+                                BaseUrl = first.BaseUrl,
+                                ApiKey = first.ApiKey,
+                                SiteModelName = first.SiteModelName
+                            };
+                        })
+                        .ToList();
 
                     return mappings.ToDictionary(x => x.ModelId, x => x);
                 })

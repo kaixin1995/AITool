@@ -36,10 +36,7 @@ public sealed class AnalyticsPageTests
         await using var factory = new AnalyticsWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/api/admin/analytics/dashboard?rangeType=all&bucketType=day");
-        var body = await response.Content.ReadAsStringAsync();
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await GetDashboardBodyAsync(client, "/api/admin/analytics/dashboard?rangeType=all&bucketType=day");
 
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
@@ -58,10 +55,7 @@ public sealed class AnalyticsPageTests
         await using var factory = new AnalyticsWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync($"/api/admin/analytics/dashboard?rangeType=all&bucketType=day&siteId={AnalyticsWebApplicationFactory.FirstSiteId}");
-        var body = await response.Content.ReadAsStringAsync();
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var body = await GetDashboardBodyAsync(client, $"/api/admin/analytics/dashboard?rangeType=all&bucketType=day&siteId={AnalyticsWebApplicationFactory.FirstSiteId}");
 
         using var document = JsonDocument.Parse(body);
         var summary = document.RootElement.GetProperty("summary");
@@ -75,12 +69,89 @@ public sealed class AnalyticsPageTests
         siteDistribution.Should().HaveCount(1);
         siteDistribution[0].GetProperty("label").GetString().Should().Be("Alpha");
     }
+
+    [Fact]
+    public async Task Get_dashboard_filters_streaming_requests_with_site_scope()
+    {
+        await using var factory = new AnalyticsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var body = await GetDashboardBodyAsync(client, $"/api/admin/analytics/dashboard?rangeType=all&bucketType=day&streamType=stream&siteId={AnalyticsWebApplicationFactory.SecondSiteId}");
+
+        using var document = JsonDocument.Parse(body);
+        var summary = document.RootElement.GetProperty("summary");
+        summary.GetProperty("totalRequests").GetInt32().Should().Be(1);
+        summary.GetProperty("successRequests").GetInt32().Should().Be(1);
+        summary.GetProperty("failedRequests").GetInt32().Should().Be(0);
+        summary.GetProperty("totalTokens").GetInt32().Should().Be(30);
+
+        var modelDistribution = document.RootElement.GetProperty("modelDistribution").EnumerateArray().ToList();
+        modelDistribution.Should().HaveCount(1);
+        modelDistribution[0].GetProperty("label").GetString().Should().Be("chat-prod");
+    }
+
+    [Fact]
+    public async Task Get_dashboard_applies_custom_range_with_combined_filters()
+    {
+        await using var factory = new AnalyticsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var targetDay = factory.StreamSuccessRequestedAt;
+        var startTime = Uri.EscapeDataString(targetDay.ToString("O"));
+        var endTime = Uri.EscapeDataString(targetDay.ToString("O"));
+        var body = await GetDashboardBodyAsync(
+            client,
+            $"/api/admin/analytics/dashboard?rangeType=custom&bucketType=day&startTime={startTime}&endTime={endTime}&protocolType=OpenAI&modelName=chat-prod&siteId={AnalyticsWebApplicationFactory.SecondSiteId}&streamType=stream");
+
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        var summary = root.GetProperty("summary");
+        summary.GetProperty("totalRequests").GetInt32().Should().Be(1);
+        summary.GetProperty("successRequests").GetInt32().Should().Be(1);
+        summary.GetProperty("failedRequests").GetInt32().Should().Be(0);
+        summary.GetProperty("totalTokens").GetInt32().Should().Be(30);
+        summary.GetProperty("fallbackRequestCount").GetInt32().Should().Be(1);
+
+        var appliedFilter = root.GetProperty("appliedFilter");
+        appliedFilter.GetProperty("rangeType").GetString().Should().Be("custom");
+        appliedFilter.GetProperty("streamType").GetString().Should().Be("stream");
+
+        root.GetProperty("siteDistribution").EnumerateArray().Should().ContainSingle();
+        root.GetProperty("requestTrend")
+            .EnumerateArray()
+            .Sum(x => x.GetProperty("requestCount").GetInt32())
+            .Should().Be(1);
+        root.GetProperty("tokenTrend")
+            .EnumerateArray()
+            .Sum(x => x.GetProperty("totalTokens").GetInt32())
+            .Should().Be(30);
+    }
+
+    // 后台统计允许先返回 pending，因此测试按短轮询等待最终结果。
+    private static async Task<string> GetDashboardBodyAsync(HttpClient client, string url)
+    {
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            var response = await client.GetAsync(url);
+            var body = await response.Content.ReadAsStringAsync();
+            if (response.StatusCode == HttpStatusCode.OK)
+            {
+                return body;
+            }
+
+            response.StatusCode.Should().Be(HttpStatusCode.Accepted, body);
+            await Task.Delay(200);
+        }
+
+        throw new Xunit.Sdk.XunitException("分析看板接口在预期时间内未返回最终结果");
+    }
 }
 
 internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Program>
 {
     internal static readonly Guid FirstSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     internal static readonly Guid SecondSiteId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+    internal DateTimeOffset StreamSuccessRequestedAt { get; private set; }
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-analytics-{Guid.NewGuid():N}.db");
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -147,6 +218,10 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
 
         var firstRequestId = Guid.Parse("33333333-3333-3333-3333-333333333333");
         var secondRequestId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        var streamSuccessRequestedAt = DateTimeOffset.UtcNow.AddDays(-1).AddMinutes(1);
+        StreamSuccessRequestedAt = streamSuccessRequestedAt;
+        var fallbackFailureRequestedAt = streamSuccessRequestedAt.AddMinutes(-1);
+        var singleFailureRequestedAt = DateTimeOffset.UtcNow.AddHours(-4);
 
         db.ProxyUsageLogs.AddRange(
             new AITool.Domain.Proxy.ProxyUsageLog
@@ -168,7 +243,7 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
                 TotalTokens = 10,
                 TotalDurationMs = 400,
                 FirstTokenLatencyMs = 0,
-                RequestedAt = DateTimeOffset.UtcNow.AddDays(-1)
+                RequestedAt = fallbackFailureRequestedAt
             },
             new AITool.Domain.Proxy.ProxyUsageLog
             {
@@ -191,7 +266,7 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
                 FirstTokenLatencyMs = 120,
                 StreamDurationMs = 380,
                 TotalDurationMs = 500,
-                RequestedAt = DateTimeOffset.UtcNow.AddDays(-1).AddMinutes(1)
+                RequestedAt = streamSuccessRequestedAt
             },
             new AITool.Domain.Proxy.ProxyUsageLog
             {
@@ -211,7 +286,7 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
                 TotalTokens = 40,
                 TotalDurationMs = 900,
                 FirstTokenLatencyMs = 300,
-                RequestedAt = DateTimeOffset.UtcNow.AddHours(-4)
+                RequestedAt = singleFailureRequestedAt
             });
 
         await db.SaveChangesAsync();

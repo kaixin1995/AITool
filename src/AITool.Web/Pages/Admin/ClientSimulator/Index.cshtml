@@ -3,7 +3,15 @@
 @using global::System.Text.Json
 @{
     ViewData["Title"] = "客户端模拟";
-    var defaultModel = Model.Models.FirstOrDefault()?.ModelName ?? string.Empty;
+    var defaultModel = !string.IsNullOrWhiteSpace(Model.DefaultOpenAiModel)
+        ? Model.DefaultOpenAiModel
+        : (Model.Models.FirstOrDefault()?.ModelName ?? string.Empty);
+    var modelProtocolJson = JsonSerializer.Serialize(Model.Models.Select(item => new
+    {
+        item.ModelName,
+        item.SupportsOpenAi,
+        item.SupportsAnthropic
+    }));
 }
 
 <div class="page-header mb-3">
@@ -36,9 +44,15 @@
                     <datalist id="modelOptions">
                         @foreach (var item in Model.Models)
                         {
-                            <option value="@item.ModelName">@item.ModelName (@item.RouteCount 条路由)</option>
+                            var supportedProtocols = string.Join(" / ", new[]
+                            {
+                                item.SupportsOpenAi ? "OpenAI" : null,
+                                item.SupportsAnthropic ? "Anthropic" : null
+                            }.Where(x => x is not null));
+                            <option value="@item.ModelName">@item.ModelName (@item.RouteCount 条路由, @supportedProtocols)</option>
                         }
                     </datalist>
+                    <div id="modelSupportHint" class="form-text">请选择支持当前协议的模型。</div>
                 </div>
                 <div class="col-xl-6">
                     <label class="form-label" for="messageInput">测试消息</label>
@@ -197,6 +211,11 @@
 </style>
 
 <script>
+    // 直接复用服务端路由能力快照，前端切换协议时就能马上识别当前模型是否可用。
+    var modelProtocolCapabilities = @Html.Raw(modelProtocolJson);
+    var defaultOpenAiModel = @Html.Raw(JsonSerializer.Serialize(Model.DefaultOpenAiModel));
+    var defaultAnthropicModel = @Html.Raw(JsonSerializer.Serialize(Model.DefaultAnthropicModel));
+
     function getBaseUrl() {
         return (document.getElementById('baseUrlInput').value || '').trim().replace(/\/$/, '');
     }
@@ -211,6 +230,66 @@
 
     function getMessage() {
         return (document.getElementById('messageInput').value || '').trim();
+    }
+
+    function findModelCapability(modelName) {
+        return modelProtocolCapabilities.find(function(item) {
+            return item.ModelName === modelName;
+        }) || null;
+    }
+
+    function updateModelSupportHint() {
+        var hint = document.getElementById('modelSupportHint');
+        var modelName = getModelName();
+        var capability = findModelCapability(modelName);
+
+        if (!modelName) {
+            hint.textContent = '请选择或输入模型名。';
+            hint.className = 'form-text';
+            return;
+        }
+
+        if (!capability) {
+            hint.textContent = '当前模型不在已发现的路由列表中。';
+            hint.className = 'form-text text-danger';
+            return;
+        }
+
+        var supported = [];
+        if (capability.SupportsOpenAi) supported.push('OpenAI');
+        if (capability.SupportsAnthropic) supported.push('Anthropic');
+        hint.textContent = '当前模型支持协议：' + supported.join(' / ');
+        hint.className = 'form-text text-muted';
+    }
+
+    function ensureProtocolModel(protocolName, silent) {
+        var capability = findModelCapability(getModelName());
+        var isSupported = capability
+            ? (protocolName === 'Anthropic' ? capability.SupportsAnthropic : capability.SupportsOpenAi)
+            : false;
+
+        if (isSupported) {
+            updateModelSupportHint();
+            return true;
+        }
+
+        var fallbackModel = protocolName === 'Anthropic' ? defaultAnthropicModel : defaultOpenAiModel;
+        if (fallbackModel) {
+            document.getElementById('modelInput').value = fallbackModel;
+            updateModelSupportHint();
+            renderAllExamples();
+            if (!silent) {
+                showStatus('当前模型不支持 ' + protocolName + '，已自动切换为可用模型：' + fallbackModel, true);
+            }
+            return true;
+        }
+
+        updateModelSupportHint();
+        if (!silent) {
+            showStatus('当前没有支持 ' + protocolName + ' 的可用模型，请先配置对应协议的路由。', false);
+        }
+
+        return false;
     }
 
     function updateEndpointTexts() {
@@ -348,6 +427,7 @@
 
     async function sendOpenAiChat() {
         if (!validateInputs(true)) return;
+        if (!ensureProtocolModel('OpenAI', false)) return;
         await sendJsonRequest({
             buttonId: 'btnOpenAiChat',
             outputId: 'openAiChatResponse',
@@ -363,12 +443,14 @@
                 ],
                 stream: document.getElementById('openAiStreamToggle').checked
             },
-            protocolName: 'OpenAI'
+            protocolName: 'OpenAI',
+            isStreaming: document.getElementById('openAiStreamToggle').checked
         });
     }
 
     async function sendAnthropicChat() {
         if (!validateInputs(true)) return;
+        if (!ensureProtocolModel('Anthropic', false)) return;
         await sendJsonRequest({
             buttonId: 'btnAnthropicChat',
             outputId: 'anthropicChatResponse',
@@ -386,7 +468,8 @@
                 ],
                 stream: document.getElementById('anthropicStreamToggle').checked
             },
-            protocolName: 'Anthropic'
+            protocolName: 'Anthropic',
+            isStreaming: document.getElementById('anthropicStreamToggle').checked
         });
     }
 
@@ -403,6 +486,14 @@
                 body: JSON.stringify(options.body)
             });
 
+            if (options.isStreaming && response.ok && response.body) {
+                output.textContent = '正在接收流式响应...\n';
+                showStatus(options.protocolName + ' 流式响应接收中', true);
+                await readStreamingResponse(response, output);
+                showStatus(options.protocolName + ' 流式调用完成', true);
+                return;
+            }
+
             var text = await response.text();
             output.textContent = formatResponseText(text);
             showStatus(response.ok ? options.protocolName + ' 调用完成' : options.protocolName + ' 调用失败', response.ok);
@@ -411,6 +502,32 @@
             showStatus(options.protocolName + ' 调用失败：' + error.message, false);
         } finally {
             btn.disabled = false;
+        }
+    }
+
+    async function readStreamingResponse(response, output) {
+        // 逐块读取 SSE，避免浏览器一直等待完整响应而看起来像卡死。
+        var reader = response.body.getReader();
+        var decoder = new TextDecoder();
+        var received = '';
+
+        try {
+            while (true) {
+                var result = await reader.read();
+                if (result.done) {
+                    break;
+                }
+
+                received += decoder.decode(result.value, { stream: true });
+                output.textContent = received;
+                output.scrollTop = output.scrollHeight;
+            }
+
+            received += decoder.decode();
+            output.textContent = received || '流式响应为空';
+            output.scrollTop = output.scrollHeight;
+        } finally {
+            reader.releaseLock();
         }
     }
 
@@ -457,6 +574,7 @@
 
     function renderAllExamples() {
         updateEndpointTexts();
+        updateModelSupportHint();
         renderRequestExamples();
     }
 
@@ -466,6 +584,13 @@
     document.getElementById('messageInput').addEventListener('input', renderAllExamples);
     document.getElementById('openAiStreamToggle').addEventListener('change', renderAllExamples);
     document.getElementById('anthropicStreamToggle').addEventListener('change', renderAllExamples);
+    document.querySelector('button[data-bs-target="#tabOpenAi"]').addEventListener('shown.bs.tab', function() {
+        ensureProtocolModel('OpenAI', true);
+    });
+    document.querySelector('button[data-bs-target="#tabAnthropic"]').addEventListener('shown.bs.tab', function() {
+        ensureProtocolModel('Anthropic', true);
+    });
 
+    ensureProtocolModel('OpenAI', true);
     renderAllExamples();
 </script>

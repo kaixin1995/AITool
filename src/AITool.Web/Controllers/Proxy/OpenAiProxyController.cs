@@ -44,7 +44,7 @@ public sealed class OpenAiProxyController : ControllerBase
             return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
         }
 
-        var modelIds = await _metadataCache.GetEnabledModelNamesAsync("OpenAI", cancellationToken);
+        var modelIds = await _metadataCache.GetEnabledModelNamesAsync(cancellationToken);
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         return Ok(new
@@ -100,7 +100,7 @@ public sealed class OpenAiProxyController : ControllerBase
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
 
         // 获取已经和站点信息合并后的候选路由，避免 N+1 查询站点。
-        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
+        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(modelName, cancellationToken);
 
         if (allRoutes.Count == 0)
             return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
@@ -117,13 +117,20 @@ public sealed class OpenAiProxyController : ControllerBase
                 continue;
 
             attemptIndex++;
+            var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+                "OpenAI",
+                route.ProtocolType,
+                requestBody,
+                route.SiteModelName,
+                enableStreaming);
             var forwardRequest = new ProxyForwardRequest
             {
                 TargetBaseUrl = route.BaseUrl,
                 TargetApiKey = route.ApiKey,
-                ProtocolType = "OpenAI",
+                ProtocolType = route.ProtocolType,
                 TargetModelName = route.SiteModelName,
                 RequestBody = requestBody,
+                PreparedRequestBody = preparedRequestBody,
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount
@@ -160,9 +167,18 @@ public sealed class OpenAiProxyController : ControllerBase
             {
                 // 成功时清除该路由的连续失败计数
                 _circuitStore.Succeed(route.RouteId);
+                var responseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
+                    "OpenAI",
+                    route.ProtocolType,
+                    result.ResponseBody,
+                    result.IsStreaming,
+                    modelName,
+                    result.InputTokens,
+                    result.CachedTokens,
+                    result.OutputTokens);
                 // 流式响应以 SSE 格式返回，使用 text/event-stream 内容类型
                 var contentType = result.IsStreaming ? "text/event-stream" : "application/json";
-                return Content(result.ResponseBody, contentType);
+                return Content(responseBody, contentType);
             }
 
             // 转发失败，通知熔断器（达到阈值才会真正触发熔断）

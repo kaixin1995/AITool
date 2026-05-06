@@ -149,6 +149,60 @@ public sealed class ProxyFallbackFlowTests
     }
 
     [Fact]
+    public async Task Get_models_returns_unauthorized_after_access_key_is_disabled()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var authorizedRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        authorizedRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+
+        var initialResponse = await client.SendAsync(authorizedRequest);
+        var initialBody = await initialResponse.Content.ReadAsStringAsync();
+
+        initialResponse.StatusCode.Should().Be(HttpStatusCode.OK, initialBody);
+        initialBody.Should().Contain("\"id\":\"chat-prod\"");
+
+        var toggleResponse = await client.PostAsync("/api/admin/access-keys/toggle/33333333-3333-3333-3333-333333333333", null);
+        toggleResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var disabledRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        disabledRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+
+        var disabledResponse = await client.SendAsync(disabledRequest);
+        disabledResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+    }
+
+    [Fact]
+    public async Task Get_models_refreshes_after_route_entry_is_deleted()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var beforeRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        beforeRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+        var beforeResponse = await client.SendAsync(beforeRequest);
+        var beforeBody = await beforeResponse.Content.ReadAsStringAsync();
+
+        beforeResponse.StatusCode.Should().Be(HttpStatusCode.OK, beforeBody);
+        beforeBody.Should().Contain("\"id\":\"chat-prod\"");
+
+        var deleteResponse = await client.PostAsync(
+            "/api/admin/route-rules/entries/delete",
+            new StringContent("{\"entryName\":\"chat-prod\"}", Encoding.UTF8, "application/json"));
+
+        deleteResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var afterRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        afterRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+        var afterResponse = await client.SendAsync(afterRequest);
+        var afterBody = await afterResponse.Content.ReadAsStringAsync();
+
+        afterResponse.StatusCode.Should().Be(HttpStatusCode.OK, afterBody);
+        afterBody.Should().NotContain("\"id\":\"chat-prod\"");
+    }
+
+    [Fact]
     public async Task Post_chat_completions_uses_runtime_settings_for_forward_request()
     {
         var fakeForwardService = new FakeProxyForwardService();
