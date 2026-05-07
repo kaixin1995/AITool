@@ -1,5 +1,4 @@
 using AITool.Application.Detection;
-using AITool.Domain.Detection;
 using AITool.Domain.Models;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
@@ -25,7 +24,7 @@ public sealed class FakeModelProbeService : IModelProbeService
     }
 }
 
-// 模型检测与日志记录测试
+// 模型检测测试
 public sealed class DetectionTests : IDisposable
 {
     private readonly AppDbContext _dbContext;
@@ -65,9 +64,9 @@ public sealed class DetectionTests : IDisposable
     }
 
     [Fact]
-    public async Task Probe_success_records_log_and_updates_mapping()
+    public async Task Probe_success_updates_mapping_status()
     {
-        // 成功探测应写入检测日志并更新映射状态
+        // 成功探测应更新映射状态
         var probeService = new FakeModelProbeService(new ModelProbeResult
         {
             Success = true,
@@ -75,32 +74,16 @@ public sealed class DetectionTests : IDisposable
         });
 
         var result = await probeService.ProbeAsync(_site, _model, CancellationToken.None);
-
-        // 记录检测日志
-        var log = new DetectionLog
-        {
-            SiteId = _mapping.SiteId,
-            ModelLibraryItemId = _mapping.ModelLibraryItemId,
-            Status = result.Success ? "success" : "fail",
-            DurationMs = result.DurationMs,
-            CheckedAt = DateTimeOffset.UtcNow
-        };
-        _dbContext.DetectionLogs.Add(log);
         _mapping.LastStatus = result.Success ? "success" : "fail";
         await _dbContext.SaveChangesAsync();
-
-        _dbContext.DetectionLogs.Should().ContainSingle(l =>
-            l.SiteId == _site.Id &&
-            l.Status == "success" &&
-            l.DurationMs == 150);
 
         _mapping.LastStatus.Should().Be("success");
     }
 
     [Fact]
-    public async Task Probe_failure_records_error_message()
+    public async Task Probe_failure_keeps_error_message_available_in_result()
     {
-        // 失败探测应记录错误信息
+        // 失败探测应保留错误信息给调用方处理
         var probeService = new FakeModelProbeService(new ModelProbeResult
         {
             Success = false,
@@ -109,49 +92,38 @@ public sealed class DetectionTests : IDisposable
         });
 
         var result = await probeService.ProbeAsync(_site, _model, CancellationToken.None);
-
-        var log = new DetectionLog
-        {
-            SiteId = _mapping.SiteId,
-            ModelLibraryItemId = _mapping.ModelLibraryItemId,
-            Status = result.Success ? "success" : "fail",
-            DurationMs = result.DurationMs,
-            ErrorMessage = result.ErrorMessage,
-            CheckedAt = DateTimeOffset.UtcNow
-        };
-        _dbContext.DetectionLogs.Add(log);
+        _mapping.LastStatus = result.Success ? "success" : "fail";
         await _dbContext.SaveChangesAsync();
 
-        var saved = _dbContext.DetectionLogs.First();
-        saved.Status.Should().Be("fail");
-        saved.ErrorMessage.Should().Be("Connection refused");
+        result.Success.Should().BeFalse();
+        result.ErrorMessage.Should().Be("Connection refused");
+        _mapping.LastStatus.Should().Be("fail");
     }
 
     [Fact]
-    public async Task Multiple_probes_keep_all_logs()
+    public async Task Multiple_probes_keep_latest_mapping_status()
     {
-        // 多次检测应保留全部日志记录
-        var probeService = new FakeModelProbeService(new ModelProbeResult
+        // 多次检测后映射状态应反映最后一次结果
+        var successProbeService = new FakeModelProbeService(new ModelProbeResult
         {
             Success = true,
             DurationMs = 100
         });
-
-        for (var i = 0; i < 3; i++)
+        var failProbeService = new FakeModelProbeService(new ModelProbeResult
         {
-            var result = await probeService.ProbeAsync(_site, _model, CancellationToken.None);
-            _dbContext.DetectionLogs.Add(new DetectionLog
-            {
-                SiteId = _mapping.SiteId,
-                ModelLibraryItemId = _mapping.ModelLibraryItemId,
-                Status = "success",
-                DurationMs = result.DurationMs,
-                CheckedAt = DateTimeOffset.UtcNow
-            });
-        }
+            Success = false,
+            DurationMs = 120,
+            ErrorMessage = "timeout"
+        });
+
+        var first = await successProbeService.ProbeAsync(_site, _model, CancellationToken.None);
+        _mapping.LastStatus = first.Success ? "success" : "fail";
+
+        var second = await failProbeService.ProbeAsync(_site, _model, CancellationToken.None);
+        _mapping.LastStatus = second.Success ? "success" : "fail";
         await _dbContext.SaveChangesAsync();
 
-        _dbContext.DetectionLogs.Should().HaveCount(3);
+        _mapping.LastStatus.Should().Be("fail");
     }
 
     public void Dispose() => _dbContext.Dispose();

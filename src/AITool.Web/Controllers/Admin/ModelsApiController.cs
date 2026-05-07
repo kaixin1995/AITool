@@ -19,17 +19,15 @@ public sealed class ModelsApiController : ControllerBase
         _metadataCache = metadataCache;
     }
 
-    // 清空所有模型及关联数据（映射、检测日志、健康监控）
+    // 清空所有模型及关联数据（映射、健康监控）
     [HttpPost("clear-all")]
     public async Task<IActionResult> ClearAll(CancellationToken cancellationToken)
     {
-        // 按依赖顺序删除：日志 → 映射 → 监控 → 模型
-        var logCount = _dbContext.DetectionLogs.Count();
+        // 按依赖顺序删除：映射 → 监控 → 模型
         var mappingCount = _dbContext.SiteModelMappings.Count();
         var monitorCount = _dbContext.ModelHealthMonitors.Count();
         var modelCount = _dbContext.ModelLibraryItems.Count();
 
-        _dbContext.DetectionLogs.RemoveRange(_dbContext.DetectionLogs);
         _dbContext.SiteModelMappings.RemoveRange(_dbContext.SiteModelMappings);
         _dbContext.ModelHealthMonitors.RemoveRange(_dbContext.ModelHealthMonitors);
         _dbContext.ModelLibraryItems.RemoveRange(_dbContext.ModelLibraryItems);
@@ -42,7 +40,6 @@ public sealed class ModelsApiController : ControllerBase
         {
             deletedModels = modelCount,
             deletedMappings = mappingCount,
-            deletedLogs = logCount,
             deletedMonitors = monitorCount
         });
     }

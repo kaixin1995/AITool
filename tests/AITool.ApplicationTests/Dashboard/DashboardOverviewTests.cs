@@ -1,6 +1,6 @@
-using AITool.Application.Dashboard;
 using AITool.Domain.Detection;
 using AITool.Domain.Models;
+using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
@@ -13,6 +13,8 @@ namespace AITool.ApplicationTests.Dashboard;
 public sealed class DashboardOverviewTests : IDisposable
 {
     private readonly AppDbContext _dbContext;
+    private Guid _enabledSite1Id;
+    private Guid _enabledSite2Id;
 
     public DashboardOverviewTests()
     {
@@ -39,31 +41,37 @@ public sealed class DashboardOverviewTests : IDisposable
     }
 
     [Fact]
-    public async Task Overview_counts_recent_detections_and_success_rate()
+    public async Task Overview_counts_recent_requests_and_success_rate()
     {
-        // 预置检测日志，验证24小时内的检测统计与成功率
+        // 预置使用日志，验证24小时内的调用统计与成功率
         SeedDashboardData();
 
-        // 添加检测日志
-        _dbContext.DetectionLogs.AddRange(
-            new DetectionLog { SiteId = Guid.NewGuid(), ModelLibraryItemId = Guid.NewGuid(), Status = "success", DurationMs = 100, CheckedAt = DateTimeOffset.UtcNow.AddHours(-1) },
-            new DetectionLog { SiteId = Guid.NewGuid(), ModelLibraryItemId = Guid.NewGuid(), Status = "success", DurationMs = 200, CheckedAt = DateTimeOffset.UtcNow.AddHours(-2) },
-            new DetectionLog { SiteId = Guid.NewGuid(), ModelLibraryItemId = Guid.NewGuid(), Status = "fail", DurationMs = 300, CheckedAt = DateTimeOffset.UtcNow.AddHours(-3) },
+        _dbContext.ProxyUsageLogs.AddRange(
+            new ProxyUsageLog { AccessKeyId = Guid.NewGuid(), ProtocolType = "OpenAI", RequestModel = "gpt-5.4", AttemptedModel = "gpt-5.4", TargetSiteId = _enabledSite1Id, Status = "success", ErrorMessage = string.Empty, ReasoningEffort = string.Empty, IsFinalResult = true, RequestedAt = DateTimeOffset.UtcNow.AddHours(-1) },
+            new ProxyUsageLog { AccessKeyId = Guid.NewGuid(), ProtocolType = "OpenAI", RequestModel = "gpt-5.4", AttemptedModel = "gpt-5.4", TargetSiteId = _enabledSite2Id, Status = "success", ErrorMessage = string.Empty, ReasoningEffort = string.Empty, IsFinalResult = true, RequestedAt = DateTimeOffset.UtcNow.AddHours(-2) },
+            new ProxyUsageLog { AccessKeyId = Guid.NewGuid(), ProtocolType = "OpenAI", RequestModel = "gpt-5.4", AttemptedModel = "gpt-5.4", TargetSiteId = _enabledSite1Id, Status = "fail", ErrorMessage = "timeout", ReasoningEffort = string.Empty, IsFinalResult = true, RequestedAt = DateTimeOffset.UtcNow.AddHours(-3) },
+            new ProxyUsageLog { AccessKeyId = Guid.NewGuid(), ProtocolType = "OpenAI", RequestModel = "gpt-5.4", AttemptedModel = "gpt-5.4", TargetSiteId = _enabledSite1Id, Status = "success", ErrorMessage = string.Empty, ReasoningEffort = string.Empty, IsFinalResult = false, RequestedAt = DateTimeOffset.UtcNow.AddHours(-1) },
             // 超过24小时的日志不应计入
-            new DetectionLog { SiteId = Guid.NewGuid(), ModelLibraryItemId = Guid.NewGuid(), Status = "success", DurationMs = 50, CheckedAt = DateTimeOffset.UtcNow.AddHours(-25) }
+            new ProxyUsageLog { AccessKeyId = Guid.NewGuid(), ProtocolType = "OpenAI", RequestModel = "gpt-5.4", AttemptedModel = "gpt-5.4", TargetSiteId = _enabledSite1Id, Status = "success", ErrorMessage = string.Empty, ReasoningEffort = string.Empty, IsFinalResult = true, RequestedAt = DateTimeOffset.UtcNow.AddHours(-25) }
         );
         await _dbContext.SaveChangesAsync();
 
         var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
-        var recentDetections = await _dbContext.DetectionLogs
-            .Where(d => d.CheckedAt >= cutoff)
+        var enabledSiteIds = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .Select(s => s.Id)
             .ToListAsync();
+        var recentRequests = (await _dbContext.ProxyUsageLogs.ToListAsync())
+            .Where(x => x.IsFinalResult)
+            .Where(x => x.RequestedAt >= cutoff)
+            .Where(x => enabledSiteIds.Contains(x.TargetSiteId))
+            .ToList();
 
-        var recentDetectionCount = recentDetections.Count;
-        var recentSuccessCount = recentDetections.Count(d => d.Status == "success");
-        var recentSuccessRate = (double)recentSuccessCount / recentDetectionCount;
+        var recentRequestCount = recentRequests.Count;
+        var recentSuccessCount = recentRequests.Count(d => d.Status == "success");
+        var recentSuccessRate = (double)recentSuccessCount / recentRequestCount;
 
-        recentDetectionCount.Should().Be(3);
+        recentRequestCount.Should().Be(3);
         recentSuccessRate.Should().BeApproximately(0.6667, 0.01);
     }
 
@@ -90,6 +98,9 @@ public sealed class DashboardOverviewTests : IDisposable
         var site3 = new Site { Name = "站点C", BaseUrl = "https://c.com", ApiKey = "key3", IsEnabled = false };
         var model1 = new ModelLibraryItem { ModelName = "gpt-5.4", DisplayName = "GPT-5.4" };
         var model2 = new ModelLibraryItem { ModelName = "claude-4", DisplayName = "Claude-4" };
+
+        _enabledSite1Id = site1.Id;
+        _enabledSite2Id = site2.Id;
 
         _dbContext.Sites.AddRange(site1, site2, site3);
         _dbContext.ModelLibraryItems.AddRange(model1, model2);

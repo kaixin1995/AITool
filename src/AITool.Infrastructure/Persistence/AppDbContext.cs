@@ -22,9 +22,6 @@ public sealed class AppDbContext : DbContext
     // 站点模型映射数据集
     public DbSet<SiteModelMapping> SiteModelMappings => Set<SiteModelMapping>();
 
-    // 检测日志数据集
-    public DbSet<DetectionLog> DetectionLogs => Set<DetectionLog>();
-
     // 定时检测任务数据集
     public DbSet<DetectionTask> DetectionTasks => Set<DetectionTask>();
 
@@ -80,15 +77,6 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.LastStatus).IsRequired().HasMaxLength(50);
             entity.Property(e => e.IsEnabled).IsRequired();
             entity.HasIndex(e => new { e.SiteId, e.RemoteModelName }).IsUnique();
-        });
-
-        // 检测日志实体配置
-        modelBuilder.Entity<DetectionLog>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.ErrorMessage).HasMaxLength(2000);
-            entity.HasIndex(e => e.CheckedAt);
         });
 
         // 定时检测任务实体配置
