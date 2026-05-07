@@ -35,6 +35,14 @@
                                 <label class="form-check-label" for="reasoningToggle">开启思考模式</label>
                             </div>
                         </div>
+                        <div class="col-xl-2 col-lg-3 col-md-4" id="reasoningEffortGroup" style="display:none;">
+                            <label class="form-label" for="reasoningEffortSelect">思考等级</label>
+                            <select id="reasoningEffortSelect" class="form-select form-select-sm">
+                                <option value="low">低 (low)</option>
+                                <option value="medium">中 (medium)</option>
+                                <option value="high" selected>高 (high)</option>
+                            </select>
+                        </div>
                         <div class="col-xl-2 col-lg-2 col-md-4">
                             <button type="button" class="btn btn-outline-secondary w-100" onclick="loadModels()">刷新模型</button>
                         </div>
@@ -518,6 +526,10 @@
             this.style.height = '88px';
             this.style.height = Math.min(this.scrollHeight, 180) + 'px';
         });
+        // 思考模式开关控制思考等级选择器的显示
+        document.getElementById('reasoningToggle').addEventListener('change', function() {
+            document.getElementById('reasoningEffortGroup').style.display = this.checked ? '' : 'none';
+        });
     });
 
     function loadModels() {
@@ -554,6 +566,7 @@
         var modelId = document.getElementById('modelSelect').value;
         var enableReasoning = document.getElementById('reasoningToggle').checked;
         var enableStreaming = document.getElementById('streamingToggle').checked;
+        var reasoningEffort = document.getElementById('reasoningEffortSelect').value;
         var input = document.getElementById('chatInput');
         var message = input.value.trim();
 
@@ -571,7 +584,7 @@
         setChatStatus(enableStreaming ? '正在建立流式连接...' : '正在发送请求...');
 
         if (enableStreaming) {
-            await sendStreamingMessage(modelId, message, enableReasoning);
+            await sendStreamingMessage(modelId, message, enableReasoning, reasoningEffort);
             return;
         }
 
@@ -585,7 +598,7 @@
         fetch('/api/admin/chat/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ modelId: modelId, message: message, enableReasoning: enableReasoning, enableStreaming: false })
+            body: JSON.stringify({ modelId: modelId, message: message, enableReasoning: enableReasoning, enableStreaming: false, reasoningEffort: reasoningEffort })
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -613,7 +626,7 @@
         });
     }
 
-    async function sendStreamingMessage(modelId, message, enableReasoning) {
+    async function sendStreamingMessage(modelId, message, enableReasoning, reasoningEffort) {
         var aiBubble = createStreamingMessageBubble(enableReasoning);
         var abortController = new AbortController();
         currentStreamState = {
@@ -630,7 +643,7 @@
             var response = await fetch('/api/admin/chat/send-stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-                body: JSON.stringify({ modelId: modelId, message: message, enableReasoning: enableReasoning, enableStreaming: true }),
+                body: JSON.stringify({ modelId: modelId, message: message, enableReasoning: enableReasoning, enableStreaming: true, reasoningEffort: reasoningEffort }),
                 signal: abortController.signal
             });
 

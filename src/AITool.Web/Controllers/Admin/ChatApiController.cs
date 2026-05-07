@@ -45,6 +45,9 @@ public sealed class ChatAttemptResult
 // 发送消息的请求体
 public sealed class ChatSendRequest
 {
+    // 思考等级选项
+    public static readonly string[] ValidReasoningEfforts = ["low", "medium", "high"];
+
     // 选择的模型ID
     public Guid ModelId { get; set; }
     // 用户消息内容
@@ -53,6 +56,8 @@ public sealed class ChatSendRequest
     public bool EnableReasoning { get; set; }
     // 是否启用流式
     public bool EnableStreaming { get; set; }
+    // 思考等级：low / medium / high，仅在开启思考模式时生效
+    public string ReasoningEffort { get; set; } = "high";
 }
 
 // 发送消息的返回结果
@@ -173,7 +178,7 @@ public sealed class ChatApiController : ControllerBase
                     continue;
 
                 attemptIndex++;
-                var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false);
+                var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = route.BaseUrl,
@@ -293,6 +298,7 @@ public sealed class ChatApiController : ControllerBase
                 route.SiteModelName,
                 request.Message,
                 request.EnableReasoning,
+                request.ReasoningEffort,
                 async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
                 async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
                 runtimeSettings.ProxyRequestTimeoutSeconds,
@@ -391,7 +397,7 @@ public sealed class ChatApiController : ControllerBase
             return Ok(new ChatSendResult { Success = false, Error = "该模型没有可用的站点映射", ReasoningEnabled = request.EnableReasoning });
 
         var requestId = Guid.NewGuid();
-        var requestBody = BuildChatRequestBody(mapping.ProtocolType, mapping.SiteModelName, request.Message, request.EnableReasoning, false);
+        var requestBody = BuildChatRequestBody(mapping.ProtocolType, mapping.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = mapping.BaseUrl,
@@ -476,6 +482,7 @@ public sealed class ChatApiController : ControllerBase
             mapping.SiteModelName,
             request.Message,
             request.EnableReasoning,
+            request.ReasoningEffort,
             async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
             async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
             runtimeSettings.ProxyRequestTimeoutSeconds,
@@ -560,6 +567,7 @@ public sealed class ChatApiController : ControllerBase
         string targetModelName,
         string message,
         bool enableReasoning,
+        string reasoningEffort,
         Func<string, Task> onContentChunk,
         Func<string, Task> onReasoningChunk,
         int requestTimeoutSeconds,
@@ -577,7 +585,7 @@ public sealed class ChatApiController : ControllerBase
                 : $"{baseUrl.TrimEnd('/')}/v1/chat/completions";
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
             {
-                Content = new StringContent(BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true), Encoding.UTF8, "application/json")
+                Content = new StringContent(BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort), Encoding.UTF8, "application/json")
             };
 
             if (protocolType == "Anthropic")
@@ -760,7 +768,7 @@ public sealed class ChatApiController : ControllerBase
         };
     }
 
-    private static string BuildChatRequestBody(string protocolType, string modelName, string message, bool enableReasoning, bool enableStreaming)
+    private static string BuildChatRequestBody(string protocolType, string modelName, string message, bool enableReasoning, bool enableStreaming, string reasoningEffort = "high")
     {
         if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
         {
@@ -781,11 +789,17 @@ public sealed class ChatApiController : ControllerBase
 
             if (enableReasoning)
             {
-                // Anthropic 需要显式开启 thinking 配置，否则不会返回思考内容。
+                // Anthropic 根据 thinking level 映射 budget_tokens
+                var budgetTokens = reasoningEffort switch
+                {
+                    "low" => 1024,
+                    "medium" => 4096,
+                    _ => 8192
+                };
                 anthropicPayload["thinking"] = new Dictionary<string, object?>
                 {
                     ["type"] = "enabled",
-                    ["budget_tokens"] = 2048
+                    ["budget_tokens"] = budgetTokens
                 };
             }
 
@@ -817,8 +831,9 @@ public sealed class ChatApiController : ControllerBase
 
         if (enableReasoning)
         {
-            // OpenAI 兼容协议继续沿用 reasoning_effort 开关。
-            payload["reasoning_effort"] = "high";
+            // OpenAI 兼容协议使用 reasoning_effort 参数
+            var effort = ChatSendRequest.ValidReasoningEfforts.Contains(reasoningEffort) ? reasoningEffort : "high";
+            payload["reasoning_effort"] = effort;
         }
 
         return JsonSerializer.Serialize(payload);
@@ -1016,10 +1031,16 @@ public sealed class ChatApiController : ControllerBase
         return (responseBody, string.Empty);
     }
 
+    // SSE 序列化使用 camelCase 命名策略，与前端 JS 属性名保持一致
+    private static readonly JsonSerializerOptions SseJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
     private async Task WriteSseEventAsync(string eventName, object payload, CancellationToken cancellationToken)
     {
         await Response.WriteAsync($"event: {eventName}\n", cancellationToken);
-        await Response.WriteAsync($"data: {JsonSerializer.Serialize(payload)}\n\n", cancellationToken);
+        await Response.WriteAsync($"data: {JsonSerializer.Serialize(payload, SseJsonOptions)}\n\n", cancellationToken);
         await Response.Body.FlushAsync(cancellationToken);
     }
 
