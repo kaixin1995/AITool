@@ -222,7 +222,8 @@ public sealed class ChatApiController : ControllerBase
                     IsStreaming = false,
                     FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
                     StreamDurationMs = forwardResult.StreamDurationMs,
-                    TotalDurationMs = forwardResult.TotalDurationMs
+                    TotalDurationMs = forwardResult.TotalDurationMs,
+                    ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty
                 }, cancellationToken);
 
                 if (forwardResult.Success)
@@ -354,7 +355,8 @@ public sealed class ChatApiController : ControllerBase
                 IsStreaming = true,
                 FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
                 StreamDurationMs = 0,
-                TotalDurationMs = streamResult.TotalDurationMs
+                TotalDurationMs = streamResult.TotalDurationMs,
+                ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty
             }, cancellationToken);
 
             if (streamResult.Success)
@@ -443,7 +445,8 @@ public sealed class ChatApiController : ControllerBase
             IsStreaming = false,
             FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
             StreamDurationMs = forwardResult.StreamDurationMs,
-            TotalDurationMs = forwardResult.TotalDurationMs
+            TotalDurationMs = forwardResult.TotalDurationMs,
+            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty
         }, cancellationToken);
 
         var attempts = new List<ChatAttemptResult>
@@ -540,7 +543,8 @@ public sealed class ChatApiController : ControllerBase
             IsStreaming = true,
             FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
             StreamDurationMs = 0,
-            TotalDurationMs = streamResult.TotalDurationMs
+            TotalDurationMs = streamResult.TotalDurationMs,
+            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty
         }, cancellationToken);
 
         if (!streamResult.Success)

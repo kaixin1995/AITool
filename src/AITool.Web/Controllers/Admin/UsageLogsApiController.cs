@@ -70,6 +70,7 @@ public sealed class UsageLogAttemptDto
     public int FirstTokenLatencyMs { get; set; }
     public int StreamDurationMs { get; set; }
     public int TotalDurationMs { get; set; }
+    public string ReasoningEffort { get; set; } = string.Empty;
     public DateTimeOffset RequestedAt { get; set; }
 }
 
@@ -206,6 +207,7 @@ public sealed class UsageLogsApiController : ControllerBase
                     FirstTokenLatencyMs = x.FirstTokenLatencyMs,
                     StreamDurationMs = x.StreamDurationMs,
                     TotalDurationMs = x.TotalDurationMs,
+                    ReasoningEffort = x.ReasoningEffort,
                     RequestedAt = x.RequestedAt
                 })
                 .ToList()

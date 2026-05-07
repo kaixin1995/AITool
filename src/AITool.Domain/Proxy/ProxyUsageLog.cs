@@ -72,6 +72,9 @@ public sealed class ProxyUsageLog
     // 请求总耗时（毫秒）
     public int TotalDurationMs { get; set; }
 
+    // 思考等级
+    public string ReasoningEffort { get; set; } = string.Empty;
+
     // 请求时间
     public DateTimeOffset RequestedAt { get; set; } = DateTimeOffset.UtcNow;
 }

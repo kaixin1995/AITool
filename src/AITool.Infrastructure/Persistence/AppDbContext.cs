@@ -147,6 +147,7 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.RequestModel).IsRequired().HasMaxLength(200);
             entity.Property(e => e.AttemptedModel).IsRequired().HasMaxLength(200);
             entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.ReasoningEffort).IsRequired().HasMaxLength(50);
             entity.Property(e => e.ErrorMessage).IsRequired().HasMaxLength(2000);
             entity.Property(e => e.IsStreamInterrupted).IsRequired();
             entity.HasIndex(e => e.RequestedAt);

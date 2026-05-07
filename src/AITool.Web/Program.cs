@@ -107,6 +107,7 @@ using (var scope = app.Services.CreateScope())
         EnsureColumn(cmd, "ProxyUsageLogs", "FirstTokenLatencyMs", "ALTER TABLE ProxyUsageLogs ADD COLUMN FirstTokenLatencyMs INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "StreamDurationMs", "ALTER TABLE ProxyUsageLogs ADD COLUMN StreamDurationMs INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "ProxyUsageLogs", "TotalDurationMs", "ALTER TABLE ProxyUsageLogs ADD COLUMN TotalDurationMs INTEGER NOT NULL DEFAULT 0");
+        EnsureColumn(cmd, "ProxyUsageLogs", "ReasoningEffort", "ALTER TABLE ProxyUsageLogs ADD COLUMN ReasoningEffort TEXT NOT NULL DEFAULT ''");
         EnsureIndex(cmd, "IX_ProxyAccessKeys_AccessKeyHash_IsEnabled", "CREATE INDEX IX_ProxyAccessKeys_AccessKeyHash_IsEnabled ON ProxyAccessKeys (AccessKeyHash, IsEnabled)");
         EnsureIndex(cmd, "IX_ProxyRouteRules_ExternalModelName_IsEnabled_ModelPriority_InstancePriority_Priority", "CREATE INDEX IX_ProxyRouteRules_ExternalModelName_IsEnabled_ModelPriority_InstancePriority_Priority ON ProxyRouteRules (ExternalModelName, IsEnabled, ModelPriority, InstancePriority, Priority)");
 

@@ -130,7 +130,8 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             IsStreamInterrupted = entry.IsStreamInterrupted,
             FirstTokenLatencyMs = entry.FirstTokenLatencyMs,
             StreamDurationMs = entry.StreamDurationMs,
-            TotalDurationMs = entry.TotalDurationMs
+            TotalDurationMs = entry.TotalDurationMs,
+            ReasoningEffort = entry.ReasoningEffort
         }).ToList();
 
         dbContext.ProxyUsageLogs.AddRange(logs);

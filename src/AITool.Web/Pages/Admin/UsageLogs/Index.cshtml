@@ -13,8 +13,14 @@
 
 <div id="usageLogsStatus" class="alert" style="display:none;"></div>
 
-<div class="card mb-3">
-    <div class="card-body">
+<div class="card mb-3 usage-logs-filter-card">
+    <div class="card-header usage-logs-filter-header">
+        <button type="button" class="usage-logs-filter-toggle" id="usageLogsFilterToggle" aria-expanded="false" aria-controls="usageLogsFilterBody" onclick="toggleUsageLogsFilters()">
+            <span>筛选与汇总</span>
+            <span id="usageLogsFilterToggleText">展开</span>
+        </button>
+    </div>
+    <div class="card-body d-none" id="usageLogsFilterBody">
         <div class="row g-3 align-items-end">
             <div class="col-md-3">
                 <label class="form-label" for="rangeTypeSelect">时间范围</label>
@@ -46,7 +52,7 @@
             </div>
             <div class="col-md-3">
                 <div class="form-check form-switch mb-2">
-                    <input class="form-check-input" type="checkbox" id="autoRefreshToggle">
+                    <input class="form-check-input" type="checkbox" id="autoRefreshToggle" checked>
                     <label class="form-check-label" for="autoRefreshToggle">自动刷新（固定 5 秒）</label>
                 </div>
                 <button type="button" class="btn btn-primary w-100" onclick="loadUsageLogsPage(1)">刷新</button>
@@ -55,7 +61,7 @@
     </div>
 </div>
 
-<div class="row g-3 mb-3">
+<div class="row g-3 mb-3 usage-logs-summary-row">
     <div class="col-md-3">
         <div class="card h-100">
             <div class="card-body">
@@ -142,6 +148,43 @@
 </div>
 
 <style>
+    .usage-logs-filter-card {
+        overflow: hidden;
+    }
+
+    .usage-logs-filter-header {
+        background: #fff;
+        padding: 0;
+        border-bottom: 0;
+    }
+
+    .usage-logs-filter-toggle {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border: 0;
+        background: transparent;
+        padding: 14px 18px;
+        font-size: 14px;
+        font-weight: 600;
+        color: #0f172a;
+        text-align: left;
+    }
+
+    .usage-logs-filter-toggle:hover {
+        background: #f8fafc;
+    }
+
+    .usage-logs-summary-row {
+        transition: opacity 0.2s ease;
+    }
+
+    .usage-logs-summary-row.is-collapsed {
+        display: none;
+    }
+
     .usage-log-chip {
         display: inline-flex;
         align-items: center;
@@ -191,6 +234,7 @@
     var usageLogsPageSize = 20;
     var usageLogsTotalPages = 0;
     var usageLogsTotalCount = 0;
+    var usageLogsFiltersCollapsed = true;
 
     document.addEventListener('DOMContentLoaded', function() {
         usageLogsDetailDrawer = new bootstrap.Offcanvas(document.getElementById('requestDetailDrawer'));
@@ -219,6 +263,8 @@
         });
         initializeCustomRange();
         syncCustomRangeVisibility();
+        syncUsageLogsFilterVisibility();
+        syncAutoRefresh();
         loadUsageLogsPage(1);
     });
 
@@ -234,6 +280,26 @@
         document.querySelectorAll('.custom-range-field').forEach(function(element) {
             element.style.display = isCustom ? '' : 'none';
         });
+    }
+
+    function toggleUsageLogsFilters() {
+        usageLogsFiltersCollapsed = !usageLogsFiltersCollapsed;
+        syncUsageLogsFilterVisibility();
+    }
+
+    function syncUsageLogsFilterVisibility() {
+        var body = document.getElementById('usageLogsFilterBody');
+        var toggle = document.getElementById('usageLogsFilterToggle');
+        var toggleText = document.getElementById('usageLogsFilterToggleText');
+        var summaryRow = document.querySelector('.usage-logs-summary-row');
+        if (!body || !toggle || !toggleText || !summaryRow) {
+            return;
+        }
+
+        body.classList.toggle('d-none', usageLogsFiltersCollapsed);
+        summaryRow.classList.toggle('is-collapsed', usageLogsFiltersCollapsed);
+        toggle.setAttribute('aria-expanded', usageLogsFiltersCollapsed ? 'false' : 'true');
+        toggleText.textContent = usageLogsFiltersCollapsed ? '展开' : '收起';
     }
 
     function loadUsageLogsPage(page) {
@@ -407,6 +473,7 @@
         var html = attempts.map(function(item, index) {
             var status = readValue(item, ['status']) || '-';
             var attemptedModel = readValue(item, ['attemptedModel', 'requestModel']) || '-';
+            var reasoningEffort = readValue(item, ['reasoningEffort']) || '';
             var errorMessage = readValue(item, ['errorMessage']) || '';
             return '' +
                 '<div class="card">' +
@@ -421,6 +488,7 @@
                         '<div class="small text-secondary mb-1">站点：' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</div>' +
                         '<div class="small text-secondary mb-1">时间：' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</div>' +
                         '<div class="small text-secondary mb-1">Tokens：' + escHtml(formatNumber(readValue(item, ['totalTokens']) || 0)) + '</div>' +
+                        '<div class="small text-secondary mb-1">思考等级：' + escHtml(reasoningEffort || '-') + '</div>' +
                         '<div class="small text-secondary">错误：' + escHtml(errorMessage || '-') + '</div>' +
                     '</div>' +
                 '</div>';

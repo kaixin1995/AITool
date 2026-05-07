@@ -72,4 +72,7 @@ public sealed class UsageLogEntry
 
     // 请求总耗时（毫秒）
     public int TotalDurationMs { get; set; }
+
+    // 思考等级
+    public string ReasoningEffort { get; set; } = string.Empty;
 }
