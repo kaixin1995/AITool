@@ -46,7 +46,7 @@ public sealed class ChatAttemptResult
 public sealed class ChatSendRequest
 {
     // 思考等级选项
-    public static readonly string[] ValidReasoningEfforts = ["low", "medium", "high"];
+    public static readonly string[] ValidReasoningEfforts = ["low", "medium", "high", "xhigh","max"];
 
     // 选择的模型ID
     public Guid ModelId { get; set; }
@@ -770,6 +770,9 @@ public sealed class ChatApiController : ControllerBase
 
     private static string BuildChatRequestBody(string protocolType, string modelName, string message, bool enableReasoning, bool enableStreaming, string reasoningEffort = "high")
     {
+        // 规范化思考等级
+        var effort = ChatSendRequest.ValidReasoningEfforts.Contains(reasoningEffort) ? reasoningEffort : "high";
+
         if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
         {
             var anthropicPayload = new Dictionary<string, object?>
@@ -789,8 +792,8 @@ public sealed class ChatApiController : ControllerBase
 
             if (enableReasoning)
             {
-                // Anthropic 根据 thinking level 映射 budget_tokens
-                var budgetTokens = reasoningEffort switch
+                // Anthropic 使用 thinking 配置，budget_tokens 按等级映射
+                var budgetTokens = effort switch
                 {
                     "low" => 1024,
                     "medium" => 4096,
@@ -832,7 +835,6 @@ public sealed class ChatApiController : ControllerBase
         if (enableReasoning)
         {
             // OpenAI 兼容协议使用 reasoning_effort 参数
-            var effort = ChatSendRequest.ValidReasoningEfforts.Contains(reasoningEffort) ? reasoningEffort : "high";
             payload["reasoning_effort"] = effort;
         }
 

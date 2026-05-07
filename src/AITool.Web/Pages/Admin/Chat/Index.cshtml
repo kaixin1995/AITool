@@ -17,37 +17,37 @@
             <div class="card-body chat-card-body">
                 <div class="chat-toolbar">
                     <div class="row g-3 align-items-end">
-                        <div class="col-xl-4 col-lg-5">
+                        <div class="col-xl-3 col-lg-4">
                             <label class="form-label" for="modelSelect">测试模型</label>
                             <select id="modelSelect" class="form-select">
                                 <option value="">-- 加载中... --</option>
                             </select>
                         </div>
-                        <div class="col-xl-2 col-lg-3 col-md-4">
+                        <div class="col-auto">
                             <div class="form-check form-switch mt-md-4 pt-md-2">
                                 <input class="form-check-input" type="checkbox" id="streamingToggle">
                                 <label class="form-check-label" for="streamingToggle">启用流式</label>
                             </div>
                         </div>
-                        <div class="col-xl-2 col-lg-3 col-md-4">
+                        <div class="col-auto">
                             <div class="form-check form-switch mt-md-4 pt-md-2">
                                 <input class="form-check-input" type="checkbox" id="reasoningToggle">
-                                <label class="form-check-label" for="reasoningToggle">开启思考模式</label>
+                                <label class="form-check-label" for="reasoningToggle">开启思考</label>
                             </div>
                         </div>
-                        <div class="col-xl-2 col-lg-3 col-md-4" id="reasoningEffortGroup" style="display:none;">
-                            <label class="form-label" for="reasoningEffortSelect">思考等级</label>
+                        <div class="col-auto" id="reasoningEffortGroup" style="display:none;">
+                            <label class="form-label mb-0" for="reasoningEffortSelect">思考等级</label>
                             <select id="reasoningEffortSelect" class="form-select form-select-sm">
-                                <option value="low">低 (low)</option>
-                                <option value="medium">中 (medium)</option>
-                                <option value="high" selected>高 (high)</option>
+                                <option value="low">低</option>
+                                <option value="medium">中</option>
+                                <option value="high" selected>高</option>
                             </select>
                         </div>
-                        <div class="col-xl-2 col-lg-2 col-md-4">
-                            <button type="button" class="btn btn-outline-secondary w-100" onclick="loadModels()">刷新模型</button>
+                        <div class="col-auto">
+                            <button type="button" class="btn btn-outline-secondary" onclick="loadModels()">刷新模型</button>
                         </div>
-                        <div class="col-xl-2 col-lg-12">
-                            <div id="chatStatus" class="small text-secondary text-xl-end">请选择模型并输入问题</div>
+                        <div class="col-xl col-lg-12">
+                            <div id="chatStatus" class="small text-secondary text-xl-end mt-xl-4">请选择模型并输入问题</div>
                         </div>
                     </div>
                 </div>
