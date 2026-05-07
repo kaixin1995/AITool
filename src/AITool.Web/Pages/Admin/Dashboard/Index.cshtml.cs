@@ -24,16 +24,21 @@ public class IndexModel : PageModel
         var enabledSiteCount = await _dbContext.Sites.CountAsync(s => s.IsEnabled, cancellationToken);
         var modelCount = await _dbContext.ModelLibraryItems.CountAsync(cancellationToken);
         var enabledTaskCount = await _dbContext.DetectionTasks.CountAsync(t => t.IsEnabled, cancellationToken);
+        var enabledSiteIds = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .Select(s => s.Id)
+            .ToListAsync(cancellationToken);
 
         var cutoff = DateTimeOffset.UtcNow.AddHours(-24);
         // 先加载全部再客户端过滤（SQLite 不支持 DateTimeOffset 的 WHERE 比较）
-        var allDetections = await _dbContext.DetectionLogs.ToListAsync(cancellationToken);
-        var recentDetections = allDetections
-            .Where(d => d.CheckedAt >= cutoff)
+        var recentUsageLogs = (await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken))
+            .Where(x => x.IsFinalResult)
+            .Where(x => x.RequestedAt >= cutoff)
+            .Where(x => enabledSiteIds.Contains(x.TargetSiteId))
             .ToList();
 
-        var recentDetectionCount = recentDetections.Count;
-        var recentSuccessCount = recentDetections.Count(d => d.Status == "success");
+        var recentDetectionCount = recentUsageLogs.Count;
+        var recentSuccessCount = recentUsageLogs.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase));
         var recentSuccessRate = recentDetectionCount > 0
             ? (double)recentSuccessCount / recentDetectionCount
             : 0;

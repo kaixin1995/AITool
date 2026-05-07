@@ -60,7 +60,9 @@ public class IndexModel : PageModel
                 g => g.Key,
                 g => g.OrderByDescending(d => d.RequestedAt).First());
 
-        var mappings = await _dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+        var mappings = await _dbContext.SiteModelMappings
+            .Where(m => m.IsEnabled)
+            .ToListAsync(cancellationToken);
         var modelIds = mappings.Select(m => m.ModelLibraryItemId).Distinct().ToList();
         var models = await _dbContext.ModelLibraryItems
             .Where(m => modelIds.Contains(m.Id))
@@ -68,10 +70,11 @@ public class IndexModel : PageModel
 
         var siteIds = mappings.Select(m => m.SiteId).Distinct().ToList();
         var sites = await _dbContext.Sites
-            .Where(s => siteIds.Contains(s.Id))
+            .Where(s => siteIds.Contains(s.Id) && s.IsEnabled)
             .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
         ModelGroups = mappings
+            .Where(m => sites.ContainsKey(m.SiteId))
             .GroupBy(m => m.ModelLibraryItemId)
             .Select(g =>
             {

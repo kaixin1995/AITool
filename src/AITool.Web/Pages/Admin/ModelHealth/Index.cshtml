@@ -69,44 +69,57 @@
 {
     var healths = Model.HealthData.GetValueOrDefault(monitored.ModelLibraryItemId) ?? [];
     var detailId = $"health-detail-{monitored.ModelLibraryItemId:N}";
+    var modelRecentLogs = healths
+        .SelectMany(x => x.RecentLogs)
+        .OrderByDescending(x => x.CheckedAt)
+        .Take(24)
+        .OrderBy(x => x.CheckedAt)
+        .ToList();
 
     <div class="detection-group health-model-group" data-display-name="@monitored.DisplayName">
         <div class="detection-group-header align-items-start">
             <div style="flex:1; min-width:0;">
                 <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
                     <h3 class="detection-group-title mb-0">@monitored.DisplayName</h3>
-                    <span class="badge bg-light text-dark">@monitored.SiteCount 个站点</span>
                     <span class="badge bg-success">@monitored.HealthySiteCount 正常</span>
                     <span class="badge bg-danger">@monitored.UnhealthySiteCount 异常</span>
                 </div>
 
                 <div class="row g-3 mb-0">
-                    <div class="col-md-3 col-sm-6">
-                        <div class="stat-card">
-                            <div class="stat-card-icon info">🌐</div>
-                            <div class="stat-card-value">@monitored.SiteCount</div>
-                            <div class="stat-card-label">关联站点数</div>
-                        </div>
-                    </div>
-                    <div class="col-md-3 col-sm-6">
+                    <div class="col-lg-3 col-md-4 col-sm-6">
                         <div class="stat-card">
                             <div class="stat-card-icon success">📈</div>
                             <div class="stat-card-value">@((monitored.AverageSuccessRate * 100).ToString("F1"))%</div>
                             <div class="stat-card-label">平均成功率</div>
                         </div>
                     </div>
-                    <div class="col-md-3 col-sm-6">
+                    <div class="col-lg-3 col-md-4 col-sm-6">
                         <div class="stat-card">
                             <div class="stat-card-icon warning">⏱</div>
                             <div class="stat-card-value">@(monitored.AverageDurationMs.HasValue ? $"{monitored.AverageDurationMs} ms" : "-")</div>
                             <div class="stat-card-label">平均耗时</div>
                         </div>
                     </div>
-                    <div class="col-md-3 col-sm-6">
-                        <div class="stat-card">
-                            <div class="stat-card-icon danger">🕒</div>
-                            <div class="stat-card-value">@(monitored.LastCheckedAt?.ToString("MM-dd HH:mm") ?? "-")</div>
-                            <div class="stat-card-label">最近请求时间</div>
+                    <div class="col-lg-6 col-md-12">
+                        <div class="stat-card" style="height:100%;">
+                            <div class="stat-card-label" style="margin-bottom:10px;">最近状态</div>
+                            @if (modelRecentLogs.Any())
+                            {
+                                <div class="health-bars" style="align-items:flex-end; min-height:72px;">
+                                    @foreach (var log in modelRecentLogs)
+                                    {
+                                        var barHeight = Math.Max(Math.Min(log.DurationMs / 10, 72), 12);
+                                        var barColor = log.Status == "success" ? "var(--success)" : "var(--danger)";
+                                        <div class="health-bar-item" title="@log.CheckedAt.ToString("MM-dd HH:mm") | @log.Status | @log.DurationMs ms@(log.ErrorMessage is not null ? " | " + log.ErrorMessage : "")">
+                                            <div class="health-bar" style="height: @(barHeight)px; background: @barColor;"></div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="text-secondary" style="font-size: 12.5px; padding: 12px 0;">暂无请求记录</div>
+                            }
                         </div>
                     </div>
                 </div>
@@ -123,6 +136,12 @@
         <div id="@detailId" class="health-detail-panel" style="display:none;">
             @if (healths.Any())
             {
+                <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                    <span class="badge bg-light text-dark">@monitored.SiteCount 个关联站点</span>
+                    <span class="badge bg-success">@monitored.HealthySiteCount 个正常站点</span>
+                    <span class="badge bg-danger">@monitored.UnhealthySiteCount 个异常站点</span>
+                </div>
+
                 foreach (var site in healths)
                 {
                     <div class="health-site-card">
@@ -135,7 +154,7 @@
                                 </span>
                             </div>
                             <div class="health-site-meta">
-                                @(site.LastCheckedAt?.ToString("yyyy-MM-dd HH:mm:ss") ?? "未检测")
+                                成功率 @((site.SuccessRate * 100).ToString("F1"))%
                                 @if (site.LastDurationMs.HasValue)
                                 {
                                     <span class="text-secondary">· @site.LastDurationMs ms</span>

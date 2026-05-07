@@ -324,7 +324,9 @@ public sealed class RouteRulesApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(modelName))
             return Ok(new List<DiscoveredSiteItem>());
 
-        var sites = await _dbContext.Sites.ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
+        var sites = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
         var normalizedModelName = modelName.Trim();
         List<DiscoveredSiteItem> results = [];
 
@@ -385,7 +387,9 @@ public sealed class RouteRulesApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(modelName))
             return Ok(new List<RouteRuleListItem>());
 
-        var sites = await _dbContext.Sites.ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
+        var sites = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
         var rules = await _dbContext.ProxyRouteRules
             .Where(r => r.ExternalModelName == modelName)

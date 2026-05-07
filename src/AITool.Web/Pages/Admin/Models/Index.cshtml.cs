@@ -50,7 +50,13 @@ public class IndexModel : PageModel
     // 加载模型列表，包含每个模型关联的站点数量
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
+        var enabledSiteIds = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .Select(s => s.Id)
+            .ToListAsync(cancellationToken);
+
         var siteCounts = await _dbContext.SiteModelMappings
+            .Where(m => m.IsEnabled && enabledSiteIds.Contains(m.SiteId))
             .GroupBy(m => m.ModelLibraryItemId)
             .Select(g => new { ModelId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.ModelId, x => x.Count, cancellationToken);

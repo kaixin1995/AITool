@@ -136,12 +136,12 @@ public class IndexModel : PageModel
         if (monitoredModelIds.Count > 0)
         {
             var mappings = await _dbContext.SiteModelMappings
-                .Where(m => monitoredModelIds.Contains(m.ModelLibraryItemId))
+                .Where(m => monitoredModelIds.Contains(m.ModelLibraryItemId) && m.IsEnabled)
                 .ToListAsync(cancellationToken);
 
             var siteIds = mappings.Select(m => m.SiteId).Distinct().ToList();
             var sites = await _dbContext.Sites
-                .Where(s => siteIds.Contains(s.Id))
+                .Where(s => siteIds.Contains(s.Id) && s.IsEnabled)
                 .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
             var recentCutoff = DateTimeOffset.UtcNow.AddDays(-7);
@@ -156,7 +156,9 @@ public class IndexModel : PageModel
             /* 按模型分组 */
             foreach (var modelId in monitoredModelIds)
             {
-                var modelMappings = mappings.Where(m => m.ModelLibraryItemId == modelId).ToList();
+                var modelMappings = mappings
+                    .Where(m => m.ModelLibraryItemId == modelId && sites.ContainsKey(m.SiteId))
+                    .ToList();
                 var modelName = models.TryGetValue(modelId, out var currentModel) ? currentModel.ModelName : string.Empty;
                 var modelLogs = allLogs.Where(l => string.Equals(l.RequestModel, modelName, StringComparison.Ordinal)).ToList();
 

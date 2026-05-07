@@ -106,7 +106,9 @@ public sealed class UsageLogsApiController : ControllerBase
     [HttpGet("list")]
     public async Task<ActionResult<UsageLogListResponseDto>> GetList([FromQuery] UsageLogListQueryDto query, CancellationToken cancellationToken)
     {
-        var sites = await _dbContext.Sites.ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+        var sites = await _dbContext.Sites
+            .Where(x => x.IsEnabled)
+            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var page = Math.Max(1, query.Page);
@@ -117,6 +119,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 .ToListAsync(cancellationToken))
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
             .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+            .Where(x => sites.ContainsKey(x.TargetSiteId))
             .OrderByDescending(x => x.RequestedAt)
             .ToList();
 
@@ -165,11 +168,15 @@ public sealed class UsageLogsApiController : ControllerBase
     [HttpGet("request-detail/{requestId:guid}")]
     public async Task<ActionResult<UsageLogRequestDetailDto>> GetRequestDetail(Guid requestId, CancellationToken cancellationToken)
     {
-        var sites = await _dbContext.Sites.ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+        var sites = await _dbContext.Sites
+            .Where(x => x.IsEnabled)
+            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
         var logs = await _dbContext.ProxyUsageLogs
             .Where(x => x.RequestId == requestId)
             .ToListAsync(cancellationToken);
+
+        logs = logs.Where(x => sites.ContainsKey(x.TargetSiteId)).ToList();
 
         if (logs.Count == 0)
         {
@@ -219,12 +226,16 @@ public sealed class UsageLogsApiController : ControllerBase
     [HttpGet("summary")]
     public async Task<ActionResult<UsageLogSummaryDto>> GetSummary([FromQuery] UsageLogListQueryDto query, CancellationToken cancellationToken)
     {
+        var sites = await _dbContext.Sites
+            .Where(x => x.IsEnabled)
+            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
 
         // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
         var logs = (await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken))
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
             .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+            .Where(x => sites.ContainsKey(x.TargetSiteId))
             .ToList();
 
         // 按 RequestId 分组，每组取最后一条记录作为该请求的最终状态
