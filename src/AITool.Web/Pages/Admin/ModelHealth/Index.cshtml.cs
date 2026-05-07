@@ -44,6 +44,12 @@ public class MonitoredModelItem
 {
     public Guid ModelLibraryItemId { get; set; }
     public string DisplayName { get; set; } = string.Empty;
+    public int SiteCount { get; set; }
+    public int HealthySiteCount { get; set; }
+    public int UnhealthySiteCount { get; set; }
+    public double AverageSuccessRate { get; set; }
+    public DateTimeOffset? LastCheckedAt { get; set; }
+    public int? AverageDurationMs { get; set; }
 }
 
 // 模型下拉选项
@@ -188,6 +194,24 @@ public class IndexModel : PageModel
                 .ToList();
 
                 HealthData[modelId] = healthList;
+            }
+
+            var monitoredModelStats = MonitoredModels.ToDictionary(x => x.ModelLibraryItemId, x => x);
+            foreach (var monitored in MonitoredModels)
+            {
+                var healths = HealthData.GetValueOrDefault(monitored.ModelLibraryItemId) ?? [];
+                monitored.SiteCount = healths.Count;
+                monitored.HealthySiteCount = healths.Count(x => x.LastStatus == "success");
+                monitored.UnhealthySiteCount = healths.Count(x => x.LastStatus == "fail");
+                monitored.AverageSuccessRate = healths.Count > 0 ? healths.Average(x => x.SuccessRate) : 0;
+                monitored.LastCheckedAt = healths
+                    .Where(x => x.LastCheckedAt.HasValue)
+                    .Select(x => x.LastCheckedAt)
+                    .OrderByDescending(x => x)
+                    .FirstOrDefault();
+                monitored.AverageDurationMs = healths.Any(x => x.LastDurationMs.HasValue)
+                    ? (int)Math.Round(healths.Where(x => x.LastDurationMs.HasValue).Average(x => x.LastDurationMs ?? 0), MidpointRounding.AwayFromZero)
+                    : null;
             }
         }
     }
