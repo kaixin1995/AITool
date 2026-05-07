@@ -504,8 +504,45 @@
     }
 
     function renderSourceBadge(source) {
-        var isChat = String(source || '').toLowerCase() === 'chat';
-        return '<span class="badge bg-' + (isChat ? 'primary' : 'secondary') + '">' + escHtml(isChat ? '对话测试' : (source || '代理')) + '</span>';
+        var normalized = String(source || '').trim().toLowerCase();
+        var badgeClass = 'secondary';
+        var label = source || '代理';
+
+        switch (normalized) {
+            case 'chat':
+                badgeClass = 'primary';
+                label = '对话测试';
+                break;
+            case 'proxy':
+                badgeClass = 'secondary';
+                label = '代理';
+                break;
+            case 'claude-code':
+                badgeClass = 'info';
+                label = 'Claude Code';
+                break;
+            case 'codex':
+                badgeClass = 'dark';
+                label = 'Codex';
+                break;
+            case 'open-code':
+                badgeClass = 'warning';
+                label = 'Open Code';
+                break;
+            case 'detection-manual':
+                badgeClass = 'success';
+                label = '手动检测';
+                break;
+            case 'detection-task':
+                badgeClass = 'purple';
+                label = '定时检测';
+                break;
+            default:
+                label = source || '代理';
+                break;
+        }
+
+        return '<span class="badge bg-' + badgeClass + '">' + escHtml(label) + '</span>';
     }
 
     function showUsageLogsStatus(message, success) {

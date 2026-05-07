@@ -64,6 +64,9 @@ public sealed class AnthropicProxyController : ControllerBase
             return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
         }
 
+        // 优先读取显式来源标记，其次退回到 User-Agent 识别常见客户端工具。
+        var requestSource = ResolveRequestSource(Request);
+
         // 读取运行时设置缓存，后台修改后会在短时间内刷新。
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
 
@@ -115,7 +118,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 AttemptedModel = route.UpstreamModelName,
                 TargetSiteId = route.SiteId,
                 Status = result.Success ? "success" : "fail",
-                Source = "proxy",
+                Source = requestSource,
                 RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
                 IsFinalResult = result.Success,
@@ -158,5 +161,41 @@ public sealed class AnthropicProxyController : ControllerBase
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
         return StatusCode(statusCode,
             new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+    }
+
+    // 优先使用自定义来源头，无法识别时再退回通用 proxy。
+    private static string ResolveRequestSource(HttpRequest request)
+    {
+        var explicitSource = request.Headers.TryGetValue("X-AITool-Source", out var sourceHeader)
+            ? sourceHeader.ToString().Trim()
+            : string.Empty;
+        if (!string.IsNullOrWhiteSpace(explicitSource))
+        {
+            return explicitSource;
+        }
+
+        var userAgent = request.Headers.UserAgent.ToString();
+        if (string.IsNullOrWhiteSpace(userAgent))
+        {
+            return "proxy";
+        }
+
+        var normalizedUserAgent = userAgent.ToLowerInvariant();
+        if (normalizedUserAgent.Contains("claude-code"))
+        {
+            return "claude-code";
+        }
+
+        if (normalizedUserAgent.Contains("codex"))
+        {
+            return "codex";
+        }
+
+        if (normalizedUserAgent.Contains("open-code") || normalizedUserAgent.Contains("opencode"))
+        {
+            return "open-code";
+        }
+
+        return "proxy";
     }
 }
