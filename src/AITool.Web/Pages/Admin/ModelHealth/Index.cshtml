@@ -4,6 +4,157 @@
     ViewData["Title"] = "模型健康看板";
 }
 
+<style>
+    .health-overview-table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+        border-radius: 18px;
+        overflow: hidden;
+        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+    }
+
+    .health-overview-table th,
+    .health-overview-table td {
+        padding: 22px 18px;
+        border-bottom: 1px solid var(--border-light);
+        vertical-align: middle;
+    }
+
+    .health-overview-table thead th {
+        font-size: 14px;
+        font-weight: 700;
+        color: var(--text-secondary);
+        background: #fff;
+        white-space: nowrap;
+    }
+
+    .health-overview-table tbody tr:last-child td {
+        border-bottom: none;
+    }
+
+    .health-model-cell {
+        min-width: 260px;
+    }
+
+    .health-model-name {
+        font-size: 16px;
+        font-weight: 700;
+        color: var(--text-primary);
+        margin-bottom: 6px;
+    }
+
+    .health-model-meta {
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .health-kpi-value {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--text-primary);
+        white-space: nowrap;
+    }
+
+    .health-kpi-value.success-rate {
+        color: var(--success);
+    }
+
+    .health-kpi-value.latency {
+        color: var(--danger);
+    }
+
+    .health-status-bars {
+        display: flex;
+        align-items: flex-end;
+        gap: 4px;
+        height: 42px;
+        min-width: 120px;
+    }
+
+    .health-status-bar-item {
+        width: 8px;
+        border-radius: 999px;
+        background: var(--success);
+        flex: 0 0 auto;
+    }
+
+    .health-status-bar-item.fail {
+        background: var(--danger);
+    }
+
+    .health-row-actions {
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+        flex-wrap: wrap;
+    }
+
+    .health-action-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 88px;
+        height: 36px;
+        padding: 0 14px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+        background: #f8fafc;
+        color: var(--text-secondary);
+        font-size: 13px;
+        font-weight: 600;
+        line-height: 1;
+        transition: all 0.18s ease;
+        box-shadow: inset 0 0 0 1px rgba(148, 163, 184, 0.12);
+    }
+
+    .health-action-btn:hover {
+        transform: translateY(-1px);
+    }
+
+    .health-action-btn.detail {
+        background: #eff6ff;
+        color: var(--primary);
+        border-color: rgba(59, 130, 246, 0.18);
+    }
+
+    .health-action-btn.detail:hover {
+        background: #dbeafe;
+        color: #1d4ed8;
+    }
+
+    .health-action-btn.remove {
+        background: #fff5f5;
+        color: var(--danger);
+        border-color: rgba(239, 68, 68, 0.16);
+    }
+
+    .health-action-btn.remove:hover {
+        background: #fee2e2;
+        color: #dc2626;
+    }
+
+    .health-action-form {
+        display: inline-flex;
+    }
+
+    .health-detail-row > td {
+        background: #fbfdff;
+        padding-top: 0;
+    }
+
+    .health-detail-panel {
+        padding-top: 16px;
+    }
+
+    @@media (max-width: 1200px) {
+        .health-overview-table {
+            display: block;
+            overflow-x: auto;
+        }
+    }
+</style>
+
 <!-- 页面标题 -->
 <div class="page-header">
     <div>
@@ -64,150 +215,173 @@
     </div>
 }
 
-<!-- 逐模型展示健康数据 -->
-@foreach (var monitored in Model.MonitoredModels)
+@if (Model.MonitoredModels.Any())
 {
-    var healths = Model.HealthData.GetValueOrDefault(monitored.ModelLibraryItemId) ?? [];
-    var detailId = $"health-detail-{monitored.ModelLibraryItemId:N}";
-    var modelRecentLogs = healths
-        .SelectMany(x => x.RecentLogs)
-        .OrderByDescending(x => x.CheckedAt)
-        .Take(24)
-        .OrderBy(x => x.CheckedAt)
-        .ToList();
+    <div class="table-wrapper">
+        <table class="health-overview-table">
+            <thead>
+                <tr>
+                    <th>模型</th>
+                    <th>最近状态</th>
+                    <th>成功率</th>
+                    <th>总调用</th>
+                    <th>平均延迟</th>
+                    <th style="text-align:right;">操作</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var monitored in Model.MonitoredModels)
+                {
+                    var healths = Model.HealthData.GetValueOrDefault(monitored.ModelLibraryItemId) ?? [];
+                    var detailId = $"health-detail-{monitored.ModelLibraryItemId:N}";
+                    var modelRecentLogs = healths
+                        .SelectMany(x => x.RecentLogs)
+                        .OrderByDescending(x => x.CheckedAt)
+                        .Take(12)
+                        .OrderBy(x => x.CheckedAt)
+                        .ToList();
 
-    <div class="detection-group health-model-group" data-display-name="@monitored.DisplayName">
-        <div class="detection-group-header align-items-start">
-            <div style="flex:1; min-width:0;">
-                <div class="d-flex flex-wrap align-items-center gap-2 mb-2">
-                    <h3 class="detection-group-title mb-0">@monitored.DisplayName</h3>
-                    <span class="badge bg-success">@monitored.HealthySiteCount 正常</span>
-                    <span class="badge bg-danger">@monitored.UnhealthySiteCount 异常</span>
-                </div>
-
-                <div class="row g-3 mb-0">
-                    <div class="col-lg-3 col-md-4 col-sm-6">
-                        <div class="stat-card">
-                            <div class="stat-card-icon success">📈</div>
-                            <div class="stat-card-value">@((monitored.AverageSuccessRate * 100).ToString("F1"))%</div>
-                            <div class="stat-card-label">平均成功率</div>
-                        </div>
-                    </div>
-                    <div class="col-lg-3 col-md-4 col-sm-6">
-                        <div class="stat-card">
-                            <div class="stat-card-icon warning">⏱</div>
-                            <div class="stat-card-value">@(monitored.AverageDurationMs.HasValue ? $"{monitored.AverageDurationMs} ms" : "-")</div>
-                            <div class="stat-card-label">平均耗时</div>
-                        </div>
-                    </div>
-                    <div class="col-lg-6 col-md-12">
-                        <div class="stat-card" style="height:100%;">
-                            <div class="stat-card-label" style="margin-bottom:10px;">最近状态</div>
+                    <tr class="health-model-group" data-display-name="@monitored.DisplayName" data-detail-id="@detailId">
+                        <td class="health-model-cell">
+                            <div class="health-model-name">@monitored.DisplayName</div>
+                            <div class="health-model-meta">@monitored.SiteCount 个关联站点</div>
+                        </td>
+                        <td>
                             @if (modelRecentLogs.Any())
                             {
-                                <div class="health-bars" style="align-items:flex-end; min-height:72px;">
+                                <div class="health-status-bars">
                                     @foreach (var log in modelRecentLogs)
                                     {
-                                        var barHeight = Math.Max(Math.Min(log.DurationMs / 10, 72), 12);
-                                        var barColor = log.Status == "success" ? "var(--success)" : "var(--danger)";
-                                        <div class="health-bar-item" title="@log.CheckedAt.ToString("MM-dd HH:mm") | @log.Status | @log.DurationMs ms@(log.ErrorMessage is not null ? " | " + log.ErrorMessage : "")">
-                                            <div class="health-bar" style="height: @(barHeight)px; background: @barColor;"></div>
-                                        </div>
+                                        var barHeight = Math.Max(Math.Min(log.DurationMs / 10, 36), 12);
+                                        var barClass = log.Status == "success" ? string.Empty : "fail";
+                                        <div class="health-status-bar-item @barClass" style="height:@(barHeight)px;" title="@log.CheckedAt.ToString("MM-dd HH:mm") | @log.Status | @log.DurationMs ms@(log.ErrorMessage is not null ? " | " + log.ErrorMessage : "")"></div>
                                     }
                                 </div>
                             }
                             else
                             {
-                                <div class="text-secondary" style="font-size: 12.5px; padding: 12px 0;">暂无请求记录</div>
+                                <span class="text-secondary">-</span>
                             }
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <div class="d-flex flex-column align-items-end gap-2 ms-3">
-                <button type="button" class="btn btn-sm btn-outline-primary" onclick="toggleHealthDetail('@detailId', this)">查看明细</button>
-                <form method="post" asp-page-handler="RemoveMonitor" asp-route-modelId="@monitored.ModelLibraryItemId" class="d-inline">
-                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认移除该模型的监控？')">移除监控</button>
-                </form>
-            </div>
-        </div>
-
-        <div id="@detailId" class="health-detail-panel" style="display:none;">
-            @if (healths.Any())
-            {
-                <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
-                    <span class="badge bg-light text-dark">@monitored.SiteCount 个关联站点</span>
-                    <span class="badge bg-success">@monitored.HealthySiteCount 个正常站点</span>
-                    <span class="badge bg-danger">@monitored.UnhealthySiteCount 个异常站点</span>
-                </div>
-
-                foreach (var site in healths)
-                {
-                    <div class="health-site-card">
-                        <div class="health-site-header">
-                            <div>
-                                <strong class="health-site-name">@site.SiteName</strong>
-                                <code>@site.RemoteModelName</code>
-                                <span class="badge bg-@(site.LastStatus == "success" ? "success" : site.LastStatus == "fail" ? "danger" : "secondary")">
-                                    @(site.LastStatus == "success" ? "正常" : site.LastStatus == "fail" ? "异常" : site.LastStatus)
-                                </span>
+                        </td>
+                        <td>
+                            <span class="health-kpi-value success-rate">@((monitored.AverageSuccessRate * 100).ToString("F1"))%</span>
+                        </td>
+                        <td>
+                            <span class="health-kpi-value">@monitored.TotalRequestCount</span>
+                        </td>
+                        <td>
+                            <span class="health-kpi-value latency">@(monitored.AverageDurationMs.HasValue ? $"{FormatDuration(monitored.AverageDurationMs.Value)}" : "-")</span>
+                        </td>
+                        <td>
+                            <div class="health-row-actions">
+                                <button type="button" class="health-action-btn detail" onclick="toggleHealthDetail('@detailId', this)">查看明细</button>
+                                <form method="post" asp-page-handler="RemoveMonitor" asp-route-modelId="@monitored.ModelLibraryItemId" class="health-action-form">
+                                    <button type="submit" class="health-action-btn remove" onclick="return confirm('确认移除该模型的监控？')">移除监控</button>
+                                </form>
                             </div>
-                            <div class="health-site-meta">
-                                成功率 @((site.SuccessRate * 100).ToString("F1"))%
-                                @if (site.LastDurationMs.HasValue)
+                        </td>
+                    </tr>
+                    <tr id="@detailId" class="health-detail-row" style="display:none;">
+                        <td colspan="6">
+                            <div class="health-detail-panel">
+                                @if (healths.Any())
                                 {
-                                    <span class="text-secondary">· @site.LastDurationMs ms</span>
-                                }
-                            </div>
-                        </div>
+                                    <div class="d-flex flex-wrap align-items-center gap-2 mb-3">
+                                        <span class="badge bg-light text-dark">@monitored.SiteCount 个关联站点</span>
+                                        <span class="badge bg-success">@monitored.HealthySiteCount 个正常站点</span>
+                                        <span class="badge bg-danger">@monitored.UnhealthySiteCount 个异常站点</span>
+                                    </div>
 
-                        <div class="health-rate-bar">
-                            <div class="health-rate-label">成功率 @((site.SuccessRate * 100).ToString("F1"))%</div>
-                            <div class="health-rate-track">
-                                <div class="health-rate-fill" style="width: @((site.SuccessRate * 100).ToString("F1"))%;
-                                    background: @(site.SuccessRate >= 0.8 ? "var(--success)" : site.SuccessRate >= 0.5 ? "var(--warning)" : "var(--danger)");"></div>
-                            </div>
-                        </div>
-
-                        @if (site.RecentLogs.Any())
-                        {
-                            <div class="health-timeline">
-                                <div class="health-timeline-label">最近 @site.RecentLogs.Count 次请求</div>
-                                <div class="health-bars">
-                                    @foreach (var log in site.RecentLogs.OrderBy(l => l.CheckedAt))
+                                    foreach (var site in healths)
                                     {
-                                        var barHeight = Math.Max(Math.Min(log.DurationMs / 10, 100), 8);
-                                        var barColor = log.Status == "success" ? "var(--success)" : "var(--danger)";
-                                        <div class="health-bar-item" title="@log.CheckedAt.ToString("MM-dd HH:mm") | @log.Status | @log.DurationMs ms@(log.ErrorMessage is not null ? " | " + log.ErrorMessage : "")">
-                                            <div class="health-bar" style="height: @(barHeight)px; background: @barColor;"></div>
+                                        <div class="health-site-card">
+                                            <div class="health-site-header">
+                                                <div>
+                                                    <strong class="health-site-name">@site.SiteName</strong>
+                                                    <code>@site.RemoteModelName</code>
+                                                    <span class="badge bg-@(site.LastStatus == "success" ? "success" : site.LastStatus == "fail" ? "danger" : "secondary")">
+                                                        @(site.LastStatus == "success" ? "正常" : site.LastStatus == "fail" ? "异常" : site.LastStatus)
+                                                    </span>
+                                                </div>
+                                                <div class="health-site-meta">
+                                                    成功率 @((site.SuccessRate * 100).ToString("F1"))%
+                                                    @if (site.LastDurationMs.HasValue)
+                                                    {
+                                                        <span class="text-secondary">· @site.LastDurationMs ms</span>
+                                                    }
+                                                </div>
+                                            </div>
+
+                                            <div class="health-rate-bar">
+                                                <div class="health-rate-label">成功率 @((site.SuccessRate * 100).ToString("F1"))%</div>
+                                                <div class="health-rate-track">
+                                                    <div class="health-rate-fill" style="width: @((site.SuccessRate * 100).ToString("F1"))%;
+                                                        background: @(site.SuccessRate >= 0.8 ? "var(--success)" : site.SuccessRate >= 0.5 ? "var(--warning)" : "var(--danger)");"></div>
+                                                </div>
+                                            </div>
+
+                                            @if (site.RecentLogs.Any())
+                                            {
+                                                <div class="health-timeline">
+                                                    <div class="health-timeline-label">最近 @site.RecentLogs.Count 次请求</div>
+                                                    <div class="health-bars">
+                                                        @foreach (var log in site.RecentLogs.OrderBy(l => l.CheckedAt))
+                                                        {
+                                                            var barHeight = Math.Max(Math.Min(log.DurationMs / 10, 100), 8);
+                                                            var barColor = log.Status == "success" ? "var(--success)" : "var(--danger)";
+                                                            <div class="health-bar-item" title="@log.CheckedAt.ToString("MM-dd HH:mm") | @log.Status | @log.DurationMs ms@(log.ErrorMessage is not null ? " | " + log.ErrorMessage : "")">
+                                                                <div class="health-bar" style="height: @(barHeight)px; background: @barColor;"></div>
+                                                            </div>
+                                                        }
+                                                    </div>
+                                                    <div class="health-timeline-range">
+                                                        <span>@site.RecentLogs.OrderBy(l => l.CheckedAt).First().CheckedAt.ToString("MM-dd")</span>
+                                                        <span>@site.RecentLogs.OrderBy(l => l.CheckedAt).Last().CheckedAt.ToString("MM-dd")</span>
+                                                    </div>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <div class="text-secondary" style="font-size: 12.5px; padding: 8px 0;">暂无请求记录</div>
+                                            }
                                         </div>
                                     }
-                                </div>
-                                <div class="health-timeline-range">
-                                    <span>@site.RecentLogs.OrderBy(l => l.CheckedAt).First().CheckedAt.ToString("MM-dd")</span>
-                                    <span>@site.RecentLogs.OrderBy(l => l.CheckedAt).Last().CheckedAt.ToString("MM-dd")</span>
-                                </div>
+                                }
+                                else
+                                {
+                                    <div class="table-wrapper">
+                                        <div class="table-empty">
+                                            <div class="table-empty-icon">📭</div>
+                                            <div class="table-empty-text">该模型暂无站点映射数据</div>
+                                        </div>
+                                    </div>
+                                }
                             </div>
-                        }
-                        else
-                        {
-                            <div class="text-secondary" style="font-size: 12.5px; padding: 8px 0;">暂无请求记录</div>
-                        }
-                    </div>
+                        </td>
+                    </tr>
                 }
-            }
-            else
-            {
-                <div class="table-wrapper">
-                    <div class="table-empty">
-                        <div class="table-empty-icon">📭</div>
-                        <div class="table-empty-text">该模型暂无站点映射数据</div>
-                    </div>
-                </div>
-            }
-        </div>
+            </tbody>
+        </table>
     </div>
+}
+
+@functions {
+    private static string FormatDuration(int durationMs)
+    {
+        if (durationMs >= 60000)
+        {
+            var minutes = durationMs / 60000;
+            var seconds = (durationMs % 60000) / 1000;
+            return $"{minutes}分 {seconds}秒";
+        }
+
+        if (durationMs >= 1000)
+        {
+            return $"{durationMs / 1000.0:F1}秒";
+        }
+
+        return $"{durationMs}ms";
+    }
 }
 
 <script>
@@ -216,7 +390,22 @@
         var keyword = document.getElementById('healthSearch').value.toLowerCase();
         document.querySelectorAll('.health-model-group').forEach(function(g) {
             var name = g.getAttribute('data-display-name').toLowerCase();
-            g.style.display = name.indexOf(keyword) >= 0 ? '' : 'none';
+            var visible = name.indexOf(keyword) >= 0;
+            g.style.display = visible ? '' : 'none';
+
+            var detailId = g.getAttribute('data-detail-id');
+            if (!detailId) {
+                return;
+            }
+
+            var detailRow = document.getElementById(detailId);
+            if (!detailRow) {
+                return;
+            }
+
+            if (!visible) {
+                detailRow.style.display = 'none';
+            }
         });
     }
 

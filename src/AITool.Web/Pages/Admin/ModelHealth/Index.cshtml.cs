@@ -50,6 +50,7 @@ public class MonitoredModelItem
     public double AverageSuccessRate { get; set; }
     public DateTimeOffset? LastCheckedAt { get; set; }
     public int? AverageDurationMs { get; set; }
+    public int TotalRequestCount { get; set; }
 }
 
 // 模型下拉选项
@@ -198,10 +199,10 @@ public class IndexModel : PageModel
                 HealthData[modelId] = healthList;
             }
 
-            var monitoredModelStats = MonitoredModels.ToDictionary(x => x.ModelLibraryItemId, x => x);
             foreach (var monitored in MonitoredModels)
             {
                 var healths = HealthData.GetValueOrDefault(monitored.ModelLibraryItemId) ?? [];
+
                 monitored.SiteCount = healths.Count;
                 monitored.HealthySiteCount = healths.Count(x => x.LastStatus == "success");
                 monitored.UnhealthySiteCount = healths.Count(x => x.LastStatus == "fail");
@@ -214,6 +215,8 @@ public class IndexModel : PageModel
                 monitored.AverageDurationMs = healths.Any(x => x.LastDurationMs.HasValue)
                     ? (int)Math.Round(healths.Where(x => x.LastDurationMs.HasValue).Average(x => x.LastDurationMs ?? 0), MidpointRounding.AwayFromZero)
                     : null;
+                // 汇总最近展示窗口内的请求数，供列表模式直接展示。
+                monitored.TotalRequestCount = healths.Sum(x => x.RecentLogs.Count);
             }
         }
     }
