@@ -26,7 +26,6 @@ public class IndexModel : PageModel
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         SiteFilters = await _dbContext.Sites
-            .Where(s => s.IsEnabled)
             .OrderBy(s => s.Name)
             .Select(s => new UsageLogSiteFilterItem
             {
