@@ -52,6 +52,10 @@ public sealed class ModelHealthRequestService
             };
         }
 
+        var runtimeSettings = await _dbContext.SystemRuntimeSettings
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken)
+            ?? new AITool.Domain.Operations.SystemRuntimeSettings();
         var requestBody = BuildProbeRequestBody(site.ProtocolType, mapping.RemoteModelName, BuildRandomMathPrompt());
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
@@ -62,8 +66,8 @@ public sealed class ModelHealthRequestService
             RequestBody = requestBody,
             PreparedRequestBody = requestBody,
             EnableStreaming = false,
-            RequestTimeoutSeconds = 60,
-            RetryCount = 0
+            RequestTimeoutSeconds = runtimeSettings.DetectionRequestTimeoutSeconds,
+            RetryCount = runtimeSettings.DetectionRetryCount
         }, cancellationToken);
 
         var status = forwardResult.Success ? "success" : "fail";

@@ -2,6 +2,7 @@ using AITool.Application.Operations;
 using AITool.Domain.Operations;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using AITool.Web.Pages.Admin.System;
 using AITool.Web.Services;
 using FluentAssertions;
@@ -23,6 +24,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
         services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
         services.AddSingleton<ProxyRequestMetadataCache>();
+        services.AddSingleton<RouteCircuitStateStore>();
         _serviceProvider = services.BuildServiceProvider();
     }
 
@@ -33,6 +35,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        var circuitStore = scope.ServiceProvider.GetRequiredService<RouteCircuitStateStore>();
 
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
@@ -42,8 +45,13 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
             Id = 1,
             ProxyRequestTimeoutSeconds = 8,
             ProxyRetryCount = 1,
+            DetectionRequestTimeoutSeconds = 10,
+            DetectionRetryCount = 0,
+            DetectionConcurrency = 1,
+            CircuitBreakerFailureThreshold = 5,
+            CircuitBreakerRecoveryMinutes = 2,
             UsageLogRetentionDays = 7,
-            DetectionLogRetentionDays = 7
+            UsageLogAutoCleanupEnabled = true
         });
         await db.SaveChangesAsync();
 
@@ -51,14 +59,19 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         before.ProxyRequestTimeoutSeconds.Should().Be(8);
         before.ProxyRetryCount.Should().Be(1);
 
-        var page = new SettingsModel(settingsService, cache)
+        var page = new SettingsModel(settingsService, cache, circuitStore)
         {
             Input = new UpdateSystemRuntimeSettingsRequest
             {
                 ProxyRequestTimeoutSeconds = 18,
                 ProxyRetryCount = 4,
+                DetectionRequestTimeoutSeconds = 22,
+                DetectionRetryCount = 1,
+                DetectionConcurrency = 3,
+                CircuitBreakerFailureThreshold = 6,
+                CircuitBreakerRecoveryMinutes = 7,
                 UsageLogRetentionDays = 9,
-                DetectionLogRetentionDays = 10
+                UsageLogAutoCleanupEnabled = false
             }
         };
 
@@ -67,6 +80,11 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         var after = await cache.GetRuntimeSettingsAsync(CancellationToken.None);
         after.ProxyRequestTimeoutSeconds.Should().Be(18);
         after.ProxyRetryCount.Should().Be(4);
+        after.DetectionRequestTimeoutSeconds.Should().Be(22);
+        after.DetectionConcurrency.Should().Be(3);
+        after.CircuitBreakerFailureThreshold.Should().Be(6);
+        after.CircuitBreakerRecoveryMinutes.Should().Be(7);
+        after.UsageLogAutoCleanupEnabled.Should().BeFalse();
     }
 
     public async ValueTask DisposeAsync()

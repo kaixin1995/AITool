@@ -51,6 +51,19 @@
                 </select>
             </div>
             <div class="col-md-3">
+                <label class="form-label" for="sourceFilterSelect">来源筛选</label>
+                <select id="sourceFilterSelect" class="form-select">
+                    <option value="">全部来源</option>
+                    <option value="proxy">代理</option>
+                    <option value="chat">对话测试</option>
+                    <option value="claude-code">Claude Code</option>
+                    <option value="codex">Codex</option>
+                    <option value="open-code">Open Code</option>
+                    <option value="detection-manual">手动检测</option>
+                    <option value="detection-task">定时检测</option>
+                </select>
+            </div>
+            <div class="col-md-3">
                 <div class="form-check form-switch mb-2">
                     <input class="form-check-input" type="checkbox" id="autoRefreshToggle" checked>
                     <label class="form-check-label" for="autoRefreshToggle">自动刷新（固定 5 秒）</label>
@@ -251,6 +264,9 @@
         document.getElementById('siteFilterSelect').addEventListener('change', function() {
             loadUsageLogsPage(1);
         });
+        document.getElementById('sourceFilterSelect').addEventListener('change', function() {
+            loadUsageLogsPage(1);
+        });
         document.getElementById('prevPageButton').addEventListener('click', function() {
             if (usageLogsCurrentPage > 1) {
                 loadUsageLogsPage(usageLogsCurrentPage - 1);
@@ -350,6 +366,11 @@
         var siteId = document.getElementById('siteFilterSelect').value;
         if (siteId) {
             query.set('siteId', siteId);
+        }
+
+        var source = document.getElementById('sourceFilterSelect').value;
+        if (source) {
+            query.set('source', source);
         }
 
         return query.toString();

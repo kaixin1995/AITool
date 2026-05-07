@@ -125,12 +125,15 @@ using (var scope = app.Services.CreateScope())
         {
             EnsureColumn(cmd, "SystemRuntimeSettings", "ProxyRequestTimeoutSeconds", "ALTER TABLE SystemRuntimeSettings ADD COLUMN ProxyRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60");
             EnsureColumn(cmd, "SystemRuntimeSettings", "ProxyRetryCount", "ALTER TABLE SystemRuntimeSettings ADD COLUMN ProxyRetryCount INTEGER NOT NULL DEFAULT 1");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "DetectionRequestTimeoutSeconds", "ALTER TABLE SystemRuntimeSettings ADD COLUMN DetectionRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "DetectionRetryCount", "ALTER TABLE SystemRuntimeSettings ADD COLUMN DetectionRetryCount INTEGER NOT NULL DEFAULT 0");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "DetectionConcurrency", "ALTER TABLE SystemRuntimeSettings ADD COLUMN DetectionConcurrency INTEGER NOT NULL DEFAULT 1");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "CircuitBreakerFailureThreshold", "ALTER TABLE SystemRuntimeSettings ADD COLUMN CircuitBreakerFailureThreshold INTEGER NOT NULL DEFAULT 5");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "CircuitBreakerRecoveryMinutes", "ALTER TABLE SystemRuntimeSettings ADD COLUMN CircuitBreakerRecoveryMinutes INTEGER NOT NULL DEFAULT 2");
             EnsureColumn(cmd, "SystemRuntimeSettings", "UsageLogRetentionDays", "ALTER TABLE SystemRuntimeSettings ADD COLUMN UsageLogRetentionDays INTEGER NOT NULL DEFAULT 7");
-            EnsureColumn(cmd, "SystemRuntimeSettings", "DetectionLogRetentionDays", "ALTER TABLE SystemRuntimeSettings ADD COLUMN DetectionLogRetentionDays INTEGER NOT NULL DEFAULT 7");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "UsageLogAutoCleanupEnabled", "ALTER TABLE SystemRuntimeSettings ADD COLUMN UsageLogAutoCleanupEnabled INTEGER NOT NULL DEFAULT 1");
             EnsureColumn(cmd, "SystemRuntimeSettings", "LastUsageLogPrunedAt", "ALTER TABLE SystemRuntimeSettings ADD COLUMN LastUsageLogPrunedAt TEXT NULL");
             EnsureColumn(cmd, "SystemRuntimeSettings", "LastUsageLogPrunedCount", "ALTER TABLE SystemRuntimeSettings ADD COLUMN LastUsageLogPrunedCount INTEGER NOT NULL DEFAULT 0");
-            EnsureColumn(cmd, "SystemRuntimeSettings", "LastDetectionLogPrunedAt", "ALTER TABLE SystemRuntimeSettings ADD COLUMN LastDetectionLogPrunedAt TEXT NULL");
-            EnsureColumn(cmd, "SystemRuntimeSettings", "LastDetectionLogPrunedCount", "ALTER TABLE SystemRuntimeSettings ADD COLUMN LastDetectionLogPrunedCount INTEGER NOT NULL DEFAULT 0");
         }
     }
     catch (Exception ex)
@@ -150,6 +153,17 @@ using (var scope = app.Services.CreateScope())
         var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         logger.LogWarning(ex, "启动时注册检测任务失败，将在下次启动时重试");
     }
+}
+
+// 启动时将当前熔断配置同步到内存状态存储
+using (var scope = app.Services.CreateScope())
+{
+    var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
+    var circuitStore = scope.ServiceProvider.GetRequiredService<RouteCircuitStateStore>();
+    var settings = await settingsService.GetOrCreateAsync();
+    circuitStore.UpdateOptions(
+        TimeSpan.FromMinutes(settings.CircuitBreakerRecoveryMinutes),
+        settings.CircuitBreakerFailureThreshold);
 }
 
 // 启用静态文件服务，提供 wwwroot 下的 CSS/JS 等资源

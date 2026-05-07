@@ -12,6 +12,7 @@ public sealed class UsageLogListQueryDto
     public DateTimeOffset? StartTime { get; set; }
     public DateTimeOffset? EndTime { get; set; }
     public Guid? SiteId { get; set; }
+    public string Source { get; set; } = string.Empty;
 }
 
 public sealed class UsageLogListResponseDto
@@ -118,6 +119,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 .ToListAsync(cancellationToken))
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
             .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+            .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(x => x.RequestedAt)
             .ToList();
 
@@ -227,6 +229,7 @@ public sealed class UsageLogsApiController : ControllerBase
         var logs = (await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken))
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
             .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+            .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         // 按 RequestId 分组，每组取最后一条记录作为该请求的最终状态

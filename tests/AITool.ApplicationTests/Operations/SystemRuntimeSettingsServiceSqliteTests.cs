@@ -36,8 +36,13 @@ public sealed class SystemRuntimeSettingsServiceSqliteTests : IDisposable
         settings.Id.Should().Be(1);
         settings.ProxyRequestTimeoutSeconds.Should().Be(60);
         settings.ProxyRetryCount.Should().Be(1);
+        settings.DetectionRequestTimeoutSeconds.Should().Be(60);
+        settings.DetectionRetryCount.Should().Be(0);
+        settings.DetectionConcurrency.Should().Be(1);
+        settings.CircuitBreakerFailureThreshold.Should().Be(5);
+        settings.CircuitBreakerRecoveryMinutes.Should().Be(2);
         settings.UsageLogRetentionDays.Should().Be(7);
-        settings.DetectionLogRetentionDays.Should().Be(7);
+        settings.UsageLogAutoCleanupEnabled.Should().BeTrue();
 
         var exists = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
         exists.ProxyRequestTimeoutSeconds.Should().Be(60);

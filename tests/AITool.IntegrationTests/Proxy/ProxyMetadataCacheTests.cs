@@ -78,18 +78,31 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
             Id = 1,
             ProxyRequestTimeoutSeconds = 8,
             ProxyRetryCount = 1,
+            DetectionRequestTimeoutSeconds = 10,
+            DetectionRetryCount = 0,
+            DetectionConcurrency = 1,
+            CircuitBreakerFailureThreshold = 5,
+            CircuitBreakerRecoveryMinutes = 2,
             UsageLogRetentionDays = 7,
-            DetectionLogRetentionDays = 7
+            UsageLogAutoCleanupEnabled = true
         });
         await db.SaveChangesAsync();
 
         var before = await cache.GetRuntimeSettingsAsync(CancellationToken.None);
         before.ProxyRequestTimeoutSeconds.Should().Be(8);
         before.ProxyRetryCount.Should().Be(1);
+        before.DetectionRequestTimeoutSeconds.Should().Be(10);
+        before.CircuitBreakerFailureThreshold.Should().Be(5);
 
         var settings = await db.SystemRuntimeSettings.SingleAsync();
         settings.ProxyRequestTimeoutSeconds = 15;
         settings.ProxyRetryCount = 3;
+        settings.DetectionRequestTimeoutSeconds = 22;
+        settings.DetectionRetryCount = 2;
+        settings.DetectionConcurrency = 4;
+        settings.CircuitBreakerFailureThreshold = 7;
+        settings.CircuitBreakerRecoveryMinutes = 9;
+        settings.UsageLogAutoCleanupEnabled = false;
         await db.SaveChangesAsync();
 
         cache.InvalidateRuntimeSettings();
@@ -97,6 +110,12 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var after = await cache.GetRuntimeSettingsAsync(CancellationToken.None);
         after.ProxyRequestTimeoutSeconds.Should().Be(15);
         after.ProxyRetryCount.Should().Be(3);
+        after.DetectionRequestTimeoutSeconds.Should().Be(22);
+        after.DetectionRetryCount.Should().Be(2);
+        after.DetectionConcurrency.Should().Be(4);
+        after.CircuitBreakerFailureThreshold.Should().Be(7);
+        after.CircuitBreakerRecoveryMinutes.Should().Be(9);
+        after.UsageLogAutoCleanupEnabled.Should().BeFalse();
     }
 
     [Fact]

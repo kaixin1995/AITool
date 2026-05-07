@@ -1,4 +1,3 @@
-using AITool.Domain.Detection;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
@@ -30,7 +29,7 @@ public sealed class LogRetentionServiceTests : IDisposable
         {
             Id = 1,
             UsageLogRetentionDays = 3,
-            DetectionLogRetentionDays = 5
+            UsageLogAutoCleanupEnabled = true
         });
 
         _dbContext.ProxyUsageLogs.AddRange(
@@ -39,8 +38,11 @@ public sealed class LogRetentionServiceTests : IDisposable
                 AccessKeyId = Guid.NewGuid(),
                 ProtocolType = "OpenAI",
                 RequestModel = "gpt-5",
+                AttemptedModel = "gpt-5",
                 TargetSiteId = Guid.NewGuid(),
                 Status = "fail",
+                ErrorMessage = string.Empty,
+                ReasoningEffort = string.Empty,
                 InputTokens = 10,
                 OutputTokens = 5,
                 TotalTokens = 15,
@@ -51,30 +53,15 @@ public sealed class LogRetentionServiceTests : IDisposable
                 AccessKeyId = Guid.NewGuid(),
                 ProtocolType = "OpenAI",
                 RequestModel = "gpt-5",
+                AttemptedModel = "gpt-5",
                 TargetSiteId = Guid.NewGuid(),
                 Status = "success",
+                ErrorMessage = string.Empty,
+                ReasoningEffort = string.Empty,
                 InputTokens = 10,
                 OutputTokens = 5,
                 TotalTokens = 15,
                 RequestedAt = DateTimeOffset.UtcNow.AddDays(-2)
-            });
-
-        _dbContext.DetectionLogs.AddRange(
-            new DetectionLog
-            {
-                SiteId = Guid.NewGuid(),
-                ModelLibraryItemId = Guid.NewGuid(),
-                Status = "fail",
-                DurationMs = 100,
-                CheckedAt = DateTimeOffset.UtcNow.AddDays(-6)
-            },
-            new DetectionLog
-            {
-                SiteId = Guid.NewGuid(),
-                ModelLibraryItemId = Guid.NewGuid(),
-                Status = "success",
-                DurationMs = 50,
-                CheckedAt = DateTimeOffset.UtcNow.AddDays(-4)
             });
 
         await _dbContext.SaveChangesAsync();
@@ -84,20 +71,11 @@ public sealed class LogRetentionServiceTests : IDisposable
         var settings = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
 
         result.UsageLogPrunedCount.Should().Be(1);
-        result.DetectionLogPrunedCount.Should().Be(1);
-
         _dbContext.ProxyUsageLogs.Should().ContainSingle();
         _dbContext.ProxyUsageLogs.Single().RequestedAt.Should().BeAfter(beforePruneAt.AddDays(-3).AddMinutes(-1));
-
-        _dbContext.DetectionLogs.Should().ContainSingle();
-        _dbContext.DetectionLogs.Single().CheckedAt.Should().BeAfter(beforePruneAt.AddDays(-5).AddMinutes(-1));
-
         settings.LastUsageLogPrunedCount.Should().Be(1);
-        settings.LastDetectionLogPrunedCount.Should().Be(1);
         settings.LastUsageLogPrunedAt.Should().NotBeNull();
-        settings.LastDetectionLogPrunedAt.Should().NotBeNull();
         settings.LastUsageLogPrunedAt.Should().BeOnOrAfter(beforePruneAt);
-        settings.LastDetectionLogPrunedAt.Should().BeOnOrAfter(beforePruneAt);
     }
 
     [Fact]
@@ -110,27 +88,22 @@ public sealed class LogRetentionServiceTests : IDisposable
         {
             Id = 1,
             UsageLogRetentionDays = 3,
-            DetectionLogRetentionDays = 5
+            UsageLogAutoCleanupEnabled = true
         });
         _dbContext.ProxyUsageLogs.Add(new ProxyUsageLog
         {
             AccessKeyId = Guid.NewGuid(),
             ProtocolType = "OpenAI",
             RequestModel = "gpt-5",
+            AttemptedModel = "gpt-5",
             TargetSiteId = Guid.NewGuid(),
             Status = "success",
+            ErrorMessage = string.Empty,
+            ReasoningEffort = string.Empty,
             InputTokens = 10,
             OutputTokens = 5,
             TotalTokens = 15,
             RequestedAt = baseTime.AddDays(-3)
-        });
-        _dbContext.DetectionLogs.Add(new DetectionLog
-        {
-            SiteId = Guid.NewGuid(),
-            ModelLibraryItemId = Guid.NewGuid(),
-            Status = "success",
-            DurationMs = 50,
-            CheckedAt = baseTime.AddDays(-5)
         });
         await _dbContext.SaveChangesAsync();
 
@@ -138,15 +111,45 @@ public sealed class LogRetentionServiceTests : IDisposable
         var settings = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
 
         result.UsageLogPrunedCount.Should().Be(0);
-        result.DetectionLogPrunedCount.Should().Be(0);
         _dbContext.ProxyUsageLogs.Should().ContainSingle();
-        _dbContext.DetectionLogs.Should().ContainSingle();
         settings.LastUsageLogPrunedCount.Should().Be(0);
-        settings.LastDetectionLogPrunedCount.Should().Be(0);
         settings.LastUsageLogPrunedAt.Should().Be(baseTime);
-        settings.LastDetectionLogPrunedAt.Should().Be(baseTime);
     }
 
+    [Fact]
+    public async Task PruneAsync_skips_cleanup_when_auto_cleanup_disabled()
+    {
+        var baseTime = new DateTimeOffset(2026, 04, 28, 12, 00, 00, TimeSpan.Zero);
+        var service = new LogRetentionService(_dbContext, () => baseTime);
+
+        _dbContext.SystemRuntimeSettings.Add(new SystemRuntimeSettings
+        {
+            Id = 1,
+            UsageLogRetentionDays = 3,
+            UsageLogAutoCleanupEnabled = false
+        });
+        _dbContext.ProxyUsageLogs.Add(new ProxyUsageLog
+        {
+            AccessKeyId = Guid.NewGuid(),
+            ProtocolType = "OpenAI",
+            RequestModel = "gpt-5",
+            AttemptedModel = "gpt-5",
+            TargetSiteId = Guid.NewGuid(),
+            Status = "success",
+            ErrorMessage = string.Empty,
+            ReasoningEffort = string.Empty,
+            RequestedAt = baseTime.AddDays(-10)
+        });
+        await _dbContext.SaveChangesAsync();
+
+        var result = await service.PruneAsync();
+        var settings = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
+
+        result.UsageLogPrunedCount.Should().Be(0);
+        _dbContext.ProxyUsageLogs.Should().ContainSingle();
+        settings.LastUsageLogPrunedCount.Should().Be(0);
+        settings.LastUsageLogPrunedAt.Should().Be(baseTime);
+    }
 
     public void Dispose() => _dbContext.Dispose();
 }

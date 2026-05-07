@@ -29,8 +29,13 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         settings.Id.Should().Be(1);
         settings.ProxyRequestTimeoutSeconds.Should().Be(60);
         settings.ProxyRetryCount.Should().Be(1);
+        settings.DetectionRequestTimeoutSeconds.Should().Be(60);
+        settings.DetectionRetryCount.Should().Be(0);
+        settings.DetectionConcurrency.Should().Be(1);
+        settings.CircuitBreakerFailureThreshold.Should().Be(5);
+        settings.CircuitBreakerRecoveryMinutes.Should().Be(2);
         settings.UsageLogRetentionDays.Should().Be(7);
-        settings.DetectionLogRetentionDays.Should().Be(7);
+        settings.UsageLogAutoCleanupEnabled.Should().BeTrue();
     }
 
     [Fact]
@@ -41,8 +46,13 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
             Id = 2,
             ProxyRequestTimeoutSeconds = 120,
             ProxyRetryCount = 5,
+            DetectionRequestTimeoutSeconds = 30,
+            DetectionRetryCount = 2,
+            DetectionConcurrency = 4,
+            CircuitBreakerFailureThreshold = 8,
+            CircuitBreakerRecoveryMinutes = 6,
             UsageLogRetentionDays = 30,
-            DetectionLogRetentionDays = 30
+            UsageLogAutoCleanupEnabled = false
         });
         await _dbContext.SaveChangesAsync();
 
@@ -51,8 +61,13 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         settings.Id.Should().Be(1);
         settings.ProxyRequestTimeoutSeconds.Should().Be(60);
         settings.ProxyRetryCount.Should().Be(1);
+        settings.DetectionRequestTimeoutSeconds.Should().Be(60);
+        settings.DetectionRetryCount.Should().Be(0);
+        settings.DetectionConcurrency.Should().Be(1);
+        settings.CircuitBreakerFailureThreshold.Should().Be(5);
+        settings.CircuitBreakerRecoveryMinutes.Should().Be(2);
         settings.UsageLogRetentionDays.Should().Be(7);
-        settings.DetectionLogRetentionDays.Should().Be(7);
+        settings.UsageLogAutoCleanupEnabled.Should().BeTrue();
         _dbContext.SystemRuntimeSettings.Should().ContainSingle(x => x.Id == 1);
     }
 
@@ -65,22 +80,37 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         {
             ProxyRequestTimeoutSeconds = 90,
             ProxyRetryCount = 3,
+            DetectionRequestTimeoutSeconds = 45,
+            DetectionRetryCount = 2,
+            DetectionConcurrency = 6,
+            CircuitBreakerFailureThreshold = 7,
+            CircuitBreakerRecoveryMinutes = 9,
             UsageLogRetentionDays = 14,
-            DetectionLogRetentionDays = 21
+            UsageLogAutoCleanupEnabled = false
         });
 
         updated.Id.Should().Be(1);
         updated.ProxyRequestTimeoutSeconds.Should().Be(90);
         updated.ProxyRetryCount.Should().Be(3);
+        updated.DetectionRequestTimeoutSeconds.Should().Be(45);
+        updated.DetectionRetryCount.Should().Be(2);
+        updated.DetectionConcurrency.Should().Be(6);
+        updated.CircuitBreakerFailureThreshold.Should().Be(7);
+        updated.CircuitBreakerRecoveryMinutes.Should().Be(9);
         updated.UsageLogRetentionDays.Should().Be(14);
-        updated.DetectionLogRetentionDays.Should().Be(21);
+        updated.UsageLogAutoCleanupEnabled.Should().BeFalse();
 
         var reloaded = await _service.GetOrCreateAsync();
         reloaded.Id.Should().Be(1);
         reloaded.ProxyRequestTimeoutSeconds.Should().Be(90);
         reloaded.ProxyRetryCount.Should().Be(3);
+        reloaded.DetectionRequestTimeoutSeconds.Should().Be(45);
+        reloaded.DetectionRetryCount.Should().Be(2);
+        reloaded.DetectionConcurrency.Should().Be(6);
+        reloaded.CircuitBreakerFailureThreshold.Should().Be(7);
+        reloaded.CircuitBreakerRecoveryMinutes.Should().Be(9);
         reloaded.UsageLogRetentionDays.Should().Be(14);
-        reloaded.DetectionLogRetentionDays.Should().Be(21);
+        reloaded.UsageLogAutoCleanupEnabled.Should().BeFalse();
     }
 
     [Fact]
@@ -90,15 +120,89 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         {
             ProxyRequestTimeoutSeconds = 0,
             ProxyRetryCount = -1,
+            DetectionRequestTimeoutSeconds = 0,
+            DetectionRetryCount = -3,
+            DetectionConcurrency = 0,
+            CircuitBreakerFailureThreshold = 0,
+            CircuitBreakerRecoveryMinutes = 0,
             UsageLogRetentionDays = 0,
-            DetectionLogRetentionDays = -5
+            UsageLogAutoCleanupEnabled = true
         });
 
         updated.Id.Should().Be(1);
         updated.ProxyRequestTimeoutSeconds.Should().Be(1);
         updated.ProxyRetryCount.Should().Be(0);
+        updated.DetectionRequestTimeoutSeconds.Should().Be(1);
+        updated.DetectionRetryCount.Should().Be(0);
+        updated.DetectionConcurrency.Should().Be(1);
+        updated.CircuitBreakerFailureThreshold.Should().Be(1);
+        updated.CircuitBreakerRecoveryMinutes.Should().Be(1);
         updated.UsageLogRetentionDays.Should().Be(1);
-        updated.DetectionLogRetentionDays.Should().Be(1);
+        updated.UsageLogAutoCleanupEnabled.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task ClearUsageLogsAsync_filters_by_source_and_time_range()
+    {
+        await _service.GetOrCreateAsync();
+        var baseTime = new DateTimeOffset(2026, 05, 07, 12, 00, 00, TimeSpan.Zero);
+
+        _dbContext.ProxyUsageLogs.AddRange(
+            new AITool.Domain.Proxy.ProxyUsageLog
+            {
+                Id = Guid.NewGuid(),
+                AccessKeyId = Guid.NewGuid(),
+                ProtocolType = "OpenAI",
+                RequestModel = "gpt-5",
+                AttemptedModel = "gpt-5",
+                TargetSiteId = Guid.NewGuid(),
+                Status = "success",
+                Source = "codex",
+                ErrorMessage = string.Empty,
+                ReasoningEffort = string.Empty,
+                RequestedAt = baseTime.AddHours(-3)
+            },
+            new AITool.Domain.Proxy.ProxyUsageLog
+            {
+                Id = Guid.NewGuid(),
+                AccessKeyId = Guid.NewGuid(),
+                ProtocolType = "OpenAI",
+                RequestModel = "gpt-5",
+                AttemptedModel = "gpt-5",
+                TargetSiteId = Guid.NewGuid(),
+                Status = "success",
+                Source = "codex",
+                ErrorMessage = string.Empty,
+                ReasoningEffort = string.Empty,
+                RequestedAt = baseTime.AddHours(-1)
+            },
+            new AITool.Domain.Proxy.ProxyUsageLog
+            {
+                Id = Guid.NewGuid(),
+                AccessKeyId = Guid.NewGuid(),
+                ProtocolType = "OpenAI",
+                RequestModel = "gpt-5",
+                AttemptedModel = "gpt-5",
+                TargetSiteId = Guid.NewGuid(),
+                Status = "success",
+                Source = "chat",
+                ErrorMessage = string.Empty,
+                ReasoningEffort = string.Empty,
+                RequestedAt = baseTime.AddHours(-2)
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var deletedCount = await _service.ClearUsageLogsAsync(new ClearUsageLogsRequest
+        {
+            Source = "codex",
+            StartTime = baseTime.AddHours(-4),
+            EndTime = baseTime.AddHours(-2)
+        });
+
+        deletedCount.Should().Be(1);
+        _dbContext.ProxyUsageLogs.Should().HaveCount(2);
+        _dbContext.ProxyUsageLogs.Should().Contain(x => x.Source == "codex" && x.RequestedAt == baseTime.AddHours(-1));
+        _dbContext.ProxyUsageLogs.Should().Contain(x => x.Source == "chat");
     }
 
     public void Dispose() => _dbContext.Dispose();

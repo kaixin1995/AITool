@@ -60,7 +60,13 @@ public sealed class ProxyRequestMetadataCache
                         : new CachedProxyRuntimeSettings
                         {
                             ProxyRequestTimeoutSeconds = settings.ProxyRequestTimeoutSeconds,
-                            ProxyRetryCount = settings.ProxyRetryCount
+                            ProxyRetryCount = settings.ProxyRetryCount,
+                            DetectionRequestTimeoutSeconds = settings.DetectionRequestTimeoutSeconds,
+                            DetectionRetryCount = settings.DetectionRetryCount,
+                            DetectionConcurrency = settings.DetectionConcurrency,
+                            CircuitBreakerFailureThreshold = settings.CircuitBreakerFailureThreshold,
+                            CircuitBreakerRecoveryMinutes = settings.CircuitBreakerRecoveryMinutes,
+                            UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled
                         };
                 })
             ?? new CachedProxyRuntimeSettings();
@@ -390,6 +396,12 @@ public sealed class CachedProxyRuntimeSettings
 {
     public int ProxyRequestTimeoutSeconds { get; set; } = 60;
     public int ProxyRetryCount { get; set; } = 1;
+    public int DetectionRequestTimeoutSeconds { get; set; } = 60;
+    public int DetectionRetryCount { get; set; } = 0;
+    public int DetectionConcurrency { get; set; } = 1;
+    public int CircuitBreakerFailureThreshold { get; set; } = 5;
+    public int CircuitBreakerRecoveryMinutes { get; set; } = 2;
+    public bool UsageLogAutoCleanupEnabled { get; set; } = true;
 }
 
 public sealed class CachedProxyRouteTarget

@@ -427,8 +427,13 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
             Id = 1,
             ProxyRequestTimeoutSeconds = 9,
             ProxyRetryCount = 2,
+            DetectionRequestTimeoutSeconds = 60,
+            DetectionRetryCount = 0,
+            DetectionConcurrency = 1,
+            CircuitBreakerFailureThreshold = 5,
+            CircuitBreakerRecoveryMinutes = 2,
             UsageLogRetentionDays = 7,
-            DetectionLogRetentionDays = 7
+            UsageLogAutoCleanupEnabled = true
         });
         await db.SaveChangesAsync();
     }

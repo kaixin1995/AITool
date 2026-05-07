@@ -7,22 +7,31 @@
 <div class="page-header">
     <div>
         <h2 class="page-title">系统设置</h2>
-        <p class="page-subtitle">配置代理运行参数与日志保留策略</p>
+        <p class="page-subtitle">配置检测、代理、日志保留与危险操作</p>
     </div>
 </div>
+
+@if (!string.IsNullOrWhiteSpace(Model.StatusMessage))
+{
+    <div class="alert alert-success">@Model.StatusMessage</div>
+}
 
 <form method="post" class="d-flex flex-column gap-3">
     <div class="card">
         <div class="card-body">
-            <h5 class="card-title">代理运行参数</h5>
+            <h5 class="card-title">检测设置</h5>
             <div class="row g-3 mt-1">
-                <div class="col-md-6">
-                    <label asp-for="Input.ProxyRequestTimeoutSeconds" class="form-label">全局请求超时秒数</label>
-                    <input asp-for="Input.ProxyRequestTimeoutSeconds" class="form-control" type="number" min="1" />
+                <div class="col-md-4">
+                    <label asp-for="Input.DetectionRequestTimeoutSeconds" class="form-label">检测超时时间（秒）</label>
+                    <input asp-for="Input.DetectionRequestTimeoutSeconds" class="form-control" type="number" min="1" />
                 </div>
-                <div class="col-md-6">
-                    <label asp-for="Input.ProxyRetryCount" class="form-label">全局单路由重试次数</label>
-                    <input asp-for="Input.ProxyRetryCount" class="form-control" type="number" min="0" />
+                <div class="col-md-4">
+                    <label asp-for="Input.DetectionRetryCount" class="form-label">检测重试次数</label>
+                    <input asp-for="Input.DetectionRetryCount" class="form-control" type="number" min="0" />
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="Input.DetectionConcurrency" class="form-label">检测并发数</label>
+                    <input asp-for="Input.DetectionConcurrency" class="form-control" type="number" min="1" />
                 </div>
             </div>
         </div>
@@ -30,23 +39,44 @@
 
     <div class="card">
         <div class="card-body">
-            <h5 class="card-title">日志保留策略</h5>
+            <h5 class="card-title">代理设置</h5>
             <div class="row g-3 mt-1">
-                <div class="col-md-6">
-                    <label asp-for="Input.UsageLogRetentionDays" class="form-label">使用日志保留天数</label>
-                    <input asp-for="Input.UsageLogRetentionDays" class="form-control" type="number" min="1" />
+                <div class="col-md-3">
+                    <label asp-for="Input.ProxyRequestTimeoutSeconds" class="form-label">代理超时时间（秒）</label>
+                    <input asp-for="Input.ProxyRequestTimeoutSeconds" class="form-control" type="number" min="1" />
                 </div>
-                <div class="col-md-6">
-                    <label asp-for="Input.DetectionLogRetentionDays" class="form-label">检测日志保留天数</label>
-                    <input asp-for="Input.DetectionLogRetentionDays" class="form-control" type="number" min="1" />
+                <div class="col-md-3">
+                    <label asp-for="Input.ProxyRetryCount" class="form-label">代理重试次数</label>
+                    <input asp-for="Input.ProxyRetryCount" class="form-control" type="number" min="0" />
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="Input.CircuitBreakerFailureThreshold" class="form-label">熔断失败阈值</label>
+                    <input asp-for="Input.CircuitBreakerFailureThreshold" class="form-control" type="number" min="1" />
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="Input.CircuitBreakerRecoveryMinutes" class="form-label">熔断恢复时间（分钟）</label>
+                    <input asp-for="Input.CircuitBreakerRecoveryMinutes" class="form-control" type="number" min="1" />
                 </div>
             </div>
-            <div class="row g-3 mt-1">
-                <div class="col-md-6">
-                    <div class="form-text">最近一次使用日志清理数量：@Model.LastUsageLogPrunedCount</div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">日志设置</h5>
+            <div class="row g-3 mt-1 align-items-end">
+                <div class="col-md-4">
+                    <label asp-for="Input.UsageLogRetentionDays" class="form-label">UsageLogs 保留天数</label>
+                    <input asp-for="Input.UsageLogRetentionDays" class="form-control" type="number" min="1" />
                 </div>
-                <div class="col-md-6">
-                    <div class="form-text">最近一次检测日志清理数量：@Model.LastDetectionLogPrunedCount</div>
+                <div class="col-md-4">
+                    <div class="form-check form-switch mt-4">
+                        <input asp-for="Input.UsageLogAutoCleanupEnabled" class="form-check-input" type="checkbox" />
+                        <label asp-for="Input.UsageLogAutoCleanupEnabled" class="form-check-label">启用自动清理</label>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="form-text">最近一次自动清理数量：@Model.LastUsageLogPrunedCount</div>
                 </div>
             </div>
         </div>
@@ -54,5 +84,40 @@
 
     <div>
         <button type="submit" class="btn btn-primary">保存设置</button>
+    </div>
+</form>
+
+<form method="post" asp-page-handler="ClearUsageLogs" class="mt-4">
+    <div class="card border-danger">
+        <div class="card-body">
+            <h5 class="card-title text-danger">危险操作</h5>
+            <p class="text-muted mb-3">手动清空 UsageLogs。留空表示不限制该条件。</p>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label asp-for="ClearUsageLogs.Source" class="form-label">来源</label>
+                    <select asp-for="ClearUsageLogs.Source" class="form-select">
+                        <option value="">全部来源</option>
+                        <option value="proxy">代理</option>
+                        <option value="chat">对话测试</option>
+                        <option value="claude-code">Claude Code</option>
+                        <option value="codex">Codex</option>
+                        <option value="open-code">Open Code</option>
+                        <option value="detection-manual">手动检测</option>
+                        <option value="detection-task">定时检测</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="ClearUsageLogs.StartTime" class="form-label">开始时间</label>
+                    <input asp-for="ClearUsageLogs.StartTime" class="form-control" type="datetime-local" />
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="ClearUsageLogs.EndTime" class="form-label">结束时间</label>
+                    <input asp-for="ClearUsageLogs.EndTime" class="form-control" type="datetime-local" />
+                </div>
+            </div>
+            <div class="mt-3">
+                <button type="submit" class="btn btn-outline-danger" onclick="return confirm('确认清空符合条件的 UsageLogs 吗？')">清空 UsageLogs</button>
+            </div>
+        </div>
     </div>
 </form>

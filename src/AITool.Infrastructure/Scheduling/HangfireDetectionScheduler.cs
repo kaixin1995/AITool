@@ -68,14 +68,21 @@ public sealed class HangfireDetectionScheduler
         }
 
         var mappings = await query.ToListAsync(cancellationToken);
+        var runtimeSettings = await dbContext.SystemRuntimeSettings
+            .AsNoTracking()
+            .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken)
+            ?? new AITool.Domain.Operations.SystemRuntimeSettings();
         var successCount = 0;
         var failCount = 0;
 
-        foreach (var mapping in mappings)
+        foreach (var batch in mappings.Chunk(Math.Max(1, runtimeSettings.DetectionConcurrency)))
         {
-            var result = await requestService.ProbeMappingAsync(mapping.Id, "detection-task", cancellationToken);
-            if (result.Status == "success") successCount++;
-            else failCount++;
+            var results = await Task.WhenAll(batch.Select(mapping => requestService.ProbeMappingAsync(mapping.Id, "detection-task", cancellationToken)));
+            foreach (var result in results)
+            {
+                if (result.Status == "success") successCount++;
+                else failCount++;
+            }
         }
 
         // 更新执行记录

@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Operations;
 
-// 系统运行时设置服务实现，负责默认值初始化与配置更新
+// 系统运行时设置服务实现，负责默认值初始化、配置更新与日志清理
 public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
 {
     private readonly AppDbContext _dbContext;
@@ -39,11 +39,43 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         // 对运行时设置做最小边界保护，避免写入无效值
         settings.ProxyRequestTimeoutSeconds = Math.Max(1, request.ProxyRequestTimeoutSeconds);
         settings.ProxyRetryCount = Math.Max(0, request.ProxyRetryCount);
+        settings.DetectionRequestTimeoutSeconds = Math.Max(1, request.DetectionRequestTimeoutSeconds);
+        settings.DetectionRetryCount = Math.Max(0, request.DetectionRetryCount);
+        settings.DetectionConcurrency = Math.Max(1, request.DetectionConcurrency);
+        settings.CircuitBreakerFailureThreshold = Math.Max(1, request.CircuitBreakerFailureThreshold);
+        settings.CircuitBreakerRecoveryMinutes = Math.Max(1, request.CircuitBreakerRecoveryMinutes);
         settings.UsageLogRetentionDays = Math.Max(1, request.UsageLogRetentionDays);
-        settings.DetectionLogRetentionDays = Math.Max(1, request.DetectionLogRetentionDays);
+        settings.UsageLogAutoCleanupEnabled = request.UsageLogAutoCleanupEnabled;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return settings;
+    }
+
+    public async Task<int> ClearUsageLogsAsync(ClearUsageLogsRequest request, CancellationToken cancellationToken = default)
+    {
+        var settings = await GetOrCreateAsync(cancellationToken);
+
+        // 先加载到内存再按条件过滤，避免 SQLite 无法稳定翻译 DateTimeOffset 区间比较
+        var logs = await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken);
+        var logsToDelete = logs
+            .Where(x => string.IsNullOrWhiteSpace(request.Source) || string.Equals(x.Source, request.Source, StringComparison.OrdinalIgnoreCase))
+            .Where(x => !request.StartTime.HasValue || x.RequestedAt >= request.StartTime.Value)
+            .Where(x => !request.EndTime.HasValue || x.RequestedAt < request.EndTime.Value)
+            .ToList();
+
+        if (logsToDelete.Count == 0)
+        {
+            settings.LastUsageLogPrunedAt = DateTimeOffset.UtcNow;
+            settings.LastUsageLogPrunedCount = 0;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return 0;
+        }
+
+        _dbContext.ProxyUsageLogs.RemoveRange(logsToDelete);
+        settings.LastUsageLogPrunedAt = DateTimeOffset.UtcNow;
+        settings.LastUsageLogPrunedCount = logsToDelete.Count;
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return logsToDelete.Count;
     }
 
     // 系统设置页与测试仍可能在缺表场景下调用该服务，因此保留兼容逻辑。
@@ -66,7 +98,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
                 return;
             }
 
-            command.CommandText = "CREATE TABLE SystemRuntimeSettings (Id INTEGER NOT NULL CONSTRAINT PK_SystemRuntimeSettings PRIMARY KEY, ProxyRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60, ProxyRetryCount INTEGER NOT NULL DEFAULT 1, UsageLogRetentionDays INTEGER NOT NULL DEFAULT 7, DetectionLogRetentionDays INTEGER NOT NULL DEFAULT 7, LastUsageLogPrunedAt TEXT NULL, LastUsageLogPrunedCount INTEGER NOT NULL DEFAULT 0, LastDetectionLogPrunedAt TEXT NULL, LastDetectionLogPrunedCount INTEGER NOT NULL DEFAULT 0)";
+            command.CommandText = "CREATE TABLE SystemRuntimeSettings (Id INTEGER NOT NULL CONSTRAINT PK_SystemRuntimeSettings PRIMARY KEY, ProxyRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60, ProxyRetryCount INTEGER NOT NULL DEFAULT 1, DetectionRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60, DetectionRetryCount INTEGER NOT NULL DEFAULT 0, DetectionConcurrency INTEGER NOT NULL DEFAULT 1, CircuitBreakerFailureThreshold INTEGER NOT NULL DEFAULT 5, CircuitBreakerRecoveryMinutes INTEGER NOT NULL DEFAULT 2, UsageLogRetentionDays INTEGER NOT NULL DEFAULT 7, UsageLogAutoCleanupEnabled INTEGER NOT NULL DEFAULT 1, LastUsageLogPrunedAt TEXT NULL, LastUsageLogPrunedCount INTEGER NOT NULL DEFAULT 0)";
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         finally

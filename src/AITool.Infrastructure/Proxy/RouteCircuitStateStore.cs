@@ -3,8 +3,9 @@ namespace AITool.Infrastructure.Proxy;
 // 路由级熔断状态存储，单条路由连续失败达到阈值后被临时屏蔽
 public sealed class RouteCircuitStateStore
 {
-    private readonly TimeSpan _blockDuration;
-    private readonly int _failThreshold;
+    private readonly object _syncRoot = new();
+    private TimeSpan _blockDuration;
+    private int _failThreshold;
     // 路由连续失败次数记录
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, int> _failCounts = [];
     // 被熔断的路由及其解除时间
@@ -16,6 +17,16 @@ public sealed class RouteCircuitStateStore
         _failThreshold = failThreshold;
     }
 
+    // 动态更新熔断参数，新配置应尽快影响后续请求。
+    public void UpdateOptions(TimeSpan blockDuration, int failThreshold)
+    {
+        lock (_syncRoot)
+        {
+            _blockDuration = blockDuration;
+            _failThreshold = failThreshold;
+        }
+    }
+
     // 记录一次失败，连续失败达到阈值时触发熔断
     public void Block(Guid routeId)
     {
@@ -23,10 +34,12 @@ public sealed class RouteCircuitStateStore
         if (IsBlocked(routeId)) return;
 
         var count = _failCounts.AddOrUpdate(routeId, 1, (_, current) => current + 1);
+        var failThreshold = _failThreshold;
+        var blockDuration = _blockDuration;
 
-        if (count >= _failThreshold)
+        if (count >= failThreshold)
         {
-            _blockedRoutes[routeId] = DateTimeOffset.UtcNow.Add(_blockDuration);
+            _blockedRoutes[routeId] = DateTimeOffset.UtcNow.Add(blockDuration);
         }
     }
 

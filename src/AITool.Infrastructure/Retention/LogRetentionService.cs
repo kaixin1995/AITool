@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Retention;
 
-// 日志保留策略服务实现，按运行时配置清理检测日志和使用日志
+// 日志保留策略服务实现，按运行时配置清理使用日志并回写结果
 public sealed class LogRetentionService : ILogRetentionService
 {
     private readonly AppDbContext _dbContext;
@@ -23,7 +23,7 @@ public sealed class LogRetentionService : ILogRetentionService
         _utcNowProvider = utcNowProvider;
     }
 
-    // 删除超过保留天数的检测日志和使用日志，并回写本次清理结果
+    // 删除超过保留天数的使用日志，并回写本次清理结果
     public async Task<LogPruneResult> PruneAsync(CancellationToken cancellationToken = default)
     {
         var settings = await _dbContext.SystemRuntimeSettings
@@ -38,8 +38,18 @@ public sealed class LogRetentionService : ILogRetentionService
         }
 
         var now = _utcNowProvider();
+        if (!settings.UsageLogAutoCleanupEnabled)
+        {
+            settings.LastUsageLogPrunedAt = now;
+            settings.LastUsageLogPrunedCount = 0;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return new LogPruneResult
+            {
+                UsageLogPrunedCount = 0
+            };
+        }
+
         var usageCutoff = now.AddDays(-settings.UsageLogRetentionDays);
-        var detectionCutoff = now.AddDays(-settings.DetectionLogRetentionDays);
 
         // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
         var allUsageLogs = await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken);
@@ -48,25 +58,15 @@ public sealed class LogRetentionService : ILogRetentionService
             .ToList();
         _dbContext.ProxyUsageLogs.RemoveRange(oldUsageLogs);
 
-        // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
-        var allDetectionLogs = await _dbContext.DetectionLogs.ToListAsync(cancellationToken);
-        var oldDetectionLogs = allDetectionLogs
-            .Where(l => l.CheckedAt < detectionCutoff)
-            .ToList();
-        _dbContext.DetectionLogs.RemoveRange(oldDetectionLogs);
-
         var prunedAt = now;
         settings.LastUsageLogPrunedAt = prunedAt;
         settings.LastUsageLogPrunedCount = oldUsageLogs.Count;
-        settings.LastDetectionLogPrunedAt = prunedAt;
-        settings.LastDetectionLogPrunedCount = oldDetectionLogs.Count;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return new LogPruneResult
         {
-            UsageLogPrunedCount = oldUsageLogs.Count,
-            DetectionLogPrunedCount = oldDetectionLogs.Count
+            UsageLogPrunedCount = oldUsageLogs.Count
         };
     }
 }
