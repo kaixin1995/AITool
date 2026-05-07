@@ -11,131 +11,116 @@
     </div>
 </div>
 
-<div class="chat-admin-page">
-    <div class="chat-admin-main">
-        <div class="card chat-card">
-            <div class="card-body chat-card-body">
-                <div class="chat-toolbar">
-                    <div class="row g-3 align-items-end">
-                        <div class="col-xl-3 col-lg-4">
-                            <label class="form-label" for="modelSelect">测试模型</label>
-                            <select id="modelSelect" class="form-select">
-                                <option value="">-- 加载中... --</option>
-                            </select>
-                        </div>
-                        <div class="col-auto">
-                            <div class="form-check form-switch mt-md-4 pt-md-2">
-                                <input class="form-check-input" type="checkbox" id="streamingToggle">
-                                <label class="form-check-label" for="streamingToggle">启用流式</label>
+<div class="chat-admin-shell">
+    <div class="chat-admin-stage">
+        <div class="chat-admin-page">
+            <div class="chat-admin-main">
+                <div class="card chat-card">
+                    <div class="card-body chat-card-body">
+                        <div class="chat-toolbar">
+                            <div class="row g-3 align-items-end">
+                                <div class="col-auto">
+                                    <div class="chat-toolbar-field">
+                                        <label class="chat-toolbar-field-label" for="modelSelect">测试模型</label>
+                                        <select id="modelSelect" class="form-select chat-toolbar-field-select">
+                                            <option value="">-- 加载中... --</option>
+                                        </select>
+                                    </div>
+                                </div>
+                                <div class="col-auto">
+                                    <div class="chat-toolbar-toggle-group">
+                                        <div class="form-check form-switch chat-toolbar-switch">
+                                            <input class="form-check-input" type="checkbox" id="streamingToggle">
+                                            <label class="form-check-label" for="streamingToggle">启用流式</label>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-auto">
+                                    <div class="chat-toolbar-toggle-group">
+                                        <div class="form-check form-switch chat-toolbar-switch">
+                                            <input class="form-check-input" type="checkbox" id="reasoningToggle">
+                                            <label class="form-check-label" for="reasoningToggle">开启思考</label>
+                                        </div>
+                                        <div class="chat-reasoning-effort" id="reasoningEffortGroup" style="display:none;">
+                                            <label class="chat-reasoning-effort-label" for="reasoningEffortSelect">思考等级</label>
+                                            <select id="reasoningEffortSelect" class="form-select form-select-sm chat-reasoning-effort-select">
+                                                <option value="low">低</option>
+                                                <option value="medium">中</option>
+                                                <option value="high" selected>高</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="col-auto">
+                                    <button type="button" class="btn btn-outline-secondary" onclick="loadModels()">刷新模型</button>
+                                </div>
                             </div>
                         </div>
-                        <div class="col-auto">
-                            <div class="form-check form-switch mt-md-4 pt-md-2">
-                                <input class="form-check-input" type="checkbox" id="reasoningToggle">
-                                <label class="form-check-label" for="reasoningToggle">开启思考</label>
+
+                        <div id="chatMessages" class="chat-messages">
+                            <div class="chat-empty">
+                                <div class="chat-empty-icon">💬</div>
+                                <div>选择模型后输入问题开始对话</div>
                             </div>
                         </div>
-                        <div class="col-auto" id="reasoningEffortGroup" style="display:none;">
-                            <label class="form-label mb-0" for="reasoningEffortSelect">思考等级</label>
-                            <select id="reasoningEffortSelect" class="form-select form-select-sm">
-                                <option value="low">低</option>
-                                <option value="medium">中</option>
-                                <option value="high" selected>高</option>
-                            </select>
-                        </div>
-                        <div class="col-auto">
-                            <button type="button" class="btn btn-outline-secondary" onclick="loadModels()">刷新模型</button>
-                        </div>
-                        <div class="col-xl col-lg-12">
-                            <div id="chatStatus" class="small text-secondary text-xl-end mt-xl-4">请选择模型并输入问题</div>
-                        </div>
                     </div>
-                </div>
 
-                <div id="chatMessages" class="chat-messages">
-                    <div class="chat-empty">
-                        <div class="chat-empty-icon">💬</div>
-                        <div>选择模型后输入问题开始对话</div>
+                    <div class="card-footer chat-input-area">
+                        <div class="chat-input-wrapper">
+                            <textarea id="chatInput" class="chat-input" placeholder="输入消息...（Enter 发送，Shift+Enter 换行）"
+                                      onkeydown="handleKeyDown(event)"></textarea>
+                            <button type="button" id="btnSend" class="btn btn-primary chat-send-btn" onclick="sendMessage()">
+                                发送
+                            </button>
+                        </div>
                     </div>
                 </div>
             </div>
 
-            <div class="card-footer chat-input-area">
-                <div class="chat-input-wrapper">
-                    <textarea id="chatInput" class="chat-input" placeholder="输入消息...（Enter 发送，Shift+Enter 换行）"
-                              onkeydown="handleKeyDown(event)"></textarea>
-                    <button type="button" id="btnSend" class="btn btn-primary chat-send-btn" onclick="sendMessage()">
-                        发送
-                    </button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <div class="chat-admin-side d-flex flex-column gap-3">
-        <div class="card">
-            <div class="card-header fw-semibold">本次调用概览</div>
-            <div class="card-body">
-                <div id="chatMetaEmpty" class="text-secondary small">发送一条消息后显示流式、Token 与耗时信息</div>
-                <div id="chatMetaPanel" class="d-none">
-                    <div class="chat-chip-row mb-3">
-                        <span id="metaStreamChip" class="chat-chip chat-chip-stream">-</span>
-                        <span id="metaReasoningChip" class="chat-chip chat-chip-reasoning">-</span>
-                    </div>
-                    <div class="chat-meta-grid">
-                        <div>
-                            <div class="chat-meta-label">总耗时</div>
-                            <div id="metaTotalDuration" class="chat-meta-value">-</div>
-                        </div>
-                        <div>
-                            <div class="chat-meta-label">首字耗时</div>
-                            <div id="metaFirstToken" class="chat-meta-value">-</div>
-                        </div>
-                        <div>
-                            <div class="chat-meta-label">输入</div>
-                            <div id="metaInputTokens" class="chat-meta-value">-</div>
-                        </div>
-                        <div>
-                            <div class="chat-meta-label">缓存</div>
-                            <div id="metaCachedTokens" class="chat-meta-value">-</div>
-                        </div>
-                        <div>
-                            <div class="chat-meta-label">输出</div>
-                            <div id="metaOutputTokens" class="chat-meta-value">-</div>
-                        </div>
-                        <div>
-                            <div class="chat-meta-label">总Token数</div>
-                            <div id="metaTotalTokens" class="chat-meta-value">-</div>
-                        </div>
+            <div class="chat-admin-side d-flex flex-column gap-3">
+                <div class="card">
+                    <div class="card-header fw-semibold">思考内容</div>
+                    <div class="card-body">
+                        <div id="chatReasoningEmpty" class="text-secondary small">开启思考模式并且上游返回思考内容后，这里会展示。</div>
+                        <pre id="chatReasoningContent" class="chat-side-pre d-none"></pre>
                     </div>
                 </div>
-            </div>
-        </div>
 
-        <div class="card">
-            <div class="card-header fw-semibold">思考内容</div>
-            <div class="card-body">
-                <div id="chatReasoningEmpty" class="text-secondary small">开启思考模式并且上游返回思考内容后，这里会展示。</div>
-                <pre id="chatReasoningContent" class="chat-side-pre d-none"></pre>
-            </div>
-        </div>
-
-        <div class="card flex-fill">
-            <div class="card-header fw-semibold">调用详细过程</div>
-            <div class="card-body">
-                <div id="chatAttemptsEmpty" class="text-secondary small">发送一条消息后显示本次请求的每次尝试。</div>
-                <div id="chatAttemptsList" class="d-flex flex-column gap-2"></div>
+                <div class="card flex-fill">
+                    <div class="card-header fw-semibold">调用详细过程</div>
+                    <div class="card-body">
+                        <div id="chatAttemptsEmpty" class="text-secondary small">发送一条消息后显示本次请求的每次尝试。</div>
+                        <div id="chatAttemptsList" class="d-flex flex-column gap-2"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
 </div>
 
 <style>
+    .chat-admin-shell {
+        width: 100%;
+        min-width: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding-bottom: 8px;
+    }
+
+    .chat-admin-stage {
+        width: 100%;
+        min-width: 0;
+        transform-origin: top left;
+    }
+
     .chat-admin-page {
+        --chat-admin-design-width: 1360;
         display: grid;
         grid-template-columns: minmax(0, 1.8fr) minmax(300px, 1fr);
         gap: 16px;
         align-items: stretch;
+        width: 100%;
+        min-width: 1080px;
         height: calc(100vh - 180px);
         min-height: 620px;
         overflow: hidden;
@@ -189,6 +174,79 @@
         border-bottom: 1px solid var(--border-color, #e5e7eb);
         flex-shrink: 0;
         padding-bottom: 16px;
+    }
+
+    .chat-toolbar .row {
+        align-items: flex-end !important;
+    }
+
+    .chat-toolbar-field {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        min-width: 220px;
+        gap: 8px;
+    }
+
+    .chat-toolbar-field-label {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.4;
+        color: #0f172a;
+    }
+
+    .chat-toolbar-field-select {
+        min-width: 220px;
+    }
+
+    .chat-toolbar-toggle-group {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        height: 40px;
+        flex-wrap: nowrap;
+    }
+
+    .chat-toolbar-switch {
+        margin: 0;
+        padding-left: 2.5rem;
+        white-space: nowrap;
+        display: inline-flex;
+        align-items: center;
+        min-height: 40px;
+    }
+
+    .chat-toolbar-switch .form-check-input {
+        margin-top: 0;
+    }
+
+    .chat-reasoning-effort {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        height: 40px;
+        padding: 0 10px;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        background: #f8fafc;
+        flex: 0 0 auto;
+        box-sizing: border-box;
+    }
+
+    .chat-reasoning-effort-label {
+        margin: 0;
+        font-size: 12px;
+        font-weight: 600;
+        color: #475569;
+        white-space: nowrap;
+    }
+
+    .chat-reasoning-effort-select {
+        min-width: 72px;
+        height: 30px;
+        padding-top: 0.25rem;
+        padding-bottom: 0.25rem;
     }
 
     .chat-messages {
@@ -369,6 +427,7 @@
     .chat-side-pre {
         white-space: pre-wrap;
         word-break: break-word;
+        overflow-wrap: anywhere;
         margin: 0;
         font-size: 13px;
         line-height: 1.65;
@@ -385,6 +444,7 @@
         border-radius: 10px;
         padding: 12px;
         background: #fff;
+        min-width: 0;
     }
 
     .chat-attempt-detail-toggle {
@@ -421,20 +481,28 @@
         display: flex;
         justify-content: space-between;
         gap: 12px;
-        align-items: center;
+        align-items: flex-start;
         margin-bottom: 8px;
+    }
+
+    .chat-attempt-head > div {
+        min-width: 0;
+        flex: 1;
     }
 
     .chat-attempt-title {
         font-size: 14px;
         font-weight: 600;
         color: #0f172a;
+        word-break: break-word;
     }
 
     .chat-attempt-meta {
         font-size: 12px;
         color: #64748b;
         line-height: 1.7;
+        word-break: break-word;
+        overflow-wrap: anywhere;
     }
 
     .chat-attempt-status {
@@ -493,27 +561,31 @@
     }
 
     @@media (max-width: 1200px) {
+        .chat-admin-shell {
+            overflow-x: hidden;
+        }
+
+        .chat-admin-stage {
+            width: calc(100% / var(--chat-admin-scale, 1));
+            min-width: 1080px;
+            transform: scale(var(--chat-admin-scale, 1));
+        }
+
         .chat-admin-page {
-            grid-template-columns: 1fr;
-            height: auto;
-            min-height: 0;
-            overflow: visible;
+            height: calc((100vh - 180px) / var(--chat-admin-scale, 1));
+            min-height: 620px;
+            overflow: hidden;
+        }
+    }
+
+    @@media (max-width: 992px) {
+        .chat-attempt-head {
+            flex-direction: column;
+            align-items: stretch;
         }
 
-        .chat-admin-main,
-        .chat-admin-side,
-        .chat-card,
-        .chat-admin-side > .card:last-child {
-            overflow: visible;
-        }
-
-        .chat-card {
-            min-height: 640px;
-        }
-
-        .chat-admin-side > .card:last-child .card-body,
-        .chat-messages {
-            overflow: visible;
+        .chat-attempt-status {
+            align-self: flex-start;
         }
     }
 
@@ -522,35 +594,40 @@
             gap: 12px;
         }
 
+        .chat-toolbar .row {
+            --bs-gutter-x: 12px;
+            --bs-gutter-y: 12px;
+            align-items: flex-start !important;
+        }
+
+        .chat-toolbar-field,
+        .chat-toolbar-field-select {
+            min-width: 200px;
+        }
+
+        .chat-toolbar-toggle-group {
+            align-items: center;
+            flex-wrap: nowrap;
+        }
+
         .chat-bubble {
             max-width: 100%;
         }
 
-        .chat-input-wrapper {
-            flex-direction: column;
-            align-items: stretch;
-        }
-
         .chat-send-btn {
-            width: 100%;
-            height: 44px;
-        }
-
-        .chat-input {
-            min-height: 72px;
-        }
-
-        .chat-meta-grid {
-            grid-template-columns: 1fr;
+            min-width: 72px;
         }
     }
 </style>
 
 <script>
     let currentStreamState = null;
+    let chatAdminResizeRaf = 0;
 
     document.addEventListener('DOMContentLoaded', function() {
         loadModels();
+        applyChatAdminScale();
+        window.addEventListener('resize', scheduleChatAdminScale);
         var chatInput = document.getElementById('chatInput');
         chatInput.addEventListener('input', function() {
             this.style.height = '88px';
@@ -561,6 +638,38 @@
             document.getElementById('reasoningEffortGroup').style.display = this.checked ? '' : 'none';
         });
     });
+
+    function scheduleChatAdminScale() {
+        if (chatAdminResizeRaf) {
+            window.cancelAnimationFrame(chatAdminResizeRaf);
+        }
+
+        chatAdminResizeRaf = window.requestAnimationFrame(function() {
+            chatAdminResizeRaf = 0;
+            applyChatAdminScale();
+        });
+    }
+
+    function applyChatAdminScale() {
+        var shell = document.querySelector('.chat-admin-shell');
+        var stage = document.querySelector('.chat-admin-stage');
+        var page = document.querySelector('.chat-admin-page');
+        if (!shell || !stage || !page) {
+            return;
+        }
+
+        if (window.innerWidth > 1200) {
+            shell.style.minHeight = '';
+            stage.style.removeProperty('--chat-admin-scale');
+            return;
+        }
+
+        var designWidth = parseFloat(getComputedStyle(page).getPropertyValue('--chat-admin-design-width')) || 1360;
+        var shellWidth = shell.clientWidth || window.innerWidth || designWidth;
+        var scale = Math.min(1, Math.max(0.7, shellWidth / designWidth));
+        stage.style.setProperty('--chat-admin-scale', scale.toFixed(4));
+        shell.style.minHeight = Math.ceil(page.offsetHeight * scale) + 'px';
+    }
 
     function loadModels() {
         var select = document.getElementById('modelSelect');
@@ -929,28 +1038,9 @@
     }
 
     function clearChatMetaOnly() {
-        renderChatMeta(null);
     }
 
     function renderChatMeta(data) {
-        var empty = document.getElementById('chatMetaEmpty');
-        var panel = document.getElementById('chatMetaPanel');
-        if (!data) {
-            empty.classList.remove('d-none');
-            panel.classList.add('d-none');
-            return;
-        }
-
-        empty.classList.add('d-none');
-        panel.classList.remove('d-none');
-        document.getElementById('metaStreamChip').textContent = data.isStreaming ? '流式调用' : '非流式调用';
-        document.getElementById('metaReasoningChip').textContent = data.reasoningEnabled ? '思考模式开启' : '思考模式关闭';
-        document.getElementById('metaTotalDuration').textContent = formatDuration(data.totalDurationMs || data.durationMs || 0);
-        document.getElementById('metaFirstToken').textContent = formatDuration(data.firstTokenLatencyMs || 0);
-        document.getElementById('metaInputTokens').textContent = formatNumber(data.inputTokens || 0);
-        document.getElementById('metaCachedTokens').textContent = formatNumber(data.cachedTokens || 0);
-        document.getElementById('metaOutputTokens').textContent = formatNumber(data.outputTokens || 0);
-        document.getElementById('metaTotalTokens').textContent = formatNumber(data.totalTokens || 0);
     }
 
     function renderReasoning(reasoningContent) {
@@ -1038,7 +1128,7 @@
     }
 
     function setChatStatus(text) {
-        document.getElementById('chatStatus').textContent = text;
+        return;
     }
 
     function scrollToBottom() {
