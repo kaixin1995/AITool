@@ -1,6 +1,5 @@
-using AITool.Application.Detection;
 using AITool.Domain.Detection;
-using AITool.Domain.SiteCatalog;
+using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Persistence;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
@@ -40,12 +39,12 @@ public sealed class HangfireDetectionScheduler
         }
     }
 
-    // 执行单次检测任务，遍历所有站点模型映射并逐一探测
+    // 执行单次检测任务，遍历所有站点模型映射并逐一发起真实代理请求
     public async Task ExecuteDetectionTaskAsync(Guid detectionTaskId, CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var probeService = scope.ServiceProvider.GetRequiredService<IModelProbeService>();
+        var requestService = scope.ServiceProvider.GetRequiredService<ModelHealthRequestService>();
 
         var detectionTask = await dbContext.DetectionTasks.FindAsync([detectionTaskId], cancellationToken);
         if (detectionTask is null || !detectionTask.IsEnabled) return;
@@ -74,27 +73,8 @@ public sealed class HangfireDetectionScheduler
 
         foreach (var mapping in mappings)
         {
-            var site = await dbContext.Sites.FindAsync([mapping.SiteId], cancellationToken);
-            var model = await dbContext.ModelLibraryItems.FindAsync([mapping.ModelLibraryItemId], cancellationToken);
-            if (site is null || model is null) continue;
-
-            var result = await probeService.ProbeAsync(site, model, cancellationToken);
-
-            // 记录每条检测日志
-            dbContext.DetectionLogs.Add(new DetectionLog
-            {
-                SiteId = mapping.SiteId,
-                ModelLibraryItemId = mapping.ModelLibraryItemId,
-                Status = result.Success ? "success" : "fail",
-                DurationMs = result.DurationMs,
-                ErrorMessage = result.ErrorMessage,
-                CheckedAt = DateTimeOffset.UtcNow
-            });
-
-            // 更新映射状态
-            mapping.LastStatus = result.Success ? "success" : "fail";
-
-            if (result.Success) successCount++;
+            var result = await requestService.ProbeMappingAsync(mapping.Id, "detection-task", cancellationToken);
+            if (result.Status == "success") successCount++;
             else failCount++;
         }
 

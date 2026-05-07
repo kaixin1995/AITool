@@ -1,9 +1,5 @@
 using System.Collections.Concurrent;
-using AITool.Application.Detection;
-using AITool.Domain.Detection;
-using AITool.Domain.Models;
-using AITool.Domain.SiteCatalog;
-using AITool.Domain.Sites;
+using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -58,37 +54,20 @@ public sealed class DetectionApiController : ControllerBase
     public async Task<IActionResult> ProbeSingle(Guid mappingId, CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var probeService = scope.ServiceProvider.GetRequiredService<IModelProbeService>();
+        var requestService = scope.ServiceProvider.GetRequiredService<ModelHealthRequestService>();
 
-        var mapping = await db.SiteModelMappings.FindAsync([mappingId], cancellationToken);
-        if (mapping is null) return NotFound(new { message = "映射不存在" });
-
-        var site = await db.Sites.FindAsync([mapping.SiteId], cancellationToken);
-        var model = await db.ModelLibraryItems.FindAsync([mapping.ModelLibraryItemId], cancellationToken);
-        if (site is null || model is null) return NotFound(new { message = "站点或模型不存在" });
-
-        var result = await probeService.ProbeAsync(site, model, cancellationToken);
-
-        var log = new DetectionLog
+        var result = await requestService.ProbeMappingAsync(mappingId, "detection-manual", cancellationToken);
+        if (result.MappingId == Guid.Empty || (result.Status == "fail" && string.Equals(result.ErrorMessage, "映射不存在", StringComparison.Ordinal)))
         {
-            SiteId = mapping.SiteId,
-            ModelLibraryItemId = mapping.ModelLibraryItemId,
-            Status = result.Success ? "success" : "fail",
-            DurationMs = result.DurationMs,
-            ErrorMessage = result.ErrorMessage,
-            CheckedAt = DateTimeOffset.UtcNow
-        };
-        db.DetectionLogs.Add(log);
-        mapping.LastStatus = result.Success ? "success" : "fail";
-        await db.SaveChangesAsync(cancellationToken);
+            return NotFound(new { message = "映射不存在" });
+        }
 
         return Ok(new ProbeResultItem
         {
-            MappingId = mapping.Id,
-            SiteName = site.Name,
-            RemoteModelName = mapping.RemoteModelName,
-            Status = result.Success ? "success" : "fail",
+            MappingId = result.MappingId,
+            SiteName = result.SiteName,
+            RemoteModelName = result.RemoteModelName,
+            Status = result.Status,
             DurationMs = result.DurationMs,
             Error = result.ErrorMessage
         });
@@ -116,41 +95,22 @@ public sealed class DetectionApiController : ControllerBase
         _ = Task.Run(async () =>
         {
             using var workScope = _scopeFactory.CreateScope();
-            var workDb = workScope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var workProbe = workScope.ServiceProvider.GetRequiredService<IModelProbeService>();
+            var requestService = workScope.ServiceProvider.GetRequiredService<ModelHealthRequestService>();
 
             foreach (var mapping in mappings)
             {
                 try
                 {
-                    var site = await workDb.Sites.FindAsync([mapping.SiteId]);
-                    var model = await workDb.ModelLibraryItems.FindAsync([mapping.ModelLibraryItemId]);
-                    if (site is null || model is null) continue;
-
-                    var result = await workProbe.ProbeAsync(site, model, default);
-
-                    var log = new DetectionLog
-                    {
-                        SiteId = mapping.SiteId,
-                        ModelLibraryItemId = mapping.ModelLibraryItemId,
-                        Status = result.Success ? "success" : "fail",
-                        DurationMs = result.DurationMs,
-                        ErrorMessage = result.ErrorMessage,
-                        CheckedAt = DateTimeOffset.UtcNow
-                    };
-                    workDb.DetectionLogs.Add(log);
-
-                    var dbMapping = await workDb.SiteModelMappings.FindAsync([mapping.Id]);
-                    if (dbMapping is not null) dbMapping.LastStatus = result.Success ? "success" : "fail";
+                    var result = await requestService.ProbeMappingAsync(mapping.Id, "detection-manual", default);
 
                     if (_progressStore.TryGetValue(taskId, out var p))
                     {
                         p.AllResults.Add(new ProbeResultItem
                         {
-                            MappingId = mapping.Id,
-                            SiteName = site.Name,
-                            RemoteModelName = mapping.RemoteModelName,
-                            Status = result.Success ? "success" : "fail",
+                            MappingId = result.MappingId,
+                            SiteName = result.SiteName,
+                            RemoteModelName = result.RemoteModelName,
+                            Status = result.Status,
                             DurationMs = result.DurationMs,
                             Error = result.ErrorMessage
                         });
@@ -164,6 +124,7 @@ public sealed class DetectionApiController : ControllerBase
                         p.AllResults.Add(new ProbeResultItem
                         {
                             MappingId = mapping.Id,
+                            RemoteModelName = mapping.RemoteModelName,
                             Status = "fail",
                             Error = ex.Message
                         });
@@ -171,8 +132,6 @@ public sealed class DetectionApiController : ControllerBase
                     }
                 }
             }
-
-            try { await workDb.SaveChangesAsync(); } catch { }
 
             if (_progressStore.TryGetValue(taskId, out var prog))
             {
@@ -203,41 +162,22 @@ public sealed class DetectionApiController : ControllerBase
         _ = Task.Run(async () =>
         {
             using var workScope = _scopeFactory.CreateScope();
-            var workDb = workScope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var workProbe = workScope.ServiceProvider.GetRequiredService<IModelProbeService>();
+            var requestService = workScope.ServiceProvider.GetRequiredService<ModelHealthRequestService>();
 
             foreach (var mapping in mappings)
             {
                 try
                 {
-                    var site = await workDb.Sites.FindAsync([mapping.SiteId]);
-                    var model = await workDb.ModelLibraryItems.FindAsync([mapping.ModelLibraryItemId]);
-                    if (site is null || model is null) continue;
-
-                    var result = await workProbe.ProbeAsync(site, model, default);
-
-                    var log = new DetectionLog
-                    {
-                        SiteId = mapping.SiteId,
-                        ModelLibraryItemId = mapping.ModelLibraryItemId,
-                        Status = result.Success ? "success" : "fail",
-                        DurationMs = result.DurationMs,
-                        ErrorMessage = result.ErrorMessage,
-                        CheckedAt = DateTimeOffset.UtcNow
-                    };
-                    workDb.DetectionLogs.Add(log);
-
-                    var dbMapping = await workDb.SiteModelMappings.FindAsync([mapping.Id]);
-                    if (dbMapping is not null) dbMapping.LastStatus = result.Success ? "success" : "fail";
+                    var result = await requestService.ProbeMappingAsync(mapping.Id, "detection-manual", default);
 
                     if (_progressStore.TryGetValue(taskId, out var p))
                     {
                         p.AllResults.Add(new ProbeResultItem
                         {
-                            MappingId = mapping.Id,
-                            SiteName = site.Name,
-                            RemoteModelName = mapping.RemoteModelName,
-                            Status = result.Success ? "success" : "fail",
+                            MappingId = result.MappingId,
+                            SiteName = result.SiteName,
+                            RemoteModelName = result.RemoteModelName,
+                            Status = result.Status,
                             DurationMs = result.DurationMs,
                             Error = result.ErrorMessage
                         });
@@ -251,6 +191,7 @@ public sealed class DetectionApiController : ControllerBase
                         p.AllResults.Add(new ProbeResultItem
                         {
                             MappingId = mapping.Id,
+                            RemoteModelName = mapping.RemoteModelName,
                             Status = "fail",
                             Error = ex.Message
                         });
@@ -258,8 +199,6 @@ public sealed class DetectionApiController : ControllerBase
                     }
                 }
             }
-
-            try { await workDb.SaveChangesAsync(); } catch { }
 
             if (_progressStore.TryGetValue(taskId, out var prog))
             {

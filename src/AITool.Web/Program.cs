@@ -5,6 +5,7 @@ using AITool.Application.Proxy;
 using AITool.Application.Routing;
 using AITool.Application.SiteCatalog;
 using AITool.Application.UsageLogs;
+using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Persistence;
@@ -45,8 +46,9 @@ builder.Services.AddHttpClient<IModelProbeService, OpenAiModelProbeService>();
 // 注册路由选择服务，用于根据优先级匹配代理路由
 builder.Services.AddScoped<IRouteSelectionService, RouteSelectionService>();
 
-// 注册代理转发服务，使用 HttpClient 转发请求到上游站点
+// 注册代理主入口实体配置
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
+builder.Services.AddScoped<ModelHealthRequestService>();
 
 // 注册使用日志服务，记录每次代理调用的 Token 用量
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();

@@ -1,4 +1,5 @@
 using AITool.Domain.Models;
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -139,23 +140,26 @@ public class IndexModel : PageModel
 
             var recentCutoff = DateTimeOffset.UtcNow.AddDays(-7);
             // 先全量加载到内存，再用 C# 过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
-            var allLogs = await _dbContext.DetectionLogs.ToListAsync(cancellationToken);
+            var allLogs = await _dbContext.ProxyUsageLogs
+                .Where(x => x.IsFinalResult)
+                .ToListAsync(cancellationToken);
             allLogs = allLogs
-                .Where(d => monitoredModelIds.Contains(d.ModelLibraryItemId) && d.CheckedAt >= recentCutoff)
+                .Where(d => monitoredModelIds.Contains(GetModelIdByName(models, d.RequestModel)) && d.RequestedAt >= recentCutoff)
                 .ToList();
 
             /* 按模型分组 */
             foreach (var modelId in monitoredModelIds)
             {
                 var modelMappings = mappings.Where(m => m.ModelLibraryItemId == modelId).ToList();
-                var modelLogs = allLogs.Where(l => l.ModelLibraryItemId == modelId).ToList();
+                var modelName = models.TryGetValue(modelId, out var currentModel) ? currentModel.ModelName : string.Empty;
+                var modelLogs = allLogs.Where(l => string.Equals(l.RequestModel, modelName, StringComparison.Ordinal)).ToList();
 
                 var healthList = modelMappings.Select(map =>
                 {
                     sites.TryGetValue(map.SiteId, out var site);
                     var siteLogs = modelLogs
-                        .Where(l => l.SiteId == map.SiteId)
-                        .OrderByDescending(l => l.CheckedAt)
+                        .Where(l => l.TargetSiteId == map.SiteId)
+                        .OrderByDescending(l => l.RequestedAt)
                         .Take(20)
                         .ToList();
 
@@ -168,13 +172,13 @@ public class IndexModel : PageModel
                         SiteName = site?.Name ?? "(未知站点)",
                         RemoteModelName = map.RemoteModelName,
                         LastStatus = latestLog?.Status ?? map.LastStatus,
-                        LastCheckedAt = latestLog?.CheckedAt,
-                        LastDurationMs = latestLog?.DurationMs,
+                        LastCheckedAt = latestLog?.RequestedAt,
+                        LastDurationMs = latestLog?.TotalDurationMs,
                         RecentLogs = siteLogs.Select(l => new ModelHealthLogEntry
                         {
                             Status = l.Status,
-                            DurationMs = l.DurationMs,
-                            CheckedAt = l.CheckedAt,
+                            DurationMs = l.TotalDurationMs,
+                            CheckedAt = l.RequestedAt,
                             ErrorMessage = l.ErrorMessage
                         }).ToList(),
                         SuccessRate = totalLogs > 0 ? (double)successCount / totalLogs : 0
@@ -186,6 +190,15 @@ public class IndexModel : PageModel
                 HealthData[modelId] = healthList;
             }
         }
+    }
+
+    // 按模型名反查监控模型 ID，便于将 UsageLogs 归并回健康看板。
+    private static Guid GetModelIdByName(Dictionary<Guid, ModelLibraryItem> models, string requestModel)
+    {
+        return models
+            .Where(x => string.Equals(x.Value.ModelName, requestModel, StringComparison.Ordinal))
+            .Select(x => x.Key)
+            .FirstOrDefault();
     }
 
     // 添加模型到监控列表

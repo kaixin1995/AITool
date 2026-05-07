@@ -1,3 +1,4 @@
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -50,12 +51,14 @@ public class IndexModel : PageModel
     // 加载所有映射按模型分组展示
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        var allLogs = await _dbContext.DetectionLogs.ToListAsync(cancellationToken);
+        var allLogs = await _dbContext.ProxyUsageLogs
+            .Where(x => x.IsFinalResult)
+            .ToListAsync(cancellationToken);
         var latestLogs = allLogs
-            .GroupBy(d => (d.SiteId, d.ModelLibraryItemId))
+            .GroupBy(d => (d.TargetSiteId, d.RequestModel))
             .ToDictionary(
                 g => g.Key,
-                g => g.OrderByDescending(d => d.CheckedAt).First());
+                g => g.OrderByDescending(d => d.RequestedAt).First());
 
         var mappings = await _dbContext.SiteModelMappings.ToListAsync(cancellationToken);
         var modelIds = mappings.Select(m => m.ModelLibraryItemId).Distinct().ToList();
@@ -80,7 +83,7 @@ public class IndexModel : PageModel
                     DisplayName = model?.DisplayName ?? "(未知模型)",
                     Sites = g.Select(m =>
                     {
-                        latestLogs.TryGetValue((m.SiteId, m.ModelLibraryItemId), out var log);
+                        latestLogs.TryGetValue((m.SiteId, model?.ModelName ?? string.Empty), out var log);
                         sites.TryGetValue(m.SiteId, out var site);
                         return new DetectionSiteStatusViewModel
                         {
@@ -88,8 +91,8 @@ public class IndexModel : PageModel
                             SiteName = site?.Name ?? "(未知站点)",
                             RemoteModelName = m.RemoteModelName,
                             LastStatus = log?.Status ?? m.LastStatus,
-                            LastCheckedAt = log?.CheckedAt,
-                            LastDurationMs = log?.DurationMs
+                            LastCheckedAt = log?.RequestedAt,
+                            LastDurationMs = log?.TotalDurationMs
                         };
                     }).OrderBy(s => s.SiteName).ToList()
                 };
