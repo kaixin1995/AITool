@@ -40,6 +40,10 @@ public sealed class ChatAttemptResult
     public int TotalTokens { get; set; }
     public int FirstTokenLatencyMs { get; set; }
     public int TotalDurationMs { get; set; }
+    // 发送到上游的请求体
+    public string RequestBody { get; set; } = string.Empty;
+    // 上游返回的响应体
+    public string ResponseBody { get; set; } = string.Empty;
 }
 
 // 发送消息的请求体
@@ -109,6 +113,10 @@ internal sealed class ChatStreamForwardResult
     public int TotalDurationMs { get; set; }
     public string ErrorMessage { get; set; } = string.Empty;
     public int StatusCode { get; set; }
+    // 发送到上游的请求体
+    public string RequestBody { get; set; } = string.Empty;
+    // 上游返回的原始响应体（流式时可能为 SSE 文本摘要）
+    public string ResponseBody { get; set; } = string.Empty;
 }
 
 // 对话测试 API，提供模型选择、普通发送和流式发送功能
@@ -192,7 +200,7 @@ public sealed class ChatApiController : ControllerBase
                     RetryCount = runtimeSettings.ProxyRetryCount
                 }, cancellationToken);
 
-                attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success));
+                attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success, requestBody, forwardResult.ResponseBody ?? ""));
 
                 await _usageLogService.LogAsync(new UsageLogEntry
                 {
@@ -321,7 +329,9 @@ public sealed class ChatApiController : ControllerBase
                     ErrorMessage = streamResult.ErrorMessage,
                     StatusCode = streamResult.StatusCode
                 },
-                streamResult.Success);
+                streamResult.Success,
+                streamResult.RequestBody,
+                streamResult.ResponseBody);
             attempts.Add(attemptResult);
 
             await _usageLogService.LogAsync(new UsageLogEntry
@@ -438,7 +448,7 @@ public sealed class ChatApiController : ControllerBase
 
         var attempts = new List<ChatAttemptResult>
         {
-            BuildAttemptResult(1, mapping.SiteName, mapping.SiteModelName, mapping.SiteModelName, forwardResult, true)
+            BuildAttemptResult(1, mapping.SiteName, mapping.SiteModelName, mapping.SiteModelName, forwardResult, true, requestBody, forwardResult.ResponseBody ?? "")
         };
 
         if (!forwardResult.Success)
@@ -505,7 +515,9 @@ public sealed class ChatApiController : ControllerBase
                 ErrorMessage = streamResult.ErrorMessage,
                 StatusCode = streamResult.StatusCode
             },
-            true);
+            true,
+            streamResult.RequestBody,
+            streamResult.ResponseBody);
         var attempts = new List<ChatAttemptResult> { attemptResult };
 
         await _usageLogService.LogAsync(new UsageLogEntry
@@ -573,6 +585,9 @@ public sealed class ChatApiController : ControllerBase
         int requestTimeoutSeconds,
         CancellationToken cancellationToken)
     {
+        // 提前构建请求体，供调用方记录到尝试详情
+        var requestBody = BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort);
+
         var client = _httpClientFactory.CreateClient();
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, requestTimeoutSeconds)));
@@ -585,7 +600,7 @@ public sealed class ChatApiController : ControllerBase
                 : $"{baseUrl.TrimEnd('/')}/v1/chat/completions";
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
             {
-                Content = new StringContent(BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort), Encoding.UTF8, "application/json")
+                Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
             };
 
             if (protocolType == "Anthropic")
@@ -608,7 +623,9 @@ public sealed class ChatApiController : ControllerBase
                     Success = false,
                     StatusCode = (int)response.StatusCode,
                     TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
-                    ErrorMessage = string.IsNullOrWhiteSpace(errorBody) ? $"上游返回 {(int)response.StatusCode}" : errorBody
+                    ErrorMessage = string.IsNullOrWhiteSpace(errorBody) ? $"上游返回 {(int)response.StatusCode}" : errorBody,
+                    RequestBody = requestBody,
+                    ResponseBody = errorBody
                 };
             }
 
@@ -675,6 +692,8 @@ public sealed class ChatApiController : ControllerBase
             }
 
             stopwatch.Stop();
+            // 流式响应的原始 body 已逐块消费，无法完整保留，用内容摘要替代
+            var responseBodySummary = $"[SSE streaming] content={contentBuilder.Length} chars, reasoning={reasoningBuilder.Length} chars, input={state.InputTokens}, output={state.OutputTokens}";
             return new ChatStreamForwardResult
             {
                 Success = state.HadAnyContent || contentBuilder.Length > 0 || reasoningBuilder.Length > 0,
@@ -687,7 +706,9 @@ public sealed class ChatApiController : ControllerBase
                 FirstTokenLatencyMs = state.FirstTokenLatencyMs,
                 TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
                 StatusCode = (int)response.StatusCode,
-                ErrorMessage = state.HadAnyContent ? string.Empty : "上游未返回可用内容"
+                ErrorMessage = state.HadAnyContent ? string.Empty : "上游未返回可用内容",
+                RequestBody = requestBody,
+                ResponseBody = responseBodySummary
             };
         }
         catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
@@ -697,7 +718,8 @@ public sealed class ChatApiController : ControllerBase
             {
                 Success = false,
                 TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
-                ErrorMessage = $"Request timed out after {requestTimeoutSeconds}s: {ex.Message}"
+                ErrorMessage = $"Request timed out after {requestTimeoutSeconds}s: {ex.Message}",
+                RequestBody = requestBody
             };
         }
         catch (Exception ex)
@@ -707,7 +729,8 @@ public sealed class ChatApiController : ControllerBase
             {
                 Success = false,
                 TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
-                ErrorMessage = ex.Message
+                ErrorMessage = ex.Message,
+                RequestBody = requestBody
             };
         }
     }
@@ -747,7 +770,9 @@ public sealed class ChatApiController : ControllerBase
         string attemptedModel,
         string siteModelName,
         ProxyForwardResult forwardResult,
-        bool isFinalResult)
+        bool isFinalResult,
+        string requestBody = "",
+        string responseBody = "")
     {
         return new ChatAttemptResult
         {
@@ -764,7 +789,9 @@ public sealed class ChatApiController : ControllerBase
             OutputTokens = forwardResult.OutputTokens,
             TotalTokens = forwardResult.InputTokens + forwardResult.CachedTokens + forwardResult.OutputTokens,
             FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
-            TotalDurationMs = forwardResult.TotalDurationMs
+            TotalDurationMs = forwardResult.TotalDurationMs,
+            RequestBody = requestBody,
+            ResponseBody = responseBody
         };
     }
 

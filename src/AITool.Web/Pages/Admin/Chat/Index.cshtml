@@ -387,6 +387,36 @@
         background: #fff;
     }
 
+    .chat-attempt-detail-toggle {
+        display: inline-block;
+        margin-top: 8px;
+        font-size: 12px;
+        color: #6366f1;
+        cursor: pointer;
+        user-select: none;
+    }
+    .chat-attempt-detail-toggle:hover { text-decoration: underline; }
+
+    .chat-attempt-detail-body {
+        display: none;
+        margin-top: 6px;
+    }
+    .chat-attempt-detail-body.show { display: block; }
+
+    .chat-attempt-detail-pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        margin: 0 0 6px 0;
+        font-size: 11px;
+        line-height: 1.5;
+        max-height: 200px;
+        overflow: auto;
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        padding: 8px;
+    }
+
     .chat-attempt-head {
         display: flex;
         justify-content: space-between;
@@ -980,6 +1010,23 @@
                 html += '<div class="chat-attempt-error">错误：' + escHtml(attempt.errorMessage) + '</div>';
             }
 
+            // 请求体 / 响应体折叠展示
+            var hasBody = attempt.requestBody || attempt.responseBody;
+            if (hasBody) {
+                var detailId = 'attemptDetail_' + attempt.attemptIndex;
+                html += '<span class="chat-attempt-detail-toggle" onclick="toggleAttemptDetail(\'' + detailId + '\')">▶ 查看请求/响应详情</span>';
+                html += '<div class="chat-attempt-detail-body" id="' + detailId + '">';
+                if (attempt.requestBody) {
+                    html += '<div style="font-size:11px;color:#6b7280;margin-bottom:2px;">请求体</div>';
+                    html += '<pre class="chat-attempt-detail-pre">' + escHtml(formatJson(attempt.requestBody)) + '</pre>';
+                }
+                if (attempt.responseBody) {
+                    html += '<div style="font-size:11px;color:#6b7280;margin-bottom:2px;">响应体</div>';
+                    html += '<pre class="chat-attempt-detail-pre">' + escHtml(formatJson(attempt.responseBody)) + '</pre>';
+                }
+                html += '</div>';
+            }
+
             card.innerHTML = html;
             list.appendChild(card);
         });
@@ -1042,5 +1089,27 @@
         var d = document.createElement('div');
         d.textContent = str == null ? '' : String(str);
         return d.innerHTML;
+    }
+
+    // 切换请求/响应详情折叠
+    function toggleAttemptDetail(id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        el.classList.toggle('show');
+        var toggle = el.previousElementSibling;
+        if (toggle) {
+            toggle.textContent = el.classList.contains('show') ? '▼ 收起请求/响应详情' : '▶ 查看请求/响应详情';
+        }
+    }
+
+    // 尝试格式化 JSON 字符串，失败则原样返回
+    function formatJson(str) {
+        if (!str) return '';
+        try {
+            var obj = JSON.parse(str);
+            return JSON.stringify(obj, null, 2);
+        } catch {
+            return str;
+        }
     }
 </script>
