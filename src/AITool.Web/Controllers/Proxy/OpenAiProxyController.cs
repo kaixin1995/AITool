@@ -16,17 +16,20 @@ public sealed class OpenAiProxyController : ControllerBase
     private readonly IUsageLogService _usageLogService;
     private readonly RouteCircuitStateStore _circuitStore;
     private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly DeveloperInvocationTraceStore _traceStore;
 
     public OpenAiProxyController(
         IProxyForwardService forwardService,
         IUsageLogService usageLogService,
         RouteCircuitStateStore circuitStore,
-        ProxyRequestMetadataCache metadataCache)
+        ProxyRequestMetadataCache metadataCache,
+        DeveloperInvocationTraceStore traceStore)
     {
         _forwardService = forwardService;
         _usageLogService = usageLogService;
         _circuitStore = circuitStore;
         _metadataCache = metadataCache;
+        _traceStore = traceStore;
     }
 
     // 返回当前代理对外暴露的模型列表，兼容 OpenAI 和 Anthropic 客户端拉取模型。
@@ -139,12 +142,21 @@ public sealed class OpenAiProxyController : ControllerBase
 
         // 读取运行时设置缓存，后台修改后会在短时间内刷新。
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+        var traceId = TryCreateDeveloperTrace(runtimeSettings, requestSource, "OpenAI", modelName, requestBody);
 
         // 获取已经和站点信息合并后的候选路由，避免 N+1 查询站点。
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(modelName, cancellationToken);
 
         if (allRoutes.Count == 0)
+        {
+            CompleteDeveloperTrace(traceId, new DeveloperInvocationResult
+            {
+                Status = "not-found",
+                StatusCode = 404,
+                ErrorMessage = $"No available route for model: {modelName}"
+            });
             return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
+        }
 
         // 按优先级逐个尝试路由，失败则通知熔断器并继续下一个
         ProxyForwardResult? lastResult = null;
@@ -158,6 +170,7 @@ public sealed class OpenAiProxyController : ControllerBase
                 continue;
 
             attemptIndex++;
+            MarkDeveloperTraceAttempt(traceId, route);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "OpenAI",
                 route.ProtocolType,
@@ -217,10 +230,36 @@ public sealed class OpenAiProxyController : ControllerBase
                     result.InputTokens,
                     result.CachedTokens,
                     result.OutputTokens);
+                CompleteDeveloperTrace(traceId, new DeveloperInvocationResult
+                {
+                    Status = "success",
+                    StatusCode = result.StatusCode,
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(responseBody),
+                    ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json",
+                    IsStreaming = result.IsStreaming,
+                    InputTokens = result.InputTokens,
+                    CachedTokens = result.CachedTokens,
+                    OutputTokens = result.OutputTokens,
+                    TotalDurationMs = result.TotalDurationMs
+                });
                 // 流式响应以 SSE 格式返回，使用 text/event-stream 内容类型
                 var contentType = result.IsStreaming ? "text/event-stream" : "application/json";
                 return Content(responseBody, contentType);
             }
+
+            CompleteDeveloperTrace(traceId, new DeveloperInvocationResult
+            {
+                Status = "fail",
+                StatusCode = result.StatusCode,
+                ErrorMessage = result.ErrorMessage ?? string.Empty,
+                ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
+                ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json",
+                IsStreaming = result.IsStreaming,
+                InputTokens = result.InputTokens,
+                CachedTokens = result.CachedTokens,
+                OutputTokens = result.OutputTokens,
+                TotalDurationMs = result.TotalDurationMs
+            });
 
             // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
             _circuitStore.Block(route.RouteId);
@@ -229,6 +268,19 @@ public sealed class OpenAiProxyController : ControllerBase
 
         // 所有路由均失败
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
+        CompleteDeveloperTrace(traceId, new DeveloperInvocationResult
+        {
+            Status = "all-failed",
+            StatusCode = statusCode,
+            ErrorMessage = lastResult?.ErrorMessage ?? "All upstream routes failed",
+            ResponseBody = DeveloperInvocationTraceStore.FormatBody(lastResult?.ResponseBody ?? string.Empty),
+            ResponseContentType = lastResult?.IsStreaming == true ? "text/event-stream" : "application/json",
+            IsStreaming = lastResult?.IsStreaming == true,
+            InputTokens = lastResult?.InputTokens ?? 0,
+            CachedTokens = lastResult?.CachedTokens ?? 0,
+            OutputTokens = lastResult?.OutputTokens ?? 0,
+            TotalDurationMs = lastResult?.TotalDurationMs ?? 0
+        });
         return StatusCode(statusCode,
             new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
     }
@@ -251,7 +303,7 @@ public sealed class OpenAiProxyController : ControllerBase
         }
 
         var normalizedUserAgent = userAgent.ToLowerInvariant();
-        if (normalizedUserAgent.Contains("claude-code"))
+        if (normalizedUserAgent.Contains("claude"))
         {
             return "claude-code";
         }
@@ -267,5 +319,52 @@ public sealed class OpenAiProxyController : ControllerBase
         }
 
         return "proxy";
+    }
+
+    private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
+    {
+        if (!runtimeSettings.DeveloperFeaturesEnabled)
+        {
+            return null;
+        }
+
+        return _traceStore.AddRequest(new DeveloperInvocationTraceRequest
+        {
+            RequestId = Guid.NewGuid(),
+            Source = requestSource,
+            UserAgent = Request.Headers.UserAgent.ToString(),
+            ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+            ProtocolType = protocolType,
+            RequestPath = Request.Path,
+            RequestModel = modelName,
+            RequestBody = DeveloperInvocationTraceStore.FormatBody(requestBody),
+            RequestHeaders = DeveloperInvocationTraceStore.CaptureHeaders(Request.Headers)
+        });
+    }
+
+    private void MarkDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route)
+    {
+        if (!traceId.HasValue)
+        {
+            return;
+        }
+
+        _traceStore.MarkAttempt(traceId.Value, new DeveloperInvocationAttempt
+        {
+            AttemptedModel = route.UpstreamModelName,
+            UpstreamProtocolType = route.ProtocolType,
+            TargetSiteId = route.SiteId,
+            TargetSiteName = route.SiteName
+        });
+    }
+
+    private void CompleteDeveloperTrace(Guid? traceId, DeveloperInvocationResult result)
+    {
+        if (!traceId.HasValue)
+        {
+            return;
+        }
+
+        _traceStore.Complete(traceId.Value, result);
     }
 }

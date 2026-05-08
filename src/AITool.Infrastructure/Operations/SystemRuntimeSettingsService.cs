@@ -46,6 +46,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.CircuitBreakerRecoveryMinutes = Math.Max(1, request.CircuitBreakerRecoveryMinutes);
         settings.UsageLogRetentionDays = Math.Max(1, request.UsageLogRetentionDays);
         settings.UsageLogAutoCleanupEnabled = request.UsageLogAutoCleanupEnabled;
+        settings.DeveloperFeaturesEnabled = request.DeveloperFeaturesEnabled;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return settings;
@@ -103,7 +104,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
                 return;
             }
 
-            command.CommandText = "CREATE TABLE SystemRuntimeSettings (Id INTEGER NOT NULL CONSTRAINT PK_SystemRuntimeSettings PRIMARY KEY, ProxyRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60, ProxyRetryCount INTEGER NOT NULL DEFAULT 1, DetectionRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60, DetectionRetryCount INTEGER NOT NULL DEFAULT 0, DetectionConcurrency INTEGER NOT NULL DEFAULT 1, CircuitBreakerFailureThreshold INTEGER NOT NULL DEFAULT 5, CircuitBreakerRecoveryMinutes INTEGER NOT NULL DEFAULT 2, UsageLogRetentionDays INTEGER NOT NULL DEFAULT 7, UsageLogAutoCleanupEnabled INTEGER NOT NULL DEFAULT 1, LastUsageLogPrunedAt TEXT NULL, LastUsageLogPrunedCount INTEGER NOT NULL DEFAULT 0)";
+            command.CommandText = "CREATE TABLE SystemRuntimeSettings (Id INTEGER NOT NULL CONSTRAINT PK_SystemRuntimeSettings PRIMARY KEY, ProxyRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60, ProxyRetryCount INTEGER NOT NULL DEFAULT 1, DetectionRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60, DetectionRetryCount INTEGER NOT NULL DEFAULT 0, DetectionConcurrency INTEGER NOT NULL DEFAULT 1, CircuitBreakerFailureThreshold INTEGER NOT NULL DEFAULT 5, CircuitBreakerRecoveryMinutes INTEGER NOT NULL DEFAULT 2, UsageLogRetentionDays INTEGER NOT NULL DEFAULT 7, UsageLogAutoCleanupEnabled INTEGER NOT NULL DEFAULT 1, DeveloperFeaturesEnabled INTEGER NOT NULL DEFAULT 0, LastUsageLogPrunedAt TEXT NULL, LastUsageLogPrunedCount INTEGER NOT NULL DEFAULT 0)";
             await command.ExecuteNonQueryAsync(cancellationToken);
         }
         finally

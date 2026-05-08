@@ -82,6 +82,17 @@
         </div>
     </div>
 
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">开发者功能</h5>
+            <div class="form-check form-switch mt-1">
+                <input asp-for="Input.DeveloperFeaturesEnabled" class="form-check-input" type="checkbox" />
+                <label asp-for="Input.DeveloperFeaturesEnabled" class="form-check-label">启用开发者功能</label>
+            </div>
+            <div class="form-text">开启后才会显示调用调试页面，并记录最近 100 条内存中的调用信息。</div>
+        </div>
+    </div>
+
     <div>
         <button type="submit" class="btn btn-primary">保存设置</button>
     </div>

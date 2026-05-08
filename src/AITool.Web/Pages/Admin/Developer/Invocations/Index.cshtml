@@ -1,0 +1,666 @@
+@page
+@model AITool.Web.Pages.Admin.Developer.Invocations.IndexModel
+@using global::System.Text.Json
+@{
+    ViewData["Title"] = "调用调试";
+}
+
+<div class="page-header trace-page-header">
+    <div>
+        <h2 class="page-title">调用调试</h2>
+        <p class="page-subtitle">仅保留内存中的最近 100 条请求与返回信息，便于排查客户端调用问题</p>
+    </div>
+    <div class="trace-toolbar">
+        <label class="trace-refresh-switch" for="autoRefreshToggle">
+            <input type="checkbox" id="autoRefreshToggle" checked>
+            <span>自动刷新（5 秒）</span>
+        </label>
+        <button type="button" class="btn btn-primary" id="refreshNowButton">立即刷新</button>
+    </div>
+</div>
+
+<div class="trace-overview-grid mb-4">
+    <article class="trace-overview-card trace-overview-card-primary">
+        <span class="trace-overview-label">当前记录数</span>
+        <strong class="trace-overview-value" id="traceTotalCount">@Model.Entries.Count</strong>
+        <span class="trace-overview-hint">只保留内存中的最新 100 条</span>
+    </article>
+    <article class="trace-overview-card trace-overview-card-danger">
+        <span class="trace-overview-label">失败 / 异常</span>
+        <strong class="trace-overview-value" id="traceFailedCount">@Model.Entries.Count(x => !string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(x.Status, "pending", StringComparison.OrdinalIgnoreCase))</strong>
+        <span class="trace-overview-hint">优先检查红色告警记录</span>
+    </article>
+    <article class="trace-overview-card trace-overview-card-warning">
+        <span class="trace-overview-label">等待返回</span>
+        <strong class="trace-overview-value" id="tracePendingCount">@Model.Entries.Count(x => string.Equals(x.Status, "pending", StringComparison.OrdinalIgnoreCase))</strong>
+        <span class="trace-overview-hint">请求已到达，但返回尚未补齐</span>
+    </article>
+</div>
+
+<div class="trace-focus-tip mb-3">
+    <span class="trace-focus-tip-mark">!</span>
+    <span>最新记录默认置顶；红色卡片表示失败或异常，黄色卡片表示仍在等待返回。</span>
+</div>
+
+<div class="accordion trace-accordion d-flex flex-column gap-3" id="invocationTraceAccordion">
+    @await Html.PartialAsync("_InvocationTraceList", Model.Entries)
+</div>
+
+<style>
+    .trace-page-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+    }
+
+    .trace-toolbar {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+    }
+
+    .trace-refresh-switch {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 42px;
+        padding: 0 14px;
+        border-radius: 999px;
+        background: #fff;
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+        margin: 0;
+        cursor: pointer;
+        user-select: none;
+        font-size: 14px;
+        color: var(--text-primary);
+    }
+
+    .trace-refresh-switch input {
+        width: 16px;
+        height: 16px;
+        margin: 0;
+        accent-color: #2563eb;
+        flex: 0 0 auto;
+    }
+
+    .trace-refresh-switch span {
+        display: inline-flex;
+        align-items: center;
+        line-height: 1;
+        white-space: nowrap;
+    }
+
+    .trace-overview-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+    }
+
+    .trace-overview-card {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 20px 22px;
+        background: #fff;
+        border-radius: 18px;
+        border: 1px solid rgba(226, 232, 240, 0.9);
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+    }
+
+    .trace-overview-card-primary {
+        border-color: rgba(59, 130, 246, 0.18);
+        background: linear-gradient(135deg, rgba(239, 246, 255, 0.92), #fff);
+    }
+
+    .trace-overview-card-danger {
+        border-color: rgba(239, 68, 68, 0.2);
+        background: linear-gradient(135deg, rgba(254, 242, 242, 0.95), #fff);
+    }
+
+    .trace-overview-card-warning {
+        border-color: rgba(245, 158, 11, 0.2);
+        background: linear-gradient(135deg, rgba(255, 251, 235, 0.95), #fff);
+    }
+
+    .trace-overview-label {
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .trace-overview-value {
+        font-size: 30px;
+        line-height: 1;
+        font-weight: 800;
+        color: var(--text-primary);
+    }
+
+    .trace-overview-hint {
+        font-size: 12px;
+        color: var(--text-secondary);
+    }
+
+    .trace-focus-tip {
+        display: inline-flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        border-radius: 999px;
+        background: #fff7ed;
+        color: #9a3412;
+        border: 1px solid rgba(251, 146, 60, 0.25);
+    }
+
+    .trace-focus-tip-mark {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        border-radius: 50%;
+        background: #f97316;
+        color: #fff;
+        font-weight: 700;
+    }
+
+    .trace-card {
+        border: 1px solid rgba(226, 232, 240, 0.9);
+        border-radius: 20px;
+        overflow: hidden;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.05);
+    }
+
+    .trace-card-success {
+        border-left: 6px solid #22c55e;
+    }
+
+    .trace-card-pending {
+        border-left: 6px solid #f59e0b;
+        background: linear-gradient(180deg, rgba(255, 251, 235, 0.4), #fff 42%);
+    }
+
+    .trace-card-danger {
+        border-left: 6px solid #ef4444;
+        background: linear-gradient(180deg, rgba(254, 242, 242, 0.55), #fff 42%);
+        box-shadow: 0 16px 36px rgba(239, 68, 68, 0.12);
+    }
+
+    .trace-card-header {
+        border-bottom: 0;
+        padding: 0;
+    }
+
+    .trace-card-toggle {
+        width: 100%;
+        border: 0;
+        background: transparent;
+        padding: 18px 20px;
+        text-align: left;
+    }
+
+    .trace-card-toggle:hover {
+        background: rgba(248, 250, 252, 0.72);
+    }
+
+    .trace-card-main {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+    }
+
+    .trace-card-topline {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+    }
+
+    .trace-title-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+
+    .trace-status-pill,
+    .trace-protocol-pill,
+    .trace-source-pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 28px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1;
+        white-space: nowrap;
+    }
+
+    .trace-status-pill-success {
+        background: #e8f7ea;
+        color: #166534;
+    }
+
+    .trace-status-pill-pending {
+        background: #fff5d6;
+        color: #b45309;
+    }
+
+    .trace-status-pill-danger {
+        background: #fee2e2;
+        color: #b91c1c;
+        box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08);
+    }
+
+    .trace-protocol-pill {
+        background: #eff6ff;
+        color: #1d4ed8;
+    }
+
+    .trace-source-pill {
+        background: #f8fafc;
+        color: var(--text-secondary);
+    }
+
+    .trace-summary-time {
+        font-size: 12px;
+        color: var(--text-secondary);
+    }
+
+    .trace-card-title-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        flex-wrap: wrap;
+    }
+
+    .trace-model-pair {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+    }
+
+    .trace-request-model,
+    .trace-attempted-model {
+        font-size: 18px;
+        font-weight: 800;
+        color: var(--text-primary);
+        word-break: break-word;
+    }
+
+    .trace-attempted-model {
+        color: #1d4ed8;
+    }
+
+    .trace-model-arrow {
+        font-size: 18px;
+        font-weight: 700;
+        color: #94a3b8;
+    }
+
+    .trace-meta-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        gap: 10px;
+    }
+
+    .trace-meta-chip {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 12px 14px;
+        border-radius: 14px;
+        background: #f8fafc;
+        border: 1px solid rgba(226, 232, 240, 0.95);
+    }
+
+    .trace-meta-label {
+        font-size: 12px;
+        color: var(--text-secondary);
+    }
+
+    .trace-info-panel,
+    .trace-code-panel {
+        border-radius: 16px;
+        border: 1px solid rgba(226, 232, 240, 0.9);
+        background: #f8fafc;
+        padding: 16px;
+    }
+
+    .trace-info-panel {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        font-size: 13px;
+        color: var(--text-primary);
+    }
+
+    .trace-section-title {
+        margin-bottom: 10px;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--text-secondary);
+    }
+
+    .trace-section-title-danger {
+        color: #b91c1c;
+    }
+
+    .trace-code-panel-danger {
+        background: #fff5f5;
+        border-color: rgba(239, 68, 68, 0.22);
+    }
+
+    .trace-panel-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 10px;
+        flex-wrap: wrap;
+    }
+
+    .trace-copy-btn {
+        min-width: 96px;
+    }
+
+    .trace-pre {
+        margin: 0;
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 360px;
+        overflow: auto;
+        font-size: 12px;
+        line-height: 1.6;
+    }
+
+    @@media (max-width: 768px) {
+        .trace-page-header,
+        .trace-toolbar {
+            align-items: stretch;
+        }
+
+        .trace-toolbar .btn {
+            width: 100%;
+        }
+
+        .trace-refresh-switch {
+            justify-content: center;
+        }
+
+        .trace-card-toggle {
+            padding: 16px;
+        }
+
+        .trace-request-model,
+        .trace-attempted-model {
+            font-size: 16px;
+        }
+    }
+</style>
+
+@section Scripts {
+    <script>
+        (function () {
+            var autoRefreshToggle = document.getElementById('autoRefreshToggle');
+            var refreshNowButton = document.getElementById('refreshNowButton');
+            var traceAccordion = document.getElementById('invocationTraceAccordion');
+            var refreshIntervalMs = 5000;
+            var refreshTimerId = null;
+            var listEndpoint = '@Url.Page("./Index", "List")';
+
+            function escapeHtml(value) {
+                return (value || '').replace(/[&<>"']/g, function (char) {
+                    switch (char) {
+                        case '&': return '&amp;';
+                        case '<': return '&lt;';
+                        case '>': return '&gt;';
+                        case '"': return '&quot;';
+                        case '\'': return '&#39;';
+                        default: return char;
+                    }
+                });
+            }
+
+            function getOpenTraceIds() {
+                if (!traceAccordion) {
+                    return [];
+                }
+
+                return Array.from(traceAccordion.querySelectorAll('.collapse.show'))
+                    .map(function (element) { return element.id; })
+                    .filter(Boolean);
+            }
+
+            function updateSummary(payload) {
+                var totalEl = document.getElementById('traceTotalCount');
+                var failedEl = document.getElementById('traceFailedCount');
+                var pendingEl = document.getElementById('tracePendingCount');
+                if (totalEl) {
+                    totalEl.textContent = payload.totalCount;
+                }
+                if (failedEl) {
+                    failedEl.textContent = payload.failedCount;
+                }
+                if (pendingEl) {
+                    pendingEl.textContent = payload.pendingCount;
+                }
+            }
+
+            function renderRequestHeaders(headers) {
+                try {
+                    return JSON.stringify(headers || {}, null, 2);
+                } catch {
+                    return '{}';
+                }
+            }
+
+            function renderEntry(entry, index) {
+                var statusCodeText = entry.statusCode > 0 ? String(entry.statusCode) : '-';
+                var durationText = entry.totalDurationMs > 0 ? entry.totalDurationMs + ' ms' : '-';
+                var responseBodyText = entry.responseBody && entry.responseBody.trim() ? entry.responseBody : '-';
+                var errorBlock = entry.errorMessage && entry.errorMessage.trim()
+                    ? '<div><div class="trace-section-title trace-section-title-danger">错误信息</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">' + escapeHtml(entry.errorMessage) + '</pre></div>'
+                    : '';
+
+                return '' +
+                    '<div class="card trace-card trace-card-' + escapeHtml(entry.statusClass) + '" data-trace-status="' + escapeHtml(entry.status) + '">' +
+                        '<div class="card-header trace-card-header bg-white">' +
+                            '<button class="trace-card-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#invocation-trace-' + index + '" aria-expanded="false" aria-controls="invocation-trace-' + index + '">' +
+                                '<div class="trace-card-main">' +
+                                    '<div class="trace-card-topline">' +
+                                        '<div class="trace-title-group">' +
+                                            '<span class="trace-status-pill trace-status-pill-' + escapeHtml(entry.statusClass) + '">' + escapeHtml(entry.statusText) + '</span>' +
+                                            '<span class="trace-protocol-pill">' + escapeHtml(entry.protocolType) + '</span>' +
+                                            '<span class="trace-source-pill">' + escapeHtml(entry.source) + '</span>' +
+                                        '</div>' +
+                                        '<div class="trace-summary-time">' + escapeHtml(entry.createdAtText) + '</div>' +
+                                    '</div>' +
+                                    '<div class="trace-card-title-row">' +
+                                        '<div class="trace-model-pair">' +
+                                            '<div class="trace-request-model">' + escapeHtml(entry.requestModel) + '</div>' +
+                                            '<div class="trace-model-arrow">→</div>' +
+                                            '<div class="trace-attempted-model">' + escapeHtml(entry.summaryAttemptedModel) + '</div>' +
+                                        '</div>' +
+                                    '</div>' +
+                                    '<div class="trace-meta-grid">' +
+                                        '<div class="trace-meta-chip"><span class="trace-meta-label">目标站点</span><strong>' + escapeHtml(entry.summarySite) + '</strong></div>' +
+                                        '<div class="trace-meta-chip"><span class="trace-meta-label">请求路径</span><strong>' + escapeHtml(entry.requestPath) + '</strong></div>' +
+                                        '<div class="trace-meta-chip"><span class="trace-meta-label">状态码</span><strong>' + escapeHtml(statusCodeText) + '</strong></div>' +
+                                        '<div class="trace-meta-chip"><span class="trace-meta-label">总耗时</span><strong>' + escapeHtml(durationText) + '</strong></div>' +
+                                    '</div>' +
+                                '</div>' +
+                            '</button>' +
+                        '</div>' +
+                        '<div id="invocation-trace-' + index + '" class="collapse" data-bs-parent="#invocationTraceAccordion">' +
+                            '<div class="card-body d-flex flex-column gap-3">' +
+                                '<div class="row g-3">' +
+                                    '<div class="col-xl-4">' +
+                                        '<div class="trace-section-title">基础信息</div>' +
+                                        '<div class="trace-info-panel">' +
+                                            '<div><strong>客户端来源：</strong>' + escapeHtml(entry.source) + '</div>' +
+                                            '<div><strong>User-Agent：</strong>' + escapeHtml(entry.userAgent || '-') + '</div>' +
+                                            '<div><strong>客户端 IP：</strong>' + escapeHtml(entry.clientIp || '-') + '</div>' +
+                                            '<div><strong>请求协议：</strong>' + escapeHtml(entry.protocolType) + '</div>' +
+                                            '<div><strong>上游协议：</strong>' + escapeHtml(entry.upstreamProtocolType || '-') + '</div>' +
+                                            '<div><strong>请求模型：</strong>' + escapeHtml(entry.requestModel) + '</div>' +
+                                            '<div><strong>调用模型：</strong>' + escapeHtml(entry.summaryAttemptedModel) + '</div>' +
+                                            '<div><strong>目标站点：</strong>' + escapeHtml(entry.summarySite) + '</div>' +
+                                            '<div><strong>状态：</strong>' + escapeHtml(entry.statusText) + '</div>' +
+                                            '<div><strong>状态码：</strong>' + escapeHtml(statusCodeText) + '</div>' +
+                                            '<div><strong>总耗时：</strong>' + escapeHtml(durationText) + '</div>' +
+                                            '<div><strong>Token：</strong>' + escapeHtml(entry.inputTokens + ' / ' + entry.cachedTokens + ' / ' + entry.outputTokens) + '</div>' +
+                                        '</div>' +
+                                    '</div>' +
+                                    '<div class="col-xl-8">' +
+                                        '<div class="trace-section-title">请求头</div>' +
+                                        '<pre class="trace-pre trace-code-panel">' + escapeHtml(renderRequestHeaders(entry.requestHeaders)) + '</pre>' +
+                                    '</div>' +
+                                '</div>' +
+                                errorBlock +
+                                '<div class="row g-3">' +
+                                    '<div class="col-xl-6">' +
+                                        '<div class="trace-panel-header">' +
+                                            '<div class="trace-section-title mb-0">请求体</div>' +
+                                            '<button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="request-body-' + index + '">复制请求体</button>' +
+                                        '</div>' +
+                                        '<pre id="request-body-' + index + '" class="trace-pre trace-code-panel">' + escapeHtml(entry.requestBody) + '</pre>' +
+                                    '</div>' +
+                                    '<div class="col-xl-6">' +
+                                        '<div class="trace-panel-header">' +
+                                            '<div class="trace-section-title mb-0">返回体</div>' +
+                                            '<button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="response-body-' + index + '">复制返回体</button>' +
+                                        '</div>' +
+                                        '<pre id="response-body-' + index + '" class="trace-pre trace-code-panel">' + escapeHtml(responseBodyText) + '</pre>' +
+                                    '</div>' +
+                                '</div>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>';
+            }
+
+            function renderEmptyState() {
+                return '<div class="card trace-empty-card"><div class="card-body text-secondary">暂无调用记录</div></div>';
+            }
+
+            function restoreOpenTraceIds(openIds) {
+                if (!Array.isArray(openIds)) {
+                    return;
+                }
+
+                openIds.forEach(function (id) {
+                    var element = document.getElementById(id);
+                    if (!element) {
+                        return;
+                    }
+
+                    var collapse = bootstrap.Collapse.getOrCreateInstance(element, { toggle: false });
+                    collapse.show();
+                });
+            }
+
+            async function refreshTraceList() {
+                var openIds = getOpenTraceIds();
+                var response = await fetch(listEndpoint, {
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest'
+                    },
+                    cache: 'no-store'
+                });
+
+                if (!response.ok) {
+                    return;
+                }
+
+                var payload = await response.json();
+                updateSummary(payload);
+
+                if (!traceAccordion) {
+                    return;
+                }
+
+                if (!payload.entries || payload.entries.length === 0) {
+                    traceAccordion.innerHTML = renderEmptyState();
+                    return;
+                }
+
+                traceAccordion.innerHTML = payload.entries.map(renderEntry).join('');
+                restoreOpenTraceIds(openIds);
+            }
+
+            if (refreshNowButton) {
+                refreshNowButton.addEventListener('click', function () {
+                    refreshTraceList();
+                });
+            }
+
+            window.copyTraceContent = async function (button) {
+                if (!button) {
+                    return;
+                }
+
+                var targetId = button.getAttribute('data-copy-target');
+                var target = targetId ? document.getElementById(targetId) : null;
+                var text = target ? (target.textContent || '') : '';
+                if (!text) {
+                    return;
+                }
+
+                try {
+                    if (navigator.clipboard && window.isSecureContext) {
+                        await navigator.clipboard.writeText(text);
+                    } else {
+                        var textarea = document.createElement('textarea');
+                        textarea.value = text;
+                        textarea.setAttribute('readonly', 'readonly');
+                        textarea.style.position = 'fixed';
+                        textarea.style.opacity = '0';
+                        textarea.style.left = '-9999px';
+                        document.body.appendChild(textarea);
+                        textarea.focus();
+                        textarea.select();
+                        document.execCommand('copy');
+                        document.body.removeChild(textarea);
+                    }
+
+                    var originalText = button.textContent;
+                    button.textContent = '复制成功';
+                    button.disabled = true;
+                    window.setTimeout(function () {
+                        button.textContent = originalText;
+                        button.disabled = false;
+                    }, 1200);
+                } catch {
+                    var fallbackText = button.textContent;
+                    button.textContent = '复制失败';
+                    button.disabled = true;
+                    window.setTimeout(function () {
+                        button.textContent = fallbackText;
+                        button.disabled = false;
+                    }, 1200);
+                }
+            };
+
+            function ensureRefreshTimer() {
+                if (refreshTimerId) {
+                    window.clearInterval(refreshTimerId);
+                }
+
+                refreshTimerId = window.setInterval(function () {
+                    if (autoRefreshToggle && autoRefreshToggle.checked) {
+                        refreshTraceList();
+                    }
+                }, refreshIntervalMs);
+            }
+
+            ensureRefreshTimer();
+        })();
+    </script>
+}

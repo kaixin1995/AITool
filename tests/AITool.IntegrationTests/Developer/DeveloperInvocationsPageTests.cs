@@ -1,0 +1,243 @@
+using System.Net;
+using System.Security.Cryptography;
+using System.Text;
+using AITool.Application.Proxy;
+using AITool.Domain.Operations;
+using AITool.Domain.Proxy;
+using AITool.Domain.Sites;
+using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
+using FluentAssertions;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+
+namespace AITool.IntegrationTests.Developer;
+
+// 调用调试页集成测试，验证开关控制与内存记录展示。
+public sealed class DeveloperInvocationsPageTests
+{
+    [Fact]
+    public async Task Get_invocations_page_returns_not_found_when_feature_is_disabled()
+    {
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(false, new DeveloperInvocationsFakeProxyForwardService());
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/Developer/Invocations");
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Get_invocations_page_shows_latest_request_and_response_when_feature_is_enabled()
+    {
+        var fakeForwardService = new DeveloperInvocationsFakeProxyForwardService();
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, fakeForwardService);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"debug-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hello debug\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new global::System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "debug-key");
+        request.Headers.UserAgent.ParseAdd("claude-code/1.0");
+        request.Headers.Add("X-AITool-Source", "claude-code");
+
+        var invokeResponse = await client.SendAsync(request);
+        invokeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var pageResponse = await client.GetAsync("/Admin/Developer/Invocations");
+        var html = await pageResponse.Content.ReadAsStringAsync();
+
+        pageResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("调用调试");
+        html.Should().Contain("自动刷新（5 秒）");
+        html.Should().Contain("复制请求体");
+        html.Should().Contain("复制返回体");
+        html.Should().Contain("claude-code");
+        html.Should().Contain("debug-model");
+        html.Should().Contain("debug-upstream-model");
+        html.Should().Contain("Debug Site");
+        html.Should().Contain("成功");
+        html.Should().Contain("debug-ok");
+        html.Should().Contain("hello debug");
+    }
+
+    [Fact]
+    public async Task Get_list_returns_entries_payload_when_feature_is_enabled()
+    {
+        var fakeForwardService = new DeveloperInvocationsFakeProxyForwardService();
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, fakeForwardService);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"debug-model\",\"messages\":[{\"role\":\"user\",\"content\":\"hello ajax\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new global::System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "debug-key");
+
+        var invokeResponse = await client.SendAsync(request);
+        invokeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var listResponse = await client.GetAsync("/Admin/Developer/Invocations?handler=List");
+        var payload = await listResponse.Content.ReadAsStringAsync();
+
+        listResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        payload.Should().Contain("totalCount");
+        payload.Should().Contain("failedCount");
+        payload.Should().Contain("pendingCount");
+        payload.Should().Contain("hello ajax");
+        payload.Should().Contain("debug-upstream-model");
+    }
+
+    [Fact]
+    public async Task Get_invocations_page_highlights_failed_entries()
+    {
+        var fakeForwardService = new DeveloperInvocationsFakeProxyForwardService
+        {
+            Result = new ProxyForwardResult
+            {
+                Success = false,
+                StatusCode = 502,
+                ErrorMessage = "upstream exploded",
+                ResponseBody = "{\"error\":\"boom\"}",
+                TotalDurationMs = 456
+            }
+        };
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, fakeForwardService);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"debug-model\",\"messages\":[{\"role\":\"user\",\"content\":\"please fail\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new global::System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "debug-key");
+
+        var invokeResponse = await client.SendAsync(request);
+        invokeResponse.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+
+        var pageResponse = await client.GetAsync("/Admin/Developer/Invocations");
+        var html = await pageResponse.Content.ReadAsStringAsync();
+
+        pageResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("失败 / 异常");
+        html.Should().Contain("全部失败");
+        html.Should().Contain("upstream exploded");
+        html.Should().Contain("trace-card-danger");
+    }
+}
+
+internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplicationFactory<Program>
+{
+    private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-developer-invocations-{Guid.NewGuid():N}.db");
+    private readonly bool _developerFeaturesEnabled;
+    private readonly DeveloperInvocationsFakeProxyForwardService _fakeForwardService;
+
+    public DeveloperInvocationsWebApplicationFactory(bool developerFeaturesEnabled, DeveloperInvocationsFakeProxyForwardService fakeForwardService)
+    {
+        _developerFeaturesEnabled = developerFeaturesEnabled;
+        _fakeForwardService = fakeForwardService;
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Testing");
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<DbContextOptions<AppDbContext>>();
+            services.RemoveAll<AppDbContext>();
+            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            services.RemoveAll<IProxyForwardService>();
+            services.AddSingleton<IProxyForwardService>(_fakeForwardService);
+        });
+    }
+
+    protected override void ConfigureClient(HttpClient client)
+    {
+        base.ConfigureClient(client);
+        SeedAsync().GetAwaiter().GetResult();
+    }
+
+    private async Task SeedAsync()
+    {
+        await using var scope = Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Database.EnsureDeletedAsync();
+        await db.Database.EnsureCreatedAsync();
+
+        var siteId = Guid.Parse("90909090-9090-9090-9090-909090909090");
+        var accessKeyRaw = "debug-key";
+        var accessKeyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(accessKeyRaw)));
+
+        db.Sites.Add(new Site
+        {
+            Id = siteId,
+            Name = "Debug Site",
+            BaseUrl = "https://debug.example.com",
+            ApiKey = "debug-site-key",
+            ProtocolType = "OpenAI",
+            IsEnabled = true
+        });
+
+        db.ProxyAccessKeys.Add(new ProxyAccessKey
+        {
+            Id = Guid.Parse("91919191-9191-9191-9191-919191919191"),
+            KeyName = "debug",
+            PlainKey = accessKeyRaw,
+            AccessKeyHash = accessKeyHash,
+            MaskedValue = "sk-***debug",
+            IsEnabled = true
+        });
+
+        db.ProxyRouteRules.Add(new ProxyRouteRule
+        {
+            Id = Guid.Parse("92929292-9292-9292-9292-929292929292"),
+            ExternalModelName = "debug-model",
+            UpstreamModelName = "debug-upstream-model",
+            SiteId = siteId,
+            SiteModelName = "debug-site-model",
+            Priority = 0,
+            ModelPriority = 0,
+            InstancePriority = 0,
+            IsEnabled = true
+        });
+
+        db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
+        {
+            Id = 1,
+            ProxyRequestTimeoutSeconds = 30,
+            ProxyRetryCount = 1,
+            DetectionRequestTimeoutSeconds = 60,
+            DetectionRetryCount = 0,
+            DetectionConcurrency = 1,
+            CircuitBreakerFailureThreshold = 5,
+            CircuitBreakerRecoveryMinutes = 2,
+            UsageLogRetentionDays = 7,
+            UsageLogAutoCleanupEnabled = true,
+            DeveloperFeaturesEnabled = _developerFeaturesEnabled
+        });
+
+        await db.SaveChangesAsync();
+    }
+}
+
+internal sealed class DeveloperInvocationsFakeProxyForwardService : IProxyForwardService
+{
+    public ProxyForwardResult Result { get; set; } = new()
+    {
+        Success = true,
+        StatusCode = 200,
+        ResponseBody = "{\"choices\":[{\"message\":{\"content\":\"debug-ok\"}}],\"usage\":{\"prompt_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":1},\"completion_tokens\":7}}",
+        InputTokens = 5,
+        CachedTokens = 1,
+        OutputTokens = 7,
+        TotalDurationMs = 123
+    };
+
+    public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
+    {
+        return Task.FromResult(Result);
+    }
+}

@@ -66,7 +66,8 @@ public sealed class ProxyRequestMetadataCache
                             DetectionConcurrency = settings.DetectionConcurrency,
                             CircuitBreakerFailureThreshold = settings.CircuitBreakerFailureThreshold,
                             CircuitBreakerRecoveryMinutes = settings.CircuitBreakerRecoveryMinutes,
-                            UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled
+                            UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
+                            DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled
                         };
                 })
             ?? new CachedProxyRuntimeSettings();
@@ -402,6 +403,7 @@ public sealed class CachedProxyRuntimeSettings
     public int CircuitBreakerFailureThreshold { get; set; } = 5;
     public int CircuitBreakerRecoveryMinutes { get; set; } = 2;
     public bool UsageLogAutoCleanupEnabled { get; set; } = true;
+    public bool DeveloperFeaturesEnabled { get; set; }
 }
 
 public sealed class CachedProxyRouteTarget

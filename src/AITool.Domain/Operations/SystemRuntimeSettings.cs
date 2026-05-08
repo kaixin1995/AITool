@@ -33,6 +33,9 @@ public sealed class SystemRuntimeSettings
     // 是否启用使用日志自动清理
     public bool UsageLogAutoCleanupEnabled { get; set; } = true;
 
+    // 是否启用开发者功能
+    public bool DeveloperFeaturesEnabled { get; set; }
+
     // 最近一次使用日志清理时间
     public DateTimeOffset? LastUsageLogPrunedAt { get; set; }
 

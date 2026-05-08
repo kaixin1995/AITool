@@ -1,3 +1,5 @@
+@using AITool.Application.Operations
+@inject ISystemRuntimeSettingsService RuntimeSettingsService
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -8,6 +10,9 @@
     <link href="~/css/theme.css" rel="stylesheet" />
 </head>
 <body>
+    @{
+        var runtimeSettings = await RuntimeSettingsService.GetOrCreateAsync();
+    }
     <div class="app-wrapper">
         <!-- 侧边栏 -->
         <aside class="app-sidebar">
@@ -70,6 +75,12 @@
                     <a class="sidebar-link" href="/Admin/UsageLogs" title="使用日志">
                         <span class="sidebar-link-icon">📋</span>使用日志
                     </a>
+                    @if (runtimeSettings.DeveloperFeaturesEnabled)
+                    {
+                        <a class="sidebar-link" href="/Admin/Developer/Invocations" title="调用调试">
+                            <span class="sidebar-link-icon">🧭</span>调用调试
+                        </a>
+                    }
                     <a class="sidebar-link" href="/Admin/System/Settings" title="系统设置">
                         <span class="sidebar-link-icon">⚙️</span>系统设置
                     </a>

@@ -1,0 +1,139 @@
+@model IReadOnlyList<AITool.Web.Services.DeveloperInvocationTraceEntry>
+@using global::System.Text.Json
+
+@if (Model.Count == 0)
+{
+    <div class="card trace-empty-card">
+        <div class="card-body text-secondary">暂无调用记录</div>
+    </div>
+}
+else
+{
+    for (var i = 0; i < Model.Count; i++)
+    {
+        var entry = Model[i];
+        var collapseId = $"invocation-trace-{i}";
+        var statusClass = GetStatusClass(entry.Status);
+        var statusText = GetStatusText(entry.Status);
+        var summarySite = string.IsNullOrWhiteSpace(entry.TargetSiteName) ? "未命中站点" : entry.TargetSiteName;
+        var summaryAttemptedModel = string.IsNullOrWhiteSpace(entry.AttemptedModel) ? "未解析调用模型" : entry.AttemptedModel;
+        <div class="card trace-card trace-card-@statusClass" data-trace-status="@entry.Status">
+            <div class="card-header trace-card-header bg-white">
+                <button class="trace-card-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#@collapseId" aria-expanded="false" aria-controls="@collapseId">
+                    <div class="trace-card-main">
+                        <div class="trace-card-topline">
+                            <div class="trace-title-group">
+                                <span class="trace-status-pill trace-status-pill-@statusClass">@statusText</span>
+                                <span class="trace-protocol-pill">@entry.ProtocolType</span>
+                                <span class="trace-source-pill">@entry.Source</span>
+                            </div>
+                            <div class="trace-summary-time">@entry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
+                        </div>
+                        <div class="trace-card-title-row">
+                            <div class="trace-model-pair">
+                                <div class="trace-request-model">@entry.RequestModel</div>
+                                <div class="trace-model-arrow">→</div>
+                                <div class="trace-attempted-model">@summaryAttemptedModel</div>
+                            </div>
+                        </div>
+                        <div class="trace-meta-grid">
+                            <div class="trace-meta-chip">
+                                <span class="trace-meta-label">目标站点</span>
+                                <strong>@summarySite</strong>
+                            </div>
+                            <div class="trace-meta-chip">
+                                <span class="trace-meta-label">请求路径</span>
+                                <strong>@entry.RequestPath</strong>
+                            </div>
+                            <div class="trace-meta-chip">
+                                <span class="trace-meta-label">状态码</span>
+                                <strong>@(entry.StatusCode > 0 ? entry.StatusCode : "-")</strong>
+                            </div>
+                            <div class="trace-meta-chip">
+                                <span class="trace-meta-label">总耗时</span>
+                                <strong>@(entry.TotalDurationMs > 0 ? $"{entry.TotalDurationMs} ms" : "-")</strong>
+                            </div>
+                        </div>
+                    </div>
+                </button>
+            </div>
+            <div id="@collapseId" class="collapse" data-bs-parent="#invocationTraceAccordion">
+                <div class="card-body d-flex flex-column gap-3">
+                    <div class="row g-3">
+                        <div class="col-xl-4">
+                            <div class="trace-section-title">基础信息</div>
+                            <div class="trace-info-panel">
+                                <div><strong>客户端来源：</strong>@entry.Source</div>
+                                <div><strong>User-Agent：</strong>@(string.IsNullOrWhiteSpace(entry.UserAgent) ? "-" : entry.UserAgent)</div>
+                                <div><strong>客户端 IP：</strong>@(string.IsNullOrWhiteSpace(entry.ClientIp) ? "-" : entry.ClientIp)</div>
+                                <div><strong>请求协议：</strong>@entry.ProtocolType</div>
+                                <div><strong>上游协议：</strong>@(string.IsNullOrWhiteSpace(entry.UpstreamProtocolType) ? "-" : entry.UpstreamProtocolType)</div>
+                                <div><strong>请求模型：</strong>@entry.RequestModel</div>
+                                <div><strong>调用模型：</strong>@summaryAttemptedModel</div>
+                                <div><strong>目标站点：</strong>@summarySite</div>
+                                <div><strong>状态：</strong>@statusText</div>
+                                <div><strong>状态码：</strong>@(entry.StatusCode == 0 ? "-" : entry.StatusCode)</div>
+                                <div><strong>总耗时：</strong>@(entry.TotalDurationMs == 0 ? "-" : $"{entry.TotalDurationMs} ms")</div>
+                                <div><strong>Token：</strong>@($"{entry.InputTokens} / {entry.CachedTokens} / {entry.OutputTokens}")</div>
+                            </div>
+                        </div>
+                        <div class="col-xl-8">
+                            <div class="trace-section-title">请求头</div>
+                            <pre class="trace-pre trace-code-panel">@JsonSerializer.Serialize(entry.RequestHeaders, new JsonSerializerOptions { WriteIndented = true })</pre>
+                        </div>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(entry.ErrorMessage))
+                    {
+                        <div>
+                            <div class="trace-section-title trace-section-title-danger">错误信息</div>
+                            <pre class="trace-pre trace-code-panel trace-code-panel-danger">@entry.ErrorMessage</pre>
+                        </div>
+                    }
+
+                    <div class="row g-3">
+                        <div class="col-xl-6">
+                            <div class="trace-panel-header">
+                                <div class="trace-section-title mb-0">请求体</div>
+                                <button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="request-body-@i">复制请求体</button>
+                            </div>
+                            <pre id="request-body-@i" class="trace-pre trace-code-panel">@entry.RequestBody</pre>
+                        </div>
+                        <div class="col-xl-6">
+                            <div class="trace-panel-header">
+                                <div class="trace-section-title mb-0">返回体</div>
+                                <button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="response-body-@i">复制返回体</button>
+                            </div>
+                            <pre id="response-body-@i" class="trace-pre trace-code-panel">@(string.IsNullOrWhiteSpace(entry.ResponseBody) ? "-" : entry.ResponseBody)</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+}
+
+@functions {
+    private static string GetStatusClass(string status)
+    {
+        return status?.ToLowerInvariant() switch
+        {
+            "success" => "success",
+            "pending" => "pending",
+            _ => "danger"
+        };
+    }
+
+    private static string GetStatusText(string status)
+    {
+        return status?.ToLowerInvariant() switch
+        {
+            "success" => "成功",
+            "pending" => "等待返回",
+            "not-found" => "无可用路由",
+            "all-failed" => "全部失败",
+            "fail" => "失败",
+            _ => string.IsNullOrWhiteSpace(status) ? "未知" : status
+        };
+    }
+}

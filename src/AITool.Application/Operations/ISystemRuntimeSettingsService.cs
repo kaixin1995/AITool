@@ -44,6 +44,9 @@ public sealed class UpdateSystemRuntimeSettingsRequest
 
     // 是否启用使用日志自动清理
     public bool UsageLogAutoCleanupEnabled { get; set; }
+
+    // 是否启用开发者功能
+    public bool DeveloperFeaturesEnabled { get; set; }
 }
 
 // 使用日志清空请求

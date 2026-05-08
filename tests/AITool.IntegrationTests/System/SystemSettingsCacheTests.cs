@@ -54,13 +54,15 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
             CircuitBreakerFailureThreshold = 5,
             CircuitBreakerRecoveryMinutes = 2,
             UsageLogRetentionDays = 7,
-            UsageLogAutoCleanupEnabled = true
+            UsageLogAutoCleanupEnabled = true,
+            DeveloperFeaturesEnabled = false
         });
         await db.SaveChangesAsync();
 
         var before = await cache.GetRuntimeSettingsAsync(CancellationToken.None);
         before.ProxyRequestTimeoutSeconds.Should().Be(8);
         before.ProxyRetryCount.Should().Be(1);
+        before.DeveloperFeaturesEnabled.Should().BeFalse();
 
         var page = new SettingsModel(settingsService, cache, circuitStore, analyticsQueryExecutor)
         {
@@ -74,7 +76,8 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
                 CircuitBreakerFailureThreshold = 6,
                 CircuitBreakerRecoveryMinutes = 7,
                 UsageLogRetentionDays = 9,
-                UsageLogAutoCleanupEnabled = false
+                UsageLogAutoCleanupEnabled = false,
+                DeveloperFeaturesEnabled = true
             }
         };
 
@@ -88,6 +91,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         after.CircuitBreakerFailureThreshold.Should().Be(6);
         after.CircuitBreakerRecoveryMinutes.Should().Be(7);
         after.UsageLogAutoCleanupEnabled.Should().BeFalse();
+        after.DeveloperFeaturesEnabled.Should().BeTrue();
     }
 
     public async ValueTask DisposeAsync()

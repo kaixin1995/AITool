@@ -36,6 +36,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         settings.CircuitBreakerRecoveryMinutes.Should().Be(2);
         settings.UsageLogRetentionDays.Should().Be(7);
         settings.UsageLogAutoCleanupEnabled.Should().BeTrue();
+        settings.DeveloperFeaturesEnabled.Should().BeFalse();
     }
 
     [Fact]
@@ -52,7 +53,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
             CircuitBreakerFailureThreshold = 8,
             CircuitBreakerRecoveryMinutes = 6,
             UsageLogRetentionDays = 30,
-            UsageLogAutoCleanupEnabled = false
+            UsageLogAutoCleanupEnabled = false,
+            DeveloperFeaturesEnabled = true
         });
         await _dbContext.SaveChangesAsync();
 
@@ -68,6 +70,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         settings.CircuitBreakerRecoveryMinutes.Should().Be(2);
         settings.UsageLogRetentionDays.Should().Be(7);
         settings.UsageLogAutoCleanupEnabled.Should().BeTrue();
+        settings.DeveloperFeaturesEnabled.Should().BeFalse();
         _dbContext.SystemRuntimeSettings.Should().ContainSingle(x => x.Id == 1);
     }
 
@@ -86,7 +89,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
             CircuitBreakerFailureThreshold = 7,
             CircuitBreakerRecoveryMinutes = 9,
             UsageLogRetentionDays = 14,
-            UsageLogAutoCleanupEnabled = false
+            UsageLogAutoCleanupEnabled = false,
+            DeveloperFeaturesEnabled = true
         });
 
         updated.Id.Should().Be(1);
@@ -99,6 +103,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         updated.CircuitBreakerRecoveryMinutes.Should().Be(9);
         updated.UsageLogRetentionDays.Should().Be(14);
         updated.UsageLogAutoCleanupEnabled.Should().BeFalse();
+        updated.DeveloperFeaturesEnabled.Should().BeTrue();
 
         var reloaded = await _service.GetOrCreateAsync();
         reloaded.Id.Should().Be(1);
@@ -111,6 +116,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         reloaded.CircuitBreakerRecoveryMinutes.Should().Be(9);
         reloaded.UsageLogRetentionDays.Should().Be(14);
         reloaded.UsageLogAutoCleanupEnabled.Should().BeFalse();
+        reloaded.DeveloperFeaturesEnabled.Should().BeTrue();
     }
 
     [Fact]
@@ -126,7 +132,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
             CircuitBreakerFailureThreshold = 0,
             CircuitBreakerRecoveryMinutes = 0,
             UsageLogRetentionDays = 0,
-            UsageLogAutoCleanupEnabled = true
+            UsageLogAutoCleanupEnabled = true,
+            DeveloperFeaturesEnabled = true
         });
 
         updated.Id.Should().Be(1);
@@ -139,6 +146,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         updated.CircuitBreakerRecoveryMinutes.Should().Be(1);
         updated.UsageLogRetentionDays.Should().Be(1);
         updated.UsageLogAutoCleanupEnabled.Should().BeTrue();
+        updated.DeveloperFeaturesEnabled.Should().BeTrue();
     }
 
     [Fact]

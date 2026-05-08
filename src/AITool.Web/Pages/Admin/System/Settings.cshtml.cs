@@ -84,7 +84,8 @@ public class SettingsModel : PageModel
             CircuitBreakerFailureThreshold = settings.CircuitBreakerFailureThreshold,
             CircuitBreakerRecoveryMinutes = settings.CircuitBreakerRecoveryMinutes,
             UsageLogRetentionDays = settings.UsageLogRetentionDays,
-            UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled
+            UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
+            DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled
         };
         LastUsageLogPrunedCount = settings.LastUsageLogPrunedCount;
         StatusMessage = Request.Query["statusMessage"];

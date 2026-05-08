@@ -56,6 +56,7 @@ builder.Services.AddScoped<ModelHealthRequestService>();
 // 注册使用日志服务，记录每次代理调用的 Token 用量
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
+builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 
 // 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点
@@ -135,6 +136,7 @@ using (var scope = app.Services.CreateScope())
             EnsureColumn(cmd, "SystemRuntimeSettings", "CircuitBreakerRecoveryMinutes", "ALTER TABLE SystemRuntimeSettings ADD COLUMN CircuitBreakerRecoveryMinutes INTEGER NOT NULL DEFAULT 2");
             EnsureColumn(cmd, "SystemRuntimeSettings", "UsageLogRetentionDays", "ALTER TABLE SystemRuntimeSettings ADD COLUMN UsageLogRetentionDays INTEGER NOT NULL DEFAULT 7");
             EnsureColumn(cmd, "SystemRuntimeSettings", "UsageLogAutoCleanupEnabled", "ALTER TABLE SystemRuntimeSettings ADD COLUMN UsageLogAutoCleanupEnabled INTEGER NOT NULL DEFAULT 1");
+            EnsureColumn(cmd, "SystemRuntimeSettings", "DeveloperFeaturesEnabled", "ALTER TABLE SystemRuntimeSettings ADD COLUMN DeveloperFeaturesEnabled INTEGER NOT NULL DEFAULT 0");
             EnsureColumn(cmd, "SystemRuntimeSettings", "LastUsageLogPrunedAt", "ALTER TABLE SystemRuntimeSettings ADD COLUMN LastUsageLogPrunedAt TEXT NULL");
             EnsureColumn(cmd, "SystemRuntimeSettings", "LastUsageLogPrunedCount", "ALTER TABLE SystemRuntimeSettings ADD COLUMN LastUsageLogPrunedCount INTEGER NOT NULL DEFAULT 0");
         }

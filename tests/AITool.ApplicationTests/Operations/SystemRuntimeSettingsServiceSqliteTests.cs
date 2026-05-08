@@ -43,9 +43,11 @@ public sealed class SystemRuntimeSettingsServiceSqliteTests : IDisposable
         settings.CircuitBreakerRecoveryMinutes.Should().Be(2);
         settings.UsageLogRetentionDays.Should().Be(7);
         settings.UsageLogAutoCleanupEnabled.Should().BeTrue();
+        settings.DeveloperFeaturesEnabled.Should().BeFalse();
 
         var exists = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
         exists.ProxyRequestTimeoutSeconds.Should().Be(60);
+        exists.DeveloperFeaturesEnabled.Should().BeFalse();
     }
 
     public void Dispose()

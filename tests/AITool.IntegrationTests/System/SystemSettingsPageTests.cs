@@ -1,4 +1,5 @@
 using System.Net;
+using AITool.Domain.Operations;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -22,15 +23,49 @@ public sealed class SystemSettingsPageTests
         var html = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        html.Should().Contain("全局请求超时秒数");
-        html.Should().Contain("全局单路由重试次数");
-        html.Should().Contain("使用日志保留天数");
+        html.Should().Contain("代理超时时间（秒）");
+        html.Should().Contain("代理重试次数");
+        html.Should().Contain("UsageLogs 保留天数");
+        html.Should().Contain("启用开发者功能");
+    }
+
+    [Fact]
+    public async Task Get_layout_hides_developer_invocation_navigation_when_feature_is_disabled()
+    {
+        await using var factory = new SystemSettingsWebApplicationFactory(false);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/System/Settings");
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().NotContain("/Admin/Developer/Invocations");
+    }
+
+    [Fact]
+    public async Task Get_layout_shows_developer_invocation_navigation_when_feature_is_enabled()
+    {
+        await using var factory = new SystemSettingsWebApplicationFactory(true);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/System/Settings");
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("/Admin/Developer/Invocations");
+        html.Should().Contain("调用调试");
     }
 }
 
 internal sealed class SystemSettingsWebApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-system-settings-{Guid.NewGuid():N}.db");
+    private readonly bool _developerFeaturesEnabled;
+
+    public SystemSettingsWebApplicationFactory(bool developerFeaturesEnabled = false)
+    {
+        _developerFeaturesEnabled = developerFeaturesEnabled;
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -55,5 +90,21 @@ internal sealed class SystemSettingsWebApplicationFactory : WebApplicationFactor
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
+
+        db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
+        {
+            Id = 1,
+            ProxyRequestTimeoutSeconds = 60,
+            ProxyRetryCount = 1,
+            DetectionRequestTimeoutSeconds = 60,
+            DetectionRetryCount = 0,
+            DetectionConcurrency = 1,
+            CircuitBreakerFailureThreshold = 5,
+            CircuitBreakerRecoveryMinutes = 2,
+            UsageLogRetentionDays = 7,
+            UsageLogAutoCleanupEnabled = true,
+            DeveloperFeaturesEnabled = _developerFeaturesEnabled
+        });
+        await db.SaveChangesAsync();
     }
 }
