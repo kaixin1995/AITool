@@ -29,6 +29,35 @@ public sealed class AnthropicProxyController : ControllerBase
         _metadataCache = metadataCache;
     }
 
+    // 兼容 Anthropic count_tokens 接口，按当前路由可解析请求格式估算 token。
+    [HttpPost("/v1/messages/count_tokens")]
+    public async Task<IActionResult> CountTokens(CancellationToken cancellationToken)
+    {
+        var accessKey = await ValidateAccessKeyAsync(cancellationToken);
+        if (accessKey is null)
+        {
+            return Unauthorized(new { error = new { type = "authentication_error", message = "Invalid or missing access key" } });
+        }
+
+        using var reader = new StreamReader(Request.Body, Encoding.UTF8);
+        var requestBody = await reader.ReadToEndAsync(cancellationToken);
+
+        try
+        {
+            using var document = JsonDocument.Parse(requestBody);
+            var root = document.RootElement;
+            var inputTokens = EstimateInputTokens(root);
+            return Ok(new
+            {
+                input_tokens = inputTokens
+            });
+        }
+        catch
+        {
+            return BadRequest(new { error = new { type = "invalid_request_error", message = "Invalid request body" } });
+        }
+    }
+
     // 代理 Anthropic messages 请求
     [HttpPost("/v1/messages")]
     public async Task<IActionResult> Messages(CancellationToken cancellationToken)
@@ -50,22 +79,19 @@ public sealed class AnthropicProxyController : ControllerBase
         }
         catch
         {
-            return BadRequest(new { error = new { message = "Invalid request body" } });
+            return BadRequest(new { error = new { type = "invalid_request_error", message = "Invalid request body" } });
         }
 
         // 验证访问密钥
-        var accessToken = Request.Headers.TryGetValue("x-api-key", out var keyHeader)
-            ? keyHeader.ToString()
-            : string.Empty;
-
-        var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
+        var accessKey = await ValidateAccessKeyAsync(cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { type = "authentication_error", message = "Invalid or missing access key" } });
         }
 
         // 优先读取显式来源标记，其次退回到 User-Agent 识别常见客户端工具。
         var requestSource = ResolveRequestSource(Request);
+        var forwardHeaders = CollectAnthropicForwardHeaders(Request);
 
         // 读取运行时设置缓存，后台修改后会在短时间内刷新。
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
@@ -74,7 +100,7 @@ public sealed class AnthropicProxyController : ControllerBase
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(modelName, cancellationToken);
 
         if (allRoutes.Count == 0)
-            return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
+            return NotFound(new { error = new { type = "not_found_error", message = $"No available route for model: {modelName}" } });
 
         // 按优先级逐个尝试路由，失败则通知熔断器并继续下一个
         ProxyForwardResult? lastResult = null;
@@ -104,7 +130,8 @@ public sealed class AnthropicProxyController : ControllerBase
                 PreparedRequestBody = preparedRequestBody,
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
-                RetryCount = runtimeSettings.ProxyRetryCount
+                RetryCount = runtimeSettings.ProxyRetryCount,
+                ForwardHeaders = forwardHeaders
             };
 
             var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
@@ -160,7 +187,7 @@ public sealed class AnthropicProxyController : ControllerBase
         // 所有路由均失败
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
         return StatusCode(statusCode,
-            new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+            new { error = new { type = "api_error", message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
     }
 
     // 优先使用自定义来源头，无法识别时再退回通用 proxy。
@@ -197,5 +224,94 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         return "proxy";
+    }
+
+    // 兼容更多 Anthropic 客户端的鉴权写法，优先读取 x-api-key，再回退 bearer。
+    private async Task<CachedProxyAccessKey?> ValidateAccessKeyAsync(CancellationToken cancellationToken)
+    {
+        var accessToken = Request.Headers.TryGetValue("x-api-key", out var keyHeader)
+            ? keyHeader.ToString()
+            : string.Empty;
+        if (string.IsNullOrWhiteSpace(accessToken))
+        {
+            var authHeader = Request.Headers.Authorization.ToString();
+            accessToken = authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                ? authHeader[7..]
+                : string.Empty;
+        }
+
+        return await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
+    }
+
+    // 透传 Anthropic 客户端特有请求头，避免能力协商信息在代理层丢失。
+    private static Dictionary<string, string> CollectAnthropicForwardHeaders(HttpRequest request)
+    {
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var headerName in new[] { "anthropic-version", "anthropic-beta" })
+        {
+            if (request.Headers.TryGetValue(headerName, out var headerValue) && !string.IsNullOrWhiteSpace(headerValue))
+            {
+                headers[headerName] = headerValue.ToString();
+            }
+        }
+
+        return headers;
+    }
+
+    // 这里先做近似估算，满足客户端前置探测需要，避免缺失接口直接报错。
+    private static int EstimateInputTokens(JsonElement root)
+    {
+        var builder = new StringBuilder();
+        if (root.TryGetProperty("system", out var system))
+        {
+            builder.Append(FlattenText(system)).Append(' ');
+        }
+
+        if (root.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var message in messages.EnumerateArray())
+            {
+                if (message.TryGetProperty("content", out var content))
+                {
+                    builder.Append(FlattenText(content)).Append(' ');
+                }
+            }
+        }
+
+        var text = builder.ToString().Trim();
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return 0;
+        }
+
+        return Math.Max(1, (int)Math.Ceiling(text.Length / 4d));
+    }
+
+    private static string FlattenText(JsonElement element)
+    {
+        return element.ValueKind switch
+        {
+            JsonValueKind.String => element.GetString() ?? string.Empty,
+            JsonValueKind.Array => string.Join(" ", element.EnumerateArray().Select(FlattenText).Where(x => !string.IsNullOrWhiteSpace(x))),
+            JsonValueKind.Object => FlattenObjectText(element),
+            _ => string.Empty
+        };
+    }
+
+    private static string FlattenObjectText(JsonElement element)
+    {
+        foreach (var propertyName in new[] { "text", "thinking", "content" })
+        {
+            if (element.TryGetProperty(propertyName, out var value))
+            {
+                var text = FlattenText(value);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    return text;
+                }
+            }
+        }
+
+        return string.Join(" ", element.EnumerateObject().Select(x => FlattenText(x.Value)).Where(x => !string.IsNullOrWhiteSpace(x)));
     }
 }

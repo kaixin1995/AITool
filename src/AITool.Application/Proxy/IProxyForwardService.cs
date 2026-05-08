@@ -29,6 +29,12 @@ public sealed class ProxyForwardRequest
 
     // 单路由内部失败重试次数
     public int RetryCount { get; set; }
+
+    // 自定义目标路径，默认按协议走聊天接口。
+    public string? TargetPath { get; set; }
+
+    // 需要透传到上游的附加请求头。
+    public Dictionary<string, string> ForwardHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 // 代理转发结果

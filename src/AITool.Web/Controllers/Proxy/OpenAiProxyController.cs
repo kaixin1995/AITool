@@ -29,14 +29,35 @@ public sealed class OpenAiProxyController : ControllerBase
         _metadataCache = metadataCache;
     }
 
-    // 返回当前代理对外暴露的模型列表，供客户端按真实 OpenAI URL 拉取模型
+    // 返回当前代理对外暴露的模型列表，兼容 OpenAI 和 Anthropic 客户端拉取模型。
     [HttpGet("/v1/models")]
     public async Task<IActionResult> Models(CancellationToken cancellationToken)
     {
-        var authHeader = Request.Headers.Authorization.ToString();
-        var accessToken = authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
-            ? authHeader[7..]
-            : string.Empty;
+        var isAnthropicClient = Request.Headers.ContainsKey("x-api-key")
+            || Request.Headers.ContainsKey("anthropic-version");
+
+        string accessToken;
+        if (isAnthropicClient)
+        {
+            accessToken = Request.Headers.TryGetValue("x-api-key", out var keyHeader)
+                ? keyHeader.ToString()
+                : string.Empty;
+
+            if (string.IsNullOrWhiteSpace(accessToken))
+            {
+                var anthropicAuthHeader = Request.Headers.Authorization.ToString();
+                accessToken = anthropicAuthHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                    ? anthropicAuthHeader[7..]
+                    : string.Empty;
+            }
+        }
+        else
+        {
+            var authHeader = Request.Headers.Authorization.ToString();
+            accessToken = authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+                ? authHeader[7..]
+                : string.Empty;
+        }
 
         var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
         if (accessKey is null)
@@ -45,6 +66,23 @@ public sealed class OpenAiProxyController : ControllerBase
         }
 
         var modelIds = await _metadataCache.GetEnabledModelNamesAsync(cancellationToken);
+
+        if (isAnthropicClient)
+        {
+            return Ok(new
+            {
+                data = modelIds.Select(modelId => new
+                {
+                    type = "model",
+                    id = modelId,
+                    display_name = modelId,
+                    created_at = DateTimeOffset.UtcNow.ToString("O")
+                }),
+                has_more = false,
+                first_id = modelIds.FirstOrDefault(),
+                last_id = modelIds.LastOrDefault()
+            });
+        }
 
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         return Ok(new

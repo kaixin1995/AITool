@@ -256,9 +256,12 @@ public sealed class ProxyForwardService : IProxyForwardService
     // 构建发送到上游的 HTTP 请求对象
     private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request, string requestBody)
     {
-        var targetUrl = request.ProtocolType == "Anthropic"
-            ? $"{request.TargetBaseUrl.TrimEnd('/')}/v1/messages"
-            : $"{request.TargetBaseUrl.TrimEnd('/')}/v1/chat/completions";
+        var targetPath = string.IsNullOrWhiteSpace(request.TargetPath)
+            ? request.ProtocolType == "Anthropic"
+                ? "/v1/messages"
+                : "/v1/chat/completions"
+            : request.TargetPath!;
+        var targetUrl = $"{request.TargetBaseUrl.TrimEnd('/')}/{targetPath.TrimStart('/')}";
 
         var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
         {
@@ -269,11 +272,25 @@ public sealed class ProxyForwardService : IProxyForwardService
         if (request.ProtocolType == "Anthropic")
         {
             httpRequest.Headers.Add("x-api-key", request.TargetApiKey);
-            httpRequest.Headers.Add("anthropic-version", "2023-06-01");
+            httpRequest.Headers.Add(
+                "anthropic-version",
+                request.ForwardHeaders.TryGetValue("anthropic-version", out var anthropicVersion) && !string.IsNullOrWhiteSpace(anthropicVersion)
+                    ? anthropicVersion
+                    : "2023-06-01");
         }
         else
         {
             httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.TargetApiKey);
+        }
+
+        foreach (var header in request.ForwardHeaders)
+        {
+            if (string.Equals(header.Key, "anthropic-version", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
         }
 
         return httpRequest;

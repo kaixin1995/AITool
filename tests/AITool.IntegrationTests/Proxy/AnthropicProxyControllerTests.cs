@@ -20,6 +20,47 @@ namespace AITool.IntegrationTests.Proxy;
 public sealed class AnthropicProxyControllerTests
 {
     [Fact]
+    public async Task Get_models_returns_anthropic_model_list()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService();
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("data")[0].GetProperty("id").GetString().Should().Be("claude-proxy");
+        document.RootElement.GetProperty("data")[0].GetProperty("type").GetString().Should().Be("model");
+        document.RootElement.GetProperty("has_more").GetBoolean().Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Post_count_tokens_returns_estimated_input_tokens()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService();
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages/count_tokens")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"system\":\"You are helpful\",\"messages\":[{\"role\":\"user\",\"content\":\"hello world\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("input_tokens").GetInt32().Should().BeGreaterThan(0);
+    }
+
+    [Fact]
     public async Task Post_messages_uses_x_api_key_and_runtime_settings_for_forward_request()
     {
         var fakeForwardService = new AnthropicFakeProxyForwardService();
@@ -44,6 +85,29 @@ public sealed class AnthropicProxyControllerTests
 
         using var document = JsonDocument.Parse(body);
         document.RootElement.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("anthropic-proxy-ok");
+    }
+
+    [Fact]
+    public async Task Post_messages_accepts_bearer_key_and_forwards_anthropic_headers()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService();
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new global::System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "anthropic-test-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+        request.Headers.Add("anthropic-beta", "token-counting-2024-11-01");
+
+        var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ForwardHeaders["anthropic-version"].Should().Be("2023-06-01");
+        fakeForwardService.Requests[0].ForwardHeaders["anthropic-beta"].Should().Be("token-counting-2024-11-01");
     }
 
     [Fact]
@@ -234,7 +298,9 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
             PreparedRequestBody = request.PreparedRequestBody,
             EnableStreaming = request.EnableStreaming,
             RequestTimeoutSeconds = request.RequestTimeoutSeconds,
-            RetryCount = request.RetryCount
+            RetryCount = request.RetryCount,
+            TargetPath = request.TargetPath,
+            ForwardHeaders = new Dictionary<string, string>(request.ForwardHeaders, StringComparer.OrdinalIgnoreCase)
         });
 
         if (string.Equals(request.ProtocolType, "OpenAI", StringComparison.Ordinal))
