@@ -27,12 +27,12 @@
     </article>
     <article class="trace-overview-card trace-overview-card-danger">
         <span class="trace-overview-label">失败 / 异常</span>
-        <strong class="trace-overview-value" id="traceFailedCount">@Model.Entries.Count(x => !string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(x.Status, "pending", StringComparison.OrdinalIgnoreCase))</strong>
+        <strong class="trace-overview-value" id="traceFailedCount">@Model.Entries.Count(x => x.Attempts.Any(a => !string.Equals(a.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)))</strong>
         <span class="trace-overview-hint">优先检查红色告警记录</span>
     </article>
     <article class="trace-overview-card trace-overview-card-warning">
         <span class="trace-overview-label">等待返回</span>
-        <strong class="trace-overview-value" id="tracePendingCount">@Model.Entries.Count(x => string.Equals(x.Status, "pending", StringComparison.OrdinalIgnoreCase))</strong>
+        <strong class="trace-overview-value" id="tracePendingCount">@Model.Entries.Count(x => x.Attempts.Any(a => string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)))</strong>
         <span class="trace-overview-hint">请求已到达，但返回尚未补齐</span>
     </article>
 </div>
@@ -326,6 +326,79 @@
         color: var(--text-secondary);
     }
 
+    .trace-chain-tip {
+        margin-bottom: 12px;
+        font-size: 12px;
+        color: var(--text-secondary);
+    }
+
+    .trace-attempt-list {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+    }
+
+    .trace-attempt-card {
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px solid rgba(226, 232, 240, 0.9);
+        background: #fff;
+    }
+
+    .trace-attempt-card-success {
+        border-left: 5px solid #22c55e;
+    }
+
+    .trace-attempt-card-pending {
+        border-left: 5px solid #f59e0b;
+        background: #fffdf6;
+    }
+
+    .trace-attempt-card-danger {
+        border-left: 5px solid #ef4444;
+        background: #fff7f7;
+    }
+
+    .trace-attempt-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+    }
+
+    .trace-attempt-order {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1;
+        background: #f1f5f9;
+        color: #334155;
+    }
+
+    .trace-attempt-route {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+    }
+
+    .trace-attempt-site {
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .trace-meta-grid-attempt {
+        margin-bottom: 12px;
+    }
+
     .trace-info-panel,
     .trace-code-panel {
         border-radius: 16px;
@@ -462,6 +535,55 @@
                 }
             }
 
+            function renderAttempts(entry, index) {
+                if (!entry.attempts || entry.attempts.length === 0) {
+                    return '';
+                }
+
+                return '' +
+                    '<div class="trace-attempt-list">' +
+                    entry.attempts.map(function (attempt, attemptIndex) {
+                        var attemptStatusCodeText = attempt.statusCode > 0 ? String(attempt.statusCode) : '-';
+                        var attemptDurationText = attempt.totalDurationMs > 0 ? attempt.totalDurationMs + ' ms' : '-';
+                        var attemptResponseBodyText = attempt.responseBody && attempt.responseBody.trim() ? attempt.responseBody : '-';
+                        var attemptErrorBlock = attempt.errorMessage && attempt.errorMessage.trim()
+                            ? '<div><div class="trace-section-title trace-section-title-danger">尝试错误</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">' + escapeHtml(attempt.errorMessage) + '</pre></div>'
+                            : '';
+
+                        return '' +
+                            '<article class="trace-attempt-card trace-attempt-card-' + escapeHtml(attempt.statusClass) + '">' +
+                                '<div class="trace-attempt-head">' +
+                                    '<div class="trace-title-group">' +
+                                        '<span class="trace-status-pill trace-status-pill-' + escapeHtml(attempt.statusClass) + '">' + escapeHtml(attempt.statusText) + '</span>' +
+                                        '<span class="trace-attempt-order">尝试 ' + (attemptIndex + 1) + '</span>' +
+                                        '<span class="trace-source-pill">' + escapeHtml(attempt.upstreamProtocolType || '-') + '</span>' +
+                                    '</div>' +
+                                    '<div class="trace-summary-time">' + escapeHtml(attempt.createdAtText) + '</div>' +
+                                '</div>' +
+                                '<div class="trace-attempt-route">' +
+                                    '<div class="trace-attempted-model">' + escapeHtml(attempt.summaryAttemptedModel) + '</div>' +
+                                    '<div class="trace-attempt-site">' + escapeHtml(attempt.summarySite) + '</div>' +
+                                '</div>' +
+                                '<div class="trace-meta-grid trace-meta-grid-attempt">' +
+                                    '<div class="trace-meta-chip"><span class="trace-meta-label">状态码</span><strong>' + escapeHtml(attemptStatusCodeText) + '</strong></div>' +
+                                    '<div class="trace-meta-chip"><span class="trace-meta-label">总耗时</span><strong>' + escapeHtml(attemptDurationText) + '</strong></div>' +
+                                    '<div class="trace-meta-chip"><span class="trace-meta-label">Token</span><strong>' + escapeHtml(attempt.inputTokens + ' / ' + attempt.cachedTokens + ' / ' + attempt.outputTokens) + '</strong></div>' +
+                                '</div>' +
+                                attemptErrorBlock +
+                                '<div class="row g-3">' +
+                                    '<div class="col-xl-6">' +
+                                        '<div class="trace-panel-header">' +
+                                            '<div class="trace-section-title mb-0">尝试返回体</div>' +
+                                            '<button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="attempt-response-body-' + index + '-' + attemptIndex + '">复制返回体</button>' +
+                                        '</div>' +
+                                        '<pre id="attempt-response-body-' + index + '-' + attemptIndex + '" class="trace-pre trace-code-panel">' + escapeHtml(attemptResponseBodyText) + '</pre>' +
+                                    '</div>' +
+                                '</div>' +
+                            '</article>';
+                    }).join('') +
+                    '</div>';
+            }
+
             function renderEntry(entry, index) {
                 var statusCodeText = entry.statusCode > 0 ? String(entry.statusCode) : '-';
                 var durationText = entry.totalDurationMs > 0 ? entry.totalDurationMs + ' ms' : '-';
@@ -469,6 +591,7 @@
                 var errorBlock = entry.errorMessage && entry.errorMessage.trim()
                     ? '<div><div class="trace-section-title trace-section-title-danger">错误信息</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">' + escapeHtml(entry.errorMessage) + '</pre></div>'
                     : '';
+                var attemptsSummary = '成功 ' + (entry.successAttemptCount || 0) + ' / 失败 ' + (entry.failedAttemptCount || 0) + ' / 等待 ' + (entry.pendingAttemptCount || 0);
 
                 return '' +
                     '<div class="card trace-card trace-card-' + escapeHtml(entry.statusClass) + '" data-trace-status="' + escapeHtml(entry.status) + '">' +
@@ -493,6 +616,7 @@
                                     '<div class="trace-meta-grid">' +
                                         '<div class="trace-meta-chip"><span class="trace-meta-label">目标站点</span><strong>' + escapeHtml(entry.summarySite) + '</strong></div>' +
                                         '<div class="trace-meta-chip"><span class="trace-meta-label">请求路径</span><strong>' + escapeHtml(entry.requestPath) + '</strong></div>' +
+                                        '<div class="trace-meta-chip"><span class="trace-meta-label">尝试统计</span><strong>' + escapeHtml(attemptsSummary) + '</strong></div>' +
                                         '<div class="trace-meta-chip"><span class="trace-meta-label">状态码</span><strong>' + escapeHtml(statusCodeText) + '</strong></div>' +
                                         '<div class="trace-meta-chip"><span class="trace-meta-label">总耗时</span><strong>' + escapeHtml(durationText) + '</strong></div>' +
                                     '</div>' +
@@ -509,20 +633,21 @@
                                             '<div><strong>User-Agent：</strong>' + escapeHtml(entry.userAgent || '-') + '</div>' +
                                             '<div><strong>客户端 IP：</strong>' + escapeHtml(entry.clientIp || '-') + '</div>' +
                                             '<div><strong>请求协议：</strong>' + escapeHtml(entry.protocolType) + '</div>' +
-                                            '<div><strong>上游协议：</strong>' + escapeHtml(entry.upstreamProtocolType || '-') + '</div>' +
                                             '<div><strong>请求模型：</strong>' + escapeHtml(entry.requestModel) + '</div>' +
-                                            '<div><strong>调用模型：</strong>' + escapeHtml(entry.summaryAttemptedModel) + '</div>' +
-                                            '<div><strong>目标站点：</strong>' + escapeHtml(entry.summarySite) + '</div>' +
-                                            '<div><strong>状态：</strong>' + escapeHtml(entry.statusText) + '</div>' +
-                                            '<div><strong>状态码：</strong>' + escapeHtml(statusCodeText) + '</div>' +
-                                            '<div><strong>总耗时：</strong>' + escapeHtml(durationText) + '</div>' +
-                                            '<div><strong>Token：</strong>' + escapeHtml(entry.inputTokens + ' / ' + entry.cachedTokens + ' / ' + entry.outputTokens) + '</div>' +
+                                            '<div><strong>最终状态：</strong>' + escapeHtml(entry.statusText) + '</div>' +
+                                            '<div><strong>尝试次数：</strong>' + escapeHtml(String((entry.attempts || []).length)) + '</div>' +
+                                            '<div><strong>尝试统计：</strong>' + escapeHtml(attemptsSummary) + '</div>' +
                                         '</div>' +
                                     '</div>' +
                                     '<div class="col-xl-8">' +
                                         '<div class="trace-section-title">请求头</div>' +
                                         '<pre class="trace-pre trace-code-panel">' + escapeHtml(renderRequestHeaders(entry.requestHeaders)) + '</pre>' +
                                     '</div>' +
+                                '</div>' +
+                                '<div>' +
+                                    '<div class="trace-section-title">真实路由尝试链路</div>' +
+                                    '<div class="trace-chain-tip">会按真实尝试顺序展示每一次命中的路由模型，包括前面失败、后面成功的完整链路。</div>' +
+                                    (renderAttempts(entry, index) || '<div class="trace-info-panel">当前还没有命中任何路由尝试。</div>') +
                                 '</div>' +
                                 errorBlock +
                                 '<div class="row g-3">' +

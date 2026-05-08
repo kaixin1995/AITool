@@ -149,12 +149,6 @@ public sealed class OpenAiProxyController : ControllerBase
 
         if (allRoutes.Count == 0)
         {
-            CompleteDeveloperTrace(traceId, new DeveloperInvocationResult
-            {
-                Status = "not-found",
-                StatusCode = 404,
-                ErrorMessage = $"No available route for model: {modelName}"
-            });
             return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
         }
 
@@ -170,7 +164,7 @@ public sealed class OpenAiProxyController : ControllerBase
                 continue;
 
             attemptIndex++;
-            MarkDeveloperTraceAttempt(traceId, route);
+            var traceAttemptId = AddDeveloperTraceAttempt(traceId, route);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "OpenAI",
                 route.ProtocolType,
@@ -230,7 +224,7 @@ public sealed class OpenAiProxyController : ControllerBase
                     result.InputTokens,
                     result.CachedTokens,
                     result.OutputTokens);
-                CompleteDeveloperTrace(traceId, new DeveloperInvocationResult
+                CompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                 {
                     Status = "success",
                     StatusCode = result.StatusCode,
@@ -247,7 +241,7 @@ public sealed class OpenAiProxyController : ControllerBase
                 return Content(responseBody, contentType);
             }
 
-            CompleteDeveloperTrace(traceId, new DeveloperInvocationResult
+            CompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
             {
                 Status = "fail",
                 StatusCode = result.StatusCode,
@@ -268,19 +262,6 @@ public sealed class OpenAiProxyController : ControllerBase
 
         // 所有路由均失败
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
-        CompleteDeveloperTrace(traceId, new DeveloperInvocationResult
-        {
-            Status = "all-failed",
-            StatusCode = statusCode,
-            ErrorMessage = lastResult?.ErrorMessage ?? "All upstream routes failed",
-            ResponseBody = DeveloperInvocationTraceStore.FormatBody(lastResult?.ResponseBody ?? string.Empty),
-            ResponseContentType = lastResult?.IsStreaming == true ? "text/event-stream" : "application/json",
-            IsStreaming = lastResult?.IsStreaming == true,
-            InputTokens = lastResult?.InputTokens ?? 0,
-            CachedTokens = lastResult?.CachedTokens ?? 0,
-            OutputTokens = lastResult?.OutputTokens ?? 0,
-            TotalDurationMs = lastResult?.TotalDurationMs ?? 0
-        });
         return StatusCode(statusCode,
             new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
     }
@@ -342,14 +323,14 @@ public sealed class OpenAiProxyController : ControllerBase
         });
     }
 
-    private void MarkDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route)
+    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route)
     {
         if (!traceId.HasValue)
         {
-            return;
+            return Guid.Empty;
         }
 
-        _traceStore.MarkAttempt(traceId.Value, new DeveloperInvocationAttempt
+        return _traceStore.AddAttempt(traceId.Value, new DeveloperInvocationAttempt
         {
             AttemptedModel = route.UpstreamModelName,
             UpstreamProtocolType = route.ProtocolType,
@@ -358,13 +339,13 @@ public sealed class OpenAiProxyController : ControllerBase
         });
     }
 
-    private void CompleteDeveloperTrace(Guid? traceId, DeveloperInvocationResult result)
+    private void CompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)
     {
-        if (!traceId.HasValue)
+        if (!traceId.HasValue || traceAttemptId == Guid.Empty)
         {
             return;
         }
 
-        _traceStore.Complete(traceId.Value, result);
+        _traceStore.CompleteAttempt(traceId.Value, traceAttemptId, result);
     }
 }

@@ -17,6 +17,10 @@ else
         var statusText = GetStatusText(entry.Status);
         var summarySite = string.IsNullOrWhiteSpace(entry.TargetSiteName) ? "未命中站点" : entry.TargetSiteName;
         var summaryAttemptedModel = string.IsNullOrWhiteSpace(entry.AttemptedModel) ? "未解析调用模型" : entry.AttemptedModel;
+        var failedAttemptCount = entry.Attempts.Count(x => !string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(x.Status, "pending", StringComparison.OrdinalIgnoreCase));
+        var pendingAttemptCount = entry.Attempts.Count(x => string.Equals(x.Status, "pending", StringComparison.OrdinalIgnoreCase));
+        var successAttemptCount = entry.Attempts.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase));
+        var attemptsSummary = $"成功 {successAttemptCount} / 失败 {failedAttemptCount} / 等待 {pendingAttemptCount}";
         <div class="card trace-card trace-card-@statusClass" data-trace-status="@entry.Status">
             <div class="card-header trace-card-header bg-white">
                 <button class="trace-card-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#@collapseId" aria-expanded="false" aria-controls="@collapseId">
@@ -46,6 +50,10 @@ else
                                 <strong>@entry.RequestPath</strong>
                             </div>
                             <div class="trace-meta-chip">
+                                <span class="trace-meta-label">尝试统计</span>
+                                <strong>@attemptsSummary</strong>
+                            </div>
+                            <div class="trace-meta-chip">
                                 <span class="trace-meta-label">状态码</span>
                                 <strong>@(entry.StatusCode > 0 ? entry.StatusCode : "-")</strong>
                             </div>
@@ -67,20 +75,84 @@ else
                                 <div><strong>User-Agent：</strong>@(string.IsNullOrWhiteSpace(entry.UserAgent) ? "-" : entry.UserAgent)</div>
                                 <div><strong>客户端 IP：</strong>@(string.IsNullOrWhiteSpace(entry.ClientIp) ? "-" : entry.ClientIp)</div>
                                 <div><strong>请求协议：</strong>@entry.ProtocolType</div>
-                                <div><strong>上游协议：</strong>@(string.IsNullOrWhiteSpace(entry.UpstreamProtocolType) ? "-" : entry.UpstreamProtocolType)</div>
                                 <div><strong>请求模型：</strong>@entry.RequestModel</div>
-                                <div><strong>调用模型：</strong>@summaryAttemptedModel</div>
-                                <div><strong>目标站点：</strong>@summarySite</div>
-                                <div><strong>状态：</strong>@statusText</div>
-                                <div><strong>状态码：</strong>@(entry.StatusCode == 0 ? "-" : entry.StatusCode)</div>
-                                <div><strong>总耗时：</strong>@(entry.TotalDurationMs == 0 ? "-" : $"{entry.TotalDurationMs} ms")</div>
-                                <div><strong>Token：</strong>@($"{entry.InputTokens} / {entry.CachedTokens} / {entry.OutputTokens}")</div>
+                                <div><strong>最终状态：</strong>@statusText</div>
+                                <div><strong>尝试次数：</strong>@entry.Attempts.Count</div>
+                                <div><strong>尝试统计：</strong>@attemptsSummary</div>
                             </div>
                         </div>
                         <div class="col-xl-8">
                             <div class="trace-section-title">请求头</div>
                             <pre class="trace-pre trace-code-panel">@JsonSerializer.Serialize(entry.RequestHeaders, new JsonSerializerOptions { WriteIndented = true })</pre>
                         </div>
+                    </div>
+
+                    <div>
+                        <div class="trace-section-title">真实路由尝试链路</div>
+                        <div class="trace-chain-tip">会按真实尝试顺序展示每一次命中的路由模型，包括前面失败、后面成功的完整链路。</div>
+                        @if (entry.Attempts.Count == 0)
+                        {
+                            <div class="trace-info-panel">当前还没有命中任何路由尝试。</div>
+                        }
+                        else
+                        {
+                            <div class="trace-attempt-list">
+                                @for (var attemptIndex = 0; attemptIndex < entry.Attempts.Count; attemptIndex++)
+                                {
+                                    var attempt = entry.Attempts[attemptIndex];
+                                    var attemptStatusClass = GetStatusClass(attempt.Status);
+                                    var attemptStatusText = GetStatusText(attempt.Status);
+                                    var attemptSummarySite = string.IsNullOrWhiteSpace(attempt.TargetSiteName) ? "未命中站点" : attempt.TargetSiteName;
+                                    var attemptSummaryModel = string.IsNullOrWhiteSpace(attempt.AttemptedModel) ? "未解析调用模型" : attempt.AttemptedModel;
+                                    <article class="trace-attempt-card trace-attempt-card-@attemptStatusClass">
+                                        <div class="trace-attempt-head">
+                                            <div class="trace-title-group">
+                                                <span class="trace-status-pill trace-status-pill-@attemptStatusClass">@attemptStatusText</span>
+                                                <span class="trace-attempt-order">尝试 @(attemptIndex + 1)</span>
+                                                <span class="trace-source-pill">@(string.IsNullOrWhiteSpace(attempt.UpstreamProtocolType) ? "-" : attempt.UpstreamProtocolType)</span>
+                                            </div>
+                                            <div class="trace-summary-time">@attempt.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
+                                        </div>
+                                        <div class="trace-attempt-route">
+                                            <div class="trace-attempted-model">@attemptSummaryModel</div>
+                                            <div class="trace-attempt-site">@attemptSummarySite</div>
+                                        </div>
+                                        <div class="trace-meta-grid trace-meta-grid-attempt">
+                                            <div class="trace-meta-chip">
+                                                <span class="trace-meta-label">状态码</span>
+                                                <strong>@(attempt.StatusCode > 0 ? attempt.StatusCode : "-")</strong>
+                                            </div>
+                                            <div class="trace-meta-chip">
+                                                <span class="trace-meta-label">总耗时</span>
+                                                <strong>@(attempt.TotalDurationMs > 0 ? $"{attempt.TotalDurationMs} ms" : "-")</strong>
+                                            </div>
+                                            <div class="trace-meta-chip">
+                                                <span class="trace-meta-label">Token</span>
+                                                <strong>@($"{attempt.InputTokens} / {attempt.CachedTokens} / {attempt.OutputTokens}")</strong>
+                                            </div>
+                                        </div>
+
+                                        @if (!string.IsNullOrWhiteSpace(attempt.ErrorMessage))
+                                        {
+                                            <div>
+                                                <div class="trace-section-title trace-section-title-danger">尝试错误</div>
+                                                <pre class="trace-pre trace-code-panel trace-code-panel-danger">@attempt.ErrorMessage</pre>
+                                            </div>
+                                        }
+
+                                        <div class="row g-3">
+                                            <div class="col-xl-6">
+                                                <div class="trace-panel-header">
+                                                    <div class="trace-section-title mb-0">尝试返回体</div>
+                                                    <button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="attempt-response-body-@i-@attemptIndex">复制返回体</button>
+                                                </div>
+                                                <pre id="attempt-response-body-@i-@attemptIndex" class="trace-pre trace-code-panel">@(string.IsNullOrWhiteSpace(attempt.ResponseBody) ? "-" : attempt.ResponseBody)</pre>
+                                            </div>
+                                        </div>
+                                    </article>
+                                }
+                            </div>
+                        }
                     </div>
 
                     @if (!string.IsNullOrWhiteSpace(entry.ErrorMessage))

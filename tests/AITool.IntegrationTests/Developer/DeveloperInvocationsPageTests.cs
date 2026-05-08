@@ -66,6 +66,23 @@ public sealed class DeveloperInvocationsPageTests
     }
 
     [Fact]
+    public async Task Get_invocations_page_contains_auto_refresh_script_markers()
+    {
+        var fakeForwardService = new DeveloperInvocationsFakeProxyForwardService();
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var pageResponse = await client.GetAsync("/Admin/Developer/Invocations");
+        var html = await pageResponse.Content.ReadAsStringAsync();
+
+        pageResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("refreshTraceList");
+        html.Should().Contain("ensureRefreshTimer");
+        html.Should().Contain("renderAttempts(entry, index) || '<div class=\"trace-info-panel\">当前还没有命中任何路由尝试。</div>'");
+        html.Should().NotContain("' + renderAttempts(entry, index) + '");
+    }
+
+    [Fact]
     public async Task Get_list_returns_entries_payload_when_feature_is_enabled()
     {
         var fakeForwardService = new DeveloperInvocationsFakeProxyForwardService();
@@ -93,42 +110,47 @@ public sealed class DeveloperInvocationsPageTests
     }
 
     [Fact]
-    public async Task Get_invocations_page_highlights_failed_entries()
+    public async Task Get_invocations_page_shows_all_route_attempts_before_final_success()
     {
-        var fakeForwardService = new DeveloperInvocationsFakeProxyForwardService
+        var fakeForwardService = new DeveloperInvocationsFakeProxyForwardService();
+        fakeForwardService.EnqueueResult(new ProxyForwardResult
         {
-            Result = new ProxyForwardResult
-            {
-                Success = false,
-                StatusCode = 502,
-                ErrorMessage = "upstream exploded",
-                ResponseBody = "{\"error\":\"boom\"}",
-                TotalDurationMs = 456
-            }
-        };
+            Success = false,
+            StatusCode = 500,
+            ErrorMessage = "first route failed",
+            ResponseBody = "{\"error\":\"first\"}",
+            TotalDurationMs = 111
+        });
+        fakeForwardService.EnqueueResult(new ProxyForwardResult
+        {
+            Success = true,
+            StatusCode = 200,
+            ResponseBody = "{\"choices\":[{\"message\":{\"content\":\"second-ok\"}}]}",
+            TotalDurationMs = 222
+        });
+
         await using var factory = new DeveloperInvocationsWebApplicationFactory(true, fakeForwardService);
         using var client = factory.CreateClient();
 
         using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
         {
-            Content = new StringContent("{\"model\":\"debug-model\",\"messages\":[{\"role\":\"user\",\"content\":\"please fail\"}]}", Encoding.UTF8, "application/json")
+            Content = new StringContent("{\"model\":\"debug-model\",\"messages\":[{\"role\":\"user\",\"content\":\"route chain\"}]}", Encoding.UTF8, "application/json")
         };
         request.Headers.Authorization = new global::System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "debug-key");
 
         var invokeResponse = await client.SendAsync(request);
-        invokeResponse.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+        invokeResponse.StatusCode.Should().Be(HttpStatusCode.OK);
 
-        var pageResponse = await client.GetAsync("/Admin/Developer/Invocations");
-        var html = await pageResponse.Content.ReadAsStringAsync();
+        var listResponse = await client.GetAsync("/Admin/Developer/Invocations?handler=List");
+        var payload = await listResponse.Content.ReadAsStringAsync();
 
-        pageResponse.StatusCode.Should().Be(HttpStatusCode.OK);
-        html.Should().Contain("失败 / 异常");
-        html.Should().Contain("全部失败");
-        html.Should().Contain("upstream exploded");
-        html.Should().Contain("trace-card-danger");
+        payload.Should().Contain("first route failed");
+        payload.Should().Contain("second-ok");
+        payload.Should().Contain("failedAttemptCount");
+        payload.Should().Contain("successAttemptCount");
+        payload.Should().Contain("debug-upstream-model-2");
     }
 }
-
 internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-developer-invocations-{Guid.NewGuid():N}.db");
@@ -204,6 +226,19 @@ internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplication
             IsEnabled = true
         });
 
+        db.ProxyRouteRules.Add(new ProxyRouteRule
+        {
+            Id = Guid.Parse("93939393-9393-9393-9393-939393939393"),
+            ExternalModelName = "debug-model",
+            UpstreamModelName = "debug-upstream-model-2",
+            SiteId = siteId,
+            SiteModelName = "debug-site-model-2",
+            Priority = 1,
+            ModelPriority = 1,
+            InstancePriority = 1,
+            IsEnabled = true
+        });
+
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
             Id = 1,
@@ -225,6 +260,8 @@ internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplication
 
 internal sealed class DeveloperInvocationsFakeProxyForwardService : IProxyForwardService
 {
+    private readonly Queue<ProxyForwardResult> _queuedResults = new();
+
     public ProxyForwardResult Result { get; set; } = new()
     {
         Success = true,
@@ -236,8 +273,18 @@ internal sealed class DeveloperInvocationsFakeProxyForwardService : IProxyForwar
         TotalDurationMs = 123
     };
 
+    public void EnqueueResult(ProxyForwardResult result)
+    {
+        _queuedResults.Enqueue(result);
+    }
+
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
+        if (_queuedResults.Count > 0)
+        {
+            return Task.FromResult(_queuedResults.Dequeue());
+        }
+
         return Task.FromResult(Result);
     }
 }

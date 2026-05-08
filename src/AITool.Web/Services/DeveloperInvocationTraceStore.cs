@@ -40,8 +40,39 @@ public sealed class DeveloperInvocationTraceStore
         }
     }
 
-    // 请求有了明确的尝试目标后再补齐路由与站点信息。
-    public void MarkAttempt(Guid traceId, DeveloperInvocationAttempt attempt)
+    // 每次真实路由尝试都单独记录，避免前面的失败被最后一次成功覆盖。
+    public Guid AddAttempt(Guid traceId, DeveloperInvocationAttempt attempt)
+    {
+        lock (_gate)
+        {
+            if (!_nodes.TryGetValue(traceId, out var node))
+            {
+                return Guid.Empty;
+            }
+
+            var traceAttempt = new DeveloperInvocationTraceAttempt
+            {
+                AttemptId = Guid.NewGuid(),
+                CreatedAt = DateTimeOffset.UtcNow,
+                UpdatedAt = DateTimeOffset.UtcNow,
+                AttemptedModel = attempt.AttemptedModel,
+                UpstreamProtocolType = attempt.UpstreamProtocolType,
+                TargetSiteId = attempt.TargetSiteId,
+                TargetSiteName = attempt.TargetSiteName,
+                Status = "pending"
+            };
+            node.Value.Attempts.Add(traceAttempt);
+            node.Value.AttemptedModel = traceAttempt.AttemptedModel;
+            node.Value.UpstreamProtocolType = traceAttempt.UpstreamProtocolType;
+            node.Value.TargetSiteId = traceAttempt.TargetSiteId;
+            node.Value.TargetSiteName = traceAttempt.TargetSiteName;
+            node.Value.UpdatedAt = DateTimeOffset.UtcNow;
+            return traceAttempt.AttemptId;
+        }
+    }
+
+    // 收到上游响应或失败后更新对应尝试结果，并同步更新整条请求的最终状态。
+    public void CompleteAttempt(Guid traceId, Guid attemptId, DeveloperInvocationResult result)
     {
         lock (_gate)
         {
@@ -49,25 +80,29 @@ public sealed class DeveloperInvocationTraceStore
             {
                 return;
             }
+
+            var attempt = node.Value.Attempts.FirstOrDefault(x => x.AttemptId == attemptId);
+            if (attempt is null)
+            {
+                return;
+            }
+
+            attempt.Status = result.Status;
+            attempt.StatusCode = result.StatusCode;
+            attempt.ErrorMessage = result.ErrorMessage;
+            attempt.ResponseBody = result.ResponseBody;
+            attempt.ResponseContentType = result.ResponseContentType;
+            attempt.IsStreaming = result.IsStreaming;
+            attempt.InputTokens = result.InputTokens;
+            attempt.CachedTokens = result.CachedTokens;
+            attempt.OutputTokens = result.OutputTokens;
+            attempt.TotalDurationMs = result.TotalDurationMs;
+            attempt.UpdatedAt = DateTimeOffset.UtcNow;
 
             node.Value.AttemptedModel = attempt.AttemptedModel;
             node.Value.UpstreamProtocolType = attempt.UpstreamProtocolType;
             node.Value.TargetSiteId = attempt.TargetSiteId;
             node.Value.TargetSiteName = attempt.TargetSiteName;
-            node.Value.UpdatedAt = DateTimeOffset.UtcNow;
-        }
-    }
-
-    // 收到上游响应或失败后更新结果信息。
-    public void Complete(Guid traceId, DeveloperInvocationResult result)
-    {
-        lock (_gate)
-        {
-            if (!_nodes.TryGetValue(traceId, out var node))
-            {
-                return;
-            }
-
             node.Value.Status = result.Status;
             node.Value.StatusCode = result.StatusCode;
             node.Value.ErrorMessage = result.ErrorMessage;
@@ -134,7 +169,32 @@ public sealed class DeveloperInvocationTraceStore
             InputTokens = entry.InputTokens,
             CachedTokens = entry.CachedTokens,
             OutputTokens = entry.OutputTokens,
-            TotalDurationMs = entry.TotalDurationMs
+            TotalDurationMs = entry.TotalDurationMs,
+            Attempts = entry.Attempts.Select(CloneAttempt).ToList()
+        };
+    }
+
+    private static DeveloperInvocationTraceAttempt CloneAttempt(DeveloperInvocationTraceAttempt attempt)
+    {
+        return new DeveloperInvocationTraceAttempt
+        {
+            AttemptId = attempt.AttemptId,
+            CreatedAt = attempt.CreatedAt,
+            UpdatedAt = attempt.UpdatedAt,
+            AttemptedModel = attempt.AttemptedModel,
+            UpstreamProtocolType = attempt.UpstreamProtocolType,
+            TargetSiteId = attempt.TargetSiteId,
+            TargetSiteName = attempt.TargetSiteName,
+            Status = attempt.Status,
+            StatusCode = attempt.StatusCode,
+            ErrorMessage = attempt.ErrorMessage,
+            ResponseBody = attempt.ResponseBody,
+            ResponseContentType = attempt.ResponseContentType,
+            IsStreaming = attempt.IsStreaming,
+            InputTokens = attempt.InputTokens,
+            CachedTokens = attempt.CachedTokens,
+            OutputTokens = attempt.OutputTokens,
+            TotalDurationMs = attempt.TotalDurationMs
         };
     }
 
@@ -217,6 +277,28 @@ public sealed class DeveloperInvocationTraceEntry
     public string TargetSiteName { get; set; } = string.Empty;
     public string RequestBody { get; set; } = string.Empty;
     public Dictionary<string, string> RequestHeaders { get; set; } = [];
+    public string Status { get; set; } = string.Empty;
+    public int StatusCode { get; set; }
+    public string ErrorMessage { get; set; } = string.Empty;
+    public string ResponseBody { get; set; } = string.Empty;
+    public string ResponseContentType { get; set; } = string.Empty;
+    public bool IsStreaming { get; set; }
+    public int InputTokens { get; set; }
+    public int CachedTokens { get; set; }
+    public int OutputTokens { get; set; }
+    public int TotalDurationMs { get; set; }
+    public List<DeveloperInvocationTraceAttempt> Attempts { get; set; } = [];
+}
+
+public sealed class DeveloperInvocationTraceAttempt
+{
+    public Guid AttemptId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public DateTimeOffset UpdatedAt { get; set; }
+    public string AttemptedModel { get; set; } = string.Empty;
+    public string UpstreamProtocolType { get; set; } = string.Empty;
+    public Guid? TargetSiteId { get; set; }
+    public string TargetSiteName { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
     public int StatusCode { get; set; }
     public string ErrorMessage { get; set; } = string.Empty;
