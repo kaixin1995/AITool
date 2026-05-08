@@ -230,7 +230,7 @@ public sealed class ChatApiController : ControllerBase
                 {
                     sw.Stop();
                     _circuitStore.Succeed(route.RouteId);
-                    var payload = ExtractChatPayload(forwardResult.ResponseBody, route.ProtocolType);
+                    var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, route.ProtocolType);
                     return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
                 }
 
@@ -468,7 +468,7 @@ public sealed class ChatApiController : ControllerBase
             });
         }
 
-        var payload = ExtractChatPayload(forwardResult.ResponseBody, mapping.ProtocolType);
+        var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, mapping.ProtocolType);
         return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
     }
 

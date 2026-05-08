@@ -19,6 +19,9 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
+builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
+
 // 注册 Razor Pages，作为管理后台的页面框架
 builder.Services.AddRazorPages();
 

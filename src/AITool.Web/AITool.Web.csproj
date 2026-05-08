@@ -4,6 +4,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+	<!-- 只生成 zh-Hans 的语言资源 -->
+	<SatelliteResourceLanguages>zh</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <ItemGroup>
