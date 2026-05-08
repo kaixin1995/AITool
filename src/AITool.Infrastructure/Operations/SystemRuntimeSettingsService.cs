@@ -81,6 +81,11 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
     // 系统设置页与测试仍可能在缺表场景下调用该服务，因此保留兼容逻辑。
     private async Task EnsureTableAsync(CancellationToken cancellationToken)
     {
+        if (!_dbContext.Database.IsRelational())
+        {
+            return;
+        }
+
         var connection = _dbContext.Database.GetDbConnection();
         var shouldClose = connection.State != System.Data.ConnectionState.Open;
         if (shouldClose)

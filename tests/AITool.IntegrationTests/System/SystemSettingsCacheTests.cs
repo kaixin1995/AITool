@@ -8,6 +8,7 @@ using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Caching.Memory;
 
 namespace AITool.IntegrationTests.System;
 
@@ -25,6 +26,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
         services.AddSingleton<ProxyRequestMetadataCache>();
         services.AddSingleton<RouteCircuitStateStore>();
+        services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
         _serviceProvider = services.BuildServiceProvider();
     }
 
@@ -36,6 +38,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         var circuitStore = scope.ServiceProvider.GetRequiredService<RouteCircuitStateStore>();
+        var analyticsQueryExecutor = scope.ServiceProvider.GetRequiredService<AnalyticsBackgroundQueryExecutor>();
 
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
@@ -59,7 +62,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         before.ProxyRequestTimeoutSeconds.Should().Be(8);
         before.ProxyRetryCount.Should().Be(1);
 
-        var page = new SettingsModel(settingsService, cache, circuitStore)
+        var page = new SettingsModel(settingsService, cache, circuitStore, analyticsQueryExecutor)
         {
             Input = new UpdateSystemRuntimeSettingsRequest
             {

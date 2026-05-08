@@ -12,15 +12,18 @@ public class SettingsModel : PageModel
     private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly RouteCircuitStateStore _circuitStore;
+    private readonly AnalyticsBackgroundQueryExecutor _analyticsQueryExecutor;
 
     public SettingsModel(
         ISystemRuntimeSettingsService systemRuntimeSettingsService,
         ProxyRequestMetadataCache metadataCache,
-        RouteCircuitStateStore circuitStore)
+        RouteCircuitStateStore circuitStore,
+        AnalyticsBackgroundQueryExecutor analyticsQueryExecutor)
     {
         _systemRuntimeSettingsService = systemRuntimeSettingsService;
         _metadataCache = metadataCache;
         _circuitStore = circuitStore;
+        _analyticsQueryExecutor = analyticsQueryExecutor;
     }
 
     [BindProperty]
@@ -54,17 +57,18 @@ public class SettingsModel : PageModel
         return RedirectToPage(new { statusMessage = "设置已保存" });
     }
 
-    public async Task<IActionResult> OnPostClearUsageLogsAsync(CancellationToken cancellationToken)
+    public async Task<IActionResult> OnPostClearUsageLogsAsync(bool clearAll, CancellationToken cancellationToken)
     {
         var deletedCount = await _systemRuntimeSettingsService.ClearUsageLogsAsync(new ClearUsageLogsRequest
         {
-            Source = ClearUsageLogs.Source,
-            StartTime = ClearUsageLogs.StartTime,
-            EndTime = ClearUsageLogs.EndTime
+            Source = clearAll ? string.Empty : ClearUsageLogs.Source,
+            StartTime = clearAll ? null : ClearUsageLogs.StartTime,
+            EndTime = clearAll ? null : ClearUsageLogs.EndTime
         }, cancellationToken);
 
         _metadataCache.InvalidateRuntimeSettings();
-        return RedirectToPage(new { statusMessage = $"已清空 {deletedCount} 条 UsageLogs" });
+        _analyticsQueryExecutor.InvalidateAll();
+        return RedirectToPage(new { statusMessage = clearAll ? $"已清空全部 UsageLogs，共 {deletedCount} 条" : $"已清空 {deletedCount} 条 UsageLogs" });
     }
 
     private async Task LoadAsync(CancellationToken cancellationToken)

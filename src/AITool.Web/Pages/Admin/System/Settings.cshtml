@@ -91,7 +91,7 @@
     <div class="card border-danger">
         <div class="card-body">
             <h5 class="card-title text-danger">危险操作</h5>
-            <p class="text-muted mb-3">手动清空 UsageLogs。留空表示不限制该条件。</p>
+            <p class="text-muted mb-3">手动清空 UsageLogs，并同步清空 Analytics 统计缓存。留空表示不限制该条件；来源和日期都不填时会清空全部 UsageLogs。</p>
             <div class="row g-3">
                 <div class="col-md-4">
                     <label asp-for="ClearUsageLogs.Source" class="form-label">来源</label>
@@ -115,8 +115,9 @@
                     <input asp-for="ClearUsageLogs.EndTime" class="form-control" type="datetime-local" />
                 </div>
             </div>
-            <div class="mt-3">
+            <div class="mt-3 d-flex flex-wrap gap-2">
                 <button type="submit" class="btn btn-outline-danger" onclick="return confirm('确认清空符合条件的 UsageLogs 吗？')">清空 UsageLogs</button>
+                <button type="submit" name="clearAll" value="true" class="btn btn-danger" onclick="return confirm('确认直接清空全部 UsageLogs 吗？这会同步清空 Analytics 统计缓存。')">清空全部</button>
             </div>
         </div>
     </div>

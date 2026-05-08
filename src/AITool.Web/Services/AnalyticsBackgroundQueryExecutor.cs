@@ -20,9 +20,11 @@ public sealed class AnalyticsQueueResult<T>
 // 将可视化统计限制为单消费者后台队列，避免请求线程直接承载长时间聚合。
 public sealed class AnalyticsBackgroundQueryExecutor : BackgroundService
 {
+    private const string CacheKeyPrefix = "analytics-dashboard:";
     private readonly IMemoryCache _memoryCache;
     private readonly Channel<AnalyticsJob> _queue;
     private readonly ConcurrentDictionary<string, AnalyticsJobState> _inflightJobs = new(StringComparer.Ordinal);
+    private int _cacheVersion;
 
     public AnalyticsBackgroundQueryExecutor(IMemoryCache memoryCache)
     {
@@ -41,7 +43,8 @@ public sealed class AnalyticsBackgroundQueryExecutor : BackgroundService
         TimeSpan waitBudget,
         CancellationToken cancellationToken)
     {
-        if (_memoryCache.TryGetValue(cacheKey, out T? cached) && cached is not null)
+        var versionedCacheKey = BuildVersionedCacheKey(cacheKey);
+        if (_memoryCache.TryGetValue(versionedCacheKey, out T? cached) && cached is not null)
         {
             return new AnalyticsQueueResult<T>
             {
@@ -50,7 +53,7 @@ public sealed class AnalyticsBackgroundQueryExecutor : BackgroundService
             };
         }
 
-        var state = _inflightJobs.GetOrAdd(cacheKey, _ => new AnalyticsJobState());
+        var state = _inflightJobs.GetOrAdd(versionedCacheKey, _ => new AnalyticsJobState());
         if (!state.IsQueued)
         {
             lock (state.SyncRoot)
@@ -62,11 +65,11 @@ public sealed class AnalyticsBackgroundQueryExecutor : BackgroundService
 
                     if (!_queue.Writer.TryWrite(new AnalyticsJob
                     {
-                        CacheKey = cacheKey,
+                        CacheKey = versionedCacheKey,
                         State = state
                     }))
                     {
-                        _inflightJobs.TryRemove(cacheKey, out _);
+                        _inflightJobs.TryRemove(versionedCacheKey, out _);
                         state.IsQueued = false;
                         return new AnalyticsQueueResult<T>
                         {
@@ -105,6 +108,11 @@ public sealed class AnalyticsBackgroundQueryExecutor : BackgroundService
         return new AnalyticsQueueResult<T> { Status = AnalyticsQueueStatus.Pending };
     }
 
+    public void InvalidateAll()
+    {
+        Interlocked.Increment(ref _cacheVersion);
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await foreach (var job in _queue.Reader.ReadAllAsync(stoppingToken))
@@ -124,6 +132,11 @@ public sealed class AnalyticsBackgroundQueryExecutor : BackgroundService
                 _inflightJobs.TryRemove(job.CacheKey, out _);
             }
         }
+    }
+
+    private string BuildVersionedCacheKey(string cacheKey)
+    {
+        return $"{CacheKeyPrefix}{Volatile.Read(ref _cacheVersion)}:{cacheKey}";
     }
 
     private sealed class AnalyticsJob

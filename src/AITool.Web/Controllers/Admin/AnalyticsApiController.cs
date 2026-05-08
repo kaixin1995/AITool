@@ -14,7 +14,6 @@ public sealed class AnalyticsQueryDto
     public string ProtocolType { get; set; } = "all";
     public string ModelName { get; set; } = "all";
     public Guid? SiteId { get; set; }
-    public string StreamType { get; set; } = "all";
 }
 
 public sealed class AnalyticsFilterOptionsDto
@@ -56,7 +55,6 @@ public sealed class AnalyticsAppliedFilterDto
     public string ProtocolType { get; set; } = string.Empty;
     public string ModelName { get; set; } = string.Empty;
     public Guid? SiteId { get; set; }
-    public string StreamType { get; set; } = string.Empty;
 }
 
 public sealed class AnalyticsSummaryDto
@@ -159,6 +157,7 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var models = await _dbContext.ModelLibraryItems
+            .AsNoTracking()
             .Where(x => x.IsEnabled)
             .OrderBy(x => x.ModelName)
             .Select(x => new AnalyticsModelOptionDto
@@ -257,8 +256,7 @@ public sealed class AnalyticsApiController : ControllerBase
         var baseLogs = allLogs
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
             .Where(x => string.Equals(query.ProtocolType, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.ProtocolType, query.ProtocolType, StringComparison.OrdinalIgnoreCase))
-            .Where(x => string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.RequestModel, query.ModelName, StringComparison.OrdinalIgnoreCase))
-            .Where(x => MatchesStreamFilter(x.IsStreaming, query.StreamType))
+            .Where(x => string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.AttemptedModel, query.ModelName, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         // 站点筛选按“命中过该站点的尝试”统计，避免回退成功后把失败站点整条请求吞掉。
@@ -290,8 +288,7 @@ public sealed class AnalyticsApiController : ControllerBase
                 BucketType = bucketType,
                 ProtocolType = string.IsNullOrWhiteSpace(query.ProtocolType) ? "all" : query.ProtocolType,
                 ModelName = string.IsNullOrWhiteSpace(query.ModelName) ? "all" : query.ModelName,
-                SiteId = query.SiteId,
-                StreamType = string.IsNullOrWhiteSpace(query.StreamType) ? "all" : query.StreamType
+                SiteId = query.SiteId
             },
             Summary = BuildSummary(finalLogs, fallbackRequestIds),
             RequestTrend = BuildRequestTrend(finalLogs, startTime, endTime, bucketType),
@@ -471,11 +468,11 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToList();
     }
 
-    // 模型分布图展示各模型的调用热度和用量。
+    // 模型分布图展示各真实模型的调用热度和用量。
     private static List<AnalyticsDistributionPointDto> BuildModelDistribution(List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs)
     {
         return finalLogs
-            .GroupBy(x => x.RequestModel)
+            .GroupBy(x => x.AttemptedModel)
             .Select(g => new AnalyticsDistributionPointDto
             {
                 Label = g.Key,
@@ -574,17 +571,6 @@ public sealed class AnalyticsApiController : ControllerBase
         return "day";
     }
 
-    private static bool MatchesStreamFilter(bool isStreaming, string? streamType)
-    {
-        var normalized = string.IsNullOrWhiteSpace(streamType) ? "all" : streamType.Trim().ToLowerInvariant();
-        return normalized switch
-        {
-            "stream" => isStreaming,
-            "nonstream" => !isStreaming,
-            _ => true
-        };
-    }
-
     private static bool IsSuccess(string status)
     {
         return string.Equals(status, "success", StringComparison.OrdinalIgnoreCase);
@@ -635,8 +621,7 @@ public sealed class AnalyticsApiController : ControllerBase
             query.EndTime?.ToString("O") ?? "-",
             query.ProtocolType ?? "all",
             query.ModelName ?? "all",
-            query.SiteId?.ToString() ?? "-",
-            query.StreamType ?? "all");
+            query.SiteId?.ToString() ?? "-");
     }
 
     // 全量范围默认不在请求线程等待，普通范围也只给极短预算。

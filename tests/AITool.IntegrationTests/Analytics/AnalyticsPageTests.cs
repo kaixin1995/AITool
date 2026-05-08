@@ -27,6 +27,9 @@ public sealed class AnalyticsPageTests
         html.Should().Contain("requestTrendChart");
         html.Should().Contain("tokenTrendChart");
         html.Should().Contain("时间范围");
+        html.Should().Contain("调用模型");
+        html.Should().Contain("modelNameInput");
+        html.Should().Contain("modelNameOptions");
         html.Should().Contain("/api/admin/analytics/dashboard");
     }
 
@@ -71,12 +74,12 @@ public sealed class AnalyticsPageTests
     }
 
     [Fact]
-    public async Task Get_dashboard_filters_streaming_requests_with_site_scope()
+    public async Task Get_dashboard_filters_site_by_attempt_scope_for_second_site()
     {
         await using var factory = new AnalyticsWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        var body = await GetDashboardBodyAsync(client, $"/api/admin/analytics/dashboard?rangeType=all&bucketType=day&streamType=stream&siteId={AnalyticsWebApplicationFactory.SecondSiteId}");
+        var body = await GetDashboardBodyAsync(client, $"/api/admin/analytics/dashboard?rangeType=all&bucketType=day&siteId={AnalyticsWebApplicationFactory.SecondSiteId}");
 
         using var document = JsonDocument.Parse(body);
         var summary = document.RootElement.GetProperty("summary");
@@ -87,11 +90,36 @@ public sealed class AnalyticsPageTests
 
         var modelDistribution = document.RootElement.GetProperty("modelDistribution").EnumerateArray().ToList();
         modelDistribution.Should().HaveCount(1);
-        modelDistribution[0].GetProperty("label").GetString().Should().Be("chat-prod");
+        modelDistribution[0].GetProperty("label").GetString().Should().Be("glm-5.1");
     }
 
     [Fact]
-    public async Task Get_dashboard_applies_custom_range_with_combined_filters()
+    public async Task Get_dashboard_uses_model_library_options_and_attempted_model_distribution()
+    {
+        await using var factory = new AnalyticsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var optionsResponse = await client.GetAsync("/api/admin/analytics/options");
+        var optionsBody = await optionsResponse.Content.ReadAsStringAsync();
+        optionsResponse.StatusCode.Should().Be(HttpStatusCode.OK, optionsBody);
+
+        using var optionsDocument = JsonDocument.Parse(optionsBody);
+        var models = optionsDocument.RootElement.GetProperty("models").EnumerateArray().Select(x => x.GetProperty("modelName").GetString()).ToList();
+        models.Should().Contain("chat-prod");
+        models.Should().Contain("reason-prod");
+        models.Should().NotContain("glm-5.1");
+        models.Should().NotContain("deepseek-r1");
+
+        var body = await GetDashboardBodyAsync(client, "/api/admin/analytics/dashboard?rangeType=all&bucketType=day&modelName=glm-5.1");
+
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        root.GetProperty("summary").GetProperty("totalRequests").GetInt32().Should().Be(1);
+        root.GetProperty("modelDistribution")[0].GetProperty("label").GetString().Should().Be("glm-5.1");
+    }
+
+    [Fact]
+    public async Task Get_dashboard_supports_custom_range_with_model_filter()
     {
         await using var factory = new AnalyticsWebApplicationFactory();
         using var client = factory.CreateClient();
@@ -101,7 +129,7 @@ public sealed class AnalyticsPageTests
         var endTime = Uri.EscapeDataString(targetDay.ToString("O"));
         var body = await GetDashboardBodyAsync(
             client,
-            $"/api/admin/analytics/dashboard?rangeType=custom&bucketType=day&startTime={startTime}&endTime={endTime}&protocolType=OpenAI&modelName=chat-prod&siteId={AnalyticsWebApplicationFactory.SecondSiteId}&streamType=stream");
+            $"/api/admin/analytics/dashboard?rangeType=custom&bucketType=day&startTime={startTime}&endTime={endTime}&protocolType=OpenAI&modelName=glm-5.1&siteId={AnalyticsWebApplicationFactory.SecondSiteId}");
 
         using var document = JsonDocument.Parse(body);
         var root = document.RootElement;
@@ -114,7 +142,6 @@ public sealed class AnalyticsPageTests
 
         var appliedFilter = root.GetProperty("appliedFilter");
         appliedFilter.GetProperty("rangeType").GetString().Should().Be("custom");
-        appliedFilter.GetProperty("streamType").GetString().Should().Be("stream");
 
         root.GetProperty("siteDistribution").EnumerateArray().Should().ContainSingle();
         root.GetProperty("requestTrend")

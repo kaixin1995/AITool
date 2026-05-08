@@ -205,5 +205,50 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         _dbContext.ProxyUsageLogs.Should().Contain(x => x.Source == "chat");
     }
 
-    public void Dispose() => _dbContext.Dispose();
+    [Fact]
+    public async Task ClearUsageLogsAsync_clears_all_when_filters_are_empty()
+    {
+        await _service.GetOrCreateAsync();
+
+        _dbContext.ProxyUsageLogs.AddRange(
+            new AITool.Domain.Proxy.ProxyUsageLog
+            {
+                Id = Guid.NewGuid(),
+                AccessKeyId = Guid.NewGuid(),
+                ProtocolType = "OpenAI",
+                RequestModel = "gpt-5",
+                AttemptedModel = "gpt-5",
+                TargetSiteId = Guid.NewGuid(),
+                Status = "success",
+                Source = "codex",
+                ErrorMessage = string.Empty,
+                ReasoningEffort = string.Empty,
+                RequestedAt = DateTimeOffset.UtcNow.AddHours(-2)
+            },
+            new AITool.Domain.Proxy.ProxyUsageLog
+            {
+                Id = Guid.NewGuid(),
+                AccessKeyId = Guid.NewGuid(),
+                ProtocolType = "Anthropic",
+                RequestModel = "claude-4",
+                AttemptedModel = "claude-4-sonnet",
+                TargetSiteId = Guid.NewGuid(),
+                Status = "fail",
+                Source = "chat",
+                ErrorMessage = "timeout",
+                ReasoningEffort = string.Empty,
+                RequestedAt = DateTimeOffset.UtcNow.AddHours(-1)
+            });
+        await _dbContext.SaveChangesAsync();
+
+        var deletedCount = await _service.ClearUsageLogsAsync(new ClearUsageLogsRequest());
+
+        deletedCount.Should().Be(2);
+        _dbContext.ProxyUsageLogs.Should().BeEmpty();
+    }
+
+    public void Dispose()
+    {
+        _dbContext.Dispose();
+    }
 }

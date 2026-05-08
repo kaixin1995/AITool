@@ -43,23 +43,17 @@
                 </select>
             </div>
             <div class="col-xl-2 col-md-4">
-                <label class="form-label" for="modelName">模型</label>
-                <select id="modelName" class="form-select">
-                    <option value="all" selected>全部模型</option>
-                </select>
+                <label class="form-label" for="modelNameInput">调用模型</label>
+                <input id="modelNameInput" type="text" class="form-control" list="modelNameOptions" value="全部模型" placeholder="全部模型" />
+                <datalist id="modelNameOptions">
+                    <option value="全部模型">全部模型</option>
+                </datalist>
+                <input id="modelName" type="hidden" value="all" />
             </div>
             <div class="col-xl-2 col-md-4">
                 <label class="form-label" for="siteId">站点</label>
                 <select id="siteId" class="form-select">
                     <option value="" selected>全部站点</option>
-                </select>
-            </div>
-            <div class="col-xl-2 col-md-4">
-                <label class="form-label" for="streamType">流式类型</label>
-                <select id="streamType" class="form-select">
-                    <option value="all" selected>全部</option>
-                    <option value="stream">仅流式</option>
-                    <option value="nonstream">仅非流式</option>
                 </select>
             </div>
             <div class="col-xl-2 col-md-4 custom-range-field" style="display:none;">
@@ -243,11 +237,7 @@
     }
 
     .analytics-filter-meta {
-        min-height: 38px;
-        display: flex;
-        align-items: center;
-        color: var(--text-secondary);
-        font-size: 13px;
+        display: none;
     }
 
     .analytics-kpi-grid {
@@ -403,8 +393,9 @@
             const bucketTypeEl = document.getElementById('bucketType');
             const protocolTypeEl = document.getElementById('protocolType');
             const modelNameEl = document.getElementById('modelName');
+            const modelNameInputEl = document.getElementById('modelNameInput');
+            const modelNameOptionsEl = document.getElementById('modelNameOptions');
             const siteIdEl = document.getElementById('siteId');
-            const streamTypeEl = document.getElementById('streamType');
             const startTimeEl = document.getElementById('startTime');
             const endTimeEl = document.getElementById('endTime');
             const refreshBtn = document.getElementById('refreshBtn');
@@ -428,7 +419,6 @@
                 params.set('bucketType', bucketTypeEl.value);
                 params.set('protocolType', protocolTypeEl.value);
                 params.set('modelName', modelNameEl.value);
-                params.set('streamType', streamTypeEl.value);
                 if (siteIdEl.value) {
                     params.set('siteId', siteIdEl.value);
                 }
@@ -485,11 +475,38 @@
                 }
             }
 
+            function fillModelOptions(items) {
+                modelNameOptionsEl.innerHTML = '';
+                const allOption = document.createElement('option');
+                allOption.value = '全部模型';
+                allOption.textContent = '全部模型';
+                modelNameOptionsEl.appendChild(allOption);
+
+                items.forEach(item => {
+                    const option = document.createElement('option');
+                    option.value = item.modelName;
+                    option.textContent = item.modelName;
+                    modelNameOptionsEl.appendChild(option);
+                });
+            }
+
+            function syncModelNameValue() {
+                const value = (modelNameInputEl.value || '').trim();
+                if (!value || value === '全部模型' || value.toLowerCase() === 'all') {
+                    modelNameEl.value = 'all';
+                    modelNameInputEl.value = '全部模型';
+                    return;
+                }
+
+                modelNameEl.value = value;
+            }
+
             async function loadOptions() {
                 const response = await fetch(optionsEndpoint);
                 const data = await response.json();
-                fillOptions(modelNameEl, data.models || [], item => ({ value: item.modelName, label: item.modelName }), '全部模型');
+                fillModelOptions(data.models || []);
                 fillOptions(siteIdEl, data.sites || [], item => ({ value: item.siteId, label: item.siteName }), null);
+                syncModelNameValue();
             }
 
             function setKpi(id, value) {
@@ -556,7 +573,7 @@
                 setKpi('kpiTokenSplit', `${formatNumber(summary.totalInputTokens || 0)} / ${formatNumber(summary.totalOutputTokens || 0)}`);
 
                 const applied = data.appliedFilter || {};
-                filterSummaryEl.textContent = `范围：${applied.startTime ? applied.startTime.slice(0, 10) : '-'} 至 ${applied.endTime ? applied.endTime.slice(0, 10) : '-'}，粒度：${applied.bucketType || '-'}`;
+                filterSummaryEl.textContent = '';
 
                 renderChart('requestTrendChart', {
                     type: 'line',
@@ -829,12 +846,17 @@
             }
 
             function bindEvents() {
-                [rangeTypeEl, bucketTypeEl, protocolTypeEl, modelNameEl, siteIdEl, streamTypeEl].forEach(el => {
+                [rangeTypeEl, bucketTypeEl, protocolTypeEl, siteIdEl].forEach(el => {
                     el.addEventListener('change', async () => {
                         toggleCustomRange();
                         await loadDashboard(false);
                     });
                 });
+                modelNameInputEl.addEventListener('change', async () => {
+                    syncModelNameValue();
+                    await loadDashboard(false);
+                });
+                modelNameInputEl.addEventListener('blur', syncModelNameValue);
                 [startTimeEl, endTimeEl].forEach(el => {
                     el.addEventListener('change', async () => {
                         if (rangeTypeEl.value === 'custom') {
