@@ -1,5 +1,7 @@
 @using AITool.Application.Operations
+@using AITool.Web.Services
 @inject ISystemRuntimeSettingsService RuntimeSettingsService
+@inject AppVersionInfo AppVersion
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -101,7 +103,7 @@
                     <h1 class="app-topbar-title">@ViewData["Title"]</h1>
                 </div>
                 <div class="app-topbar-right">
-                    <span class="text-secondary" style="font-size:13px;">AI Tool v1.0</span>
+                    <span class="text-secondary" style="font-size:13px;">AI Tool v@(AppVersion.Value)</span>
                 </div>
             </header>
 

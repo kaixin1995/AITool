@@ -887,10 +887,10 @@
                 const number = Number(value || 0);
                 const abs = Math.abs(number);
                 const units = [
-                    { threshold: 1e12, suffix: 'T Tokens', digits: 2 },
-                    { threshold: 1e9, suffix: 'G Tokens', digits: 2 },
-                    { threshold: 1e6, suffix: 'M Tokens', digits: 2 },
-                    { threshold: 1e3, suffix: 'K Tokens', digits: 2 }
+                    { threshold: 1e12, suffix: 'T', digits: 2 },
+                    { threshold: 1e9, suffix: 'G', digits: 2 },
+                    { threshold: 1e6, suffix: 'M', digits: 2 },
+                    { threshold: 1e3, suffix: 'K', digits: 2 }
                 ];
 
                 for (const unit of units) {
@@ -899,7 +899,7 @@
                     }
                 }
 
-                return `${formatNumber(number)} Tokens`;
+                return formatNumber(number);
             }
 
             // 耗时统一按 ms / s / min / h 自动换单位，保留易读的展示形式。
