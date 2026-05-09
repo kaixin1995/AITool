@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
 using AITool.Infrastructure.Persistence;
+using Microsoft.Extensions.Logging;
 
 namespace AITool.Infrastructure.Proxy;
 
@@ -11,10 +12,12 @@ namespace AITool.Infrastructure.Proxy;
 public sealed class ProxyForwardService : IProxyForwardService
 {
     private readonly HttpClient _httpClient;
+    private readonly ILogger<ProxyForwardService> _logger;
 
-    public ProxyForwardService(HttpClient httpClient)
+    public ProxyForwardService(HttpClient httpClient, ILogger<ProxyForwardService> logger)
     {
         _httpClient = httpClient;
+        _logger = logger;
     }
 
     // 将请求转发到目标站点并解析响应中的 Token 用量
@@ -106,6 +109,12 @@ public sealed class ProxyForwardService : IProxyForwardService
                 stopwatch.Stop();
                 if (attempt == attempts - 1)
                 {
+                    _logger.LogError(ex,
+                        "代理请求超时。Protocol={Protocol}, Target={Target}, Streaming={Streaming}, TimeoutSeconds={TimeoutSeconds}",
+                        request.ProtocolType,
+                        request.TargetBaseUrl,
+                        isStreaming,
+                        request.RequestTimeoutSeconds);
                     return new ProxyForwardResult
                     {
                         Success = false,
@@ -119,6 +128,11 @@ public sealed class ProxyForwardService : IProxyForwardService
                 stopwatch.Stop();
                 if (attempt == attempts - 1)
                 {
+                    _logger.LogError(ex,
+                        "代理请求失败。Protocol={Protocol}, Target={Target}, Streaming={Streaming}",
+                        request.ProtocolType,
+                        request.TargetBaseUrl,
+                        isStreaming);
                     return new ProxyForwardResult
                     {
                         Success = false,
@@ -188,6 +202,11 @@ public sealed class ProxyForwardService : IProxyForwardService
                 stopwatch.Stop();
                 if (attempt == attempts - 1)
                 {
+                    _logger.LogError(ex,
+                        "代理流式请求超时。Protocol={Protocol}, Target={Target}, TimeoutSeconds={TimeoutSeconds}",
+                        request.ProtocolType,
+                        request.TargetBaseUrl,
+                        request.RequestTimeoutSeconds);
                     return new ProxyForwardResult
                     {
                         Success = false,
@@ -202,6 +221,10 @@ public sealed class ProxyForwardService : IProxyForwardService
                 stopwatch.Stop();
                 if (attempt == attempts - 1)
                 {
+                    _logger.LogError(ex,
+                        "代理流式请求失败。Protocol={Protocol}, Target={Target}",
+                        request.ProtocolType,
+                        request.TargetBaseUrl);
                     return new ProxyForwardResult
                     {
                         Success = false,
@@ -318,6 +341,10 @@ public sealed class ProxyForwardService : IProxyForwardService
         {
             stopwatch.Stop();
             totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+            _logger.LogError(ex,
+                "代理流在返回首包后异常中断。Protocol={Protocol}, Target={Target}",
+                request.ProtocolType,
+                request.TargetBaseUrl);
 
             return new ProxyForwardResult
             {

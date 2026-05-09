@@ -4,6 +4,7 @@ using AITool.Application.Proxy;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using AITool.Web.Services;
 
 namespace AITool.Web.Controllers.Proxy;
@@ -23,19 +24,22 @@ public sealed class AnthropicProxyController : ControllerBase
     private readonly RouteCircuitStateStore _circuitStore;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly DeveloperInvocationTraceStore _traceStore;
+    private readonly ILogger<AnthropicProxyController> _logger;
 
     public AnthropicProxyController(
         IProxyForwardService forwardService,
         IUsageLogService usageLogService,
         RouteCircuitStateStore circuitStore,
         ProxyRequestMetadataCache metadataCache,
-        DeveloperInvocationTraceStore traceStore)
+        DeveloperInvocationTraceStore traceStore,
+        ILogger<AnthropicProxyController> logger)
     {
         _forwardService = forwardService;
         _usageLogService = usageLogService;
         _circuitStore = circuitStore;
         _metadataCache = metadataCache;
         _traceStore = traceStore;
+        _logger = logger;
     }
 
     // 兼容 Anthropic count_tokens 接口，按当前路由可解析请求格式估算 token。
@@ -202,6 +206,7 @@ public sealed class AnthropicProxyController : ControllerBase
                     OutputTokens = streamResult.OutputTokens,
                     TotalDurationMs = streamResult.TotalDurationMs
                 });
+                LogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
 
                 _circuitStore.Block(route.RouteId);
                 lastResult = streamResult;
@@ -294,6 +299,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 OutputTokens = result.OutputTokens,
                 TotalDurationMs = result.TotalDurationMs
             });
+            LogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
 
             // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
             _circuitStore.Block(route.RouteId);
@@ -517,6 +523,31 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         _traceStore.CompleteAttempt(traceId.Value, traceAttemptId, result);
+    }
+
+    private void LogFailedProxyAttempt(
+        string requestSource,
+        string modelName,
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string preparedRequestBody,
+        ProxyForwardResult result)
+    {
+        _logger.LogError(
+            "代理请求失败\nSource={Source}\nClientProtocol={ClientProtocol}\nUpstreamProtocol={UpstreamProtocol}\nRequestModel={RequestModel}\nAttemptedModel={AttemptedModel}\nSiteName={SiteName}\nBaseUrl={BaseUrl}\nStatusCode={StatusCode}\nIsStreaming={IsStreaming}\nIsStreamInterrupted={IsStreamInterrupted}\nErrorMessage={ErrorMessage}\nRequestBody={RequestBody}\nResponseBody={ResponseBody}",
+            requestSource,
+            "Anthropic",
+            actualProtocolType,
+            modelName,
+            route.UpstreamModelName,
+            route.SiteName,
+            route.BaseUrl,
+            result.StatusCode,
+            result.IsStreaming,
+            result.IsStreamInterrupted,
+            result.ErrorMessage ?? string.Empty,
+            HttpLogFormatter.FormatBody(preparedRequestBody),
+            HttpLogFormatter.FormatBody(result.ResponseBody));
     }
 
     private static string ResolveForwardingMode(string clientProtocolType, string upstreamProtocolType)

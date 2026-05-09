@@ -149,7 +149,7 @@ public sealed class DeveloperInvocationsPageTests
         payload.Should().Contain("failedAttemptCount");
         payload.Should().Contain("successAttemptCount");
         payload.Should().Contain("debug-upstream-model-2");
-        payload.Should().Contain("forwardingMode":"direct");
+        payload.Should().Contain("\"forwardingMode\":\"direct\"");
     }
 
     [Fact]

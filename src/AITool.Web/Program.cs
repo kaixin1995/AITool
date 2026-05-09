@@ -15,9 +15,16 @@ using AITool.Infrastructure.Routing;
 using AITool.Infrastructure.Scheduling;
 using AITool.Web.Services;
 using Hangfire;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using NLog.Web;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Logging.ClearProviders();
+builder.Host.UseNLog();
 
 var applicationVersion = "1.0";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
@@ -29,8 +36,42 @@ builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
 builder.Services.AddRazorPages();
 
 // 注册 API 控制器，用于代理转发端点。
-builder.Services.AddControllers();
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<HttpExceptionLoggingFilter>();
+});
 builder.Services.AddMemoryCache();
+builder.Services.AddScoped<HttpExceptionLoggingFilter>();
+
+builder.Services
+    .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddCookie(options =>
+    {
+        options.LoginPath = "/Login";
+        options.AccessDeniedPath = "/Login";
+        options.Cookie.Name = "AITool.AdminAuth";
+        options.SlidingExpiration = true;
+        options.Events = new CookieAuthenticationEvents
+        {
+            OnRedirectToLogin = context =>
+            {
+                if (IsAdminRequest(context.Request))
+                {
+                    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
+                    var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
+                        ? "/Login"
+                        : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
+                    context.Response.Redirect(loginUrl);
+                    return Task.CompletedTask;
+                }
+
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                return Task.CompletedTask;
+            }
+        };
+    });
+builder.Services.AddAuthorization();
+builder.Services.AddSingleton<AdminAuthService>();
 
 // 数据库文件放在软件根目录下。
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
@@ -110,7 +151,87 @@ using (var scope = app.Services.CreateScope())
 }
 
 // 启用静态文件服务，提供 wwwroot 下的 CSS/JS 等资源。
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    app.UseExceptionHandler(exceptionApp =>
+    {
+        exceptionApp.Run(async context =>
+        {
+            var feature = context.Features.Get<IExceptionHandlerFeature>();
+            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+            if (feature?.Error is not null)
+            {
+                context.Request.EnableBuffering();
+                string requestBody;
+                using (var reader = new StreamReader(context.Request.Body, leaveOpen: true))
+                {
+                    context.Request.Body.Position = 0;
+                    requestBody = await reader.ReadToEndAsync(context.RequestAborted);
+                    context.Request.Body.Position = 0;
+                }
+
+                logger.LogError(feature.Error,
+                    "未处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
+                    context.Request.Path,
+                    context.Request.Method,
+                    context.TraceIdentifier,
+                    context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty,
+                    HttpLogFormatter.FormatBody(requestBody));
+            }
+
+            if (!context.Response.HasStarted)
+            {
+                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                context.Response.ContentType = "application/json; charset=utf-8";
+                await context.Response.WriteAsJsonAsync(new { message = "服务器内部异常" });
+            }
+        });
+    });
+}
+
 app.UseStaticFiles();
+app.UseAuthentication();
+app.UseAuthorization();
+app.Use(async (context, next) =>
+{
+    if (app.Environment.IsEnvironment("Testing") || !IsAdminRequest(context.Request) || IsLoginPageRequest(context.Request))
+    {
+        await next();
+        return;
+    }
+
+    if (context.User.Identity?.IsAuthenticated == true)
+    {
+        await next();
+        return;
+    }
+
+    var authService = context.RequestServices.GetRequiredService<AdminAuthService>();
+    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
+    var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
+        ? "/Login"
+        : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
+
+    if (IsAdminApiRequest(context.Request))
+    {
+        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        return;
+    }
+
+    if (IsHangfireRequest(context.Request))
+    {
+        context.Response.Redirect(loginUrl);
+        return;
+    }
+
+    if (authService.HasPasswordConfigured())
+    {
+        context.Response.Redirect(loginUrl);
+        return;
+    }
+
+    context.Response.Redirect(loginUrl);
+});
 
 // 映射健康检查端点，作为集成测试的验证入口。
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
@@ -131,6 +252,32 @@ app.MapRazorPages();
 app.MapControllers();
 
 app.Run();
+
+static bool IsAdminRequest(HttpRequest request)
+{
+    return IsAdminPageRequest(request) || IsAdminApiRequest(request) || IsHangfireRequest(request);
+}
+
+static bool IsAdminPageRequest(HttpRequest request)
+{
+    var path = request.Path;
+    return path == "/" || path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase);
+}
+
+static bool IsLoginPageRequest(HttpRequest request)
+{
+    return request.Path == "/Login";
+}
+
+static bool IsAdminApiRequest(HttpRequest request)
+{
+    return request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase);
+}
+
+static bool IsHangfireRequest(HttpRequest request)
+{
+    return request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase);
+}
 
 // 暴露 Program 类供集成测试引用。
 public partial class Program;

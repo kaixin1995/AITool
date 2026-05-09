@@ -17,8 +17,6 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
 
     public async Task<SystemRuntimeSettings> GetOrCreateAsync(CancellationToken cancellationToken = default)
     {
-        await EnsureTableAsync(cancellationToken);
-
         var settings = await _dbContext.SystemRuntimeSettings
             .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken);
         if (settings is not null)
@@ -77,42 +75,5 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.LastUsageLogPrunedCount = logsToDelete.Count;
         await _dbContext.SaveChangesAsync(cancellationToken);
         return logsToDelete.Count;
-    }
-
-    // 系统设置页与测试仍可能在缺表场景下调用该服务，因此保留兼容逻辑。
-    private async Task EnsureTableAsync(CancellationToken cancellationToken)
-    {
-        if (!_dbContext.Database.IsRelational())
-        {
-            return;
-        }
-
-        var connection = _dbContext.Database.GetDbConnection();
-        var shouldClose = connection.State != System.Data.ConnectionState.Open;
-        if (shouldClose)
-        {
-            await connection.OpenAsync(cancellationToken);
-        }
-
-        try
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='SystemRuntimeSettings'";
-            var exists = Convert.ToInt64(await command.ExecuteScalarAsync(cancellationToken)) > 0;
-            if (exists)
-            {
-                return;
-            }
-
-            command.CommandText = "CREATE TABLE SystemRuntimeSettings (Id INTEGER NOT NULL CONSTRAINT PK_SystemRuntimeSettings PRIMARY KEY, ProxyRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60, ProxyRetryCount INTEGER NOT NULL DEFAULT 1, DetectionRequestTimeoutSeconds INTEGER NOT NULL DEFAULT 60, DetectionRetryCount INTEGER NOT NULL DEFAULT 0, DetectionConcurrency INTEGER NOT NULL DEFAULT 1, CircuitBreakerFailureThreshold INTEGER NOT NULL DEFAULT 5, CircuitBreakerRecoveryMinutes INTEGER NOT NULL DEFAULT 2, UsageLogRetentionDays INTEGER NOT NULL DEFAULT 7, UsageLogAutoCleanupEnabled INTEGER NOT NULL DEFAULT 1, DeveloperFeaturesEnabled INTEGER NOT NULL DEFAULT 0, LastUsageLogPrunedAt TEXT NULL, LastUsageLogPrunedCount INTEGER NOT NULL DEFAULT 0)";
-            await command.ExecuteNonQueryAsync(cancellationToken);
-        }
-        finally
-        {
-            if (shouldClose)
-            {
-                await connection.CloseAsync();
-            }
-        }
     }
 }
