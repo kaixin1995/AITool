@@ -146,7 +146,7 @@ public sealed class OpenAiProxyController : ControllerBase
 
         // 读取运行时设置缓存，后台修改后会在短时间内刷新。
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
-        var traceId = TryCreateDeveloperTrace(runtimeSettings, requestSource, "OpenAI", modelName, requestBody);
+        var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, "OpenAI", modelName, requestBody);
 
         // 获取已经和站点信息合并后的候选路由，优先尝试支持 OpenAI 原协议的站点。
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
@@ -164,12 +164,12 @@ public sealed class OpenAiProxyController : ControllerBase
         foreach (var route in allRoutes)
         {
             // 跳过已被熔断器屏蔽的路由
-            if (_circuitStore.IsBlocked(route.RouteId))
+            if (IsRouteBlockedSafely(route.RouteId))
                 continue;
 
             attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
-            var traceAttemptId = AddDeveloperTraceAttempt(traceId, route, actualProtocolType);
+            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "OpenAI",
                 actualProtocolType,
@@ -191,7 +191,7 @@ public sealed class OpenAiProxyController : ControllerBase
 
             var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
 
-            await _usageLogService.LogAsync(new UsageLogEntry
+            await SafeLogUsageAsync(new UsageLogEntry
             {
                 RequestId = requestId,
                 AccessKeyId = accessKey.Id,
@@ -219,7 +219,7 @@ public sealed class OpenAiProxyController : ControllerBase
             if (result.Success)
             {
                 // 成功时清除该路由的连续失败计数
-                _circuitStore.Succeed(route.RouteId);
+                SafeSucceedRoute(route.RouteId);
                 var responseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
                     "OpenAI",
                     actualProtocolType,
@@ -229,7 +229,7 @@ public sealed class OpenAiProxyController : ControllerBase
                     result.InputTokens,
                     result.CachedTokens,
                     result.OutputTokens);
-                CompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                 {
                     Status = "success",
                     StatusCode = result.StatusCode,
@@ -246,7 +246,7 @@ public sealed class OpenAiProxyController : ControllerBase
                 return Content(responseBody, contentType);
             }
 
-            CompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+            SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
             {
                 Status = "fail",
                 StatusCode = result.StatusCode,
@@ -259,10 +259,10 @@ public sealed class OpenAiProxyController : ControllerBase
                 OutputTokens = result.OutputTokens,
                 TotalDurationMs = result.TotalDurationMs
             });
-            LogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
+            SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
 
             // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
-            _circuitStore.Block(route.RouteId);
+            SafeBlockRoute(route.RouteId);
             lastResult = result;
         }
 
@@ -329,6 +329,22 @@ public sealed class OpenAiProxyController : ControllerBase
         });
     }
 
+    private Guid? TryCreateDeveloperTraceSafely(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
+    {
+        try
+        {
+            return TryCreateDeveloperTrace(runtimeSettings, requestSource, protocolType, modelName, requestBody);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "创建开发者调用追踪失败，但请求继续转发。Protocol={Protocol}, RequestModel={RequestModel}",
+                protocolType,
+                modelName);
+            return null;
+        }
+    }
+
     private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
     {
         if (!traceId.HasValue)
@@ -346,11 +362,122 @@ public sealed class OpenAiProxyController : ControllerBase
         });
     }
 
+    private Guid AddDeveloperTraceAttemptSafely(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
+    {
+        try
+        {
+            return AddDeveloperTraceAttempt(traceId, route, actualProtocolType);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "创建开发者调用追踪尝试失败，但请求继续转发。RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
+                route.ExternalModelName,
+                route.UpstreamModelName);
+            return Guid.Empty;
+        }
+    }
+
     private static string ResolveForwardingMode(string clientProtocolType, string upstreamProtocolType)
     {
         return string.Equals(clientProtocolType, upstreamProtocolType, StringComparison.OrdinalIgnoreCase)
             ? "direct"
             : "bridge";
+    }
+
+    private async Task SafeLogUsageAsync(UsageLogEntry entry, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _usageLogService.LogAsync(entry, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "记录使用日志失败，但请求继续返回。Protocol={Protocol}, RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
+                entry.ProtocolType,
+                entry.RequestModel,
+                entry.AttemptedModel);
+        }
+    }
+
+    private bool IsRouteBlockedSafely(Guid routeId)
+    {
+        try
+        {
+            return _circuitStore.IsBlocked(routeId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "读取熔断状态失败，按未熔断继续转发。RouteId={RouteId}",
+                routeId);
+            return false;
+        }
+    }
+
+    private void SafeSucceedRoute(Guid routeId)
+    {
+        try
+        {
+            _circuitStore.Succeed(routeId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "更新路由成功状态失败，但请求继续返回。RouteId={RouteId}",
+                routeId);
+        }
+    }
+
+    private void SafeBlockRoute(Guid routeId)
+    {
+        try
+        {
+            _circuitStore.Block(routeId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "更新路由失败状态失败，但继续尝试后续路由。RouteId={RouteId}",
+                routeId);
+        }
+    }
+
+    private void SafeCompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)
+    {
+        try
+        {
+            CompleteDeveloperTraceAttempt(traceId, traceAttemptId, result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "完成开发者调用追踪失败，但请求继续返回。TraceId={TraceId}, AttemptId={AttemptId}",
+                traceId,
+                traceAttemptId);
+        }
+    }
+
+    private void SafeLogFailedProxyAttempt(
+        string requestSource,
+        string modelName,
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string preparedRequestBody,
+        ProxyForwardResult result)
+    {
+        try
+        {
+            LogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "记录失败代理日志失败，但继续后续流程。RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
+                modelName,
+                route.UpstreamModelName);
+        }
     }
 
     private void CompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)
