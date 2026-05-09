@@ -21,6 +21,16 @@ public static class ProxyProtocolBridge
         public int CachedTokens { get; set; }
         public int OutputTokens { get; set; }
         public string StopReason { get; set; } = "end_turn";
+        public Dictionary<int, AnthropicToolCallBlockState> ToolCalls { get; } = [];
+    }
+
+    public sealed class AnthropicToolCallBlockState
+    {
+        public int ContentIndex { get; init; }
+        public string ToolUseId { get; set; } = $"toolu_{Guid.NewGuid():N}";
+        public string Name { get; set; } = string.Empty;
+        public bool Started { get; set; }
+        public bool Closed { get; set; }
     }
 
     public static string PrepareRequestBody(
@@ -175,6 +185,14 @@ public static class ProxyProtocolBridge
                 });
             }
 
+            if (TryGetToolCallDelta(choice, out var toolCallDelta))
+            {
+                state.HadAnyContent = true;
+                CloseThinkingBlockIfNeeded(builder, state);
+                CloseTextBlockIfNeeded(builder, state);
+                AppendToolCallDelta(builder, state, toolCallDelta);
+            }
+
             var contentText = ExtractDeltaContent(delta);
             if (contentText is not null)
             {
@@ -246,6 +264,8 @@ public static class ProxyProtocolBridge
             });
             state.TextClosed = true;
         }
+
+        CloseToolCallBlocks(builder, state);
 
         AppendSseEvent(builder, "message_delta", new JsonObject
         {
@@ -661,6 +681,146 @@ public static class ProxyProtocolBridge
         builder.Append("event: ").Append(eventName).Append('\n');
         builder.Append("data: ").Append(payload.ToJsonString()).Append("\n\n");
     }
+
+    private static void CloseThinkingBlockIfNeeded(StringBuilder builder, AnthropicOpenAiStreamState state)
+    {
+        if (state.ThinkingIndex < 0 || state.ThinkingClosed)
+        {
+            return;
+        }
+
+        AppendSseEvent(builder, "content_block_stop", new JsonObject
+        {
+            ["type"] = "content_block_stop",
+            ["index"] = state.ThinkingIndex
+        });
+        state.ThinkingClosed = true;
+    }
+
+    private static void CloseTextBlockIfNeeded(StringBuilder builder, AnthropicOpenAiStreamState state)
+    {
+        if (state.TextIndex < 0 || state.TextClosed)
+        {
+            return;
+        }
+
+        AppendSseEvent(builder, "content_block_stop", new JsonObject
+        {
+            ["type"] = "content_block_stop",
+            ["index"] = state.TextIndex
+        });
+        state.TextClosed = true;
+    }
+
+    private static void CloseToolCallBlocks(StringBuilder builder, AnthropicOpenAiStreamState state)
+    {
+        foreach (var toolCallState in state.ToolCalls.OrderBy(x => x.Key).Select(x => x.Value))
+        {
+            if (!toolCallState.Started || toolCallState.Closed)
+            {
+                continue;
+            }
+
+            AppendSseEvent(builder, "content_block_stop", new JsonObject
+            {
+                ["type"] = "content_block_stop",
+                ["index"] = toolCallState.ContentIndex
+            });
+            toolCallState.Closed = true;
+        }
+    }
+
+    private static void AppendToolCallDelta(StringBuilder builder, AnthropicOpenAiStreamState state, OpenAiToolCallDelta toolCallDelta)
+    {
+        if (!state.ToolCalls.TryGetValue(toolCallDelta.Index, out var toolCallState))
+        {
+            toolCallState = new AnthropicToolCallBlockState
+            {
+                ContentIndex = state.NextContentIndex++
+            };
+            state.ToolCalls[toolCallDelta.Index] = toolCallState;
+        }
+
+        if (!string.IsNullOrWhiteSpace(toolCallDelta.Id))
+        {
+            toolCallState.ToolUseId = toolCallDelta.Id;
+        }
+
+        if (!string.IsNullOrWhiteSpace(toolCallDelta.Name))
+        {
+            toolCallState.Name = toolCallDelta.Name;
+        }
+
+        if (!toolCallState.Started)
+        {
+            AppendSseEvent(builder, "content_block_start", new JsonObject
+            {
+                ["type"] = "content_block_start",
+                ["index"] = toolCallState.ContentIndex,
+                ["content_block"] = new JsonObject
+                {
+                    ["type"] = "tool_use",
+                    ["id"] = toolCallState.ToolUseId,
+                    ["name"] = toolCallState.Name,
+                    ["input"] = new JsonObject()
+                }
+            });
+            toolCallState.Started = true;
+        }
+
+        if (!string.IsNullOrEmpty(toolCallDelta.ArgumentsDelta))
+        {
+            AppendSseEvent(builder, "content_block_delta", new JsonObject
+            {
+                ["type"] = "content_block_delta",
+                ["index"] = toolCallState.ContentIndex,
+                ["delta"] = new JsonObject
+                {
+                    ["type"] = "input_json_delta",
+                    ["partial_json"] = toolCallDelta.ArgumentsDelta
+                }
+            });
+        }
+    }
+
+    private static bool TryGetToolCallDelta(JsonElement choice, out OpenAiToolCallDelta toolCallDelta)
+    {
+        toolCallDelta = default;
+        if (!choice.TryGetProperty("delta", out var delta) ||
+            !delta.TryGetProperty("tool_calls", out var toolCalls) ||
+            toolCalls.ValueKind != JsonValueKind.Array ||
+            toolCalls.GetArrayLength() == 0)
+        {
+            return false;
+        }
+
+        var firstToolCall = toolCalls[0];
+        var index = firstToolCall.TryGetProperty("index", out var indexElement) && indexElement.ValueKind == JsonValueKind.Number
+            ? indexElement.GetInt32()
+            : 0;
+        var id = firstToolCall.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String
+            ? idElement.GetString() ?? string.Empty
+            : string.Empty;
+        var name = string.Empty;
+        var argumentsDelta = string.Empty;
+        if (firstToolCall.TryGetProperty("function", out var functionElement) && functionElement.ValueKind == JsonValueKind.Object)
+        {
+            if (functionElement.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String)
+            {
+                name = nameElement.GetString() ?? string.Empty;
+            }
+
+            if (functionElement.TryGetProperty("arguments", out var argumentsElement) && argumentsElement.ValueKind == JsonValueKind.String)
+            {
+                argumentsDelta = argumentsElement.GetString() ?? string.Empty;
+            }
+        }
+
+        toolCallDelta = new OpenAiToolCallDelta(index, id, name, argumentsDelta);
+        return true;
+    }
+
+    private readonly record struct OpenAiToolCallDelta(int Index, string Id, string Name, string ArgumentsDelta);
 
     private static JsonArray CloneArray(JsonNode? node)
     {

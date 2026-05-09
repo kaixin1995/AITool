@@ -245,25 +245,19 @@ public sealed class AnthropicProxyControllerTests
     }
 
     [Fact]
-    public async Task Post_messages_stops_fallback_when_openai_stream_fails_after_first_chunk()
+    public async Task Post_messages_bridges_openai_tool_call_stream_to_anthropic_tool_use_events()
     {
         var fakeForwardService = new AnthropicFakeProxyForwardService
         {
             OpenAiStreamingLines =
             [
-                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}",
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_123\",\"function\":{\"name\":\"Bash\",\"arguments\":\"{\\u0022command\\u0022:\\u0022ec\"}}]}}]}",
+                string.Empty,
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"ho hi\\u0022}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":6,\"prompt_tokens_details\":{\"cached_tokens\":1},\"completion_tokens\":3}}",
+                string.Empty,
+                "data: [DONE]",
                 string.Empty
-            ],
-            StreamingResultFactory = _ => new ProxyForwardResult
-            {
-                Success = false,
-                StatusCode = 502,
-                ErrorMessage = "stream interrupted after first chunk",
-                IsStreaming = true,
-                HasStartedStreaming = true,
-                IsStreamInterrupted = true,
-                TotalDurationMs = 12
-            }
+            ]
         };
         await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "OpenAI");
         using var client = factory.CreateClient();
@@ -279,10 +273,14 @@ public sealed class AnthropicProxyControllerTests
         var body = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
-        body.Should().Contain("event: message_start");
-        body.Should().Contain("event: content_block_delta");
+        body.Should().Contain("\"type\":\"tool_use\"");
+        body.Should().Contain("\"name\":\"Bash\"");
+        body.Should().Contain("\"type\":\"input_json_delta\"");
+        body.Should().Contain("\"partial_json\":\"{\\u0022command\\u0022:\\u0022ec\"");
+        body.Should().Contain("\"partial_json\":\"ho hi\\u0022}\"");
+        body.Should().Contain("\"stop_reason\":\"tool_use\"");
+        body.Should().Contain("event: content_block_stop");
         body.Should().Contain("event: message_stop");
-        body.Should().NotContain("StatusCode cannot be set because the response has already started");
     }
 
     [Fact]
