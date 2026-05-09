@@ -7,6 +7,22 @@ namespace AITool.Web.Services;
 // 代理协议桥接器，负责在客户端协议与目标站点协议不一致时转换请求和响应。
 public static class ProxyProtocolBridge
 {
+    public sealed class AnthropicOpenAiStreamState
+    {
+        public string MessageId { get; set; } = $"msg_{Guid.NewGuid():N}";
+        public int NextContentIndex { get; set; }
+        public int ThinkingIndex { get; set; } = -1;
+        public int TextIndex { get; set; } = -1;
+        public bool ThinkingClosed { get; set; }
+        public bool TextClosed { get; set; }
+        public bool HadAnyContent { get; set; }
+        public bool ReceivedDoneEvent { get; set; }
+        public int InputTokens { get; set; }
+        public int CachedTokens { get; set; }
+        public int OutputTokens { get; set; }
+        public string StopReason { get; set; } = "end_turn";
+    }
+
     public static string PrepareRequestBody(
         string clientProtocol,
         string targetProtocol,
@@ -55,6 +71,202 @@ public static class ProxyProtocolBridge
         return string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
             ? BuildAnthropicResponseFromOpenAi(responseBody, modelName, inputTokens, cachedTokens, outputTokens)
             : BuildOpenAiResponseFromAnthropic(responseBody, modelName, inputTokens, cachedTokens, outputTokens);
+    }
+
+    public static string BuildAnthropicStreamStart(string modelName, AnthropicOpenAiStreamState state)
+    {
+        var builder = new StringBuilder();
+        AppendSseEvent(builder, "message_start", new JsonObject
+        {
+            ["type"] = "message_start",
+            ["message"] = new JsonObject
+            {
+                ["id"] = state.MessageId,
+                ["type"] = "message",
+                ["role"] = "assistant",
+                ["model"] = modelName,
+                ["usage"] = new JsonObject
+                {
+                    ["input_tokens"] = 0,
+                    ["cache_creation_input_tokens"] = 0,
+                    ["cache_read_input_tokens"] = 0,
+                    ["output_tokens"] = 0
+                },
+                ["content"] = new JsonArray()
+            }
+        });
+        return builder.ToString();
+    }
+
+    public static string ConvertOpenAiStreamChunkToAnthropic(string jsonText, AnthropicOpenAiStreamState state)
+    {
+        var builder = new StringBuilder();
+
+        try
+        {
+            using var document = JsonDocument.Parse(jsonText);
+            var root = document.RootElement;
+
+            if (root.TryGetProperty("usage", out var usage))
+            {
+                var extracted = ExtractUsageFromElement(usage, "OpenAI");
+                if (extracted.InputTokens > 0)
+                {
+                    state.InputTokens = extracted.InputTokens;
+                }
+
+                if (extracted.CachedTokens >= 0)
+                {
+                    state.CachedTokens = extracted.CachedTokens;
+                }
+
+                if (extracted.OutputTokens > 0)
+                {
+                    state.OutputTokens = extracted.OutputTokens;
+                }
+            }
+
+            if (!root.TryGetProperty("choices", out var choices) ||
+                choices.ValueKind != JsonValueKind.Array ||
+                choices.GetArrayLength() == 0)
+            {
+                return builder.ToString();
+            }
+
+            var choice = choices[0];
+            if (choice.TryGetProperty("finish_reason", out var finishReason) && finishReason.ValueKind == JsonValueKind.String)
+            {
+                state.StopReason = MapOpenAiFinishReason(finishReason.GetString());
+            }
+
+            if (!choice.TryGetProperty("delta", out var delta))
+            {
+                return builder.ToString();
+            }
+
+            var reasoningText = ExtractReasoningFromElement(delta);
+            if (reasoningText.Length > 0)
+            {
+                state.HadAnyContent = true;
+                if (state.ThinkingIndex < 0)
+                {
+                    state.ThinkingIndex = state.NextContentIndex++;
+                    AppendSseEvent(builder, "content_block_start", new JsonObject
+                    {
+                        ["type"] = "content_block_start",
+                        ["index"] = state.ThinkingIndex,
+                        ["content_block"] = new JsonObject
+                        {
+                            ["type"] = "thinking",
+                            ["thinking"] = ""
+                        }
+                    });
+                }
+
+                AppendSseEvent(builder, "content_block_delta", new JsonObject
+                {
+                    ["type"] = "content_block_delta",
+                    ["index"] = state.ThinkingIndex,
+                    ["delta"] = new JsonObject
+                    {
+                        ["type"] = "thinking_delta",
+                        ["thinking"] = reasoningText
+                    }
+                });
+            }
+
+            var contentText = ExtractDeltaContent(delta);
+            if (contentText is not null)
+            {
+                state.HadAnyContent = true;
+                if (state.ThinkingIndex >= 0 && !state.ThinkingClosed)
+                {
+                    AppendSseEvent(builder, "content_block_stop", new JsonObject
+                    {
+                        ["type"] = "content_block_stop",
+                        ["index"] = state.ThinkingIndex
+                    });
+                    state.ThinkingClosed = true;
+                }
+
+                if (state.TextIndex < 0)
+                {
+                    state.TextIndex = state.NextContentIndex++;
+                    AppendSseEvent(builder, "content_block_start", new JsonObject
+                    {
+                        ["type"] = "content_block_start",
+                        ["index"] = state.TextIndex,
+                        ["content_block"] = new JsonObject
+                        {
+                            ["type"] = "text",
+                            ["text"] = ""
+                        }
+                    });
+                }
+
+                AppendSseEvent(builder, "content_block_delta", new JsonObject
+                {
+                    ["type"] = "content_block_delta",
+                    ["index"] = state.TextIndex,
+                    ["delta"] = new JsonObject
+                    {
+                        ["type"] = "text_delta",
+                        ["text"] = contentText
+                    }
+                });
+            }
+        }
+        catch
+        {
+        }
+
+        return builder.ToString();
+    }
+
+    public static string CompleteAnthropicStream(AnthropicOpenAiStreamState state)
+    {
+        var builder = new StringBuilder();
+
+        if (state.ThinkingIndex >= 0 && !state.ThinkingClosed)
+        {
+            AppendSseEvent(builder, "content_block_stop", new JsonObject
+            {
+                ["type"] = "content_block_stop",
+                ["index"] = state.ThinkingIndex
+            });
+            state.ThinkingClosed = true;
+        }
+
+        if (state.TextIndex >= 0 && !state.TextClosed)
+        {
+            AppendSseEvent(builder, "content_block_stop", new JsonObject
+            {
+                ["type"] = "content_block_stop",
+                ["index"] = state.TextIndex
+            });
+            state.TextClosed = true;
+        }
+
+        AppendSseEvent(builder, "message_delta", new JsonObject
+        {
+            ["type"] = "message_delta",
+            ["usage"] = new JsonObject
+            {
+                ["input_tokens"] = state.InputTokens,
+                ["cache_creation_input_tokens"] = 0,
+                ["cache_read_input_tokens"] = state.CachedTokens,
+                ["output_tokens"] = state.OutputTokens
+            },
+            ["delta"] = new JsonObject
+            {
+                ["stop_reason"] = state.StopReason
+            }
+        });
+        AppendSseEvent(builder, "message_stop", new JsonObject
+        {
+            ["type"] = "message_stop"
+        });
+        return builder.ToString();
     }
 
     // 跨协议转到 OpenAI 站点时，把 Anthropic messages 请求映射成 chat completions。
@@ -177,6 +389,7 @@ public static class ProxyProtocolBridge
             ["usage"] = new JsonObject
             {
                 ["input_tokens"] = inputTokens,
+                ["cache_creation_input_tokens"] = 0,
                 ["cache_read_input_tokens"] = cachedTokens,
                 ["output_tokens"] = outputTokens
             }
@@ -243,16 +456,21 @@ public static class ProxyProtocolBridge
                 ["model"] = modelName,
                 ["usage"] = new JsonObject
                 {
-                    ["input_tokens"] = inputTokens
-                }
+                    ["input_tokens"] = Math.Max(inputTokens - cachedTokens, 0),
+                    ["cache_creation_input_tokens"] = 0,
+                    ["cache_read_input_tokens"] = cachedTokens,
+                    ["output_tokens"] = 0
+                },
+                ["content"] = new JsonArray()
             }
         });
 
         var contentIndex = 0;
-        if (!string.IsNullOrWhiteSpace(reasoningText))
+        if (reasoningText.Length > 0)
         {
             AppendSseEvent(builder, "content_block_start", new JsonObject
             {
+                ["type"] = "content_block_start",
                 ["index"] = contentIndex,
                 ["content_block"] = new JsonObject
                 {
@@ -262,6 +480,7 @@ public static class ProxyProtocolBridge
             });
             AppendSseEvent(builder, "content_block_delta", new JsonObject
             {
+                ["type"] = "content_block_delta",
                 ["index"] = contentIndex,
                 ["delta"] = new JsonObject
                 {
@@ -271,15 +490,16 @@ public static class ProxyProtocolBridge
             });
             AppendSseEvent(builder, "content_block_stop", new JsonObject
             {
+                ["type"] = "content_block_stop",
                 ["index"] = contentIndex
             });
-            contentIndex++;
         }
 
-        if (!string.IsNullOrWhiteSpace(contentText))
+        if (contentText is not null)
         {
             AppendSseEvent(builder, "content_block_start", new JsonObject
             {
+                ["type"] = "content_block_start",
                 ["index"] = contentIndex,
                 ["content_block"] = new JsonObject
                 {
@@ -289,6 +509,7 @@ public static class ProxyProtocolBridge
             });
             AppendSseEvent(builder, "content_block_delta", new JsonObject
             {
+                ["type"] = "content_block_delta",
                 ["index"] = contentIndex,
                 ["delta"] = new JsonObject
                 {
@@ -298,20 +519,24 @@ public static class ProxyProtocolBridge
             });
             AppendSseEvent(builder, "content_block_stop", new JsonObject
             {
+                ["type"] = "content_block_stop",
                 ["index"] = contentIndex
             });
         }
 
         AppendSseEvent(builder, "message_delta", new JsonObject
         {
+            ["type"] = "message_delta",
+            ["usage"] = new JsonObject
+            {
+                ["input_tokens"] = inputTokens,
+                ["cache_creation_input_tokens"] = 0,
+                ["cache_read_input_tokens"] = cachedTokens,
+                ["output_tokens"] = outputTokens
+            },
             ["delta"] = new JsonObject
             {
                 ["stop_reason"] = "end_turn"
-            },
-            ["usage"] = new JsonObject
-            {
-                ["output_tokens"] = outputTokens,
-                ["cache_read_input_tokens"] = cachedTokens
             }
         });
         AppendSseEvent(builder, "message_stop", new JsonObject
@@ -328,7 +553,7 @@ public static class ProxyProtocolBridge
         var (contentText, reasoningText) = ExtractAnthropicStreamingText(responseBody);
         var builder = new StringBuilder();
 
-        if (!string.IsNullOrWhiteSpace(reasoningText))
+        if (reasoningText.Length > 0)
         {
             AppendOpenAiChunk(builder, modelName, new JsonObject
             {
@@ -336,7 +561,7 @@ public static class ProxyProtocolBridge
             });
         }
 
-        if (!string.IsNullOrWhiteSpace(contentText))
+        if (contentText is not null)
         {
             AppendOpenAiChunk(builder, modelName, new JsonObject
             {
@@ -388,6 +613,47 @@ public static class ProxyProtocolBridge
             }
         }.ToJsonString());
         builder.Append("\n\n");
+    }
+
+    public static string EnsureAnthropicStreamClosed(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
+    {
+        var normalized = responseBody.Replace("\r\n", "\n");
+        if (normalized.Contains("event: message_stop\n", StringComparison.OrdinalIgnoreCase))
+        {
+            return responseBody;
+        }
+
+        var builder = new StringBuilder(responseBody);
+        if (builder.Length > 0 && !responseBody.EndsWith("\n\n", StringComparison.Ordinal))
+        {
+            if (!responseBody.EndsWith("\n", StringComparison.Ordinal))
+            {
+                builder.Append('\n');
+            }
+
+            builder.Append('\n');
+        }
+
+        AppendSseEvent(builder, "message_delta", new JsonObject
+        {
+            ["type"] = "message_delta",
+            ["usage"] = new JsonObject
+            {
+                ["input_tokens"] = inputTokens,
+                ["cache_creation_input_tokens"] = 0,
+                ["cache_read_input_tokens"] = cachedTokens,
+                ["output_tokens"] = outputTokens
+            },
+            ["delta"] = new JsonObject
+            {
+                ["stop_reason"] = "end_turn"
+            }
+        });
+        AppendSseEvent(builder, "message_stop", new JsonObject
+        {
+            ["type"] = "message_stop"
+        });
+        return builder.ToString();
     }
 
     private static void AppendSseEvent(StringBuilder builder, string eventName, JsonObject payload)
@@ -494,10 +760,11 @@ public static class ProxyProtocolBridge
         }
     }
 
-    private static (string ContentText, string ReasoningText) ExtractOpenAiStreamingText(string responseBody)
+    private static (string? ContentText, string ReasoningText) ExtractOpenAiStreamingText(string responseBody)
     {
         var textBuilder = new StringBuilder();
         var reasoningBuilder = new StringBuilder();
+        var sawContentDelta = false;
 
         foreach (var rawLine in responseBody.Split('\n'))
         {
@@ -524,7 +791,13 @@ public static class ProxyProtocolBridge
                 }
 
                 var delta = choices[0].TryGetProperty("delta", out var deltaElement) ? deltaElement : default;
-                AppendIfNotEmpty(textBuilder, ExtractDeltaContent(delta));
+                var content = ExtractDeltaContent(delta);
+                if (content is not null)
+                {
+                    sawContentDelta = true;
+                    textBuilder.Append(content);
+                }
+
                 AppendIfNotEmpty(reasoningBuilder, ExtractReasoningFromElement(delta));
             }
             catch
@@ -532,15 +805,16 @@ public static class ProxyProtocolBridge
             }
         }
 
-        return (textBuilder.ToString(), reasoningBuilder.ToString());
+        return (sawContentDelta ? textBuilder.ToString() : null, reasoningBuilder.ToString());
     }
 
-    private static (string ContentText, string ReasoningText) ExtractAnthropicStreamingText(string responseBody)
+    private static (string? ContentText, string ReasoningText) ExtractAnthropicStreamingText(string responseBody)
     {
         var textBuilder = new StringBuilder();
         var reasoningBuilder = new StringBuilder();
         var currentEvent = string.Empty;
         var dataLines = new List<string>();
+        var sawContentDelta = false;
 
         foreach (var rawLine in responseBody.Split('\n'))
         {
@@ -562,20 +836,20 @@ public static class ProxyProtocolBridge
                 continue;
             }
 
-            ProcessAnthropicSseBlock(currentEvent, dataLines, textBuilder, reasoningBuilder);
+            ProcessAnthropicSseBlock(currentEvent, dataLines, textBuilder, reasoningBuilder, ref sawContentDelta);
             currentEvent = string.Empty;
             dataLines.Clear();
         }
 
         if (dataLines.Count > 0)
         {
-            ProcessAnthropicSseBlock(currentEvent, dataLines, textBuilder, reasoningBuilder);
+            ProcessAnthropicSseBlock(currentEvent, dataLines, textBuilder, reasoningBuilder, ref sawContentDelta);
         }
 
-        return (textBuilder.ToString(), reasoningBuilder.ToString());
+        return (sawContentDelta ? textBuilder.ToString() : null, reasoningBuilder.ToString());
     }
 
-    private static void ProcessAnthropicSseBlock(string eventName, List<string> dataLines, StringBuilder textBuilder, StringBuilder reasoningBuilder)
+    private static void ProcessAnthropicSseBlock(string eventName, List<string> dataLines, StringBuilder textBuilder, StringBuilder reasoningBuilder, ref bool sawContentDelta)
     {
         var data = string.Join("\n", dataLines);
         if (data == "[DONE]")
@@ -601,7 +875,12 @@ public static class ProxyProtocolBridge
 
             if (string.Equals(eventName, "content_block_delta", StringComparison.OrdinalIgnoreCase))
             {
-                AppendIfNotEmpty(textBuilder, ExtractElementText(delta, "text", "content"));
+                var text = ExtractElementText(delta, "text", "content");
+                if (text is not null)
+                {
+                    sawContentDelta = true;
+                    textBuilder.Append(text);
+                }
             }
         }
         catch
@@ -656,22 +935,22 @@ public static class ProxyProtocolBridge
 
         if (element.TryGetProperty("reasoning", out var reasoning))
         {
-            return ExtractElementText(reasoning, "text", "content", "summary_text", "reasoning");
+            return ExtractElementText(reasoning, "text", "content", "summary_text", "reasoning") ?? string.Empty;
         }
 
         if (element.TryGetProperty("thinking", out var thinking))
         {
-            return ExtractElementText(thinking, "text", "content", "thinking");
+            return ExtractElementText(thinking, "text", "content", "thinking") ?? string.Empty;
         }
 
         return string.Empty;
     }
 
-    private static string ExtractDeltaContent(JsonElement delta)
+    private static string? ExtractDeltaContent(JsonElement delta)
     {
         if (delta.ValueKind == JsonValueKind.Undefined)
         {
-            return string.Empty;
+            return null;
         }
 
         if (delta.TryGetProperty("content", out var contentElement) && contentElement.ValueKind == JsonValueKind.String)
@@ -679,10 +958,50 @@ public static class ProxyProtocolBridge
             return contentElement.GetString() ?? string.Empty;
         }
 
-        return string.Empty;
+        return null;
     }
 
-    private static string ExtractElementText(JsonElement element, params string[] propertyNames)
+    private static string MapOpenAiFinishReason(string? finishReason)
+    {
+        return finishReason?.ToLowerInvariant() switch
+        {
+            "length" => "max_tokens",
+            "tool_calls" => "tool_use",
+            "content_filter" => "stop_sequence",
+            _ => "end_turn"
+        };
+    }
+
+    private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
+    {
+        if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
+            var cached = 0;
+            if (usage.TryGetProperty("cache_read_input_tokens", out var readCache))
+            {
+                cached += readCache.GetInt32();
+            }
+
+            if (usage.TryGetProperty("cache_creation_input_tokens", out var createCache))
+            {
+                cached += createCache.GetInt32();
+            }
+
+            var output = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
+            return (input, cached, output);
+        }
+
+        var prompt = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
+        var promptDetails = usage.TryGetProperty("prompt_tokens_details", out var ptd) ? ptd : default;
+        var cachedTokens = promptDetails.ValueKind == JsonValueKind.Object && promptDetails.TryGetProperty("cached_tokens", out var ct)
+            ? ct.GetInt32()
+            : 0;
+        var completion = usage.TryGetProperty("completion_tokens", out var completionTokens) ? completionTokens.GetInt32() : 0;
+        return (prompt, cachedTokens, completion);
+    }
+
+    private static string? ExtractElementText(JsonElement element, params string[] propertyNames)
     {
         foreach (var propertyName in propertyNames)
         {
@@ -701,13 +1020,17 @@ public static class ProxyProtocolBridge
                 var parts = new List<string>();
                 foreach (var item in propertyValue.EnumerateArray())
                 {
-                    AppendIfNotEmpty(parts, ExtractElementText(item, "text", "content", "thinking"));
+                    var text = ExtractElementText(item, "text", "content", "thinking");
+                    if (text is not null)
+                    {
+                        parts.Add(text);
+                    }
                 }
                 return string.Join("\n", parts);
             }
         }
 
-        return string.Empty;
+        return null;
     }
 
     private static string ExtractTextFromNode(JsonNode? node)

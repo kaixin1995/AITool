@@ -484,4 +484,19 @@ internal sealed class FakeProxyForwardService : IProxyForwardService
             OutputTokens = 2
         });
     }
+
+    public async Task<ProxyForwardResult> ForwardStreamingAsync(
+        ProxyForwardRequest request,
+        Func<string, CancellationToken, Task> onSseDataAsync,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await ForwardAsync(request, cancellationToken);
+        foreach (var line in result.ResponseBody.Replace("\r\n", "\n").Split('\n'))
+        {
+            await onSseDataAsync(line, cancellationToken);
+        }
+
+        result.IsStreaming = true;
+        return result;
+    }
 }

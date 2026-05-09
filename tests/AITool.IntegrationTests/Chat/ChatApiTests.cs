@@ -221,6 +221,21 @@ internal sealed class ChatFakeProxyForwardService : IProxyForwardService
             OutputTokens = 4
         });
     }
+
+    public async Task<ProxyForwardResult> ForwardStreamingAsync(
+        ProxyForwardRequest request,
+        Func<string, CancellationToken, Task> onSseDataAsync,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await ForwardAsync(request, cancellationToken);
+        foreach (var line in result.ResponseBody.Replace("\r\n", "\n").Split('\n'))
+        {
+            await onSseDataAsync(line, cancellationToken);
+        }
+
+        result.IsStreaming = true;
+        return result;
+    }
 }
 
 internal sealed class ChatFakeHttpClientFactory : IHttpClientFactory

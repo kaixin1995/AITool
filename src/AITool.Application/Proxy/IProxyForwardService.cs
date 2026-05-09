@@ -1,5 +1,7 @@
 namespace AITool.Application.Proxy;
 
+using System.Diagnostics.CodeAnalysis;
+
 // 代理转发请求参数
 public sealed class ProxyForwardRequest
 {
@@ -61,6 +63,9 @@ public sealed class ProxyForwardResult
     // 是否为流式请求
     public bool IsStreaming { get; set; }
 
+    // 是否已收到上游首个流式数据块
+    public bool HasStartedStreaming { get; set; }
+
     // 是否发生流式异常中断
     public bool IsStreamInterrupted { get; set; }
 
@@ -82,4 +87,10 @@ public interface IProxyForwardService
 {
     // 根据协议类型将请求转发到目标站点
     Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default);
+
+    // 流式请求时逐段回调上游 SSE 数据，供控制器实时透传或转换。
+    Task<ProxyForwardResult> ForwardStreamingAsync(
+        ProxyForwardRequest request,
+        Func<string, CancellationToken, Task> onSseDataAsync,
+        CancellationToken cancellationToken = default);
 }

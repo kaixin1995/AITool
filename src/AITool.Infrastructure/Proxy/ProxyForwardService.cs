@@ -61,7 +61,7 @@ public sealed class ProxyForwardService : IProxyForwardService
 
                 if (isStreaming)
                 {
-                    return await ProcessStreamingResponseAsync(response, stopwatch, request, isStreaming, cancellationToken);
+                    return await ProcessStreamingResponseAsync(response, stopwatch, request, isStreaming, null, cancellationToken);
                 }
 
                 var responseBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
@@ -136,9 +136,99 @@ public sealed class ProxyForwardService : IProxyForwardService
         };
     }
 
-    // 逐行读取 SSE 流，追踪首字延迟并提取 Token 用量
+    // 直接把上游 SSE 数据块逐段交给调用方，供控制器做实时协议转换与下游刷新。
+    public async Task<ProxyForwardResult> ForwardStreamingAsync(
+        ProxyForwardRequest request,
+        Func<string, CancellationToken, Task> onSseDataAsync,
+        CancellationToken cancellationToken = default)
+    {
+        var attempts = Math.Max(0, request.RetryCount) + 1;
+        var requestBody = string.IsNullOrWhiteSpace(request.PreparedRequestBody)
+            ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
+            : request.PreparedRequestBody;
+
+        for (var attempt = 0; attempt < attempts; attempt++)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, request.RequestTimeoutSeconds)));
+            var stopwatch = Stopwatch.StartNew();
+
+            try
+            {
+                using var httpRequest = BuildRequestMessage(request, requestBody);
+                var response = await _httpClient.SendAsync(
+                    httpRequest,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    timeoutCts.Token);
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    stopwatch.Stop();
+                    var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+                    if (attempt == attempts - 1)
+                    {
+                        return new ProxyForwardResult
+                        {
+                            Success = false,
+                            StatusCode = (int)response.StatusCode,
+                            ResponseBody = errorBody,
+                            TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                            IsStreaming = true,
+                            ErrorMessage = errorBody
+                        };
+                    }
+
+                    continue;
+                }
+
+                return await ProcessStreamingResponseAsync(response, stopwatch, request, true, onSseDataAsync, cancellationToken);
+            }
+            catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
+            {
+                stopwatch.Stop();
+                if (attempt == attempts - 1)
+                {
+                    return new ProxyForwardResult
+                    {
+                        Success = false,
+                        TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                        IsStreaming = true,
+                        ErrorMessage = $"Request timed out after {request.RequestTimeoutSeconds}s: {ex.Message}"
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                if (attempt == attempts - 1)
+                {
+                    return new ProxyForwardResult
+                    {
+                        Success = false,
+                        TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                        IsStreaming = true,
+                        ErrorMessage = ex.Message
+                    };
+                }
+            }
+        }
+
+        return new ProxyForwardResult
+        {
+            Success = false,
+            IsStreaming = true,
+            ErrorMessage = "Unknown proxy forwarding error"
+        };
+    }
+
+    // 逐行读取 SSE 流，追踪首字延迟并提取 Token 用量。
     private async Task<ProxyForwardResult> ProcessStreamingResponseAsync(
-        HttpResponseMessage response, Stopwatch stopwatch, ProxyForwardRequest request, bool isStreaming, CancellationToken cancellationToken)
+        HttpResponseMessage response,
+        Stopwatch stopwatch,
+        ProxyForwardRequest request,
+        bool isStreaming,
+        Func<string, CancellationToken, Task>? onSseDataAsync,
+        CancellationToken cancellationToken)
     {
         var totalDurationMs = 0;
         var firstTokenLatencyMs = 0;
@@ -160,6 +250,11 @@ public sealed class ProxyForwardService : IProxyForwardService
                 if (line == null) break;
 
                 sb.AppendLine(line);
+
+                if (onSseDataAsync is not null)
+                {
+                    await onSseDataAsync(line, cancellationToken);
+                }
 
                 // 跳过空行和注释行
                 if (string.IsNullOrWhiteSpace(line) || line.StartsWith(':')) continue;
@@ -225,6 +320,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 CachedTokens = cachedTokens,
                 OutputTokens = outputTokens,
                 IsStreaming = isStreaming,
+                HasStartedStreaming = true,
                 IsStreamInterrupted = true,
                 FirstTokenLatencyMs = firstTokenLatencyMs,
                 StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
@@ -245,6 +341,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             CachedTokens = cachedTokens,
             OutputTokens = outputTokens,
             IsStreaming = isStreaming,
+            HasStartedStreaming = hasFirstContent,
             IsStreamInterrupted = hasFirstContent && !receivedDoneEvent,
             FirstTokenLatencyMs = firstTokenLatencyMs,
             StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),

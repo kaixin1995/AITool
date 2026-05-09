@@ -150,6 +150,92 @@ public sealed class DeveloperInvocationsPageTests
         payload.Should().Contain("successAttemptCount");
         payload.Should().Contain("debug-upstream-model-2");
     }
+
+    [Fact]
+    public async Task Get_list_returns_anthropic_stream_payload_with_typed_events_when_feature_is_enabled()
+    {
+        var fakeForwardService = new DeveloperInvocationsFakeProxyForwardService
+        {
+            Result = new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                IsStreaming = true,
+                ResponseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"!\"}}],\"usage\":{\"prompt_tokens\":10,\"prompt_tokens_details\":{\"cached_tokens\":2},\"completion_tokens\":3}}\n\ndata: [DONE]\n\n",
+                InputTokens = 10,
+                CachedTokens = 2,
+                OutputTokens = 3,
+                TotalDurationMs = 50
+            }
+        };
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, fakeForwardService);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"debug-model\",\"max_tokens\":64,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"stream hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "debug-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var payload = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        payload.Should().Contain("event: message_start");
+        payload.Should().Contain("\"type\":\"message_start\"");
+        payload.Should().Contain("event: content_block_start");
+        payload.Should().Contain("\"type\":\"content_block_start\"");
+        payload.Should().Contain("event: content_block_delta");
+        payload.Should().Contain("\"type\":\"content_block_delta\"");
+        payload.Should().Contain("event: content_block_stop");
+        payload.Should().Contain("\"type\":\"content_block_stop\"");
+        payload.Should().Contain("event: message_delta");
+        payload.Should().Contain("\"type\":\"message_delta\"");
+        payload.Should().Contain("event: message_stop");
+        payload.Should().Contain("\"type\":\"message_stop\"");
+        payload.Should().Contain("\"content\":[]");
+        payload.Should().Contain("\"cache_creation_input_tokens\":0");
+    }
+
+    [Fact]
+    public async Task Get_anthropic_stream_appends_closing_events_when_upstream_done_is_missing()
+    {
+        var fakeForwardService = new DeveloperInvocationsFakeProxyForwardService
+        {
+            Result = new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                IsStreaming = true,
+                HasStartedStreaming = true,
+                IsStreamInterrupted = true,
+                ResponseBody = "data: {\"choices\":[{\"delta\":{\"content\":\"Partial\"}}]}\n\n",
+                InputTokens = 8,
+                CachedTokens = 1,
+                OutputTokens = 2,
+                TotalDurationMs = 80,
+                ErrorMessage = "stream interrupted before DONE"
+            }
+        };
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, fakeForwardService);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"debug-model\",\"max_tokens\":64,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"stream hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "debug-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var payload = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        payload.Should().Contain("event: message_delta");
+        payload.Should().Contain("event: message_stop");
+        payload.Should().Contain("\"type\":\"message_stop\"");
+    }
 }
 internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplicationFactory<Program>
 {
@@ -286,5 +372,19 @@ internal sealed class DeveloperInvocationsFakeProxyForwardService : IProxyForwar
         }
 
         return Task.FromResult(Result);
+    }
+
+    public async Task<ProxyForwardResult> ForwardStreamingAsync(
+        ProxyForwardRequest request,
+        Func<string, CancellationToken, Task> onSseDataAsync,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await ForwardAsync(request, cancellationToken);
+        foreach (var line in result.ResponseBody.Replace("\r\n", "\n").Split('\n'))
+        {
+            await onSseDataAsync(line, cancellationToken);
+        }
+
+        return result;
     }
 }

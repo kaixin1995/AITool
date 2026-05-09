@@ -111,6 +111,78 @@ public sealed class AnthropicProxyControllerTests
     }
 
     [Fact]
+    public async Task Post_messages_preserves_whitespace_only_stream_chunks_when_bridging_openai_stream()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            OpenAiStreamingLines =
+            [
+                "data: {\"choices\":[{\"delta\":{\"content\":\"```bash\"}}]}",
+                string.Empty,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"\\n\"}}]}",
+                string.Empty,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"curl test\"}}],\"usage\":{\"prompt_tokens\":6,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens\":2}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "OpenAI");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("\\u0060\\u0060\\u0060bash");
+        body.Should().Contain("\"text\":\"\\n\"");
+        body.Should().Contain("curl test");
+        body.Should().NotContain("bashcurl");
+    }
+
+    [Fact]
+    public async Task Post_messages_preserves_space_only_stream_chunks_when_bridging_openai_stream()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            OpenAiStreamingLines =
+            [
+                "data: {\"choices\":[{\"delta\":{\"content\":\"A\"}}]}",
+                string.Empty,
+                "data: {\"choices\":[{\"delta\":{\"content\":\" \"}}]}",
+                string.Empty,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"B\"}}],\"usage\":{\"prompt_tokens\":6,\"prompt_tokens_details\":{\"cached_tokens\":0},\"completion_tokens\":2}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "OpenAI");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("\"text\":\" \"");
+        body.Should().NotContain("\"text\":\"AB\"");
+    }
+
+    [Fact]
     public async Task Post_messages_returns_unauthorized_after_access_key_is_disabled()
     {
         var fakeForwardService = new AnthropicFakeProxyForwardService();
@@ -284,6 +356,7 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
 internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
 {
     public List<ProxyForwardRequest> Requests { get; } = [];
+    public List<string>? OpenAiStreamingLines { get; set; }
 
     // 使用固定成功响应，验证 Anthropic 入口会把真实运行时参数传递到转发层。
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
@@ -324,5 +397,65 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
             InputTokens = 6,
             OutputTokens = 9
         });
+    }
+
+    public async Task<ProxyForwardResult> ForwardStreamingAsync(
+        ProxyForwardRequest request,
+        Func<string, CancellationToken, Task> onSseDataAsync,
+        CancellationToken cancellationToken = default)
+    {
+        Requests.Add(new ProxyForwardRequest
+        {
+            TargetBaseUrl = request.TargetBaseUrl,
+            TargetApiKey = request.TargetApiKey,
+            ProtocolType = request.ProtocolType,
+            TargetModelName = request.TargetModelName,
+            RequestBody = request.RequestBody,
+            PreparedRequestBody = request.PreparedRequestBody,
+            EnableStreaming = request.EnableStreaming,
+            RequestTimeoutSeconds = request.RequestTimeoutSeconds,
+            RetryCount = request.RetryCount,
+            TargetPath = request.TargetPath,
+            ForwardHeaders = new Dictionary<string, string>(request.ForwardHeaders, StringComparer.OrdinalIgnoreCase)
+        });
+
+        if (string.Equals(request.ProtocolType, "OpenAI", StringComparison.Ordinal))
+        {
+            var lines = OpenAiStreamingLines ??
+            [
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}",
+                string.Empty,
+                "data: {\"choices\":[{\"delta\":{\"content\":\"!\"}}],\"usage\":{\"prompt_tokens\":6,\"prompt_tokens_details\":{\"cached_tokens\":2},\"completion_tokens\":9}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ];
+
+            foreach (var line in lines)
+            {
+                await onSseDataAsync(line, cancellationToken);
+            }
+
+            return new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = string.Join("\n", lines),
+                InputTokens = 6,
+                CachedTokens = 2,
+                OutputTokens = 9,
+                IsStreaming = true,
+                HasStartedStreaming = true
+            };
+        }
+
+        var result = await ForwardAsync(request, cancellationToken);
+        foreach (var line in result.ResponseBody.Replace("\r\n", "\n").Split('\n'))
+        {
+            await onSseDataAsync(line, cancellationToken);
+        }
+
+        result.IsStreaming = true;
+        return result;
     }
 }

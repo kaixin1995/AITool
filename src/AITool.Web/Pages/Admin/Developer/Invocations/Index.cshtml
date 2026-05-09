@@ -407,6 +407,17 @@
         padding: 16px;
     }
 
+    .trace-error-stack {
+        display: grid;
+        gap: 12px;
+        min-width: 0;
+    }
+
+    .trace-code-panel {
+        min-width: 0;
+        overflow: hidden;
+    }
+
     .trace-info-panel {
         display: flex;
         flex-direction: column;
@@ -547,7 +558,7 @@
                         var attemptDurationText = attempt.totalDurationMs > 0 ? attempt.totalDurationMs + ' ms' : '-';
                         var attemptResponseBodyText = attempt.responseBody && attempt.responseBody.trim() ? attempt.responseBody : '-';
                         var attemptErrorBlock = attempt.errorMessage && attempt.errorMessage.trim()
-                            ? '<div><div class="trace-section-title trace-section-title-danger">尝试错误</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">' + escapeHtml(attempt.errorMessage) + '</pre></div>'
+                            ? '<div class="trace-error-stack"><div class="trace-section-title trace-section-title-danger">尝试错误</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">' + escapeHtml(attempt.errorMessage) + '</pre></div>'
                             : '';
 
                         return '' +
@@ -589,7 +600,7 @@
                 var durationText = entry.totalDurationMs > 0 ? entry.totalDurationMs + ' ms' : '-';
                 var responseBodyText = entry.responseBody && entry.responseBody.trim() ? entry.responseBody : '-';
                 var errorBlock = entry.errorMessage && entry.errorMessage.trim()
-                    ? '<div><div class="trace-section-title trace-section-title-danger">错误信息</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">' + escapeHtml(entry.errorMessage) + '</pre></div>'
+                    ? '<div class="trace-error-stack"><div class="trace-section-title trace-section-title-danger">错误信息</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">' + escapeHtml(entry.errorMessage) + '</pre></div>'
                     : '';
                 var attemptsSummary = '成功 ' + (entry.successAttemptCount || 0) + ' / 失败 ' + (entry.failedAttemptCount || 0) + ' / 等待 ' + (entry.pendingAttemptCount || 0);
 

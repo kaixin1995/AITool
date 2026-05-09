@@ -134,7 +134,7 @@ else
 
                                         @if (!string.IsNullOrWhiteSpace(attempt.ErrorMessage))
                                         {
-                                            <div>
+                                            <div class="trace-error-stack">
                                                 <div class="trace-section-title trace-section-title-danger">尝试错误</div>
                                                 <pre class="trace-pre trace-code-panel trace-code-panel-danger">@attempt.ErrorMessage</pre>
                                             </div>
@@ -157,7 +157,7 @@ else
 
                     @if (!string.IsNullOrWhiteSpace(entry.ErrorMessage))
                     {
-                        <div>
+                        <div class="trace-error-stack">
                             <div class="trace-section-title trace-section-title-danger">错误信息</div>
                             <pre class="trace-pre trace-code-panel trace-code-panel-danger">@entry.ErrorMessage</pre>
                         </div>
