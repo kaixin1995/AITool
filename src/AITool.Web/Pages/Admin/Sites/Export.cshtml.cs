@@ -32,7 +32,8 @@ public class ExportModel : PageModel
             Name = s.Name,
             BaseUrl = s.BaseUrl,
             ApiKey = s.ApiKey,
-            ProtocolType = s.ProtocolType
+            SupportsOpenAi = s.SupportsOpenAi,
+            SupportsAnthropic = s.SupportsAnthropic
         }).ToList();
 
         /* 导出用的匿名对象，仅包含必要字段 */
@@ -42,7 +43,8 @@ public class ExportModel : PageModel
             name = s.Name,
             baseUrl = s.BaseUrl,
             apiKey = s.ApiKey,
-            protocolType = s.ProtocolType
+            supportsOpenAi = s.SupportsOpenAi,
+            supportsAnthropic = s.SupportsAnthropic
         });
 
         JsonData = JsonSerializer.Serialize(exportData, new JsonSerializerOptions
@@ -61,5 +63,6 @@ public class SiteExportItem
     public string Name { get; set; } = string.Empty;
     public string BaseUrl { get; set; } = string.Empty;
     public string ApiKey { get; set; } = string.Empty;
-    public string ProtocolType { get; set; } = "OpenAI";
+    public bool SupportsOpenAi { get; set; } = true;
+    public bool SupportsAnthropic { get; set; }
 }

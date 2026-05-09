@@ -36,11 +36,18 @@
         </div>
 
         <div class="mb-3">
-            <label asp-for="Command.ProtocolType" class="form-label">协议类型</label>
-            <select asp-for="Command.ProtocolType" class="form-select">
-                <option value="OpenAI">OpenAI</option>
-                <option value="Anthropic">Anthropic</option>
-            </select>
+            <label class="form-label">支持协议</label>
+            <div class="d-flex flex-column gap-2">
+                <div class="form-check">
+                    <input asp-for="Command.SupportsOpenAi" class="form-check-input" type="checkbox" />
+                    <label asp-for="Command.SupportsOpenAi" class="form-check-label">支持 OpenAI</label>
+                </div>
+                <div class="form-check">
+                    <input asp-for="Command.SupportsAnthropic" class="form-check-input" type="checkbox" />
+                    <label asp-for="Command.SupportsAnthropic" class="form-check-label">支持 Anthropic</label>
+                </div>
+            </div>
+            <span asp-validation-for="Command.SupportsOpenAi" class="text-danger"></span>
         </div>
 
         <div class="mb-3 form-check">

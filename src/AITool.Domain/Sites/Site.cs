@@ -15,8 +15,14 @@ public sealed class Site
     // 站点访问密钥
     public string ApiKey { get; set; } = string.Empty;
 
-    // 协议类型，当前用于区分 OpenAI 兼容站点
+    // 协议类型，当前用于区分默认站点协议。
     public string ProtocolType { get; set; } = "OpenAI";
+
+    // 标记站点是否支持 OpenAI 原协议直连。
+    public bool SupportsOpenAi { get; set; } = true;
+
+    // 标记站点是否支持 Anthropic 原协议直连。
+    public bool SupportsAnthropic { get; set; }
 
     // 是否启用该站点
     public bool IsEnabled { get; set; } = true;

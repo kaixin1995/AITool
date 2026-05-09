@@ -52,16 +52,17 @@ public sealed class ModelHealthRequestService
             };
         }
 
+        var protocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic);
         var runtimeSettings = await _dbContext.SystemRuntimeSettings
             .AsNoTracking()
             .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken)
             ?? new AITool.Domain.Operations.SystemRuntimeSettings();
-        var requestBody = BuildProbeRequestBody(site.ProtocolType, mapping.RemoteModelName, BuildRandomMathPrompt());
+        var requestBody = BuildProbeRequestBody(protocolType, mapping.RemoteModelName, BuildRandomMathPrompt());
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = site.BaseUrl,
             TargetApiKey = site.ApiKey,
-            ProtocolType = site.ProtocolType,
+            ProtocolType = protocolType,
             TargetModelName = mapping.RemoteModelName,
             RequestBody = requestBody,
             PreparedRequestBody = requestBody,
@@ -78,7 +79,7 @@ public sealed class ModelHealthRequestService
         {
             RequestId = Guid.NewGuid(),
             AccessKeyId = Guid.Empty,
-            ProtocolType = site.ProtocolType,
+            ProtocolType = protocolType,
             RequestModel = model.ModelName,
             AttemptedModel = mapping.RemoteModelName,
             TargetSiteId = site.Id,
@@ -125,6 +126,12 @@ public sealed class ModelHealthRequestService
             2 => $"请直接回答结果，不要解释：{left} * {right} = ?",
             _ => $"请直接回答结果，不要解释：{left * right} / {right} = ?"
         };
+    }
+
+    // 按站点支持能力推导一次普通非流式聊天请求协议。
+    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
+    {
+        return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
     }
 
     // 按站点协议构建一次普通非流式聊天请求。

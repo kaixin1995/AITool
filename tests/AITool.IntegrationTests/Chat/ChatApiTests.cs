@@ -74,9 +74,9 @@ public sealed class ChatApiTests
         body.Should().Contain("event: token");
         body.Should().Contain("stream-ok");
         body.Should().Contain("event: meta");
-        body.Should().Contain("\"Success\":true");
-        body.Should().Contain("\"InputTokens\":4");
-        body.Should().Contain("\"OutputTokens\":6");
+        body.Should().Contain("\"success\":true");
+        body.Should().Contain("\"inputTokens\":4");
+        body.Should().Contain("\"outputTokens\":6");
         body.Should().Contain("event: done");
     }
 }
@@ -138,6 +138,8 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
             BaseUrl = "https://anthropic.example.com",
             ApiKey = "anthropic-key",
             ProtocolType = "Anthropic",
+            SupportsOpenAi = false,
+            SupportsAnthropic = true,
             IsEnabled = true
         });
 

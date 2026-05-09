@@ -97,6 +97,8 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
             BaseUrl = "https://anthropic-only.example.com",
             ApiKey = "anthropic-only-key",
             ProtocolType = "Anthropic",
+            SupportsOpenAi = false,
+            SupportsAnthropic = true,
             IsEnabled = true
         });
 

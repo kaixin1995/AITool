@@ -222,7 +222,7 @@ public sealed class AnthropicProxyControllerTests
     }
 
     [Fact]
-    public async Task Post_messages_falls_back_to_next_route_when_openai_stream_fails_before_first_chunk()
+    public async Task Post_messages_prefers_anthropic_route_before_openai_bridge_when_available()
     {
         var fakeForwardService = new AnthropicFallbackStreamProxyForwardService();
         await using var factory = new AnthropicProxyFallbackWebApplicationFactory(fakeForwardService);
@@ -239,7 +239,7 @@ public sealed class AnthropicProxyControllerTests
         var body = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
-        fakeForwardService.StreamAttemptCount.Should().Be(1);
+        fakeForwardService.StreamAttemptCount.Should().Be(0);
         fakeForwardService.NonStreamAttemptCount.Should().Be(1);
         body.Should().Contain("anthropic-fallback-ok");
     }
@@ -366,6 +366,8 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
             BaseUrl = "https://anthropic-proxy.example.com",
             ApiKey = "site-anthropic-key",
             ProtocolType = _siteProtocol,
+            SupportsOpenAi = string.Equals(_siteProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase),
+            SupportsAnthropic = string.Equals(_siteProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase),
             IsEnabled = true
         });
 
@@ -464,6 +466,8 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
                 BaseUrl = "https://openai-first.example.com",
                 ApiKey = "site-openai-key",
                 ProtocolType = "OpenAI",
+                SupportsOpenAi = true,
+                SupportsAnthropic = false,
                 IsEnabled = true
             },
             new Site
@@ -473,6 +477,8 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
                 BaseUrl = "https://anthropic-second.example.com",
                 ApiKey = "site-anthropic-key",
                 ProtocolType = "Anthropic",
+                SupportsOpenAi = false,
+                SupportsAnthropic = true,
                 IsEnabled = true
             });
 

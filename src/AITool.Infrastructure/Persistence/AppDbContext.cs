@@ -56,6 +56,8 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.BaseUrl).IsRequired().HasMaxLength(500);
             entity.Property(e => e.ApiKey).IsRequired().HasMaxLength(500);
             entity.Property(e => e.ProtocolType).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.SupportsOpenAi).IsRequired();
+            entity.Property(e => e.SupportsAnthropic).IsRequired();
         });
 
         // 模型库实体配置

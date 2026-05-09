@@ -136,6 +136,8 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
             BaseUrl = "https://route-cache.example.com",
             ApiKey = "route-key",
             ProtocolType = "OpenAI",
+            SupportsOpenAi = true,
+            SupportsAnthropic = true,
             IsEnabled = true
         });
         db.ProxyRouteRules.Add(new ProxyRouteRule
@@ -161,6 +163,84 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         cache.InvalidateRouteTargets();
 
         (await cache.GetRouteTargetsForModelAsync("OpenAI", "cache-route-model", CancellationToken.None)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Get_route_targets_for_model_prioritizes_matching_protocol_before_bridge_targets()
+    {
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+
+        await db.Database.EnsureDeletedAsync();
+        await db.Database.EnsureCreatedAsync();
+
+        var openAiSiteId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        var anthropicSiteId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+
+        db.Sites.AddRange(
+            new Site
+            {
+                Id = openAiSiteId,
+                Name = "OpenAI Only",
+                BaseUrl = "https://openai-only.example.com",
+                ApiKey = "openai-key",
+                ProtocolType = "OpenAI",
+                SupportsOpenAi = true,
+                SupportsAnthropic = false,
+                IsEnabled = true
+            },
+            new Site
+            {
+                Id = anthropicSiteId,
+                Name = "Anthropic Native",
+                BaseUrl = "https://anthropic-native.example.com",
+                ApiKey = "anthropic-key",
+                ProtocolType = "Anthropic",
+                SupportsOpenAi = false,
+                SupportsAnthropic = true,
+                IsEnabled = true
+            });
+
+        db.ProxyRouteRules.AddRange(
+            new ProxyRouteRule
+            {
+                Id = Guid.Parse("66666666-6666-6666-6666-666666666666"),
+                ExternalModelName = "dual-route-model",
+                UpstreamModelName = "openai-upstream",
+                SiteId = openAiSiteId,
+                SiteModelName = "openai-model",
+                Priority = 0,
+                ModelPriority = 0,
+                InstancePriority = 0,
+                IsEnabled = true
+            },
+            new ProxyRouteRule
+            {
+                Id = Guid.Parse("77777777-7777-7777-7777-777777777777"),
+                ExternalModelName = "dual-route-model",
+                UpstreamModelName = "anthropic-upstream",
+                SiteId = anthropicSiteId,
+                SiteModelName = "anthropic-model",
+                Priority = 1,
+                ModelPriority = 1,
+                InstancePriority = 1,
+                IsEnabled = true
+            });
+
+        await db.SaveChangesAsync();
+
+        var anthropicRoutes = await cache.GetRouteTargetsForModelAsync("Anthropic", "dual-route-model", CancellationToken.None);
+        anthropicRoutes.Should().HaveCount(2);
+        anthropicRoutes[0].ResolveProtocolForClient("Anthropic").Should().Be("Anthropic");
+        anthropicRoutes[0].SiteId.Should().Be(anthropicSiteId);
+        anthropicRoutes[1].ResolveProtocolForClient("Anthropic").Should().Be("OpenAI");
+
+        var openAiRoutes = await cache.GetRouteTargetsForModelAsync("OpenAI", "dual-route-model", CancellationToken.None);
+        openAiRoutes.Should().HaveCount(2);
+        openAiRoutes[0].ResolveProtocolForClient("OpenAI").Should().Be("OpenAI");
+        openAiRoutes[0].SiteId.Should().Be(openAiSiteId);
+        openAiRoutes[1].ResolveProtocolForClient("OpenAI").Should().Be("Anthropic");
     }
 
     public async ValueTask DisposeAsync()

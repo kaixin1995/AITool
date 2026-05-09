@@ -332,6 +332,8 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
             BaseUrl = "https://invalid-primary.example.com",
             ApiKey = "upstream-key-1",
             ProtocolType = "OpenAI",
+            SupportsOpenAi = true,
+            SupportsAnthropic = false,
             IsEnabled = true
         };
         var secondSite = new Site
@@ -341,6 +343,8 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
             BaseUrl = "https://invalid-fallback.example.com",
             ApiKey = "upstream-key-2",
             ProtocolType = "OpenAI",
+            SupportsOpenAi = true,
+            SupportsAnthropic = false,
             IsEnabled = true
         };
         var thirdSite = new Site
@@ -350,6 +354,8 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
             BaseUrl = "https://invalid-replica.example.com",
             ApiKey = "upstream-key-3",
             ProtocolType = "OpenAI",
+            SupportsOpenAi = true,
+            SupportsAnthropic = false,
             IsEnabled = true
         };
 

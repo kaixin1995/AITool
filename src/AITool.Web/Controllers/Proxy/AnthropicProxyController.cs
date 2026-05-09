@@ -106,8 +106,8 @@ public sealed class AnthropicProxyController : ControllerBase
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
         var traceId = TryCreateDeveloperTrace(runtimeSettings, requestSource, "Anthropic", modelName, requestBody);
 
-        // 获取已经和站点信息合并后的候选路由，避免 N+1 查询站点。
-        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(modelName, cancellationToken);
+        // 获取已经和站点信息合并后的候选路由，优先尝试支持 Anthropic 原协议的站点。
+        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("Anthropic", modelName, cancellationToken);
 
         if (allRoutes.Count == 0)
         {
@@ -127,9 +127,10 @@ public sealed class AnthropicProxyController : ControllerBase
 
             attemptIndex++;
             var traceAttemptId = AddDeveloperTraceAttempt(traceId, route);
+            var actualProtocolType = route.ResolveProtocolForClient("Anthropic");
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "Anthropic",
-                route.ProtocolType,
+                actualProtocolType,
                 requestBody,
                 route.SiteModelName,
                 enableStreaming);
@@ -137,7 +138,7 @@ public sealed class AnthropicProxyController : ControllerBase
             {
                 TargetBaseUrl = route.BaseUrl,
                 TargetApiKey = route.ApiKey,
-                ProtocolType = route.ProtocolType,
+                ProtocolType = actualProtocolType,
                 TargetModelName = route.SiteModelName,
                 RequestBody = requestBody,
                 PreparedRequestBody = preparedRequestBody,
@@ -147,7 +148,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 ForwardHeaders = forwardHeaders
             };
 
-            if (enableStreaming && string.Equals(route.ProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+            if (enableStreaming && string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
             {
                 var streamOutcome = await ForwardOpenAiStreamAsAnthropicAsync(
                     forwardRequest,
@@ -244,7 +245,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 // 成功时清除该路由的连续失败计数
                 _circuitStore.Succeed(route.RouteId);
                 if (result.IsStreaming &&
-                    string.Equals(route.ProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
                     HttpContext.Response.HasStarted)
                 {
                     return new EmptyResult();
@@ -252,14 +253,14 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 var responseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
                     "Anthropic",
-                    route.ProtocolType,
+                    actualProtocolType,
                     result.ResponseBody,
                     result.IsStreaming,
                     modelName,
                     result.InputTokens,
                     result.CachedTokens,
                     result.OutputTokens);
-                if (result.IsStreaming && result.HasStartedStreaming && result.IsStreamInterrupted && string.Equals(route.ProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+                if (result.IsStreaming && result.HasStartedStreaming && result.IsStreamInterrupted && string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
                 {
                     responseBody = ProxyProtocolBridge.EnsureAnthropicStreamClosed(responseBody, modelName, result.InputTokens, result.CachedTokens, result.OutputTokens);
                 }

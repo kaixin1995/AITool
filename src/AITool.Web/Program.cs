@@ -96,6 +96,8 @@ using (var scope = app.Services.CreateScope())
         conn.Open();
         using var cmd = conn.CreateCommand();
 
+        EnsureColumn(cmd, "Sites", "SupportsOpenAi", "ALTER TABLE Sites ADD COLUMN SupportsOpenAi INTEGER NOT NULL DEFAULT 1");
+        EnsureColumn(cmd, "Sites", "SupportsAnthropic", "ALTER TABLE Sites ADD COLUMN SupportsAnthropic INTEGER NOT NULL DEFAULT 0");
         EnsureColumn(cmd, "SiteModelMappings", "IsEnabled", "ALTER TABLE SiteModelMappings ADD COLUMN IsEnabled INTEGER NOT NULL DEFAULT 1");
         EnsureColumn(cmd, "ProxyAccessKeys", "PlainKey", "ALTER TABLE ProxyAccessKeys ADD COLUMN PlainKey TEXT NOT NULL DEFAULT ''");
         EnsureColumn(cmd, "ProxyRouteRules", "UpstreamModelName", "ALTER TABLE ProxyRouteRules ADD COLUMN UpstreamModelName TEXT NOT NULL DEFAULT ''");

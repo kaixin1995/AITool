@@ -157,20 +157,32 @@ public class CreateModel : PageModel
     // 提交站点创建
     public async Task<IActionResult> OnPostAsync(CancellationToken cancellationToken)
     {
+        if (!Command.SupportsOpenAi && !Command.SupportsAnthropic)
+        {
+            ModelState.AddModelError("Command.SupportsOpenAi", "至少选择一种支持协议");
+        }
+
         if (!ModelState.IsValid) return Page();
 
-        // 将命令转为实体并保存
+        // 站点不再由页面选择默认协议，这里仅保留兼容字段的推导值。
         _dbContext.Sites.Add(new Site
         {
             Name = Command.Name,
             BaseUrl = Command.BaseUrl,
             ApiKey = Command.ApiKey,
-            ProtocolType = Command.ProtocolType,
+            ProtocolType = ResolveSiteProtocolType(Command.SupportsOpenAi, Command.SupportsAnthropic),
+            SupportsOpenAi = Command.SupportsOpenAi,
+            SupportsAnthropic = Command.SupportsAnthropic,
             IsEnabled = Command.IsEnabled
         });
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         _metadataCache?.InvalidateRouteTargets();
         return RedirectToPage("./Index");
+    }
+
+    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
+    {
+        return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";
     }
 }

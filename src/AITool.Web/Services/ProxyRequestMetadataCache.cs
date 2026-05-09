@@ -76,8 +76,9 @@ public sealed class ProxyRequestMetadataCache
     // 读取指定协议下可用的模型列表，供 /v1/models 等接口复用。
     public async Task<IReadOnlyList<string>> GetEnabledModelNamesAsync(string protocolType, CancellationToken cancellationToken)
     {
-        var routes = await GetRouteTargetsAsync(protocolType, cancellationToken);
+        var routes = await GetRouteTargetsAsync(cancellationToken);
         return routes
+            .Where(x => x.SupportsProtocol(protocolType))
             .Select(x => x.ExternalModelName)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(x => x, StringComparer.Ordinal)
@@ -101,10 +102,11 @@ public sealed class ProxyRequestMetadataCache
         string externalModelName,
         CancellationToken cancellationToken)
     {
-        var routes = await GetRouteTargetsAsync(protocolType, cancellationToken);
+        var routes = await GetRouteTargetsAsync(cancellationToken);
         return routes
             .Where(x => string.Equals(x.ExternalModelName, externalModelName, StringComparison.Ordinal))
-            .OrderBy(x => x.ModelPriority)
+            .OrderBy(x => x.GetProtocolPriority(protocolType))
+            .ThenBy(x => x.ModelPriority)
             .ThenBy(x => x.InstancePriority)
             .ThenBy(x => x.Priority)
             .ToList();
@@ -230,44 +232,6 @@ public sealed class ProxyRequestMetadataCache
             ?? [];
     }
 
-    private async Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsAsync(string protocolType, CancellationToken cancellationToken)
-    {
-        var cacheKey = RouteTargetsCacheKeyPrefix + protocolType;
-        return await _memoryCache.GetOrCreateAsync(
-                cacheKey,
-                async entry =>
-                {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
-
-                    using var scope = _scopeFactory.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-
-                    return await (
-                            from route in dbContext.ProxyRouteRules.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on route.SiteId equals site.Id
-                            where route.IsEnabled
-                                && site.IsEnabled
-                                && site.ProtocolType == protocolType
-                            select new CachedProxyRouteTarget
-                            {
-                                RouteId = route.Id,
-                                SiteId = site.Id,
-                                SiteName = site.Name,
-                                ProtocolType = site.ProtocolType,
-                                ExternalModelName = route.ExternalModelName,
-                                UpstreamModelName = route.UpstreamModelName,
-                                SiteModelName = route.SiteModelName,
-                                BaseUrl = site.BaseUrl,
-                                ApiKey = site.ApiKey,
-                                ModelPriority = route.ModelPriority,
-                                InstancePriority = route.InstancePriority,
-                                Priority = route.Priority
-                            })
-                        .ToListAsync(cancellationToken);
-                })
-            ?? [];
-    }
-
     private async Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsAsync(CancellationToken cancellationToken)
     {
         return await _memoryCache.GetOrCreateAsync(
@@ -288,7 +252,9 @@ public sealed class ProxyRequestMetadataCache
                                 RouteId = route.Id,
                                 SiteId = site.Id,
                                 SiteName = site.Name,
-                                ProtocolType = site.ProtocolType,
+                                ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
+                                SupportsOpenAi = site.SupportsOpenAi,
+                                SupportsAnthropic = site.SupportsAnthropic,
                                 ExternalModelName = route.ExternalModelName,
                                 UpstreamModelName = route.UpstreamModelName,
                                 SiteModelName = route.SiteModelName,
@@ -352,7 +318,8 @@ public sealed class ProxyRequestMetadataCache
                                 model.ModelName,
                                 SiteId = site.Id,
                                 SiteName = site.Name,
-                                site.ProtocolType,
+                                site.SupportsOpenAi,
+                                site.SupportsAnthropic,
                                 site.BaseUrl,
                                 site.ApiKey,
                                 SiteModelName = mapping.RemoteModelName
@@ -373,7 +340,7 @@ public sealed class ProxyRequestMetadataCache
                                 ModelName = first.ModelName,
                                 SiteId = first.SiteId,
                                 SiteName = first.SiteName,
-                                ProtocolType = first.ProtocolType,
+                                ProtocolType = ResolveSiteProtocolType(first.SupportsOpenAi, first.SupportsAnthropic),
                                 BaseUrl = first.BaseUrl,
                                 ApiKey = first.ApiKey,
                                 SiteModelName = first.SiteModelName
@@ -384,6 +351,11 @@ public sealed class ProxyRequestMetadataCache
                     return mappings.ToDictionary(x => x.ModelId, x => x);
                 })
             ?? [];
+    }
+
+    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
+    {
+        return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
     }
 }
 
@@ -412,6 +384,8 @@ public sealed class CachedProxyRouteTarget
     public Guid SiteId { get; set; }
     public string SiteName { get; set; } = string.Empty;
     public string ProtocolType { get; set; } = string.Empty;
+    public bool SupportsOpenAi { get; set; }
+    public bool SupportsAnthropic { get; set; }
     public string ExternalModelName { get; set; } = string.Empty;
     public string UpstreamModelName { get; set; } = string.Empty;
     public string SiteModelName { get; set; } = string.Empty;
@@ -420,6 +394,33 @@ public sealed class CachedProxyRouteTarget
     public int ModelPriority { get; set; }
     public int InstancePriority { get; set; }
     public int Priority { get; set; }
+
+    public bool SupportsProtocol(string protocolType)
+    {
+        if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            return SupportsAnthropic;
+        }
+
+        return SupportsOpenAi;
+    }
+
+    public int GetProtocolPriority(string protocolType)
+    {
+        return SupportsProtocol(protocolType) ? 0 : 1;
+    }
+
+    public string ResolveProtocolForClient(string clientProtocol)
+    {
+        if (SupportsProtocol(clientProtocol))
+        {
+            return clientProtocol;
+        }
+
+        return string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
+            ? "OpenAI"
+            : "Anthropic";
+    }
 }
 
 public sealed class CachedChatModel

@@ -37,7 +37,7 @@
                     </th>
                     <th>名称</th>
                     <th>根地址</th>
-                    <th>协议类型</th>
+                    <th>支持协议</th>
                     <th>状态</th>
                     <th>创建时间</th>
                     <th>操作</th>
@@ -63,7 +63,16 @@
                         </td>
                         <td><strong>@site.Name</strong></td>
                         <td><code>@site.BaseUrl</code></td>
-                        <td><span class="badge bg-info">@site.ProtocolType</span></td>
+                        <td>
+                            @if (site.SupportsOpenAi)
+                            {
+                                <span class="badge bg-primary me-1">OpenAI</span>
+                            }
+                            @if (site.SupportsAnthropic)
+                            {
+                                <span class="badge bg-secondary">Anthropic</span>
+                            }
+                        </td>
                         <td>
                             <span class="badge bg-@(site.IsEnabled ? "success" : "secondary")">
                                 @(site.IsEnabled ? "启用" : "禁用")

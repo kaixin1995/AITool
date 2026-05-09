@@ -14,7 +14,8 @@ public class ImportSiteItem
     public string Name { get; set; } = string.Empty;
     public string BaseUrl { get; set; } = string.Empty;
     public string ApiKey { get; set; } = string.Empty;
-    public string ProtocolType { get; set; } = "OpenAI";
+    public bool SupportsOpenAi { get; set; } = true;
+    public bool SupportsAnthropic { get; set; }
 }
 
 // 站点批量导入页模型
@@ -76,7 +77,9 @@ public class ImportModel : PageModel
                     Name = item.Name,
                     BaseUrl = item.BaseUrl,
                     ApiKey = item.ApiKey,
-                    ProtocolType = item.ProtocolType,
+                    ProtocolType = ResolveSiteProtocolType(item.SupportsOpenAi, item.SupportsAnthropic),
+                    SupportsOpenAi = item.SupportsOpenAi,
+                    SupportsAnthropic = item.SupportsAnthropic,
                     IsEnabled = true
                 });
                 created++;
@@ -93,5 +96,10 @@ public class ImportModel : PageModel
             StatusSuccess = false;
         }
         return Page();
+    }
+
+    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
+    {
+        return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";
     }
 }

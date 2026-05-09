@@ -144,8 +144,8 @@ public sealed class OpenAiProxyController : ControllerBase
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
         var traceId = TryCreateDeveloperTrace(runtimeSettings, requestSource, "OpenAI", modelName, requestBody);
 
-        // 获取已经和站点信息合并后的候选路由，避免 N+1 查询站点。
-        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(modelName, cancellationToken);
+        // 获取已经和站点信息合并后的候选路由，优先尝试支持 OpenAI 原协议的站点。
+        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
 
         if (allRoutes.Count == 0)
         {
@@ -165,9 +165,10 @@ public sealed class OpenAiProxyController : ControllerBase
 
             attemptIndex++;
             var traceAttemptId = AddDeveloperTraceAttempt(traceId, route);
+            var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "OpenAI",
-                route.ProtocolType,
+                actualProtocolType,
                 requestBody,
                 route.SiteModelName,
                 enableStreaming);
@@ -175,7 +176,7 @@ public sealed class OpenAiProxyController : ControllerBase
             {
                 TargetBaseUrl = route.BaseUrl,
                 TargetApiKey = route.ApiKey,
-                ProtocolType = route.ProtocolType,
+                ProtocolType = actualProtocolType,
                 TargetModelName = route.SiteModelName,
                 RequestBody = requestBody,
                 PreparedRequestBody = preparedRequestBody,
@@ -217,7 +218,7 @@ public sealed class OpenAiProxyController : ControllerBase
                 _circuitStore.Succeed(route.RouteId);
                 var responseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
                     "OpenAI",
-                    route.ProtocolType,
+                    actualProtocolType,
                     result.ResponseBody,
                     result.IsStreaming,
                     modelName,

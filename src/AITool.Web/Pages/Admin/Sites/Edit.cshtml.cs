@@ -32,10 +32,13 @@ public class EditModel : PageModel
     public string BaseUrl { get; set; } = string.Empty;
 
     [BindProperty]
-    public string ApiKey { get; set; } = string.Empty;
+    public string? ApiKey { get; set; }
 
     [BindProperty]
-    public string ProtocolType { get; set; } = "OpenAI";
+    public bool SupportsOpenAi { get; set; } = true;
+
+    [BindProperty]
+    public bool SupportsAnthropic { get; set; }
 
     [BindProperty]
     public bool IsEnabled { get; set; }
@@ -52,8 +55,9 @@ public class EditModel : PageModel
 
         Name = site.Name;
         BaseUrl = site.BaseUrl;
-        ApiKey = site.ApiKey;
-        ProtocolType = site.ProtocolType;
+        ApiKey = null;
+        SupportsOpenAi = site.SupportsOpenAi;
+        SupportsAnthropic = site.SupportsAnthropic;
         IsEnabled = site.IsEnabled;
 
         return Page();
@@ -62,6 +66,11 @@ public class EditModel : PageModel
     // 提交站点更新
     public async Task<IActionResult> OnPostAsync(Guid id, CancellationToken cancellationToken)
     {
+        if (!SupportsOpenAi && !SupportsAnthropic)
+        {
+            ModelState.AddModelError(nameof(SupportsOpenAi), "至少选择一种支持协议");
+        }
+
         if (!ModelState.IsValid) return Page();
 
         try
@@ -71,8 +80,14 @@ public class EditModel : PageModel
 
             site.Name = Name;
             site.BaseUrl = BaseUrl;
-            site.ApiKey = ApiKey;
-            site.ProtocolType = ProtocolType;
+            // 编辑时留空表示继续使用原有密钥。
+            if (!string.IsNullOrWhiteSpace(ApiKey))
+            {
+                site.ApiKey = ApiKey;
+            }
+            site.SupportsOpenAi = SupportsOpenAi;
+            site.SupportsAnthropic = SupportsAnthropic;
+            site.ProtocolType = ResolveSiteProtocolType(SupportsOpenAi, SupportsAnthropic);
             site.IsEnabled = IsEnabled;
 
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -87,5 +102,10 @@ public class EditModel : PageModel
         }
 
         return Page();
+    }
+
+    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
+    {
+        return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";
     }
 }
