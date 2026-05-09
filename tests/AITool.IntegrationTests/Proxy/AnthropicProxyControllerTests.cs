@@ -222,6 +222,70 @@ public sealed class AnthropicProxyControllerTests
     }
 
     [Fact]
+    public async Task Post_messages_falls_back_to_next_route_when_openai_stream_fails_before_first_chunk()
+    {
+        var fakeForwardService = new AnthropicFallbackStreamProxyForwardService();
+        await using var factory = new AnthropicProxyFallbackWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.StreamAttemptCount.Should().Be(1);
+        fakeForwardService.NonStreamAttemptCount.Should().Be(1);
+        body.Should().Contain("anthropic-fallback-ok");
+    }
+
+    [Fact]
+    public async Task Post_messages_stops_fallback_when_openai_stream_fails_after_first_chunk()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            OpenAiStreamingLines =
+            [
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}",
+                string.Empty
+            ],
+            StreamingResultFactory = _ => new ProxyForwardResult
+            {
+                Success = false,
+                StatusCode = 502,
+                ErrorMessage = "stream interrupted after first chunk",
+                IsStreaming = true,
+                HasStartedStreaming = true,
+                IsStreamInterrupted = true,
+                TotalDurationMs = 12
+            }
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "OpenAI");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("event: message_start");
+        body.Should().Contain("event: content_block_delta");
+        body.Should().Contain("event: message_stop");
+        body.Should().NotContain("StatusCode cannot be set because the response has already started");
+    }
+
+    [Fact]
     public async Task Post_messages_bridges_to_openai_route_when_only_openai_site_exists()
     {
         var fakeForwardService = new AnthropicFakeProxyForwardService();
@@ -353,10 +417,131 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
     }
 }
 
+internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicationFactory<Program>
+{
+    private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-anthropic-proxy-fallback-{Guid.NewGuid():N}.db");
+    private readonly AnthropicFallbackStreamProxyForwardService _fakeForwardService;
+
+    public AnthropicProxyFallbackWebApplicationFactory(AnthropicFallbackStreamProxyForwardService fakeForwardService)
+    {
+        _fakeForwardService = fakeForwardService;
+    }
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Testing");
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<DbContextOptions<AppDbContext>>();
+            services.RemoveAll<AppDbContext>();
+            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            services.RemoveAll<IProxyForwardService>();
+            services.AddSingleton<IProxyForwardService>(_fakeForwardService);
+        });
+    }
+
+    protected override void ConfigureClient(HttpClient client)
+    {
+        base.ConfigureClient(client);
+        SeedAsync().GetAwaiter().GetResult();
+    }
+
+    private async Task SeedAsync()
+    {
+        await using var scope = Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Database.EnsureDeletedAsync();
+        await db.Database.EnsureCreatedAsync();
+
+        var openAiSiteId = Guid.Parse("71717171-7171-7171-7171-717171717171");
+        var anthropicSiteId = Guid.Parse("72727272-7272-7272-7272-727272727272");
+        var accessKeyRaw = "anthropic-test-key";
+        var accessKeyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(accessKeyRaw)));
+
+        db.Sites.AddRange(
+            new Site
+            {
+                Id = openAiSiteId,
+                Name = "OpenAI First",
+                BaseUrl = "https://openai-first.example.com",
+                ApiKey = "site-openai-key",
+                ProtocolType = "OpenAI",
+                IsEnabled = true
+            },
+            new Site
+            {
+                Id = anthropicSiteId,
+                Name = "Anthropic Second",
+                BaseUrl = "https://anthropic-second.example.com",
+                ApiKey = "site-anthropic-key",
+                ProtocolType = "Anthropic",
+                IsEnabled = true
+            });
+
+        db.ProxyAccessKeys.Add(new ProxyAccessKey
+        {
+            Id = Guid.Parse("99999999-9999-9999-9999-999999999999"),
+            KeyName = "anthropic",
+            PlainKey = accessKeyRaw,
+            AccessKeyHash = accessKeyHash,
+            MaskedValue = "sk-***ropic",
+            IsEnabled = true
+        });
+
+        db.ProxyRouteEntries.Add(new ProxyRouteEntry
+        {
+            EntryName = "claude-proxy"
+        });
+
+        db.ProxyRouteRules.AddRange(
+            new ProxyRouteRule
+            {
+                Id = Guid.Parse("73737373-7373-7373-7373-737373737373"),
+                ExternalModelName = "claude-proxy",
+                UpstreamModelName = "claude-openai-primary",
+                SiteId = openAiSiteId,
+                SiteModelName = "claude-openai-primary-real",
+                Priority = 0,
+                ModelPriority = 0,
+                InstancePriority = 0,
+                IsEnabled = true
+            },
+            new ProxyRouteRule
+            {
+                Id = Guid.Parse("74747474-7474-7474-7474-747474747474"),
+                ExternalModelName = "claude-proxy",
+                UpstreamModelName = "claude-anthropic-secondary",
+                SiteId = anthropicSiteId,
+                SiteModelName = "claude-anthropic-secondary-real",
+                Priority = 1,
+                ModelPriority = 1,
+                InstancePriority = 1,
+                IsEnabled = true
+            });
+
+        db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
+        {
+            Id = 1,
+            ProxyRequestTimeoutSeconds = 11,
+            ProxyRetryCount = 0,
+            DetectionRequestTimeoutSeconds = 60,
+            DetectionRetryCount = 0,
+            DetectionConcurrency = 1,
+            CircuitBreakerFailureThreshold = 5,
+            CircuitBreakerRecoveryMinutes = 2,
+            UsageLogRetentionDays = 7,
+            UsageLogAutoCleanupEnabled = true
+        });
+
+        await db.SaveChangesAsync();
+    }
+}
+
 internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
 {
     public List<ProxyForwardRequest> Requests { get; } = [];
     public List<string>? OpenAiStreamingLines { get; set; }
+    public Func<ProxyForwardRequest, ProxyForwardResult>? StreamingResultFactory { get; set; }
 
     // 使用固定成功响应，验证 Anthropic 入口会把真实运行时参数传递到转发层。
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
@@ -436,6 +621,19 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
                 await onSseDataAsync(line, cancellationToken);
             }
 
+            var streamingResult = StreamingResultFactory?.Invoke(request);
+            if (streamingResult is not null)
+            {
+                streamingResult.ResponseBody = string.IsNullOrWhiteSpace(streamingResult.ResponseBody)
+                    ? string.Join("\n", lines)
+                    : streamingResult.ResponseBody;
+                streamingResult.InputTokens = streamingResult.InputTokens == 0 ? 6 : streamingResult.InputTokens;
+                streamingResult.CachedTokens = streamingResult.CachedTokens;
+                streamingResult.OutputTokens = streamingResult.OutputTokens == 0 ? 9 : streamingResult.OutputTokens;
+                streamingResult.IsStreaming = true;
+                return streamingResult;
+            }
+
             return new ProxyForwardResult
             {
                 Success = true,
@@ -457,5 +655,42 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
 
         result.IsStreaming = true;
         return result;
+    }
+}
+
+internal sealed class AnthropicFallbackStreamProxyForwardService : IProxyForwardService
+{
+    public int StreamAttemptCount { get; private set; }
+    public int NonStreamAttemptCount { get; private set; }
+
+    public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
+    {
+        NonStreamAttemptCount++;
+        return Task.FromResult(new ProxyForwardResult
+        {
+            Success = true,
+            StatusCode = 200,
+            ResponseBody = "{\"content\":[{\"type\":\"text\",\"text\":\"anthropic-fallback-ok\"}],\"usage\":{\"input_tokens\":4,\"output_tokens\":6}}",
+            InputTokens = 4,
+            OutputTokens = 6,
+            IsStreaming = false
+        });
+    }
+
+    public Task<ProxyForwardResult> ForwardStreamingAsync(
+        ProxyForwardRequest request,
+        Func<string, CancellationToken, Task> onSseDataAsync,
+        CancellationToken cancellationToken = default)
+    {
+        StreamAttemptCount++;
+        return Task.FromResult(new ProxyForwardResult
+        {
+            Success = false,
+            StatusCode = 502,
+            ErrorMessage = "upstream failed before first chunk",
+            IsStreaming = true,
+            HasStartedStreaming = false,
+            TotalDurationMs = 5
+        });
     }
 }

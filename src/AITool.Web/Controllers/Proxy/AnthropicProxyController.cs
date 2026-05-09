@@ -12,6 +12,12 @@ namespace AITool.Web.Controllers.Proxy;
 [ApiController]
 public sealed class AnthropicProxyController : ControllerBase
 {
+    private sealed class StreamForwardOutcome
+    {
+        public ProxyForwardResult Result { get; init; } = new();
+        public bool CanFallback { get; init; }
+    }
+
     private readonly IProxyForwardService _forwardService;
     private readonly IUsageLogService _usageLogService;
     private readonly RouteCircuitStateStore _circuitStore;
@@ -141,15 +147,72 @@ public sealed class AnthropicProxyController : ControllerBase
                 ForwardHeaders = forwardHeaders
             };
 
-            var result = enableStreaming &&
-                string.Equals(route.ProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase)
-                ? await ForwardOpenAiStreamAsAnthropicAsync(
+            if (enableStreaming && string.Equals(route.ProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                var streamOutcome = await ForwardOpenAiStreamAsAnthropicAsync(
                     forwardRequest,
                     modelName,
                     traceId,
                     traceAttemptId,
-                    cancellationToken)
-                : await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+                    cancellationToken);
+                var streamResult = streamOutcome.Result;
+
+                await _usageLogService.LogAsync(new UsageLogEntry
+                {
+                    RequestId = requestId,
+                    AccessKeyId = accessKey.Id,
+                    ProtocolType = "Anthropic",
+                    RequestModel = modelName,
+                    AttemptedModel = route.UpstreamModelName,
+                    TargetSiteId = route.SiteId,
+                    Status = streamResult.Success ? "success" : "fail",
+                    Source = requestSource,
+                    RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
+                    AttemptIndex = attemptIndex,
+                    IsFinalResult = streamResult.Success,
+                    FallbackTriggered = !streamResult.Success,
+                    ErrorMessage = streamResult.Success ? string.Empty : (streamResult.ErrorMessage ?? string.Empty),
+                    InputTokens = streamResult.InputTokens,
+                    CachedTokens = streamResult.CachedTokens,
+                    OutputTokens = streamResult.OutputTokens,
+                    IsStreaming = streamResult.IsStreaming,
+                    IsStreamInterrupted = streamResult.IsStreamInterrupted,
+                    FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+                    StreamDurationMs = streamResult.StreamDurationMs,
+                    TotalDurationMs = streamResult.TotalDurationMs
+                }, cancellationToken);
+
+                if (streamResult.Success)
+                {
+                    _circuitStore.Succeed(route.RouteId);
+                    return new EmptyResult();
+                }
+
+                CompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                {
+                    Status = "fail",
+                    StatusCode = streamResult.StatusCode,
+                    ErrorMessage = streamResult.ErrorMessage ?? string.Empty,
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(streamResult.ResponseBody),
+                    ResponseContentType = "text/event-stream",
+                    IsStreaming = true,
+                    InputTokens = streamResult.InputTokens,
+                    CachedTokens = streamResult.CachedTokens,
+                    OutputTokens = streamResult.OutputTokens,
+                    TotalDurationMs = streamResult.TotalDurationMs
+                });
+
+                _circuitStore.Block(route.RouteId);
+                lastResult = streamResult;
+                if (!streamOutcome.CanFallback)
+                {
+                    return new EmptyResult();
+                }
+
+                continue;
+            }
+
+            var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
 
             await _usageLogService.LogAsync(new UsageLogEntry
             {
@@ -242,17 +305,20 @@ public sealed class AnthropicProxyController : ControllerBase
             new { error = new { type = "api_error", message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
     }
 
-    private async Task<ProxyForwardResult> ForwardOpenAiStreamAsAnthropicAsync(
+    private async Task<StreamForwardOutcome> ForwardOpenAiStreamAsAnthropicAsync(
         ProxyForwardRequest forwardRequest,
         string modelName,
         Guid? traceId,
         Guid traceAttemptId,
         CancellationToken cancellationToken)
     {
-        Response.StatusCode = 200;
-        Response.ContentType = "text/event-stream";
-        Response.Headers.CacheControl = "no-cache";
-        Response.Headers.Connection = "keep-alive";
+        if (!Response.HasStarted)
+        {
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
 
         var state = new ProxyProtocolBridge.AnthropicOpenAiStreamState();
         var responseBuilder = new StringBuilder();
@@ -271,12 +337,15 @@ public sealed class AnthropicProxyController : ControllerBase
             startedWriting = true;
         }
 
-        await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), cancellationToken);
-
         var result = await _forwardService.ForwardStreamingAsync(
             forwardRequest,
             async (line, token) =>
             {
+                if (!startedWriting)
+                {
+                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
+                }
+
                 if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
                 {
                     return;
@@ -306,32 +375,63 @@ public sealed class AnthropicProxyController : ControllerBase
                 result.ErrorMessage ??= state.HadAnyContent ? "stream interrupted before DONE" : result.ErrorMessage;
             }
 
+            if (startedWriting)
+            {
+                var closingChunk = ProxyProtocolBridge.CompleteAnthropicStream(state);
+                await WriteChunkAsync(closingChunk, cancellationToken);
+                result.ResponseBody = responseBuilder.ToString();
+            }
+
+            result.InputTokens = state.InputTokens;
+            result.CachedTokens = state.CachedTokens;
+            result.OutputTokens = state.OutputTokens;
+
+            if (startedWriting)
+            {
+                CompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                {
+                    Status = "success",
+                    StatusCode = result.StatusCode,
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
+                    ResponseContentType = "text/event-stream",
+                    IsStreaming = true,
+                    InputTokens = result.InputTokens,
+                    CachedTokens = result.CachedTokens,
+                    OutputTokens = result.OutputTokens,
+                    TotalDurationMs = result.TotalDurationMs
+                });
+            }
+
+            return new StreamForwardOutcome
+            {
+                Result = result,
+                CanFallback = false
+            };
+        }
+
+        if (startedWriting)
+        {
+            result.ResponseBody = responseBuilder.ToString();
             var closingChunk = ProxyProtocolBridge.CompleteAnthropicStream(state);
             await WriteChunkAsync(closingChunk, cancellationToken);
             result.ResponseBody = responseBuilder.ToString();
             result.InputTokens = state.InputTokens;
             result.CachedTokens = state.CachedTokens;
             result.OutputTokens = state.OutputTokens;
+            result.IsStreamInterrupted = true;
 
-            CompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+            return new StreamForwardOutcome
             {
-                Status = "success",
-                StatusCode = result.StatusCode,
-                ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
-                ResponseContentType = "text/event-stream",
-                IsStreaming = true,
-                InputTokens = result.InputTokens,
-                CachedTokens = result.CachedTokens,
-                OutputTokens = result.OutputTokens,
-                TotalDurationMs = result.TotalDurationMs
-            });
-        }
-        else if (startedWriting)
-        {
-            result.ResponseBody = responseBuilder.ToString();
+                Result = result,
+                CanFallback = false
+            };
         }
 
-        return result;
+        return new StreamForwardOutcome
+        {
+            Result = result,
+            CanFallback = true
+        };
     }
 
     // 优先使用自定义来源头，无法识别时再退回通用 proxy。
