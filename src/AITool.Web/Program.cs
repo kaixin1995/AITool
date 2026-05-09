@@ -19,12 +19,15 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using NLog;
 using NLog.Web;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.ClearProviders();
 builder.Host.UseNLog();
+
+var startupLogger = LogManager.GetLogger("Startup");
 
 var applicationVersion = "1.0";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
@@ -149,6 +152,12 @@ using (var scope = app.Services.CreateScope())
         TimeSpan.FromMinutes(settings.CircuitBreakerRecoveryMinutes),
         settings.CircuitBreakerFailureThreshold);
 }
+
+startupLogger.Info(
+    "系统启动完成。Version={Version}, Environment={Environment}, Port={Port}",
+    applicationVersion,
+    app.Environment.EnvironmentName,
+    serverPort);
 
 // 启用静态文件服务，提供 wwwroot 下的 CSS/JS 等资源。
 if (!app.Environment.IsEnvironment("Testing"))
