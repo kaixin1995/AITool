@@ -185,6 +185,76 @@ public sealed class ProxyForwardServiceTests
         result.InputTokens.Should().Be(3);
         result.OutputTokens.Should().Be(4);
     }
+    // Anthropic 原协议流在收到 message_stop 时应视为正常结束，不能误判为中断。
+    [Fact]
+    public async Task ForwardAsync_treats_anthropic_stream_with_message_stop_as_completed()
+    {
+        var handler = new SequenceHandler(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("event: message_start\n" +
+                                            "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12}}}\n\n" +
+                                            "event: content_block_delta\n" +
+                                            "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n" +
+                                            "event: message_delta\n" +
+                                            "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":3},\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n" +
+                                            "event: message_stop\n" +
+                                            "data: {\"type\":\"message_stop\"}\n\n")
+            });
+
+        var httpClient = new HttpClient(handler);
+        var service = new ProxyForwardService(httpClient);
+
+        var result = await service.ForwardAsync(new ProxyForwardRequest
+        {
+            TargetBaseUrl = "https://unit.test",
+            TargetApiKey = "token",
+            ProtocolType = "Anthropic",
+            TargetModelName = "claude-sonnet",
+            RequestBody = "{\"model\":\"chat-prod\",\"stream\":true}",
+            EnableStreaming = true,
+            RetryCount = 0,
+            RequestTimeoutSeconds = 5
+        });
+
+        result.Success.Should().BeTrue();
+        result.IsStreaming.Should().BeTrue();
+        result.IsStreamInterrupted.Should().BeFalse();
+        result.ErrorMessage.Should().BeNull();
+        result.InputTokens.Should().Be(12);
+        result.OutputTokens.Should().Be(3);
+    }
+
+    // OpenAI 原协议流缺少 DONE 时仍应保留中断标记，避免误吞真实异常。
+    [Fact]
+    public async Task ForwardAsync_keeps_openai_stream_without_done_as_interrupted()
+    {
+        var handler = new SequenceHandler(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+            });
+
+        var httpClient = new HttpClient(handler);
+        var service = new ProxyForwardService(httpClient);
+
+        var result = await service.ForwardAsync(new ProxyForwardRequest
+        {
+            TargetBaseUrl = "https://unit.test",
+            TargetApiKey = "token",
+            ProtocolType = "OpenAI",
+            TargetModelName = "gpt-5.5-a",
+            RequestBody = "{\"model\":\"chat-prod\",\"stream\":true}",
+            EnableStreaming = true,
+            RetryCount = 0,
+            RequestTimeoutSeconds = 5
+        });
+
+        result.Success.Should().BeTrue();
+        result.IsStreaming.Should().BeTrue();
+        result.IsStreamInterrupted.Should().BeTrue();
+        result.ErrorMessage.Should().Be("stream interrupted before normal completion");
+    }
 }
 
 public sealed class SequenceHandler : HttpMessageHandler

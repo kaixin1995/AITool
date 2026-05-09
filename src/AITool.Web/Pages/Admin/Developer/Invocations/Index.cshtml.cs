@@ -104,6 +104,7 @@ public sealed class IndexModel : PageModel
             UpdatedAtText = attempt.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
             AttemptedModel = attempt.AttemptedModel,
             UpstreamProtocolType = attempt.UpstreamProtocolType,
+            ForwardingMode = attempt.ForwardingMode,
             TargetSiteId = attempt.TargetSiteId,
             TargetSiteName = attempt.TargetSiteName,
             Status = attempt.Status,
@@ -204,6 +205,7 @@ public sealed class DeveloperInvocationTraceAttemptDto
     public string UpdatedAtText { get; set; } = string.Empty;
     public string AttemptedModel { get; set; } = string.Empty;
     public string UpstreamProtocolType { get; set; } = string.Empty;
+    public string ForwardingMode { get; set; } = string.Empty;
     public Guid? TargetSiteId { get; set; }
     public string TargetSiteName { get; set; } = string.Empty;
     public string SummarySite { get; set; } = string.Empty;

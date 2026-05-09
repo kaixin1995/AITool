@@ -109,7 +109,8 @@ else
                                             <div class="trace-title-group">
                                                 <span class="trace-status-pill trace-status-pill-@attemptStatusClass">@attemptStatusText</span>
                                                 <span class="trace-attempt-order">尝试 @(attemptIndex + 1)</span>
-                                                <span class="trace-source-pill">@(string.IsNullOrWhiteSpace(attempt.UpstreamProtocolType) ? "-" : attempt.UpstreamProtocolType)</span>
+                                                <span class="trace-protocol-pill">@(string.IsNullOrWhiteSpace(attempt.UpstreamProtocolType) ? "-" : attempt.UpstreamProtocolType)</span>
+                                                <span class="trace-source-pill">@GetForwardingModeText(attempt.ForwardingMode)</span>
                                             </div>
                                             <div class="trace-summary-time">@attempt.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</div>
                                         </div>
@@ -118,6 +119,10 @@ else
                                             <div class="trace-attempt-site">@attemptSummarySite</div>
                                         </div>
                                         <div class="trace-meta-grid trace-meta-grid-attempt">
+                                            <div class="trace-meta-chip">
+                                                <span class="trace-meta-label">转发方式</span>
+                                                <strong>@GetForwardingModeText(attempt.ForwardingMode)</strong>
+                                            </div>
                                             <div class="trace-meta-chip">
                                                 <span class="trace-meta-label">状态码</span>
                                                 <strong>@(attempt.StatusCode > 0 ? attempt.StatusCode : "-")</strong>
@@ -193,6 +198,16 @@ else
             "success" => "success",
             "pending" => "pending",
             _ => "danger"
+        };
+    }
+
+    private static string GetForwardingModeText(string forwardingMode)
+    {
+        return forwardingMode?.ToLowerInvariant() switch
+        {
+            "direct" => "直接透传",
+            "bridge" => "兼容中转",
+            _ => "未标记"
         };
     }
 

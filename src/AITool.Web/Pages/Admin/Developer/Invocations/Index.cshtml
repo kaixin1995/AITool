@@ -546,6 +546,17 @@
                 }
             }
 
+            function getForwardingModeText(forwardingMode) {
+                switch ((forwardingMode || '').toLowerCase()) {
+                    case 'direct':
+                        return '直接透传';
+                    case 'bridge':
+                        return '兼容中转';
+                    default:
+                        return '未标记';
+                }
+            }
+
             function renderAttempts(entry, index) {
                 if (!entry.attempts || entry.attempts.length === 0) {
                     return '';
@@ -567,7 +578,8 @@
                                     '<div class="trace-title-group">' +
                                         '<span class="trace-status-pill trace-status-pill-' + escapeHtml(attempt.statusClass) + '">' + escapeHtml(attempt.statusText) + '</span>' +
                                         '<span class="trace-attempt-order">尝试 ' + (attemptIndex + 1) + '</span>' +
-                                        '<span class="trace-source-pill">' + escapeHtml(attempt.upstreamProtocolType || '-') + '</span>' +
+                                        '<span class="trace-protocol-pill">' + escapeHtml(attempt.upstreamProtocolType || '-') + '</span>' +
+                                        '<span class="trace-source-pill">' + escapeHtml(getForwardingModeText(attempt.forwardingMode)) + '</span>' +
                                     '</div>' +
                                     '<div class="trace-summary-time">' + escapeHtml(attempt.createdAtText) + '</div>' +
                                 '</div>' +
@@ -576,6 +588,7 @@
                                     '<div class="trace-attempt-site">' + escapeHtml(attempt.summarySite) + '</div>' +
                                 '</div>' +
                                 '<div class="trace-meta-grid trace-meta-grid-attempt">' +
+                                    '<div class="trace-meta-chip"><span class="trace-meta-label">转发方式</span><strong>' + escapeHtml(getForwardingModeText(attempt.forwardingMode)) + '</strong></div>' +
                                     '<div class="trace-meta-chip"><span class="trace-meta-label">状态码</span><strong>' + escapeHtml(attemptStatusCodeText) + '</strong></div>' +
                                     '<div class="trace-meta-chip"><span class="trace-meta-label">总耗时</span><strong>' + escapeHtml(attemptDurationText) + '</strong></div>' +
                                     '<div class="trace-meta-chip"><span class="trace-meta-label">Token</span><strong>' + escapeHtml(attempt.inputTokens + ' / ' + attempt.cachedTokens + ' / ' + attempt.outputTokens) + '</strong></div>' +

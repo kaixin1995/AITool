@@ -149,6 +149,7 @@ public sealed class DeveloperInvocationsPageTests
         payload.Should().Contain("failedAttemptCount");
         payload.Should().Contain("successAttemptCount");
         payload.Should().Contain("debug-upstream-model-2");
+        payload.Should().Contain("forwardingMode":"direct");
     }
 
     [Fact]
@@ -235,6 +236,10 @@ public sealed class DeveloperInvocationsPageTests
         payload.Should().Contain("event: message_delta");
         payload.Should().Contain("event: message_stop");
         payload.Should().Contain("\"type\":\"message_stop\"");
+
+        var listResponse = await client.GetAsync("/Admin/Developer/Invocations?handler=List");
+        var listPayload = await listResponse.Content.ReadAsStringAsync();
+        listPayload.Should().Contain("\"forwardingMode\":\"bridge\"");
     }
 }
 internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplicationFactory<Program>
@@ -286,6 +291,8 @@ internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplication
             BaseUrl = "https://debug.example.com",
             ApiKey = "debug-site-key",
             ProtocolType = "OpenAI",
+            SupportsOpenAi = true,
+            SupportsAnthropic = true,
             IsEnabled = true
         });
 

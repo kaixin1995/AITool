@@ -237,6 +237,7 @@ public sealed class ProxyForwardService : IProxyForwardService
         var outputTokens = 0;
         var hasFirstContent = false;
         var receivedDoneEvent = false;
+        var receivedAnthropicMessageStop = false;
 
         var sb = new StringBuilder();
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
@@ -281,6 +282,13 @@ public sealed class ProxyForwardService : IProxyForwardService
                 {
                     using var doc = JsonDocument.Parse(jsonText);
                     var root = doc.RootElement;
+
+                    if (request.ProtocolType == "Anthropic"
+                        && root.TryGetProperty("type", out var eventType)
+                        && string.Equals(eventType.GetString(), "message_stop", StringComparison.OrdinalIgnoreCase))
+                    {
+                        receivedAnthropicMessageStop = true;
+                    }
 
                     if (root.TryGetProperty("usage", out var usage))
                     {
@@ -331,6 +339,9 @@ public sealed class ProxyForwardService : IProxyForwardService
 
         stopwatch.Stop();
         totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+        var streamCompletedNormally = request.ProtocolType == "Anthropic"
+            ? receivedAnthropicMessageStop
+            : receivedDoneEvent;
 
         return new ProxyForwardResult
         {
@@ -342,11 +353,11 @@ public sealed class ProxyForwardService : IProxyForwardService
             OutputTokens = outputTokens,
             IsStreaming = isStreaming,
             HasStartedStreaming = hasFirstContent,
-            IsStreamInterrupted = hasFirstContent && !receivedDoneEvent,
+            IsStreamInterrupted = hasFirstContent && !streamCompletedNormally,
             FirstTokenLatencyMs = firstTokenLatencyMs,
             StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
             TotalDurationMs = totalDurationMs,
-            ErrorMessage = hasFirstContent && !receivedDoneEvent ? "stream interrupted before DONE" : null
+            ErrorMessage = hasFirstContent && !streamCompletedNormally ? "stream interrupted before normal completion" : null
         };
     }
 

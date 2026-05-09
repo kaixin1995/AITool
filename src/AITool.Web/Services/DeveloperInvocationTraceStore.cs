@@ -57,6 +57,7 @@ public sealed class DeveloperInvocationTraceStore
                 UpdatedAt = DateTimeOffset.UtcNow,
                 AttemptedModel = attempt.AttemptedModel,
                 UpstreamProtocolType = attempt.UpstreamProtocolType,
+                ForwardingMode = attempt.ForwardingMode,
                 TargetSiteId = attempt.TargetSiteId,
                 TargetSiteName = attempt.TargetSiteName,
                 Status = "pending"
@@ -183,6 +184,7 @@ public sealed class DeveloperInvocationTraceStore
             UpdatedAt = attempt.UpdatedAt,
             AttemptedModel = attempt.AttemptedModel,
             UpstreamProtocolType = attempt.UpstreamProtocolType,
+            ForwardingMode = attempt.ForwardingMode,
             TargetSiteId = attempt.TargetSiteId,
             TargetSiteName = attempt.TargetSiteName,
             Status = attempt.Status,
@@ -241,6 +243,7 @@ public sealed class DeveloperInvocationAttempt
 {
     public string AttemptedModel { get; set; } = string.Empty;
     public string UpstreamProtocolType { get; set; } = string.Empty;
+    public string ForwardingMode { get; set; } = string.Empty;
     public Guid? TargetSiteId { get; set; }
     public string TargetSiteName { get; set; } = string.Empty;
 }
@@ -297,6 +300,7 @@ public sealed class DeveloperInvocationTraceAttempt
     public DateTimeOffset UpdatedAt { get; set; }
     public string AttemptedModel { get; set; } = string.Empty;
     public string UpstreamProtocolType { get; set; } = string.Empty;
+    public string ForwardingMode { get; set; } = string.Empty;
     public Guid? TargetSiteId { get; set; }
     public string TargetSiteName { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;

@@ -164,8 +164,8 @@ public sealed class OpenAiProxyController : ControllerBase
                 continue;
 
             attemptIndex++;
-            var traceAttemptId = AddDeveloperTraceAttempt(traceId, route);
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
+            var traceAttemptId = AddDeveloperTraceAttempt(traceId, route, actualProtocolType);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "OpenAI",
                 actualProtocolType,
@@ -324,7 +324,7 @@ public sealed class OpenAiProxyController : ControllerBase
         });
     }
 
-    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route)
+    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
     {
         if (!traceId.HasValue)
         {
@@ -334,10 +334,18 @@ public sealed class OpenAiProxyController : ControllerBase
         return _traceStore.AddAttempt(traceId.Value, new DeveloperInvocationAttempt
         {
             AttemptedModel = route.UpstreamModelName,
-            UpstreamProtocolType = route.ProtocolType,
+            UpstreamProtocolType = actualProtocolType,
+            ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
             TargetSiteId = route.SiteId,
             TargetSiteName = route.SiteName
         });
+    }
+
+    private static string ResolveForwardingMode(string clientProtocolType, string upstreamProtocolType)
+    {
+        return string.Equals(clientProtocolType, upstreamProtocolType, StringComparison.OrdinalIgnoreCase)
+            ? "direct"
+            : "bridge";
     }
 
     private void CompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)

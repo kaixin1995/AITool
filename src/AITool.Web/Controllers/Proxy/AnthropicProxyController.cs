@@ -126,8 +126,8 @@ public sealed class AnthropicProxyController : ControllerBase
                 continue;
 
             attemptIndex++;
-            var traceAttemptId = AddDeveloperTraceAttempt(traceId, route);
             var actualProtocolType = route.ResolveProtocolForClient("Anthropic");
+            var traceAttemptId = AddDeveloperTraceAttempt(traceId, route, actualProtocolType);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "Anthropic",
                 actualProtocolType,
@@ -492,7 +492,7 @@ public sealed class AnthropicProxyController : ControllerBase
         });
     }
 
-    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route)
+    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
     {
         if (!traceId.HasValue)
         {
@@ -502,7 +502,8 @@ public sealed class AnthropicProxyController : ControllerBase
         return _traceStore.AddAttempt(traceId.Value, new DeveloperInvocationAttempt
         {
             AttemptedModel = route.UpstreamModelName,
-            UpstreamProtocolType = route.ProtocolType,
+            UpstreamProtocolType = actualProtocolType,
+            ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType),
             TargetSiteId = route.SiteId,
             TargetSiteName = route.SiteName
         });
@@ -516,6 +517,13 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         _traceStore.CompleteAttempt(traceId.Value, traceAttemptId, result);
+    }
+
+    private static string ResolveForwardingMode(string clientProtocolType, string upstreamProtocolType)
+    {
+        return string.Equals(clientProtocolType, upstreamProtocolType, StringComparison.OrdinalIgnoreCase)
+            ? "direct"
+            : "bridge";
     }
 
     // 兼容更多 Anthropic 客户端的鉴权写法，优先读取 x-api-key，再回退 bearer。

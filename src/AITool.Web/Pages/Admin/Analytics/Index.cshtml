@@ -566,11 +566,11 @@
                 setKpi('kpiTotalRequests', String(summary.totalRequests || 0));
                 setKpi('kpiSuccessRate', `${Number(summary.successRate || 0).toFixed(2)}%`);
                 setKpi('kpiFailureRate', `${Number(summary.failureRate || 0).toFixed(2)}%`);
-                setKpi('kpiTotalTokens', formatNumber(summary.totalTokens || 0));
-                setKpi('kpiAvgDuration', `${Number(summary.averageTotalDurationMs || 0).toFixed(2)} ms`);
-                setKpi('kpiAvgFirstToken', `${Number(summary.averageFirstTokenLatencyMs || 0).toFixed(2)} ms`);
+                setKpi('kpiTotalTokens', formatTokenValue(summary.totalTokens || 0));
+                setKpi('kpiAvgDuration', formatDurationValue(summary.averageTotalDurationMs || 0));
+                setKpi('kpiAvgFirstToken', formatDurationValue(summary.averageFirstTokenLatencyMs || 0));
                 setKpi('kpiFallbackCount', formatNumber(summary.fallbackRequestCount || 0));
-                setKpi('kpiTokenSplit', `${formatNumber(summary.totalInputTokens || 0)} / ${formatNumber(summary.totalOutputTokens || 0)}`);
+                setKpi('kpiTokenSplit', `${formatTokenValue(summary.totalInputTokens || 0)} / ${formatTokenValue(summary.totalOutputTokens || 0)}`);
 
                 const applied = data.appliedFilter || {};
                 filterSummaryEl.textContent = '';
@@ -665,17 +665,31 @@
                     },
                     options: {
                         ...baseChartOptions(),
+                        scales: {
+                            ...baseChartOptions().scales,
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        return formatTokenValue(value);
+                                    }
+                                }
+                            }
+                        },
                         plugins: {
                             ...baseChartOptions().plugins,
                             tooltip: {
                                 callbacks: {
+                                    label: function(context) {
+                                        return `${context.dataset.label}: ${formatTokenValue(context.parsed.y)}`;
+                                    },
                                     footer: function(items) {
                                         if (!items.length) {
                                             return '';
                                         }
                                         const index = items[0].dataIndex;
                                         const point = tokenTrend[index];
-                                        return `总量: ${formatNumber(point.totalTokens || 0)}`;
+                                        return `总量: ${formatTokenValue(point.totalTokens || 0)}`;
                                     }
                                 }
                             }
@@ -706,7 +720,30 @@
                             }
                         ]
                     },
-                    options: baseChartOptions()
+                    options: {
+                        ...baseChartOptions(),
+                        scales: {
+                            ...baseChartOptions().scales,
+                            y: {
+                                beginAtZero: true,
+                                ticks: {
+                                    callback: function(value) {
+                                        return formatDurationAxisValue(value);
+                                    }
+                                }
+                            }
+                        },
+                        plugins: {
+                            ...baseChartOptions().plugins,
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        return `${context.dataset.label}: ${formatDurationValue(context.parsed.y)}`;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 });
 
                 renderChart('fallbackTrendChart', {
@@ -843,6 +880,57 @@
 
             function formatNumber(value) {
                 return Number(value || 0).toLocaleString('zh-CN');
+            }
+
+            // Tokens 统一按数量级自动换单位，避免大数难读。
+            function formatTokenValue(value) {
+                const number = Number(value || 0);
+                const abs = Math.abs(number);
+                const units = [
+                    { threshold: 1e12, suffix: 'T Tokens', digits: 2 },
+                    { threshold: 1e9, suffix: 'G Tokens', digits: 2 },
+                    { threshold: 1e6, suffix: 'M Tokens', digits: 2 },
+                    { threshold: 1e3, suffix: 'K Tokens', digits: 2 }
+                ];
+
+                for (const unit of units) {
+                    if (abs >= unit.threshold) {
+                        return `${(number / unit.threshold).toFixed(unit.digits)} ${unit.suffix}`;
+                    }
+                }
+
+                return `${formatNumber(number)} Tokens`;
+            }
+
+            // 耗时统一按 ms / s / min / h 自动换单位，保留易读的展示形式。
+            function formatDurationValue(value) {
+                const number = Number(value || 0);
+                const abs = Math.abs(number);
+                if (abs >= 3600000) {
+                    return `${(number / 3600000).toFixed(2)} h`;
+                }
+                if (abs >= 60000) {
+                    return `${(number / 60000).toFixed(2)} min`;
+                }
+                if (abs >= 1000) {
+                    return `${(number / 1000).toFixed(2)} s`;
+                }
+                return `${number.toFixed(2)} ms`;
+            }
+
+            function formatDurationAxisValue(value) {
+                const number = Number(value || 0);
+                const abs = Math.abs(number);
+                if (abs >= 3600000) {
+                    return `${(number / 3600000).toFixed(1)} h`;
+                }
+                if (abs >= 60000) {
+                    return `${(number / 60000).toFixed(1)} min`;
+                }
+                if (abs >= 1000) {
+                    return `${(number / 1000).toFixed(1)} s`;
+                }
+                return `${number.toFixed(0)} ms`;
             }
 
             function bindEvents() {
