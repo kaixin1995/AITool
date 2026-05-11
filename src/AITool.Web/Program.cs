@@ -25,6 +25,8 @@ using NLog.Web;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
 builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
@@ -158,6 +160,8 @@ startupLogger.Info(
     applicationVersion,
     app.Environment.EnvironmentName,
     serverPort);
+Console.WriteLine($"AI Tool 已启动：http://127.0.0.1:{serverPort}");
+Console.WriteLine($"AI Tool 已启动：http://{GetLocalIpAddress()}:{serverPort}");
 
 // 启用静态文件服务，提供 wwwroot 下的 CSS/JS 等资源。
 if (!app.Environment.IsEnvironment("Testing"))
@@ -168,16 +172,14 @@ if (!app.Environment.IsEnvironment("Testing"))
         {
             var feature = context.Features.Get<IExceptionHandlerFeature>();
             var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+            if (feature?.Error is OperationCanceledException)
+            {
+                return;
+            }
+
             if (feature?.Error is not null)
             {
-                context.Request.EnableBuffering();
-                string requestBody;
-                using (var reader = new StreamReader(context.Request.Body, leaveOpen: true))
-                {
-                    context.Request.Body.Position = 0;
-                    requestBody = await reader.ReadToEndAsync(context.RequestAborted);
-                    context.Request.Body.Position = 0;
-                }
+                var requestBody = await TryReadRequestBodySafelyAsync(context.Request, context.RequestAborted);
 
                 logger.LogError(feature.Error,
                     "未处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
@@ -286,6 +288,41 @@ static bool IsAdminApiRequest(HttpRequest request)
 static bool IsHangfireRequest(HttpRequest request)
 {
     return request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase);
+}
+
+static string GetLocalIpAddress()
+{
+    try
+    {
+        var addresses = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName());
+        var ipv4 = addresses.FirstOrDefault(x => x.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !System.Net.IPAddress.IsLoopback(x));
+        return ipv4?.ToString() ?? "127.0.0.1";
+    }
+    catch
+    {
+        return "127.0.0.1";
+    }
+}
+
+static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, CancellationToken cancellationToken)
+{
+    try
+    {
+        request.EnableBuffering();
+        using var reader = new StreamReader(request.Body, leaveOpen: true);
+        request.Body.Position = 0;
+        var requestBody = await reader.ReadToEndAsync(cancellationToken);
+        request.Body.Position = 0;
+        return requestBody;
+    }
+    catch (OperationCanceledException)
+    {
+        return "<canceled>";
+    }
+    catch
+    {
+        return "<unavailable>";
+    }
 }
 
 // 暴露 Program 类供集成测试引用。

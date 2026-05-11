@@ -14,16 +14,13 @@ public sealed class HttpExceptionLoggingFilter : IAsyncExceptionFilter
 
     public async Task OnExceptionAsync(ExceptionContext context)
     {
-        var request = context.HttpContext.Request;
-        request.EnableBuffering();
-
-        string requestBody;
-        using (var reader = new StreamReader(request.Body, leaveOpen: true))
+        if (context.Exception is OperationCanceledException)
         {
-            request.Body.Position = 0;
-            requestBody = await reader.ReadToEndAsync(context.HttpContext.RequestAborted);
-            request.Body.Position = 0;
+            return;
         }
+
+        var request = context.HttpContext.Request;
+        var requestBody = await TryReadRequestBodyAsync(request, context.HttpContext.RequestAborted);
 
         _logger.LogError(context.Exception,
             "请求处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
@@ -32,5 +29,26 @@ public sealed class HttpExceptionLoggingFilter : IAsyncExceptionFilter
             context.HttpContext.TraceIdentifier,
             request.QueryString.HasValue ? request.QueryString.Value : string.Empty,
             HttpLogFormatter.FormatBody(requestBody));
+    }
+
+    private static async Task<string> TryReadRequestBodyAsync(HttpRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            request.EnableBuffering();
+            using var reader = new StreamReader(request.Body, leaveOpen: true);
+            request.Body.Position = 0;
+            var requestBody = await reader.ReadToEndAsync(cancellationToken);
+            request.Body.Position = 0;
+            return requestBody;
+        }
+        catch (OperationCanceledException)
+        {
+            return "<canceled>";
+        }
+        catch
+        {
+            return "<unavailable>";
+        }
     }
 }

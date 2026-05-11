@@ -223,40 +223,48 @@ public sealed class UsageLogsApiController : ControllerBase
     [HttpGet("summary")]
     public async Task<ActionResult<UsageLogSummaryDto>> GetSummary([FromQuery] UsageLogListQueryDto query, CancellationToken cancellationToken)
     {
-        var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
-
-        // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
-        var logs = (await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken))
-            .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
-            .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
-            .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        // 按 RequestId 分组，每组取最后一条记录作为该请求的最终状态
-        var finalLogs = logs
-            .GroupBy(x => x.RequestId)
-            .Select(g => g.OrderByDescending(x => x.AttemptIndex).First())
-            .ToList();
-
-        var totalRequests = finalLogs.Count;
-        var successRequests = finalLogs.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase));
-        var failedRequests = totalRequests - successRequests;
-        var successRate = totalRequests == 0
-            ? 0d
-            : Math.Round(successRequests * 100d / totalRequests, 2, MidpointRounding.AwayFromZero);
-        var totalTokens = finalLogs.Sum(x => x.TotalTokens);
-        var maxDurationMs = finalLogs.Count == 0
-            ? 0
-            : finalLogs.Max(x => x.TotalDurationMs);
-
-        return Ok(new UsageLogSummaryDto
+        try
         {
-            TotalRequests = totalRequests,
-            FailedRequests = failedRequests,
-            SuccessRate = successRate,
-            TotalTokens = totalTokens,
-            MaxDurationMs = maxDurationMs
-        });
+            var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
+
+            // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
+            var logs = (await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken))
+                .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
+                .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+                .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            // 按 RequestId 分组，每组取最后一条记录作为该请求的最终状态
+            var finalLogs = logs
+                .GroupBy(x => x.RequestId)
+                .Select(g => g.OrderByDescending(x => x.AttemptIndex).First())
+                .ToList();
+
+            var totalRequests = finalLogs.Count;
+            var successRequests = finalLogs.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase));
+            var failedRequests = totalRequests - successRequests;
+            var successRate = totalRequests == 0
+                ? 0d
+                : Math.Round(successRequests * 100d / totalRequests, 2, MidpointRounding.AwayFromZero);
+            var totalTokens = finalLogs.Sum(x => x.TotalTokens);
+            var maxDurationMs = finalLogs.Count == 0
+                ? 0
+                : finalLogs.Max(x => x.TotalDurationMs);
+
+            return Ok(new UsageLogSummaryDto
+            {
+                TotalRequests = totalRequests,
+                FailedRequests = failedRequests,
+                SuccessRate = successRate,
+                TotalTokens = totalTokens,
+                MaxDurationMs = maxDurationMs
+            });
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 请求已取消时直接结束，避免把前端主动中止记成服务异常。
+            return new EmptyResult();
+        }
     }
 
     // 根据预设范围或指定起止时间生成过滤区间。

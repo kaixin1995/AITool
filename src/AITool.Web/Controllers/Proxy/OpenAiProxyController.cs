@@ -190,6 +190,7 @@ public sealed class OpenAiProxyController : ControllerBase
             };
 
             var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+            SafeWriteConsoleProxyLog("OpenAI", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -477,6 +478,35 @@ public sealed class OpenAiProxyController : ControllerBase
                 "记录失败代理日志失败，但继续后续流程。RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
                 modelName,
                 route.UpstreamModelName);
+        }
+    }
+
+    private void SafeWriteConsoleProxyLog(
+        string clientProtocol,
+        string requestSource,
+        string modelName,
+        string actualProtocolType,
+        string preparedRequestBody,
+        ProxyForwardResult result,
+        int requestBodyLength)
+    {
+        try
+        {
+            Console.WriteLine(ConsoleProxyLogFormatter.BuildSummary(
+                clientProtocol,
+                requestSource,
+                modelName,
+                actualProtocolType,
+                result.StatusCode,
+                result.Success,
+                result.IsStreaming,
+                result.IsStreamInterrupted,
+                result.TotalDurationMs,
+                requestBodyLength,
+                result.ResponseBody?.Length ?? 0));
+        }
+        catch
+        {
         }
     }
 

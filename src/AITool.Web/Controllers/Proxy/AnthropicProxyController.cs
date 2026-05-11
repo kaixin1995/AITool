@@ -161,6 +161,7 @@ public sealed class AnthropicProxyController : ControllerBase
                     traceAttemptId,
                     cancellationToken);
                 var streamResult = streamOutcome.Result;
+                SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
 
                 await SafeLogUsageAsync(new UsageLogEntry
                 {
@@ -219,6 +220,7 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+            SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -639,6 +641,35 @@ public sealed class AnthropicProxyController : ControllerBase
                 "记录失败代理日志失败，但继续后续流程。RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
                 modelName,
                 route.UpstreamModelName);
+        }
+    }
+
+    private void SafeWriteConsoleProxyLog(
+        string clientProtocol,
+        string requestSource,
+        string modelName,
+        string actualProtocolType,
+        string preparedRequestBody,
+        ProxyForwardResult result,
+        int requestBodyLength)
+    {
+        try
+        {
+            Console.WriteLine(ConsoleProxyLogFormatter.BuildSummary(
+                clientProtocol,
+                requestSource,
+                modelName,
+                actualProtocolType,
+                result.StatusCode,
+                result.Success,
+                result.IsStreaming,
+                result.IsStreamInterrupted,
+                result.TotalDurationMs,
+                requestBodyLength,
+                result.ResponseBody?.Length ?? 0));
+        }
+        catch
+        {
         }
     }
 
