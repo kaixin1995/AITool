@@ -90,6 +90,8 @@ internal sealed class ClientSimulatorWebApplicationFactory : WebApplicationFacto
                 BaseUrl = "https://openai.example.com",
                 ApiKey = "openai-key",
                 ProtocolType = "OpenAI",
+                SupportsOpenAi = true,
+                SupportsAnthropic = false,
                 IsEnabled = true
             },
             new Site
@@ -99,6 +101,8 @@ internal sealed class ClientSimulatorWebApplicationFactory : WebApplicationFacto
                 BaseUrl = "https://anthropic.example.com",
                 ApiKey = "anthropic-key",
                 ProtocolType = "Anthropic",
+                SupportsOpenAi = false,
+                SupportsAnthropic = true,
                 IsEnabled = true
             });
 

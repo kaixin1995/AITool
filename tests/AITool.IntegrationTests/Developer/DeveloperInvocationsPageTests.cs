@@ -292,7 +292,7 @@ internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplication
             ApiKey = "debug-site-key",
             ProtocolType = "OpenAI",
             SupportsOpenAi = true,
-            SupportsAnthropic = true,
+            SupportsAnthropic = false,
             IsEnabled = true
         });
 

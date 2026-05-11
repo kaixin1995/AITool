@@ -43,19 +43,18 @@ public sealed class IndexModel : PageModel
             .Select(s => s.Id)
             .ToListAsync(cancellationToken);
 
-        // 按对外模型名汇总路由信息，由于代理支持跨协议中转（ProxyProtocolBridge），
-        // 只要有可用路由，模型就同时支持 OpenAI 和 Anthropic 入口。
+        // 按对外模型名汇总路由信息，页面展示站点原生支持能力，避免把单协议模型误判为双协议可用。
         var routeModels = await (
                 from rule in _dbContext.ProxyRouteRules
                 join site in _dbContext.Sites on rule.SiteId equals site.Id
                 where rule.IsEnabled && site.IsEnabled && enabledSiteIds.Contains(rule.SiteId)
-                group rule by rule.ExternalModelName into g
+                group site by rule.ExternalModelName into g
                 select new ClientSimulatorModelItemViewModel
                 {
                     ModelName = g.Key,
                     RouteCount = g.Count(),
-                    SupportsOpenAi = true,
-                    SupportsAnthropic = true
+                    SupportsOpenAi = g.Any(x => x.SupportsOpenAi),
+                    SupportsAnthropic = g.Any(x => x.SupportsAnthropic)
                 })
             .OrderBy(m => m.ModelName)
             .ToListAsync(cancellationToken);
