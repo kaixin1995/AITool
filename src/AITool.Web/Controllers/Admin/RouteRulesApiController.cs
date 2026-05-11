@@ -271,10 +271,11 @@ public sealed class RouteRulesApiController : ControllerBase
             .ToDictionary(g => g.Key, g => g.Count());
 
         // 查询已配置路由规则的模型名称
-        var routedModels = await _dbContext.ProxyRouteRules
+        var routedModels = (await _dbContext.ProxyRouteRules
             .Select(r => r.ExternalModelName)
             .Distinct()
-            .ToHashSetAsync(cancellationToken);
+            .ToListAsync(cancellationToken))
+            .ToHashSet();
 
         // 通过 ModelName 关联
         var modelNames = models.Select(m => m.ModelName).ToHashSet();

@@ -8,6 +8,7 @@ using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Routing;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AITool.ApplicationTests.Routing;
 
@@ -132,7 +133,7 @@ public sealed class ProxyForwardServiceTests
             });
 
         var httpClient = new HttpClient(handler);
-        var service = new ProxyForwardService(httpClient);
+        var service = new ProxyForwardService(httpClient, NullLogger<ProxyForwardService>.Instance);
 
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
@@ -166,7 +167,7 @@ public sealed class ProxyForwardServiceTests
             });
 
         var httpClient = new HttpClient(handler);
-        var service = new ProxyForwardService(httpClient);
+        var service = new ProxyForwardService(httpClient, NullLogger<ProxyForwardService>.Instance);
 
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
@@ -203,7 +204,7 @@ public sealed class ProxyForwardServiceTests
             });
 
         var httpClient = new HttpClient(handler);
-        var service = new ProxyForwardService(httpClient);
+        var service = new ProxyForwardService(httpClient, NullLogger<ProxyForwardService>.Instance);
 
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {
@@ -236,7 +237,7 @@ public sealed class ProxyForwardServiceTests
             });
 
         var httpClient = new HttpClient(handler);
-        var service = new ProxyForwardService(httpClient);
+        var service = new ProxyForwardService(httpClient, NullLogger<ProxyForwardService>.Instance);
 
         var result = await service.ForwardAsync(new ProxyForwardRequest
         {

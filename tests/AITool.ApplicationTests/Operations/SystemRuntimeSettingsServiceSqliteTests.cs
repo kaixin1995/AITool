@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.ApplicationTests.Operations;
 
-// 运行时设置服务 SQLite 测试，验证历史库缺表时也能自动恢复默认配置
+// 运行时设置服务 SQLite 测试，验证当前实现依赖已创建好的表结构。
 public sealed class SystemRuntimeSettingsServiceSqliteTests : IDisposable
 {
     private readonly SqliteConnection _connection;
@@ -24,12 +24,11 @@ public sealed class SystemRuntimeSettingsServiceSqliteTests : IDisposable
 
         _dbContext = new AppDbContext(options);
         _dbContext.Database.EnsureCreated();
-        _dbContext.Database.ExecuteSqlRaw("DROP TABLE IF EXISTS SystemRuntimeSettings");
         _service = new SystemRuntimeSettingsService(_dbContext);
     }
 
     [Fact]
-    public async Task GetOrCreateAsync_creates_default_record_when_system_runtime_settings_table_is_missing()
+    public async Task GetOrCreateAsync_creates_default_record_when_table_exists_but_row_is_missing()
     {
         var settings = await _service.GetOrCreateAsync();
 
