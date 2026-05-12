@@ -8,7 +8,7 @@ namespace AITool.Web.Controllers.Admin;
 public sealed class AnalyticsQueryDto
 {
     public string RangeType { get; set; } = "week";
-    public string BucketType { get; set; } = "day";
+    public string BucketType { get; set; } = "auto";
     public DateTimeOffset? StartTime { get; set; }
     public DateTimeOffset? EndTime { get; set; }
     public string ProtocolType { get; set; } = "all";
@@ -551,12 +551,17 @@ public sealed class AnalyticsApiController : ControllerBase
     private static string ResolveBucketType(string? bucketType, string? rangeType, DateTimeOffset startTime, DateTimeOffset endTime)
     {
         var normalized = string.IsNullOrWhiteSpace(bucketType) ? "auto" : bucketType.Trim().ToLowerInvariant();
-        if (normalized is "day" or "week" or "month")
+        if (normalized is "hour" or "day" or "week" or "month")
         {
             return normalized;
         }
 
         var range = string.IsNullOrWhiteSpace(rangeType) ? "week" : rangeType.Trim().ToLowerInvariant();
+        if (range == "day")
+        {
+            return "hour";
+        }
+
         if (range == "month")
         {
             return "week";
@@ -580,6 +585,7 @@ public sealed class AnalyticsApiController : ControllerBase
     {
         return bucketType switch
         {
+            "hour" => StartOfHour(value),
             "week" => StartOfDay(value).AddDays(-((7 + (int)value.DayOfWeek - (int)DayOfWeek.Monday) % 7)),
             "month" => new DateTimeOffset(new DateTime(value.Year, value.Month, 1), value.Offset),
             _ => StartOfDay(value)
@@ -590,6 +596,7 @@ public sealed class AnalyticsApiController : ControllerBase
     {
         return bucketType switch
         {
+            "hour" => value.AddHours(1),
             "week" => value.AddDays(7),
             "month" => value.AddMonths(1),
             _ => value.AddDays(1)
@@ -600,6 +607,7 @@ public sealed class AnalyticsApiController : ControllerBase
     {
         return bucketType switch
         {
+            "hour" => $"{value:MM-dd HH}:00",
             "week" => $"{value:yyyy-MM-dd} 周",
             "month" => $"{value:yyyy-MM}",
             _ => $"{value:yyyy-MM-dd}"
@@ -609,6 +617,11 @@ public sealed class AnalyticsApiController : ControllerBase
     private static DateTimeOffset StartOfDay(DateTimeOffset value)
     {
         return new DateTimeOffset(value.Year, value.Month, value.Day, 0, 0, 0, value.Offset);
+    }
+
+    private static DateTimeOffset StartOfHour(DateTimeOffset value)
+    {
+        return new DateTimeOffset(value.Year, value.Month, value.Day, value.Hour, 0, 0, value.Offset);
     }
 
     // 缓存键按筛选参数收敛，降低重复统计开销。

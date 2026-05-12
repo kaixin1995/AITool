@@ -17,7 +17,9 @@ public sealed class IndexModel : PageModel
         _traceStore = traceStore;
     }
 
-    public IReadOnlyList<DeveloperInvocationTraceEntry> Entries { get; private set; } = [];
+    public int InitialTotalCount { get; private set; }
+    public int InitialFailedCount { get; private set; }
+    public int InitialPendingCount { get; private set; }
 
     public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
     {
@@ -27,7 +29,10 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        Entries = _traceStore.List();
+        var entries = _traceStore.List();
+        InitialTotalCount = entries.Count;
+        InitialFailedCount = entries.Count(x => x.Attempts.Any(a => !string.Equals(a.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)));
+        InitialPendingCount = entries.Count(x => x.Attempts.Any(a => string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)));
         return Page();
     }
 

@@ -386,7 +386,7 @@
         var data = await response.json();
         document.getElementById('summaryTotalRequests').textContent = formatNumber(readValue(data, ['totalRequests', 'requestCount', 'totalCount']) || 0);
         document.getElementById('summarySuccessRate').textContent = formatPercent(readValue(data, ['successRate']) || 0);
-        document.getElementById('summaryTotalTokens').textContent = formatNumber(readValue(data, ['totalTokens']) || 0);
+        document.getElementById('summaryTotalTokens').textContent = formatMetricNumber(readValue(data, ['totalTokens']) || 0);
         document.getElementById('summaryFailedRequests').textContent = formatNumber(readValue(data, ['failedRequests', 'failureCount']) || 0);
     }
 
@@ -657,6 +657,34 @@
             return '-';
         }
         return number.toLocaleString('zh-CN');
+    }
+
+    function formatMetricNumber(value) {
+        var number = Number(value || 0);
+        if (!isFinite(number)) {
+            return '-';
+        }
+
+        var units = ['', 'K', 'M', 'G', 'T'];
+        var unitIndex = 0;
+        while (Math.abs(number) >= 1000 && unitIndex < units.length - 1) {
+            number = number / 1000;
+            unitIndex++;
+        }
+
+        if (unitIndex === 0) {
+            return formatNumber(number);
+        }
+
+        var formatted = number >= 100 ? number.toFixed(0)
+            : number >= 10 ? number.toFixed(1)
+            : number.toFixed(2);
+
+        if (formatted.indexOf('.') >= 0) {
+            formatted = formatted.replace(/0+$/, '').replace(/\.$/, '');
+        }
+
+        return formatted + ' ' + units[unitIndex];
     }
 
     function escHtml(str) {

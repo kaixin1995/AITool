@@ -12,7 +12,7 @@
     </div>
     <div class="trace-toolbar">
         <label class="trace-refresh-switch" for="autoRefreshToggle">
-            <input type="checkbox" id="autoRefreshToggle" checked>
+            <input type="checkbox" id="autoRefreshToggle">
             <span>自动刷新（5 秒）</span>
         </label>
         <button type="button" class="btn btn-primary" id="refreshNowButton">立即刷新</button>
@@ -22,17 +22,17 @@
 <div class="trace-overview-grid mb-4">
     <article class="trace-overview-card trace-overview-card-primary">
         <span class="trace-overview-label">当前记录数</span>
-        <strong class="trace-overview-value" id="traceTotalCount">@Model.Entries.Count</strong>
+        <strong class="trace-overview-value" id="traceTotalCount">@Model.InitialTotalCount</strong>
         <span class="trace-overview-hint">只保留内存中的最新 100 条</span>
     </article>
     <article class="trace-overview-card trace-overview-card-danger">
         <span class="trace-overview-label">失败 / 异常</span>
-        <strong class="trace-overview-value" id="traceFailedCount">@Model.Entries.Count(x => x.Attempts.Any(a => !string.Equals(a.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)))</strong>
+        <strong class="trace-overview-value" id="traceFailedCount">@Model.InitialFailedCount</strong>
         <span class="trace-overview-hint">优先检查红色告警记录</span>
     </article>
     <article class="trace-overview-card trace-overview-card-warning">
         <span class="trace-overview-label">等待返回</span>
-        <strong class="trace-overview-value" id="tracePendingCount">@Model.Entries.Count(x => x.Attempts.Any(a => string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)))</strong>
+        <strong class="trace-overview-value" id="tracePendingCount">@Model.InitialPendingCount</strong>
         <span class="trace-overview-hint">请求已到达，但返回尚未补齐</span>
     </article>
 </div>
@@ -42,9 +42,12 @@
     <span>最新记录默认置顶；红色卡片表示失败或异常，黄色卡片表示仍在等待返回。</span>
 </div>
 
-<div class="accordion trace-accordion d-flex flex-column gap-3" id="invocationTraceAccordion">
-    @await Html.PartialAsync("_InvocationTraceList", Model.Entries)
+<div class="trace-loading-card" id="traceLoadingCard">
+    <div class="trace-loading-title">调用记录按需加载中</div>
+    <div class="trace-loading-text">首次进入页面时先展示统计信息，详细列表会在后台懒加载，避免 100 条记录一次性渲染导致页面抖动。</div>
 </div>
+
+<div class="accordion trace-accordion d-flex flex-column gap-3" id="invocationTraceAccordion"></div>
 
 <style>
     .trace-page-header {
@@ -153,6 +156,31 @@
         background: #fff7ed;
         color: #9a3412;
         border: 1px solid rgba(251, 146, 60, 0.25);
+    }
+
+    .trace-loading-card {
+        margin-bottom: 16px;
+        padding: 16px 18px;
+        border-radius: 18px;
+        border: 1px solid rgba(59, 130, 246, 0.14);
+        background: linear-gradient(135deg, rgba(239, 246, 255, 0.9), #fff);
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+    }
+
+    .trace-loading-title {
+        margin-bottom: 6px;
+        font-size: 14px;
+        font-weight: 700;
+        color: #1d4ed8;
+    }
+
+    .trace-loading-text {
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .trace-loading-card.d-none {
+        display: none;
     }
 
     .trace-focus-tip-mark {
@@ -496,9 +524,12 @@
             var autoRefreshToggle = document.getElementById('autoRefreshToggle');
             var refreshNowButton = document.getElementById('refreshNowButton');
             var traceAccordion = document.getElementById('invocationTraceAccordion');
+            var traceLoadingCard = document.getElementById('traceLoadingCard');
             var refreshIntervalMs = 5000;
             var refreshTimerId = null;
             var listEndpoint = '@Url.Page("./Index", "List")';
+            var hasLoadedListOnce = false;
+            var isRefreshing = false;
 
             function escapeHtml(value) {
                 return (value || '').replace(/[&<>"']/g, function (char) {
@@ -716,37 +747,63 @@
             }
 
             async function refreshTraceList() {
-                var openIds = getOpenTraceIds();
-                var response = await fetch(listEndpoint, {
-                    headers: {
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
-                    cache: 'no-store'
-                });
-
-                if (!response.ok) {
+                if (isRefreshing) {
                     return;
                 }
 
-                var payload = await response.json();
-                updateSummary(payload);
+                isRefreshing = true;
+                var openIds = hasLoadedListOnce ? getOpenTraceIds() : [];
 
-                if (!traceAccordion) {
-                    return;
+                try {
+                    var response = await fetch(listEndpoint, {
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        cache: 'no-store'
+                    });
+
+                    if (!response.ok) {
+                        return;
+                    }
+
+                    var payload = await response.json();
+                    updateSummary(payload);
+
+                    if (!traceAccordion) {
+                        return;
+                    }
+
+                    if (!payload.entries || payload.entries.length === 0) {
+                        traceAccordion.innerHTML = renderEmptyState();
+                        hasLoadedListOnce = true;
+                        if (traceLoadingCard) {
+                            traceLoadingCard.classList.add('d-none');
+                        }
+                        return;
+                    }
+
+                    traceAccordion.innerHTML = payload.entries.map(renderEntry).join('');
+                    hasLoadedListOnce = true;
+                    if (traceLoadingCard) {
+                        traceLoadingCard.classList.add('d-none');
+                    }
+                    restoreOpenTraceIds(openIds);
+                } finally {
+                    isRefreshing = false;
                 }
-
-                if (!payload.entries || payload.entries.length === 0) {
-                    traceAccordion.innerHTML = renderEmptyState();
-                    return;
-                }
-
-                traceAccordion.innerHTML = payload.entries.map(renderEntry).join('');
-                restoreOpenTraceIds(openIds);
             }
 
             if (refreshNowButton) {
                 refreshNowButton.addEventListener('click', function () {
                     refreshTraceList();
+                });
+            }
+
+            if (autoRefreshToggle) {
+                autoRefreshToggle.addEventListener('change', function () {
+                    if (autoRefreshToggle.checked && !hasLoadedListOnce) {
+                        refreshTraceList();
+                    }
                 });
             }
 
@@ -810,6 +867,9 @@
             }
 
             ensureRefreshTimer();
+            window.setTimeout(function () {
+                refreshTraceList();
+            }, 0);
         })();
     </script>
 }

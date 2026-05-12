@@ -50,19 +50,22 @@ public sealed class DeveloperInvocationsPageTests
 
         var pageResponse = await client.GetAsync("/Admin/Developer/Invocations");
         var html = await pageResponse.Content.ReadAsStringAsync();
+        var listResponse = await client.GetAsync("/Admin/Developer/Invocations?handler=List");
+        var payload = await listResponse.Content.ReadAsStringAsync();
 
         pageResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        listResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         html.Should().Contain("调用调试");
         html.Should().Contain("自动刷新（5 秒）");
-        html.Should().Contain("复制请求体");
-        html.Should().Contain("复制返回体");
-        html.Should().Contain("claude-code");
-        html.Should().Contain("debug-model");
-        html.Should().Contain("debug-upstream-model");
-        html.Should().Contain("Debug Site");
-        html.Should().Contain("成功");
-        html.Should().Contain("debug-ok");
-        html.Should().Contain("hello debug");
+        html.Should().Contain("调用记录按需加载中");
+        html.Should().Contain("setTimeout(function () {");
+        html.Should().Contain("refreshTraceList();");
+        payload.Should().Contain("claude-code");
+        payload.Should().Contain("debug-model");
+        payload.Should().Contain("debug-upstream-model");
+        payload.Should().Contain("Debug Site");
+        payload.Should().Contain("debug-ok");
+        payload.Should().Contain("hello debug");
     }
 
     [Fact]
@@ -79,7 +82,24 @@ public sealed class DeveloperInvocationsPageTests
         html.Should().Contain("refreshTraceList");
         html.Should().Contain("ensureRefreshTimer");
         html.Should().Contain("renderAttempts(entry, index) || '<div class=\"trace-info-panel\">当前还没有命中任何路由尝试。</div>'");
+        html.Should().Contain("autoRefreshToggle.checked && !hasLoadedListOnce");
+        html.Should().Contain("setTimeout(function () {");
         html.Should().NotContain("' + renderAttempts(entry, index) + '");
+    }
+
+    [Fact]
+    public async Task Get_invocations_page_does_not_enable_auto_refresh_by_default()
+    {
+        var fakeForwardService = new DeveloperInvocationsFakeProxyForwardService();
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var pageResponse = await client.GetAsync("/Admin/Developer/Invocations");
+        var html = await pageResponse.Content.ReadAsStringAsync();
+
+        pageResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("id=\"autoRefreshToggle\"");
+        html.Should().NotContain("id=\"autoRefreshToggle\" checked");
     }
 
     [Fact]

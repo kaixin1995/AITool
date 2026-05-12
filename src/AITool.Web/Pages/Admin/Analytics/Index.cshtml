@@ -29,6 +29,7 @@
                 <label class="form-label" for="bucketType">统计粒度</label>
                 <select id="bucketType" class="form-select">
                     <option value="auto" selected>自动</option>
+                    <option value="hour">按小时</option>
                     <option value="day">按天</option>
                     <option value="week">按周</option>
                     <option value="month">按月</option>
@@ -115,7 +116,7 @@
     </article>
     <article class="analytics-kpi-card">
         <span class="analytics-kpi-label">输入 / 输出 Tokens</span>
-        <strong class="analytics-kpi-value" id="kpiTokenSplit">0 / 0</strong>
+        <strong class="analytics-kpi-value compact" id="kpiTokenSplit">0 / 0</strong>
     </article>
 </section>
 
@@ -153,6 +154,18 @@
         </div>
         <div class="analytics-chart-body">
             <canvas id="tokenTrendChart"></canvas>
+        </div>
+    </section>
+
+    <section class="analytics-panel card">
+        <div class="analytics-panel-header">
+            <div>
+                <h5 class="analytics-panel-title">缓存命中比例</h5>
+                <div class="analytics-panel-subtitle">按时间桶观察缓存 tokens 占输入 tokens 的比例</div>
+            </div>
+        </div>
+        <div class="analytics-chart-body">
+            <canvas id="cacheRatioTrendChart"></canvas>
         </div>
     </section>
 
@@ -252,6 +265,7 @@
         border-radius: 18px;
         padding: 18px 20px;
         box-shadow: var(--shadow-sm);
+        min-width: 0;
     }
 
     .analytics-kpi-label {
@@ -267,6 +281,14 @@
         line-height: 1.1;
         font-weight: 700;
         color: var(--text-primary);
+    }
+
+    .analytics-kpi-value.compact {
+        font-size: 22px;
+        white-space: nowrap;
+        letter-spacing: -0.02em;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
 
     .analytics-kpi-value.success {
@@ -344,6 +366,10 @@
     @@media (max-width: 1200px) {
         .analytics-kpi-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+
+        .analytics-kpi-value.compact {
+            font-size: 20px;
         }
     }
 
@@ -559,6 +585,15 @@
                 const fallbackTrend = data.fallbackTrend || [];
                 const siteDistribution = data.siteDistribution || [];
                 const modelDistribution = data.modelDistribution || [];
+                const cacheRatioTrend = tokenTrend.map(point => {
+                    const inputTokens = Number(point.inputTokens || 0);
+                    const cachedTokens = Number(point.cachedTokens || 0);
+                    return {
+                        label: point.label,
+                        cachedTokens,
+                        ratio: inputTokens <= 0 ? 0 : Number(((cachedTokens * 100) / inputTokens).toFixed(2))
+                    };
+                });
                 const labels = requestTrend.map(x => x.label);
                 const hasData = summary.totalRequests > 0;
 
@@ -573,7 +608,7 @@
                 setKpi('kpiTokenSplit', `${formatTokenValue(summary.totalInputTokens || 0)} / ${formatTokenValue(summary.totalOutputTokens || 0)}`);
 
                 const applied = data.appliedFilter || {};
-                filterSummaryEl.textContent = '';
+                filterSummaryEl.textContent = formatAppliedFilterSummary(applied);
 
                 renderChart('requestTrendChart', {
                     type: 'line',
@@ -690,6 +725,69 @@
                                         const index = items[0].dataIndex;
                                         const point = tokenTrend[index];
                                         return `总量: ${formatTokenValue(point.totalTokens || 0)}`;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+
+                renderChart('cacheRatioTrendChart', {
+                    type: 'bar',
+                    data: {
+                        labels: cacheRatioTrend.map(x => x.label),
+                        datasets: [
+                            {
+                                label: '缓存占输入比例 %',
+                                data: cacheRatioTrend.map(x => x.ratio),
+                                backgroundColor: 'rgba(6,182,212,0.72)',
+                                borderRadius: 8
+                            },
+                            {
+                                label: '缓存 Tokens',
+                                data: cacheRatioTrend.map(x => x.cachedTokens),
+                                type: 'line',
+                                borderColor: palette.indigo,
+                                backgroundColor: palette.indigo,
+                                yAxisID: 'y1',
+                                tension: 0.25
+                            }
+                        ]
+                    },
+                    options: {
+                        ...baseChartOptions(),
+                        scales: {
+                            x: { grid: { display: false } },
+                            y: {
+                                beginAtZero: true,
+                                max: 100,
+                                ticks: {
+                                    callback: function(value) {
+                                        return `${Number(value || 0).toFixed(0)}%`;
+                                    }
+                                }
+                            },
+                            y1: {
+                                beginAtZero: true,
+                                position: 'right',
+                                grid: { drawOnChartArea: false },
+                                ticks: {
+                                    callback: function(value) {
+                                        return formatTokenValue(value);
+                                    }
+                                }
+                            }
+                        },
+                        plugins: {
+                            ...baseChartOptions().plugins,
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        if (context.datasetIndex === 0) {
+                                            return `${context.dataset.label}: ${Number(context.parsed.y || 0).toFixed(2)}%`;
+                                        }
+
+                                        return `${context.dataset.label}: ${formatTokenValue(context.parsed.y)}`;
                                     }
                                 }
                             }
@@ -878,8 +976,23 @@
                 }, delayMs);
             }
 
-            function formatNumber(value) {
-                return Number(value || 0).toLocaleString('zh-CN');
+            function formatAppliedFilterSummary(applied) {
+                const rangeMap = {
+                    day: '按天',
+                    week: '按周',
+                    month: '按月',
+                    all: '全部',
+                    custom: '指定范围'
+                };
+                const bucketMap = {
+                    hour: '按小时',
+                    day: '按天',
+                    week: '按周',
+                    month: '按月'
+                };
+                const rangeText = rangeMap[applied.rangeType] || applied.rangeType || '-';
+                const bucketText = bucketMap[applied.bucketType] || applied.bucketType || '-';
+                return `时间范围：${rangeText} · 统计粒度：${bucketText}`;
             }
 
             // Tokens 统一按数量级自动换单位，避免大数难读。
