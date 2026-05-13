@@ -145,12 +145,118 @@
 
     .health-detail-panel {
         padding-top: 16px;
+        max-width: 100%;
+        overflow: hidden;
+    }
+
+    .health-site-card {
+        margin-bottom: 16px;
+        padding: 18px;
+        border: 1px solid var(--border-light);
+        border-radius: 16px;
+        background: #fff;
+        overflow: hidden;
+    }
+
+    .health-site-card:last-child {
+        margin-bottom: 0;
+    }
+
+    .health-site-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 12px;
+    }
+
+    .health-site-name {
+        font-size: 15px;
+        color: var(--text-primary);
+    }
+
+    .health-site-meta {
+        font-size: 13px;
+        color: var(--text-secondary);
+        white-space: nowrap;
+    }
+
+    .health-rate-bar {
+        margin-bottom: 14px;
+    }
+
+    .health-rate-label {
+        margin-bottom: 8px;
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .health-rate-track {
+        height: 8px;
+        border-radius: 999px;
+        background: #e2e8f0;
+        overflow: hidden;
+    }
+
+    .health-rate-fill {
+        height: 100%;
+        border-radius: inherit;
+    }
+
+    .health-timeline {
+        min-width: 0;
+    }
+
+    .health-timeline-line {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        width: 100%;
+        min-height: 18px;
+    }
+
+    .health-timeline-segment {
+        position: relative;
+        height: 10px;
+        border-radius: 999px;
+        flex: 1 1 0;
+        min-width: 8px;
+        background: var(--success);
+    }
+
+    .health-timeline-segment.fail {
+        background: var(--danger);
+    }
+
+    .health-timeline-range {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-top: 8px;
+        font-size: 12px;
+        color: var(--text-secondary);
     }
 
     @@media (max-width: 1200px) {
         .health-overview-table {
             display: block;
             overflow-x: auto;
+        }
+    }
+
+    @@media (max-width: 768px) {
+        .health-overview-table th,
+        .health-overview-table td {
+            padding: 16px 12px;
+        }
+
+        .health-row-actions {
+            justify-content: flex-start;
+        }
+
+        .health-site-card {
+            padding: 14px;
         }
     }
 </style>
@@ -195,12 +301,21 @@
 @if (Model.MonitoredModels.Any())
 {
     <div class="form-card" style="margin-bottom:20px;">
-        <div class="row g-2 align-items-end">
+        <form method="get" class="row g-2 align-items-end">
+            <div class="col-md-3">
+                <label class="form-label" for="range">时间范围</label>
+                <select id="range" name="range" class="form-select" onchange="this.form.submit()">
+                    @foreach (var option in Model.RangeOptions)
+                    {
+                        <option value="@option.Value" selected="@(Model.Range == option.Value ? "selected" : null)">@option.Label</option>
+                    }
+                </select>
+            </div>
             <div class="col-md-4">
                 <label class="form-label">搜索模型</label>
                 <input type="text" id="healthSearch" class="form-control" placeholder="输入模型名称过滤..." oninput="filterHealthModels()" />
             </div>
-        </div>
+        </form>
     </div>
 }
 
@@ -323,20 +438,17 @@
                                             @if (site.RecentLogs.Any())
                                             {
                                                 <div class="health-timeline">
-                                                    <div class="health-timeline-label">最近 @site.RecentLogs.Count 次请求</div>
-                                                    <div class="health-bars">
-                                                        @foreach (var log in site.RecentLogs.OrderBy(l => l.CheckedAt))
+                                                    <div class="health-timeline-label">@GetTimelineTitle(Model.Range, site.RecentLogs.Count) 次请求（线段统计，失败段优先标红）</div>
+                                                    <div class="health-timeline-line">
+                                                        @foreach (var segment in site.TimelineSegments)
                                                         {
-                                                            var barHeight = Math.Max(Math.Min(log.DurationMs / 10, 100), 8);
-                                                            var barColor = log.Status == "success" ? "var(--success)" : "var(--danger)";
-                                                            <div class="health-bar-item" title="@log.CheckedAt.ToString("MM-dd HH:mm") | @log.Status | @log.DurationMs ms@(log.ErrorMessage is not null ? " | " + log.ErrorMessage : "")">
-                                                                <div class="health-bar" style="height: @(barHeight)px; background: @barColor;"></div>
-                                                            </div>
+                                                            var segmentClass = segment.Status == "success" ? string.Empty : "fail";
+                                                            <div class="health-timeline-segment @segmentClass" title="@segment.StartAt.ToString("MM-dd HH:mm") ~ @segment.EndAt.ToString("MM-dd HH:mm") | @segment.Status | @segment.Count 次请求"></div>
                                                         }
                                                     </div>
                                                     <div class="health-timeline-range">
-                                                        <span>@site.RecentLogs.OrderBy(l => l.CheckedAt).First().CheckedAt.ToString("MM-dd")</span>
-                                                        <span>@site.RecentLogs.OrderBy(l => l.CheckedAt).Last().CheckedAt.ToString("MM-dd")</span>
+                                                        <span>@site.TimelineSegments.First().StartAt.ToString("MM-dd")</span>
+                                                        <span>@site.TimelineSegments.Last().EndAt.ToString("MM-dd")</span>
                                                     </div>
                                                 </div>
                                             }
@@ -381,6 +493,16 @@
         }
 
         return $"{durationMs}ms";
+    }
+
+    private static string GetTimelineTitle(string range, int count)
+    {
+        return (range ?? "7d") switch
+        {
+            "1d" => $"最近 24 小时 {count}",
+            "30d" => $"最近 30 天 {count}",
+            _ => $"最近 7 天 {count}"
+        };
     }
 }
 

@@ -890,10 +890,7 @@
                             backgroundColor: 'rgba(99,102,241,0.75)'
                         }]
                     },
-                    options: {
-                        ...baseChartOptions(),
-                        indexAxis: 'y'
-                    }
+                    options: baseChartOptions()
                 });
 
                 renderChart('modelDistributionChart', {
@@ -974,6 +971,10 @@
                 pendingRetryTimer = window.setTimeout(() => {
                     loadDashboard(true);
                 }, delayMs);
+            }
+
+            function formatNumber(value) {
+                return Number(value || 0).toLocaleString('zh-CN');
             }
 
             function formatAppliedFilterSummary(applied) {

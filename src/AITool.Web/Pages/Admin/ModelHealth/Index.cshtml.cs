@@ -20,8 +20,10 @@ public class ModelHealthSiteViewModel
     public DateTimeOffset? LastCheckedAt { get; set; }
     // 最近检测耗时（毫秒）
     public int? LastDurationMs { get; set; }
-    // 最近 N 条检测记录（用于绘制时间线）
+    // 最近 N 条检测记录（用于统计与计数）
     public List<ModelHealthLogEntry> RecentLogs { get; set; } = [];
+    // 时间轴线段（固定宽度聚合展示，失败优先标红）
+    public List<ModelHealthTimelineSegment> TimelineSegments { get; set; } = [];
     // 成功率（最近 N 条中成功的比例）
     public double SuccessRate { get; set; }
 }
@@ -37,6 +39,18 @@ public class ModelHealthLogEntry
     public DateTimeOffset CheckedAt { get; set; }
     // 错误信息
     public string? ErrorMessage { get; set; }
+}
+
+public class ModelHealthTimelineSegment
+{
+    // 线段聚合后的状态，存在失败则标记为失败
+    public string Status { get; set; } = string.Empty;
+    // 该线段包含的请求数
+    public int Count { get; set; }
+    // 线段起始时间
+    public DateTimeOffset StartAt { get; set; }
+    // 线段结束时间
+    public DateTimeOffset EndAt { get; set; }
 }
 
 // 已监控模型视图项
@@ -60,6 +74,12 @@ public class ModelSelectItem
     public string DisplayName { get; set; } = string.Empty;
 }
 
+public sealed class ModelHealthRangeOption
+{
+    public string Value { get; set; } = string.Empty;
+    public string Label { get; set; } = string.Empty;
+}
+
 // 模型健康看板页面模型，支持持久化监控配置
 public class IndexModel : PageModel
 {
@@ -78,6 +98,16 @@ public class IndexModel : PageModel
 
     // 各监控模型的健康数据，按模型 ID 索引
     public Dictionary<Guid, List<ModelHealthSiteViewModel>> HealthData { get; set; } = [];
+
+    public List<ModelHealthRangeOption> RangeOptions { get; } =
+    [
+        new() { Value = "1d", Label = "最近 24 小时" },
+        new() { Value = "7d", Label = "最近 7 天" },
+        new() { Value = "30d", Label = "最近 30 天" }
+    ];
+
+    [BindProperty(SupportsGet = true)]
+    public string Range { get; set; } = "7d";
 
     // 操作提示
     public string? StatusMessage { get; set; }
@@ -145,14 +175,18 @@ public class IndexModel : PageModel
                 .Where(s => siteIds.Contains(s.Id) && s.IsEnabled)
                 .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
-            var recentCutoff = DateTimeOffset.UtcNow.AddDays(-7);
-            // 先全量加载到内存，再用 C# 过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
+            var recentCutoff = ResolveRecentCutoff(Range);
+            // 先全量加载到内存，再按最近时间窗口过滤，避免 SQLite 无法翻译 DateTimeOffset 比较。
             var allLogs = await _dbContext.ProxyUsageLogs
                 .Where(x => x.IsFinalResult)
                 .ToListAsync(cancellationToken);
             allLogs = allLogs
-                .Where(d => monitoredModelIds.Contains(GetModelIdByName(models, d.RequestModel)) && d.RequestedAt >= recentCutoff)
+                .Where(x => x.RequestedAt >= recentCutoff)
                 .ToList();
+
+            var routeRules = await _dbContext.ProxyRouteRules
+                .Where(x => x.IsEnabled)
+                .ToListAsync(cancellationToken);
 
             /* 按模型分组 */
             foreach (var modelId in monitoredModelIds)
@@ -161,17 +195,36 @@ public class IndexModel : PageModel
                     .Where(m => m.ModelLibraryItemId == modelId && sites.ContainsKey(m.SiteId))
                     .ToList();
                 var modelName = models.TryGetValue(modelId, out var currentModel) ? currentModel.ModelName : string.Empty;
-                var modelLogs = allLogs.Where(l => string.Equals(l.RequestModel, modelName, StringComparison.Ordinal)).ToList();
+                var relatedRouteRules = routeRules
+                    .Where(x => string.Equals(x.ExternalModelName, modelName, StringComparison.Ordinal))
+                    .ToList();
+                var matchedRequestModels = relatedRouteRules
+                    .Select(x => x.ExternalModelName)
+                    .Concat([modelName])
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToHashSet(StringComparer.Ordinal);
+                var matchedAttemptedModels = modelMappings
+                    .Select(x => x.RemoteModelName)
+                    .Concat(relatedRouteRules.Select(x => x.UpstreamModelName))
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Distinct(StringComparer.Ordinal)
+                    .ToHashSet(StringComparer.Ordinal);
+                var modelLogs = allLogs
+                    .Where(l => matchedRequestModels.Contains(l.RequestModel)
+                        || matchedAttemptedModels.Contains(l.AttemptedModel))
+                    .ToList();
 
                 var healthList = modelMappings.Select(map =>
                 {
                     sites.TryGetValue(map.SiteId, out var site);
                     var siteLogs = modelLogs
-                        .Where(l => l.TargetSiteId == map.SiteId)
+                        .Where(l => l.TargetSiteId == map.SiteId
+                            || string.Equals(l.AttemptedModel, map.RemoteModelName, StringComparison.Ordinal))
                         .OrderByDescending(l => l.RequestedAt)
-                        .Take(20)
                         .ToList();
 
+                    var timelineSegments = BuildTimelineSegments(siteLogs);
                     var latestLog = siteLogs.FirstOrDefault();
                     var successCount = siteLogs.Count(l => l.Status == "success");
                     var totalLogs = siteLogs.Count;
@@ -190,6 +243,7 @@ public class IndexModel : PageModel
                             CheckedAt = l.RequestedAt,
                             ErrorMessage = l.ErrorMessage
                         }).ToList(),
+                        TimelineSegments = timelineSegments,
                         SuccessRate = totalLogs > 0 ? (double)successCount / totalLogs : 0
                     };
                 })
@@ -221,13 +275,80 @@ public class IndexModel : PageModel
         }
     }
 
-    // 按模型名反查监控模型 ID，便于将 UsageLogs 归并回健康看板。
-    private static Guid GetModelIdByName(Dictionary<Guid, ModelLibraryItem> models, string requestModel)
+    private static DateTimeOffset ResolveRecentCutoff(string? range)
     {
-        return models
-            .Where(x => string.Equals(x.Value.ModelName, requestModel, StringComparison.Ordinal))
-            .Select(x => x.Key)
-            .FirstOrDefault();
+        return (range ?? "7d").Trim().ToLowerInvariant() switch
+        {
+            "1d" => DateTimeOffset.UtcNow.AddDays(-1),
+            "30d" => DateTimeOffset.UtcNow.AddDays(-30),
+            _ => DateTimeOffset.UtcNow.AddDays(-7)
+        };
+    }
+
+    private static List<ModelHealthTimelineSegment> BuildTimelineSegments(List<ProxyUsageLog> siteLogs)
+    {
+        const int segmentCount = 48;
+
+        if (siteLogs.Count == 0)
+        {
+            return [];
+        }
+
+        var orderedLogs = siteLogs
+            .OrderBy(l => l.RequestedAt)
+            .ToList();
+        var startAt = orderedLogs.First().RequestedAt;
+        var endAt = orderedLogs.Last().RequestedAt;
+
+        if (startAt >= endAt)
+        {
+            return
+            [
+                new ModelHealthTimelineSegment
+                {
+                    Status = string.Equals(orderedLogs[0].Status, "success", StringComparison.OrdinalIgnoreCase) ? "success" : "fail",
+                    Count = orderedLogs.Count,
+                    StartAt = startAt,
+                    EndAt = endAt
+                }
+            ];
+        }
+
+        var totalTicks = endAt.UtcTicks - startAt.UtcTicks;
+        var bucketSize = Math.Max(totalTicks / segmentCount, 1L);
+        var buckets = new List<ModelHealthTimelineSegment>(segmentCount);
+
+        for (var i = 0; i < segmentCount; i++)
+        {
+            var bucketStartTicks = startAt.UtcTicks + (bucketSize * i);
+            var bucketEndTicks = i == segmentCount - 1
+                ? endAt.UtcTicks
+                : Math.Min(startAt.UtcTicks + (bucketSize * (i + 1)), endAt.UtcTicks);
+            var bucketLogs = orderedLogs
+                .Where(log =>
+                {
+                    var ticks = log.RequestedAt.UtcTicks;
+                    return i == segmentCount - 1
+                        ? ticks >= bucketStartTicks && ticks <= bucketEndTicks
+                        : ticks >= bucketStartTicks && ticks < bucketEndTicks;
+                })
+                .ToList();
+
+            if (bucketLogs.Count == 0)
+            {
+                continue;
+            }
+
+            buckets.Add(new ModelHealthTimelineSegment
+            {
+                Status = bucketLogs.Any(log => !string.Equals(log.Status, "success", StringComparison.OrdinalIgnoreCase)) ? "fail" : "success",
+                Count = bucketLogs.Count,
+                StartAt = bucketLogs.First().RequestedAt,
+                EndAt = bucketLogs.Last().RequestedAt
+            });
+        }
+
+        return buckets;
     }
 
     // 添加模型到监控列表
