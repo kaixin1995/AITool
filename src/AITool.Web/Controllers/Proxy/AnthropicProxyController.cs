@@ -350,11 +350,6 @@ public sealed class AnthropicProxyController : ControllerBase
             forwardRequest,
             async (line, token) =>
             {
-                if (!startedWriting)
-                {
-                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
-                }
-
                 if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
                 {
                     return;
@@ -365,6 +360,26 @@ public sealed class AnthropicProxyController : ControllerBase
                 {
                     state.ReceivedDoneEvent = true;
                     return;
+                }
+
+                // 兼容部分 OpenAI 站点在 stream=true 下直接返回完整响应对象，而不是 chunk 流。
+                if (!startedWriting && IsOpenAiStreamingResponseEnvelope(jsonText))
+                {
+                    var convertedResponse = ProxyProtocolBridge.BuildAnthropicStreamFromOpenAiResponse(jsonText, modelName, 0, 0, 0);
+                    if (!string.IsNullOrEmpty(convertedResponse))
+                    {
+                        state.ReceivedDoneEvent = true;
+                        startedWriting = true;
+                        responseBuilder.Append(convertedResponse);
+                        await Response.WriteAsync(convertedResponse, token);
+                        await Response.Body.FlushAsync(token);
+                        return;
+                    }
+                }
+
+                if (!startedWriting)
+                {
+                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
                 }
 
                 var convertedChunk = ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(jsonText, state);
@@ -477,6 +492,23 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         return "proxy";
+    }
+
+    private static bool IsOpenAiStreamingResponseEnvelope(string jsonText)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(jsonText);
+            var root = doc.RootElement;
+            return root.TryGetProperty("choices", out var choices)
+                && choices.ValueKind == JsonValueKind.Array
+                && choices.GetArrayLength() > 0
+                && choices[0].TryGetProperty("message", out _);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)

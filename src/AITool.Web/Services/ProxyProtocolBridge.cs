@@ -297,6 +297,273 @@ public static class ProxyProtocolBridge
         return builder.ToString();
     }
 
+    // 上游忽略 stream=true 返回完整 OpenAI JSON 时，补生成 Anthropic SSE，避免 Claude Code 一直等待。
+    public static string BuildAnthropicStreamFromOpenAiResponse(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
+    {
+        string? upstreamId = null;
+        string contentText = string.Empty;
+        string reasoningText = string.Empty;
+        string finishReason = "stop";
+        int cacheCreation = 0;
+        int upstreamInput = 0;
+        int upstreamOutput = 0;
+        JsonArray? toolUseBlocks = null;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("id", out var idEl))
+            {
+                upstreamId = idEl.GetString();
+            }
+
+            if (root.TryGetProperty("usage", out var usageEl))
+            {
+                if (usageEl.TryGetProperty("prompt_tokens", out var pt))
+                {
+                    upstreamInput = pt.GetInt32();
+                }
+
+                if (usageEl.TryGetProperty("completion_tokens", out var ct))
+                {
+                    upstreamOutput = ct.GetInt32();
+                }
+
+                if (usageEl.TryGetProperty("prompt_tokens_details", out var ptd))
+                {
+                    if (ptd.TryGetProperty("cached_tokens", out var cachedEl))
+                    {
+                        cachedTokens = cachedEl.GetInt32();
+                    }
+
+                    if (ptd.TryGetProperty("cached_creation_tokens", out var cctEl))
+                    {
+                        cacheCreation = cctEl.GetInt32();
+                    }
+                }
+            }
+
+            if (root.TryGetProperty("choices", out var choices)
+                && choices.ValueKind == JsonValueKind.Array
+                && choices.GetArrayLength() > 0)
+            {
+                var choice = choices[0];
+                if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
+                {
+                    finishReason = fr.GetString() ?? "stop";
+                }
+
+                if (choice.TryGetProperty("message", out var message))
+                {
+                    reasoningText = ExtractReasoningFromElement(message);
+                    contentText = ExtractContentFromMessage(message);
+
+                    if (message.TryGetProperty("tool_calls", out var toolCalls)
+                        && toolCalls.ValueKind == JsonValueKind.Array)
+                    {
+                        toolUseBlocks = new JsonArray();
+                        foreach (var tc in toolCalls.EnumerateArray())
+                        {
+                            var tcId = tc.TryGetProperty("id", out var tcIdEl) ? tcIdEl.GetString() ?? string.Empty : string.Empty;
+                            var tcName = string.Empty;
+                            var tcArgs = "{}";
+                            if (tc.TryGetProperty("function", out var funcEl))
+                            {
+                                if (funcEl.TryGetProperty("name", out var nEl))
+                                {
+                                    tcName = nEl.GetString() ?? string.Empty;
+                                }
+
+                                if (funcEl.TryGetProperty("arguments", out var aEl))
+                                {
+                                    tcArgs = aEl.GetString() ?? "{}";
+                                }
+                            }
+
+                            JsonNode? tcInput;
+                            try
+                            {
+                                tcInput = JsonNode.Parse(tcArgs);
+                            }
+                            catch
+                            {
+                                tcInput = tcArgs;
+                            }
+
+                            toolUseBlocks.Add(new JsonObject
+                            {
+                                ["type"] = "tool_use",
+                                ["id"] = tcId,
+                                ["name"] = tcName,
+                                ["input"] = tcInput
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        catch
+        {
+            return string.Empty;
+        }
+
+        var stopReason = MapOpenAiFinishReason(finishReason);
+        var effectiveInput = upstreamInput > 0 ? upstreamInput : inputTokens;
+        var effectiveOutput = upstreamOutput > 0 ? upstreamOutput : outputTokens;
+        var directInputTokens = Math.Max(effectiveInput - cachedTokens - cacheCreation, 0);
+
+        var builder = new StringBuilder();
+        AppendSseEvent(builder, "message_start", new JsonObject
+        {
+            ["type"] = "message_start",
+            ["message"] = new JsonObject
+            {
+                ["id"] = upstreamId ?? $"msg_{Guid.NewGuid():N}",
+                ["type"] = "message",
+                ["role"] = "assistant",
+                ["model"] = modelName,
+                ["usage"] = new JsonObject
+                {
+                    ["input_tokens"] = directInputTokens,
+                    ["cache_creation_input_tokens"] = cacheCreation,
+                    ["cache_read_input_tokens"] = cachedTokens,
+                    ["output_tokens"] = 0
+                },
+                ["content"] = new JsonArray()
+            }
+        });
+
+        var contentIndex = 0;
+        if (!string.IsNullOrEmpty(reasoningText))
+        {
+            AppendSseEvent(builder, "content_block_start", new JsonObject
+            {
+                ["type"] = "content_block_start",
+                ["index"] = contentIndex,
+                ["content_block"] = new JsonObject
+                {
+                    ["type"] = "thinking",
+                    ["thinking"] = string.Empty
+                }
+            });
+            AppendSseEvent(builder, "content_block_delta", new JsonObject
+            {
+                ["type"] = "content_block_delta",
+                ["index"] = contentIndex,
+                ["delta"] = new JsonObject
+                {
+                    ["type"] = "thinking_delta",
+                    ["thinking"] = reasoningText
+                }
+            });
+            AppendSseEvent(builder, "content_block_stop", new JsonObject
+            {
+                ["type"] = "content_block_stop",
+                ["index"] = contentIndex
+            });
+            contentIndex++;
+        }
+
+        if (!string.IsNullOrEmpty(contentText))
+        {
+            AppendSseEvent(builder, "content_block_start", new JsonObject
+            {
+                ["type"] = "content_block_start",
+                ["index"] = contentIndex,
+                ["content_block"] = new JsonObject
+                {
+                    ["type"] = "text",
+                    ["text"] = string.Empty
+                }
+            });
+            AppendSseEvent(builder, "content_block_delta", new JsonObject
+            {
+                ["type"] = "content_block_delta",
+                ["index"] = contentIndex,
+                ["delta"] = new JsonObject
+                {
+                    ["type"] = "text_delta",
+                    ["text"] = contentText
+                }
+            });
+            AppendSseEvent(builder, "content_block_stop", new JsonObject
+            {
+                ["type"] = "content_block_stop",
+                ["index"] = contentIndex
+            });
+            contentIndex++;
+        }
+
+        if (toolUseBlocks is not null)
+        {
+            foreach (var block in toolUseBlocks)
+            {
+                if (block is not JsonObject toolBlock)
+                {
+                    continue;
+                }
+
+                AppendSseEvent(builder, "content_block_start", new JsonObject
+                {
+                    ["type"] = "content_block_start",
+                    ["index"] = contentIndex,
+                    ["content_block"] = new JsonObject
+                    {
+                        ["type"] = "tool_use",
+                        ["id"] = toolBlock["id"]?.DeepClone(),
+                        ["name"] = toolBlock["name"]?.DeepClone(),
+                        ["input"] = new JsonObject()
+                    }
+                });
+
+                var partialJson = toolBlock["input"]?.ToJsonString() ?? "{}";
+                if (!string.IsNullOrEmpty(partialJson))
+                {
+                    AppendSseEvent(builder, "content_block_delta", new JsonObject
+                    {
+                        ["type"] = "content_block_delta",
+                        ["index"] = contentIndex,
+                        ["delta"] = new JsonObject
+                        {
+                            ["type"] = "input_json_delta",
+                            ["partial_json"] = partialJson
+                        }
+                    });
+                }
+
+                AppendSseEvent(builder, "content_block_stop", new JsonObject
+                {
+                    ["type"] = "content_block_stop",
+                    ["index"] = contentIndex
+                });
+                contentIndex++;
+            }
+        }
+
+        AppendSseEvent(builder, "message_delta", new JsonObject
+        {
+            ["type"] = "message_delta",
+            ["usage"] = new JsonObject
+            {
+                ["input_tokens"] = effectiveInput,
+                ["cache_creation_input_tokens"] = cacheCreation,
+                ["cache_read_input_tokens"] = cachedTokens,
+                ["output_tokens"] = effectiveOutput
+            },
+            ["delta"] = new JsonObject
+            {
+                ["stop_reason"] = stopReason
+            }
+        });
+        AppendSseEvent(builder, "message_stop", new JsonObject
+        {
+            ["type"] = "message_stop"
+        });
+        return builder.ToString();
+    }
+
     // 跨协议转到 OpenAI 站点时，把 Anthropic messages 请求映射成 chat completions。
     private static string BuildOpenAiRequestFromAnthropic(JsonObject rootNode, string targetModelName, bool enableStreaming)
     {
