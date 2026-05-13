@@ -628,7 +628,7 @@ public static class ProxyProtocolBridge
                         var calls = new JsonArray();
                         foreach (var toolUse in toolUseBlocks)
                         {
-                            calls.Add(toolUse);
+                            calls.Add(toolUse?.DeepClone());
                         }
 
                         openAiMsg["tool_calls"] = calls;
@@ -782,7 +782,7 @@ public static class ProxyProtocolBridge
                 if (string.Equals(role, "tool", StringComparison.OrdinalIgnoreCase))
                 {
                     var toolCallId = msgObj["tool_call_id"]?.GetValue<string>() ?? "";
-                    var toolContent = content?.GetValue<string>() ?? content?.ToJsonString() ?? "...";
+                    var toolContent = SerializeOpenAiToolContent(content);
 
                     var toolResultBlock = new JsonObject
                     {
@@ -1810,7 +1810,7 @@ public static class ProxyProtocolBridge
                 case "tool_result":
                     var trContent = blockObj["content"];
                     // tool_result content 可能是字符串或数组
-                    var trContentStr = trContent?.GetValue<string>() ?? trContent?.ToJsonString() ?? "";
+                    var trContentStr = SerializeAnthropicToolResultContent(trContent);
                     toolResults.Add(new JsonObject
                     {
                         ["role"] = "tool",
@@ -1924,6 +1924,71 @@ public static class ProxyProtocolBridge
             }
             return textParts.Count > 0 ? string.Join("\n", textParts) : null;
         }
+        return content.ToJsonString();
+    }
+
+    private static string SerializeOpenAiToolContent(JsonNode? content)
+    {
+        if (content is null)
+        {
+            return "...";
+        }
+
+        if (content is JsonValue value)
+        {
+            try
+            {
+                return value.GetValue<string>();
+            }
+            catch
+            {
+                return value.ToJsonString();
+            }
+        }
+
+        return content.ToJsonString();
+    }
+
+    private static string SerializeAnthropicToolResultContent(JsonNode? content)
+    {
+        if (content is null)
+        {
+            return string.Empty;
+        }
+
+        if (content is JsonValue value)
+        {
+            try
+            {
+                return value.GetValue<string>();
+            }
+            catch
+            {
+                return value.ToJsonString();
+            }
+        }
+
+        if (content is JsonArray blocks)
+        {
+            var textParts = new List<string>();
+            foreach (var block in blocks)
+            {
+                if (block is JsonObject blockObj && blockObj["type"]?.GetValue<string>() == "text")
+                {
+                    var text = blockObj["text"]?.GetValue<string>();
+                    if (!string.IsNullOrWhiteSpace(text))
+                    {
+                        textParts.Add(text);
+                    }
+                }
+            }
+
+            if (textParts.Count > 0)
+            {
+                return string.Join("\n", textParts);
+            }
+        }
+
         return content.ToJsonString();
     }
 

@@ -331,6 +331,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
         var state = new ProxyProtocolBridge.AnthropicOpenAiStreamState();
         var responseBuilder = new StringBuilder();
+        var pendingSseLines = new List<string>();
         var startedWriting = false;
 
         async Task WriteChunkAsync(string chunk, CancellationToken token)
@@ -346,46 +347,60 @@ public sealed class AnthropicProxyController : ControllerBase
             startedWriting = true;
         }
 
+        async Task FlushOpenAiSseBlockAsync(CancellationToken token)
+        {
+            if (!TryExtractSseDataPayload(pendingSseLines, out var jsonText))
+            {
+                pendingSseLines.Clear();
+                return;
+            }
+
+            pendingSseLines.Clear();
+            if (string.Equals(jsonText, "[DONE]", StringComparison.OrdinalIgnoreCase))
+            {
+                state.ReceivedDoneEvent = true;
+                return;
+            }
+
+            // 兼容部分 OpenAI 站点在 stream=true 下直接返回完整响应对象，而不是 chunk 流。
+            if (!startedWriting && IsOpenAiStreamingResponseEnvelope(jsonText))
+            {
+                var convertedResponse = ProxyProtocolBridge.BuildAnthropicStreamFromOpenAiResponse(jsonText, modelName, 0, 0, 0);
+                if (!string.IsNullOrEmpty(convertedResponse))
+                {
+                    state.ReceivedDoneEvent = true;
+                    await WriteChunkAsync(convertedResponse, token);
+                    return;
+                }
+            }
+
+            if (!startedWriting)
+            {
+                await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
+            }
+
+            var convertedChunk = ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(jsonText, state);
+            await WriteChunkAsync(convertedChunk, token);
+        }
+
         var result = await _forwardService.ForwardStreamingAsync(
             forwardRequest,
             async (line, token) =>
             {
-                if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrEmpty(line))
                 {
+                    await FlushOpenAiSseBlockAsync(token);
                     return;
                 }
 
-                var jsonText = line["data: ".Length..];
-                if (string.Equals(jsonText, "[DONE]", StringComparison.OrdinalIgnoreCase))
-                {
-                    state.ReceivedDoneEvent = true;
-                    return;
-                }
-
-                // 兼容部分 OpenAI 站点在 stream=true 下直接返回完整响应对象，而不是 chunk 流。
-                if (!startedWriting && IsOpenAiStreamingResponseEnvelope(jsonText))
-                {
-                    var convertedResponse = ProxyProtocolBridge.BuildAnthropicStreamFromOpenAiResponse(jsonText, modelName, 0, 0, 0);
-                    if (!string.IsNullOrEmpty(convertedResponse))
-                    {
-                        state.ReceivedDoneEvent = true;
-                        startedWriting = true;
-                        responseBuilder.Append(convertedResponse);
-                        await Response.WriteAsync(convertedResponse, token);
-                        await Response.Body.FlushAsync(token);
-                        return;
-                    }
-                }
-
-                if (!startedWriting)
-                {
-                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
-                }
-
-                var convertedChunk = ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(jsonText, state);
-                await WriteChunkAsync(convertedChunk, token);
+                pendingSseLines.Add(line);
             },
             cancellationToken);
+
+        if (pendingSseLines.Count > 0)
+        {
+            await FlushOpenAiSseBlockAsync(cancellationToken);
+        }
 
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
@@ -509,6 +524,38 @@ public sealed class AnthropicProxyController : ControllerBase
         {
             return false;
         }
+    }
+
+    private static bool TryExtractSseDataPayload(List<string> sseLines, out string payload)
+    {
+        payload = string.Empty;
+        if (sseLines.Count == 0)
+        {
+            return false;
+        }
+
+        var dataLines = new List<string>();
+        foreach (var line in sseLines)
+        {
+            if (line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                var data = line.Length > 5 ? line[5..] : string.Empty;
+                if (data.StartsWith(' '))
+                {
+                    data = data[1..];
+                }
+
+                dataLines.Add(data);
+            }
+        }
+
+        if (dataLines.Count == 0)
+        {
+            return false;
+        }
+
+        payload = string.Join("\n", dataLines);
+        return true;
     }
 
     private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
