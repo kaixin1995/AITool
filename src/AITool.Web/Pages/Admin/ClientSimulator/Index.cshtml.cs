@@ -10,6 +10,8 @@ public sealed class ClientSimulatorModelItemViewModel
     public int RouteCount { get; set; }
     public bool SupportsOpenAi { get; set; }
     public bool SupportsAnthropic { get; set; }
+    public bool CanUseOpenAi { get; set; }
+    public bool CanUseAnthropic { get; set; }
 }
 
 public sealed class IndexModel : PageModel
@@ -54,13 +56,15 @@ public sealed class IndexModel : PageModel
                     ModelName = g.Key,
                     RouteCount = g.Count(),
                     SupportsOpenAi = g.Any(x => x.SupportsOpenAi),
-                    SupportsAnthropic = g.Any(x => x.SupportsAnthropic)
+                    SupportsAnthropic = g.Any(x => x.SupportsAnthropic),
+                    CanUseOpenAi = g.Any(),
+                    CanUseAnthropic = g.Any()
                 })
             .OrderBy(m => m.ModelName)
             .ToListAsync(cancellationToken);
 
         Models = routeModels;
-        DefaultOpenAiModel = routeModels.FirstOrDefault(x => x.SupportsOpenAi)?.ModelName ?? string.Empty;
-        DefaultAnthropicModel = routeModels.FirstOrDefault(x => x.SupportsAnthropic)?.ModelName ?? string.Empty;
+        DefaultOpenAiModel = routeModels.FirstOrDefault(x => x.CanUseOpenAi)?.ModelName ?? string.Empty;
+        DefaultAnthropicModel = routeModels.FirstOrDefault(x => x.CanUseAnthropic)?.ModelName ?? string.Empty;
     }
 }

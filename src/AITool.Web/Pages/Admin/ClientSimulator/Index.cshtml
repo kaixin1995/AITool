@@ -10,7 +10,9 @@
     {
         item.ModelName,
         item.SupportsOpenAi,
-        item.SupportsAnthropic
+        item.SupportsAnthropic,
+        item.CanUseOpenAi,
+        item.CanUseAnthropic
     }));
 }
 
@@ -44,11 +46,13 @@
                     <datalist id="modelOptions">
                         @foreach (var item in Model.Models)
                         {
-                            var supportedProtocols = string.Join(" / ", new[]
-                            {
-                                item.SupportsOpenAi ? "OpenAI" : null,
-                                item.SupportsAnthropic ? "Anthropic" : null
-                            }.Where(x => x is not null));
+        var supportedProtocols = string.Join(" / ", new[]
+        {
+            item.SupportsOpenAi ? "OpenAI 原生" : null,
+            item.SupportsAnthropic ? "Anthropic 原生" : null,
+            !item.SupportsOpenAi && item.CanUseOpenAi ? "OpenAI 兼容" : null,
+            !item.SupportsAnthropic && item.CanUseAnthropic ? "Anthropic 兼容" : null
+        }.Where(x => x is not null));
                             <option value="@item.ModelName">@item.ModelName (@item.RouteCount 条路由, @supportedProtocols)</option>
                         }
                     </datalist>
@@ -256,8 +260,10 @@
         }
 
         var supported = [];
-        if (capability.SupportsOpenAi) supported.push('OpenAI');
-        if (capability.SupportsAnthropic) supported.push('Anthropic');
+        if (capability.SupportsOpenAi) supported.push('OpenAI 原生');
+        else if (capability.CanUseOpenAi) supported.push('OpenAI 兼容');
+        if (capability.SupportsAnthropic) supported.push('Anthropic 原生');
+        else if (capability.CanUseAnthropic) supported.push('Anthropic 兼容');
         hint.textContent = '当前模型支持协议：' + supported.join(' / ');
         hint.className = 'form-text text-muted';
     }
@@ -265,7 +271,7 @@
     function ensureProtocolModel(protocolName, silent) {
         var capability = findModelCapability(getModelName());
         var isSupported = capability
-            ? (protocolName === 'Anthropic' ? capability.SupportsAnthropic : capability.SupportsOpenAi)
+            ? (protocolName === 'Anthropic' ? capability.CanUseAnthropic : capability.CanUseOpenAi)
             : false;
 
         if (isSupported) {

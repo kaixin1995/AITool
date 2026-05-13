@@ -23,15 +23,16 @@ public sealed class ClientSimulatorPageTests
         var html = await response.Content.ReadAsStringAsync();
 
         response.EnsureSuccessStatusCode();
-        html.Should().Contain("gpt-only (1 条路由, OpenAI)");
-        html.Should().Contain("claude-only (1 条路由, Anthropic)");
+        html.Should().Contain("\"ModelName\":\"gpt-only\"");
+        html.Should().Contain("\"SupportsOpenAi\":true");
+        html.Should().Contain("\"CanUseAnthropic\":true");
         html.Should().Contain("\"ModelName\":\"claude-only\"");
         html.Should().Contain("\"SupportsAnthropic\":true");
         html.Should().Contain("var defaultAnthropicModel = \"claude-only\"");
     }
 
     [Fact]
-    public async Task Get_page_does_not_fallback_anthropic_default_to_openai_only_model()
+    public async Task Get_page_falls_back_anthropic_default_to_openai_only_model_via_bridge()
     {
         await using var factory = new ClientSimulatorWebApplicationFactory(includeAnthropicRoute: false);
         using var client = factory.CreateClient();
@@ -40,8 +41,11 @@ public sealed class ClientSimulatorPageTests
         var html = await response.Content.ReadAsStringAsync();
 
         response.EnsureSuccessStatusCode();
+        html.Should().Contain("\"ModelName\":\"gpt-only\"");
+        html.Should().Contain("\"SupportsOpenAi\":true");
+        html.Should().Contain("\"CanUseAnthropic\":true");
         html.Should().Contain("var defaultOpenAiModel = \"gpt-only\"");
-        html.Should().Contain("var defaultAnthropicModel = \"\"");
+        html.Should().Contain("var defaultAnthropicModel = \"gpt-only\"");
     }
 }
 
