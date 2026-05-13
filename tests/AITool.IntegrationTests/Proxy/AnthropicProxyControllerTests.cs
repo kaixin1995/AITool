@@ -308,6 +308,42 @@ public sealed class AnthropicProxyControllerTests
     }
 
     [Fact]
+    public async Task Post_messages_bridges_multiple_openai_tool_call_deltas_to_anthropic_tool_use_events()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            OpenAiStreamingLines =
+            [
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"Glob\",\"arguments\":\"{\\u0022path\\u0022:\\u0022src\"}},{\"index\":1,\"id\":\"call_2\",\"function\":{\"name\":\"Read\",\"arguments\":\"{\\u0022file_path\\u0022:\\u0022README\"}}]}}]}",
+                string.Empty,
+                "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"\\u0022}\"}},{\"index\":1,\"function\":{\"arguments\":\".md\\u0022}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":6,\"prompt_tokens_details\":{\"cached_tokens\":1},\"completion_tokens\":4}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "OpenAI");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("\"name\":\"Glob\"");
+        body.Should().Contain("\"name\":\"Read\"");
+        body.Should().Contain("\"partial_json\":\"{\\u0022path\\u0022:\\u0022src\"");
+        body.Should().Contain("\"partial_json\":\"{\\u0022file_path\\u0022:\\u0022README\"");
+        body.Should().Contain("event: message_stop");
+    }
+
+    [Fact]
     public async Task Post_messages_bridges_multiline_openai_sse_block_to_anthropic_events()
     {
         var fakeForwardService = new AnthropicFakeProxyForwardService
@@ -345,6 +381,39 @@ public sealed class AnthropicProxyControllerTests
     }
 
     [Fact]
+    public async Task Post_messages_accumulates_multiple_anthropic_text_and_thinking_blocks_into_openai_response()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            ForwardResultFactory = _ => new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "{\"id\":\"msg_multi\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"thinking\",\"thinking\":\"step-1\"},{\"type\":\"thinking\",\"thinking\":\"step-2\"},{\"type\":\"text\",\"text\":\"hello\"},{\"type\":\"text\",\"text\":\" world\"}],\"stop_reason\":\"end_turn\",\"usage\":{\"input_tokens\":6,\"cache_read_input_tokens\":1,\"output_tokens\":3}}",
+                InputTokens = 6,
+                CachedTokens = 1,
+                OutputTokens = 3
+            }
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "Anthropic");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new global::System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "anthropic-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("hello world");
+        document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("reasoning_content").GetString().Should().Be("step-1\nstep-2");
+    }
+
+    [Fact]
     public async Task Post_messages_bridges_non_chunked_openai_stream_response_to_anthropic_events()
     {
         var fakeForwardService = new AnthropicFakeProxyForwardService
@@ -374,6 +443,63 @@ public sealed class AnthropicProxyControllerTests
         body.Should().Contain("\"type\":\"text_delta\"");
         body.Should().Contain("full-response");
         body.Should().Contain("\"stop_reason\":\"end_turn\"");
+        body.Should().Contain("event: message_stop");
+    }
+
+    [Fact]
+    public async Task Post_messages_prefers_non_empty_openai_choice_when_first_choice_is_empty()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            ForwardResultFactory = _ => new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "{\"choices\":[{\"message\":{\"content\":\"\"},\"finish_reason\":\"stop\"},{\"message\":{\"content\":\"openai-second-choice\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":6,\"prompt_tokens_details\":{\"cached_tokens\":2},\"completion_tokens\":9}}",
+                InputTokens = 6,
+                CachedTokens = 2,
+                OutputTokens = 9
+            }
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "OpenAI");
+        using var client = factory.CreateClient();
+
+        var response = await SendMessagesAsync(client);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("openai-second-choice");
+    }
+
+    [Fact]
+    public async Task Post_messages_bridges_multi_choice_openai_stream_content_to_anthropic_events()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            OpenAiStreamingLines =
+            [
+                "data: {\"choices\":[{\"index\":0,\"delta\":{}},{\"index\":1,\"delta\":{\"content\":\"from-second-choice\"}}],\"usage\":{\"prompt_tokens\":6,\"prompt_tokens_details\":{\"cached_tokens\":1},\"completion_tokens\":2}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "OpenAI");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("from-second-choice");
         body.Should().Contain("event: message_stop");
     }
 
@@ -639,6 +765,7 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
 {
     public List<ProxyForwardRequest> Requests { get; } = [];
     public List<string>? OpenAiStreamingLines { get; set; }
+    public Func<ProxyForwardRequest, ProxyForwardResult>? ForwardResultFactory { get; set; }
     public Func<ProxyForwardRequest, ProxyForwardResult>? StreamingResultFactory { get; set; }
 
     // 使用固定成功响应，验证 Anthropic 入口会把真实运行时参数传递到转发层。
@@ -658,6 +785,12 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
             TargetPath = request.TargetPath,
             ForwardHeaders = new Dictionary<string, string>(request.ForwardHeaders, StringComparer.OrdinalIgnoreCase)
         });
+
+        var directResult = ForwardResultFactory?.Invoke(request);
+        if (directResult is not null)
+        {
+            return Task.FromResult(directResult);
+        }
 
         if (string.Equals(request.ProtocolType, "OpenAI", StringComparison.Ordinal))
         {

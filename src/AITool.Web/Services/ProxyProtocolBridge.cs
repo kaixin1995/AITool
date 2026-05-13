@@ -151,59 +151,67 @@ public static class ProxyProtocolBridge
                 return builder.ToString();
             }
 
-            var choice = choices[0];
-            if (choice.TryGetProperty("finish_reason", out var finishReason) && finishReason.ValueKind == JsonValueKind.String)
+            foreach (var choice in EnumerateOpenAiChoices(root))
             {
-                state.StopReason = MapOpenAiFinishReason(finishReason.GetString());
-            }
-
-            if (!choice.TryGetProperty("delta", out var delta))
-            {
-                return builder.ToString();
-            }
-
-            var reasoningText = ExtractReasoningFromElement(delta);
-            if (reasoningText.Length > 0)
-            {
-                state.HadAnyContent = true;
-                if (state.ThinkingIndex < 0)
+                if (choice.TryGetProperty("finish_reason", out var finishReason) && finishReason.ValueKind == JsonValueKind.String)
                 {
-                    state.ThinkingIndex = state.NextContentIndex++;
-                    AppendSseEvent(builder, "content_block_start", new JsonObject
+                    state.StopReason = MapOpenAiFinishReason(finishReason.GetString());
+                }
+
+                if (!choice.TryGetProperty("delta", out var delta))
+                {
+                    continue;
+                }
+
+                var reasoningText = ExtractReasoningFromElement(delta);
+                if (reasoningText.Length > 0)
+                {
+                    state.HadAnyContent = true;
+                    if (state.ThinkingIndex < 0)
                     {
-                        ["type"] = "content_block_start",
-                        ["index"] = state.ThinkingIndex,
-                        ["content_block"] = new JsonObject
+                        state.ThinkingIndex = state.NextContentIndex++;
+                        AppendSseEvent(builder, "content_block_start", new JsonObject
                         {
-                            ["type"] = "thinking",
-                            ["thinking"] = ""
+                            ["type"] = "content_block_start",
+                            ["index"] = state.ThinkingIndex,
+                            ["content_block"] = new JsonObject
+                            {
+                                ["type"] = "thinking",
+                                ["thinking"] = ""
+                            }
+                        });
+                    }
+
+                    AppendSseEvent(builder, "content_block_delta", new JsonObject
+                    {
+                        ["type"] = "content_block_delta",
+                        ["index"] = state.ThinkingIndex,
+                        ["delta"] = new JsonObject
+                        {
+                            ["type"] = "thinking_delta",
+                            ["thinking"] = reasoningText
                         }
                     });
                 }
 
-                AppendSseEvent(builder, "content_block_delta", new JsonObject
+                var toolCallDeltas = GetToolCallDeltas(choice);
+                if (toolCallDeltas.Count > 0)
                 {
-                    ["type"] = "content_block_delta",
-                    ["index"] = state.ThinkingIndex,
-                    ["delta"] = new JsonObject
+                    state.HadAnyContent = true;
+                    CloseThinkingBlockIfNeeded(builder, state);
+                    CloseTextBlockIfNeeded(builder, state);
+                    foreach (var toolCallDelta in toolCallDeltas)
                     {
-                        ["type"] = "thinking_delta",
-                        ["thinking"] = reasoningText
+                        AppendToolCallDelta(builder, state, toolCallDelta);
                     }
-                });
-            }
+                }
 
-            if (TryGetToolCallDelta(choice, out var toolCallDelta))
-            {
-                state.HadAnyContent = true;
-                CloseThinkingBlockIfNeeded(builder, state);
-                CloseTextBlockIfNeeded(builder, state);
-                AppendToolCallDelta(builder, state, toolCallDelta);
-            }
+                var contentText = ExtractDeltaContent(delta);
+                if (contentText is null)
+                {
+                    continue;
+                }
 
-            var contentText = ExtractDeltaContent(delta);
-            if (contentText is not null)
-            {
                 state.HadAnyContent = true;
                 if (state.ThinkingIndex >= 0 && !state.ThinkingClosed)
                 {
@@ -349,56 +357,59 @@ public static class ProxyProtocolBridge
                 && choices.ValueKind == JsonValueKind.Array
                 && choices.GetArrayLength() > 0)
             {
-                var choice = choices[0];
-                if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
+                var selectedChoice = GetPreferredOpenAiChoice(choices);
+                if (selectedChoice is { } choice)
                 {
-                    finishReason = fr.GetString() ?? "stop";
-                }
-
-                if (choice.TryGetProperty("message", out var message))
-                {
-                    reasoningText = ExtractReasoningFromElement(message);
-                    contentText = ExtractContentFromMessage(message);
-
-                    if (message.TryGetProperty("tool_calls", out var toolCalls)
-                        && toolCalls.ValueKind == JsonValueKind.Array)
+                    if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
                     {
-                        toolUseBlocks = new JsonArray();
-                        foreach (var tc in toolCalls.EnumerateArray())
+                        finishReason = fr.GetString() ?? "stop";
+                    }
+
+                    if (choice.TryGetProperty("message", out var message))
+                    {
+                        reasoningText = ExtractReasoningFromElement(message);
+                        contentText = ExtractContentFromMessage(message);
+
+                        if (message.TryGetProperty("tool_calls", out var toolCalls)
+                            && toolCalls.ValueKind == JsonValueKind.Array)
                         {
-                            var tcId = tc.TryGetProperty("id", out var tcIdEl) ? tcIdEl.GetString() ?? string.Empty : string.Empty;
-                            var tcName = string.Empty;
-                            var tcArgs = "{}";
-                            if (tc.TryGetProperty("function", out var funcEl))
+                            toolUseBlocks = new JsonArray();
+                            foreach (var tc in toolCalls.EnumerateArray())
                             {
-                                if (funcEl.TryGetProperty("name", out var nEl))
+                                var tcId = tc.TryGetProperty("id", out var tcIdEl) ? tcIdEl.GetString() ?? string.Empty : string.Empty;
+                                var tcName = string.Empty;
+                                var tcArgs = "{}";
+                                if (tc.TryGetProperty("function", out var funcEl))
                                 {
-                                    tcName = nEl.GetString() ?? string.Empty;
+                                    if (funcEl.TryGetProperty("name", out var nEl))
+                                    {
+                                        tcName = nEl.GetString() ?? string.Empty;
+                                    }
+
+                                    if (funcEl.TryGetProperty("arguments", out var aEl))
+                                    {
+                                        tcArgs = aEl.GetString() ?? "{}";
+                                    }
                                 }
 
-                                if (funcEl.TryGetProperty("arguments", out var aEl))
+                                JsonNode? tcInput;
+                                try
                                 {
-                                    tcArgs = aEl.GetString() ?? "{}";
+                                    tcInput = JsonNode.Parse(tcArgs);
                                 }
-                            }
+                                catch
+                                {
+                                    tcInput = tcArgs;
+                                }
 
-                            JsonNode? tcInput;
-                            try
-                            {
-                                tcInput = JsonNode.Parse(tcArgs);
+                                toolUseBlocks.Add(new JsonObject
+                                {
+                                    ["type"] = "tool_use",
+                                    ["id"] = tcId,
+                                    ["name"] = tcName,
+                                    ["input"] = tcInput
+                                });
                             }
-                            catch
-                            {
-                                tcInput = tcArgs;
-                            }
-
-                            toolUseBlocks.Add(new JsonObject
-                            {
-                                ["type"] = "tool_use",
-                                ["id"] = tcId,
-                                ["name"] = tcName,
-                                ["input"] = tcInput
-                            });
                         }
                     }
                 }
@@ -1017,39 +1028,42 @@ public static class ProxyProtocolBridge
             if (root.TryGetProperty("choices", out var choices)
                 && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
             {
-                var choice = choices[0];
-                if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
-                    finishReason = fr.GetString() ?? "stop";
-
-                if (choice.TryGetProperty("message", out var message))
+                var selectedChoice = GetPreferredOpenAiChoice(choices);
+                if (selectedChoice is { } choice)
                 {
-                    reasoningText = ExtractReasoningFromElement(message);
-                    contentText = ExtractContentFromMessage(message);
+                    if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
+                        finishReason = fr.GetString() ?? "stop";
 
-                    // 提取 tool_calls
-                    if (message.TryGetProperty("tool_calls", out var toolCalls)
-                        && toolCalls.ValueKind == JsonValueKind.Array)
+                    if (choice.TryGetProperty("message", out var message))
                     {
-                        toolUseBlocks = new JsonArray();
-                        foreach (var tc in toolCalls.EnumerateArray())
+                        reasoningText = ExtractReasoningFromElement(message);
+                        contentText = ExtractContentFromMessage(message);
+
+                        // 提取 tool_calls
+                        if (message.TryGetProperty("tool_calls", out var toolCalls)
+                            && toolCalls.ValueKind == JsonValueKind.Array)
                         {
-                            var tcId = tc.TryGetProperty("id", out var tcIdEl) ? tcIdEl.GetString() ?? "" : "";
-                            var tcName = "";
-                            var tcArgs = "{}";
-                            if (tc.TryGetProperty("function", out var funcEl))
+                            toolUseBlocks = new JsonArray();
+                            foreach (var tc in toolCalls.EnumerateArray())
                             {
-                                if (funcEl.TryGetProperty("name", out var nEl)) tcName = nEl.GetString() ?? "";
-                                if (funcEl.TryGetProperty("arguments", out var aEl)) tcArgs = aEl.GetString() ?? "{}";
+                                var tcId = tc.TryGetProperty("id", out var tcIdEl) ? tcIdEl.GetString() ?? "" : "";
+                                var tcName = "";
+                                var tcArgs = "{}";
+                                if (tc.TryGetProperty("function", out var funcEl))
+                                {
+                                    if (funcEl.TryGetProperty("name", out var nEl)) tcName = nEl.GetString() ?? "";
+                                    if (funcEl.TryGetProperty("arguments", out var aEl)) tcArgs = aEl.GetString() ?? "{}";
+                                }
+                                JsonNode? tcInput;
+                                try { tcInput = JsonNode.Parse(tcArgs); } catch { tcInput = tcArgs; }
+                                toolUseBlocks.Add(new JsonObject
+                                {
+                                    ["type"] = "tool_use",
+                                    ["id"] = tcId,
+                                    ["name"] = tcName,
+                                    ["input"] = tcInput
+                                });
                             }
-                            JsonNode? tcInput;
-                            try { tcInput = JsonNode.Parse(tcArgs); } catch { tcInput = tcArgs; }
-                            toolUseBlocks.Add(new JsonObject
-                            {
-                                ["type"] = "tool_use",
-                                ["id"] = tcId,
-                                ["name"] = tcName,
-                                ["input"] = tcInput
-                            });
                         }
                     }
                 }
@@ -1099,8 +1113,8 @@ public static class ProxyProtocolBridge
     private static string BuildOpenAiResponseFromAnthropic(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
     {
         string? upstreamId = null;
-        string responseText = "";
-        string thinkingContent = "";
+        string? responseText = null;
+        var thinkingParts = new List<string>();
         string stopReason = "end_turn";
         int cacheCreation = 0;
         int cacheRead = 0;
@@ -1153,11 +1167,13 @@ public static class ProxyProtocolBridge
                             break;
                         case "thinking":
                             if (block.TryGetProperty("thinking", out var thEl) && thEl.ValueKind == JsonValueKind.String)
-                                thinkingContent = thEl.GetString() ?? "";
+                                AppendIfNotEmpty(thinkingParts, thEl.GetString());
                             break;
                         case "text":
                             if (block.TryGetProperty("text", out var txtEl) && txtEl.ValueKind == JsonValueKind.String)
-                                responseText = txtEl.GetString() ?? "";
+                            {
+                                responseText = string.Concat(responseText, txtEl.GetString() ?? string.Empty);
+                            }
                             break;
                     }
                 }
@@ -1172,15 +1188,19 @@ public static class ProxyProtocolBridge
 
         var messageObject = new JsonObject
         {
-            ["role"] = "assistant",
-            ["content"] = responseText
+            ["role"] = "assistant"
         };
+
+        if (!string.IsNullOrWhiteSpace(responseText))
+        {
+            messageObject["content"] = responseText;
+        }
 
         if (tools.Count > 0)
             messageObject["tool_calls"] = tools;
 
-        if (!string.IsNullOrWhiteSpace(thinkingContent))
-            messageObject["reasoning_content"] = thinkingContent;
+        if (!string.IsNullOrWhiteSpace(string.Join("", thinkingParts)))
+            messageObject["reasoning_content"] = string.Join("\n", thinkingParts);
 
         return new JsonObject
         {
@@ -1505,18 +1525,21 @@ public static class ProxyProtocolBridge
                 if (!root.TryGetProperty("choices", out var choices) ||
                     choices.ValueKind != JsonValueKind.Array || choices.GetArrayLength() == 0) continue;
 
-                var choice = choices[0];
-                if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
+                foreach (var choice in EnumerateOpenAiChoices(root))
                 {
-                    var frStr = fr.GetString();
-                    if (!string.IsNullOrEmpty(frStr)) finishReason = frStr;
-                }
+                    if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
+                    {
+                        var frStr = fr.GetString();
+                        if (!string.IsNullOrEmpty(frStr)) finishReason = frStr;
+                    }
 
-                // tool_calls delta
-                if (choice.TryGetProperty("delta", out var delta) &&
-                    delta.TryGetProperty("tool_calls", out var tcs) &&
-                    tcs.ValueKind == JsonValueKind.Array)
-                {
+                    if (!choice.TryGetProperty("delta", out var delta) ||
+                        !delta.TryGetProperty("tool_calls", out var tcs) ||
+                        tcs.ValueKind != JsonValueKind.Array)
+                    {
+                        continue;
+                    }
+
                     foreach (var tc in tcs.EnumerateArray())
                     {
                         var idx = tc.TryGetProperty("index", out var idxEl) && idxEl.ValueKind == JsonValueKind.Number
@@ -2393,41 +2416,44 @@ public static class ProxyProtocolBridge
         }
     }
 
-    private static bool TryGetToolCallDelta(JsonElement choice, out OpenAiToolCallDelta toolCallDelta)
+    private static List<OpenAiToolCallDelta> GetToolCallDeltas(JsonElement choice)
     {
-        toolCallDelta = default;
+        var toolCallDeltas = new List<OpenAiToolCallDelta>();
         if (!choice.TryGetProperty("delta", out var delta) ||
             !delta.TryGetProperty("tool_calls", out var toolCalls) ||
             toolCalls.ValueKind != JsonValueKind.Array ||
             toolCalls.GetArrayLength() == 0)
         {
-            return false;
+            return toolCallDeltas;
         }
 
-        var firstToolCall = toolCalls[0];
-        var index = firstToolCall.TryGetProperty("index", out var indexElement) && indexElement.ValueKind == JsonValueKind.Number
-            ? indexElement.GetInt32()
-            : 0;
-        var id = firstToolCall.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String
-            ? idElement.GetString() ?? string.Empty
-            : string.Empty;
-        var name = string.Empty;
-        var argumentsDelta = string.Empty;
-        if (firstToolCall.TryGetProperty("function", out var functionElement) && functionElement.ValueKind == JsonValueKind.Object)
+        foreach (var toolCall in toolCalls.EnumerateArray())
         {
-            if (functionElement.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String)
+            var index = toolCall.TryGetProperty("index", out var indexElement) && indexElement.ValueKind == JsonValueKind.Number
+                ? indexElement.GetInt32()
+                : 0;
+            var id = toolCall.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String
+                ? idElement.GetString() ?? string.Empty
+                : string.Empty;
+            var name = string.Empty;
+            var argumentsDelta = string.Empty;
+            if (toolCall.TryGetProperty("function", out var functionElement) && functionElement.ValueKind == JsonValueKind.Object)
             {
-                name = nameElement.GetString() ?? string.Empty;
+                if (functionElement.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String)
+                {
+                    name = nameElement.GetString() ?? string.Empty;
+                }
+
+                if (functionElement.TryGetProperty("arguments", out var argumentsElement) && argumentsElement.ValueKind == JsonValueKind.String)
+                {
+                    argumentsDelta = argumentsElement.GetString() ?? string.Empty;
+                }
             }
 
-            if (functionElement.TryGetProperty("arguments", out var argumentsElement) && argumentsElement.ValueKind == JsonValueKind.String)
-            {
-                argumentsDelta = argumentsElement.GetString() ?? string.Empty;
-            }
+            toolCallDeltas.Add(new OpenAiToolCallDelta(index, id, name, argumentsDelta));
         }
 
-        toolCallDelta = new OpenAiToolCallDelta(index, id, name, argumentsDelta);
-        return true;
+        return toolCallDeltas;
     }
 
     private readonly record struct OpenAiToolCallDelta(int Index, string Id, string Name, string ArgumentsDelta);
@@ -2487,10 +2513,15 @@ public static class ProxyProtocolBridge
                 return (responseBody, string.Empty);
             }
 
-            var message = choices[0].GetProperty("message");
-            var reasoning = ExtractReasoningFromElement(message);
-            var content = ExtractContentFromMessage(message);
-            return (content, reasoning);
+            var message = GetPreferredOpenAiMessage(choices);
+            if (message.ValueKind == JsonValueKind.Object)
+            {
+                var reasoning = ExtractReasoningFromElement(message);
+                var content = ExtractContentFromMessage(message);
+                return (content, reasoning);
+            }
+
+            return (responseBody, string.Empty);
         }
         catch
         {
@@ -2560,15 +2591,18 @@ public static class ProxyProtocolBridge
                     continue;
                 }
 
-                var delta = choices[0].TryGetProperty("delta", out var deltaElement) ? deltaElement : default;
-                var content = ExtractDeltaContent(delta);
-                if (content is not null)
+                foreach (var choice in EnumerateOpenAiChoices(document.RootElement))
                 {
-                    sawContentDelta = true;
-                    textBuilder.Append(content);
-                }
+                    var delta = choice.TryGetProperty("delta", out var deltaElement) ? deltaElement : default;
+                    var content = ExtractDeltaContent(delta);
+                    if (content is not null)
+                    {
+                        sawContentDelta = true;
+                        textBuilder.Append(content);
+                    }
 
-                AppendIfNotEmpty(reasoningBuilder, ExtractReasoningFromElement(delta));
+                    AppendIfNotEmpty(reasoningBuilder, ExtractReasoningFromElement(delta));
+                }
             }
             catch
             {
@@ -2664,6 +2698,53 @@ public static class ProxyProtocolBridge
         catch
         {
         }
+    }
+
+    private static IEnumerable<JsonElement> EnumerateOpenAiChoices(JsonElement root)
+    {
+        if (!root.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array)
+        {
+            yield break;
+        }
+
+        foreach (var choice in choices.EnumerateArray())
+        {
+            yield return choice;
+        }
+    }
+
+    private static JsonElement? GetPreferredOpenAiChoice(JsonElement choices)
+    {
+        JsonElement? fallback = null;
+        foreach (var choice in choices.EnumerateArray())
+        {
+            fallback ??= choice;
+            if (choice.TryGetProperty("message", out var message))
+            {
+                var hasToolCalls = message.TryGetProperty("tool_calls", out var toolCalls) &&
+                                   toolCalls.ValueKind == JsonValueKind.Array &&
+                                   toolCalls.GetArrayLength() > 0;
+                var hasReasoning = !string.IsNullOrWhiteSpace(ExtractReasoningFromElement(message));
+                var hasContent = !string.IsNullOrWhiteSpace(ExtractContentFromMessage(message));
+                if (hasToolCalls || hasReasoning || hasContent)
+                {
+                    return choice;
+                }
+            }
+        }
+
+        return fallback;
+    }
+
+    private static JsonElement GetPreferredOpenAiMessage(JsonElement choices)
+    {
+        var preferredChoice = GetPreferredOpenAiChoice(choices);
+        if (preferredChoice is { } choice && choice.TryGetProperty("message", out var message))
+        {
+            return message;
+        }
+
+        return default;
     }
 
     private static string ExtractContentFromMessage(JsonElement message)
