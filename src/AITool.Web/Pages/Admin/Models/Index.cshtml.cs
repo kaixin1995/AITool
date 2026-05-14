@@ -132,6 +132,12 @@ public class IndexModel : PageModel
                 .Append(model.ModelName)
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
+            var affectedMonitors = await _dbContext.ModelHealthMonitors
+                .Where(x => x.ModelLibraryItemId == modelId)
+                .ToListAsync(cancellationToken);
+            var affectedDetectionTasks = await _dbContext.DetectionTasks
+                .Where(x => x.ModelLibraryItemId == modelId)
+                .ToListAsync(cancellationToken);
 
             if (mappings.Count > 0)
             {
@@ -141,6 +147,15 @@ public class IndexModel : PageModel
             {
                 _dbContext.ProxyRouteRules.RemoveRange(affectedRules);
             }
+            if (affectedMonitors.Count > 0)
+            {
+                _dbContext.ModelHealthMonitors.RemoveRange(affectedMonitors);
+            }
+            foreach (var task in affectedDetectionTasks)
+            {
+                // 删除模型后清空检测任务的模型绑定，避免后台继续出现已删除模型。
+                task.ModelLibraryItemId = null;
+            }
             _dbContext.ModelLibraryItems.Remove(model);
 
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -148,7 +163,7 @@ public class IndexModel : PageModel
 
             _metadataCache?.InvalidateModelMetadata();
             _metadataCache?.InvalidateRouteTargets();
-            StatusMessage = $"模型已删除，并清理了 {mappings.Count} 条站点关联与 {affectedRules.Count} 条相关路由规则";
+            StatusMessage = $"模型已删除，并清理了 {mappings.Count} 条站点关联、{affectedRules.Count} 条相关路由规则、{affectedMonitors.Count} 条健康监控，并解绑了 {affectedDetectionTasks.Count} 个检测任务";
             StatusSuccess = true;
         }
         catch (Exception ex)

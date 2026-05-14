@@ -60,38 +60,34 @@ public class IndexModel : PageModel
                 g => g.Key,
                 g => g.OrderByDescending(d => d.RequestedAt).First());
 
+        var models = await _dbContext.ModelLibraryItems
+            .ToDictionaryAsync(m => m.Id, m => m, cancellationToken);
+        var sites = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
         var mappings = await _dbContext.SiteModelMappings
             .Where(m => m.IsEnabled)
             .ToListAsync(cancellationToken);
-        var modelIds = mappings.Select(m => m.ModelLibraryItemId).Distinct().ToList();
-        var models = await _dbContext.ModelLibraryItems
-            .Where(m => modelIds.Contains(m.Id))
-            .ToDictionaryAsync(m => m.Id, m => m, cancellationToken);
-
-        var siteIds = mappings.Select(m => m.SiteId).Distinct().ToList();
-        var sites = await _dbContext.Sites
-            .Where(s => siteIds.Contains(s.Id) && s.IsEnabled)
-            .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
         ModelGroups = mappings
-            .Where(m => sites.ContainsKey(m.SiteId))
+            .Where(m => models.ContainsKey(m.ModelLibraryItemId) && sites.ContainsKey(m.SiteId))
             .GroupBy(m => m.ModelLibraryItemId)
             .Select(g =>
             {
-                models.TryGetValue(g.Key, out var model);
+                var model = models[g.Key];
                 return new DetectionModelGroupViewModel
                 {
                     ModelLibraryItemId = g.Key,
-                    ModelName = model?.ModelName ?? "(未知模型)",
-                    DisplayName = model?.DisplayName ?? "(未知模型)",
+                    ModelName = model.ModelName,
+                    DisplayName = model.DisplayName,
                     Sites = g.Select(m =>
                     {
-                        latestLogs.TryGetValue((m.SiteId, model?.ModelName ?? string.Empty), out var log);
-                        sites.TryGetValue(m.SiteId, out var site);
+                        latestLogs.TryGetValue((m.SiteId, model.ModelName), out var log);
+                        var site = sites[m.SiteId];
                         return new DetectionSiteStatusViewModel
                         {
                             MappingId = m.Id,
-                            SiteName = site?.Name ?? "(未知站点)",
+                            SiteName = site.Name,
                             RemoteModelName = m.RemoteModelName,
                             LastStatus = log?.Status ?? m.LastStatus,
                             LastCheckedAt = log?.RequestedAt,

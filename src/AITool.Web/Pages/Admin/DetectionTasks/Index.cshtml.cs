@@ -101,6 +101,19 @@ public class IndexModel : PageModel
                 .Where(m => modelIds.Contains(m.Id))
                 .ToDictionaryAsync(m => m.Id, m => m, cancellationToken)
             : new Dictionary<Guid, Domain.Models.ModelLibraryItem>();
+        var orphanTaskIds = tasks
+            .Where(t => t.ModelLibraryItemId.HasValue && !models.ContainsKey(t.ModelLibraryItemId.Value))
+            .Select(t => t.Id)
+            .ToList();
+        if (orphanTaskIds.Count > 0)
+        {
+            // 历史删除模型后的遗留任务绑定在这里自动解绑，避免任务页继续引用无效模型。
+            foreach (var task in tasks.Where(t => orphanTaskIds.Contains(t.Id)))
+            {
+                task.ModelLibraryItemId = null;
+            }
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
 
         Tasks = tasks.Select(t =>
         {

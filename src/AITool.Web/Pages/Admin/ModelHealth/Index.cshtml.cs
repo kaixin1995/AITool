@@ -133,21 +133,34 @@ public class IndexModel : PageModel
     {
         /* 加载已监控的模型列表 */
         var monitors = await _dbContext.ModelHealthMonitors.ToListAsync(cancellationToken);
-        var monitoredModelIds = monitors.Select(m => m.ModelLibraryItemId).ToList();
+        var monitoredModelIds = monitors.Select(m => m.ModelLibraryItemId).Distinct().ToList();
 
         var models = await _dbContext.ModelLibraryItems
             .Where(m => monitoredModelIds.Contains(m.Id))
             .ToDictionaryAsync(m => m.Id, m => m, cancellationToken);
+        var orphanMonitors = monitors
+            .Where(m => !models.ContainsKey(m.ModelLibraryItemId))
+            .ToList();
+        if (orphanMonitors.Count > 0)
+        {
+            // 历史删除模型留下的监控配置在这里顺手清掉，避免页面继续出现已删除模型。
+            _dbContext.ModelHealthMonitors.RemoveRange(orphanMonitors);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            monitors = monitors
+                .Where(m => models.ContainsKey(m.ModelLibraryItemId))
+                .ToList();
+        }
+
+        monitoredModelIds = monitors
+            .Select(m => m.ModelLibraryItemId)
+            .Distinct()
+            .ToList();
 
         MonitoredModels = monitors
-            .Select(m =>
+            .Select(m => new MonitoredModelItem
             {
-                models.TryGetValue(m.ModelLibraryItemId, out var model);
-                return new MonitoredModelItem
-                {
-                    ModelLibraryItemId = m.ModelLibraryItemId,
-                    DisplayName = model?.DisplayName ?? "(已删除的模型)"
-                };
+                ModelLibraryItemId = m.ModelLibraryItemId,
+                DisplayName = models[m.ModelLibraryItemId].DisplayName
             })
             .OrderBy(m => m.DisplayName)
             .ToList();
