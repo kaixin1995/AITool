@@ -7,6 +7,7 @@ namespace AITool.Web.Services;
 public sealed class DeveloperInvocationTraceStore
 {
     private const int MaxEntryCount = 100;
+    private static readonly TimeSpan EntryRetention = TimeSpan.FromHours(6);
     private readonly object _gate = new();
     private readonly LinkedList<DeveloperInvocationTraceEntry> _entries = [];
     private readonly Dictionary<Guid, LinkedListNode<DeveloperInvocationTraceEntry>> _nodes = [];
@@ -33,6 +34,7 @@ public sealed class DeveloperInvocationTraceStore
 
         lock (_gate)
         {
+            PurgeExpiredUnsafe();
             var node = _entries.AddFirst(entry);
             _nodes[entry.TraceId] = node;
             TrimUnsafe();
@@ -45,6 +47,7 @@ public sealed class DeveloperInvocationTraceStore
     {
         lock (_gate)
         {
+            PurgeExpiredUnsafe();
             if (!_nodes.TryGetValue(traceId, out var node))
             {
                 return Guid.Empty;
@@ -77,6 +80,7 @@ public sealed class DeveloperInvocationTraceStore
     {
         lock (_gate)
         {
+            PurgeExpiredUnsafe();
             if (!_nodes.TryGetValue(traceId, out var node))
             {
                 return;
@@ -122,7 +126,29 @@ public sealed class DeveloperInvocationTraceStore
     {
         lock (_gate)
         {
+            PurgeExpiredUnsafe();
             return _entries.Select(Clone).ToList();
+        }
+    }
+
+    // 展开详情时按 traceId 单独读取，避免列表阶段一次返回大量明细数据。
+    public DeveloperInvocationTraceEntry? Get(Guid traceId)
+    {
+        lock (_gate)
+        {
+            PurgeExpiredUnsafe();
+            return _nodes.TryGetValue(traceId, out var node) ? Clone(node.Value) : null;
+        }
+    }
+
+    // 清理超过保留时长的旧记录，避免页面和内存长期累积无意义数据。
+    private void PurgeExpiredUnsafe()
+    {
+        var expireBefore = DateTimeOffset.UtcNow - EntryRetention;
+        while (_entries.Last is { } last && last.Value.CreatedAt < expireBefore)
+        {
+            _nodes.Remove(last.Value.TraceId);
+            _entries.RemoveLast();
         }
     }
 

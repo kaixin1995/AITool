@@ -8,7 +8,7 @@
 <div class="page-header trace-page-header">
     <div>
         <h2 class="page-title">调用调试</h2>
-        <p class="page-subtitle">仅保留内存中的最近 100 条请求与返回信息，便于排查客户端调用问题</p>
+        <p class="page-subtitle">内存中最多保留最近 100 条记录，且仅保留 6 小时；列表按页加载，每页只展示 20 条</p>
     </div>
     <div class="trace-toolbar">
         <label class="trace-refresh-switch" for="autoRefreshToggle">
@@ -23,7 +23,7 @@
     <article class="trace-overview-card trace-overview-card-primary">
         <span class="trace-overview-label">当前记录数</span>
         <strong class="trace-overview-value" id="traceTotalCount">@Model.InitialTotalCount</strong>
-        <span class="trace-overview-hint">只保留内存中的最新 100 条</span>
+        <span class="trace-overview-hint">最多 100 条，且仅保留 6 小时</span>
     </article>
     <article class="trace-overview-card trace-overview-card-danger">
         <span class="trace-overview-label">失败 / 异常</span>
@@ -44,7 +44,15 @@
 
 <div class="trace-loading-card" id="traceLoadingCard">
     <div class="trace-loading-title">调用记录按需加载中</div>
-    <div class="trace-loading-text">首次进入页面时先展示统计信息，详细列表会在后台懒加载，避免 100 条记录一次性渲染导致页面抖动。</div>
+    <div class="trace-loading-text">首次进入页面时先展示统计信息，详细列表会在后台懒加载，并按页加载 20 条，避免一次性渲染过多记录导致页面抖动。</div>
+</div>
+
+<div class="trace-pagination-bar" id="tracePaginationBar">
+    <div class="trace-pagination-summary" id="tracePaginationSummary">每页 20 条</div>
+    <div class="trace-pagination-actions">
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="tracePrevPageButton">上一页</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="traceNextPageButton">下一页</button>
+    </div>
 </div>
 
 <div class="accordion trace-accordion d-flex flex-column gap-3" id="invocationTraceAccordion"></div>
@@ -181,6 +189,32 @@
 
     .trace-loading-card.d-none {
         display: none;
+    }
+
+    .trace-pagination-bar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        margin-bottom: 16px;
+        padding: 14px 16px;
+        border-radius: 18px;
+        border: 1px solid rgba(226, 232, 240, 0.9);
+        background: #fff;
+        box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+    }
+
+    .trace-pagination-summary {
+        font-size: 13px;
+        color: var(--text-secondary);
+    }
+
+    .trace-pagination-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
     }
 
     .trace-focus-tip-mark {
@@ -525,11 +559,17 @@
             var refreshNowButton = document.getElementById('refreshNowButton');
             var traceAccordion = document.getElementById('invocationTraceAccordion');
             var traceLoadingCard = document.getElementById('traceLoadingCard');
+            var tracePaginationSummary = document.getElementById('tracePaginationSummary');
+            var tracePrevPageButton = document.getElementById('tracePrevPageButton');
+            var traceNextPageButton = document.getElementById('traceNextPageButton');
             var refreshIntervalMs = 5000;
             var refreshTimerId = null;
             var listEndpoint = '@Url.Page("./Index", "List")';
+            var detailEndpoint = '@Url.Page("./Index", "Detail")';
             var hasLoadedListOnce = false;
             var isRefreshing = false;
+            var currentPage = 1;
+            var currentTotalPages = 1;
 
             function escapeHtml(value) {
                 return (value || '').replace(/[&<>"']/g, function (char) {
@@ -569,6 +609,35 @@
                 }
             }
 
+            // 分页信息需要在自动刷新后继续保持当前页，而不是把整页记录无限堆积。
+            function updatePagination(payload) {
+                currentPage = payload.pageNumber || 1;
+                currentTotalPages = payload.totalPages || 1;
+                if (tracePaginationSummary) {
+                    var totalCount = payload.totalCount || 0;
+                    var pageSize = payload.pageSize || 20;
+                    tracePaginationSummary.textContent = '第 ' + currentPage + ' / ' + currentTotalPages + ' 页 · 每页 ' + pageSize + ' 条 · 共 ' + totalCount + ' 条';
+                }
+                if (tracePrevPageButton) {
+                    tracePrevPageButton.disabled = currentPage <= 1 || isRefreshing;
+                }
+                if (traceNextPageButton) {
+                    traceNextPageButton.disabled = currentPage >= currentTotalPages || isRefreshing;
+                }
+            }
+
+            function buildListUrl(page) {
+                var url = new URL(listEndpoint, window.location.origin);
+                url.searchParams.set('page', String(page || 1));
+                return url.toString();
+            }
+
+            function buildDetailUrl(traceId) {
+                var url = new URL(detailEndpoint, window.location.origin);
+                url.searchParams.set('traceId', String(traceId || ''));
+                return url.toString();
+            }
+
             function renderRequestHeaders(headers) {
                 try {
                     return JSON.stringify(headers || {}, null, 2);
@@ -588,7 +657,7 @@
                 }
             }
 
-            function renderAttempts(entry, index) {
+            function renderAttempts(entry) {
                 if (!entry.attempts || entry.attempts.length === 0) {
                     return '';
                 }
@@ -629,9 +698,9 @@
                                     '<div class="col-xl-6">' +
                                         '<div class="trace-panel-header">' +
                                             '<div class="trace-section-title mb-0">尝试返回体</div>' +
-                                            '<button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="attempt-response-body-' + index + '-' + attemptIndex + '">复制返回体</button>' +
+                                            '<button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="attempt-response-body-' + entry.traceId + '-' + attempt.attemptId + '">复制返回体</button>' +
                                         '</div>' +
-                                        '<pre id="attempt-response-body-' + index + '-' + attemptIndex + '" class="trace-pre trace-code-panel">' + escapeHtml(attemptResponseBodyText) + '</pre>' +
+                                        '<pre id="attempt-response-body-' + entry.traceId + '-' + attempt.attemptId + '" class="trace-pre trace-code-panel">' + escapeHtml(attemptResponseBodyText) + '</pre>' +
                                     '</div>' +
                                 '</div>' +
                             '</article>';
@@ -639,9 +708,7 @@
                     '</div>';
             }
 
-            function renderEntry(entry, index) {
-                var statusCodeText = entry.statusCode > 0 ? String(entry.statusCode) : '-';
-                var durationText = entry.totalDurationMs > 0 ? entry.totalDurationMs + ' ms' : '-';
+            function renderDetail(entry) {
                 var responseBodyText = entry.responseBody && entry.responseBody.trim() ? entry.responseBody : '-';
                 var errorBlock = entry.errorMessage && entry.errorMessage.trim()
                     ? '<div class="trace-error-stack"><div class="trace-section-title trace-section-title-danger">错误信息</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">' + escapeHtml(entry.errorMessage) + '</pre></div>'
@@ -649,9 +716,61 @@
                 var attemptsSummary = '成功 ' + (entry.successAttemptCount || 0) + ' / 失败 ' + (entry.failedAttemptCount || 0) + ' / 等待 ' + (entry.pendingAttemptCount || 0);
 
                 return '' +
+                    '<div class="card-body d-flex flex-column gap-3">' +
+                        '<div class="row g-3">' +
+                            '<div class="col-xl-4">' +
+                                '<div class="trace-section-title">基础信息</div>' +
+                                '<div class="trace-info-panel">' +
+                                    '<div><strong>客户端来源：</strong>' + escapeHtml(entry.source) + '</div>' +
+                                    '<div><strong>User-Agent：</strong>' + escapeHtml(entry.userAgent || '-') + '</div>' +
+                                    '<div><strong>客户端 IP：</strong>' + escapeHtml(entry.clientIp || '-') + '</div>' +
+                                    '<div><strong>请求协议：</strong>' + escapeHtml(entry.protocolType) + '</div>' +
+                                    '<div><strong>请求模型：</strong>' + escapeHtml(entry.requestModel) + '</div>' +
+                                    '<div><strong>最终状态：</strong>' + escapeHtml(entry.statusText) + '</div>' +
+                                    '<div><strong>尝试次数：</strong>' + escapeHtml(String((entry.attempts || []).length)) + '</div>' +
+                                    '<div><strong>尝试统计：</strong>' + escapeHtml(attemptsSummary) + '</div>' +
+                                '</div>' +
+                            '</div>' +
+                            '<div class="col-xl-8">' +
+                                '<div class="trace-section-title">请求头</div>' +
+                                '<pre class="trace-pre trace-code-panel">' + escapeHtml(renderRequestHeaders(entry.requestHeaders)) + '</pre>' +
+                            '</div>' +
+                        '</div>' +
+                        '<div>' +
+                            '<div class="trace-section-title">真实路由尝试链路</div>' +
+                            '<div class="trace-chain-tip">会按真实尝试顺序展示每一次命中的路由模型，包括前面失败、后面成功的完整链路。</div>' +
+                            (renderAttempts(entry) || '<div class="trace-info-panel">当前还没有命中任何路由尝试。</div>') +
+                        '</div>' +
+                        errorBlock +
+                        '<div class="row g-3">' +
+                            '<div class="col-xl-6">' +
+                                '<div class="trace-panel-header">' +
+                                    '<div class="trace-section-title mb-0">请求体</div>' +
+                                    '<button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="request-body-' + entry.traceId + '">复制请求体</button>' +
+                                '</div>' +
+                                '<pre id="request-body-' + entry.traceId + '" class="trace-pre trace-code-panel">' + escapeHtml(entry.requestBody) + '</pre>' +
+                            '</div>' +
+                            '<div class="col-xl-6">' +
+                                '<div class="trace-panel-header">' +
+                                    '<div class="trace-section-title mb-0">返回体</div>' +
+                                    '<button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="response-body-' + entry.traceId + '">复制返回体</button>' +
+                                '</div>' +
+                                '<pre id="response-body-' + entry.traceId + '" class="trace-pre trace-code-panel">' + escapeHtml(responseBodyText) + '</pre>' +
+                            '</div>' +
+                        '</div>' +
+                    '</div>';
+            }
+
+            function renderEntry(entry) {
+                var traceCollapseId = 'invocation-trace-' + entry.traceId;
+                var statusCodeText = entry.statusCode > 0 ? String(entry.statusCode) : '-';
+                var durationText = entry.totalDurationMs > 0 ? entry.totalDurationMs + ' ms' : '-';
+                var attemptsSummary = '成功 ' + (entry.successAttemptCount || 0) + ' / 失败 ' + (entry.failedAttemptCount || 0) + ' / 等待 ' + (entry.pendingAttemptCount || 0);
+
+                return '' +
                     '<div class="card trace-card trace-card-' + escapeHtml(entry.statusClass) + '" data-trace-status="' + escapeHtml(entry.status) + '">' +
                         '<div class="card-header trace-card-header bg-white">' +
-                            '<button class="trace-card-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#invocation-trace-' + index + '" aria-expanded="false" aria-controls="invocation-trace-' + index + '">' +
+                            '<button class="trace-card-toggle" type="button" data-bs-toggle="collapse" data-bs-target="#' + traceCollapseId + '" aria-expanded="false" aria-controls="' + traceCollapseId + '">' +
                                 '<div class="trace-card-main">' +
                                     '<div class="trace-card-topline">' +
                                         '<div class="trace-title-group">' +
@@ -678,49 +797,10 @@
                                 '</div>' +
                             '</button>' +
                         '</div>' +
-                        '<div id="invocation-trace-' + index + '" class="collapse" data-bs-parent="#invocationTraceAccordion">' +
-                            '<div class="card-body d-flex flex-column gap-3">' +
-                                '<div class="row g-3">' +
-                                    '<div class="col-xl-4">' +
-                                        '<div class="trace-section-title">基础信息</div>' +
-                                        '<div class="trace-info-panel">' +
-                                            '<div><strong>客户端来源：</strong>' + escapeHtml(entry.source) + '</div>' +
-                                            '<div><strong>User-Agent：</strong>' + escapeHtml(entry.userAgent || '-') + '</div>' +
-                                            '<div><strong>客户端 IP：</strong>' + escapeHtml(entry.clientIp || '-') + '</div>' +
-                                            '<div><strong>请求协议：</strong>' + escapeHtml(entry.protocolType) + '</div>' +
-                                            '<div><strong>请求模型：</strong>' + escapeHtml(entry.requestModel) + '</div>' +
-                                            '<div><strong>最终状态：</strong>' + escapeHtml(entry.statusText) + '</div>' +
-                                            '<div><strong>尝试次数：</strong>' + escapeHtml(String((entry.attempts || []).length)) + '</div>' +
-                                            '<div><strong>尝试统计：</strong>' + escapeHtml(attemptsSummary) + '</div>' +
-                                        '</div>' +
-                                    '</div>' +
-                                    '<div class="col-xl-8">' +
-                                        '<div class="trace-section-title">请求头</div>' +
-                                        '<pre class="trace-pre trace-code-panel">' + escapeHtml(renderRequestHeaders(entry.requestHeaders)) + '</pre>' +
-                                    '</div>' +
-                                '</div>' +
-                                '<div>' +
-                                    '<div class="trace-section-title">真实路由尝试链路</div>' +
-                                    '<div class="trace-chain-tip">会按真实尝试顺序展示每一次命中的路由模型，包括前面失败、后面成功的完整链路。</div>' +
-                                    (renderAttempts(entry, index) || '<div class="trace-info-panel">当前还没有命中任何路由尝试。</div>') +
-                                '</div>' +
-                                errorBlock +
-                                '<div class="row g-3">' +
-                                    '<div class="col-xl-6">' +
-                                        '<div class="trace-panel-header">' +
-                                            '<div class="trace-section-title mb-0">请求体</div>' +
-                                            '<button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="request-body-' + index + '">复制请求体</button>' +
-                                        '</div>' +
-                                        '<pre id="request-body-' + index + '" class="trace-pre trace-code-panel">' + escapeHtml(entry.requestBody) + '</pre>' +
-                                    '</div>' +
-                                    '<div class="col-xl-6">' +
-                                        '<div class="trace-panel-header">' +
-                                            '<div class="trace-section-title mb-0">返回体</div>' +
-                                            '<button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="response-body-' + index + '">复制返回体</button>' +
-                                        '</div>' +
-                                        '<pre id="response-body-' + index + '" class="trace-pre trace-code-panel">' + escapeHtml(responseBodyText) + '</pre>' +
-                                    '</div>' +
-                                '</div>' +
+                        '<div id="' + traceCollapseId + '" class="collapse" data-bs-parent="#invocationTraceAccordion" data-trace-id="' + escapeHtml(entry.traceId) + '">' +
+                            '<div class="card-body d-flex flex-column gap-3 trace-detail-loading">' +
+                                '<div class="trace-loading-title">详情将在展开后加载</div>' +
+                                '<div class="trace-loading-text">为减少列表刷新开销，请求头、请求体、返回体和完整尝试链路会在展开当前卡片后单独获取。</div>' +
                             '</div>' +
                         '</div>' +
                     '</div>';
@@ -728,6 +808,42 @@
 
             function renderEmptyState() {
                 return '<div class="card trace-empty-card"><div class="card-body text-secondary">暂无调用记录</div></div>';
+            }
+
+            // 展开时单独加载明细，避免分页列表和自动刷新反复搬运大字段。
+            async function loadTraceDetail(collapseElement) {
+                if (!collapseElement) {
+                    return;
+                }
+
+                var traceId = collapseElement.getAttribute('data-trace-id');
+                if (!traceId || collapseElement.getAttribute('data-detail-loading') === 'true') {
+                    return;
+                }
+
+                collapseElement.setAttribute('data-detail-loading', 'true');
+                collapseElement.innerHTML = '<div class="card-body d-flex flex-column gap-3 trace-detail-loading"><div class="trace-loading-title">详情加载中</div><div class="trace-loading-text">正在单独获取当前调用记录的请求头、请求体、返回体和尝试链路。</div></div>';
+
+                try {
+                    var response = await fetch(buildDetailUrl(traceId), {
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        cache: 'no-store'
+                    });
+
+                    if (!response.ok) {
+                        collapseElement.innerHTML = '<div class="card-body"><div class="trace-error-stack"><div class="trace-section-title trace-section-title-danger">详情加载失败</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">无法读取当前调用记录详情，请稍后重试。</pre></div></div>';
+                        return;
+                    }
+
+                    var payload = await response.json();
+                    collapseElement.innerHTML = renderDetail(payload);
+                } catch {
+                    collapseElement.innerHTML = '<div class="card-body"><div class="trace-error-stack"><div class="trace-section-title trace-section-title-danger">详情加载失败</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">请求详情接口时发生异常，请稍后重试。</pre></div></div>';
+                } finally {
+                    collapseElement.removeAttribute('data-detail-loading');
+                }
             }
 
             function restoreOpenTraceIds(openIds) {
@@ -746,16 +862,18 @@
                 });
             }
 
-            async function refreshTraceList() {
+            async function refreshTraceList(page) {
                 if (isRefreshing) {
                     return;
                 }
 
                 isRefreshing = true;
+                var requestedPage = Math.max(1, page || currentPage || 1);
                 var openIds = hasLoadedListOnce ? getOpenTraceIds() : [];
+                updatePagination({ pageNumber: currentPage, pageSize: 20, totalPages: Math.max(currentPage, 1), totalCount: 0 });
 
                 try {
-                    var response = await fetch(listEndpoint, {
+                    var response = await fetch(buildListUrl(requestedPage), {
                         headers: {
                             'X-Requested-With': 'XMLHttpRequest'
                         },
@@ -768,6 +886,7 @@
 
                     var payload = await response.json();
                     updateSummary(payload);
+                    updatePagination(payload);
 
                     if (!traceAccordion) {
                         return;
@@ -790,19 +909,47 @@
                     restoreOpenTraceIds(openIds);
                 } finally {
                     isRefreshing = false;
+                    if (tracePrevPageButton) {
+                        tracePrevPageButton.disabled = currentPage <= 1;
+                    }
+                    if (traceNextPageButton) {
+                        traceNextPageButton.disabled = currentPage >= currentTotalPages;
+                    }
                 }
+            }
+
+            if (traceAccordion) {
+                traceAccordion.addEventListener('shown.bs.collapse', function (event) {
+                    loadTraceDetail(event.target);
+                });
             }
 
             if (refreshNowButton) {
                 refreshNowButton.addEventListener('click', function () {
-                    refreshTraceList();
+                    refreshTraceList(currentPage);
+                });
+            }
+
+            if (tracePrevPageButton) {
+                tracePrevPageButton.addEventListener('click', function () {
+                    if (currentPage > 1) {
+                        refreshTraceList(currentPage - 1);
+                    }
+                });
+            }
+
+            if (traceNextPageButton) {
+                traceNextPageButton.addEventListener('click', function () {
+                    if (currentPage < currentTotalPages) {
+                        refreshTraceList(currentPage + 1);
+                    }
                 });
             }
 
             if (autoRefreshToggle) {
                 autoRefreshToggle.addEventListener('change', function () {
                     if (autoRefreshToggle.checked && !hasLoadedListOnce) {
-                        refreshTraceList();
+                        refreshTraceList(currentPage);
                     }
                 });
             }
@@ -861,14 +1008,14 @@
 
                 refreshTimerId = window.setInterval(function () {
                     if (autoRefreshToggle && autoRefreshToggle.checked) {
-                        refreshTraceList();
+                        refreshTraceList(currentPage);
                     }
                 }, refreshIntervalMs);
             }
 
             ensureRefreshTimer();
             window.setTimeout(function () {
-                refreshTraceList();
+                refreshTraceList(currentPage);
             }, 0);
         })();
     </script>

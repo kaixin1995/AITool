@@ -8,6 +8,8 @@ namespace AITool.Web.Pages.Admin.Developer.Invocations;
 // 调用调试页模型，按运行时开关展示内存中的最近调用信息。
 public sealed class IndexModel : PageModel
 {
+    public const int PageSize = 20;
+
     private readonly ISystemRuntimeSettingsService _runtimeSettingsService;
     private readonly DeveloperInvocationTraceStore _traceStore;
 
@@ -36,7 +38,7 @@ public sealed class IndexModel : PageModel
         return Page();
     }
 
-    public async Task<IActionResult> OnGetListAsync(CancellationToken cancellationToken)
+    public async Task<IActionResult> OnGetListAsync(int page = 1, CancellationToken cancellationToken = default)
     {
         var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
         if (!settings.DeveloperFeaturesEnabled)
@@ -45,17 +47,72 @@ public sealed class IndexModel : PageModel
         }
 
         var entries = _traceStore.List();
+        var totalCount = entries.Count;
+        var totalPages = Math.Max(1, (int)Math.Ceiling(totalCount / (double)PageSize));
+        var currentPage = Math.Min(Math.Max(page, 1), totalPages);
+        var pagedEntries = entries
+            .Skip((currentPage - 1) * PageSize)
+            .Take(PageSize)
+            .Select(ToSummaryDto)
+            .ToList();
+
         var payload = new DeveloperInvocationListResponse
         {
-            TotalCount = entries.Count,
+            TotalCount = totalCount,
             FailedCount = entries.Count(x => x.Attempts.Any(a => !string.Equals(a.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase))),
             PendingCount = entries.Count(x => x.Attempts.Any(a => string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase))),
-            Entries = entries.Select(ToDto).ToList()
+            PageNumber = currentPage,
+            PageSize = PageSize,
+            TotalPages = totalPages,
+            Entries = pagedEntries
         };
         return new JsonResult(payload);
     }
 
-    private static DeveloperInvocationTraceDto ToDto(DeveloperInvocationTraceEntry entry)
+    public async Task<IActionResult> OnGetDetailAsync(Guid traceId, CancellationToken cancellationToken = default)
+    {
+        var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
+        if (!settings.DeveloperFeaturesEnabled)
+        {
+            return NotFound();
+        }
+
+        var entry = _traceStore.Get(traceId);
+        if (entry is null)
+        {
+            return NotFound();
+        }
+
+        return new JsonResult(ToDetailDto(entry));
+    }
+
+    // 列表阶段只返回摘要字段，避免一次性传输大块请求体、返回体和完整尝试链路。
+    private static DeveloperInvocationTraceSummaryDto ToSummaryDto(DeveloperInvocationTraceEntry entry)
+    {
+        return new DeveloperInvocationTraceSummaryDto
+        {
+            TraceId = entry.TraceId,
+            CreatedAt = entry.CreatedAt,
+            CreatedAtText = entry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+            Source = entry.Source,
+            ProtocolType = entry.ProtocolType,
+            RequestPath = entry.RequestPath,
+            RequestModel = entry.RequestModel,
+            SummarySite = string.IsNullOrWhiteSpace(entry.TargetSiteName) ? "未命中站点" : entry.TargetSiteName,
+            SummaryAttemptedModel = string.IsNullOrWhiteSpace(entry.AttemptedModel) ? "未解析调用模型" : entry.AttemptedModel,
+            Status = entry.Status,
+            StatusText = GetStatusText(entry.Status),
+            StatusClass = GetStatusClass(entry.Status),
+            StatusCode = entry.StatusCode,
+            TotalDurationMs = entry.TotalDurationMs,
+            FailedAttemptCount = entry.Attempts.Count(x => !string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(x.Status, "pending", StringComparison.OrdinalIgnoreCase)),
+            PendingAttemptCount = entry.Attempts.Count(x => string.Equals(x.Status, "pending", StringComparison.OrdinalIgnoreCase)),
+            SuccessAttemptCount = entry.Attempts.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase))
+        };
+    }
+
+    // 展开卡片后再单独返回完整详情，减少列表刷新和自动刷新时的无效负载。
+    private static DeveloperInvocationTraceDto ToDetailDto(DeveloperInvocationTraceEntry entry)
     {
         return new DeveloperInvocationTraceDto
         {
@@ -158,7 +215,31 @@ public sealed class DeveloperInvocationListResponse
     public int TotalCount { get; set; }
     public int FailedCount { get; set; }
     public int PendingCount { get; set; }
-    public List<DeveloperInvocationTraceDto> Entries { get; set; } = [];
+    public int PageNumber { get; set; }
+    public int PageSize { get; set; }
+    public int TotalPages { get; set; }
+    public List<DeveloperInvocationTraceSummaryDto> Entries { get; set; } = [];
+}
+
+public sealed class DeveloperInvocationTraceSummaryDto
+{
+    public Guid TraceId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
+    public string CreatedAtText { get; set; } = string.Empty;
+    public string Source { get; set; } = string.Empty;
+    public string ProtocolType { get; set; } = string.Empty;
+    public string RequestPath { get; set; } = string.Empty;
+    public string RequestModel { get; set; } = string.Empty;
+    public string SummarySite { get; set; } = string.Empty;
+    public string SummaryAttemptedModel { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string StatusText { get; set; } = string.Empty;
+    public string StatusClass { get; set; } = string.Empty;
+    public int StatusCode { get; set; }
+    public int TotalDurationMs { get; set; }
+    public int FailedAttemptCount { get; set; }
+    public int PendingAttemptCount { get; set; }
+    public int SuccessAttemptCount { get; set; }
 }
 
 public sealed class DeveloperInvocationTraceDto
