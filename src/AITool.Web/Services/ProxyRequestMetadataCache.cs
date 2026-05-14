@@ -105,8 +105,8 @@ public sealed class ProxyRequestMetadataCache
         var routes = await GetRouteTargetsAsync(cancellationToken);
         return routes
             .Where(x => string.Equals(x.ExternalModelName, externalModelName, StringComparison.Ordinal))
-            .OrderBy(x => x.GetProtocolPriority(protocolType))
-            .ThenBy(x => x.ModelPriority)
+            // 路由优先级应始终以后台配置顺序为准；协议不匹配时走兼容转发，而不是提前跳过前面的候选站点。
+            .OrderBy(x => x.ModelPriority)
             .ThenBy(x => x.InstancePriority)
             .ThenBy(x => x.Priority)
             .ToList();

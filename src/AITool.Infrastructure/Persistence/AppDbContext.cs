@@ -66,7 +66,8 @@ public sealed class AppDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.ModelName).IsRequired().HasMaxLength(200);
             entity.Property(e => e.DisplayName).HasMaxLength(200);
-            entity.Property(e => e.ModelType).IsRequired().HasMaxLength(50);
+            // 兼容旧库中仍保留的 ModelType 非空列，但不再对外暴露该字段。
+            entity.Property<string>("ModelType").IsRequired().HasMaxLength(50);
             // 模型名称唯一索引，防止重复模型
             entity.HasIndex(e => e.ModelName).IsUnique();
         });
@@ -159,5 +160,47 @@ public sealed class AppDbContext : DbContext
         });
 
         base.OnModelCreating(modelBuilder);
+    }
+
+    public override int SaveChanges()
+    {
+        ApplyLegacyModelTypeCompatibility();
+        return base.SaveChanges();
+    }
+
+    public override int SaveChanges(bool acceptAllChangesOnSuccess)
+    {
+        ApplyLegacyModelTypeCompatibility();
+        return base.SaveChanges(acceptAllChangesOnSuccess);
+    }
+
+    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+    {
+        ApplyLegacyModelTypeCompatibility();
+        return base.SaveChangesAsync(cancellationToken);
+    }
+
+    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
+    {
+        ApplyLegacyModelTypeCompatibility();
+        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
+    }
+
+    // 旧数据库还保留 ModelType 非空列时，为新增模型补一个兼容值，避免写库失败。
+    private void ApplyLegacyModelTypeCompatibility()
+    {
+        foreach (var entry in ChangeTracker.Entries<ModelLibraryItem>())
+        {
+            if (entry.State != EntityState.Added)
+            {
+                continue;
+            }
+
+            var modelTypeProperty = entry.Property<string>("ModelType");
+            if (string.IsNullOrWhiteSpace(modelTypeProperty.CurrentValue))
+            {
+                modelTypeProperty.CurrentValue = "chat";
+            }
+        }
     }
 }

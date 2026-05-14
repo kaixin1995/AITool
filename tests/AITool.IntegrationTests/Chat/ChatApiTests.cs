@@ -148,7 +148,6 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
             Id = ModelId,
             ModelName = "chat-anthropic",
             DisplayName = "Chat Anthropic",
-            ModelType = "chat",
             IsEnabled = true
         });
 

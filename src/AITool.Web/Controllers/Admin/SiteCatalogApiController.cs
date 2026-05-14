@@ -110,12 +110,13 @@ public sealed class SiteCatalogApiController : ControllerBase
         {
             var mapping = existingMappings.FirstOrDefault(m => m.RemoteModelName == remoteName);
             var modelItem = modelItems.FirstOrDefault(m => m.ModelName == remoteName);
+            var hasValidImport = mapping is not null && modelItem is not null && mapping.ModelLibraryItemId == modelItem.Id;
 
             result.Add(new RemoteModelInfo
             {
                 RemoteModelName = remoteName,
-                ExistingMappingId = mapping?.Id,
-                IsEnabled = mapping?.IsEnabled ?? true,
+                ExistingMappingId = hasValidImport ? mapping!.Id : null,
+                IsEnabled = hasValidImport && mapping!.IsEnabled,
                 ExistingDisplayName = modelItem?.DisplayName
             });
         }
@@ -181,6 +182,16 @@ public sealed class SiteCatalogApiController : ControllerBase
     [HttpPost("import-selected")]
     public async Task<IActionResult> ImportSelected([FromBody] ImportSelectedRequest request, CancellationToken cancellationToken)
     {
+        if (request.Selections.Count == 0)
+        {
+            return BadRequest(new { message = "未收到任何模型选择数据" });
+        }
+
+        if (!request.Selections.Any(x => x.Selected))
+        {
+            return BadRequest(new { message = "请至少选择一个模型" });
+        }
+
         var importedCount = 0;
         var allSiteIds = request.Selections.Select(s => s.SiteId).Distinct().ToList();
         var allExistingMappings = await _dbContext.SiteModelMappings
@@ -236,6 +247,8 @@ public sealed class SiteCatalogApiController : ControllerBase
                     }
                     else
                     {
+                        // 重新导入时同步修复旧映射指向，避免模型库记录已删但站点映射仍指向失效模型。
+                        mapping.ModelLibraryItemId = modelItem.Id;
                         mapping.IsEnabled = true;
                         mapping.LastStatus = "updated";
                     }
@@ -287,12 +300,13 @@ public sealed class SiteCatalogApiController : ControllerBase
             {
                 var mapping = existingMappings.FirstOrDefault(m => m.RemoteModelName == remoteName);
                 var modelItem = modelItems.FirstOrDefault(m => m.ModelName == remoteName);
+                var hasValidImport = mapping is not null && modelItem is not null && mapping.ModelLibraryItemId == modelItem.Id;
 
                 models.Add(new RemoteModelInfo
                 {
                     RemoteModelName = remoteName,
-                    ExistingMappingId = mapping?.Id,
-                    IsEnabled = mapping?.IsEnabled ?? true,
+                    ExistingMappingId = hasValidImport ? mapping!.Id : null,
+                    IsEnabled = hasValidImport && mapping!.IsEnabled,
                     ExistingDisplayName = modelItem?.DisplayName
                 });
             }

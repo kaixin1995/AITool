@@ -8,7 +8,7 @@
 <div class="page-header">
     <div>
         <h2 class="page-title">模型库管理</h2>
-        <p class="page-subtitle">管理所有可用模型及其类型</p>
+        <p class="page-subtitle">管理所有可用模型及其基础信息</p>
     </div>
     <div class="d-flex gap-2">
         <a asp-page="./Create" class="btn btn-primary">＋ 新增模型</a>
@@ -47,7 +47,7 @@
                 showMsg('已清空 ' + data.deletedModels + ' 个模型、' + data.deletedMappings + ' 条映射、' + data.deletedLogs + ' 条检测日志、' + data.deletedMonitors + ' 条监控', true);
                 // 清空表格
                 var tbody = document.querySelector('.table tbody');
-                tbody.innerHTML = '<tr><td colspan="7"><div class="table-empty"><div class="table-empty-icon">🧠</div><div class="table-empty-text">暂无模型，点击上方按钮新增</div></div></td></tr>';
+                tbody.innerHTML = '<tr><td colspan="6"><div class="table-empty"><div class="table-empty-icon">🧠</div><div class="table-empty-text">暂无模型，点击上方按钮新增</div></div></td></tr>';
             })
             .catch(function(err) {
                 btn.disabled = false;
@@ -64,7 +64,6 @@
             <tr>
                 <th>模型名</th>
                 <th>显示名</th>
-                <th>类型</th>
                 <th>关联站点数</th>
                 <th>状态</th>
                 <th>创建时间</th>
@@ -75,7 +74,7 @@
             @if (!Model.Models.Any())
             {
                 <tr>
-                    <td colspan="7">
+                    <td colspan="6">
                         <div class="table-empty">
                             <div class="table-empty-icon">🧠</div>
                             <div class="table-empty-text">暂无模型，点击上方按钮新增</div>
@@ -88,7 +87,6 @@
                 <tr>
                     <td><code>@item.ModelName</code></td>
                     <td><strong>@item.DisplayName</strong></td>
-                    <td><span class="badge bg-primary">@item.ModelType</span></td>
                     <td><span class="badge bg-info">@item.SiteCount</span></td>
                     <td>
                         <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">

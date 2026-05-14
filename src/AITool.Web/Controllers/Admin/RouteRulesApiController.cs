@@ -220,26 +220,21 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpGet("site-instances")]
     public async Task<IActionResult> GetSiteInstances(CancellationToken cancellationToken)
     {
-        var sites = await _dbContext.Sites
-            .Where(x => x.IsEnabled)
-            .OrderBy(x => x.Name)
-            .ToDictionaryAsync(x => x.Id, x => x, cancellationToken);
-
-        var items = await _dbContext.SiteModelMappings
-            .Where(x => x.IsEnabled)
-            .OrderBy(x => x.RemoteModelName)
+        // 候选实例池只保留仍然挂在启用模型上的有效站点映射，避免显示孤儿映射。
+        var result = await (
+                from mapping in _dbContext.SiteModelMappings
+                join site in _dbContext.Sites on mapping.SiteId equals site.Id
+                join model in _dbContext.ModelLibraryItems on mapping.ModelLibraryItemId equals model.Id
+                where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
+                orderby site.Name, mapping.RemoteModelName
+                select new SiteInstanceItem
+                {
+                    SiteId = site.Id,
+                    SiteName = site.Name,
+                    SiteModelName = mapping.RemoteModelName,
+                    ProtocolType = site.ProtocolType
+                })
             .ToListAsync(cancellationToken);
-
-        var result = items
-            .Where(x => sites.ContainsKey(x.SiteId))
-            .Select(x => new SiteInstanceItem
-            {
-                SiteId = x.SiteId,
-                SiteName = sites[x.SiteId].Name,
-                SiteModelName = x.RemoteModelName,
-                ProtocolType = sites[x.SiteId].ProtocolType
-            })
-            .ToList();
 
         return Ok(result);
     }

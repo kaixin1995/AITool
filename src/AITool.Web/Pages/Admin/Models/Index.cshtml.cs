@@ -15,7 +15,6 @@ public class ModelWithSiteCount
     public Guid Id { get; set; }
     public string ModelName { get; set; } = string.Empty;
     public string DisplayName { get; set; } = string.Empty;
-    public string ModelType { get; set; } = string.Empty;
     public bool IsEnabled { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     // 关联的站点数量
@@ -68,13 +67,11 @@ public class IndexModel : PageModel
                 Id = x.Id,
                 ModelName = x.ModelName,
                 DisplayName = x.DisplayName,
-                ModelType = x.ModelType,
                 IsEnabled = x.IsEnabled,
                 CreatedAt = x.CreatedAt
             })
             .ToListAsync(cancellationToken);
 
-        // 填充关联站点数
         foreach (var model in Models)
         {
             model.SiteCount = siteCounts.GetValueOrDefault(model.Id);
@@ -104,18 +101,54 @@ public class IndexModel : PageModel
         return Page();
     }
 
-    // 删除模型
+    // 删除模型时，同时清理该模型下全部站点映射与相关路由规则，避免留下失效关联。
     public async Task<IActionResult> OnPostDeleteAsync(Guid modelId, CancellationToken cancellationToken)
     {
         try
         {
             var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
             if (model is null) return RedirectToPage();
+
+            var mappings = await _dbContext.SiteModelMappings
+                .Where(x => x.ModelLibraryItemId == modelId)
+                .ToListAsync(cancellationToken);
+            var mappingPairs = mappings
+                .Select(x => new { x.SiteId, x.RemoteModelName })
+                .ToList();
+            var mappingSiteIds = mappingPairs
+                .Select(x => x.SiteId)
+                .Distinct()
+                .ToList();
+
+            // 先按站点范围取回候选规则，再在内存里按站点+模型精确匹配，避免 EF 无法翻译本地集合 Any。
+            var candidateRules = await _dbContext.ProxyRouteRules
+                .Where(x => x.ExternalModelName == model.ModelName || mappingSiteIds.Contains(x.SiteId))
+                .ToListAsync(cancellationToken);
+            var affectedRules = candidateRules
+                .Where(x => x.ExternalModelName == model.ModelName || mappingPairs.Any(p => p.SiteId == x.SiteId && p.RemoteModelName == x.SiteModelName))
+                .ToList();
+            var affectedEntryNames = affectedRules
+                .Select(x => x.ExternalModelName)
+                .Append(model.ModelName)
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+
+            if (mappings.Count > 0)
+            {
+                _dbContext.SiteModelMappings.RemoveRange(mappings);
+            }
+            if (affectedRules.Count > 0)
+            {
+                _dbContext.ProxyRouteRules.RemoveRange(affectedRules);
+            }
             _dbContext.ModelLibraryItems.Remove(model);
+
             await _dbContext.SaveChangesAsync(cancellationToken);
+            await CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
+
             _metadataCache?.InvalidateModelMetadata();
             _metadataCache?.InvalidateRouteTargets();
-            StatusMessage = "模型已删除";
+            StatusMessage = $"模型已删除，并清理了 {mappings.Count} 条站点关联与 {affectedRules.Count} 条相关路由规则";
             StatusSuccess = true;
         }
         catch (Exception ex)
@@ -125,6 +158,43 @@ public class IndexModel : PageModel
         }
         await OnGetAsync(cancellationToken);
         return Page();
+    }
+
+    private async Task CleanupEmptyRouteEntriesAsync(IEnumerable<string> entryNames, CancellationToken cancellationToken)
+    {
+        var normalizedNames = entryNames
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (normalizedNames.Count == 0)
+        {
+            return;
+        }
+
+        var remainingEntryNames = await _dbContext.ProxyRouteRules
+            .Where(x => normalizedNames.Contains(x.ExternalModelName))
+            .Select(x => x.ExternalModelName)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var emptyEntryNames = normalizedNames
+            .Except(remainingEntryNames, StringComparer.Ordinal)
+            .ToList();
+
+        if (emptyEntryNames.Count == 0)
+        {
+            return;
+        }
+
+        var emptyEntries = await _dbContext.ProxyRouteEntries
+            .Where(x => emptyEntryNames.Contains(x.EntryName))
+            .ToListAsync(cancellationToken);
+        if (emptyEntries.Count == 0)
+        {
+            return;
+        }
+
+        _dbContext.ProxyRouteEntries.RemoveRange(emptyEntries);
+        await _dbContext.SaveChangesAsync(cancellationToken);
     }
 }
 
@@ -162,7 +232,6 @@ public class CreateModelModel : PageModel
         {
             ModelName = Command.ModelName,
             DisplayName = Command.DisplayName,
-            ModelType = Command.ModelType,
             IsEnabled = Command.IsEnabled
         });
 

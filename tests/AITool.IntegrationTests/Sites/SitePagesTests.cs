@@ -105,7 +105,6 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Pro
                 Id = firstModelId,
                 ModelName = "gpt-a",
                 DisplayName = "GPT A",
-                ModelType = "chat",
                 IsEnabled = true
             },
             new AITool.Domain.Models.ModelLibraryItem
@@ -113,7 +112,6 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Pro
                 Id = secondModelId,
                 ModelName = "gpt-b",
                 DisplayName = "GPT B",
-                ModelType = "chat",
                 IsEnabled = true
             });
 

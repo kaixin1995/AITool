@@ -29,14 +29,6 @@
             <span asp-validation-for="Command.DisplayName" class="text-danger"></span>
         </div>
 
-        <div class="mb-3">
-            <label asp-for="Command.ModelType" class="form-label">模型类型</label>
-            <select asp-for="Command.ModelType" class="form-select">
-                <option value="chat">Chat</option>
-                <option value="embedding">Embedding</option>
-            </select>
-        </div>
-
         <div class="mb-3 form-check">
             <input asp-for="Command.IsEnabled" class="form-check-input" type="checkbox" checked />
             <label asp-for="Command.IsEnabled" class="form-check-label">启用</label>

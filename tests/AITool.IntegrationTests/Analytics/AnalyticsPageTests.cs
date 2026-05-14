@@ -231,7 +231,6 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
                 Id = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
                 ModelName = "chat-prod",
                 DisplayName = "Chat Prod",
-                ModelType = "chat",
                 IsEnabled = true
             },
             new AITool.Domain.Models.ModelLibraryItem
@@ -239,7 +238,6 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
                 Id = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
                 ModelName = "reason-prod",
                 DisplayName = "Reason Prod",
-                ModelType = "chat",
                 IsEnabled = true
             });
 

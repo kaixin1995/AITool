@@ -53,7 +53,6 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
             Id = modelId,
             ModelName = "old-model",
             DisplayName = "Old Model",
-            ModelType = "chat",
             IsEnabled = true
         });
         db.SiteModelMappings.Add(new SiteModelMapping
@@ -74,7 +73,6 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         {
             ModelName = "new-model",
             DisplayName = "New Model",
-            ModelType = "chat",
             IsEnabled = true
         };
 

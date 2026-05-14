@@ -390,14 +390,14 @@
             var alias = row.querySelector('.alias-input').value.trim() || model.remoteModelName;
 
             selections.push({
-                siteId: model.siteId,
-                remoteModelName: model.remoteModelName,
-                displayName: alias,
-                selected: checked
+                SiteId: model.siteId,
+                RemoteModelName: model.remoteModelName,
+                DisplayName: alias,
+                Selected: checked
             });
         });
 
-        if (selections.filter(function (item) { return item.selected; }).length === 0) {
+        if (selections.filter(function (item) { return item.Selected; }).length === 0) {
             alert('请至少选择一个模型');
             return;
         }
@@ -409,12 +409,27 @@
         fetch('/api/admin/site-catalog/import-selected', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ selections: selections })
+            body: JSON.stringify({ Selections: selections })
         })
-            .then(function (r) { return r.json(); })
+            .then(function (r) {
+                return r.json()
+                    .catch(function () { return {}; })
+                    .then(function (data) {
+                        if (!r.ok) {
+                            throw new Error(data.message || data.title || '导入失败');
+                        }
+                        return data;
+                    });
+            })
             .then(function (data) {
+                var importedCount = typeof data.importedCount === 'number'
+                    ? data.importedCount
+                    : (typeof data.ImportedCount === 'number' ? data.ImportedCount : null);
+                if (importedCount === null) {
+                    throw new Error('导入接口未返回导入数量');
+                }
                 bsModal.hide();
-                alert('导入完成，共导入 ' + data.importedCount + ' 个模型');
+                alert('导入完成，共导入 ' + importedCount + ' 个模型');
                 window.location.reload();
             })
             .catch(function (err) {
