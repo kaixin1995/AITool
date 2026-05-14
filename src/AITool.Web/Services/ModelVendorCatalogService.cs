@@ -134,7 +134,7 @@ public sealed class ModelVendorCatalogService
                 return new ModelVendorDefinition
                 {
                     VendorName = g.Key,
-                    IconSvgBody = first.IconSvgBody?.Trim() ?? string.Empty,
+                    IconSvgBody = NormalizeIconSvgBody(first.IconSvgBody),
                     HeaderBackground = string.IsNullOrWhiteSpace(first.HeaderBackground) ? "#f8fafc" : first.HeaderBackground.Trim(),
                     SortOrder = first.SortOrder
                 };
@@ -237,6 +237,35 @@ public sealed class ModelVendorCatalogService
         return pattern
             .Split([',', '，'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(x => !string.IsNullOrWhiteSpace(x));
+    }
+
+    // 兼容直接粘贴完整 svg 标签；若存在原始 viewBox，则以内层 svg 保留坐标系，避免大尺寸图标被 24x24 外层裁掉。
+    private static string NormalizeIconSvgBody(string? iconSvgBody)
+    {
+        var normalized = iconSvgBody?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            return string.Empty;
+        }
+
+        var svgMatch = Regex.Match(normalized, "^<svg\\b(?<attrs>[^>]*)>(?<body>[\\s\\S]*)</svg>$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!svgMatch.Success)
+        {
+            return normalized;
+        }
+
+        var body = svgMatch.Groups["body"].Value.Trim();
+        var attrs = svgMatch.Groups["attrs"].Value;
+        var viewBoxMatch = Regex.Match(attrs, "\\bviewBox\\s*=\\s*(['\"])(?<viewBox>.*?)\\1", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        if (!viewBoxMatch.Success)
+        {
+            return body;
+        }
+
+        var viewBox = viewBoxMatch.Groups["viewBox"].Value.Trim();
+        return string.IsNullOrWhiteSpace(viewBox)
+            ? body
+            : $"<svg viewBox=\"{viewBox}\">{body}</svg>";
     }
 
     private static string NormalizeMatchType(string? matchType)
