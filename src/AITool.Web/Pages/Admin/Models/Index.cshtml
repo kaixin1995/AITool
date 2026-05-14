@@ -148,40 +148,16 @@
                     <input type="hidden" asp-for="ActiveTab" value="rules" />
 
                     <div class="vendor-editor-toolbar">
-                        <div class="text-muted small">支持三种匹配方式：精确匹配、通配符匹配（如 <code>gpt*</code>）、正则匹配。单条规则可用逗号分隔多个表达式，例如 <code>doubao*,skylark*</code>。当前配置保存在 <code>model-vendor-catalog.json</code>。</div>
+                        <div class="text-muted small">每个厂商卡片内同时维护厂商名称、标题样式、SVG 图标和匹配规则。支持精确匹配、通配符匹配（如 <code>gpt*</code>）、正则匹配。单条规则可用逗号分隔多个表达式，例如 <code>doubao*,skylark*</code>。当前配置以软件运行目录下的 <code>model-vendor-catalog.json</code> 为准；如果该文件不存在，才会用源码目录中的同名文件做首次生成模板。</div>
                         <div class="d-flex gap-2 flex-wrap">
                             <button type="button" class="btn btn-outline-secondary btn-sm" onclick="restoreDefaultVendorCatalog()">恢复当前文件内容</button>
+                            <button type="button" class="btn btn-outline-primary btn-sm" onclick="addVendorRow()">新增厂商</button>
                             <button type="submit" class="btn btn-primary btn-sm">保存厂商规则</button>
                         </div>
                     </div>
 
                     <div class="vendor-editor-section">
-                        <div class="vendor-editor-section-header">
-                            <h5 class="mb-0">厂商定义</h5>
-                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="addVendorRow()">新增厂商</button>
-                        </div>
                         <div id="vendorDefinitionList" class="vendor-definition-list"></div>
-                    </div>
-
-                    <div class="vendor-editor-section mt-4">
-                        <div class="vendor-editor-section-header">
-                            <h5 class="mb-0">匹配规则</h5>
-                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="addRuleRow()">新增规则</button>
-                        </div>
-                        <div class="table-responsive">
-                            <table class="table align-middle vendor-rule-table mb-0">
-                                <thead>
-                                    <tr>
-                                        <th style="width:90px;">优先级</th>
-                                        <th style="width:140px;">厂商</th>
-                                        <th style="width:140px;">匹配方式</th>
-                                        <th>匹配表达式</th>
-                                        <th style="width:80px;" class="text-end">操作</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="vendorRuleList"></tbody>
-                            </table>
-                        </div>
                     </div>
                 </form>
             </div>
@@ -358,6 +334,10 @@
         flex-wrap: wrap;
     }
 
+    .vendor-editor-toolbar {
+        margin-bottom: 16px;
+    }
+
     .vendor-editor-section {
         border: 1px solid var(--border-color, #e9ecef);
         border-radius: 16px;
@@ -369,7 +349,6 @@
         display: flex;
         flex-direction: column;
         gap: 16px;
-        margin-top: 16px;
     }
 
     .vendor-definition-card {
@@ -383,6 +362,29 @@
         display: grid;
         grid-template-columns: 1.2fr 180px 120px;
         gap: 12px;
+    }
+
+    .vendor-rule-section {
+        margin-top: 16px;
+        border-top: 1px dashed rgba(15, 23, 42, 0.12);
+        padding-top: 16px;
+    }
+
+    .vendor-rule-row {
+        display: grid;
+        grid-template-columns: 100px 150px minmax(0, 1fr) 76px;
+        gap: 10px;
+        align-items: start;
+        margin-top: 10px;
+    }
+
+    .vendor-rule-empty {
+        margin-top: 10px;
+        padding: 12px 14px;
+        border: 1px dashed rgba(15, 23, 42, 0.12);
+        border-radius: 12px;
+        color: #64748b;
+        font-size: 13px;
     }
 
     .vendor-preview-card {
@@ -433,7 +435,8 @@
     }
 
     @@media (max-width: 992px) {
-        .vendor-definition-grid {
+        .vendor-definition-grid,
+        .vendor-rule-row {
             grid-template-columns: 1fr;
         }
     }
@@ -466,7 +469,6 @@
     document.addEventListener('DOMContentLoaded', function () {
         syncVendorCatalogJson();
         renderVendorEditor();
-        renderRuleEditor();
     });
 
     function showMsg(msg, success) {
@@ -568,7 +570,6 @@
 
         vendorCatalogState = JSON.parse(JSON.stringify(defaultVendorCatalog));
         renderVendorEditor();
-        renderRuleEditor();
         syncVendorCatalogJson();
     }
 
@@ -585,9 +586,15 @@
     }
 
     function removeVendorRow(index) {
+        ensureVendorCatalogShape();
+        var vendorName = vendorCatalogState.Vendors[index] ? (vendorCatalogState.Vendors[index].VendorName || '') : '';
         vendorCatalogState.Vendors.splice(index, 1);
+        if (vendorName !== '') {
+            vendorCatalogState.Rules = vendorCatalogState.Rules.filter(function (rule) {
+                return (rule.VendorName || '') !== vendorName;
+            });
+        }
         renderVendorEditor();
-        renderRuleEditor();
         syncVendorCatalogJson();
     }
 
@@ -596,27 +603,83 @@
         syncVendorCatalogJson();
     }
 
-    function addRuleRow() {
+    // 厂商名变更时同步改写其名下规则，避免配置被拆散。
+    function updateVendorName(index, value) {
         ensureVendorCatalogShape();
-        vendorCatalogState.Rules.push({
-            VendorName: vendorCatalogState.Vendors[0] ? vendorCatalogState.Vendors[0].VendorName : '',
-            MatchType: 'wildcard',
-            Pattern: '',
-            Priority: vendorCatalogState.Rules.length * 10
+        var oldName = vendorCatalogState.Vendors[index] ? (vendorCatalogState.Vendors[index].VendorName || '') : '';
+        vendorCatalogState.Vendors[index].VendorName = value;
+        vendorCatalogState.Rules.forEach(function (rule) {
+            if ((rule.VendorName || '') === oldName) {
+                rule.VendorName = value;
+            }
         });
-        renderRuleEditor();
         syncVendorCatalogJson();
     }
 
-    function removeRuleRow(index) {
-        vendorCatalogState.Rules.splice(index, 1);
-        renderRuleEditor();
+    function addRuleForVendor(index) {
+        ensureVendorCatalogShape();
+        vendorCatalogState.Rules.push({
+            VendorName: vendorCatalogState.Vendors[index] ? (vendorCatalogState.Vendors[index].VendorName || '') : '',
+            MatchType: 'wildcard',
+            Pattern: '',
+            Priority: (vendorCatalogState.Rules.length + 1) * 10
+        });
+        renderVendorEditor();
+        syncVendorCatalogJson();
+    }
+
+    function removeRuleByIndex(ruleIndex) {
+        vendorCatalogState.Rules.splice(ruleIndex, 1);
+        renderVendorEditor();
         syncVendorCatalogJson();
     }
 
     function updateRuleField(index, field, value) {
         vendorCatalogState.Rules[index][field] = field === 'Priority' ? parseInt(value || '0', 10) || 0 : value;
         syncVendorCatalogJson();
+    }
+
+    function getRulesForVendor(vendorName) {
+        var results = [];
+        vendorCatalogState.Rules.forEach(function (rule, ruleIndex) {
+            if ((rule.VendorName || '') === (vendorName || '')) {
+                results.push({ rule: rule, ruleIndex: ruleIndex });
+            }
+        });
+        return results;
+    }
+
+    function renderVendorRules(vendorName) {
+        var rules = getRulesForVendor(vendorName);
+        if (rules.length === 0) {
+            return '<div class="vendor-rule-empty">当前厂商还没有匹配规则，点击右上角“新增规则”即可直接补充。</div>';
+        }
+
+        return rules.map(function (entry) {
+            var rule = entry.rule;
+            return '' +
+                '<div class="vendor-rule-row" data-rule-index="' + entry.ruleIndex + '">' +
+                    '<div>' +
+                        '<label class="form-label">优先级</label>' +
+                        '<input type="number" class="form-control form-control-sm rule-priority-input" value="' + escapeHtml(String(rule.Priority ?? 0)) + '" />' +
+                    '</div>' +
+                    '<div>' +
+                        '<label class="form-label">匹配方式</label>' +
+                        '<select class="form-select form-select-sm rule-match-type-input">' +
+                            '<option value="exact" ' + (rule.MatchType === 'exact' ? 'selected' : '') + '>精确</option>' +
+                            '<option value="wildcard" ' + ((rule.MatchType || 'wildcard') === 'wildcard' ? 'selected' : '') + '>通配符 *</option>' +
+                            '<option value="regex" ' + (rule.MatchType === 'regex' ? 'selected' : '') + '>正则</option>' +
+                        '</select>' +
+                    '</div>' +
+                    '<div>' +
+                        '<label class="form-label">匹配表达式</label>' +
+                        '<input type="text" class="form-control form-control-sm rule-pattern-input" value="' + escapeHtml(rule.Pattern || '') + '" placeholder="如 doubao*,skylark* 或 ^claude-3.*$,^claude-4.*$" />' +
+                    '</div>' +
+                    '<div class="pt-4 text-end">' +
+                        '<button type="button" class="btn btn-sm btn-outline-danger rule-delete-btn">删除</button>' +
+                    '</div>' +
+                '</div>';
+        }).join('');
     }
 
     function renderVendorEditor() {
@@ -633,7 +696,7 @@
             card.innerHTML = '' +
                 '<div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-3">' +
                     '<strong>厂商 #' + (index + 1) + '</strong>' +
-                    '<button type="button" class="btn btn-sm btn-outline-danger">删除</button>' +
+                    '<button type="button" class="btn btn-sm btn-outline-danger vendor-delete-btn">删除厂商</button>' +
                 '</div>' +
                 '<div class="vendor-definition-grid">' +
                     '<div>' +
@@ -662,14 +725,24 @@
                             '<div class="text-muted small">模型分组标题示例</div>' +
                         '</div>' +
                     '</div>' +
+                '</div>' +
+                '<div class="vendor-rule-section">' +
+                    '<div class="vendor-editor-section-header">' +
+                        '<h6 class="mb-0">匹配规则</h6>' +
+                        '<button type="button" class="btn btn-sm btn-outline-primary vendor-add-rule-btn">新增规则</button>' +
+                    '</div>' +
+                    '<div class="text-muted small mt-2">当前规则自动归属于该厂商，无需再单独选择厂商名。</div>' +
+                    '<div class="vendor-rule-list">' + renderVendorRules(vendor.VendorName) + '</div>' +
                 '</div>';
 
-            card.querySelector('.btn-outline-danger').addEventListener('click', function () {
+            card.querySelector('.vendor-delete-btn').addEventListener('click', function () {
                 removeVendorRow(index);
             });
+            card.querySelector('.vendor-add-rule-btn').addEventListener('click', function () {
+                addRuleForVendor(index);
+            });
             card.querySelector('.vendor-name-input').addEventListener('change', function () {
-                updateVendorField(index, 'VendorName', this.value);
-                renderRuleEditor();
+                updateVendorName(index, this.value);
                 renderVendorEditor();
             });
             card.querySelector('.vendor-bg-input').addEventListener('change', function () {
@@ -684,67 +757,28 @@
                 renderVendorEditor();
             });
 
+            card.querySelectorAll('.vendor-rule-row').forEach(function (row) {
+                var ruleIndex = parseInt(row.getAttribute('data-rule-index') || '-1', 10);
+                if (ruleIndex < 0) {
+                    return;
+                }
+
+                row.querySelector('.rule-priority-input').addEventListener('change', function () {
+                    updateRuleField(ruleIndex, 'Priority', this.value);
+                });
+                row.querySelector('.rule-match-type-input').addEventListener('change', function () {
+                    updateRuleField(ruleIndex, 'MatchType', this.value);
+                });
+                row.querySelector('.rule-pattern-input').addEventListener('change', function () {
+                    updateRuleField(ruleIndex, 'Pattern', this.value);
+                });
+                row.querySelector('.rule-delete-btn').addEventListener('click', function () {
+                    removeRuleByIndex(ruleIndex);
+                });
+            });
+
             container.appendChild(card);
         });
-    }
-
-    function renderRuleEditor() {
-        ensureVendorCatalogShape();
-        var tbody = document.getElementById('vendorRuleList');
-        if (!tbody) {
-            return;
-        }
-
-        var vendorOptions = vendorCatalogState.Vendors
-            .map(function (vendor) {
-                return '<option value="' + escapeHtml(vendor.VendorName || '') + '"></option>';
-            })
-            .join('');
-
-        tbody.innerHTML = '';
-        vendorCatalogState.Rules.forEach(function (rule, index) {
-            var row = document.createElement('tr');
-            row.innerHTML = '' +
-                '<td><input type="number" class="form-control form-control-sm rule-priority-input" value="' + escapeHtml(String(rule.Priority ?? 0)) + '" /></td>' +
-                '<td><input type="text" list="vendorNameOptions" class="form-control form-control-sm rule-vendor-input" value="' + escapeHtml(rule.VendorName || '') + '" /></td>' +
-                '<td>' +
-                    '<select class="form-select form-select-sm rule-match-type-input">' +
-                        '<option value="exact" ' + (rule.MatchType === 'exact' ? 'selected' : '') + '>精确</option>' +
-                        '<option value="wildcard" ' + ((rule.MatchType || 'wildcard') === 'wildcard' ? 'selected' : '') + '>通配符 *</option>' +
-                        '<option value="regex" ' + (rule.MatchType === 'regex' ? 'selected' : '') + '>正则</option>' +
-                    '</select>' +
-                '</td>' +
-                '<td><input type="text" class="form-control form-control-sm rule-pattern-input" value="' + escapeHtml(rule.Pattern || '') + '" placeholder="如 doubao*,skylark* 或 ^claude-3.*$,^claude-4.*$" /></td>' +
-                '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger">删除</button></td>';
-
-            row.querySelector('.btn-outline-danger').addEventListener('click', function () {
-                removeRuleRow(index);
-            });
-            row.querySelector('.rule-priority-input').addEventListener('change', function () {
-                updateRuleField(index, 'Priority', this.value);
-            });
-            row.querySelector('.rule-vendor-input').addEventListener('change', function () {
-                updateRuleField(index, 'VendorName', this.value);
-            });
-            row.querySelector('.rule-match-type-input').addEventListener('change', function () {
-                updateRuleField(index, 'MatchType', this.value);
-            });
-            row.querySelector('.rule-pattern-input').addEventListener('change', function () {
-                updateRuleField(index, 'Pattern', this.value);
-            });
-
-            tbody.appendChild(row);
-        });
-
-        var existingDatalist = document.getElementById('vendorNameOptions');
-        if (existingDatalist) {
-            existingDatalist.remove();
-        }
-
-        var datalist = document.createElement('datalist');
-        datalist.id = 'vendorNameOptions';
-        datalist.innerHTML = vendorOptions;
-        document.body.appendChild(datalist);
     }
 
     function buildVendorIconPreview(iconSvgBody, vendorName) {

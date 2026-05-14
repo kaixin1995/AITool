@@ -38,31 +38,53 @@ public sealed class ModelVendorCatalogService
     };
 
     private readonly string _catalogPath;
+    private readonly string _templateCatalogPath;
 
     public ModelVendorCatalogService(IWebHostEnvironment environment)
     {
-        _catalogPath = Path.Combine(environment.ContentRootPath, CatalogFileName);
+        // 厂商配置以软件运行目录中的文件为准，源码目录中的文件只作为首次生成模板。
+        _catalogPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, CatalogFileName);
+        _templateCatalogPath = Path.Combine(environment.ContentRootPath, CatalogFileName);
     }
 
     public async Task<ModelVendorCatalog> GetOrCreateAsync(CancellationToken cancellationToken = default)
     {
         if (!File.Exists(_catalogPath))
         {
-            var emptyCatalog = NormalizeCatalog(new ModelVendorCatalog());
-            await WriteCatalogAsync(emptyCatalog, cancellationToken);
-            return emptyCatalog;
+            var initializedCatalog = await InitializeCatalogAsync(cancellationToken);
+            await WriteCatalogAsync(initializedCatalog, cancellationToken);
+            return initializedCatalog;
         }
 
         var json = await File.ReadAllTextAsync(_catalogPath, cancellationToken);
         if (string.IsNullOrWhiteSpace(json))
         {
-            var emptyCatalog = NormalizeCatalog(new ModelVendorCatalog());
-            await WriteCatalogAsync(emptyCatalog, cancellationToken);
-            return emptyCatalog;
+            var initializedCatalog = await InitializeCatalogAsync(cancellationToken);
+            await WriteCatalogAsync(initializedCatalog, cancellationToken);
+            return initializedCatalog;
         }
 
         var catalog = JsonSerializer.Deserialize<ModelVendorCatalog>(json, JsonOptions) ?? new ModelVendorCatalog();
         return NormalizeCatalog(catalog);
+    }
+
+    // 运行目录缺少配置时，优先用源码目录模板初始化；模板不存在时再退回空配置。
+    private async Task<ModelVendorCatalog> InitializeCatalogAsync(CancellationToken cancellationToken)
+    {
+        var runtimePath = Path.GetFullPath(_catalogPath);
+        var templatePath = Path.GetFullPath(_templateCatalogPath);
+        if (!string.Equals(runtimePath, templatePath, StringComparison.OrdinalIgnoreCase)
+            && File.Exists(_templateCatalogPath))
+        {
+            var templateJson = await File.ReadAllTextAsync(_templateCatalogPath, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(templateJson))
+            {
+                var templateCatalog = JsonSerializer.Deserialize<ModelVendorCatalog>(templateJson, JsonOptions) ?? new ModelVendorCatalog();
+                return NormalizeCatalog(templateCatalog);
+            }
+        }
+
+        return NormalizeCatalog(new ModelVendorCatalog());
     }
 
     public async Task<ModelVendorCatalog> SaveAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken = default)
