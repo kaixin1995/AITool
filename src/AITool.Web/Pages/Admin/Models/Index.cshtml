@@ -2,13 +2,28 @@
 @model AITool.Web.Pages.Admin.Models.IndexModel
 @{
     ViewData["Title"] = "模型库管理";
+    var totalModelCount = Model.VendorGroups.Sum(x => x.Models.Count);
+    var modelsTabActive = !string.Equals(Model.ActiveTab, "rules", StringComparison.OrdinalIgnoreCase);
+    string BuildVendorIcon(string iconSvgBody)
+    {
+        if (string.IsNullOrWhiteSpace(iconSvgBody))
+        {
+            return string.Empty;
+        }
+
+        // 统一替换外部 SVG 内的渐变引用，避免维护的 path 使用旧 id 时图标丢失。
+        var normalizedSvgBody = iconSvgBody
+            .Replace("url(#lobe-icons-qwen-fill)", "url(#vendor-gradient-alibaba)", StringComparison.Ordinal)
+            .Replace("id=\"lobe-icons-qwen-fill\"", "id=\"vendor-gradient-alibaba\"", StringComparison.Ordinal);
+
+        return $"<svg viewBox=\"0 0 24 24\" aria-hidden=\"true\"><defs><linearGradient id=\"vendor-gradient-alibaba\" x1=\"0%\" y1=\"0%\" x2=\"100%\" y2=\"100%\"><stop offset=\"0%\" stop-color=\"#FF8A00\" /><stop offset=\"100%\" stop-color=\"#FF5F00\" /></linearGradient></defs>{normalizedSvgBody}</svg>";
+    }
 }
 
-<!-- 页面标题 -->
 <div class="page-header">
     <div>
         <h2 class="page-title">模型库管理</h2>
-        <p class="page-subtitle">管理所有可用模型及其基础信息</p>
+        <p class="page-subtitle">支持按厂商分组浏览模型，并维护模型与厂商的匹配规则</p>
     </div>
     <div class="d-flex gap-2">
         <a asp-page="./Create" class="btn btn-primary">＋ 新增模型</a>
@@ -16,13 +31,444 @@
     </div>
 </div>
 
-<!-- 状态提示 -->
+@if (!string.IsNullOrEmpty(Model.StatusMessage))
+{
+    <div class="alert @(Model.StatusSuccess ? "alert-success" : "alert-danger")">
+        @Model.StatusMessage
+    </div>
+}
+
 <div id="statusAlert" style="display:none;" class="alert">
     <span id="statusText"></span>
 </div>
 
+<div class="card models-tab-card">
+    <div class="card-header p-0">
+        <ul class="nav nav-tabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link @(modelsTabActive ? "active" : null)" data-bs-toggle="tab" data-bs-target="#tabModelGallery" type="button" role="tab">模型分组</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link @(!modelsTabActive ? "active" : null)" data-bs-toggle="tab" data-bs-target="#tabVendorRules" type="button" role="tab">厂商规则</button>
+            </li>
+        </ul>
+    </div>
+    <div class="card-body">
+        <div class="tab-content">
+            <div class="tab-pane fade @(modelsTabActive ? "show active" : null)" id="tabModelGallery" role="tabpanel">
+                <div class="model-toolbar">
+                    <div class="model-search-box">
+                        <input id="modelSearchInput" type="text" class="form-control" placeholder="搜索模型名称或显示名" oninput="filterModels()" />
+                    </div>
+                    <div class="model-toolbar-summary">
+                        共 <strong id="visibleModelCount">@totalModelCount</strong> / @totalModelCount 个模型
+                    </div>
+                </div>
+
+                @if (!Model.VendorGroups.Any())
+                {
+                    <div class="table-empty model-empty-state">
+                        <div class="table-empty-text">暂无模型，点击上方按钮新增</div>
+                    </div>
+                }
+                else
+                {
+                    <div id="vendorGroupsContainer" class="vendor-groups">
+                        @foreach (var group in Model.VendorGroups)
+                        {
+                            var iconSvg = BuildVendorIcon(group.IconSvgBody);
+                            <section class="vendor-group" data-vendor-name="@group.VendorName">
+                                <div class="vendor-group-header" style="background:@group.HeaderBackground;">
+                                    <div class="vendor-group-title-wrap">
+                                        <div class="vendor-group-icon @(string.IsNullOrWhiteSpace(group.IconSvgBody) ? "vendor-group-icon-fallback" : null)">
+                                            @if (!string.IsNullOrWhiteSpace(iconSvg))
+                                            {
+                                                @Html.Raw(iconSvg)
+                                            }
+                                            else
+                                            {
+                                                <span>@group.VendorName[..1]</span>
+                                            }
+                                        </div>
+                                        <div>
+                                            <h3 class="vendor-group-title">@group.VendorName</h3>
+                                            <div class="vendor-group-subtitle">当前分组下共 @group.Models.Count 个模型</div>
+                                        </div>
+                                    </div>
+                                    <span class="badge bg-white text-dark vendor-group-count" data-group-count>@group.Models.Count</span>
+                                </div>
+
+                                <div class="vendor-model-grid">
+                                    @foreach (var item in group.Models)
+                                    {
+                                        var searchText = $"{item.ModelName} {item.DisplayName} {group.VendorName}".ToLowerInvariant();
+                                        <article class="model-card" data-model-search="@searchText">
+                                            <div class="model-card-top">
+                                                <div>
+                                                    <div class="model-card-name">@item.ModelName</div>
+                                                    <div class="model-card-display">@item.DisplayName</div>
+                                                </div>
+                                                <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
+                                                    @(item.IsEnabled ? "启用" : "禁用")
+                                                </span>
+                                            </div>
+
+                                            <div class="model-card-meta">
+                                                <span class="badge bg-info">关联站点 @item.SiteCount</span>
+                                                <span class="model-card-created">创建于 @item.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</span>
+                                            </div>
+
+                                            <div class="model-card-actions">
+                                                <form method="post" asp-page-handler="Toggle" asp-route-modelId="@item.Id" class="d-inline">
+                                                    <button type="submit" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")">
+                                                        @(item.IsEnabled ? "禁用" : "启用")
+                                                    </button>
+                                                </form>
+                                                <a asp-page="./Edit" asp-route-id="@item.Id" class="btn btn-sm btn-outline-primary">编辑</a>
+                                                <form method="post" asp-page-handler="Delete" asp-route-modelId="@item.Id" class="d-inline">
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该模型？')">删除</button>
+                                                </form>
+                                            </div>
+                                        </article>
+                                    }
+                                </div>
+                            </section>
+                        }
+                    </div>
+
+                    <div id="searchEmptyState" class="table-empty model-empty-state" style="display:none;">
+                        <div class="table-empty-text">没有匹配的模型</div>
+                    </div>
+                }
+            </div>
+
+            <div class="tab-pane fade @(!modelsTabActive ? "show active" : null)" id="tabVendorRules" role="tabpanel">
+                <form method="post" asp-page-handler="SaveVendorCatalog" onsubmit="return beforeSubmitVendorCatalog()">
+                    <input type="hidden" asp-for="VendorCatalogJson" id="vendorCatalogJsonInput" />
+                    <input type="hidden" asp-for="ActiveTab" value="rules" />
+
+                    <div class="vendor-editor-toolbar">
+                        <div class="text-muted small">支持三种匹配方式：精确匹配、通配符匹配（如 <code>gpt*</code>）、正则匹配。单条规则可用逗号分隔多个表达式，例如 <code>doubao*,skylark*</code>。当前配置保存在 <code>model-vendor-catalog.json</code>。</div>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="restoreDefaultVendorCatalog()">恢复当前文件内容</button>
+                            <button type="submit" class="btn btn-primary btn-sm">保存厂商规则</button>
+                        </div>
+                    </div>
+
+                    <div class="vendor-editor-section">
+                        <div class="vendor-editor-section-header">
+                            <h5 class="mb-0">厂商定义</h5>
+                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="addVendorRow()">新增厂商</button>
+                        </div>
+                        <div id="vendorDefinitionList" class="vendor-definition-list"></div>
+                    </div>
+
+                    <div class="vendor-editor-section mt-4">
+                        <div class="vendor-editor-section-header">
+                            <h5 class="mb-0">匹配规则</h5>
+                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="addRuleRow()">新增规则</button>
+                        </div>
+                        <div class="table-responsive">
+                            <table class="table align-middle vendor-rule-table mb-0">
+                                <thead>
+                                    <tr>
+                                        <th style="width:90px;">优先级</th>
+                                        <th style="width:140px;">厂商</th>
+                                        <th style="width:140px;">匹配方式</th>
+                                        <th>匹配表达式</th>
+                                        <th style="width:80px;" class="text-end">操作</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="vendorRuleList"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .models-tab-card .nav-tabs {
+        padding: 0 12px;
+    }
+
+    .model-toolbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 20px;
+        padding: 16px 18px;
+        border: 1px solid var(--border-color, #e9ecef);
+        border-radius: 16px;
+        background: var(--card-bg, #fff);
+    }
+
+    .model-search-box {
+        flex: 1;
+        max-width: 520px;
+    }
+
+    .model-toolbar-summary {
+        color: var(--text-secondary, #6c757d);
+        white-space: nowrap;
+    }
+
+    .vendor-groups {
+        display: flex;
+        flex-direction: column;
+        gap: 22px;
+    }
+
+    .vendor-group {
+        border: 1px solid var(--border-color, #e9ecef);
+        border-radius: 18px;
+        overflow: hidden;
+        background: var(--card-bg, #fff);
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+    }
+
+    .vendor-group-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 18px 22px;
+        color: #1f2937;
+        border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+    }
+
+    .vendor-group-title-wrap {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        min-width: 0;
+    }
+
+    .vendor-group-icon {
+        width: 44px;
+        height: 44px;
+        border-radius: 12px;
+        background: rgba(255,255,255,.7);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        border: 1px solid rgba(15, 23, 42, 0.06);
+    }
+
+    .vendor-group-icon svg {
+        width: 24px;
+        height: 24px;
+        color: #111827;
+    }
+
+    .vendor-group-icon-fallback span {
+        font-weight: 700;
+        color: #111827;
+    }
+
+    .vendor-group-title {
+        margin: 0;
+        font-size: 26px;
+        font-weight: 700;
+    }
+
+    .vendor-group-subtitle {
+        margin-top: 4px;
+        font-size: 13px;
+        color: #475569;
+    }
+
+    .vendor-model-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 18px;
+        padding: 20px;
+    }
+
+    .model-card {
+        border: 1px solid var(--border-color, #e9ecef);
+        border-radius: 16px;
+        padding: 18px;
+        background: var(--card-bg, #fff);
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        min-height: 176px;
+    }
+
+    .model-card-top {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+    }
+
+    .model-card-name {
+        font-size: 16px;
+        font-weight: 700;
+        line-height: 1.4;
+        word-break: break-word;
+    }
+
+    .model-card-display {
+        margin-top: 4px;
+        color: var(--text-secondary, #6c757d);
+        font-size: 13px;
+        word-break: break-word;
+    }
+
+    .model-card-meta {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+
+    .model-card-created {
+        color: var(--text-secondary, #6c757d);
+        font-size: 12px;
+    }
+
+    .model-card-actions {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-top: auto;
+    }
+
+    .model-empty-state {
+        padding: 36px 20px;
+        border: 1px dashed var(--border-color, #dee2e6);
+        border-radius: 16px;
+        background: var(--card-bg, #fff);
+    }
+
+    .vendor-editor-toolbar,
+    .vendor-editor-section-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+
+    .vendor-editor-section {
+        border: 1px solid var(--border-color, #e9ecef);
+        border-radius: 16px;
+        padding: 18px;
+        background: var(--card-bg, #fff);
+    }
+
+    .vendor-definition-list {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        margin-top: 16px;
+    }
+
+    .vendor-definition-card {
+        border: 1px solid var(--border-color, #e9ecef);
+        border-radius: 16px;
+        padding: 16px;
+        background: #fff;
+    }
+
+    .vendor-definition-grid {
+        display: grid;
+        grid-template-columns: 1.2fr 180px 120px;
+        gap: 12px;
+    }
+
+    .vendor-preview-card {
+        margin-top: 14px;
+        border: 1px dashed rgba(15, 23, 42, 0.12);
+        border-radius: 14px;
+        padding: 14px;
+    }
+
+    .vendor-preview-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 14px;
+        border-radius: 12px;
+    }
+
+    .vendor-preview-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        background: rgba(255,255,255,.75);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid rgba(15, 23, 42, 0.06);
+    }
+
+    .vendor-preview-icon svg {
+        width: 22px;
+        height: 22px;
+        color: #111827;
+    }
+
+    .vendor-preview-fallback {
+        font-weight: 700;
+    }
+
+    .vendor-svg-textarea {
+        min-height: 108px;
+        font-family: Consolas, monospace;
+        font-size: 12px;
+    }
+
+    .vendor-rule-table td,
+    .vendor-rule-table th {
+        vertical-align: middle;
+    }
+
+    @@media (max-width: 992px) {
+        .vendor-definition-grid {
+            grid-template-columns: 1fr;
+        }
+    }
+
+    @@media (max-width: 768px) {
+        .model-toolbar {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .model-search-box {
+            max-width: none;
+        }
+
+        .vendor-group-header {
+            flex-direction: column;
+            align-items: flex-start;
+        }
+
+        .vendor-group-title {
+            font-size: 22px;
+        }
+    }
+</style>
+
 <script>
-    // 显示操作提示
+    var defaultVendorCatalog = @Html.Raw(Model.VendorCatalogEditorJson);
+    var vendorCatalogState = JSON.parse(JSON.stringify(defaultVendorCatalog));
+
+    document.addEventListener('DOMContentLoaded', function () {
+        syncVendorCatalogJson();
+        renderVendorEditor();
+        renderRuleEditor();
+    });
+
     function showMsg(msg, success) {
         var alert = document.getElementById('statusAlert');
         var text = document.getElementById('statusText');
@@ -31,7 +477,6 @@
         text.textContent = msg;
     }
 
-    // 清空全部模型
     function clearAllModels() {
         if (!confirm('确认清空所有模型？此操作将同时删除所有站点映射、检测日志和健康监控数据，不可恢复！')) return;
         var btn = document.getElementById('btnClearAll');
@@ -45,9 +490,7 @@
                 btn.textContent = '清空模型';
                 if (data.message) { showMsg(data.message, false); return; }
                 showMsg('已清空 ' + data.deletedModels + ' 个模型、' + data.deletedMappings + ' 条映射、' + data.deletedLogs + ' 条检测日志、' + data.deletedMonitors + ' 条监控', true);
-                // 清空表格
-                var tbody = document.querySelector('.table tbody');
-                tbody.innerHTML = '<tr><td colspan="6"><div class="table-empty"><div class="table-empty-icon">🧠</div><div class="table-empty-text">暂无模型，点击上方按钮新增</div></div></td></tr>';
+                window.location.reload();
             })
             .catch(function(err) {
                 btn.disabled = false;
@@ -55,58 +498,274 @@
                 showMsg('清空失败：' + err.message, false);
             });
     }
-</script>
 
-<!-- 模型列表表格 -->
-<div class="table-wrapper">
-    <table class="table">
-        <thead>
-            <tr>
-                <th>模型名</th>
-                <th>显示名</th>
-                <th>关联站点数</th>
-                <th>状态</th>
-                <th>创建时间</th>
-                <th>操作</th>
-            </tr>
-        </thead>
-        <tbody>
-            @if (!Model.Models.Any())
-            {
-                <tr>
-                    <td colspan="6">
-                        <div class="table-empty">
-                            <div class="table-empty-icon">🧠</div>
-                            <div class="table-empty-text">暂无模型，点击上方按钮新增</div>
-                        </div>
-                    </td>
-                </tr>
+    // 按模型名、显示名和厂商分组做前端过滤，避免频繁回发。
+    function filterModels() {
+        var keyword = (document.getElementById('modelSearchInput')?.value || '').trim().toLowerCase();
+        var visibleModelCount = 0;
+
+        document.querySelectorAll('.vendor-group').forEach(function(group) {
+            var groupVisibleCount = 0;
+            group.querySelectorAll('.model-card').forEach(function(card) {
+                var searchText = card.getAttribute('data-model-search') || '';
+                var matched = keyword === '' || searchText.indexOf(keyword) >= 0;
+                card.style.display = matched ? '' : 'none';
+                if (matched) {
+                    visibleModelCount++;
+                    groupVisibleCount++;
+                }
+            });
+
+            group.style.display = groupVisibleCount > 0 ? '' : 'none';
+            var countBadge = group.querySelector('[data-group-count]');
+            if (countBadge) {
+                countBadge.textContent = groupVisibleCount;
             }
-            @foreach (var item in Model.Models)
-            {
-                <tr>
-                    <td><code>@item.ModelName</code></td>
-                    <td><strong>@item.DisplayName</strong></td>
-                    <td><span class="badge bg-info">@item.SiteCount</span></td>
-                    <td>
-                        <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
-                            @(item.IsEnabled ? "启用" : "禁用")
-                        </span>
-                    </td>
-                    <td>@item.CreatedAt.LocalDateTime.ToString("yyyy-MM-dd HH:mm")</td>
-                    <td>
-                        <form method="post" asp-page-handler="Toggle" asp-route-modelId="@item.Id" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")">
-                                @(item.IsEnabled ? "禁用" : "启用")
-                            </button>
-                        </form>
-                        <a asp-page="./Edit" asp-route-id="@item.Id" class="btn btn-sm btn-outline-primary">编辑</a>
-                        <form method="post" asp-page-handler="Delete" asp-route-modelId="@item.Id" class="d-inline">
-                            <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该模型？')">删除</button>
-                        </form>
-                    </td>
-                </tr>
-            }
-        </tbody>
-    </table>
-</div>
+        });
+
+        var visibleModelCountElement = document.getElementById('visibleModelCount');
+        if (visibleModelCountElement) {
+            visibleModelCountElement.textContent = visibleModelCount;
+        }
+
+        var emptyState = document.getElementById('searchEmptyState');
+        if (emptyState) {
+            emptyState.style.display = visibleModelCount === 0 ? '' : 'none';
+        }
+    }
+
+    function ensureVendorCatalogShape() {
+        if (!vendorCatalogState || typeof vendorCatalogState !== 'object') {
+            vendorCatalogState = { Vendors: [], Rules: [] };
+        }
+
+        if (!Array.isArray(vendorCatalogState.Vendors)) {
+            vendorCatalogState.Vendors = [];
+        }
+
+        if (!Array.isArray(vendorCatalogState.Rules)) {
+            vendorCatalogState.Rules = [];
+        }
+    }
+
+    function syncVendorCatalogJson() {
+        ensureVendorCatalogShape();
+        var input = document.getElementById('vendorCatalogJsonInput');
+        if (input) {
+            input.value = JSON.stringify(vendorCatalogState);
+        }
+    }
+
+    function beforeSubmitVendorCatalog() {
+        syncVendorCatalogJson();
+        return true;
+    }
+
+    function restoreDefaultVendorCatalog() {
+        if (!confirm('确认恢复为当前文件内容吗？未保存修改将丢失。')) {
+            return;
+        }
+
+        vendorCatalogState = JSON.parse(JSON.stringify(defaultVendorCatalog));
+        renderVendorEditor();
+        renderRuleEditor();
+        syncVendorCatalogJson();
+    }
+
+    function addVendorRow() {
+        ensureVendorCatalogShape();
+        vendorCatalogState.Vendors.push({
+            VendorName: '',
+            IconSvgBody: '',
+            HeaderBackground: '#f8fafc',
+            SortOrder: vendorCatalogState.Vendors.length * 10
+        });
+        renderVendorEditor();
+        syncVendorCatalogJson();
+    }
+
+    function removeVendorRow(index) {
+        vendorCatalogState.Vendors.splice(index, 1);
+        renderVendorEditor();
+        renderRuleEditor();
+        syncVendorCatalogJson();
+    }
+
+    function updateVendorField(index, field, value) {
+        vendorCatalogState.Vendors[index][field] = field === 'SortOrder' ? parseInt(value || '0', 10) || 0 : value;
+        syncVendorCatalogJson();
+    }
+
+    function addRuleRow() {
+        ensureVendorCatalogShape();
+        vendorCatalogState.Rules.push({
+            VendorName: vendorCatalogState.Vendors[0] ? vendorCatalogState.Vendors[0].VendorName : '',
+            MatchType: 'wildcard',
+            Pattern: '',
+            Priority: vendorCatalogState.Rules.length * 10
+        });
+        renderRuleEditor();
+        syncVendorCatalogJson();
+    }
+
+    function removeRuleRow(index) {
+        vendorCatalogState.Rules.splice(index, 1);
+        renderRuleEditor();
+        syncVendorCatalogJson();
+    }
+
+    function updateRuleField(index, field, value) {
+        vendorCatalogState.Rules[index][field] = field === 'Priority' ? parseInt(value || '0', 10) || 0 : value;
+        syncVendorCatalogJson();
+    }
+
+    function renderVendorEditor() {
+        ensureVendorCatalogShape();
+        var container = document.getElementById('vendorDefinitionList');
+        if (!container) {
+            return;
+        }
+
+        container.innerHTML = '';
+        vendorCatalogState.Vendors.forEach(function (vendor, index) {
+            var card = document.createElement('div');
+            card.className = 'vendor-definition-card';
+            card.innerHTML = '' +
+                '<div class="d-flex justify-content-between align-items-center gap-2 flex-wrap mb-3">' +
+                    '<strong>厂商 #' + (index + 1) + '</strong>' +
+                    '<button type="button" class="btn btn-sm btn-outline-danger">删除</button>' +
+                '</div>' +
+                '<div class="vendor-definition-grid">' +
+                    '<div>' +
+                        '<label class="form-label">厂商名称</label>' +
+                        '<input type="text" class="form-control vendor-name-input" value="' + escapeHtml(vendor.VendorName || '') + '" />' +
+                    '</div>' +
+                    '<div>' +
+                        '<label class="form-label">标题背景色</label>' +
+                        '<input type="text" class="form-control vendor-bg-input" value="' + escapeHtml(vendor.HeaderBackground || '#f8fafc') + '" placeholder="#eef6ff" />' +
+                    '</div>' +
+                    '<div>' +
+                        '<label class="form-label">排序值</label>' +
+                        '<input type="number" class="form-control vendor-sort-input" value="' + escapeHtml(String(vendor.SortOrder ?? 0)) + '" />' +
+                    '</div>' +
+                '</div>' +
+                '<div class="mt-3">' +
+                    '<label class="form-label">标题 SVG 图标 Path 内容</label>' +
+                    '<textarea class="form-control vendor-svg-input vendor-svg-textarea" placeholder="<path ...></path>">' + escapeHtml(vendor.IconSvgBody || '') + '</textarea>' +
+                '</div>' +
+                '<div class="vendor-preview-card">' +
+                    '<div class="text-muted small mb-2">标题预览</div>' +
+                    '<div class="vendor-preview-header" style="background:' + escapeAttribute(vendor.HeaderBackground || '#f8fafc') + ';">' +
+                        '<div class="vendor-preview-icon">' + buildVendorIconPreview(vendor.IconSvgBody, vendor.VendorName) + '</div>' +
+                        '<div>' +
+                            '<div class="fw-semibold">' + escapeHtml(vendor.VendorName || '未命名厂商') + '</div>' +
+                            '<div class="text-muted small">模型分组标题示例</div>' +
+                        '</div>' +
+                    '</div>' +
+                '</div>';
+
+            card.querySelector('.btn-outline-danger').addEventListener('click', function () {
+                removeVendorRow(index);
+            });
+            card.querySelector('.vendor-name-input').addEventListener('change', function () {
+                updateVendorField(index, 'VendorName', this.value);
+                renderRuleEditor();
+                renderVendorEditor();
+            });
+            card.querySelector('.vendor-bg-input').addEventListener('change', function () {
+                updateVendorField(index, 'HeaderBackground', this.value);
+                renderVendorEditor();
+            });
+            card.querySelector('.vendor-sort-input').addEventListener('change', function () {
+                updateVendorField(index, 'SortOrder', this.value);
+            });
+            card.querySelector('.vendor-svg-input').addEventListener('change', function () {
+                updateVendorField(index, 'IconSvgBody', this.value);
+                renderVendorEditor();
+            });
+
+            container.appendChild(card);
+        });
+    }
+
+    function renderRuleEditor() {
+        ensureVendorCatalogShape();
+        var tbody = document.getElementById('vendorRuleList');
+        if (!tbody) {
+            return;
+        }
+
+        var vendorOptions = vendorCatalogState.Vendors
+            .map(function (vendor) {
+                return '<option value="' + escapeHtml(vendor.VendorName || '') + '"></option>';
+            })
+            .join('');
+
+        tbody.innerHTML = '';
+        vendorCatalogState.Rules.forEach(function (rule, index) {
+            var row = document.createElement('tr');
+            row.innerHTML = '' +
+                '<td><input type="number" class="form-control form-control-sm rule-priority-input" value="' + escapeHtml(String(rule.Priority ?? 0)) + '" /></td>' +
+                '<td><input type="text" list="vendorNameOptions" class="form-control form-control-sm rule-vendor-input" value="' + escapeHtml(rule.VendorName || '') + '" /></td>' +
+                '<td>' +
+                    '<select class="form-select form-select-sm rule-match-type-input">' +
+                        '<option value="exact" ' + (rule.MatchType === 'exact' ? 'selected' : '') + '>精确</option>' +
+                        '<option value="wildcard" ' + ((rule.MatchType || 'wildcard') === 'wildcard' ? 'selected' : '') + '>通配符 *</option>' +
+                        '<option value="regex" ' + (rule.MatchType === 'regex' ? 'selected' : '') + '>正则</option>' +
+                    '</select>' +
+                '</td>' +
+                '<td><input type="text" class="form-control form-control-sm rule-pattern-input" value="' + escapeHtml(rule.Pattern || '') + '" placeholder="如 doubao*,skylark* 或 ^claude-3.*$,^claude-4.*$" /></td>' +
+                '<td class="text-end"><button type="button" class="btn btn-sm btn-outline-danger">删除</button></td>';
+
+            row.querySelector('.btn-outline-danger').addEventListener('click', function () {
+                removeRuleRow(index);
+            });
+            row.querySelector('.rule-priority-input').addEventListener('change', function () {
+                updateRuleField(index, 'Priority', this.value);
+            });
+            row.querySelector('.rule-vendor-input').addEventListener('change', function () {
+                updateRuleField(index, 'VendorName', this.value);
+            });
+            row.querySelector('.rule-match-type-input').addEventListener('change', function () {
+                updateRuleField(index, 'MatchType', this.value);
+            });
+            row.querySelector('.rule-pattern-input').addEventListener('change', function () {
+                updateRuleField(index, 'Pattern', this.value);
+            });
+
+            tbody.appendChild(row);
+        });
+
+        var existingDatalist = document.getElementById('vendorNameOptions');
+        if (existingDatalist) {
+            existingDatalist.remove();
+        }
+
+        var datalist = document.createElement('datalist');
+        datalist.id = 'vendorNameOptions';
+        datalist.innerHTML = vendorOptions;
+        document.body.appendChild(datalist);
+    }
+
+    function buildVendorIconPreview(iconSvgBody, vendorName) {
+        if (iconSvgBody && iconSvgBody.trim() !== '') {
+            // 统一替换外部 SVG 内的渐变引用，避免预览和列表页显示不一致。
+            var normalizedSvgBody = String(iconSvgBody)
+                .split('url(#lobe-icons-qwen-fill)').join('url(#vendor-gradient-alibaba-preview)')
+                .split('id="lobe-icons-qwen-fill"').join('id="vendor-gradient-alibaba-preview"');
+            return '<svg viewBox="0 0 24 24"><defs><linearGradient id="vendor-gradient-alibaba-preview" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#FF8A00"></stop><stop offset="100%" stop-color="#FF5F00"></stop></linearGradient></defs>' + normalizedSvgBody + '</svg>';
+        }
+
+        return '<span class="vendor-preview-fallback">' + escapeHtml((vendorName || '未').substring(0, 1)) + '</span>';
+    }
+
+    function escapeHtml(text) {
+        var element = document.createElement('div');
+        element.textContent = text == null ? '' : String(text);
+        return element.innerHTML;
+    }
+
+    function escapeAttribute(text) {
+        return escapeHtml(text).replace(/"/g, '&quot;');
+    }
+</script>

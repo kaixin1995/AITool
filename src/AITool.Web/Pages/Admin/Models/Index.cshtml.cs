@@ -1,15 +1,15 @@
+using System.Text.Json;
 using AITool.Application.Models;
 using AITool.Domain.Models;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Web.Pages.Admin.Models;
 
-// 模型库视图模型，包含关联站点数
 public class ModelWithSiteCount
 {
     public Guid Id { get; set; }
@@ -17,21 +17,40 @@ public class ModelWithSiteCount
     public string DisplayName { get; set; } = string.Empty;
     public bool IsEnabled { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
-    // 关联的站点数量
     public int SiteCount { get; set; }
 }
 
-// 模型库列表页模型
+public class ModelVendorGroupViewModel
+{
+    public string VendorName { get; set; } = string.Empty;
+    public string IconSvgBody { get; set; } = string.Empty;
+    public string HeaderBackground { get; set; } = string.Empty;
+    public List<ModelWithSiteCount> Models { get; set; } = [];
+}
+
 public class IndexModel : PageModel
 {
+    private static readonly JsonSerializerOptions EditorJsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache? _metadataCache;
+    private readonly ModelVendorCatalogService? _vendorCatalogService;
 
     [ActivatorUtilitiesConstructor]
-    public IndexModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public IndexModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache, ModelVendorCatalogService vendorCatalogService)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
+        _vendorCatalogService = vendorCatalogService;
+    }
+
+    public IndexModel(AppDbContext dbContext, ModelVendorCatalogService vendorCatalogService)
+    {
+        _dbContext = dbContext;
+        _vendorCatalogService = vendorCatalogService;
     }
 
     public IndexModel(AppDbContext dbContext)
@@ -39,46 +58,58 @@ public class IndexModel : PageModel
         _dbContext = dbContext;
     }
 
-    // 模型库列表数据
-    public List<ModelWithSiteCount> Models { get; set; } = [];
+    public List<ModelVendorGroupViewModel> VendorGroups { get; set; } = [];
 
-    // 状态消息
+    public string VendorCatalogEditorJson { get; set; } = string.Empty;
+
+    [BindProperty]
+    public string VendorCatalogJson { get; set; } = string.Empty;
+
+    [BindProperty]
+    public string ActiveTab { get; set; } = "models";
+
     public string? StatusMessage { get; set; }
     public bool StatusSuccess { get; set; }
 
-    // 加载模型列表，包含每个模型关联的站点数量
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        var enabledSiteIds = await _dbContext.Sites
-            .Where(s => s.IsEnabled)
-            .Select(s => s.Id)
-            .ToListAsync(cancellationToken);
-
-        var siteCounts = await _dbContext.SiteModelMappings
-            .Where(m => m.IsEnabled && enabledSiteIds.Contains(m.SiteId))
-            .GroupBy(m => m.ModelLibraryItemId)
-            .Select(g => new { ModelId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.ModelId, x => x.Count, cancellationToken);
-
-        Models = await _dbContext.ModelLibraryItems
-            .OrderBy(x => x.ModelName)
-            .Select(x => new ModelWithSiteCount
-            {
-                Id = x.Id,
-                ModelName = x.ModelName,
-                DisplayName = x.DisplayName,
-                IsEnabled = x.IsEnabled,
-                CreatedAt = x.CreatedAt
-            })
-            .ToListAsync(cancellationToken);
-
-        foreach (var model in Models)
-        {
-            model.SiteCount = siteCounts.GetValueOrDefault(model.Id);
-        }
+        await LoadPageDataAsync(cancellationToken);
     }
 
-    // 切换模型启用/禁用状态
+    public async Task<IActionResult> OnPostSaveVendorCatalogAsync(CancellationToken cancellationToken)
+    {
+        ActiveTab = "rules";
+        if (_vendorCatalogService is null)
+        {
+            StatusMessage = "当前环境未启用厂商规则保存服务";
+            StatusSuccess = false;
+            await LoadPageDataAsync(cancellationToken);
+            return Page();
+        }
+
+        try
+        {
+            var catalog = JsonSerializer.Deserialize<ModelVendorCatalog>(VendorCatalogJson, EditorJsonOptions)
+                ?? throw new InvalidOperationException("厂商规则数据不能为空");
+            var savedCatalog = await _vendorCatalogService.SaveAsync(catalog, cancellationToken);
+            StatusMessage = "厂商规则已保存";
+            StatusSuccess = true;
+            await LoadPageDataAsync(savedCatalog, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"保存失败：{ex.Message}";
+            StatusSuccess = false;
+            var persistedCatalog = await GetVendorCatalogAsync(cancellationToken);
+            await LoadModelGroupsAsync(persistedCatalog, cancellationToken);
+            VendorCatalogEditorJson = string.IsNullOrWhiteSpace(VendorCatalogJson)
+                ? JsonSerializer.Serialize(persistedCatalog, EditorJsonOptions)
+                : VendorCatalogJson;
+        }
+
+        return Page();
+    }
+
     public async Task<IActionResult> OnPostToggleAsync(Guid modelId, CancellationToken cancellationToken)
     {
         try
@@ -97,11 +128,12 @@ public class IndexModel : PageModel
             StatusMessage = $"操作失败：{ex.Message}";
             StatusSuccess = false;
         }
-        await OnGetAsync(cancellationToken);
+
+        ActiveTab = "models";
+        await LoadPageDataAsync(cancellationToken);
         return Page();
     }
 
-    // 删除模型时，同时清理该模型下全部站点映射与相关路由规则，避免留下失效关联。
     public async Task<IActionResult> OnPostDeleteAsync(Guid modelId, CancellationToken cancellationToken)
     {
         try
@@ -120,7 +152,6 @@ public class IndexModel : PageModel
                 .Distinct()
                 .ToList();
 
-            // 先按站点范围取回候选规则，再在内存里按站点+模型精确匹配，避免 EF 无法翻译本地集合 Any。
             var candidateRules = await _dbContext.ProxyRouteRules
                 .Where(x => x.ExternalModelName == model.ModelName || mappingSiteIds.Contains(x.SiteId))
                 .ToListAsync(cancellationToken);
@@ -171,8 +202,75 @@ public class IndexModel : PageModel
             StatusMessage = $"操作失败：{ex.Message}";
             StatusSuccess = false;
         }
-        await OnGetAsync(cancellationToken);
+
+        ActiveTab = "models";
+        await LoadPageDataAsync(cancellationToken);
         return Page();
+    }
+
+    private async Task LoadPageDataAsync(CancellationToken cancellationToken)
+    {
+        var catalog = await GetVendorCatalogAsync(cancellationToken);
+        await LoadPageDataAsync(catalog, cancellationToken);
+    }
+
+    private async Task LoadPageDataAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken)
+    {
+        VendorCatalogEditorJson = JsonSerializer.Serialize(catalog, EditorJsonOptions);
+        VendorCatalogJson = VendorCatalogEditorJson;
+        await LoadModelGroupsAsync(catalog, cancellationToken);
+    }
+
+    private async Task<ModelVendorCatalog> GetVendorCatalogAsync(CancellationToken cancellationToken)
+    {
+        return _vendorCatalogService is null
+            ? new ModelVendorCatalog()
+            : await _vendorCatalogService.GetOrCreateAsync(cancellationToken);
+    }
+
+    // 模型分组展示统一走可维护的厂商规则，避免页面内再写死映射逻辑。
+    private async Task LoadModelGroupsAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken)
+    {
+        var enabledSiteIds = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .Select(s => s.Id)
+            .ToListAsync(cancellationToken);
+
+        var siteCounts = await _dbContext.SiteModelMappings
+            .Where(m => m.IsEnabled && enabledSiteIds.Contains(m.SiteId))
+            .GroupBy(m => m.ModelLibraryItemId)
+            .Select(g => new { ModelId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.ModelId, x => x.Count, cancellationToken);
+
+        var models = await _dbContext.ModelLibraryItems
+            .OrderBy(x => x.ModelName)
+            .Select(x => new ModelWithSiteCount
+            {
+                Id = x.Id,
+                ModelName = x.ModelName,
+                DisplayName = x.DisplayName,
+                IsEnabled = x.IsEnabled,
+                CreatedAt = x.CreatedAt
+            })
+            .ToListAsync(cancellationToken);
+
+        foreach (var model in models)
+        {
+            model.SiteCount = siteCounts.GetValueOrDefault(model.Id);
+        }
+
+        VendorGroups = models
+            .GroupBy(x => ModelVendorCatalogService.ResolveVendor(catalog, x.ModelName), ModelVendorDefinitionComparer.Instance)
+            .OrderBy(g => g.Key.SortOrder)
+            .ThenBy(g => g.Key.VendorName, StringComparer.OrdinalIgnoreCase)
+            .Select(g => new ModelVendorGroupViewModel
+            {
+                VendorName = g.Key.VendorName,
+                IconSvgBody = g.Key.IconSvgBody,
+                HeaderBackground = g.Key.HeaderBackground,
+                Models = g.OrderBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase).ToList()
+            })
+            .ToList();
     }
 
     private async Task CleanupEmptyRouteEntriesAsync(IEnumerable<string> entryNames, CancellationToken cancellationToken)
@@ -213,7 +311,22 @@ public class IndexModel : PageModel
     }
 }
 
-// 模型库创建页模型
+// 比较器只按厂商名归组，避免同名厂商因对象实例不同被拆成多个分组。
+internal sealed class ModelVendorDefinitionComparer : IEqualityComparer<ModelVendorDefinition>
+{
+    public static ModelVendorDefinitionComparer Instance { get; } = new();
+
+    public bool Equals(ModelVendorDefinition? x, ModelVendorDefinition? y)
+    {
+        return string.Equals(x?.VendorName, y?.VendorName, StringComparison.OrdinalIgnoreCase);
+    }
+
+    public int GetHashCode(ModelVendorDefinition obj)
+    {
+        return StringComparer.OrdinalIgnoreCase.GetHashCode(obj.VendorName ?? string.Empty);
+    }
+}
+
 public class CreateModelModel : PageModel
 {
     private readonly AppDbContext _dbContext;
@@ -234,15 +347,12 @@ public class CreateModelModel : PageModel
     [BindProperty]
     public CreateModelLibraryItemCommand Command { get; set; } = new();
 
-    // 显示创建表单
     public void OnGet() { }
 
-    // 提交模型创建
     public async Task<IActionResult> OnPostAsync(CancellationToken cancellationToken)
     {
         if (!ModelState.IsValid) return Page();
 
-        // 将命令转为实体并保存
         _dbContext.ModelLibraryItems.Add(new ModelLibraryItem
         {
             ModelName = Command.ModelName,

@@ -110,6 +110,7 @@ builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 // 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点。
 builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<ProxyRequestMetadataCache>();
+builder.Services.AddSingleton<ModelVendorCatalogService>();
 
 // 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
