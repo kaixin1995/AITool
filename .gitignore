@@ -372,3 +372,4 @@ FodyWeavers.xsd
 /aitool.db-shm
 /aitool.db-wal
 /.claude/
+/.artifacts
