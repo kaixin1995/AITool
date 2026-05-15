@@ -38,9 +38,6 @@
                     <a class="sidebar-link" href="/Admin/Chat" title="对话测试">
                         <span class="sidebar-link-icon">💬</span>对话测试
                     </a>
-                    <a class="sidebar-link" href="/Admin/ClientSimulator" title="客户端模拟">
-                        <span class="sidebar-link-icon">🧪</span>客户端模拟
-                    </a>
                 </div>
                 <!-- 资源管理 -->
                 <div class="sidebar-section">
@@ -74,15 +71,15 @@
                     <a class="sidebar-link" href="/Admin/ModelHealth" title="模型健康">
                         <span class="sidebar-link-icon">💊</span>模型健康
                     </a>
+                    @if (runtimeSettings.DeveloperFeaturesEnabled)
+                    {
+                        <a class="sidebar-link" href="/Admin/Developer/Invocations" title="调试工具">
+                            <span class="sidebar-link-icon">🛠️</span>调试工具
+                        </a>
+                    }
                     <a class="sidebar-link" href="/Admin/UsageLogs" title="使用日志">
                         <span class="sidebar-link-icon">📋</span>使用日志
                     </a>
-                    @if (runtimeSettings.DeveloperFeaturesEnabled)
-                    {
-                        <a class="sidebar-link" href="/Admin/Developer/Invocations" title="调用调试">
-                            <span class="sidebar-link-icon">🧭</span>调用调试
-                        </a>
-                    }
                     <a class="sidebar-link" href="/Admin/System/Settings" title="系统设置">
                         <span class="sidebar-link-icon">⚙️</span>系统设置
                     </a>

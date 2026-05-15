@@ -1,6 +1,9 @@
 using AITool.Application.Operations;
+using AITool.Infrastructure.Persistence;
+using AITool.Web.Pages.Admin.ClientSimulator;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.EntityFrameworkCore;
 using AITool.Web.Services;
 
 namespace AITool.Web.Pages.Admin.Developer.Invocations;
@@ -12,16 +15,24 @@ public sealed class IndexModel : PageModel
 
     private readonly ISystemRuntimeSettingsService _runtimeSettingsService;
     private readonly DeveloperInvocationTraceStore _traceStore;
+    private readonly AppDbContext _dbContext;
 
-    public IndexModel(ISystemRuntimeSettingsService runtimeSettingsService, DeveloperInvocationTraceStore traceStore)
+    public IndexModel(ISystemRuntimeSettingsService runtimeSettingsService, DeveloperInvocationTraceStore traceStore, AppDbContext dbContext)
     {
         _runtimeSettingsService = runtimeSettingsService;
         _traceStore = traceStore;
+        _dbContext = dbContext;
     }
 
     public int InitialTotalCount { get; private set; }
     public int InitialFailedCount { get; private set; }
     public int InitialPendingCount { get; private set; }
+    public string ActiveTab { get; private set; } = "invocations";
+    public string DefaultBaseUrl { get; private set; } = string.Empty;
+    public string DefaultAccessKey { get; private set; } = string.Empty;
+    public string DefaultOpenAiModel { get; private set; } = string.Empty;
+    public string DefaultAnthropicModel { get; private set; } = string.Empty;
+    public List<ClientSimulatorModelItemViewModel> Models { get; private set; } = [];
 
     public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
     {
@@ -31,10 +42,13 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
+        ActiveTab = "invocations";
+
         var entries = _traceStore.List();
         InitialTotalCount = entries.Count;
         InitialFailedCount = entries.Count(x => x.Attempts.Any(a => !string.Equals(a.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)));
         InitialPendingCount = entries.Count(x => x.Attempts.Any(a => string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)));
+        await LoadClientSimulatorAsync(cancellationToken);
         return Page();
     }
 
@@ -184,6 +198,43 @@ public sealed class IndexModel : PageModel
             SummarySite = string.IsNullOrWhiteSpace(attempt.TargetSiteName) ? "未命中站点" : attempt.TargetSiteName,
             SummaryAttemptedModel = string.IsNullOrWhiteSpace(attempt.AttemptedModel) ? "未解析调用模型" : attempt.AttemptedModel
         };
+    }
+
+    private async Task LoadClientSimulatorAsync(CancellationToken cancellationToken)
+    {
+        DefaultBaseUrl = $"{Request.Scheme}://{Request.Host}";
+
+        DefaultAccessKey = await _dbContext.ProxyAccessKeys
+            .Where(k => k.IsEnabled && !string.IsNullOrWhiteSpace(k.PlainKey))
+            .OrderBy(k => k.KeyName)
+            .Select(k => k.PlainKey)
+            .FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+
+        var enabledSiteIds = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .Select(s => s.Id)
+            .ToListAsync(cancellationToken);
+
+        var routeModels = await (
+                from rule in _dbContext.ProxyRouteRules
+                join site in _dbContext.Sites on rule.SiteId equals site.Id
+                where rule.IsEnabled && site.IsEnabled && enabledSiteIds.Contains(rule.SiteId)
+                group site by rule.ExternalModelName into g
+                select new ClientSimulatorModelItemViewModel
+                {
+                    ModelName = g.Key,
+                    RouteCount = g.Count(),
+                    SupportsOpenAi = g.Any(x => x.SupportsOpenAi),
+                    SupportsAnthropic = g.Any(x => x.SupportsAnthropic),
+                    CanUseOpenAi = g.Any(),
+                    CanUseAnthropic = g.Any()
+                })
+            .OrderBy(m => m.ModelName)
+            .ToListAsync(cancellationToken);
+
+        Models = routeModels;
+        DefaultOpenAiModel = routeModels.FirstOrDefault(x => x.CanUseOpenAi)?.ModelName ?? string.Empty;
+        DefaultAnthropicModel = routeModels.FirstOrDefault(x => x.CanUseAnthropic)?.ModelName ?? string.Empty;
     }
 
     private static string GetStatusClass(string status)
