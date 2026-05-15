@@ -37,15 +37,12 @@
     </article>
 </div>
 
-<div class="trace-focus-tip mb-3">
-    <span class="trace-focus-tip-mark">!</span>
-    <span>最新记录默认置顶；红色卡片表示失败或异常，黄色卡片表示仍在等待返回。</span>
-</div>
-
 <div class="trace-loading-card" id="traceLoadingCard">
     <div class="trace-loading-title">调用记录按需加载中</div>
     <div class="trace-loading-text">首次进入页面时先展示统计信息，详细列表会在后台懒加载，并按页加载 20 条，避免一次性渲染过多记录导致页面抖动。</div>
 </div>
+
+<div class="accordion trace-accordion d-flex flex-column gap-3" id="invocationTraceAccordion"></div>
 
 <div class="trace-pagination-bar" id="tracePaginationBar">
     <div class="trace-pagination-summary" id="tracePaginationSummary">每页 20 条</div>
@@ -54,8 +51,6 @@
         <button type="button" class="btn btn-outline-secondary btn-sm" id="traceNextPageButton">下一页</button>
     </div>
 </div>
-
-<div class="accordion trace-accordion d-flex flex-column gap-3" id="invocationTraceAccordion"></div>
 
 <style>
     .trace-page-header {
@@ -155,17 +150,6 @@
         color: var(--text-secondary);
     }
 
-    .trace-focus-tip {
-        display: inline-flex;
-        align-items: center;
-        gap: 10px;
-        padding: 10px 14px;
-        border-radius: 999px;
-        background: #fff7ed;
-        color: #9a3412;
-        border: 1px solid rgba(251, 146, 60, 0.25);
-    }
-
     .trace-loading-card {
         margin-bottom: 16px;
         padding: 16px 18px;
@@ -192,12 +176,12 @@
     }
 
     .trace-pagination-bar {
-        display: flex;
+        display: none;
         align-items: center;
         justify-content: space-between;
         gap: 12px;
         flex-wrap: wrap;
-        margin-bottom: 16px;
+        margin-top: 16px;
         padding: 14px 16px;
         border-radius: 18px;
         border: 1px solid rgba(226, 232, 240, 0.9);
@@ -215,18 +199,6 @@
         align-items: center;
         gap: 8px;
         flex-wrap: wrap;
-    }
-
-    .trace-focus-tip-mark {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        width: 22px;
-        height: 22px;
-        border-radius: 50%;
-        background: #f97316;
-        color: #fff;
-        font-weight: 700;
     }
 
     .trace-card {
@@ -559,6 +531,7 @@
             var refreshNowButton = document.getElementById('refreshNowButton');
             var traceAccordion = document.getElementById('invocationTraceAccordion');
             var traceLoadingCard = document.getElementById('traceLoadingCard');
+            var tracePaginationBar = document.getElementById('tracePaginationBar');
             var tracePaginationSummary = document.getElementById('tracePaginationSummary');
             var tracePrevPageButton = document.getElementById('tracePrevPageButton');
             var traceNextPageButton = document.getElementById('traceNextPageButton');
@@ -609,20 +582,44 @@
                 }
             }
 
-            // 分页信息需要在自动刷新后继续保持当前页，而不是把整页记录无限堆积。
+            function formatDuration(durationMs) {
+                var value = Number(durationMs || 0);
+                if (!value || value <= 0) {
+                    return '-';
+                }
+
+                // 按量级自动切换毫秒、秒、分钟，避免长耗时记录难以扫读。
+                if (value < 1000) {
+                    return value + ' ms';
+                }
+                if (value < 60000) {
+                    return formatDurationNumber(value / 1000) + ' 秒';
+                }
+                return formatDurationNumber(value / 60000) + ' 分';
+            }
+
+            function formatDurationNumber(value) {
+                return Number(value.toFixed(value >= 10 ? 1 : 2)).toString();
+            }
+
+            // 分页信息需要在自动刷新后继续保持当前页，并在不足一页时直接隐藏翻页栏。
             function updatePagination(payload) {
                 currentPage = payload.pageNumber || 1;
                 currentTotalPages = payload.totalPages || 1;
+                var totalCount = payload.totalCount || 0;
+                var pageSize = payload.pageSize || 20;
+                var shouldShowPagination = currentTotalPages > 1 && totalCount > pageSize;
+                if (tracePaginationBar) {
+                    tracePaginationBar.style.display = shouldShowPagination ? 'flex' : 'none';
+                }
                 if (tracePaginationSummary) {
-                    var totalCount = payload.totalCount || 0;
-                    var pageSize = payload.pageSize || 20;
                     tracePaginationSummary.textContent = '第 ' + currentPage + ' / ' + currentTotalPages + ' 页 · 每页 ' + pageSize + ' 条 · 共 ' + totalCount + ' 条';
                 }
                 if (tracePrevPageButton) {
-                    tracePrevPageButton.disabled = currentPage <= 1 || isRefreshing;
+                    tracePrevPageButton.disabled = !shouldShowPagination || currentPage <= 1 || isRefreshing;
                 }
                 if (traceNextPageButton) {
-                    traceNextPageButton.disabled = currentPage >= currentTotalPages || isRefreshing;
+                    traceNextPageButton.disabled = !shouldShowPagination || currentPage >= currentTotalPages || isRefreshing;
                 }
             }
 
@@ -666,7 +663,7 @@
                     '<div class="trace-attempt-list">' +
                     entry.attempts.map(function (attempt, attemptIndex) {
                         var attemptStatusCodeText = attempt.statusCode > 0 ? String(attempt.statusCode) : '-';
-                        var attemptDurationText = attempt.totalDurationMs > 0 ? attempt.totalDurationMs + ' ms' : '-';
+                        var attemptDurationText = formatDuration(attempt.totalDurationMs);
                         var attemptResponseBodyText = attempt.responseBody && attempt.responseBody.trim() ? attempt.responseBody : '-';
                         var attemptErrorBlock = attempt.errorMessage && attempt.errorMessage.trim()
                             ? '<div class="trace-error-stack"><div class="trace-section-title trace-section-title-danger">尝试错误</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">' + escapeHtml(attempt.errorMessage) + '</pre></div>'
@@ -764,7 +761,7 @@
             function renderEntry(entry) {
                 var traceCollapseId = 'invocation-trace-' + entry.traceId;
                 var statusCodeText = entry.statusCode > 0 ? String(entry.statusCode) : '-';
-                var durationText = entry.totalDurationMs > 0 ? entry.totalDurationMs + ' ms' : '-';
+                var durationText = formatDuration(entry.totalDurationMs);
                 var attemptsSummary = '成功 ' + (entry.successAttemptCount || 0) + ' / 失败 ' + (entry.failedAttemptCount || 0) + ' / 等待 ' + (entry.pendingAttemptCount || 0);
 
                 return '' +
@@ -870,7 +867,7 @@
                 isRefreshing = true;
                 var requestedPage = Math.max(1, page || currentPage || 1);
                 var openIds = hasLoadedListOnce ? getOpenTraceIds() : [];
-                updatePagination({ pageNumber: currentPage, pageSize: 20, totalPages: Math.max(currentPage, 1), totalCount: 0 });
+                updatePagination({ pageNumber: requestedPage, pageSize: 20, totalPages: Math.max(currentTotalPages, requestedPage, 1), totalCount: currentTotalPages > 1 ? currentTotalPages * 20 : 0 });
 
                 try {
                     var response = await fetch(buildListUrl(requestedPage), {
