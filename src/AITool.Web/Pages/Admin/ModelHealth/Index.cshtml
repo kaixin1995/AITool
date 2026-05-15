@@ -281,15 +281,20 @@
 <div class="form-card" style="margin-bottom:20px;">
     <div class="form-section-title">添加监控模型</div>
     <form method="post" asp-page-handler="AddMonitor" class="row g-2 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label" for="availableModelSearch">搜索模型</label>
+            <input type="text" id="availableModelSearch" class="form-control" placeholder="输入模型名称过滤下拉选项..." oninput="filterAvailableModels()" />
+        </div>
         <div class="col-md-5">
-            <label class="form-label">选择模型</label>
-            <select name="modelId" class="form-select" required>
+            <label class="form-label" for="availableModelSelect">选择模型</label>
+            <select id="availableModelSelect" name="modelId" class="form-select" required>
                 <option value="">-- 请选择模型 --</option>
                 @foreach (var m in Model.AvailableModels)
                 {
                     <option value="@m.Id">@m.DisplayName</option>
                 }
             </select>
+            <div id="availableModelSearchEmpty" class="form-text" style="display:none;">没有匹配的模型，请调整关键词。</div>
         </div>
         <div class="col-auto">
             <button type="submit" class="btn btn-primary">添加监控</button>
@@ -507,9 +512,69 @@
 }
 
 <script>
+    var availableModelOptions = [];
+
+    // 为原生下拉框补一个前端搜索层，避免模型太多时很难定位目标项。
+    function initializeAvailableModelOptions() {
+        var select = document.getElementById('availableModelSelect');
+        if (!select) {
+            return;
+        }
+
+        availableModelOptions = Array.from(select.options)
+            .filter(function(option) {
+                return option.value !== '';
+            })
+            .map(function(option) {
+                return {
+                    value: option.value,
+                    text: option.text
+                };
+            });
+    }
+
+    function filterAvailableModels() {
+        var select = document.getElementById('availableModelSelect');
+        var searchInput = document.getElementById('availableModelSearch');
+        var emptyState = document.getElementById('availableModelSearchEmpty');
+        if (!select || !searchInput) {
+            return;
+        }
+
+        if (availableModelOptions.length === 0) {
+            initializeAvailableModelOptions();
+        }
+
+        var keyword = searchInput.value.toLowerCase().trim();
+        var selectedValue = select.value;
+        var matchedOptions = availableModelOptions.filter(function(option) {
+            return keyword === '' || option.text.toLowerCase().indexOf(keyword) >= 0;
+        });
+
+        select.innerHTML = '';
+        select.add(new Option('-- 请选择模型 --', ''));
+        matchedOptions.forEach(function(option) {
+            select.add(new Option(option.text, option.value));
+        });
+
+        var hasSelectedValue = matchedOptions.some(function(option) {
+            return option.value === selectedValue;
+        });
+        select.value = hasSelectedValue ? selectedValue : '';
+
+        if (emptyState) {
+            emptyState.style.display = matchedOptions.length === 0 ? '' : 'none';
+        }
+    }
+
     /* 按模型名搜索过滤健康看板 */
     function filterHealthModels() {
-        var keyword = document.getElementById('healthSearch').value.toLowerCase();
+        var searchInput = document.getElementById('healthSearch');
+        if (!searchInput) {
+            return;
+        }
+
+        var keyword = searchInput.value.toLowerCase();
         document.querySelectorAll('.health-model-group').forEach(function(g) {
             var name = g.getAttribute('data-display-name').toLowerCase();
             var visible = name.indexOf(keyword) >= 0;
@@ -544,4 +609,6 @@
             button.textContent = isHidden ? '收起明细' : '查看明细';
         }
     }
+
+    initializeAvailableModelOptions();
 </script>
