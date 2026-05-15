@@ -52,7 +52,7 @@ public sealed class IndexModel : PageModel
         return Page();
     }
 
-    public async Task<IActionResult> OnGetListAsync(int page = 1, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> OnGetListAsync(int pageNumber = 1, CancellationToken cancellationToken = default)
     {
         var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
         if (!settings.DeveloperFeaturesEnabled)
@@ -63,7 +63,8 @@ public sealed class IndexModel : PageModel
         var entries = _traceStore.List();
         var totalCount = entries.Count;
         var totalPages = Math.Max(1, (int)Math.Ceiling(totalCount / (double)PageSize));
-        var currentPage = Math.Min(Math.Max(page, 1), totalPages);
+        // Razor Pages 会把 page 当作保留路由字段参与绑定，这里改用 pageNumber 避免翻页始终回到第一页。
+        var currentPage = Math.Min(Math.Max(pageNumber, 1), totalPages);
         var pagedEntries = entries
             .Skip((currentPage - 1) * PageSize)
             .Take(PageSize)

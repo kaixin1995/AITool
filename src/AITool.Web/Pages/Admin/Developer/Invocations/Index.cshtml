@@ -1250,7 +1250,7 @@
 
             function buildListUrl(page) {
                 var url = new URL(listEndpoint, window.location.origin);
-                url.searchParams.set('page', String(page || 1));
+                url.searchParams.set('pageNumber', String(page || 1));
                 return url.toString();
             }
 
