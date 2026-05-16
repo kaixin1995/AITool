@@ -56,7 +56,7 @@ public class ModelHealthLogEntry
     /// </summary>
     public string Status { get; set; } = string.Empty;
     /// <summary>
-    /// DurationMs。
+    /// 耗时（毫秒）。
     /// </summary>
     public int DurationMs { get; set; }
     /// <summary>
@@ -189,7 +189,7 @@ public class IndexModel : PageModel
     public List<ModelSelectItem> AvailableModels { get; set; } = [];
 
     /// <summary>
-    /// MonitoredModels。
+    /// 已监控模型列表。
     /// </summary>
     public List<MonitoredModelItem> MonitoredModels { get; set; } = [];
 

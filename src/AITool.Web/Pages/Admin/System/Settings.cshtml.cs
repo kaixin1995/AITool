@@ -44,13 +44,13 @@ public class SettingsModel : PageModel
     }
 
     /// <summary>
-    /// new。
+    /// 系统设置表单提交数据。
     /// </summary>
     [BindProperty]
     public UpdateSystemRuntimeSettingsRequest Input { get; set; } = new();
 
     /// <summary>
-    /// new。
+    /// 清理 UsageLogs 表单提交数据。
     /// </summary>
     [BindProperty]
     public ClearUsageLogsInput ClearUsageLogs { get; set; } = new();
@@ -144,12 +144,12 @@ public sealed class ClearUsageLogsInput
     public string Source { get; set; } = string.Empty;
 
     /// <summary>
-    /// StartTime。
+    /// 开始时间。
     /// </summary>
     public DateTimeOffset? StartTime { get; set; }
 
     /// <summary>
-    /// EndTime。
+    /// 结束时间。
     /// </summary>
     public DateTimeOffset? EndTime { get; set; }
 }

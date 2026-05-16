@@ -14,7 +14,7 @@ namespace AITool.Infrastructure.Persistence;
 public sealed class AppDbContext : DbContext
 {
     /// <summary>
-    /// 初始化 AppDbContext。
+    /// 注入数据库上下文配置选项
     /// </summary>
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
@@ -74,7 +74,7 @@ public sealed class AppDbContext : DbContext
     public DbSet<SystemRuntimeSettings> SystemRuntimeSettings => Set<SystemRuntimeSettings>();
 
     /// <summary>
-    /// 方法 OnModelCreating。
+    /// 配置所有实体的主键、字段约束、索引等数据库映射规则
     /// </summary>
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -193,7 +193,7 @@ public sealed class AppDbContext : DbContext
     }
 
     /// <summary>
-    /// 方法 SaveChanges。
+    /// 保存前自动补全旧 ModelType 兼容字段
     /// </summary>
     public override int SaveChanges()
     {
@@ -202,7 +202,7 @@ public sealed class AppDbContext : DbContext
     }
 
     /// <summary>
-    /// 方法 SaveChanges。
+    /// 保存前自动补全旧 ModelType 兼容字段
     /// </summary>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
@@ -211,7 +211,7 @@ public sealed class AppDbContext : DbContext
     }
 
     /// <summary>
-    /// 方法 SaveChangesAsync。
+    /// 异步保存前自动补全旧 ModelType 兼容字段
     /// </summary>
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -220,7 +220,7 @@ public sealed class AppDbContext : DbContext
     }
 
     /// <summary>
-    /// 方法 SaveChangesAsync。
+    /// 异步保存前自动补全旧 ModelType 兼容字段
     /// </summary>
     public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {

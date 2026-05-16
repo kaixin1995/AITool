@@ -12,7 +12,7 @@ namespace AITool.Web.Services;
 public sealed class ProxyRequestMetadataCache
 {
     /// <summary>
-    /// FromSeconds。
+    /// 缓存有效时长。
     /// </summary>
     private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(5);
     /// <summary>
@@ -442,7 +442,7 @@ public sealed class CachedProxyAccessKey
     /// </summary>
     public Guid Id { get; set; }
     /// <summary>
-    /// AccessKeyHash。
+    /// 访问密钥哈希值。
     /// </summary>
     public string AccessKeyHash { get; set; } = string.Empty;
 }

@@ -13,11 +13,11 @@ public sealed class DeveloperInvocationTraceStore
     /// </summary>
     private const int MaxEntryCount = 100;
     /// <summary>
-    /// FromHours。
+    /// 调用记录保留时长。
     /// </summary>
     private static readonly TimeSpan EntryRetention = TimeSpan.FromHours(6);
     /// <summary>
-    /// new。
+    /// 并发访问锁对象。
     /// </summary>
     private readonly object _gate = new();
     /// <summary>
@@ -535,7 +535,7 @@ public sealed class DeveloperInvocationTraceEntry
 public sealed class DeveloperInvocationTraceAttempt
 {
     /// <summary>
-    /// AttemptId。
+    /// 调用尝试标识。
     /// </summary>
     public Guid AttemptId { get; set; }
     /// <summary>

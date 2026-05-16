@@ -12,20 +12,20 @@ namespace AITool.Infrastructure.Health;
 public sealed class ModelHealthRequestService
 {
     /// <summary>
-    /// 字段 _dbContext。
+    /// 数据库上下文，用于查询映射、站点、模型等数据
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 字段 _forwardService。
+    /// 代理转发服务，用于向目标站点发起真实请求
     /// </summary>
     private readonly IProxyForwardService _forwardService;
     /// <summary>
-    /// 字段 _usageLogService。
+    /// 使用日志服务，用于记录每次检测的调用结果
     /// </summary>
     private readonly IUsageLogService _usageLogService;
 
     /// <summary>
-    /// 初始化 ModelHealthRequestService。
+    /// 注入数据库上下文、代理转发服务和日志服务
     /// </summary>
     public ModelHealthRequestService(
         AppDbContext dbContext,
@@ -200,27 +200,27 @@ public sealed class ModelHealthRequestService
 public sealed class ModelHealthProbeResult
 {
     /// <summary>
-    /// 属性 MappingId。
+    /// 被检测的站点模型映射 ID
     /// </summary>
     public Guid MappingId { get; set; }
     /// <summary>
-    /// 属性 SiteName。
+    /// 站点名称
     /// </summary>
     public string SiteName { get; set; } = string.Empty;
     /// <summary>
-    /// 属性 RemoteModelName。
+    /// 站点上的实际模型名称
     /// </summary>
     public string RemoteModelName { get; set; } = string.Empty;
     /// <summary>
-    /// 属性 Status。
+    /// 检测结果状态：success 或 fail
     /// </summary>
     public string Status { get; set; } = string.Empty;
     /// <summary>
-    /// 属性 DurationMs。
+    /// 请求耗时（毫秒），可能为空
     /// </summary>
     public int? DurationMs { get; set; }
     /// <summary>
-    /// 属性 ErrorMessage。
+    /// 失败时的错误信息
     /// </summary>
     public string? ErrorMessage { get; set; }
 }

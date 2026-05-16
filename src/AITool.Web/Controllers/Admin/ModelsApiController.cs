@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// ModelsApiController。
+/// 模型管理控制器，提供模型相关数据的批量清空操作。
 /// </summary>
 [ApiController]
 [Route("api/admin/models")]

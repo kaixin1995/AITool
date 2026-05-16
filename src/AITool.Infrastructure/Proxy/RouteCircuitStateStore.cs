@@ -6,15 +6,15 @@ namespace AITool.Infrastructure.Proxy;
 public sealed class RouteCircuitStateStore
 {
     /// <summary>
-    /// 方法 new。
+    /// 保护熔断参数读写的同步锁
     /// </summary>
     private readonly object _syncRoot = new();
     /// <summary>
-    /// 字段 _blockDuration。
+    /// 触发熔断后路由被屏蔽的持续时间
     /// </summary>
     private TimeSpan _blockDuration;
     /// <summary>
-    /// 字段 _failThreshold。
+    /// 连续失败达到该次数时触发熔断
     /// </summary>
     private int _failThreshold;
     /// <summary>
@@ -27,7 +27,7 @@ public sealed class RouteCircuitStateStore
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, DateTimeOffset> _blockedRoutes = [];
 
     /// <summary>
-    /// 初始化 RouteCircuitStateStore。
+    /// 注入熔断屏蔽时长和连续失败阈值
     /// </summary>
     public RouteCircuitStateStore(TimeSpan? blockDuration = null, int failThreshold = 5)
     {

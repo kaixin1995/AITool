@@ -663,6 +663,9 @@ public sealed class AnthropicProxyControllerTests
     }
 }
 
+/// <summary>
+/// 构建 Anthropic 代理集成测试的 WebApplicationFactory，使用隔离数据库和伪造转发服务。
+/// </summary>
 internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactory<Program>
 {
     /// <summary>
@@ -784,6 +787,9 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
     }
 }
 
+/// <summary>
+/// 构建混合路由回退场景的 WebApplicationFactory，先配一条 OpenAI 站点再配一条 Anthropic 站点。
+/// </summary>
 internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicationFactory<Program>
 {
     /// <summary>
@@ -926,6 +932,9 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
     }
 }
 
+/// <summary>
+/// 伪造代理转发服务，用于验证 Anthropic 入口的鉴权、参数传递和协议转换。
+/// </summary>
 internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
 {
     /// <summary>

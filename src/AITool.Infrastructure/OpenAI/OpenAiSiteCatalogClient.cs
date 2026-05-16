@@ -10,12 +10,12 @@ namespace AITool.Infrastructure.OpenAI;
 public sealed class OpenAiSiteCatalogClient : ISiteCatalogClient
 {
     /// <summary>
-    /// 字段 _httpClient。
+    /// 用于请求站点 /v1/models 接口的 HTTP 客户端
     /// </summary>
     private readonly HttpClient _httpClient;
 
     /// <summary>
-    /// 初始化 OpenAiSiteCatalogClient。
+    /// 注入 HTTP 客户端
     /// </summary>
     public OpenAiSiteCatalogClient(HttpClient httpClient)
     {
@@ -43,18 +43,18 @@ public sealed class OpenAiSiteCatalogClient : ISiteCatalogClient
     private sealed class OpenAiModelsResponse
     {
         /// <summary>
-        /// 属性 Data。
+        /// /v1/models 返回的模型列表
         /// </summary>
         public List<OpenAiModelItem>? Data { get; set; }
     }
 
     /// <summary>
-    /// 类 OpenAiModelItem。
+    /// OpenAI /v1/models 响应中的单个模型条目
     /// </summary>
     private sealed class OpenAiModelItem
     {
         /// <summary>
-        /// 属性 Id。
+        /// 模型标识符
         /// </summary>
         public string Id { get; set; } = string.Empty;
     }

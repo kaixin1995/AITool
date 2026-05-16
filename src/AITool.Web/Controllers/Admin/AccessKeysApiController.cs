@@ -9,7 +9,7 @@ using Microsoft.EntityFrameworkCore;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// CreateAccessKeyRequest。
+/// 创建访问密钥的请求参数，仅需指定密钥名称。
 /// </summary>
 public sealed class CreateAccessKeyRequest
 {
@@ -20,7 +20,7 @@ public sealed class CreateAccessKeyRequest
 }
 
 /// <summary>
-/// CreateAccessKeyResult。
+/// 创建访问密钥的响应结果，包含新创建密钥的标识、名称和明文密钥。
 /// </summary>
 public sealed class CreateAccessKeyResult
 {
@@ -43,7 +43,7 @@ public sealed class CreateAccessKeyResult
 }
 
 /// <summary>
-/// AccessKeyListItem。
+/// 访问密钥列表项，用于密钥管理页面展示每条密钥的基本信息。
 /// </summary>
 public sealed class AccessKeyListItem
 {
@@ -66,7 +66,7 @@ public sealed class AccessKeyListItem
 }
 
 /// <summary>
-/// AccessKeysApiController。
+/// 访问密钥管理控制器，提供密钥的创建、列表查询、启用/禁用和删除功能。
 /// </summary>
 [ApiController]
 [Route("api/admin/access-keys")]

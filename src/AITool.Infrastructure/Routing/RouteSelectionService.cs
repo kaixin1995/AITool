@@ -11,12 +11,12 @@ namespace AITool.Infrastructure.Routing;
 public sealed class RouteSelectionService : IRouteSelectionService
 {
     /// <summary>
-    /// 字段 _dbContext。
+    /// 数据库上下文，用于查询路由规则
     /// </summary>
     private readonly AppDbContext _dbContext;
 
     /// <summary>
-    /// 初始化 RouteSelectionService。
+    /// 注入数据库上下文
     /// </summary>
     public RouteSelectionService(AppDbContext dbContext)
     {

@@ -13,12 +13,12 @@ namespace AITool.Infrastructure.OpenAI;
 public sealed class OpenAiModelProbeService : IModelProbeService
 {
     /// <summary>
-    /// 字段 _httpClient。
+    /// 用于发送模型探测请求的 HTTP 客户端
     /// </summary>
     private readonly HttpClient _httpClient;
 
     /// <summary>
-    /// 初始化 OpenAiModelProbeService。
+    /// 注入 HTTP 客户端
     /// </summary>
     public OpenAiModelProbeService(HttpClient httpClient)
     {

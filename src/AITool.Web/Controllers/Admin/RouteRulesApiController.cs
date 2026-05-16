@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// RouteModelItem。
+/// 路由规则配置页中展示的模型项，包含该模型的站点数量和路由配置状态。
 /// </summary>
 public sealed class RouteModelItem
 {
@@ -30,7 +30,7 @@ public sealed class RouteModelItem
 }
 
 /// <summary>
-/// RouteEntryListItem。
+/// 路由主入口列表项，展示入口名称和其下的候选实例数量。
 /// </summary>
 public sealed class RouteEntryListItem
 {
@@ -45,7 +45,7 @@ public sealed class RouteEntryListItem
 }
 
 /// <summary>
-/// CreateRouteEntryRequest。
+/// 创建路由主入口的请求参数。
 /// </summary>
 public sealed class CreateRouteEntryRequest
 {
@@ -56,7 +56,7 @@ public sealed class CreateRouteEntryRequest
 }
 
 /// <summary>
-/// DeleteRouteEntryRequest。
+/// 删除路由主入口的请求参数。
 /// </summary>
 public sealed class DeleteRouteEntryRequest
 {
@@ -67,7 +67,7 @@ public sealed class DeleteRouteEntryRequest
 }
 
 /// <summary>
-/// SiteInstanceItem。
+/// 可选站点实例项，用于路由规则配置页中展示可绑定的站点映射。
 /// </summary>
 public sealed class SiteInstanceItem
 {
@@ -90,7 +90,7 @@ public sealed class SiteInstanceItem
 }
 
 /// <summary>
-/// DiscoveredSiteItem。
+/// 按模型名称发现的可用站点项，展示站点信息和远端模型名称。
 /// </summary>
 public sealed class DiscoveredSiteItem
 {
@@ -113,7 +113,7 @@ public sealed class DiscoveredSiteItem
 }
 
 /// <summary>
-/// RouteRuleListItem。
+/// 路由规则列表项，展示单条规则的详细信息，包括站点、模型、优先级和启用状态。
 /// </summary>
 public sealed class RouteRuleListItem
 {
@@ -156,7 +156,7 @@ public sealed class RouteRuleListItem
 }
 
 /// <summary>
-/// SaveRouteRulesRequest。
+/// 批量保存路由规则的请求参数，按外部模型名称整体覆盖该模型下的所有规则。
 /// </summary>
 public sealed class SaveRouteRulesRequest
 {
@@ -171,7 +171,7 @@ public sealed class SaveRouteRulesRequest
 }
 
 /// <summary>
-/// SaveRouteRuleEntry。
+/// 单条路由规则条目，用于保存规则时指定上游模型与目标站点的映射关系。
 /// </summary>
 public sealed class SaveRouteRuleEntry
 {
@@ -190,7 +190,7 @@ public sealed class SaveRouteRuleEntry
 }
 
 /// <summary>
-/// RouteRulesApiController。
+/// 路由规则管理控制器，提供主入口、站点实例和规则条目的增删改查。
 /// </summary>
 [ApiController]
 [Route("api/admin/route-rules")]

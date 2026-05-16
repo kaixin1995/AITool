@@ -13,7 +13,7 @@ using Microsoft.EntityFrameworkCore;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// ChatModelItem。
+/// 调试对话页的模型选择项，包含模型标识、显示名称和可用站点数量。
 /// </summary>
 public sealed class ChatModelItem
 {
@@ -32,7 +32,7 @@ public sealed class ChatModelItem
 }
 
 /// <summary>
-/// ChatAttemptResult。
+/// 单次路由尝试的结果，记录该次尝试调用的站点、模型、状态和 Token 用量。
 /// </summary>
 public sealed class ChatAttemptResult
 {
@@ -103,7 +103,7 @@ public sealed class ChatAttemptResult
 }
 
 /// <summary>
-/// ChatSendRequest。
+/// 发送调试对话消息的请求参数，指定目标模型、消息内容和输出模式。
 /// </summary>
 public sealed class ChatSendRequest
 {
@@ -135,7 +135,7 @@ public sealed class ChatSendRequest
 }
 
 /// <summary>
-/// ChatSendResult。
+/// 调试对话请求的最终响应，包含返回内容、思考内容、Token 用量和所有尝试详情。
 /// </summary>
 public sealed class ChatSendResult
 {
@@ -202,7 +202,7 @@ public sealed class ChatSendResult
 }
 
 /// <summary>
-/// ChatStreamForwardResult。
+/// 流式对话转发的内部结果，记录流式响应的拼接内容、Token 用量和原始请求/响应体。
 /// </summary>
 internal sealed class ChatStreamForwardResult
 {
@@ -261,7 +261,7 @@ internal sealed class ChatStreamForwardResult
 }
 
 /// <summary>
-/// ChatApiController。
+/// 调试对话控制器，提供模型选择和非流式/流式调试请求功能。
 /// </summary>
 [ApiController]
 [Route("api/admin/chat")]
@@ -1058,7 +1058,7 @@ public sealed class ChatApiController : ControllerBase
     }
 
     /// <summary>
-    /// SseBlockProcessState。
+    /// SSE 数据块处理过程中的累积状态，用于跟踪首 Token 延迟和 Token 用量。
     /// </summary>
     private sealed class SseBlockProcessState
     {

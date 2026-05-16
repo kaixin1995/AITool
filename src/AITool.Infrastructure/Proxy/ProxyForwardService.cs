@@ -14,16 +14,16 @@ namespace AITool.Infrastructure.Proxy;
 public sealed class ProxyForwardService : IProxyForwardService
 {
     /// <summary>
-    /// 字段 _httpClient。
+    /// 用于发送代理请求的 HTTP 客户端
     /// </summary>
     private readonly HttpClient _httpClient;
     /// <summary>
-    /// 字段 _logger。
+    /// 日志记录器，用于记录转发超时和异常
     /// </summary>
     private readonly ILogger<ProxyForwardService> _logger;
 
     /// <summary>
-    /// 初始化 ProxyForwardService。
+    /// 注入 HTTP 客户端和日志记录器
     /// </summary>
     public ProxyForwardService(HttpClient httpClient, ILogger<ProxyForwardService> logger)
     {

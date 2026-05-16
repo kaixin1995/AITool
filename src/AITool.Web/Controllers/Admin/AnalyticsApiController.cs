@@ -6,7 +6,7 @@ using Microsoft.EntityFrameworkCore;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// AnalyticsQueryDto。
+/// 前端查询统计数据时的请求参数，包含时间范围、分桶粒度和筛选条件。
 /// </summary>
 public sealed class AnalyticsQueryDto
 {
@@ -41,7 +41,7 @@ public sealed class AnalyticsQueryDto
 }
 
 /// <summary>
-/// AnalyticsFilterOptionsDto。
+/// 统计筛选下拉选项，包含可用的站点和模型列表。
 /// </summary>
 public sealed class AnalyticsFilterOptionsDto
 {
@@ -56,7 +56,7 @@ public sealed class AnalyticsFilterOptionsDto
 }
 
 /// <summary>
-/// AnalyticsSiteOptionDto。
+/// 站点筛选下拉项，用于统计页的站点选择器。
 /// </summary>
 public sealed class AnalyticsSiteOptionDto
 {
@@ -71,7 +71,7 @@ public sealed class AnalyticsSiteOptionDto
 }
 
 /// <summary>
-/// AnalyticsModelOptionDto。
+/// 模型筛选下拉项，用于统计页的模型选择器。
 /// </summary>
 public sealed class AnalyticsModelOptionDto
 {
@@ -82,7 +82,7 @@ public sealed class AnalyticsModelOptionDto
 }
 
 /// <summary>
-/// AnalyticsDashboardResponseDto。
+/// 统计看板完整响应，包含筛选条件、汇总指标和各维度趋势图表数据。
 /// </summary>
 public sealed class AnalyticsDashboardResponseDto
 {
@@ -91,7 +91,7 @@ public sealed class AnalyticsDashboardResponseDto
     /// </summary>
     public AnalyticsAppliedFilterDto AppliedFilter { get; set; } = new();
     /// <summary>
-    /// 默认筛选条件。
+    /// 汇总统计数据。
     /// </summary>
     public AnalyticsSummaryDto Summary { get; set; } = new();
     /// <summary>
@@ -129,7 +129,7 @@ public sealed class AnalyticsDashboardResponseDto
 }
 
 /// <summary>
-/// AnalyticsAppliedFilterDto。
+/// 本次统计实际生效的筛选条件快照，随看板数据一并返回给前端。
 /// </summary>
 public sealed class AnalyticsAppliedFilterDto
 {
@@ -164,7 +164,7 @@ public sealed class AnalyticsAppliedFilterDto
 }
 
 /// <summary>
-/// AnalyticsSummaryDto。
+/// 统计汇总指标，包含请求总数、成功率、Token 用量和耗时均值。
 /// </summary>
 public sealed class AnalyticsSummaryDto
 {
@@ -219,12 +219,12 @@ public sealed class AnalyticsSummaryDto
 }
 
 /// <summary>
-/// AnalyticsTrendPointDto。
+/// 请求趋势图中的一个时间桶，包含该时段的请求数。
 /// </summary>
 public sealed class AnalyticsTrendPointDto
 {
     /// <summary>
-    /// 标签。
+    /// 时间桶的显示标签，如 "2024-01-01" 或 "01-01 08:00"。
     /// </summary>
     public string Label { get; set; } = string.Empty;
     /// <summary>
@@ -234,12 +234,12 @@ public sealed class AnalyticsTrendPointDto
 }
 
 /// <summary>
-/// AnalyticsResultTrendPointDto。
+/// 成功/失败结果趋势图中的一个时间桶，包含该时段的成功与失败数量及比率。
 /// </summary>
 public sealed class AnalyticsResultTrendPointDto
 {
     /// <summary>
-    /// 标签。
+    /// 时间桶的显示标签。
     /// </summary>
     public string Label { get; set; } = string.Empty;
     /// <summary>
@@ -261,12 +261,12 @@ public sealed class AnalyticsResultTrendPointDto
 }
 
 /// <summary>
-/// AnalyticsTokenTrendPointDto。
+/// Token 用量趋势图中的一个时间桶，包含输入、缓存、输出和总 Token 数。
 /// </summary>
 public sealed class AnalyticsTokenTrendPointDto
 {
     /// <summary>
-    /// 标签。
+    /// 时间桶的显示标签。
     /// </summary>
     public string Label { get; set; } = string.Empty;
     /// <summary>
@@ -288,12 +288,12 @@ public sealed class AnalyticsTokenTrendPointDto
 }
 
 /// <summary>
-/// AnalyticsDurationTrendPointDto。
+/// 耗时趋势图中的一个时间桶，包含该时段的平均总耗时和首 Token 延迟。
 /// </summary>
 public sealed class AnalyticsDurationTrendPointDto
 {
     /// <summary>
-    /// 标签。
+    /// 时间桶的显示标签。
     /// </summary>
     public string Label { get; set; } = string.Empty;
     /// <summary>
@@ -307,12 +307,12 @@ public sealed class AnalyticsDurationTrendPointDto
 }
 
 /// <summary>
-/// AnalyticsFallbackTrendPointDto。
+/// 回退趋势图中的一个时间桶，包含该时段的回退次数和回退率。
 /// </summary>
 public sealed class AnalyticsFallbackTrendPointDto
 {
     /// <summary>
-    /// 标签。
+    /// 时间桶的显示标签。
     /// </summary>
     public string Label { get; set; } = string.Empty;
     /// <summary>
@@ -326,12 +326,12 @@ public sealed class AnalyticsFallbackTrendPointDto
 }
 
 /// <summary>
-/// AnalyticsDistributionPointDto。
+/// 分布统计中的一个维度点，用于站点或模型的请求量/成功率/Token/耗时分布。
 /// </summary>
 public sealed class AnalyticsDistributionPointDto
 {
     /// <summary>
-    /// 标签。
+    /// 维度标签，站点分布时为站点名称，模型分布时为模型名称。
     /// </summary>
     public string Label { get; set; } = string.Empty;
     /// <summary>
@@ -357,12 +357,12 @@ public sealed class AnalyticsDistributionPointDto
 }
 
 /// <summary>
-/// AnalyticsCacheRatioPointDto。
+/// 模型缓存命中分布中的一个维度点，展示各模型的缓存命中率和相关 Token 统计。
 /// </summary>
 public sealed class AnalyticsCacheRatioPointDto
 {
     /// <summary>
-    /// 标签。
+    /// 模型名称，作为分布维度标签。
     /// </summary>
     public string Label { get; set; } = string.Empty;
     /// <summary>
@@ -384,7 +384,7 @@ public sealed class AnalyticsCacheRatioPointDto
 }
 
 /// <summary>
-/// AnalyticsApiController。
+/// 统计分析控制器，提供用量统计看板和趋势图表数据。
 /// </summary>
 [ApiController]
 [Route("api/admin/analytics")]
@@ -1015,7 +1015,7 @@ public sealed class AnalyticsApiController : ControllerBase
     }
 
     /// <summary>
-    /// AnalyticsBucket。
+    /// 内部时间桶，表示聚合统计用的一个时间区间。
     /// </summary>
     private sealed class AnalyticsBucket
     {

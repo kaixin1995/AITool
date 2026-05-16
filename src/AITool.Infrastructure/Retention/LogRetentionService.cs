@@ -11,16 +11,16 @@ namespace AITool.Infrastructure.Retention;
 public sealed class LogRetentionService : ILogRetentionService
 {
     /// <summary>
-    /// 字段 _dbContext。
+    /// 数据库上下文，用于查询和删除过期使用日志
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 字段 _utcNowProvider。
+    /// 当前 UTC 时间提供器，测试时可替换为固定时间
     /// </summary>
     private readonly Func<DateTimeOffset> _utcNowProvider;
 
     /// <summary>
-    /// 初始化 LogRetentionService。
+    /// 注入数据库上下文，使用系统当前 UTC 时间
     /// </summary>
     public LogRetentionService(AppDbContext dbContext)
         : this(dbContext, () => DateTimeOffset.UtcNow)

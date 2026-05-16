@@ -11,12 +11,12 @@ namespace AITool.Infrastructure.Operations;
 public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
 {
     /// <summary>
-    /// 字段 _dbContext。
+    /// 数据库上下文，用于读写系统运行时配置
     /// </summary>
     private readonly AppDbContext _dbContext;
 
     /// <summary>
-    /// 初始化 SystemRuntimeSettingsService。
+    /// 注入数据库上下文
     /// </summary>
     public SystemRuntimeSettingsService(AppDbContext dbContext)
     {
@@ -24,7 +24,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
     }
 
     /// <summary>
-    /// 方法 GetOrCreateAsync。
+    /// 获取系统运行时配置，不存在时自动创建默认值并持久化
     /// </summary>
     public async Task<SystemRuntimeSettings> GetOrCreateAsync(CancellationToken cancellationToken = default)
     {
@@ -42,7 +42,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
     }
 
     /// <summary>
-    /// 方法 UpdateAsync。
+    /// 更新系统运行时配置，对各字段做边界保护后持久化
     /// </summary>
     public async Task<SystemRuntimeSettings> UpdateAsync(UpdateSystemRuntimeSettingsRequest request, CancellationToken cancellationToken = default)
     {
@@ -65,7 +65,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
     }
 
     /// <summary>
-    /// 方法 ClearUsageLogsAsync。
+    /// 按来源和时间范围清理使用日志，并回写本次清理结果
     /// </summary>
     public async Task<int> ClearUsageLogsAsync(ClearUsageLogsRequest request, CancellationToken cancellationToken = default)
     {

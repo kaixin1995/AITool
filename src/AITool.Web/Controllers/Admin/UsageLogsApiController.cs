@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// UsageLogListQueryDto。
+/// 前端查询用量日志列表时的请求参数，支持分页、时间范围和站点筛选。
 /// </summary>
 public sealed class UsageLogListQueryDto
 {
@@ -40,7 +40,7 @@ public sealed class UsageLogListQueryDto
 }
 
 /// <summary>
-/// UsageLogListResponseDto。
+/// 用量日志分页列表响应，包含分页信息和当前页的日志条目列表。
 /// </summary>
 public sealed class UsageLogListResponseDto
 {
@@ -67,7 +67,7 @@ public sealed class UsageLogListResponseDto
 }
 
 /// <summary>
-/// UsageLogListItemDto。
+/// 单条用量日志在列表中的展示项，包含请求、模型、站点、Token 和耗时等信息。
 /// </summary>
 public sealed class UsageLogListItemDto
 {
@@ -166,7 +166,7 @@ public sealed class UsageLogListItemDto
 }
 
 /// <summary>
-/// UsageLogAttemptDto。
+/// 单次尝试的详情项，用于请求明细中展示每一轮路由尝试的结果和指标。
 /// </summary>
 public sealed class UsageLogAttemptDto
 {
@@ -253,7 +253,7 @@ public sealed class UsageLogAttemptDto
 }
 
 /// <summary>
-/// UsageLogRequestDetailDto。
+/// 请求明细响应，包含请求的基本信息和所有尝试的详细列表。
 /// </summary>
 public sealed class UsageLogRequestDetailDto
 {
@@ -276,7 +276,7 @@ public sealed class UsageLogRequestDetailDto
 }
 
 /// <summary>
-/// UsageLogSummaryDto。
+/// 用量统计摘要，包含请求总数、成功率、Token 总量和最大耗时。
 /// </summary>
 public sealed class UsageLogSummaryDto
 {
@@ -303,7 +303,7 @@ public sealed class UsageLogSummaryDto
 }
 
 /// <summary>
-/// UsageLogsApiController。
+/// 用量日志管理控制器，提供日志分页查询、请求明细和统计摘要。
 /// </summary>
 [ApiController]
 [Route("api/admin/usage-logs")]

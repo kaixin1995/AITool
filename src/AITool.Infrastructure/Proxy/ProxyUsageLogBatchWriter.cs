@@ -14,15 +14,15 @@ namespace AITool.Infrastructure.Proxy;
 public sealed class ProxyUsageLogBatchWriter : BackgroundService
 {
     /// <summary>
-    /// 字段 MaxBatchSize。
+    /// 单次批量写入的最大日志条数
     /// </summary>
     private const int MaxBatchSize = 100;
     /// <summary>
-    /// 方法 FromMilliseconds。
+    /// 后台刷盘的聚合等待间隔
     /// </summary>
     private static readonly TimeSpan FlushInterval = TimeSpan.FromMilliseconds(800);
     /// <summary>
-    /// 方法 BoundedChannelOptions。
+    /// 有界通道，用于在生产者与后台消费者之间缓冲日志条目
     /// </summary>
     private readonly Channel<UsageLogEntry> _channel = Channel.CreateBounded<UsageLogEntry>(new BoundedChannelOptions(4096)
     {
@@ -31,20 +31,20 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
         SingleWriter = false
     });
     /// <summary>
-    /// 字段 _scopeFactory。
+    /// 服务范围工厂，用于每次刷盘时创建独立的 DI 作用域
     /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
     /// <summary>
-    /// 字段 _logger。
+    /// 日志记录器，用于记录批量写入异常和队列溢出警告
     /// </summary>
     private readonly ILogger<ProxyUsageLogBatchWriter> _logger;
     /// <summary>
-    /// 字段 _writeThroughMode。
+    /// 直写模式标志，测试环境下跳过队列直接写入数据库
     /// </summary>
     private readonly bool _writeThroughMode;
 
     /// <summary>
-    /// 初始化 ProxyUsageLogBatchWriter。
+    /// 注入服务范围工厂、日志记录器和主机环境信息
     /// </summary>
     public ProxyUsageLogBatchWriter(IServiceScopeFactory scopeFactory, ILogger<ProxyUsageLogBatchWriter> logger, IHostEnvironment hostEnvironment)
     {
@@ -74,7 +74,7 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
     }
 
     /// <summary>
-    /// 方法 ExecuteAsync。
+    /// 后台主循环，持续从通道中读取日志条目并按批次刷盘
     /// </summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -127,7 +127,7 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
     }
 
     /// <summary>
-    /// 方法 FlushBatchAsync。
+    /// 将一批日志条目通过独立作用域写入数据库
     /// </summary>
     private async Task FlushBatchAsync(List<UsageLogEntry> batch, CancellationToken cancellationToken)
     {

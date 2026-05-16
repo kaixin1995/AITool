@@ -8,12 +8,12 @@ namespace AITool.Infrastructure.Proxy;
 public sealed class UsageLogService : IUsageLogService
 {
     /// <summary>
-    /// 字段 _batchWriter。
+    /// 后台批量写入器，负责将日志条目投递到队列并异步刷盘
     /// </summary>
     private readonly ProxyUsageLogBatchWriter _batchWriter;
 
     /// <summary>
-    /// 初始化 UsageLogService。
+    /// 注入批量写入器
     /// </summary>
     public UsageLogService(ProxyUsageLogBatchWriter batchWriter)
     {

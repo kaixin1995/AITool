@@ -10,11 +10,11 @@ namespace AITool.Web.Services;
 public sealed class ModelVendorCatalog
 {
     /// <summary>
-    /// Vendors。
+    /// 厂商定义列表。
     /// </summary>
     public List<ModelVendorDefinition> Vendors { get; set; } = [];
     /// <summary>
-    /// Rules。
+    /// 匹配规则列表。
     /// </summary>
     public List<ModelVendorRuleDefinition> Rules { get; set; } = [];
 }
@@ -79,7 +79,7 @@ public sealed class ModelVendorCatalogService
     /// </summary>
     private const string UncategorizedVendorName = "未分类";
     /// <summary>
-    /// new。
+    /// JSON 序列化选项。
     /// </summary>
     private static readonly JsonSerializerOptions JsonOptions = new()
     {

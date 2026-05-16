@@ -70,7 +70,7 @@ public class ModelVendorGroupViewModel
 public class IndexModel : PageModel
 {
     /// <summary>
-    /// new。
+    /// 编辑器 JSON 序列化选项。
     /// </summary>
     private static readonly JsonSerializerOptions EditorJsonOptions = new()
     {
@@ -421,7 +421,7 @@ public class IndexModel : PageModel
 internal sealed class ModelVendorDefinitionComparer : IEqualityComparer<ModelVendorDefinition>
 {
     /// <summary>
-    /// new。
+    /// 单例比较器实例。
     /// </summary>
     public static ModelVendorDefinitionComparer Instance { get; } = new();
 
@@ -457,7 +457,7 @@ public class CreateModelModel : PageModel
     private readonly ProxyRequestMetadataCache? _metadataCache;
 
     /// <summary>
-    /// CreateModelModel。
+    /// 包含元数据缓存的构造函数。
     /// </summary>
     [ActivatorUtilitiesConstructor]
     public CreateModelModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
@@ -467,7 +467,7 @@ public class CreateModelModel : PageModel
     }
 
     /// <summary>
-    /// CreateModelModel。
+    /// 不含元数据缓存的构造函数。
     /// </summary>
     public CreateModelModel(AppDbContext dbContext)
     {
@@ -475,7 +475,7 @@ public class CreateModelModel : PageModel
     }
 
     /// <summary>
-    /// new。
+    /// 新建模型提交命令。
     /// </summary>
     [BindProperty]
     public CreateModelLibraryItemCommand Command { get; set; } = new();

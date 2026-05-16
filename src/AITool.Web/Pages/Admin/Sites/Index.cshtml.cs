@@ -194,7 +194,7 @@ public class CreateModel : PageModel
     }
 
     /// <summary>
-    /// new。
+    /// 新建站点表单提交命令。
     /// </summary>
     [BindProperty]
     public CreateSiteCommand Command { get; set; } = new();

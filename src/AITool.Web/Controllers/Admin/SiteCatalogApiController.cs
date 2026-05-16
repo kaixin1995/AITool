@@ -11,7 +11,7 @@ using Microsoft.EntityFrameworkCore;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// RemoteModelInfo。
+/// 远端模型信息项，表示从站点抓取到的一个模型及其导入状态。
 /// </summary>
 public sealed class RemoteModelInfo
 {
@@ -34,7 +34,7 @@ public sealed class RemoteModelInfo
 }
 
 /// <summary>
-/// SiteFetchResult。
+/// 单个站点的抓取结果，包含站点信息和抓取到的模型列表。
 /// </summary>
 public sealed class SiteFetchResult
 {
@@ -61,7 +61,7 @@ public sealed class SiteFetchResult
 }
 
 /// <summary>
-/// FetchAllProgress。
+/// 批量抓取进度，用于前端轮询展示所有站点的抓取状态和结果。
 /// </summary>
 public sealed class FetchAllProgress
 {
@@ -88,7 +88,7 @@ public sealed class FetchAllProgress
 }
 
 /// <summary>
-/// ModelSelectionItem。
+/// 模型导入选择项，用于前端勾选要导入或取消导入的远端模型。
 /// </summary>
 public sealed class ModelSelectionItem
 {
@@ -111,7 +111,7 @@ public sealed class ModelSelectionItem
 }
 
 /// <summary>
-/// ImportSelectedRequest。
+/// 导入选中模型的请求参数，包含前端勾选的所有模型选择项。
 /// </summary>
 public sealed class ImportSelectedRequest
 {
@@ -122,7 +122,7 @@ public sealed class ImportSelectedRequest
 }
 
 /// <summary>
-/// SiteCatalogApiController。
+/// 站点目录管理控制器，提供远端模型抓取、批量抓取进度查询和模型导入功能。
 /// </summary>
 [ApiController]
 [Route("api/admin/site-catalog")]

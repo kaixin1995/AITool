@@ -7,7 +7,7 @@ using Microsoft.EntityFrameworkCore;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// ProbeResultItem。
+/// 单个站点映射的探测结果，记录探测状态、耗时和可能的错误信息。
 /// </summary>
 public sealed class ProbeResultItem
 {
@@ -38,7 +38,7 @@ public sealed class ProbeResultItem
 }
 
 /// <summary>
-/// ProbeProgress。
+/// 批量探测任务的进度信息，用于前端轮询展示任务完成状态和各映射的探测结果。
 /// </summary>
 public sealed class ProbeProgress
 {
@@ -69,7 +69,7 @@ public sealed class ProbeProgress
 }
 
 /// <summary>
-/// DetectionApiController。
+/// 模型探测控制器，提供单个映射探测、按模型批量探测和全量探测功能。
 /// </summary>
 [ApiController]
 [Route("api/admin/detection")]

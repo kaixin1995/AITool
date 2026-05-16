@@ -13,12 +13,12 @@ namespace AITool.Infrastructure.Scheduling;
 public sealed class HangfireDetectionScheduler
 {
     /// <summary>
-    /// 字段 _scopeFactory。
+    /// 服务范围工厂，用于在 Hangfire 作业中创建独立的 DI 作用域
     /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
 
     /// <summary>
-    /// 初始化 HangfireDetectionScheduler。
+    /// 注入服务范围工厂
     /// </summary>
     public HangfireDetectionScheduler(IServiceScopeFactory scopeFactory)
     {

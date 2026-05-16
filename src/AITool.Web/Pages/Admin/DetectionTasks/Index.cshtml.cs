@@ -17,7 +17,7 @@ public class DetectionTaskViewModel
     /// </summary>
     public Guid TaskId { get; set; }
     /// <summary>
-    /// Name。
+    /// 任务名称。
     /// </summary>
     public string Name { get; set; } = string.Empty;
     /// <summary>
@@ -48,7 +48,7 @@ public class DetectionTaskViewModel
 public class ExecutionHistoryItem
 {
     /// <summary>
-    /// StartedAt。
+    /// 开始时间。
     /// </summary>
     public DateTimeOffset StartedAt { get; set; }
     /// <summary>
