@@ -219,7 +219,8 @@ public sealed class AnthropicProxyController : ControllerBase
                 continue;
             }
 
-            var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+            // 每条路由使用独立超时令牌，不受客户端断连影响，保证后续路由仍能独立尝试。
+            var result = await _forwardService.ForwardAsync(forwardRequest, CancellationToken.None);
             SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
 
             await SafeLogUsageAsync(new UsageLogEntry
