@@ -902,15 +902,10 @@
                     data: {
                         labels: modelDistribution.map(x => x.label),
                         datasets: [{
-                            label: '请求量',
-                            data: modelDistribution.map(x => x.requestCount),
-                            backgroundColor: 'rgba(59,130,246,0.75)',
-                            yAxisID: 'y'
-                        }, {
                             label: '总 Tokens',
                             data: modelDistribution.map(x => x.totalTokens),
                             backgroundColor: 'rgba(16,185,129,0.75)',
-                            yAxisID: 'y1'
+                            borderRadius: 8
                         }]
                     },
                     options: {
@@ -918,12 +913,7 @@
                         scales: {
                             x: { grid: { display: false } },
                             y: {
-                                beginAtZero: true
-                            },
-                            y1: {
                                 beginAtZero: true,
-                                position: 'right',
-                                grid: { drawOnChartArea: false },
                                 ticks: {
                                     callback: function(value) {
                                         return formatTokenValue(value);
@@ -936,11 +926,14 @@
                             tooltip: {
                                 callbacks: {
                                     label: function(context) {
-                                        if (context.datasetIndex === 1) {
-                                            return `${context.dataset.label}: ${formatTokenValue(context.parsed.y)}`;
-                                        }
-
-                                        return `${context.dataset.label}: ${formatNumber(context.parsed.y)}`;
+                                        const index = context.dataIndex;
+                                        const point = modelDistribution[index];
+                                        return [
+                                            `总 Tokens: ${formatTokenValue(point.totalTokens || 0)}`,
+                                            `调用量: ${formatNumber(point.requestCount || 0)}`,
+                                            `成功: ${formatNumber(point.successCount || 0)}`,
+                                            `失败: ${formatNumber(point.failedCount || 0)}`
+                                        ];
                                     }
                                 }
                             }
