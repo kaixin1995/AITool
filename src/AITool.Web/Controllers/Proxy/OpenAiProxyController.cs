@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AITool.Application.Proxy;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
@@ -13,6 +14,31 @@ namespace AITool.Web.Controllers.Proxy;
 [ApiController]
 public sealed class OpenAiProxyController : ControllerBase
 {
+    private sealed class StreamForwardOutcome
+    {
+        public ProxyForwardResult Result { get; init; } = new();
+        public bool CanFallback { get; init; }
+    }
+
+    private sealed class AnthropicToOpenAiStreamState
+    {
+        public bool RoleChunkSent { get; set; }
+        public bool ReceivedMessageStop { get; set; }
+        public string StopReason { get; set; } = "stop";
+        public int InputTokens { get; set; }
+        public int CachedTokens { get; set; }
+        public int CacheCreationTokens { get; set; }
+        public int OutputTokens { get; set; }
+        public Dictionary<int, AnthropicToolCallState> ToolCalls { get; } = [];
+    }
+
+    private sealed class AnthropicToolCallState
+    {
+        public int Index { get; init; }
+        public string Id { get; set; } = string.Empty;
+        public string Name { get; set; } = string.Empty;
+    }
+
     private readonly IProxyForwardService _forwardService;
     private readonly IUsageLogService _usageLogService;
     private readonly RouteCircuitStateStore _circuitStore;
@@ -189,6 +215,81 @@ public sealed class OpenAiProxyController : ControllerBase
                 RetryCount = runtimeSettings.ProxyRetryCount
             };
 
+            if (enableStreaming)
+            {
+                var streamOutcome = string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
+                    ? await ForwardAnthropicStreamAsOpenAiAsync(forwardRequest, modelName, CancellationToken.None)
+                    : await ForwardOpenAiStreamPassthroughAsync(forwardRequest, CancellationToken.None);
+                var streamResult = streamOutcome.Result;
+                SafeWriteConsoleProxyLog("OpenAI", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
+
+                await SafeLogUsageAsync(new UsageLogEntry
+                {
+                    RequestId = requestId,
+                    AccessKeyId = accessKey.Id,
+                    ProtocolType = "OpenAI",
+                    RequestModel = modelName,
+                    AttemptedModel = route.UpstreamModelName,
+                    TargetSiteId = route.SiteId,
+                    Status = streamResult.Success ? "success" : "fail",
+                    Source = requestSource,
+                    RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
+                    AttemptIndex = attemptIndex,
+                    IsFinalResult = streamResult.Success,
+                    FallbackTriggered = !streamResult.Success,
+                    ErrorMessage = streamResult.Success ? string.Empty : (streamResult.ErrorMessage ?? string.Empty),
+                    InputTokens = streamResult.InputTokens,
+                    CachedTokens = streamResult.CachedTokens,
+                    OutputTokens = streamResult.OutputTokens,
+                    IsStreaming = true,
+                    IsStreamInterrupted = streamResult.IsStreamInterrupted,
+                    FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+                    StreamDurationMs = streamResult.StreamDurationMs,
+                    TotalDurationMs = streamResult.TotalDurationMs
+                }, CancellationToken.None);
+
+                if (streamResult.Success)
+                {
+                    SafeSucceedRoute(route.RouteId);
+                    SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                    {
+                        Status = "success",
+                        StatusCode = streamResult.StatusCode,
+                        ResponseBody = DeveloperInvocationTraceStore.FormatBody(streamResult.ResponseBody),
+                        ResponseContentType = "text/event-stream",
+                        IsStreaming = true,
+                        InputTokens = streamResult.InputTokens,
+                        CachedTokens = streamResult.CachedTokens,
+                        OutputTokens = streamResult.OutputTokens,
+                        TotalDurationMs = streamResult.TotalDurationMs
+                    });
+                    return new EmptyResult();
+                }
+
+                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                {
+                    Status = "fail",
+                    StatusCode = streamResult.StatusCode,
+                    ErrorMessage = streamResult.ErrorMessage ?? string.Empty,
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(streamResult.ResponseBody),
+                    ResponseContentType = "text/event-stream",
+                    IsStreaming = true,
+                    InputTokens = streamResult.InputTokens,
+                    CachedTokens = streamResult.CachedTokens,
+                    OutputTokens = streamResult.OutputTokens,
+                    TotalDurationMs = streamResult.TotalDurationMs
+                });
+                SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
+                SafeBlockRoute(route.RouteId);
+                lastResult = streamResult;
+                if (!streamOutcome.CanFallback)
+                {
+                    return new EmptyResult();
+                }
+
+                continue;
+            }
+
             // 每条路由使用独立超时令牌，不受客户端断连影响，保证后续路由仍能独立尝试。
             var result = await _forwardService.ForwardAsync(forwardRequest, CancellationToken.None);
             SafeWriteConsoleProxyLog("OpenAI", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
@@ -274,6 +375,399 @@ public sealed class OpenAiProxyController : ControllerBase
             new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
     }
 
+    private async Task<StreamForwardOutcome> ForwardOpenAiStreamPassthroughAsync(
+        ProxyForwardRequest forwardRequest,
+        CancellationToken cancellationToken)
+    {
+        if (!Response.HasStarted)
+        {
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+
+        var responseBuilder = new StringBuilder();
+        var pendingSseLines = new List<string>();
+        var startedWriting = false;
+        var receivedDoneEvent = false;
+        var inputTokens = 0;
+        var cachedTokens = 0;
+        var outputTokens = 0;
+
+        async Task WriteRawSseBlockAsync(List<string> lines, CancellationToken token)
+        {
+            if (lines.Count == 0)
+            {
+                return;
+            }
+
+            var chunkBuilder = new StringBuilder();
+            foreach (var line in lines)
+            {
+                chunkBuilder.Append(line).Append('\n');
+            }
+
+            chunkBuilder.Append('\n');
+            var chunk = chunkBuilder.ToString();
+            responseBuilder.Append(chunk);
+            await Response.WriteAsync(chunk, token);
+            await Response.Body.FlushAsync(token);
+            startedWriting = true;
+        }
+
+        async Task FlushOpenAiSseBlockAsync(CancellationToken token)
+        {
+            if (pendingSseLines.Count == 0)
+            {
+                return;
+            }
+
+            if (TryExtractSseDataPayload(pendingSseLines, out var payload))
+            {
+                if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+                {
+                    receivedDoneEvent = true;
+                }
+                else
+                {
+                    UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+                }
+            }
+
+            await WriteRawSseBlockAsync(pendingSseLines, token);
+            pendingSseLines.Clear();
+        }
+
+        var result = await _forwardService.ForwardStreamingAsync(
+            forwardRequest,
+            async (line, token) =>
+            {
+                if (string.IsNullOrEmpty(line))
+                {
+                    await FlushOpenAiSseBlockAsync(token);
+                    return;
+                }
+
+                pendingSseLines.Add(line);
+            },
+            cancellationToken);
+
+        if (pendingSseLines.Count > 0)
+        {
+            await FlushOpenAiSseBlockAsync(cancellationToken);
+        }
+
+        result.ResponseBody = responseBuilder.ToString();
+        result.IsStreaming = true;
+        result.HasStartedStreaming = startedWriting;
+        result.InputTokens = inputTokens;
+        result.CachedTokens = cachedTokens;
+        result.OutputTokens = outputTokens;
+
+        if (result.Success && !receivedDoneEvent)
+        {
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage ??= startedWriting
+                ? "stream interrupted before [DONE]"
+                : "stream ended before any complete SSE event";
+        }
+
+        if (!result.Success && startedWriting)
+        {
+            result.IsStreamInterrupted = true;
+        }
+
+        return new StreamForwardOutcome
+        {
+            Result = result,
+            CanFallback = !startedWriting
+        };
+    }
+
+    private async Task<StreamForwardOutcome> ForwardAnthropicStreamAsOpenAiAsync(
+        ProxyForwardRequest forwardRequest,
+        string modelName,
+        CancellationToken cancellationToken)
+    {
+        if (!Response.HasStarted)
+        {
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+
+        var state = new AnthropicToOpenAiStreamState();
+        var responseBuilder = new StringBuilder();
+        var pendingSseLines = new List<string>();
+        var startedWriting = false;
+
+        async Task WriteChunkAsync(string chunk, CancellationToken token)
+        {
+            if (string.IsNullOrEmpty(chunk))
+            {
+                return;
+            }
+
+            responseBuilder.Append(chunk);
+            await Response.WriteAsync(chunk, token);
+            await Response.Body.FlushAsync(token);
+            startedWriting = true;
+        }
+
+        async Task EnsureRoleChunkAsync(CancellationToken token)
+        {
+            if (state.RoleChunkSent)
+            {
+                return;
+            }
+
+            // 先发 role chunk，确保下游按标准 OpenAI SSE 增量消费。
+            await WriteChunkAsync(BuildOpenAiDeltaChunk(modelName, new JsonObject
+            {
+                ["role"] = "assistant",
+                ["content"] = string.Empty
+            }), token);
+            state.RoleChunkSent = true;
+        }
+
+        async Task FlushAnthropicSseBlockAsync(CancellationToken token)
+        {
+            if (!TryExtractSseEventPayload(pendingSseLines, out var eventName, out var payload))
+            {
+                pendingSseLines.Clear();
+                return;
+            }
+
+            pendingSseLines.Clear();
+            if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(payload);
+                var root = document.RootElement;
+
+                if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (root.TryGetProperty("message", out var message) &&
+                        message.TryGetProperty("usage", out var startUsage))
+                    {
+                        UpdateAnthropicUsageFromElement(startUsage, state);
+                    }
+
+                    await EnsureRoleChunkAsync(token);
+                    return;
+                }
+
+                if (string.Equals(eventName, "content_block_start", StringComparison.OrdinalIgnoreCase) &&
+                    root.TryGetProperty("content_block", out var contentBlock))
+                {
+                    var blockType = contentBlock.TryGetProperty("type", out var typeElement)
+                        ? typeElement.GetString()
+                        : null;
+                    if (string.Equals(blockType, "tool_use", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var blockIndex = root.TryGetProperty("index", out var indexElement) && indexElement.ValueKind == JsonValueKind.Number
+                            ? indexElement.GetInt32()
+                            : state.ToolCalls.Count;
+                        if (!state.ToolCalls.TryGetValue(blockIndex, out var toolCallState))
+                        {
+                            toolCallState = new AnthropicToolCallState { Index = state.ToolCalls.Count };
+                            state.ToolCalls[blockIndex] = toolCallState;
+                        }
+
+                        toolCallState.Id = contentBlock.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String
+                            ? idElement.GetString() ?? string.Empty
+                            : toolCallState.Id;
+                        toolCallState.Name = contentBlock.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String
+                            ? nameElement.GetString() ?? string.Empty
+                            : toolCallState.Name;
+
+                        await EnsureRoleChunkAsync(token);
+                        await WriteChunkAsync(BuildOpenAiToolCallChunk(modelName, new JsonArray
+                        {
+                            new JsonObject
+                            {
+                                ["index"] = toolCallState.Index,
+                                ["id"] = toolCallState.Id,
+                                ["type"] = "function",
+                                ["function"] = new JsonObject
+                                {
+                                    ["name"] = toolCallState.Name,
+                                    ["arguments"] = string.Empty
+                                }
+                            }
+                        }), token);
+                    }
+
+                    return;
+                }
+
+                if (string.Equals(eventName, "content_block_delta", StringComparison.OrdinalIgnoreCase) &&
+                    root.TryGetProperty("delta", out var delta))
+                {
+                    var deltaType = delta.TryGetProperty("type", out var deltaTypeElement)
+                        ? deltaTypeElement.GetString()
+                        : null;
+                    if (string.Equals(deltaType, "text_delta", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var text = delta.TryGetProperty("text", out var textElement) && textElement.ValueKind == JsonValueKind.String
+                            ? textElement.GetString()
+                            : null;
+                        if (!string.IsNullOrEmpty(text))
+                        {
+                            await EnsureRoleChunkAsync(token);
+                            await WriteChunkAsync(BuildOpenAiDeltaChunk(modelName, new JsonObject
+                            {
+                                ["content"] = text
+                            }), token);
+                        }
+
+                        return;
+                    }
+
+                    if (string.Equals(deltaType, "thinking_delta", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var thinking = delta.TryGetProperty("thinking", out var thinkingElement) && thinkingElement.ValueKind == JsonValueKind.String
+                            ? thinkingElement.GetString()
+                            : null;
+                        if (!string.IsNullOrEmpty(thinking))
+                        {
+                            await EnsureRoleChunkAsync(token);
+                            await WriteChunkAsync(BuildOpenAiDeltaChunk(modelName, new JsonObject
+                            {
+                                ["reasoning_content"] = thinking
+                            }), token);
+                        }
+
+                        return;
+                    }
+
+                    if (string.Equals(deltaType, "signature_delta", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return;
+                    }
+
+                    if (string.Equals(deltaType, "input_json_delta", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var blockIndex = root.TryGetProperty("index", out var indexElement) && indexElement.ValueKind == JsonValueKind.Number
+                            ? indexElement.GetInt32()
+                            : -1;
+                        var partialJson = delta.TryGetProperty("partial_json", out var partialJsonElement) && partialJsonElement.ValueKind == JsonValueKind.String
+                            ? partialJsonElement.GetString()
+                            : null;
+                        if (blockIndex >= 0 &&
+                            !string.IsNullOrEmpty(partialJson) &&
+                            state.ToolCalls.TryGetValue(blockIndex, out var toolCallState))
+                        {
+                            await EnsureRoleChunkAsync(token);
+                            await WriteChunkAsync(BuildOpenAiToolCallChunk(modelName, new JsonArray
+                            {
+                                new JsonObject
+                                {
+                                    ["index"] = toolCallState.Index,
+                                    ["function"] = new JsonObject
+                                    {
+                                        ["arguments"] = partialJson
+                                    }
+                                }
+                            }), token);
+                        }
+
+                        return;
+                    }
+                }
+
+                if (string.Equals(eventName, "message_delta", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (root.TryGetProperty("delta", out var messageDelta) &&
+                        messageDelta.TryGetProperty("stop_reason", out var stopReasonElement) &&
+                        stopReasonElement.ValueKind == JsonValueKind.String)
+                    {
+                        state.StopReason = stopReasonElement.GetString() ?? state.StopReason;
+                    }
+
+                    if (root.TryGetProperty("usage", out var deltaUsage))
+                    {
+                        UpdateAnthropicUsageFromElement(deltaUsage, state);
+                    }
+
+                    return;
+                }
+
+                if (string.Equals(eventName, "message_stop", StringComparison.OrdinalIgnoreCase))
+                {
+                    state.ReceivedMessageStop = true;
+                    await EnsureRoleChunkAsync(token);
+                    var totalInputTokens = state.InputTokens + state.CachedTokens + state.CacheCreationTokens;
+                    await WriteChunkAsync(BuildOpenAiFinishChunk(
+                        modelName,
+                        MapAnthropicStopReason(state.StopReason),
+                        totalInputTokens,
+                        state.CachedTokens,
+                        state.CacheCreationTokens,
+                        state.OutputTokens), token);
+                    await WriteChunkAsync("data: [DONE]\n\n", token);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        var result = await _forwardService.ForwardStreamingAsync(
+            forwardRequest,
+            async (line, token) =>
+            {
+                if (string.IsNullOrEmpty(line))
+                {
+                    await FlushAnthropicSseBlockAsync(token);
+                    return;
+                }
+
+                pendingSseLines.Add(line);
+            },
+            cancellationToken);
+
+        if (pendingSseLines.Count > 0)
+        {
+            await FlushAnthropicSseBlockAsync(cancellationToken);
+        }
+
+        var totalPromptTokens = state.InputTokens + state.CachedTokens + state.CacheCreationTokens;
+        result.ResponseBody = responseBuilder.ToString();
+        result.IsStreaming = true;
+        result.HasStartedStreaming = startedWriting;
+        result.InputTokens = totalPromptTokens;
+        result.CachedTokens = state.CachedTokens;
+        result.OutputTokens = state.OutputTokens;
+
+        if (result.Success && !state.ReceivedMessageStop)
+        {
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage ??= startedWriting
+                ? "stream interrupted before message_stop"
+                : "stream ended before any complete SSE event";
+        }
+
+        if (!result.Success && startedWriting)
+        {
+            result.IsStreamInterrupted = true;
+        }
+
+        return new StreamForwardOutcome
+        {
+            Result = result,
+            CanFallback = !startedWriting
+        };
+    }
+
     // 优先使用自定义来源头，无法识别时再退回通用 proxy。
     private static string ResolveRequestSource(HttpRequest request)
     {
@@ -308,6 +802,214 @@ public sealed class OpenAiProxyController : ControllerBase
         }
 
         return "proxy";
+    }
+
+    private static bool TryExtractSseDataPayload(List<string> sseLines, out string payload)
+    {
+        payload = string.Empty;
+        if (sseLines.Count == 0)
+        {
+            return false;
+        }
+
+        var dataLines = new List<string>();
+        foreach (var line in sseLines)
+        {
+            if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var data = line.Length > 5 ? line[5..] : string.Empty;
+            if (data.StartsWith(' '))
+            {
+                data = data[1..];
+            }
+
+            dataLines.Add(data);
+        }
+
+        if (dataLines.Count == 0)
+        {
+            return false;
+        }
+
+        payload = string.Join("\n", dataLines);
+        return true;
+    }
+
+    private static bool TryExtractSseEventPayload(List<string> sseLines, out string eventName, out string payload)
+    {
+        eventName = string.Empty;
+        payload = string.Empty;
+        if (sseLines.Count == 0)
+        {
+            return false;
+        }
+
+        var dataLines = new List<string>();
+        foreach (var line in sseLines)
+        {
+            if (line.StartsWith("event:", StringComparison.OrdinalIgnoreCase))
+            {
+                eventName = line.Length > 6 ? line[6..].Trim() : string.Empty;
+                continue;
+            }
+
+            if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var data = line.Length > 5 ? line[5..] : string.Empty;
+            if (data.StartsWith(' '))
+            {
+                data = data[1..];
+            }
+
+            dataLines.Add(data);
+        }
+
+        if (dataLines.Count == 0)
+        {
+            return false;
+        }
+
+        payload = string.Join("\n", dataLines);
+        return true;
+    }
+
+    private static void UpdateOpenAiUsageFromPayload(string jsonText, ref int inputTokens, ref int cachedTokens, ref int outputTokens)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(jsonText);
+            var root = document.RootElement;
+            if (!root.TryGetProperty("usage", out var usage))
+            {
+                return;
+            }
+
+            if (usage.TryGetProperty("prompt_tokens", out var promptTokens) && promptTokens.ValueKind == JsonValueKind.Number)
+            {
+                inputTokens = promptTokens.GetInt32();
+            }
+
+            if (usage.TryGetProperty("completion_tokens", out var completionTokens) && completionTokens.ValueKind == JsonValueKind.Number)
+            {
+                outputTokens = completionTokens.GetInt32();
+            }
+
+            if (usage.TryGetProperty("prompt_tokens_details", out var promptTokenDetails) &&
+                promptTokenDetails.TryGetProperty("cached_tokens", out var cachedTokenElement) &&
+                cachedTokenElement.ValueKind == JsonValueKind.Number)
+            {
+                cachedTokens = cachedTokenElement.GetInt32();
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static void UpdateAnthropicUsageFromElement(JsonElement usage, AnthropicToOpenAiStreamState state)
+    {
+        if (usage.TryGetProperty("input_tokens", out var inputTokens) && inputTokens.ValueKind == JsonValueKind.Number)
+        {
+            state.InputTokens = inputTokens.GetInt32();
+        }
+
+        if (usage.TryGetProperty("cache_read_input_tokens", out var cachedTokens) && cachedTokens.ValueKind == JsonValueKind.Number)
+        {
+            state.CachedTokens = cachedTokens.GetInt32();
+        }
+
+        if (usage.TryGetProperty("cache_creation_input_tokens", out var cacheCreationTokens) && cacheCreationTokens.ValueKind == JsonValueKind.Number)
+        {
+            state.CacheCreationTokens = cacheCreationTokens.GetInt32();
+        }
+
+        if (usage.TryGetProperty("output_tokens", out var outputTokens) && outputTokens.ValueKind == JsonValueKind.Number)
+        {
+            state.OutputTokens = outputTokens.GetInt32();
+        }
+    }
+
+    private static string BuildOpenAiDeltaChunk(string modelName, JsonObject deltaObject)
+    {
+        return BuildOpenAiChunkCore(modelName, deltaObject, null, null);
+    }
+
+    private static string BuildOpenAiToolCallChunk(string modelName, JsonArray toolCalls)
+    {
+        return BuildOpenAiChunkCore(modelName, new JsonObject
+        {
+            ["tool_calls"] = toolCalls
+        }, null, null);
+    }
+
+    private static string BuildOpenAiFinishChunk(
+        string modelName,
+        string finishReason,
+        int inputTokens,
+        int cachedTokens,
+        int cacheCreationTokens,
+        int outputTokens)
+    {
+        return BuildOpenAiChunkCore(
+            modelName,
+            new JsonObject(),
+            finishReason,
+            new JsonObject
+            {
+                ["prompt_tokens"] = inputTokens,
+                ["prompt_tokens_details"] = new JsonObject
+                {
+                    ["cached_tokens"] = cachedTokens,
+                    ["cached_creation_tokens"] = cacheCreationTokens
+                },
+                ["completion_tokens"] = outputTokens,
+                ["total_tokens"] = inputTokens + outputTokens
+            });
+    }
+
+    private static string BuildOpenAiChunkCore(string modelName, JsonObject deltaObject, string? finishReason, JsonObject? usage)
+    {
+        var payload = new JsonObject
+        {
+            ["id"] = $"chatcmpl-{Guid.NewGuid():N}",
+            ["object"] = "chat.completion.chunk",
+            ["created"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            ["model"] = modelName,
+            ["choices"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["index"] = 0,
+                    ["delta"] = deltaObject,
+                    ["finish_reason"] = finishReason is null ? null : JsonValue.Create(finishReason)
+                }
+            }
+        };
+
+        if (usage is not null)
+        {
+            payload["usage"] = usage;
+        }
+
+        return $"data: {payload.ToJsonString()}\n\n";
+    }
+
+    private static string MapAnthropicStopReason(string? stopReason)
+    {
+        return stopReason?.ToLowerInvariant() switch
+        {
+            "max_tokens" => "length",
+            "tool_use" => "tool_calls",
+            "stop_sequence" => "stop",
+            "refusal" => "content_filter",
+            _ => "stop"
+        };
     }
 
     private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)

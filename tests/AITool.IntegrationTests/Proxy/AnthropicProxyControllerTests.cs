@@ -111,6 +111,67 @@ public sealed class AnthropicProxyControllerTests
     }
 
     [Fact]
+    public async Task Post_messages_stream_passthroughs_anthropic_sse_and_records_usage()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            AnthropicStreamingLines =
+            [
+                "event: message_start",
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-3-7-sonnet-real\",\"usage\":{\"input_tokens\":6,\"cache_read_input_tokens\":2,\"output_tokens\":0},\"content\":[]}}",
+                string.Empty,
+                "event: content_block_start",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"anthropic-direct-stream\"}}",
+                string.Empty,
+                "event: content_block_stop",
+                "data: {\"type\":\"content_block_stop\",\"index\":0}",
+                string.Empty,
+                "event: message_delta",
+                "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":5},\"delta\":{\"stop_reason\":\"end_turn\"}}",
+                string.Empty,
+                "event: message_stop",
+                "data: {\"type\":\"message_stop\"}",
+                string.Empty
+            ]
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "Anthropic");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Anthropic");
+        fakeForwardService.Requests[0].EnableStreaming.Should().BeTrue();
+        body.Should().Contain("event: message_start");
+        body.Should().Contain("anthropic-direct-stream");
+        body.Should().Contain("event: message_delta");
+        body.Should().Contain("event: message_stop");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.OrderBy(x => x.AttemptIndex).ToListAsync();
+
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("success");
+        logs[0].IsStreaming.Should().BeTrue();
+        logs[0].InputTokens.Should().Be(6);
+        logs[0].CachedTokens.Should().Be(2);
+        logs[0].OutputTokens.Should().Be(5);
+    }
+
+    [Fact]
     public async Task Post_messages_preserves_whitespace_only_stream_chunks_when_bridging_openai_stream()
     {
         var fakeForwardService = new AnthropicFakeProxyForwardService
@@ -239,9 +300,12 @@ public sealed class AnthropicProxyControllerTests
         var body = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
-        fakeForwardService.StreamAttemptCount.Should().Be(0);
-        fakeForwardService.NonStreamAttemptCount.Should().Be(1);
+        // 当前路由顺序以后台配置为准，因此会先尝试第一条 OpenAI 兼容流，再回退到后面的 Anthropic 直连流式路由。
+        fakeForwardService.StreamAttemptCount.Should().Be(2);
+        fakeForwardService.NonStreamAttemptCount.Should().Be(0);
+        body.Should().Contain("event: message_start");
         body.Should().Contain("anthropic-fallback-ok");
+        body.Should().Contain("event: message_stop");
     }
 
     [Fact]
@@ -765,6 +829,7 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
 {
     public List<ProxyForwardRequest> Requests { get; } = [];
     public List<string>? OpenAiStreamingLines { get; set; }
+    public List<string>? AnthropicStreamingLines { get; set; }
     public Func<ProxyForwardRequest, ProxyForwardResult>? ForwardResultFactory { get; set; }
     public Func<ProxyForwardRequest, ProxyForwardResult>? StreamingResultFactory { get; set; }
 
@@ -878,6 +943,40 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
             };
         }
 
+        var anthropicLines = AnthropicStreamingLines;
+        if (anthropicLines is not null)
+        {
+            foreach (var line in anthropicLines)
+            {
+                await onSseDataAsync(line, cancellationToken);
+            }
+
+            var anthropicStreamingResult = StreamingResultFactory?.Invoke(request);
+            if (anthropicStreamingResult is not null)
+            {
+                anthropicStreamingResult.ResponseBody = string.IsNullOrWhiteSpace(anthropicStreamingResult.ResponseBody)
+                    ? string.Join("\n", anthropicLines)
+                    : anthropicStreamingResult.ResponseBody;
+                anthropicStreamingResult.InputTokens = anthropicStreamingResult.InputTokens == 0 ? 6 : anthropicStreamingResult.InputTokens;
+                anthropicStreamingResult.CachedTokens = anthropicStreamingResult.CachedTokens == 0 ? 2 : anthropicStreamingResult.CachedTokens;
+                anthropicStreamingResult.OutputTokens = anthropicStreamingResult.OutputTokens == 0 ? 5 : anthropicStreamingResult.OutputTokens;
+                anthropicStreamingResult.IsStreaming = true;
+                return anthropicStreamingResult;
+            }
+
+            return new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = string.Join("\n", anthropicLines),
+                InputTokens = 6,
+                CachedTokens = 2,
+                OutputTokens = 5,
+                IsStreaming = true,
+                HasStartedStreaming = true
+            };
+        }
+
         var result = await ForwardAsync(request, cancellationToken);
         foreach (var line in result.ResponseBody.Replace("\r\n", "\n").Split('\n'))
         {
@@ -908,13 +1007,55 @@ internal sealed class AnthropicFallbackStreamProxyForwardService : IProxyForward
         });
     }
 
-    public Task<ProxyForwardResult> ForwardStreamingAsync(
+    public async Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,
         CancellationToken cancellationToken = default)
     {
         StreamAttemptCount++;
-        return Task.FromResult(new ProxyForwardResult
+        if (string.Equals(request.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            var lines = new[]
+            {
+                "event: message_start",
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_fallback\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-anthropic-secondary-real\",\"usage\":{\"input_tokens\":4,\"output_tokens\":0},\"content\":[]}}",
+                string.Empty,
+                "event: content_block_start",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"anthropic-fallback-ok\"}}",
+                string.Empty,
+                "event: content_block_stop",
+                "data: {\"type\":\"content_block_stop\",\"index\":0}",
+                string.Empty,
+                "event: message_delta",
+                "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":6},\"delta\":{\"stop_reason\":\"end_turn\"}}",
+                string.Empty,
+                "event: message_stop",
+                "data: {\"type\":\"message_stop\"}",
+                string.Empty
+            };
+
+            foreach (var line in lines)
+            {
+                await onSseDataAsync(line, cancellationToken);
+            }
+
+            return new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = string.Join("\n", lines),
+                InputTokens = 4,
+                OutputTokens = 6,
+                IsStreaming = true,
+                HasStartedStreaming = true,
+                TotalDurationMs = 8
+            };
+        }
+
+        return new ProxyForwardResult
         {
             Success = false,
             StatusCode = 502,
@@ -922,6 +1063,6 @@ internal sealed class AnthropicFallbackStreamProxyForwardService : IProxyForward
             IsStreaming = true,
             HasStartedStreaming = false,
             TotalDurationMs = 5
-        });
+        };
     }
 }

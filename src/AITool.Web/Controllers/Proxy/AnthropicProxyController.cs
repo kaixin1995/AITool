@@ -152,14 +152,20 @@ public sealed class AnthropicProxyController : ControllerBase
                 ForwardHeaders = forwardHeaders
             };
 
-            if (enableStreaming && string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+            if (enableStreaming)
             {
-                var streamOutcome = await ForwardOpenAiStreamAsAnthropicAsync(
-                    forwardRequest,
-                    modelName,
-                    traceId,
-                    traceAttemptId,
-                    cancellationToken);
+                var streamOutcome = string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase)
+                    ? await ForwardOpenAiStreamAsAnthropicAsync(
+                        forwardRequest,
+                        modelName,
+                        traceId,
+                        traceAttemptId,
+                        cancellationToken)
+                    : await ForwardAnthropicStreamPassthroughAsync(
+                        forwardRequest,
+                        traceId,
+                        traceAttemptId,
+                        cancellationToken);
                 var streamResult = streamOutcome.Result;
                 SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
 
@@ -186,7 +192,7 @@ public sealed class AnthropicProxyController : ControllerBase
                     FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
                     StreamDurationMs = streamResult.StreamDurationMs,
                     TotalDurationMs = streamResult.TotalDurationMs
-                }, cancellationToken);
+                }, CancellationToken.None);
 
                 if (streamResult.Success)
                 {
@@ -313,6 +319,131 @@ public sealed class AnthropicProxyController : ControllerBase
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
         return StatusCode(statusCode,
             new { error = new { type = "api_error", message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+    }
+
+    private async Task<StreamForwardOutcome> ForwardAnthropicStreamPassthroughAsync(
+        ProxyForwardRequest forwardRequest,
+        Guid? traceId,
+        Guid traceAttemptId,
+        CancellationToken cancellationToken)
+    {
+        if (!Response.HasStarted)
+        {
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+
+        var responseBuilder = new StringBuilder();
+        var pendingSseLines = new List<string>();
+        var startedWriting = false;
+        var receivedMessageStop = false;
+        var inputTokens = 0;
+        var cachedTokens = 0;
+        var outputTokens = 0;
+
+        async Task WriteRawSseBlockAsync(List<string> lines, CancellationToken token)
+        {
+            if (lines.Count == 0)
+            {
+                return;
+            }
+
+            var chunkBuilder = new StringBuilder();
+            foreach (var line in lines)
+            {
+                chunkBuilder.Append(line).Append('\n');
+            }
+
+            chunkBuilder.Append('\n');
+            var chunk = chunkBuilder.ToString();
+            responseBuilder.Append(chunk);
+            await Response.WriteAsync(chunk, token);
+            await Response.Body.FlushAsync(token);
+            startedWriting = true;
+        }
+
+        async Task FlushAnthropicSseBlockAsync(CancellationToken token)
+        {
+            if (pendingSseLines.Count == 0)
+            {
+                return;
+            }
+
+            if (TryExtractSseEventPayload(pendingSseLines, out var eventName, out var payload))
+            {
+                if (!string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+                {
+                    UpdateAnthropicUsageFromPayload(eventName, payload, ref inputTokens, ref cachedTokens, ref outputTokens, ref receivedMessageStop);
+                }
+            }
+
+            await WriteRawSseBlockAsync(pendingSseLines, token);
+            pendingSseLines.Clear();
+        }
+
+        var result = await _forwardService.ForwardStreamingAsync(
+            forwardRequest,
+            async (line, token) =>
+            {
+                if (string.IsNullOrEmpty(line))
+                {
+                    await FlushAnthropicSseBlockAsync(token);
+                    return;
+                }
+
+                pendingSseLines.Add(line);
+            },
+            cancellationToken);
+
+        if (pendingSseLines.Count > 0)
+        {
+            await FlushAnthropicSseBlockAsync(cancellationToken);
+        }
+
+        result.ResponseBody = responseBuilder.ToString();
+        result.IsStreaming = true;
+        result.HasStartedStreaming = startedWriting;
+        result.InputTokens = inputTokens;
+        result.CachedTokens = cachedTokens;
+        result.OutputTokens = outputTokens;
+
+        if (result.Success && !receivedMessageStop)
+        {
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage ??= startedWriting
+                ? "stream interrupted before message_stop"
+                : "stream ended before any complete SSE event";
+        }
+
+        if (!result.Success && startedWriting)
+        {
+            result.IsStreamInterrupted = true;
+        }
+
+        if (result.Success && startedWriting)
+        {
+            SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+            {
+                Status = "success",
+                StatusCode = result.StatusCode,
+                ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
+                ResponseContentType = "text/event-stream",
+                IsStreaming = true,
+                InputTokens = result.InputTokens,
+                CachedTokens = result.CachedTokens,
+                OutputTokens = result.OutputTokens,
+                TotalDurationMs = result.TotalDurationMs
+            });
+        }
+
+        return new StreamForwardOutcome
+        {
+            Result = result,
+            CanFallback = !startedWriting
+        };
     }
 
     private async Task<StreamForwardOutcome> ForwardOpenAiStreamAsAnthropicAsync(
@@ -557,6 +688,111 @@ public sealed class AnthropicProxyController : ControllerBase
 
         payload = string.Join("\n", dataLines);
         return true;
+    }
+
+    private static bool TryExtractSseEventPayload(List<string> sseLines, out string eventName, out string payload)
+    {
+        eventName = string.Empty;
+        payload = string.Empty;
+        if (sseLines.Count == 0)
+        {
+            return false;
+        }
+
+        var dataLines = new List<string>();
+        foreach (var line in sseLines)
+        {
+            if (line.StartsWith("event:", StringComparison.OrdinalIgnoreCase))
+            {
+                eventName = line.Length > 6 ? line[6..].Trim() : string.Empty;
+                continue;
+            }
+
+            if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var data = line.Length > 5 ? line[5..] : string.Empty;
+            if (data.StartsWith(' '))
+            {
+                data = data[1..];
+            }
+
+            dataLines.Add(data);
+        }
+
+        if (dataLines.Count == 0)
+        {
+            return false;
+        }
+
+        payload = string.Join("\n", dataLines);
+        return true;
+    }
+
+    private static void UpdateAnthropicUsageFromPayload(
+        string eventName,
+        string payload,
+        ref int inputTokens,
+        ref int cachedTokens,
+        ref int outputTokens,
+        ref bool receivedMessageStop)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(payload);
+            var root = document.RootElement;
+
+            if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase) &&
+                root.TryGetProperty("message", out var message) &&
+                message.TryGetProperty("usage", out var startUsage))
+            {
+                if (startUsage.TryGetProperty("input_tokens", out var startInput) && startInput.ValueKind == JsonValueKind.Number)
+                {
+                    inputTokens = startInput.GetInt32();
+                }
+
+                if (startUsage.TryGetProperty("cache_read_input_tokens", out var startCached) && startCached.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens = startCached.GetInt32();
+                }
+
+                if (startUsage.TryGetProperty("output_tokens", out var startOutput) && startOutput.ValueKind == JsonValueKind.Number)
+                {
+                    outputTokens = startOutput.GetInt32();
+                }
+            }
+
+            if (string.Equals(eventName, "message_delta", StringComparison.OrdinalIgnoreCase))
+            {
+                if (root.TryGetProperty("usage", out var deltaUsage))
+                {
+                    if (deltaUsage.TryGetProperty("input_tokens", out var deltaInput) && deltaInput.ValueKind == JsonValueKind.Number)
+                    {
+                        inputTokens = deltaInput.GetInt32();
+                    }
+
+                    if (deltaUsage.TryGetProperty("cache_read_input_tokens", out var deltaCached) && deltaCached.ValueKind == JsonValueKind.Number)
+                    {
+                        cachedTokens = deltaCached.GetInt32();
+                    }
+
+                    if (deltaUsage.TryGetProperty("output_tokens", out var deltaOutput) && deltaOutput.ValueKind == JsonValueKind.Number)
+                    {
+                        outputTokens = deltaOutput.GetInt32();
+                    }
+                }
+            }
+
+            if (string.Equals(eventName, "message_stop", StringComparison.OrdinalIgnoreCase))
+            {
+                receivedMessageStop = true;
+            }
+        }
+        catch
+        {
+        }
     }
 
     private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)

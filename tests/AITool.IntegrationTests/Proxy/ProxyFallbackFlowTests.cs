@@ -282,6 +282,99 @@ public sealed class ProxyFallbackFlowTests
         rules[0].SiteModelName.Should().Be("gpt-5.5-a");
         rules[1].SiteModelName.Should().Be("gpt-5.5-b");
     }
+
+    [Fact]
+    public async Task Post_chat_completions_stream_passthroughs_openai_sse_and_records_usage()
+    {
+        var fakeForwardService = new FakeProxyForwardService
+        {
+            StreamingLines =
+            [
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}",
+                string.Empty,
+                "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}],\"usage\":{\"prompt_tokens\":4,\"prompt_tokens_details\":{\"cached_tokens\":2},\"completion_tokens\":3}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"chat-prod\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        response.Content.Headers.ContentType?.MediaType.Should().Be("text/event-stream");
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"stream_options\":{\"include_usage\":true}");
+        body.Should().Contain("\"content\":\"Hello\"");
+        body.Should().Contain("\"content\":\" world\"");
+        body.Should().Contain("\"completion_tokens\":3");
+        body.Should().Contain("data: [DONE]");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.OrderBy(x => x.AttemptIndex).ToListAsync();
+
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("success");
+        logs[0].IsStreaming.Should().BeTrue();
+        logs[0].InputTokens.Should().Be(4);
+        logs[0].CachedTokens.Should().Be(2);
+        logs[0].OutputTokens.Should().Be(3);
+    }
+
+    [Fact]
+    public async Task Post_chat_completions_stream_does_not_fallback_after_first_chunk_is_written_then_interrupted()
+    {
+        var fakeForwardService = new FakeProxyForwardService
+        {
+            StreamingLines =
+            [
+                "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}",
+                string.Empty
+            ],
+            StreamingResultFactory = _ => new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                IsStreaming = true,
+                HasStartedStreaming = true
+            }
+        };
+        await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"chat-prod\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("partial");
+        fakeForwardService.Requests.Should().ContainSingle();
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.OrderBy(x => x.AttemptIndex).ToListAsync();
+
+        logs.Should().ContainSingle();
+        logs[0].AttemptedModel.Should().Be("gpt-5.5");
+        logs[0].Status.Should().Be("fail");
+        logs[0].IsStreamInterrupted.Should().BeTrue();
+        logs[0].FallbackTriggered.Should().BeTrue();
+    }
 }
 
 internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory<Program>
@@ -455,20 +548,20 @@ internal sealed class FakeProxyForwardService : IProxyForwardService
     private int _attemptCount;
 
     public List<ProxyForwardRequest> Requests { get; } = new();
+    public List<string>? StreamingLines { get; set; }
+    public Func<ProxyForwardRequest, ProxyForwardResult>? ForwardResultFactory { get; set; }
+    public Func<ProxyForwardRequest, ProxyForwardResult>? StreamingResultFactory { get; set; }
 
     // 使用固定的两次结果模拟主路由失败、备路由成功的回退链路
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
-        Requests.Add(new ProxyForwardRequest
+        Requests.Add(CloneRequest(request));
+
+        var customResult = ForwardResultFactory?.Invoke(request);
+        if (customResult is not null)
         {
-            TargetBaseUrl = request.TargetBaseUrl,
-            TargetApiKey = request.TargetApiKey,
-            ProtocolType = request.ProtocolType,
-            TargetModelName = request.TargetModelName,
-            RequestBody = request.RequestBody,
-            RequestTimeoutSeconds = request.RequestTimeoutSeconds,
-            RetryCount = request.RetryCount
-        });
+            return Task.FromResult(customResult);
+        }
 
         _attemptCount++;
         if (_attemptCount == 1)
@@ -496,6 +589,30 @@ internal sealed class FakeProxyForwardService : IProxyForwardService
         Func<string, CancellationToken, Task> onSseDataAsync,
         CancellationToken cancellationToken = default)
     {
+        if (StreamingLines is not null || StreamingResultFactory is not null)
+        {
+            Requests.Add(CloneRequest(request));
+            var lines = StreamingLines ?? [];
+            foreach (var line in lines)
+            {
+                await onSseDataAsync(line, cancellationToken);
+            }
+
+            var streamingResult = StreamingResultFactory?.Invoke(request) ?? new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = string.Join("\n", lines),
+                IsStreaming = true,
+                HasStartedStreaming = lines.Any(line => !string.IsNullOrEmpty(line))
+            };
+            streamingResult.ResponseBody = string.IsNullOrWhiteSpace(streamingResult.ResponseBody)
+                ? string.Join("\n", lines)
+                : streamingResult.ResponseBody;
+            streamingResult.IsStreaming = true;
+            return streamingResult;
+        }
+
         var result = await ForwardAsync(request, cancellationToken);
         foreach (var line in result.ResponseBody.Replace("\r\n", "\n").Split('\n'))
         {
@@ -504,5 +621,23 @@ internal sealed class FakeProxyForwardService : IProxyForwardService
 
         result.IsStreaming = true;
         return result;
+    }
+
+    private static ProxyForwardRequest CloneRequest(ProxyForwardRequest request)
+    {
+        return new ProxyForwardRequest
+        {
+            TargetBaseUrl = request.TargetBaseUrl,
+            TargetApiKey = request.TargetApiKey,
+            ProtocolType = request.ProtocolType,
+            TargetModelName = request.TargetModelName,
+            RequestBody = request.RequestBody,
+            PreparedRequestBody = request.PreparedRequestBody,
+            EnableStreaming = request.EnableStreaming,
+            RequestTimeoutSeconds = request.RequestTimeoutSeconds,
+            RetryCount = request.RetryCount,
+            TargetPath = request.TargetPath,
+            ForwardHeaders = new Dictionary<string, string>(request.ForwardHeaders, StringComparer.OrdinalIgnoreCase)
+        };
     }
 }

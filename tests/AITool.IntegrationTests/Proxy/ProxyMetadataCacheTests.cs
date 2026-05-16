@@ -232,9 +232,10 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
 
         var anthropicRoutes = await cache.GetRouteTargetsForModelAsync("Anthropic", "dual-route-model", CancellationToken.None);
         anthropicRoutes.Should().HaveCount(2);
-        anthropicRoutes[0].ResolveProtocolForClient("Anthropic").Should().Be("Anthropic");
-        anthropicRoutes[0].SiteId.Should().Be(anthropicSiteId);
-        anthropicRoutes[1].ResolveProtocolForClient("Anthropic").Should().Be("OpenAI");
+        // 当前缓存按后台配置顺序返回候选路由，协议不匹配时交给控制器走兼容转发。
+        anthropicRoutes[0].ResolveProtocolForClient("Anthropic").Should().Be("OpenAI");
+        anthropicRoutes[0].SiteId.Should().Be(openAiSiteId);
+        anthropicRoutes[1].ResolveProtocolForClient("Anthropic").Should().Be("Anthropic");
 
         var openAiRoutes = await cache.GetRouteTargetsForModelAsync("OpenAI", "dual-route-model", CancellationToken.None);
         openAiRoutes.Should().HaveCount(2);
