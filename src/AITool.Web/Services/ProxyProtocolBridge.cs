@@ -43,6 +43,11 @@ public static class ProxyProtocolBridge
     {
         if (string.Equals(clientProtocol, targetProtocol, StringComparison.OrdinalIgnoreCase))
         {
+            if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                return ReplaceOpenAiModelAndEnsureStreamUsage(requestBody, targetModelName, enableStreaming);
+            }
+
             return ReplaceModelName(requestBody, targetModelName);
         }
 
@@ -2501,6 +2506,37 @@ public static class ProxyProtocolBridge
         }
     }
 
+    private static string ReplaceOpenAiModelAndEnsureStreamUsage(string requestBody, string targetModelName, bool enableStreaming)
+    {
+        try
+        {
+            var rootNode = JsonNode.Parse(requestBody) as JsonObject;
+            if (rootNode is null)
+            {
+                return requestBody;
+            }
+
+            rootNode["model"] = targetModelName;
+
+            var streamRequested = enableStreaming;
+            if (!streamRequested && rootNode["stream"] is JsonValue streamNode && streamNode.TryGetValue<bool>(out var streamEnabled))
+            {
+                streamRequested = streamEnabled;
+            }
+
+            if (streamRequested)
+            {
+                // OpenAI 直传流式场景默认补 usage，避免 UsageLogs 与调试页里 token 永远是 0。
+                rootNode["stream_options"] = new JsonObject { ["include_usage"] = true };
+            }
+
+            return rootNode.ToJsonString();
+        }
+        catch
+        {
+            return requestBody;
+        }
+    }
     private static (string ContentText, string ReasoningText) ExtractOpenAiResponseText(string responseBody)
     {
         try
