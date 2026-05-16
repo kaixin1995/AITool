@@ -585,15 +585,7 @@
                 const fallbackTrend = data.fallbackTrend || [];
                 const siteDistribution = data.siteDistribution || [];
                 const modelDistribution = data.modelDistribution || [];
-                const cacheRatioTrend = tokenTrend.map(point => {
-                    const inputTokens = Number(point.inputTokens || 0);
-                    const cachedTokens = Number(point.cachedTokens || 0);
-                    return {
-                        label: point.label,
-                        cachedTokens,
-                        ratio: inputTokens <= 0 ? 0 : Number(((cachedTokens * 100) / inputTokens).toFixed(2))
-                    };
-                });
+                const modelCacheRatioDistribution = data.modelCacheRatioDistribution || [];
                 const labels = requestTrend.map(x => x.label);
                 const hasData = summary.totalRequests > 0;
 
@@ -735,17 +727,17 @@
                 renderChart('cacheRatioTrendChart', {
                     type: 'bar',
                     data: {
-                        labels: cacheRatioTrend.map(x => x.label),
+                        labels: modelCacheRatioDistribution.map(x => x.label),
                         datasets: [
                             {
-                                label: '缓存占输入比例 %',
-                                data: cacheRatioTrend.map(x => x.ratio),
+                                label: '缓存命中率 %',
+                                data: modelCacheRatioDistribution.map(x => x.cacheHitRate),
                                 backgroundColor: 'rgba(6,182,212,0.72)',
                                 borderRadius: 8
                             },
                             {
                                 label: '缓存 Tokens',
-                                data: cacheRatioTrend.map(x => x.cachedTokens),
+                                data: modelCacheRatioDistribution.map(x => x.cachedTokens),
                                 type: 'line',
                                 borderColor: palette.indigo,
                                 backgroundColor: palette.indigo,
@@ -788,6 +780,18 @@
                                         }
 
                                         return `${context.dataset.label}: ${formatTokenValue(context.parsed.y)}`;
+                                    },
+                                    footer: function(items) {
+                                        if (!items.length) {
+                                            return '';
+                                        }
+
+                                        const point = modelCacheRatioDistribution[items[0].dataIndex];
+                                        return [
+                                            `实际输入: ${formatTokenValue(point.inputTokens || 0)}`,
+                                            `缓存命中: ${formatTokenValue(point.cachedTokens || 0)}`,
+                                            `总输入口径: ${formatTokenValue(point.totalInputScope || 0)}`
+                                        ];
                                     }
                                 }
                             }
@@ -900,14 +904,48 @@
                         datasets: [{
                             label: '请求量',
                             data: modelDistribution.map(x => x.requestCount),
-                            backgroundColor: 'rgba(59,130,246,0.75)'
+                            backgroundColor: 'rgba(59,130,246,0.75)',
+                            yAxisID: 'y'
                         }, {
                             label: '总 Tokens',
                             data: modelDistribution.map(x => x.totalTokens),
-                            backgroundColor: 'rgba(16,185,129,0.75)'
+                            backgroundColor: 'rgba(16,185,129,0.75)',
+                            yAxisID: 'y1'
                         }]
                     },
-                    options: baseChartOptions()
+                    options: {
+                        ...baseChartOptions(),
+                        scales: {
+                            x: { grid: { display: false } },
+                            y: {
+                                beginAtZero: true
+                            },
+                            y1: {
+                                beginAtZero: true,
+                                position: 'right',
+                                grid: { drawOnChartArea: false },
+                                ticks: {
+                                    callback: function(value) {
+                                        return formatTokenValue(value);
+                                    }
+                                }
+                            }
+                        },
+                        plugins: {
+                            ...baseChartOptions().plugins,
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        if (context.datasetIndex === 1) {
+                                            return `${context.dataset.label}: ${formatTokenValue(context.parsed.y)}`;
+                                        }
+
+                                        return `${context.dataset.label}: ${formatNumber(context.parsed.y)}`;
+                                    }
+                                }
+                            }
+                        }
+                    }
                 });
             }
 
@@ -1001,8 +1039,8 @@
                 const number = Number(value || 0);
                 const abs = Math.abs(number);
                 const units = [
-                    { threshold: 1e12, suffix: 'T', digits: 2 },
-                    { threshold: 1e9, suffix: 'G', digits: 2 },
+                    { threshold: 1e12, suffix: 'TB', digits: 2 },
+                    { threshold: 1e9, suffix: 'GB', digits: 2 },
                     { threshold: 1e6, suffix: 'M', digits: 2 },
                     { threshold: 1e3, suffix: 'K', digits: 2 }
                 ];

@@ -44,6 +44,7 @@ public sealed class AnalyticsDashboardResponseDto
     public List<AnalyticsFallbackTrendPointDto> FallbackTrend { get; set; } = [];
     public List<AnalyticsDistributionPointDto> SiteDistribution { get; set; } = [];
     public List<AnalyticsDistributionPointDto> ModelDistribution { get; set; } = [];
+    public List<AnalyticsCacheRatioPointDto> ModelCacheRatioDistribution { get; set; } = [];
 }
 
 public sealed class AnalyticsAppliedFilterDto
@@ -119,6 +120,15 @@ public sealed class AnalyticsDistributionPointDto
     public int FailedCount { get; set; }
     public int TotalTokens { get; set; }
     public double AverageTotalDurationMs { get; set; }
+}
+
+public sealed class AnalyticsCacheRatioPointDto
+{
+    public string Label { get; set; } = string.Empty;
+    public int InputTokens { get; set; }
+    public int CachedTokens { get; set; }
+    public int TotalInputScope { get; set; }
+    public double CacheHitRate { get; set; }
 }
 
 // 可视化分析 API，统一输出图表和汇总统计所需的数据。
@@ -297,7 +307,8 @@ public sealed class AnalyticsApiController : ControllerBase
             DurationTrend = BuildDurationTrend(finalLogs, startTime, endTime, bucketType),
             FallbackTrend = BuildFallbackTrend(finalLogs, fallbackRequestIds, startTime, endTime, bucketType),
             SiteDistribution = BuildSiteDistribution(finalLogs, siteNames),
-            ModelDistribution = BuildModelDistribution(finalLogs)
+            ModelDistribution = BuildModelDistribution(finalLogs),
+            ModelCacheRatioDistribution = BuildModelCacheRatioDistribution(finalLogs)
         };
     }
 
@@ -483,6 +494,35 @@ public sealed class AnalyticsApiController : ControllerBase
                 AverageTotalDurationMs = Math.Round(g.Average(x => x.TotalDurationMs), 2)
             })
             .OrderByDescending(x => x.RequestCount)
+            .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
+            .Take(10)
+            .ToList();
+    }
+
+
+    // 缓存命中图按 UsageLogs 实际模型聚合，展示每个真实模型的缓存命中率。
+    private static List<AnalyticsCacheRatioPointDto> BuildModelCacheRatioDistribution(List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs)
+    {
+        return finalLogs
+            .Where(x => !string.IsNullOrWhiteSpace(x.AttemptedModel))
+            .GroupBy(x => x.AttemptedModel)
+            .Select(g =>
+            {
+                var inputTokens = g.Sum(x => x.InputTokens);
+                var cachedTokens = g.Sum(x => x.CachedTokens);
+                var outputTokens = g.Sum(x => x.OutputTokens);
+                var totalTokens = inputTokens + outputTokens;
+                return new AnalyticsCacheRatioPointDto
+                {
+                    Label = g.Key,
+                    InputTokens = inputTokens,
+                    CachedTokens = cachedTokens,
+                    TotalInputScope = totalTokens,
+                    CacheHitRate = totalTokens <= 0 ? 0 : Math.Round(cachedTokens * 100d / totalTokens, 2)
+                };
+            })
+            .OrderByDescending(x => x.CacheHitRate)
+            .ThenByDescending(x => x.CachedTokens)
             .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
             .Take(10)
             .ToList();
