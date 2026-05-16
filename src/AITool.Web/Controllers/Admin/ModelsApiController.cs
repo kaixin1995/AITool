@@ -5,21 +5,34 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
-// 模型库管理 API
+/// <summary>
+/// ModelsApiController。
+/// </summary>
 [ApiController]
 [Route("api/admin/models")]
 public sealed class ModelsApiController : ControllerBase
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
 
+    /// <summary>
+    /// 创建模型管理控制器。
+    /// </summary>
     public ModelsApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
     }
 
-    // 清空所有模型及关联数据（映射、健康监控）
+    /// <summary>
+    /// 清空模型相关数据。
+    /// </summary>
     [HttpPost("clear-all")]
     public async Task<IActionResult> ClearAll(CancellationToken cancellationToken)
     {

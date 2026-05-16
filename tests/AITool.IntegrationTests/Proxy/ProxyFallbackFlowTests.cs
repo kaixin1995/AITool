@@ -17,9 +17,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AITool.IntegrationTests.Proxy;
 
-// 代理回退链路集成测试，验证按顺序 fallback 并记录每次尝试日志
+/// <summary>
+/// 代理回退链路集成测试，验证按顺序 fallback 并记录每次尝试日志
+/// </summary>
 public sealed class ProxyFallbackFlowTests
 {
+    /// <summary>
+    /// 验证主路由入口列表会返回入口名称和候选数量。
+    /// </summary>
     [Fact]
     public async Task Get_entries_returns_master_entry_names_with_candidate_counts()
     {
@@ -34,6 +39,9 @@ public sealed class ProxyFallbackFlowTests
         body.Should().Contain("\"candidateCount\":2");
     }
 
+    /// <summary>
+    /// 验证新建空入口后，入口列表中能够立即看到该记录。
+    /// </summary>
     [Fact]
     public async Task Post_entries_creates_empty_master_entry_visible_in_entry_list()
     {
@@ -53,6 +61,9 @@ public sealed class ProxyFallbackFlowTests
         listBody.Should().Contain("\"candidateCount\":0");
     }
 
+    /// <summary>
+    /// 验证删除入口时会一并移除该入口下的全部路由规则。
+    /// </summary>
     [Fact]
     public async Task Delete_entry_removes_all_rules_for_that_master_entry()
     {
@@ -72,6 +83,9 @@ public sealed class ProxyFallbackFlowTests
         remaining.Should().Be(0);
     }
 
+    /// <summary>
+    /// 验证保存路由时支持为同一入口配置多组上游模型。
+    /// </summary>
     [Fact]
     public async Task Save_route_rules_accepts_multiple_upstream_model_groups()
     {
@@ -103,6 +117,9 @@ public sealed class ProxyFallbackFlowTests
         rules[1].InstancePriority.Should().Be(0);
     }
 
+    /// <summary>
+    /// 验证路由页面包含搜索框，并且不会直接渲染调试用协议表达式。
+    /// </summary>
     [Fact]
     public async Task Get_routes_page_contains_search_box_and_hides_protocol_rendering_text()
     {
@@ -117,6 +134,9 @@ public sealed class ProxyFallbackFlowTests
         html.Should().NotContain("item.protocolType");
     }
 
+    /// <summary>
+    /// 验证首条路由失败后会回退到下一条路由，并完整记录每次尝试日志。
+    /// </summary>
     [Fact]
     public async Task Post_chat_completions_falls_back_to_next_route_and_persists_attempt_logs()
     {
@@ -148,6 +168,9 @@ public sealed class ProxyFallbackFlowTests
         logs[1].IsFinalResult.Should().BeTrue();
     }
 
+    /// <summary>
+    /// 验证访问密钥被禁用后，请求模型列表会返回未授权。
+    /// </summary>
     [Fact]
     public async Task Get_models_returns_unauthorized_after_access_key_is_disabled()
     {
@@ -173,6 +196,9 @@ public sealed class ProxyFallbackFlowTests
         disabledResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
+    /// <summary>
+    /// 验证删除入口后，模型列表会及时刷新并移除对应模型。
+    /// </summary>
     [Fact]
     public async Task Get_models_refreshes_after_route_entry_is_deleted()
     {
@@ -202,6 +228,9 @@ public sealed class ProxyFallbackFlowTests
         afterBody.Should().NotContain("\"id\":\"chat-prod\"");
     }
 
+    /// <summary>
+    /// 验证聊天补全请求会使用当前运行时设置中的超时与重试参数。
+    /// </summary>
     [Fact]
     public async Task Post_chat_completions_uses_runtime_settings_for_forward_request()
     {
@@ -225,6 +254,9 @@ public sealed class ProxyFallbackFlowTests
         fakeForwardService.Requests[1].RetryCount.Should().Be(2);
     }
 
+    /// <summary>
+    /// 验证手动调整后的路由顺序会被保存，并被后续请求直接采用。
+    /// </summary>
     [Fact]
     public async Task Save_route_rules_persists_latest_manual_order_used_by_followup_request()
     {
@@ -254,6 +286,9 @@ public sealed class ProxyFallbackFlowTests
         fakeForwardService.Requests[0].TargetModelName.Should().Be("glm-5.1-a");
     }
 
+    /// <summary>
+    /// 验证同一个站点可以在同一入口中配置多条不同的候选规则。
+    /// </summary>
     [Fact]
     public async Task Save_route_rules_allows_same_site_to_appear_multiple_times()
     {
@@ -283,6 +318,9 @@ public sealed class ProxyFallbackFlowTests
         rules[1].SiteModelName.Should().Be("gpt-5.5-b");
     }
 
+    /// <summary>
+    /// 验证 OpenAI 流式透传会原样返回 SSE，并正确记录用量。
+    /// </summary>
     [Fact]
     public async Task Post_chat_completions_stream_passthroughs_openai_sse_and_records_usage()
     {
@@ -331,6 +369,9 @@ public sealed class ProxyFallbackFlowTests
         logs[0].OutputTokens.Should().Be(3);
     }
 
+    /// <summary>
+    /// 验证流式响应一旦写出首个分片，即使后续中断也不会再回退到下一条路由。
+    /// </summary>
     [Fact]
     public async Task Post_chat_completions_stream_does_not_fallback_after_first_chunk_is_written_then_interrupted()
     {
@@ -377,21 +418,39 @@ public sealed class ProxyFallbackFlowTests
     }
 }
 
+/// <summary>
+/// 用于构建 ProxyFallbackWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// </summary>
 internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 保存当前测试使用的临时数据库文件路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-proxy-fallback-{Guid.NewGuid():N}.db");
+    /// <summary>
+    /// 保存当前测试使用的伪造转发服务。
+    /// </summary>
     private readonly FakeProxyForwardService _fakeForwardService;
 
+    /// <summary>
+    /// 初始化代理回退测试宿主。
+    /// </summary>
     public ProxyFallbackWebApplicationFactory()
         : this(new FakeProxyForwardService())
     {
     }
 
+    /// <summary>
+    /// 初始化代理回退测试宿主。
+    /// </summary>
     public ProxyFallbackWebApplicationFactory(FakeProxyForwardService fakeForwardService)
     {
         _fakeForwardService = fakeForwardService;
     }
 
+    /// <summary>
+    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -405,12 +464,18 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
         });
     }
 
+    /// <summary>
+    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();
@@ -537,22 +602,45 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
         await db.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// 释放测试过程中创建的资源。
+    /// </summary>
     public new async ValueTask DisposeAsync()
     {
         await base.DisposeAsync();
     }
 }
 
+/// <summary>
+/// 用于模拟代理转发结果，支撑 FakeProxyForwardService 相关断言。
+/// </summary>
 internal sealed class FakeProxyForwardService : IProxyForwardService
 {
+    /// <summary>
+    /// 记录当前测试中已经发生的转发尝试次数。
+    /// </summary>
     private int _attemptCount;
 
+    /// <summary>
+    /// 保存测试期间捕获到的转发请求。
+    /// </summary>
     public List<ProxyForwardRequest> Requests { get; } = new();
+    /// <summary>
+    /// 保存测试时返回的流式响应片段。
+    /// </summary>
     public List<string>? StreamingLines { get; set; }
+    /// <summary>
+    /// 允许按请求动态生成非流式转发结果，便于模拟首路由失败等场景。
+    /// </summary>
     public Func<ProxyForwardRequest, ProxyForwardResult>? ForwardResultFactory { get; set; }
+    /// <summary>
+    /// 允许按请求动态生成流式转发结果，便于覆盖中断与透传场景。
+    /// </summary>
     public Func<ProxyForwardRequest, ProxyForwardResult>? StreamingResultFactory { get; set; }
 
-    // 使用固定的两次结果模拟主路由失败、备路由成功的回退链路
+    /// <summary>
+    /// 使用固定的两次结果模拟主路由失败、备路由成功的回退链路
+    /// </summary>
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         Requests.Add(CloneRequest(request));
@@ -584,6 +672,9 @@ internal sealed class FakeProxyForwardService : IProxyForwardService
         });
     }
 
+    /// <summary>
+    /// 模拟流式转发过程，并按测试设定回放 OpenAI SSE 分片。
+    /// </summary>
     public async Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,
@@ -623,6 +714,9 @@ internal sealed class FakeProxyForwardService : IProxyForwardService
         return result;
     }
 
+    /// <summary>
+    /// 创建 CloneRequest 对应的测试对象。
+    /// </summary>
     private static ProxyForwardRequest CloneRequest(ProxyForwardRequest request)
     {
         return new ProxyForwardRequest

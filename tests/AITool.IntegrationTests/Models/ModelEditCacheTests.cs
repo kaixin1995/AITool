@@ -11,13 +11,27 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.IntegrationTests.Models;
 
-// 模型编辑缓存测试，验证保存后聊天相关缓存会立刻失效并重新加载。
+/// <summary>
+/// 模型编辑缓存测试，验证保存后聊天相关缓存会立刻失效并重新加载。
+/// </summary>
 public sealed class ModelEditCacheTests : IAsyncDisposable
 {
+    /// <summary>
+    /// 保存测试使用的服务提供器。
+    /// </summary>
     private readonly ServiceProvider _serviceProvider;
+    /// <summary>
+    /// 保存测试使用的内存缓存实例。
+    /// </summary>
     private readonly IMemoryCache _memoryCache;
+    /// <summary>
+    /// 保存当前测试使用的临时数据库路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-model-edit-cache-{Guid.NewGuid():N}.db");
 
+    /// <summary>
+    /// 创建模型编辑缓存测试所需的服务容器和数据库配置。
+    /// </summary>
     public ModelEditCacheTests()
     {
         var services = new ServiceCollection();
@@ -28,6 +42,9 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         _memoryCache = _serviceProvider.GetRequiredService<IMemoryCache>();
     }
 
+    /// <summary>
+    /// 验证保存模型后，已启用模型的缓存会立即失效并重新加载。
+    /// </summary>
     [Fact]
     public async Task OnPostAsync_invalidates_enabled_model_cache_immediately()
     {
@@ -84,6 +101,9 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         cachedAfterEdit.DisplayName.Should().Be("New Model");
     }
 
+    /// <summary>
+    /// 释放测试过程中创建的资源。
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
         _memoryCache.Dispose();

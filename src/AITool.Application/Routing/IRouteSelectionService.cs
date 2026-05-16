@@ -2,31 +2,45 @@ using AITool.Domain.Proxy;
 
 namespace AITool.Application.Routing;
 
-// 路由选择结果，包含匹配到的路由规则和目标站点信息
+/// <summary>
+/// 路由选择结果，用于封装一次匹配后得到的路由信息。
+/// </summary>
 public sealed class RouteSelectionResult
 {
-    // 匹配到的路由规则
+    /// <summary>
+    /// 保存最终匹配到的路由规则；未命中时保持为空。
+    /// </summary>
     public ProxyRouteRule? Route { get; set; }
 
-    // 是否找到有效路由
+    /// <summary>
+    /// 通过是否存在路由规则，快速判断本次匹配是否成功。
+    /// </summary>
     public bool Found => Route is not null;
 }
 
-// 路由选择服务接口，根据优先级为给定模型名称选择最佳启用的路由规则
+/// <summary>
+/// 路由选择服务接口，负责根据外部模型名挑选可用且优先级合适的路由规则。
+/// </summary>
 public interface IRouteSelectionService
 {
-    // 根据外部模型名称选择优先级最高的启用路由
+    /// <summary>
+    /// 根据外部模型名称选择优先级最高的可用路由。
+    /// </summary>
     Task<RouteSelectionResult> SelectRouteAsync(
         string externalModelName,
         CancellationToken cancellationToken = default);
 
-    // 根据外部模型名称选择路由，同时跳过被熔断屏蔽的站点
+    /// <summary>
+    /// 在指定排除站点集合的前提下选择路由，通常用于失败后的重试或熔断避让。
+    /// </summary>
     Task<RouteSelectionResult> SelectRouteAsync(
         string externalModelName,
         HashSet<Guid> excludedSiteIds,
         CancellationToken cancellationToken = default);
 
-    // 获取指定模型名称的所有启用路由，按优先级升序排列（用于失败重试）
+    /// <summary>
+    /// 获取指定模型名称对应的全部启用路由，并按优先级顺序返回，供上层依次尝试。
+    /// </summary>
     Task<List<RouteSelectionResult>> SelectAllRoutesAsync(
         string externalModelName,
         CancellationToken cancellationToken = default);

@@ -2,93 +2,151 @@ namespace AITool.Application.Proxy;
 
 using System.Diagnostics.CodeAnalysis;
 
-// 代理转发请求参数
+/// <summary>
+/// 代理转发请求参数，用于描述一次上游调用所需的完整上下文。
+/// </summary>
 public sealed class ProxyForwardRequest
 {
-    // 目标站点根地址
+    /// <summary>
+    /// 目标站点根地址，转发层会基于该地址拼接具体接口路径。
+    /// </summary>
     public string TargetBaseUrl { get; set; } = string.Empty;
 
-    // 目标站点 API 密钥
+    /// <summary>
+    /// 目标站点 API 密钥，用于上游鉴权。
+    /// </summary>
     public string TargetApiKey { get; set; } = string.Empty;
 
-    // 协议类型，例如 OpenAI 或 Anthropic
+    /// <summary>
+    /// 协议类型，例如 OpenAI 或 Anthropic，用于决定请求格式和目标接口。
+    /// </summary>
     public string ProtocolType { get; set; } = "OpenAI";
 
-    // 目标站点上的模型名称
+    /// <summary>
+    /// 上游站点实际接收的模型名称，通常已完成路由映射。
+    /// </summary>
     public string TargetModelName { get; set; } = string.Empty;
 
-    // 原始请求体（JSON 字符串）
+    /// <summary>
+    /// 原始请求体 JSON 字符串，保留调用方提交的完整内容。
+    /// </summary>
     public string RequestBody { get; set; } = string.Empty;
 
-    // 预先替换目标模型后的请求体，供转发层复用，避免重复解析原始 JSON。
+    /// <summary>
+    /// 预先替换目标模型后的请求体，供转发层直接复用，避免重复解析和改写原始 JSON。
+    /// </summary>
     public string? PreparedRequestBody { get; set; }
 
-    // 是否启用流式
+    /// <summary>
+    /// 标记本次请求是否需要按流式方式读取并转发响应。
+    /// </summary>
     public bool EnableStreaming { get; set; }
 
-    // 单次请求超时时间（秒）
+    /// <summary>
+    /// 单次上游请求的超时时间，单位为秒。
+    /// </summary>
     public int RequestTimeoutSeconds { get; set; }
 
-    // 单路由内部失败重试次数
+    /// <summary>
+    /// 同一路由在内部允许的失败重试次数，不包含首次请求。
+    /// </summary>
     public int RetryCount { get; set; }
 
-    // 自定义目标路径，默认按协议走聊天接口。
+    /// <summary>
+    /// 自定义目标路径；未指定时通常按协议使用默认聊天接口。
+    /// </summary>
     public string? TargetPath { get; set; }
 
-    // 需要透传到上游的附加请求头。
+    /// <summary>
+    /// 需要额外透传给上游的请求头，使用不区分大小写的键比较方式。
+    /// </summary>
     public Dictionary<string, string> ForwardHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
-// 代理转发结果
+/// <summary>
+/// 代理转发结果，用于汇总一次上游调用的状态、耗时和统计数据。
+/// </summary>
 public sealed class ProxyForwardResult
 {
-    // 是否成功
+    /// <summary>
+    /// 标记本次转发是否成功完成。
+    /// </summary>
     public bool Success { get; set; }
 
-    // 响应状态码
+    /// <summary>
+    /// 记录上游返回的 HTTP 状态码。
+    /// </summary>
     public int StatusCode { get; set; }
 
-    // 响应体内容
+    /// <summary>
+    /// 保存上游响应体内容；流式场景下通常用于补充最终结果或错误信息。
+    /// </summary>
     public string ResponseBody { get; set; } = string.Empty;
 
-    // 输入 Token 数
+    /// <summary>
+    /// 记录本次请求消耗的输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
 
-    // 缓存 Token 数
+    /// <summary>
+    /// 记录本次请求命中的缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
 
-    // 输出 Token 数
+    /// <summary>
+    /// 记录本次请求生成的输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
 
-    // 是否为流式请求
+    /// <summary>
+    /// 标记本次调用是否按流式方式处理。
+    /// </summary>
     public bool IsStreaming { get; set; }
 
-    // 是否已收到上游首个流式数据块
+    /// <summary>
+    /// 标记是否已经收到上游首个流式数据块，便于区分首包前失败和中途失败。
+    /// </summary>
     public bool HasStartedStreaming { get; set; }
 
-    // 是否发生流式异常中断
+    /// <summary>
+    /// 标记流式响应过程中是否出现异常中断。
+    /// </summary>
     public bool IsStreamInterrupted { get; set; }
 
-    // 首字耗时（毫秒）
+    /// <summary>
+    /// 记录从发起请求到收到首个输出片段的耗时，单位为毫秒。
+    /// </summary>
     public int FirstTokenLatencyMs { get; set; }
 
-    // 首字后的后续耗时（毫秒）
+    /// <summary>
+    /// 记录首个输出片段之后到流结束的持续时间，单位为毫秒。
+    /// </summary>
     public int StreamDurationMs { get; set; }
 
-    // 请求总耗时（毫秒）
+    /// <summary>
+    /// 记录本次请求整体耗时，单位为毫秒。
+    /// </summary>
     public int TotalDurationMs { get; set; }
 
-    // 错误信息
+    /// <summary>
+    /// 保存失败或异常时的错误信息，成功时通常为空。
+    /// </summary>
     public string? ErrorMessage { get; set; }
 }
 
-// 代理转发服务接口，将请求转发到目标站点并返回结果
+/// <summary>
+/// 代理转发服务接口，负责将标准化请求发送到目标站点并返回统一结果。
+/// </summary>
 public interface IProxyForwardService
 {
-    // 根据协议类型将请求转发到目标站点
+    /// <summary>
+    /// 按指定协议执行一次普通转发请求，并返回完整的调用结果。
+    /// </summary>
     Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default);
 
-    // 流式请求时逐段回调上游 SSE 数据，供控制器实时透传或转换。
+    /// <summary>
+    /// 执行流式转发，并在收到每段 SSE 数据时回调给上层做实时透传或转换。
+    /// </summary>
     Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,

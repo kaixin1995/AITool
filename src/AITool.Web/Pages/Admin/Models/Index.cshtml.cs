@@ -10,35 +10,89 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Web.Pages.Admin.Models;
 
+/// <summary>
+/// 带站点数量的模型信息。
+/// </summary>
 public class ModelWithSiteCount
 {
+    /// <summary>
+    /// 标识。
+    /// </summary>
     public Guid Id { get; set; }
+    /// <summary>
+    /// 模型名称。
+    /// </summary>
     public string ModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
     public string DisplayName { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
     public bool IsEnabled { get; set; }
+    /// <summary>
+    /// 创建时间。
+    /// </summary>
     public DateTimeOffset CreatedAt { get; set; }
+    /// <summary>
+    /// 站点数量。
+    /// </summary>
     public int SiteCount { get; set; }
 }
 
+/// <summary>
+/// 模型厂商分组。
+/// </summary>
 public class ModelVendorGroupViewModel
 {
+    /// <summary>
+    /// 厂商名称。
+    /// </summary>
     public string VendorName { get; set; } = string.Empty;
+    /// <summary>
+    /// 图标 SVG 内容。
+    /// </summary>
     public string IconSvgBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 头部背景色。
+    /// </summary>
     public string HeaderBackground { get; set; } = string.Empty;
+    /// <summary>
+    /// 模型列表。
+    /// </summary>
     public List<ModelWithSiteCount> Models { get; set; } = [];
 }
 
+/// <summary>
+/// 模型管理页面模型。
+/// </summary>
 public class IndexModel : PageModel
 {
+    /// <summary>
+    /// new。
+    /// </summary>
     private static readonly JsonSerializerOptions EditorJsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
     };
 
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache? _metadataCache;
+    /// <summary>
+    /// 模型厂商目录服务。
+    /// </summary>
     private readonly ModelVendorCatalogService? _vendorCatalogService;
 
+    /// <summary>
+    /// 模型管理页面模型。
+    /// </summary>
     [ActivatorUtilitiesConstructor]
     public IndexModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache, ModelVendorCatalogService vendorCatalogService)
     {
@@ -47,35 +101,65 @@ public class IndexModel : PageModel
         _vendorCatalogService = vendorCatalogService;
     }
 
+    /// <summary>
+    /// 模型管理页面模型。
+    /// </summary>
     public IndexModel(AppDbContext dbContext, ModelVendorCatalogService vendorCatalogService)
     {
         _dbContext = dbContext;
         _vendorCatalogService = vendorCatalogService;
     }
 
+    /// <summary>
+    /// 模型管理页面模型。
+    /// </summary>
     public IndexModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
+    /// <summary>
+    /// 厂商分组列表。
+    /// </summary>
     public List<ModelVendorGroupViewModel> VendorGroups { get; set; } = [];
 
+    /// <summary>
+    /// 厂商规则编辑器数据。
+    /// </summary>
     public string VendorCatalogEditorJson { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 厂商规则提交数据。
+    /// </summary>
     [BindProperty]
     public string VendorCatalogJson { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 当前激活页签。
+    /// </summary>
     [BindProperty]
     public string ActiveTab { get; set; } = "models";
 
+    /// <summary>
+    /// 状态提示。
+    /// </summary>
     public string? StatusMessage { get; set; }
+    /// <summary>
+    /// 操作是否成功。
+    /// </summary>
     public bool StatusSuccess { get; set; }
 
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         await LoadPageDataAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// 保存厂商规则配置。
+    /// </summary>
     public async Task<IActionResult> OnPostSaveVendorCatalogAsync(CancellationToken cancellationToken)
     {
         ActiveTab = "rules";
@@ -110,6 +194,9 @@ public class IndexModel : PageModel
         return Page();
     }
 
+    /// <summary>
+    /// 切换启用状态。
+    /// </summary>
     public async Task<IActionResult> OnPostToggleAsync(Guid modelId, CancellationToken cancellationToken)
     {
         try
@@ -134,6 +221,9 @@ public class IndexModel : PageModel
         return Page();
     }
 
+    /// <summary>
+    /// 处理删除请求。
+    /// </summary>
     public async Task<IActionResult> OnPostDeleteAsync(Guid modelId, CancellationToken cancellationToken)
     {
         try
@@ -208,12 +298,18 @@ public class IndexModel : PageModel
         return Page();
     }
 
+    /// <summary>
+    /// 加载页面所需数据。
+    /// </summary>
     private async Task LoadPageDataAsync(CancellationToken cancellationToken)
     {
         var catalog = await GetVendorCatalogAsync(cancellationToken);
         await LoadPageDataAsync(catalog, cancellationToken);
     }
 
+    /// <summary>
+    /// 加载页面所需数据。
+    /// </summary>
     private async Task LoadPageDataAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken)
     {
         VendorCatalogEditorJson = JsonSerializer.Serialize(catalog, EditorJsonOptions);
@@ -221,6 +317,9 @@ public class IndexModel : PageModel
         await LoadModelGroupsAsync(catalog, cancellationToken);
     }
 
+    /// <summary>
+    /// 获取厂商规则配置。
+    /// </summary>
     private async Task<ModelVendorCatalog> GetVendorCatalogAsync(CancellationToken cancellationToken)
     {
         return _vendorCatalogService is null
@@ -228,7 +327,9 @@ public class IndexModel : PageModel
             : await _vendorCatalogService.GetOrCreateAsync(cancellationToken);
     }
 
-    // 模型分组展示统一走可维护的厂商规则，避免页面内再写死映射逻辑。
+    /// <summary>
+    /// 加载模型厂商分组。
+    /// </summary>
     private async Task LoadModelGroupsAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken)
     {
         var enabledSiteIds = await _dbContext.Sites
@@ -273,6 +374,9 @@ public class IndexModel : PageModel
             .ToList();
     }
 
+    /// <summary>
+    /// 清理空的路由入口。
+    /// </summary>
     private async Task CleanupEmptyRouteEntriesAsync(IEnumerable<string> entryNames, CancellationToken cancellationToken)
     {
         var normalizedNames = entryNames
@@ -311,27 +415,50 @@ public class IndexModel : PageModel
     }
 }
 
-// 比较器只按厂商名归组，避免同名厂商因对象实例不同被拆成多个分组。
+/// <summary>
+/// 模型厂商比较器。
+/// </summary>
 internal sealed class ModelVendorDefinitionComparer : IEqualityComparer<ModelVendorDefinition>
 {
+    /// <summary>
+    /// new。
+    /// </summary>
     public static ModelVendorDefinitionComparer Instance { get; } = new();
 
+    /// <summary>
+    /// 比较两个厂商定义是否相同。
+    /// </summary>
     public bool Equals(ModelVendorDefinition? x, ModelVendorDefinition? y)
     {
         return string.Equals(x?.VendorName, y?.VendorName, StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// 返回厂商定义的哈希值。
+    /// </summary>
     public int GetHashCode(ModelVendorDefinition obj)
     {
         return StringComparer.OrdinalIgnoreCase.GetHashCode(obj.VendorName ?? string.Empty);
     }
 }
 
+/// <summary>
+/// 新建模型页面模型。
+/// </summary>
 public class CreateModelModel : PageModel
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache? _metadataCache;
 
+    /// <summary>
+    /// CreateModelModel。
+    /// </summary>
     [ActivatorUtilitiesConstructor]
     public CreateModelModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
@@ -339,16 +466,28 @@ public class CreateModelModel : PageModel
         _metadataCache = metadataCache;
     }
 
+    /// <summary>
+    /// CreateModelModel。
+    /// </summary>
     public CreateModelModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
+    /// <summary>
+    /// new。
+    /// </summary>
     [BindProperty]
     public CreateModelLibraryItemCommand Command { get; set; } = new();
 
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public void OnGet() { }
 
+    /// <summary>
+    /// 处理页面提交请求。
+    /// </summary>
     public async Task<IActionResult> OnPostAsync(CancellationToken cancellationToken)
     {
         if (!ModelState.IsValid) return Page();

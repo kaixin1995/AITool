@@ -4,36 +4,104 @@ using System.Text.Json.Nodes;
 
 namespace AITool.Web.Services;
 
-// 代理协议桥接器，负责在客户端协议与目标站点协议不一致时转换请求和响应。
+/// <summary>
+/// 负责在 OpenAI 与 Anthropic 协议之间转换请求和响应内容。
+/// </summary>
 public static class ProxyProtocolBridge
 {
+    /// <summary>
+    /// 保存 OpenAI 流式响应转换为 Anthropic 事件流时的消息状态。
+    /// </summary>
     public sealed class AnthropicOpenAiStreamState
     {
+        /// <summary>
+        /// 当前 Anthropic 消息的唯一标识。
+        /// </summary>
         public string MessageId { get; set; } = $"msg_{Guid.NewGuid():N}";
+        /// <summary>
+        /// 下一个可分配的内容块索引。
+        /// </summary>
         public int NextContentIndex { get; set; }
+        /// <summary>
+        /// thinking 内容块的索引，未创建时为 -1。
+        /// </summary>
         public int ThinkingIndex { get; set; } = -1;
+        /// <summary>
+        /// text 内容块的索引，未创建时为 -1。
+        /// </summary>
         public int TextIndex { get; set; } = -1;
+        /// <summary>
+        /// thinking 内容块是否已发送结束事件。
+        /// </summary>
         public bool ThinkingClosed { get; set; }
+        /// <summary>
+        /// text 内容块是否已发送结束事件。
+        /// </summary>
         public bool TextClosed { get; set; }
+        /// <summary>
+        /// 当前流中是否已经输出过任意内容块。
+        /// </summary>
         public bool HadAnyContent { get; set; }
+        /// <summary>
+        /// 是否已收到上游流的结束事件。
+        /// </summary>
         public bool ReceivedDoneEvent { get; set; }
+        /// <summary>
+        /// 输入 token 数。
+        /// </summary>
         public int InputTokens { get; set; }
+        /// <summary>
+        /// 命中缓存的输入 token 数。
+        /// </summary>
         public int CachedTokens { get; set; }
+        /// <summary>
+        /// 写入缓存时消耗的输入 token 数。
+        /// </summary>
         public int CacheCreationTokens { get; set; }
+        /// <summary>
+        /// 输出 token 数。
+        /// </summary>
         public int OutputTokens { get; set; }
+        /// <summary>
+        /// 当前消息最终对应的停止原因。
+        /// </summary>
         public string StopReason { get; set; } = "end_turn";
+        /// <summary>
+        /// 按工具调用索引保存的工具块状态。
+        /// </summary>
         public Dictionary<int, AnthropicToolCallBlockState> ToolCalls { get; } = [];
     }
 
+    /// <summary>
+    /// 保存单个 Anthropic tool_use 内容块的输出状态。
+    /// </summary>
     public sealed class AnthropicToolCallBlockState
     {
+        /// <summary>
+        /// 该工具调用在 Anthropic 内容数组中的索引。
+        /// </summary>
         public int ContentIndex { get; init; }
+        /// <summary>
+        /// 当前工具调用对应的 tool_use_id。
+        /// </summary>
         public string ToolUseId { get; set; } = $"toolu_{Guid.NewGuid():N}";
+        /// <summary>
+        /// 工具名称。
+        /// </summary>
         public string Name { get; set; } = string.Empty;
+        /// <summary>
+        /// 是否已发送工具块起始事件。
+        /// </summary>
         public bool Started { get; set; }
+        /// <summary>
+        /// 是否已发送工具块结束事件。
+        /// </summary>
         public bool Closed { get; set; }
     }
 
+    /// <summary>
+    /// 按客户端协议和目标协议生成最终要转发的请求体。
+    /// </summary>
     public static string PrepareRequestBody(
         string clientProtocol,
         string targetProtocol,
@@ -62,6 +130,9 @@ public static class ProxyProtocolBridge
             : BuildAnthropicRequestFromOpenAi(rootNode, targetModelName, enableStreaming);
     }
 
+    /// <summary>
+    /// 按客户端协议将上游响应内容转换为可直接返回的格式。
+    /// </summary>
     public static string AdaptResponseBodyForClient(
         string clientProtocol,
         string upstreamProtocol,
@@ -89,6 +160,9 @@ public static class ProxyProtocolBridge
             : BuildOpenAiResponseFromAnthropic(responseBody, modelName, inputTokens, cachedTokens, outputTokens);
     }
 
+    /// <summary>
+    /// 构造 Anthropic 流式响应的起始事件。
+    /// </summary>
     public static string BuildAnthropicStreamStart(string modelName, AnthropicOpenAiStreamState state)
     {
         var builder = new StringBuilder();
@@ -114,6 +188,9 @@ public static class ProxyProtocolBridge
         return builder.ToString();
     }
 
+    /// <summary>
+    /// 将单个 OpenAI 流式数据块转换为 Anthropic 事件片段。
+    /// </summary>
     public static string ConvertOpenAiStreamChunkToAnthropic(string jsonText, AnthropicOpenAiStreamState state)
     {
         var builder = new StringBuilder();
@@ -262,6 +339,9 @@ public static class ProxyProtocolBridge
         return builder.ToString();
     }
 
+    /// <summary>
+    /// 为 Anthropic 流式响应补齐剩余结束事件。
+    /// </summary>
     public static string CompleteAnthropicStream(AnthropicOpenAiStreamState state)
     {
         var builder = new StringBuilder();
@@ -310,7 +390,9 @@ public static class ProxyProtocolBridge
         return builder.ToString();
     }
 
-    // 上游忽略 stream=true 返回完整 OpenAI JSON 时，补生成 Anthropic SSE，避免 Claude Code 一直等待。
+    /// <summary>
+    /// 将完整的 OpenAI 普通响应重建为 Anthropic 事件流。
+    /// </summary>
     public static string BuildAnthropicStreamFromOpenAiResponse(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
     {
         string? upstreamId = null;
@@ -580,7 +662,9 @@ public static class ProxyProtocolBridge
         return builder.ToString();
     }
 
-    // 跨协议转到 OpenAI 站点时，把 Anthropic messages 请求映射成 chat completions。
+    /// <summary>
+    /// 将 Anthropic 请求体转换为 OpenAI 请求格式。
+    /// </summary>
     private static string BuildOpenAiRequestFromAnthropic(JsonObject rootNode, string targetModelName, bool enableStreaming)
     {
         var messages = new JsonArray();
@@ -760,7 +844,9 @@ public static class ProxyProtocolBridge
         return payload.ToJsonString();
     }
 
-    // 跨协议转到 Anthropic 站点时，把 OpenAI chat completions 请求映射成 messages。
+    /// <summary>
+    /// 将 OpenAI 请求体转换为 Anthropic 请求格式。
+    /// </summary>
     private static string BuildAnthropicRequestFromOpenAi(JsonObject rootNode, string targetModelName, bool enableStreaming)
     {
         var claudeMessages = new JsonArray();
@@ -997,7 +1083,9 @@ public static class ProxyProtocolBridge
         return payload.ToJsonString();
     }
 
-    // 把 OpenAI 响应包装成 Anthropic messages 响应，提取真实的 stop_reason、tool_calls 和缓存用量。
+    /// <summary>
+    /// 将 OpenAI 普通响应转换为 Anthropic 消息格式。
+    /// </summary>
     private static string BuildAnthropicResponseFromOpenAi(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
     {
         string? upstreamId = null;
@@ -1114,7 +1202,9 @@ public static class ProxyProtocolBridge
         }.ToJsonString();
     }
 
-    // 把 Anthropic 响应包装成 OpenAI chat completions 响应，提取真实的 finish_reason、tool_calls 和用量。
+    /// <summary>
+    /// 将 Anthropic 普通响应转换为 OpenAI 消息格式。
+    /// </summary>
     private static string BuildOpenAiResponseFromAnthropic(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
     {
         string? upstreamId = null;
@@ -1236,7 +1326,9 @@ public static class ProxyProtocolBridge
         }.ToJsonString();
     }
 
-    // OpenAI 流汇总后包装成 Anthropic SSE 事件，提取真实 finish_reason、tool_calls 和用量。
+    /// <summary>
+    /// 将 OpenAI 流式响应整体转换为 Anthropic 事件流。
+    /// </summary>
     private static string BuildAnthropicStreamingResponseFromOpenAi(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
     {
         var (contentText, reasoningText) = ExtractOpenAiStreamingText(responseBody);
@@ -1364,7 +1456,9 @@ public static class ProxyProtocolBridge
         return builder.ToString();
     }
 
-    // Anthropic SSE 汇总后包装成 OpenAI chunk，提取真实 finish_reason、tool_calls、reasoning、signature_delta。
+    /// <summary>
+    /// 将 Anthropic 流式响应整体转换为 OpenAI 事件流。
+    /// </summary>
     private static string BuildOpenAiStreamingResponseFromAnthropic(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
     {
         var (contentText, reasoningText) = ExtractAnthropicStreamingText(responseBody);
@@ -1447,6 +1541,9 @@ public static class ProxyProtocolBridge
         return builder.ToString();
     }
 
+    /// <summary>
+    /// 追加一个不含工具调用的 OpenAI 流式数据块。
+    /// </summary>
     private static void AppendOpenAiChunk(StringBuilder builder, string modelName, JsonObject deltaObject)
     {
         builder.Append("data: ");
@@ -1469,7 +1566,9 @@ public static class ProxyProtocolBridge
         builder.Append("\n\n");
     }
 
-    // 带 tool_calls 的 OpenAI chunk
+    /// <summary>
+    /// 追加一个包含工具调用增量的 OpenAI 流式数据块。
+    /// </summary>
     private static void AppendOpenAiChunkWithToolCalls(StringBuilder builder, string modelName, JsonArray toolCalls)
     {
         builder.Append("data: ");
@@ -1492,7 +1591,9 @@ public static class ProxyProtocolBridge
         builder.Append("\n\n");
     }
 
-    // 从 OpenAI 流式响应中提取 finish_reason、tool_calls 和用量
+    /// <summary>
+    /// 从 OpenAI 流式响应中提取停止原因、工具调用和用量信息。
+    /// </summary>
     private static (string FinishReason, List<StreamingToolCall> ToolCalls, StreamingUsageInfo Usage) ExtractOpenAiStreamingMetadata(string responseBody)
     {
         var finishReason = "stop";
@@ -1572,7 +1673,9 @@ public static class ProxyProtocolBridge
         return (finishReason, toolCalls.Values.OrderBy(x => x.Index).ToList(), usageInfo);
     }
 
-    // 从 Anthropic 流式响应中提取 stop_reason、tool_calls 和用量
+    /// <summary>
+    /// 从 Anthropic 流式响应中提取停止原因、工具调用和用量信息。
+    /// </summary>
     private static (string StopReason, List<StreamingToolCall> ToolCalls, StreamingUsageInfo Usage) ExtractAnthropicStreamingMetadata(string responseBody)
     {
         var stopReason = "end_turn";
@@ -1608,7 +1711,9 @@ public static class ProxyProtocolBridge
         return (stopReason, toolCalls, usageInfo);
     }
 
-    // 处理单个 Anthropic SSE 事件块中的 metadata
+    /// <summary>
+    /// 解析单个 Anthropic SSE 元数据事件并提取停止原因、工具调用和用量信息。
+    /// </summary>
     private static void ProcessAnthropicMetadataBlock(string eventName, List<string> dataLines, ref string stopReason, List<StreamingToolCall> toolCalls, ref StreamingUsageInfo usageInfo)
     {
         var data = string.Join("\n", dataLines);
@@ -1680,24 +1785,55 @@ public static class ProxyProtocolBridge
         catch { }
     }
 
-    // 流式工具调用信息
+    /// <summary>
+    /// 保存流式工具调用在重组过程中的索引、标识和参数片段。
+    /// </summary>
     private sealed class StreamingToolCall
     {
+        /// <summary>
+        /// 工具调用在流式 choices 中的索引。
+        /// </summary>
         public int Index { get; set; }
+        /// <summary>
+        /// 工具调用标识。
+        /// </summary>
         public string Id { get; set; } = "";
+        /// <summary>
+        /// 工具名称。
+        /// </summary>
         public string Name { get; set; } = "";
+        /// <summary>
+        /// 累积后的工具参数文本。
+        /// </summary>
         public string Arguments { get; set; } = "";
     }
 
-    // 流式用量信息
+    /// <summary>
+    /// 保存流式响应中提取出的上游 token 用量信息。
+    /// </summary>
     private sealed class StreamingUsageInfo
     {
+        /// <summary>
+        /// 上游返回的输入 token 数。
+        /// </summary>
         public int UpstreamInput { get; set; }
+        /// <summary>
+        /// 上游返回的输出 token 数。
+        /// </summary>
         public int UpstreamOutput { get; set; }
+        /// <summary>
+        /// 上游返回的缓存命中 token 数。
+        /// </summary>
         public int UpstreamCached { get; set; }
+        /// <summary>
+        /// 上游返回的缓存写入 token 数。
+        /// </summary>
         public int CacheCreation { get; set; }
     }
 
+    /// <summary>
+    /// 在 Anthropic 流式响应缺少结束事件时补齐 message_delta 和 message_stop。
+    /// </summary>
     public static string EnsureAnthropicStreamClosed(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
     {
         var normalized = responseBody.Replace("\r\n", "\n");
@@ -1739,7 +1875,9 @@ public static class ProxyProtocolBridge
         return builder.ToString();
     }
 
-    // 解析 Anthropic content blocks，分离文本、tool_use、图片
+    /// <summary>
+    /// 解析 Anthropic assistant 内容块，拆分出文本、工具调用和图片内容。
+    /// </summary>
     private static (string? TextContent, JsonArray ToolUseBlocks, JsonArray ImageBlocks) ParseAnthropicContentBlocks(JsonNode? content)
     {
         string? textContent = null;
@@ -1803,7 +1941,9 @@ public static class ProxyProtocolBridge
         return (textContent, toolUseBlocks, imageBlocks);
     }
 
-    // 解析 Anthropic user content，分离文本、图片、tool_result
+    /// <summary>
+    /// 解析 Anthropic user 内容块，拆分出文本、工具结果和图片内容。
+    /// </summary>
     private static (string? TextContent, JsonArray ImageBlocks, List<JsonObject> ToolResults, JsonArray UserImageBlocks) ParseAnthropicUserContent(JsonNode? content)
     {
         string? textContent = null;
@@ -1867,7 +2007,9 @@ public static class ProxyProtocolBridge
         return (textContent, imageBlocks, toolResults, userImageBlocks);
     }
 
-    // 解析 OpenAI content 为 Claude blocks（文本 + 图片）
+    /// <summary>
+    /// 解析 OpenAI 内容并转换为 Anthropic 可用的文本和媒体块。
+    /// </summary>
     private static (string? TextContent, JsonArray ImageBlocks) ParseOpenAiContentToClaudeBlocks(JsonNode? content)
     {
         string? textContent = null;
@@ -1930,7 +2072,9 @@ public static class ProxyProtocolBridge
         return (textContent, imageBlocks);
     }
 
-    // 将 OpenAI content 节点提取为纯文本字符串
+    /// <summary>
+    /// 尽量将 OpenAI 内容节点提取为纯文本字符串。
+    /// </summary>
     private static string? ExtractOpenAiContentAsString(JsonNode? content)
     {
         if (content is null) return null;
@@ -1955,6 +2099,9 @@ public static class ProxyProtocolBridge
         return content.ToJsonString();
     }
 
+    /// <summary>
+    /// 将 OpenAI tool 消息内容序列化为可写入 Anthropic 的文本。
+    /// </summary>
     private static string SerializeOpenAiToolContent(JsonNode? content)
     {
         if (content is null)
@@ -1977,6 +2124,9 @@ public static class ProxyProtocolBridge
         return content.ToJsonString();
     }
 
+    /// <summary>
+    /// 将 Anthropic tool_result 内容整理为 OpenAI 可用的文本。
+    /// </summary>
     private static string SerializeAnthropicToolResultContent(JsonNode? content)
     {
         if (content is null)
@@ -2020,7 +2170,9 @@ public static class ProxyProtocolBridge
         return content.ToJsonString();
     }
 
-    // Anthropic tools 数组 → OpenAI function tools 格式
+    /// <summary>
+    /// 将 Anthropic tools 配置转换为 OpenAI function tools。
+    /// </summary>
     private static void ConvertAnthropicToolsToOpenAi(JsonObject rootNode, JsonObject payload)
     {
         if (rootNode["tools"] is not JsonArray tools) return;
@@ -2048,7 +2200,9 @@ public static class ProxyProtocolBridge
             payload["tools"] = openAiTools;
     }
 
-    // Anthropic tool_choice → OpenAI tool_choice 格式
+    /// <summary>
+    /// 将 Anthropic 的 tool_choice 配置转换为 OpenAI 格式。
+    /// </summary>
     private static void ConvertAnthropicToolChoiceToOpenAi(JsonObject rootNode, JsonObject payload)
     {
         if (rootNode["tool_choice"] is not JsonNode tc) return;
@@ -2097,7 +2251,9 @@ public static class ProxyProtocolBridge
         }
     }
 
-    // OpenAI function tools → Anthropic tools 格式
+    /// <summary>
+    /// 将 OpenAI function tools 配置转换为 Anthropic tools。
+    /// </summary>
     private static void ConvertOpenAiToolsToAnthropic(JsonObject rootNode, JsonObject payload)
     {
         if (rootNode["tools"] is not JsonArray tools) return;
@@ -2126,7 +2282,9 @@ public static class ProxyProtocolBridge
             payload["tools"] = claudeTools;
     }
 
-    // OpenAI tool_choice + parallel_tool_calls → Anthropic tool_choice
+    /// <summary>
+    /// 将 OpenAI 的 tool_choice 配置转换为 Anthropic 格式。
+    /// </summary>
     private static void ConvertOpenAiToolChoiceToAnthropic(JsonObject rootNode, JsonObject payload)
     {
         var tc = rootNode["tool_choice"];
@@ -2176,7 +2334,9 @@ public static class ProxyProtocolBridge
             payload["tool_choice"] = claudeTc;
     }
 
-    // OpenAI web_search_options → Anthropic web_search 工具
+    /// <summary>
+    /// 将 OpenAI 的 web_search_options 转换为 Anthropic web_search 工具配置。
+    /// </summary>
     private static void ConvertOpenAiWebSearchToAnthropic(JsonObject rootNode, JsonObject payload)
     {
         if (rootNode["web_search_options"] is not JsonObject wsOpts) return;
@@ -2231,14 +2391,24 @@ public static class ProxyProtocolBridge
         }
     }
 
-    // OpenAI 消息累加器，用于合并同角色的消息和处理 tool_result
+    /// <summary>
+    /// 暂存同一条 OpenAI 消息转换后的 Anthropic 角色和内容块。
+    /// </summary>
     private sealed class OpenAiMessageAccumulator
     {
+        /// <summary>
+        /// 当前暂存消息的角色。
+        /// </summary>
         public string Role { get; init; } = "user";
+        /// <summary>
+        /// 当前暂存消息累积的内容块。
+        /// </summary>
         public List<JsonObject> Blocks { get; } = [];
     }
 
-    // 将累加器中的 blocks 添加到 claudeMessages，合并同角色消息
+    /// <summary>
+    /// 将暂存消息合并或追加到 Anthropic 消息数组中。
+    /// </summary>
     private static void AddAccumulatorToMessages(JsonArray claudeMessages, OpenAiMessageAccumulator accumulator, ref OpenAiMessageAccumulator? lastAccumulator)
     {
         if (accumulator.Blocks.Count == 0)
@@ -2301,7 +2471,9 @@ public static class ProxyProtocolBridge
         lastAccumulator = accumulator;
     }
 
-    // 反向映射：Anthropic stop_reason → OpenAI finish_reason
+    /// <summary>
+    /// 将 Anthropic 的停止原因映射为 OpenAI finish_reason。
+    /// </summary>
     private static string MapAnthropicStopReason(string? stopReason)
     {
         return stopReason?.ToLowerInvariant() switch
@@ -2314,12 +2486,18 @@ public static class ProxyProtocolBridge
         };
     }
 
+    /// <summary>
+    /// 向字符串构建器追加一个 SSE 事件。
+    /// </summary>
     private static void AppendSseEvent(StringBuilder builder, string eventName, JsonObject payload)
     {
         builder.Append("event: ").Append(eventName).Append('\n');
         builder.Append("data: ").Append(payload.ToJsonString()).Append("\n\n");
     }
 
+    /// <summary>
+    /// 在需要时关闭当前的 thinking 内容块。
+    /// </summary>
     private static void CloseThinkingBlockIfNeeded(StringBuilder builder, AnthropicOpenAiStreamState state)
     {
         if (state.ThinkingIndex < 0 || state.ThinkingClosed)
@@ -2335,6 +2513,9 @@ public static class ProxyProtocolBridge
         state.ThinkingClosed = true;
     }
 
+    /// <summary>
+    /// 在需要时关闭当前的 text 内容块。
+    /// </summary>
     private static void CloseTextBlockIfNeeded(StringBuilder builder, AnthropicOpenAiStreamState state)
     {
         if (state.TextIndex < 0 || state.TextClosed)
@@ -2350,6 +2531,9 @@ public static class ProxyProtocolBridge
         state.TextClosed = true;
     }
 
+    /// <summary>
+    /// 关闭所有已开始但尚未结束的工具调用内容块。
+    /// </summary>
     private static void CloseToolCallBlocks(StringBuilder builder, AnthropicOpenAiStreamState state)
     {
         foreach (var toolCallState in state.ToolCalls.OrderBy(x => x.Key).Select(x => x.Value))
@@ -2368,6 +2552,9 @@ public static class ProxyProtocolBridge
         }
     }
 
+    /// <summary>
+    /// 将 OpenAI 工具调用增量追加为 Anthropic 的 tool_use 事件。
+    /// </summary>
     private static void AppendToolCallDelta(StringBuilder builder, AnthropicOpenAiStreamState state, OpenAiToolCallDelta toolCallDelta)
     {
         if (!state.ToolCalls.TryGetValue(toolCallDelta.Index, out var toolCallState))
@@ -2421,6 +2608,9 @@ public static class ProxyProtocolBridge
         }
     }
 
+    /// <summary>
+    /// 从 OpenAI choice 增量中提取工具调用片段列表。
+    /// </summary>
     private static List<OpenAiToolCallDelta> GetToolCallDeltas(JsonElement choice)
     {
         var toolCallDeltas = new List<OpenAiToolCallDelta>();
@@ -2461,13 +2651,22 @@ public static class ProxyProtocolBridge
         return toolCallDeltas;
     }
 
+    /// <summary>
+    /// 表示单个 OpenAI 工具调用增量片段。
+    /// </summary>
     private readonly record struct OpenAiToolCallDelta(int Index, string Id, string Name, string ArgumentsDelta);
 
+    /// <summary>
+    /// 克隆节点并确保返回 JsonArray 实例。
+    /// </summary>
     private static JsonArray CloneArray(JsonNode? node)
     {
         return node?.DeepClone() as JsonArray ?? [];
     }
 
+    /// <summary>
+    /// 当源对象包含指定属性时复制到目标对象。
+    /// </summary>
     private static void CopyNodeIfPresent(JsonObject source, JsonObject target, string propertyName)
     {
         if (source[propertyName] is not null)
@@ -2476,6 +2675,9 @@ public static class ProxyProtocolBridge
         }
     }
 
+    /// <summary>
+    /// 从 system 节点中提取可用的系统提示文本。
+    /// </summary>
     private static string ExtractSystemContent(JsonNode systemNode)
     {
         return systemNode switch
@@ -2487,6 +2689,9 @@ public static class ProxyProtocolBridge
         };
     }
 
+    /// <summary>
+    /// 仅替换请求体中的模型名称。
+    /// </summary>
     private static string ReplaceModelName(string requestBody, string targetModelName)
     {
         try
@@ -2506,6 +2711,9 @@ public static class ProxyProtocolBridge
         }
     }
 
+    /// <summary>
+    /// 替换 OpenAI 请求中的模型名称，并在流式场景补齐 usage 配置。
+    /// </summary>
     private static string ReplaceOpenAiModelAndEnsureStreamUsage(string requestBody, string targetModelName, bool enableStreaming)
     {
         try
@@ -2537,6 +2745,9 @@ public static class ProxyProtocolBridge
             return requestBody;
         }
     }
+    /// <summary>
+    /// 从 OpenAI 普通响应中提取正文文本和推理文本。
+    /// </summary>
     private static (string ContentText, string ReasoningText) ExtractOpenAiResponseText(string responseBody)
     {
         try
@@ -2565,6 +2776,9 @@ public static class ProxyProtocolBridge
         }
     }
 
+    /// <summary>
+    /// 从 Anthropic 普通响应中提取正文文本和推理文本。
+    /// </summary>
     private static (string ContentText, string ReasoningText) ExtractAnthropicResponseText(string responseBody)
     {
         try
@@ -2597,6 +2811,9 @@ public static class ProxyProtocolBridge
         }
     }
 
+    /// <summary>
+    /// 从 OpenAI 流式响应中提取完整正文文本和推理文本。
+    /// </summary>
     private static (string? ContentText, string ReasoningText) ExtractOpenAiStreamingText(string responseBody)
     {
         var textBuilder = new StringBuilder();
@@ -2648,6 +2865,9 @@ public static class ProxyProtocolBridge
         return (sawContentDelta ? textBuilder.ToString() : null, reasoningBuilder.ToString());
     }
 
+    /// <summary>
+    /// 从 Anthropic 流式响应中提取完整正文文本和推理文本。
+    /// </summary>
     private static (string? ContentText, string ReasoningText) ExtractAnthropicStreamingText(string responseBody)
     {
         var textBuilder = new StringBuilder();
@@ -2689,6 +2909,9 @@ public static class ProxyProtocolBridge
         return (sawContentDelta ? textBuilder.ToString() : null, reasoningBuilder.ToString());
     }
 
+    /// <summary>
+    /// 处理单个 Anthropic SSE 数据块并提取文本或推理内容。
+    /// </summary>
     private static void ProcessAnthropicSseBlock(string eventName, List<string> dataLines, StringBuilder textBuilder, StringBuilder reasoningBuilder, ref bool sawContentDelta)
     {
         var data = string.Join("\n", dataLines);
@@ -2736,6 +2959,9 @@ public static class ProxyProtocolBridge
         }
     }
 
+    /// <summary>
+    /// 枚举响应中的 OpenAI choices 数组。
+    /// </summary>
     private static IEnumerable<JsonElement> EnumerateOpenAiChoices(JsonElement root)
     {
         if (!root.TryGetProperty("choices", out var choices) || choices.ValueKind != JsonValueKind.Array)
@@ -2749,6 +2975,9 @@ public static class ProxyProtocolBridge
         }
     }
 
+    /// <summary>
+    /// 从 choices 中选择最适合作为主结果的项。
+    /// </summary>
     private static JsonElement? GetPreferredOpenAiChoice(JsonElement choices)
     {
         JsonElement? fallback = null;
@@ -2772,6 +3001,9 @@ public static class ProxyProtocolBridge
         return fallback;
     }
 
+    /// <summary>
+    /// 获取首个包含有效内容的 OpenAI message。
+    /// </summary>
     private static JsonElement GetPreferredOpenAiMessage(JsonElement choices)
     {
         var preferredChoice = GetPreferredOpenAiChoice(choices);
@@ -2783,6 +3015,9 @@ public static class ProxyProtocolBridge
         return default;
     }
 
+    /// <summary>
+    /// 从 OpenAI message 中提取非推理类正文内容。
+    /// </summary>
     private static string ExtractContentFromMessage(JsonElement message)
     {
         if (!message.TryGetProperty("content", out var contentElement))
@@ -2816,6 +3051,9 @@ public static class ProxyProtocolBridge
         return string.Join("\n", parts);
     }
 
+    /// <summary>
+    /// 从响应节点中提取 reasoning 或 thinking 文本。
+    /// </summary>
     private static string ExtractReasoningFromElement(JsonElement element)
     {
         if (element.ValueKind == JsonValueKind.Undefined)
@@ -2841,6 +3079,9 @@ public static class ProxyProtocolBridge
         return string.Empty;
     }
 
+    /// <summary>
+    /// 从增量节点中提取文本 content 字段。
+    /// </summary>
     private static string? ExtractDeltaContent(JsonElement delta)
     {
         if (delta.ValueKind == JsonValueKind.Undefined)
@@ -2856,7 +3097,9 @@ public static class ProxyProtocolBridge
         return null;
     }
 
-    // OpenAI finish_reason → Anthropic stop_reason 映射
+    /// <summary>
+    /// 将 OpenAI 的 finish_reason 映射为 Anthropic 停止原因。
+    /// </summary>
     private static string MapOpenAiFinishReason(string? finishReason)
     {
         return finishReason?.ToLowerInvariant() switch
@@ -2869,6 +3112,9 @@ public static class ProxyProtocolBridge
         };
     }
 
+    /// <summary>
+    /// 按协议类型从 usage 节点中提取输入、缓存和输出 token 数。
+    /// </summary>
     private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
     {
         if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
@@ -2898,6 +3144,9 @@ public static class ProxyProtocolBridge
         return (prompt, cachedTokens, completion);
     }
 
+    /// <summary>
+    /// 按给定属性名顺序从 JsonElement 中提取文本。
+    /// </summary>
     private static string? ExtractElementText(JsonElement element, params string[] propertyNames)
     {
         foreach (var propertyName in propertyNames)
@@ -2930,6 +3179,9 @@ public static class ProxyProtocolBridge
         return null;
     }
 
+    /// <summary>
+    /// 递归从 JsonNode 中提取最合适的文本内容。
+    /// </summary>
     private static string ExtractTextFromNode(JsonNode? node)
     {
         if (node is null)
@@ -2972,6 +3224,9 @@ public static class ProxyProtocolBridge
         return node.ToJsonString();
     }
 
+    /// <summary>
+    /// 当文本非空时追加到字符串列表中。
+    /// </summary>
     private static void AppendIfNotEmpty(List<string> parts, string? text)
     {
         if (!string.IsNullOrWhiteSpace(text))
@@ -2980,6 +3235,9 @@ public static class ProxyProtocolBridge
         }
     }
 
+    /// <summary>
+    /// 当文本非空时追加到字符串构建器中。
+    /// </summary>
     private static void AppendIfNotEmpty(StringBuilder builder, string? text)
     {
         if (!string.IsNullOrWhiteSpace(text))

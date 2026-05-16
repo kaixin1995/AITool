@@ -1,14 +1,22 @@
 namespace AITool.Domain.Proxy;
 
-// 主入口实体，记录可独立存在的本地逻辑入口
+/// <summary>
+/// 表示一条代理主入口配置，用于描述系统中可独立存在并对外暴露的逻辑入口。
+/// </summary>
 public sealed class ProxyRouteEntry
 {
-    // 主入口主键
+    /// <summary>
+    /// 主入口唯一标识，用于在配置和关联关系中定位具体入口。
+    /// </summary>
     public Guid Id { get; set; } = Guid.NewGuid();
 
-    // 对外暴露的主入口名称
+    /// <summary>
+    /// 主入口名称，用于对外展示或在内部区分不同的代理入口。
+    /// </summary>
     public string EntryName { get; set; } = string.Empty;
 
-    // 创建时间
+    /// <summary>
+    /// 主入口创建时间，用于记录该入口配置的建立时间。
+    /// </summary>
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }

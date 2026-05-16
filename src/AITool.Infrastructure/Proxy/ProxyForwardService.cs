@@ -8,19 +8,32 @@ using Microsoft.Extensions.Logging;
 
 namespace AITool.Infrastructure.Proxy;
 
-// 基于 HttpClient 的代理转发服务，将请求转发到目标站点
+/// <summary>
+/// 基于 HttpClient 的代理转发服务，将请求转发到目标站点
+/// </summary>
 public sealed class ProxyForwardService : IProxyForwardService
 {
+    /// <summary>
+    /// 字段 _httpClient。
+    /// </summary>
     private readonly HttpClient _httpClient;
+    /// <summary>
+    /// 字段 _logger。
+    /// </summary>
     private readonly ILogger<ProxyForwardService> _logger;
 
+    /// <summary>
+    /// 初始化 ProxyForwardService。
+    /// </summary>
     public ProxyForwardService(HttpClient httpClient, ILogger<ProxyForwardService> logger)
     {
         _httpClient = httpClient;
         _logger = logger;
     }
 
-    // 将请求转发到目标站点并解析响应中的 Token 用量
+    /// <summary>
+    /// 将请求转发到目标站点并解析响应中的 Token 用量
+    /// </summary>
     public async Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         var attempts = Math.Max(0, request.RetryCount) + 1;
@@ -150,7 +163,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         };
     }
 
-    // 直接把上游 SSE 数据块逐段交给调用方，供控制器做实时协议转换与下游刷新。
+    /// <summary>
+    /// 直接把上游 SSE 数据块逐段交给调用方，供控制器做实时协议转换与下游刷新。
+    /// </summary>
     public async Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,
@@ -244,7 +259,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         };
     }
 
-    // 逐行读取 SSE 流，追踪首字延迟并提取 Token 用量。
+    /// <summary>
+    /// 逐行读取 SSE 流，追踪首字延迟并提取 Token 用量。
+    /// </summary>
     private async Task<ProxyForwardResult> ProcessStreamingResponseAsync(
         HttpResponseMessage response,
         Stopwatch stopwatch,
@@ -388,7 +405,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         };
     }
 
-    // 构建发送到上游的 HTTP 请求对象
+    /// <summary>
+    /// 构建发送到上游的 HTTP 请求对象
+    /// </summary>
     private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request, string requestBody)
     {
         var targetPath = string.IsNullOrWhiteSpace(request.TargetPath)
@@ -431,7 +450,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         return httpRequest;
     }
 
-    // 替换请求体中的模型名称为目标站点的模型名称
+    /// <summary>
+    /// 替换请求体中的模型名称为目标站点的模型名称
+    /// </summary>
     private static string ModifyRequestBody(string requestBody, string targetModelName)
     {
         try
@@ -458,7 +479,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
     }
 
-    // 判断原始请求是否为流式模式
+    /// <summary>
+    /// 判断原始请求是否为流式模式
+    /// </summary>
     private static bool IsStreamingRequest(string requestBody)
     {
         try
@@ -474,7 +497,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
     }
 
-    // 根据响应内容判断非流式响应是否真正返回了可用结果
+    /// <summary>
+    /// 根据响应内容判断非流式响应是否真正返回了可用结果
+    /// </summary>
     private static bool HasUsableResponse(string responseBody, string protocolType)
     {
         if (string.IsNullOrWhiteSpace(responseBody))
@@ -509,7 +534,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
     }
 
-    // 为非流式失败结果构造更明确的错误信息
+    /// <summary>
+    /// 为非流式失败结果构造更明确的错误信息
+    /// </summary>
     private static string BuildFailureMessage(string responseBody, string protocolType)
     {
         if (string.IsNullOrWhiteSpace(responseBody))
@@ -539,7 +566,9 @@ public sealed class ProxyForwardService : IProxyForwardService
             : "Upstream returned no usable choices.";
     }
 
-    // 从响应体中提取 Token 用量信息（非流式响应）
+    /// <summary>
+    /// 从响应体中提取 Token 用量信息（非流式响应）
+    /// </summary>
     private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageMetrics(string responseBody, string protocolType)
     {
         try
@@ -562,7 +591,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         return (0, 0, 0);
     }
 
-    // 从 usage JSON 元素中提取 Token 用量
+    /// <summary>
+    /// 从 usage JSON 元素中提取 Token 用量
+    /// </summary>
     private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
     {
         if (protocolType == "Anthropic")

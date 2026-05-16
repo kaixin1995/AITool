@@ -8,9 +8,14 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.IntegrationTests.Sites;
 
-// 站点管理测试，验证批量删除站点会同步删除关联映射
+/// <summary>
+/// 站点管理测试，验证批量删除站点会同步删除关联映射
+/// </summary>
 public sealed class SiteBulkDeleteTests
 {
+    /// <summary>
+    /// 验证批量删除站点时，会一并删除关联的模型映射。
+    /// </summary>
     [Fact]
     public async Task OnPostBulkDeleteAsync_removes_selected_sites_and_related_mappings()
     {
@@ -38,6 +43,9 @@ public sealed class SiteBulkDeleteTests
         remainingMappings[0].SiteId.Should().Be(Guid.Parse("33333333-3333-3333-3333-333333333333"));
     }
 
+    /// <summary>
+    /// 创建当前测试要使用的数据库上下文。
+    /// </summary>
     private static AppDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<AppDbContext>()
@@ -50,6 +58,9 @@ public sealed class SiteBulkDeleteTests
         return db;
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private static async Task SeedAsync(AppDbContext db)
     {
         var siteA = new Site

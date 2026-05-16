@@ -5,16 +5,27 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Operations;
 
-// 系统运行时设置服务实现，负责默认值初始化、配置更新与日志清理
+/// <summary>
+/// 系统运行时设置服务实现，负责默认值初始化、配置更新与日志清理
+/// </summary>
 public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
 {
+    /// <summary>
+    /// 字段 _dbContext。
+    /// </summary>
     private readonly AppDbContext _dbContext;
 
+    /// <summary>
+    /// 初始化 SystemRuntimeSettingsService。
+    /// </summary>
     public SystemRuntimeSettingsService(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
+    /// <summary>
+    /// 方法 GetOrCreateAsync。
+    /// </summary>
     public async Task<SystemRuntimeSettings> GetOrCreateAsync(CancellationToken cancellationToken = default)
     {
         var settings = await _dbContext.SystemRuntimeSettings
@@ -30,6 +41,9 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         return settings;
     }
 
+    /// <summary>
+    /// 方法 UpdateAsync。
+    /// </summary>
     public async Task<SystemRuntimeSettings> UpdateAsync(UpdateSystemRuntimeSettingsRequest request, CancellationToken cancellationToken = default)
     {
         var settings = await GetOrCreateAsync(cancellationToken);
@@ -50,6 +64,9 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         return settings;
     }
 
+    /// <summary>
+    /// 方法 ClearUsageLogsAsync。
+    /// </summary>
     public async Task<int> ClearUsageLogsAsync(ClearUsageLogsRequest request, CancellationToken cancellationToken = default)
     {
         var settings = await GetOrCreateAsync(cancellationToken);

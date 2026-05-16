@@ -12,125 +12,289 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
-// 对话测试用的模型列表项
+/// <summary>
+/// ChatModelItem。
+/// </summary>
 public sealed class ChatModelItem
 {
-    // 模型ID
+    /// <summary>
+    /// 模型标识。
+    /// </summary>
     public Guid ModelId { get; set; }
-    // 模型显示名
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
     public string DisplayName { get; set; } = string.Empty;
-    // 关联可用站点数
+    /// <summary>
+    /// 可用站点数量。
+    /// </summary>
     public int AvailableSiteCount { get; set; }
 }
 
-// 对话测试的单次尝试明细
+/// <summary>
+/// ChatAttemptResult。
+/// </summary>
 public sealed class ChatAttemptResult
 {
+    /// <summary>
+    /// 尝试序号。
+    /// </summary>
     public int AttemptIndex { get; set; }
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 尝试调用的模型名称。
+    /// </summary>
     public string AttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点侧模型名称。
+    /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string ErrorMessage { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否为最终结果。
+    /// </summary>
     public bool IsFinalResult { get; set; }
+    /// <summary>
+    /// 是否流式返回。
+    /// </summary>
     public bool IsStreaming { get; set; }
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
     public int TotalTokens { get; set; }
+    /// <summary>
+    /// 首 Token 延迟（毫秒）。
+    /// </summary>
     public int FirstTokenLatencyMs { get; set; }
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
-    // 发送到上游的请求体
+    /// <summary>
+    /// 请求体内容。
+    /// </summary>
     public string RequestBody { get; set; } = string.Empty;
-    // 上游返回的响应体
+    /// <summary>
+    /// 响应体内容。
+    /// </summary>
     public string ResponseBody { get; set; } = string.Empty;
 }
 
-// 发送消息的请求体
+/// <summary>
+/// ChatSendRequest。
+/// </summary>
 public sealed class ChatSendRequest
 {
-    // 思考等级选项
+    /// <summary>
+    /// 支持的思考强度选项。
+    /// </summary>
     public static readonly string[] ValidReasoningEfforts = ["low", "medium", "high", "xhigh","max"];
 
-    // 选择的模型ID
+    /// <summary>
+    /// 模型标识。
+    /// </summary>
     public Guid ModelId { get; set; }
-    // 用户消息内容
+    /// <summary>
+    /// 用户消息内容。
+    /// </summary>
     public string Message { get; set; } = string.Empty;
-    // 是否开启思考模式
+    /// <summary>
+    /// 是否开启思考。
+    /// </summary>
     public bool EnableReasoning { get; set; }
-    // 是否启用流式
+    /// <summary>
+    /// 是否开启流式输出。
+    /// </summary>
     public bool EnableStreaming { get; set; }
-    // 思考等级：low / medium / high，仅在开启思考模式时生效
+    /// <summary>
+    /// 思考强度。
+    /// </summary>
     public string ReasoningEffort { get; set; } = "high";
 }
 
-// 发送消息的返回结果
+/// <summary>
+/// ChatSendResult。
+/// </summary>
 public sealed class ChatSendResult
 {
-    // 是否成功
+    /// <summary>
+    /// 是否成功。
+    /// </summary>
     public bool Success { get; set; }
-    // 请求ID
+    /// <summary>
+    /// 请求标识。
+    /// </summary>
     public Guid? RequestId { get; set; }
-    // AI 回复内容
+    /// <summary>
+    /// 返回内容。
+    /// </summary>
     public string Content { get; set; } = string.Empty;
-    // 思考内容
+    /// <summary>
+    /// 思考内容。
+    /// </summary>
     public string ReasoningContent { get; set; } = string.Empty;
-    // 错误信息
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string? Error { get; set; }
-    // 请求耗时（毫秒）
+    /// <summary>
+    /// 耗时（毫秒）。
+    /// </summary>
     public long DurationMs { get; set; }
-    // 是否开启思考模式
+    /// <summary>
+    /// 是否启用思考。
+    /// </summary>
     public bool ReasoningEnabled { get; set; }
-    // 是否流式
+    /// <summary>
+    /// 是否流式返回。
+    /// </summary>
     public bool IsStreaming { get; set; }
-    // 输入 Token 数
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
-    // 缓存 Token 数
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
-    // 输出 Token 数
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
-    // 总 Token 数
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
     public int TotalTokens { get; set; }
-    // 首字耗时（毫秒）
+    /// <summary>
+    /// 首 Token 延迟（毫秒）。
+    /// </summary>
     public int FirstTokenLatencyMs { get; set; }
-    // 总耗时（毫秒）
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
-    // 调用尝试明细
+    /// <summary>
+    /// 尝试详情。
+    /// </summary>
     public List<ChatAttemptResult> Attempts { get; set; } = [];
 }
 
-// 聊天页流式转发的中间结果
+/// <summary>
+/// ChatStreamForwardResult。
+/// </summary>
 internal sealed class ChatStreamForwardResult
 {
+    /// <summary>
+    /// 是否成功。
+    /// </summary>
     public bool Success { get; set; }
+    /// <summary>
+    /// 是否收到过有效内容。
+    /// </summary>
     public bool HadAnyContent { get; set; }
+    /// <summary>
+    /// 返回内容。
+    /// </summary>
     public string Content { get; set; } = string.Empty;
+    /// <summary>
+    /// 思考内容。
+    /// </summary>
     public string ReasoningContent { get; set; } = string.Empty;
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
+    /// <summary>
+    /// 首 Token 延迟（毫秒）。
+    /// </summary>
     public int FirstTokenLatencyMs { get; set; }
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string ErrorMessage { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态码。
+    /// </summary>
     public int StatusCode { get; set; }
-    // 发送到上游的请求体
+    /// <summary>
+    /// 请求体内容。
+    /// </summary>
     public string RequestBody { get; set; } = string.Empty;
-    // 上游返回的原始响应体（流式时可能为 SSE 文本摘要）
+    /// <summary>
+    /// 响应体内容。
+    /// </summary>
     public string ResponseBody { get; set; } = string.Empty;
 }
 
-// 对话测试 API，提供模型选择、普通发送和流式发送功能
+/// <summary>
+/// ChatApiController。
+/// </summary>
 [ApiController]
 [Route("api/admin/chat")]
 public sealed class ChatApiController : ControllerBase
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理转发服务。
+    /// </summary>
     private readonly IProxyForwardService _forwardService;
+    /// <summary>
+    /// 路由熔断状态存储。
+    /// </summary>
     private readonly RouteCircuitStateStore _circuitStore;
+    /// <summary>
+    /// 用量日志服务。
+    /// </summary>
     private readonly IUsageLogService _usageLogService;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
+    /// <summary>
+    /// HttpClient 工厂。
+    /// </summary>
     private readonly IHttpClientFactory _httpClientFactory;
 
+    /// <summary>
+    /// 创建调试对话控制器。
+    /// </summary>
     public ChatApiController(
         AppDbContext dbContext,
         IProxyForwardService forwardService,
@@ -147,7 +311,9 @@ public sealed class ChatApiController : ControllerBase
         _httpClientFactory = httpClientFactory;
     }
 
-    // 获取可用于对话测试的模型列表
+    /// <summary>
+    /// 获取可调试的模型列表。
+    /// </summary>
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
@@ -155,7 +321,9 @@ public sealed class ChatApiController : ControllerBase
         return Ok(models);
     }
 
-    // 非流式发送，返回完整 JSON 结果
+    /// <summary>
+    /// 发送非流式调试请求。
+    /// </summary>
     [HttpPost("send")]
     public async Task<IActionResult> Send([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
     {
@@ -253,7 +421,9 @@ public sealed class ChatApiController : ControllerBase
         return await SendFallback(request, model, runtimeSettings, cancellationToken);
     }
 
-    // 流式发送，使用 SSE 将上游内容逐步推给前端。
+    /// <summary>
+    /// 发送流式调试请求。
+    /// </summary>
     [HttpPost("send-stream")]
     public async Task SendStream([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
     {
@@ -395,7 +565,9 @@ public sealed class ChatApiController : ControllerBase
         await WriteSseEventAsync("error", new { message = "所有路由站点均请求失败", attempts }, cancellationToken);
     }
 
-    // 回退逻辑：没有路由规则时直接通过站点映射发送
+    /// <summary>
+    /// 使用兜底映射发送非流式请求。
+    /// </summary>
     private async Task<IActionResult> SendFallback(
         ChatSendRequest request,
         CachedEnabledModel model,
@@ -472,7 +644,9 @@ public sealed class ChatApiController : ControllerBase
         return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
     }
 
-    // 流式回退逻辑：没有路由规则时直接通过站点映射流式发送。
+    /// <summary>
+    /// 使用兜底映射发送流式请求。
+    /// </summary>
     private async Task SendStreamFallbackAsync(
         ChatSendRequest request,
         CachedEnabledModel model,
@@ -575,7 +749,9 @@ public sealed class ChatApiController : ControllerBase
         await WriteSseEventAsync("done", new { requestId }, cancellationToken);
     }
 
-    // 使用 HttpClient 按 SSE 方式读取上游响应，并实时转发到前端。
+    /// <summary>
+    /// 转发流式对话请求。
+    /// </summary>
     private async Task<ChatStreamForwardResult> ForwardStreamAsync(
         string protocolType,
         string baseUrl,
@@ -739,6 +915,9 @@ public sealed class ChatApiController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 组装成功响应结果。
+    /// </summary>
     private static ChatSendResult BuildSuccessResult(
         Guid requestId,
         string content,
@@ -768,6 +947,9 @@ public sealed class ChatApiController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// 组装单次尝试结果。
+    /// </summary>
     private static ChatAttemptResult BuildAttemptResult(
         int attemptIndex,
         string siteName,
@@ -799,6 +981,9 @@ public sealed class ChatApiController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// 构建对话请求体。
+    /// </summary>
     private static string BuildChatRequestBody(string protocolType, string modelName, string message, bool enableReasoning, bool enableStreaming, string reasoningEffort = "high")
     {
         // 规范化思考等级
@@ -872,16 +1057,36 @@ public sealed class ChatApiController : ControllerBase
         return JsonSerializer.Serialize(payload);
     }
 
+    /// <summary>
+    /// SseBlockProcessState。
+    /// </summary>
     private sealed class SseBlockProcessState
     {
+        /// <summary>
+        /// 首 Token 延迟（毫秒）。
+        /// </summary>
         public int FirstTokenLatencyMs { get; set; }
+        /// <summary>
+        /// 输入 Token 数。
+        /// </summary>
         public int InputTokens { get; set; }
+        /// <summary>
+        /// 缓存 Token 数。
+        /// </summary>
         public int CachedTokens { get; set; }
+        /// <summary>
+        /// 输出 Token 数。
+        /// </summary>
         public int OutputTokens { get; set; }
+        /// <summary>
+        /// 是否收到过有效内容。
+        /// </summary>
         public bool HadAnyContent { get; set; }
     }
 
-    // 处理单个 SSE block，并抽取内容、思考与 usage。
+    /// <summary>
+    /// 处理单个 SSE 数据块。
+    /// </summary>
     private static async Task<bool> ProcessSseBlockAsync(
         string protocolType,
         string eventName,
@@ -994,7 +1199,9 @@ public sealed class ChatApiController : ControllerBase
         return false;
     }
 
-    // 尽量兼容不同上游返回格式，同时提取正常回答和思考内容。
+    /// <summary>
+    /// 提取非流式对话响应内容。
+    /// </summary>
     private static (string Content, string ReasoningContent) ExtractChatPayload(string responseBody, string protocolType)
     {
         try
@@ -1064,12 +1271,17 @@ public sealed class ChatApiController : ControllerBase
         return (responseBody, string.Empty);
     }
 
-    // SSE 序列化使用 camelCase 命名策略，与前端 JS 属性名保持一致
+    /// <summary>
+    /// SSE 序列化选项。
+    /// </summary>
     private static readonly JsonSerializerOptions SseJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
 
+    /// <summary>
+    /// 写入 SSE 事件。
+    /// </summary>
     private async Task WriteSseEventAsync(string eventName, object payload, CancellationToken cancellationToken)
     {
         await Response.WriteAsync($"event: {eventName}\n", cancellationToken);
@@ -1077,6 +1289,9 @@ public sealed class ChatApiController : ControllerBase
         await Response.Body.FlushAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// 提取非流式对话响应内容。
+    /// </summary>
     private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageMetrics(JsonElement usage, int currentInput, int currentCached, int currentOutput)
     {
         var inputTokens = usage.TryGetProperty("prompt_tokens", out var promptTokens) ? promptTokens.GetInt32() : currentInput;
@@ -1093,6 +1308,9 @@ public sealed class ChatApiController : ControllerBase
         return (inputTokens, cachedTokens, outputTokens);
     }
 
+    /// <summary>
+    /// 提取增量内容文本。
+    /// </summary>
     private static string ExtractDeltaContent(JsonElement delta)
     {
         if (delta.TryGetProperty("content", out var content))
@@ -1116,7 +1334,9 @@ public sealed class ChatApiController : ControllerBase
         return string.Empty;
     }
 
-    // 兼容不同 OpenAI 风格上游的思考字段，优先提取可直接展示的文本。
+    /// <summary>
+    /// 提取思考文本。
+    /// </summary>
     private static string ExtractReasoningText(JsonElement element)
     {
         var directText = ExtractElementText(element, "reasoning_content", "reasoning", "thinking", "summary_text", "output_text", "text");
@@ -1146,6 +1366,9 @@ public sealed class ChatApiController : ControllerBase
         return string.Empty;
     }
 
+    /// <summary>
+    /// 提取节点文本内容。
+    /// </summary>
     private static string ExtractElementText(JsonElement element, params string[] propertyNames)
     {
         foreach (var propertyName in propertyNames)
@@ -1186,6 +1409,9 @@ public sealed class ChatApiController : ControllerBase
         return string.Empty;
     }
 
+    /// <summary>
+    /// 在非空时追加文本。
+    /// </summary>
     private static void AppendIfNotEmpty(List<string> values, string? value)
     {
         if (!string.IsNullOrWhiteSpace(value))

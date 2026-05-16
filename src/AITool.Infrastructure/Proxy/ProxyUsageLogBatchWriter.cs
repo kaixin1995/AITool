@@ -8,21 +8,44 @@ using Microsoft.Extensions.Logging;
 
 namespace AITool.Infrastructure.Proxy;
 
-// 将代理日志写入降级为后台批量刷盘，避免主请求线程同步等待 SQLite 写锁。
+/// <summary>
+/// 将代理日志写入降级为后台批量刷盘，避免主请求线程同步等待 SQLite 写锁。
+/// </summary>
 public sealed class ProxyUsageLogBatchWriter : BackgroundService
 {
+    /// <summary>
+    /// 字段 MaxBatchSize。
+    /// </summary>
     private const int MaxBatchSize = 100;
+    /// <summary>
+    /// 方法 FromMilliseconds。
+    /// </summary>
     private static readonly TimeSpan FlushInterval = TimeSpan.FromMilliseconds(800);
+    /// <summary>
+    /// 方法 BoundedChannelOptions。
+    /// </summary>
     private readonly Channel<UsageLogEntry> _channel = Channel.CreateBounded<UsageLogEntry>(new BoundedChannelOptions(4096)
     {
         FullMode = BoundedChannelFullMode.DropWrite,
         SingleReader = true,
         SingleWriter = false
     });
+    /// <summary>
+    /// 字段 _scopeFactory。
+    /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
+    /// <summary>
+    /// 字段 _logger。
+    /// </summary>
     private readonly ILogger<ProxyUsageLogBatchWriter> _logger;
+    /// <summary>
+    /// 字段 _writeThroughMode。
+    /// </summary>
     private readonly bool _writeThroughMode;
 
+    /// <summary>
+    /// 初始化 ProxyUsageLogBatchWriter。
+    /// </summary>
     public ProxyUsageLogBatchWriter(IServiceScopeFactory scopeFactory, ILogger<ProxyUsageLogBatchWriter> logger, IHostEnvironment hostEnvironment)
     {
         _scopeFactory = scopeFactory;
@@ -30,7 +53,9 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
         _writeThroughMode = hostEnvironment.IsEnvironment("Testing");
     }
 
-    // 代理链路只尝试入队，不等待数据库写入完成。
+    /// <summary>
+    /// 代理链路只尝试入队，不等待数据库写入完成。
+    /// </summary>
     public async ValueTask<bool> EnqueueAsync(UsageLogEntry entry, CancellationToken cancellationToken)
     {
         if (_writeThroughMode)
@@ -48,6 +73,9 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
         return false;
     }
 
+    /// <summary>
+    /// 方法 ExecuteAsync。
+    /// </summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         var buffer = new List<UsageLogEntry>(MaxBatchSize);
@@ -98,6 +126,9 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
         }
     }
 
+    /// <summary>
+    /// 方法 FlushBatchAsync。
+    /// </summary>
     private async Task FlushBatchAsync(List<UsageLogEntry> batch, CancellationToken cancellationToken)
     {
         if (batch.Count == 0)

@@ -7,98 +7,200 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.ModelHealth;
 
-// 模型健康度视图模型，展示指定模型在各站点的健康状态
+/// <summary>
+/// 模型健康页中的站点状态。
+/// </summary>
 public class ModelHealthSiteViewModel
 {
-    // 站点名称
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
-    // 远程模型名
+    /// <summary>
+    /// 远程模型名称。
+    /// </summary>
     public string RemoteModelName { get; set; } = string.Empty;
-    // 最近检测状态
+    /// <summary>
+    /// 最近状态。
+    /// </summary>
     public string LastStatus { get; set; } = string.Empty;
-    // 最近检测时间
+    /// <summary>
+    /// 最近检测时间。
+    /// </summary>
     public DateTimeOffset? LastCheckedAt { get; set; }
-    // 最近检测耗时（毫秒）
+    /// <summary>
+    /// 最近耗时（毫秒）。
+    /// </summary>
     public int? LastDurationMs { get; set; }
-    // 最近 N 条检测记录（用于统计与计数）
+    /// <summary>
+    /// 最近日志。
+    /// </summary>
     public List<ModelHealthLogEntry> RecentLogs { get; set; } = [];
-    // 时间轴线段（固定宽度聚合展示，失败优先标红）
+    /// <summary>
+    /// 时间线片段。
+    /// </summary>
     public List<ModelHealthTimelineSegment> TimelineSegments { get; set; } = [];
-    // 成功率（最近 N 条中成功的比例）
+    /// <summary>
+    /// 成功率。
+    /// </summary>
     public double SuccessRate { get; set; }
 }
 
-// 检测日志条目视图模型
+/// <summary>
+/// 模型健康日志项。
+/// </summary>
 public class ModelHealthLogEntry
 {
-    // 检测状态
+    /// <summary>
+    /// 状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
-    // 耗时（毫秒）
+    /// <summary>
+    /// DurationMs。
+    /// </summary>
     public int DurationMs { get; set; }
-    // 检测时间
+    /// <summary>
+    /// 检测时间。
+    /// </summary>
     public DateTimeOffset CheckedAt { get; set; }
-    // 错误信息
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string? ErrorMessage { get; set; }
 }
 
+/// <summary>
+/// 模型健康时间线片段。
+/// </summary>
 public class ModelHealthTimelineSegment
 {
-    // 线段聚合后的状态，存在失败则标记为失败
+    /// <summary>
+    /// 状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
-    // 该线段包含的请求数
+    /// <summary>
+    /// 数量。
+    /// </summary>
     public int Count { get; set; }
-    // 线段起始时间
+    /// <summary>
+    /// 开始时间。
+    /// </summary>
     public DateTimeOffset StartAt { get; set; }
-    // 线段结束时间
+    /// <summary>
+    /// 结束时间。
+    /// </summary>
     public DateTimeOffset EndAt { get; set; }
 }
 
-// 已监控模型视图项
+/// <summary>
+/// 已监控模型项。
+/// </summary>
 public class MonitoredModelItem
 {
+    /// <summary>
+    /// 模型库项标识。
+    /// </summary>
     public Guid ModelLibraryItemId { get; set; }
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
     public string DisplayName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点数量。
+    /// </summary>
     public int SiteCount { get; set; }
+    /// <summary>
+    /// 健康站点数量。
+    /// </summary>
     public int HealthySiteCount { get; set; }
+    /// <summary>
+    /// 异常站点数量。
+    /// </summary>
     public int UnhealthySiteCount { get; set; }
+    /// <summary>
+    /// 平均成功率。
+    /// </summary>
     public double AverageSuccessRate { get; set; }
+    /// <summary>
+    /// 最近检测时间。
+    /// </summary>
     public DateTimeOffset? LastCheckedAt { get; set; }
+    /// <summary>
+    /// 平均耗时（毫秒）。
+    /// </summary>
     public int? AverageDurationMs { get; set; }
+    /// <summary>
+    /// 请求总数。
+    /// </summary>
     public int TotalRequestCount { get; set; }
 }
 
-// 模型下拉选项
+/// <summary>
+/// 模型选择项。
+/// </summary>
 public class ModelSelectItem
 {
+    /// <summary>
+    /// 标识。
+    /// </summary>
     public Guid Id { get; set; }
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
     public string DisplayName { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// 健康数据时间范围选项。
+/// </summary>
 public sealed class ModelHealthRangeOption
 {
+    /// <summary>
+    /// 值。
+    /// </summary>
     public string Value { get; set; } = string.Empty;
+    /// <summary>
+    /// 标签。
+    /// </summary>
     public string Label { get; set; } = string.Empty;
 }
 
-// 模型健康看板页面模型，支持持久化监控配置
+/// <summary>
+/// 模型健康页面模型。
+/// </summary>
 public class IndexModel : PageModel
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
 
+    /// <summary>
+    /// 模型健康页面模型。
+    /// </summary>
     public IndexModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
-    // 所有可选模型列表（用于下拉框添加监控）
+    /// <summary>
+    /// 可选模型列表。
+    /// </summary>
     public List<ModelSelectItem> AvailableModels { get; set; } = [];
 
-    // 已配置监控的模型列表
+    /// <summary>
+    /// MonitoredModels。
+    /// </summary>
     public List<MonitoredModelItem> MonitoredModels { get; set; } = [];
 
-    // 各监控模型的健康数据，按模型 ID 索引
+    /// <summary>
+    /// 健康数据。
+    /// </summary>
     public Dictionary<Guid, List<ModelHealthSiteViewModel>> HealthData { get; set; } = [];
 
+    /// <summary>
+    /// 时间范围选项。
+    /// </summary>
     public List<ModelHealthRangeOption> RangeOptions { get; } =
     [
         new() { Value = "1d", Label = "最近 24 小时" },
@@ -106,14 +208,24 @@ public class IndexModel : PageModel
         new() { Value = "30d", Label = "最近 30 天" }
     ];
 
+    /// <summary>
+    /// 当前时间范围。
+    /// </summary>
     [BindProperty(SupportsGet = true)]
     public string Range { get; set; } = "7d";
 
-    // 操作提示
+    /// <summary>
+    /// 状态提示。
+    /// </summary>
     public string? StatusMessage { get; set; }
+    /// <summary>
+    /// 操作是否成功。
+    /// </summary>
     public bool StatusSuccess { get; set; }
 
-    // 加载已监控模型及其健康数据
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         try
@@ -128,7 +240,9 @@ public class IndexModel : PageModel
         }
     }
 
-    // 实际的数据加载逻辑
+    /// <summary>
+    /// 加载页面数据。
+    /// </summary>
     private async Task LoadDataAsync(CancellationToken cancellationToken)
     {
         /* 加载已监控的模型列表 */
@@ -288,6 +402,9 @@ public class IndexModel : PageModel
         }
     }
 
+    /// <summary>
+    /// 计算最近数据的时间下限。
+    /// </summary>
     private static DateTimeOffset ResolveRecentCutoff(string? range)
     {
         return (range ?? "7d").Trim().ToLowerInvariant() switch
@@ -298,6 +415,9 @@ public class IndexModel : PageModel
         };
     }
 
+    /// <summary>
+    /// 构建健康时间线片段。
+    /// </summary>
     private static List<ModelHealthTimelineSegment> BuildTimelineSegments(List<ProxyUsageLog> siteLogs)
     {
         const int segmentCount = 48;
@@ -364,7 +484,9 @@ public class IndexModel : PageModel
         return buckets;
     }
 
-    // 添加模型到监控列表
+    /// <summary>
+    /// 添加模型健康监控。
+    /// </summary>
     public async Task<IActionResult> OnPostAddMonitorAsync(Guid modelId, CancellationToken cancellationToken)
     {
         try
@@ -397,7 +519,9 @@ public class IndexModel : PageModel
         return Page();
     }
 
-    // 移除模型监控
+    /// <summary>
+    /// 移除模型健康监控。
+    /// </summary>
     public async Task<IActionResult> OnPostRemoveMonitorAsync(Guid modelId, CancellationToken cancellationToken)
     {
         try

@@ -10,62 +10,145 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
-// 远程模型信息，用于前端展示拉取结果
+/// <summary>
+/// RemoteModelInfo。
+/// </summary>
 public sealed class RemoteModelInfo
 {
+    /// <summary>
+    /// 远端模型名称。
+    /// </summary>
     public string RemoteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 已有映射标识。
+    /// </summary>
     public Guid? ExistingMappingId { get; set; }
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
     public bool IsEnabled { get; set; }
+    /// <summary>
+    /// 已导入的显示名称。
+    /// </summary>
     public string? ExistingDisplayName { get; set; }
 }
 
-// 单个站点的拉取结果
+/// <summary>
+/// SiteFetchResult。
+/// </summary>
 public sealed class SiteFetchResult
 {
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid SiteId { get; set; }
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 抓取状态。
+    /// </summary>
     public string Status { get; set; } = "pending";
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string? Error { get; set; }
+    /// <summary>
+    /// 模型列表。
+    /// </summary>
     public List<RemoteModelInfo> Models { get; set; } = [];
 }
 
-// 全局拉取进度跟踪
+/// <summary>
+/// FetchAllProgress。
+/// </summary>
 public sealed class FetchAllProgress
 {
+    /// <summary>
+    /// 任务标识。
+    /// </summary>
     public string TaskId { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点总数。
+    /// </summary>
     public int TotalSites { get; set; }
+    /// <summary>
+    /// 已完成站点数。
+    /// </summary>
     public int CompletedSites { get; set; }
+    /// <summary>
+    /// 是否已完成。
+    /// </summary>
     public bool IsCompleted { get; set; }
+    /// <summary>
+    /// 各站点抓取进度。
+    /// </summary>
     public List<SiteFetchResult> Sites { get; set; } = [];
 }
 
-// 用户勾选的单个模型导入项
+/// <summary>
+/// ModelSelectionItem。
+/// </summary>
 public sealed class ModelSelectionItem
 {
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid SiteId { get; set; }
+    /// <summary>
+    /// 远端模型名称。
+    /// </summary>
     public string RemoteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
     public string DisplayName { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否选中。
+    /// </summary>
     public bool Selected { get; set; }
 }
 
-// 批量导入请求
+/// <summary>
+/// ImportSelectedRequest。
+/// </summary>
 public sealed class ImportSelectedRequest
 {
+    /// <summary>
+    /// 选中的模型项。
+    /// </summary>
     public List<ModelSelectionItem> Selections { get; set; } = [];
 }
 
-// 站点模型拉取 API，分离拉取与导入流程
+/// <summary>
+/// SiteCatalogApiController。
+/// </summary>
 [ApiController]
 [Route("api/admin/site-catalog")]
 public sealed class SiteCatalogApiController : ControllerBase
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 服务作用域工厂。
+    /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
 
-    // 全局拉取进度存储
+    /// <summary>
+    /// 批量抓取进度缓存。
+    /// </summary>
     private static readonly ConcurrentDictionary<string, FetchAllProgress> ProgressStore = new();
 
+    /// <summary>
+    /// 创建站点目录控制器。
+    /// </summary>
     public SiteCatalogApiController(AppDbContext dbContext, IServiceScopeFactory scopeFactory, ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
@@ -73,7 +156,9 @@ public sealed class SiteCatalogApiController : ControllerBase
         _metadataCache = metadataCache;
     }
 
-    // 拉取单个站点的远程模型列表
+    /// <summary>
+    /// 抓取单个站点的模型列表。
+    /// </summary>
     [HttpGet("fetch-models/{siteId}")]
     public async Task<IActionResult> FetchModels(Guid siteId, CancellationToken cancellationToken)
     {
@@ -124,7 +209,9 @@ public sealed class SiteCatalogApiController : ControllerBase
         return Ok(result);
     }
 
-    // 启动异步拉取全部站点模型任务
+    /// <summary>
+    /// 批量抓取所有启用站点的模型列表。
+    /// </summary>
     [HttpPost("fetch-all-models")]
     public async Task<IActionResult> FetchAllModels(CancellationToken cancellationToken)
     {
@@ -166,7 +253,9 @@ public sealed class SiteCatalogApiController : ControllerBase
         return Ok(new { taskId });
     }
 
-    // 查询全部站点拉取进度
+    /// <summary>
+    /// 获取批量抓取进度。
+    /// </summary>
     [HttpGet("fetch-all-progress/{taskId}")]
     public IActionResult GetFetchAllProgress(string taskId)
     {
@@ -178,7 +267,9 @@ public sealed class SiteCatalogApiController : ControllerBase
         return Ok(progress);
     }
 
-    // 批量导入用户勾选的模型
+    /// <summary>
+    /// 导入选中的模型。
+    /// </summary>
     [HttpPost("import-selected")]
     public async Task<IActionResult> ImportSelected([FromBody] ImportSelectedRequest request, CancellationToken cancellationToken)
     {
@@ -269,7 +360,9 @@ public sealed class SiteCatalogApiController : ControllerBase
         return Ok(new { importedCount });
     }
 
-    // 后台拉取单个站点的模型列表
+    /// <summary>
+    /// 抓取单个站点的模型并更新进度。
+    /// </summary>
     private async Task FetchSingleSiteModelsAsync(string taskId, int siteIndex, Site site, CancellationToken cancellationToken)
     {
         if (!ProgressStore.TryGetValue(taskId, out var progress))

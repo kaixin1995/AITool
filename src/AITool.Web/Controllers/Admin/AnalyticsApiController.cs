@@ -5,142 +5,411 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
+/// <summary>
+/// AnalyticsQueryDto。
+/// </summary>
 public sealed class AnalyticsQueryDto
 {
+    /// <summary>
+    /// 时间范围类型。
+    /// </summary>
     public string RangeType { get; set; } = "week";
+    /// <summary>
+    /// 统计分桶类型。
+    /// </summary>
     public string BucketType { get; set; } = "auto";
+    /// <summary>
+    /// 开始时间。
+    /// </summary>
     public DateTimeOffset? StartTime { get; set; }
+    /// <summary>
+    /// 结束时间。
+    /// </summary>
     public DateTimeOffset? EndTime { get; set; }
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
     public string ProtocolType { get; set; } = "all";
+    /// <summary>
+    /// 模型名称。
+    /// </summary>
     public string ModelName { get; set; } = "all";
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid? SiteId { get; set; }
 }
 
+/// <summary>
+/// AnalyticsFilterOptionsDto。
+/// </summary>
 public sealed class AnalyticsFilterOptionsDto
 {
+    /// <summary>
+    /// 站点筛选项。
+    /// </summary>
     public List<AnalyticsSiteOptionDto> Sites { get; set; } = [];
+    /// <summary>
+    /// 模型筛选项。
+    /// </summary>
     public List<AnalyticsModelOptionDto> Models { get; set; } = [];
 }
 
+/// <summary>
+/// AnalyticsSiteOptionDto。
+/// </summary>
 public sealed class AnalyticsSiteOptionDto
 {
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid SiteId { get; set; }
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// AnalyticsModelOptionDto。
+/// </summary>
 public sealed class AnalyticsModelOptionDto
 {
+    /// <summary>
+    /// 模型名称。
+    /// </summary>
     public string ModelName { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// AnalyticsDashboardResponseDto。
+/// </summary>
 public sealed class AnalyticsDashboardResponseDto
 {
+    /// <summary>
+    /// 默认筛选条件。
+    /// </summary>
     public AnalyticsAppliedFilterDto AppliedFilter { get; set; } = new();
+    /// <summary>
+    /// 默认筛选条件。
+    /// </summary>
     public AnalyticsSummaryDto Summary { get; set; } = new();
+    /// <summary>
+    /// 请求趋势数据。
+    /// </summary>
     public List<AnalyticsTrendPointDto> RequestTrend { get; set; } = [];
+    /// <summary>
+    /// 结果趋势数据。
+    /// </summary>
     public List<AnalyticsResultTrendPointDto> ResultTrend { get; set; } = [];
+    /// <summary>
+    /// Token 趋势数据。
+    /// </summary>
     public List<AnalyticsTokenTrendPointDto> TokenTrend { get; set; } = [];
+    /// <summary>
+    /// 耗时趋势数据。
+    /// </summary>
     public List<AnalyticsDurationTrendPointDto> DurationTrend { get; set; } = [];
+    /// <summary>
+    /// 回退趋势数据。
+    /// </summary>
     public List<AnalyticsFallbackTrendPointDto> FallbackTrend { get; set; } = [];
+    /// <summary>
+    /// 站点分布数据。
+    /// </summary>
     public List<AnalyticsDistributionPointDto> SiteDistribution { get; set; } = [];
+    /// <summary>
+    /// 模型分布数据。
+    /// </summary>
     public List<AnalyticsDistributionPointDto> ModelDistribution { get; set; } = [];
+    /// <summary>
+    /// 模型缓存命中分布数据。
+    /// </summary>
     public List<AnalyticsCacheRatioPointDto> ModelCacheRatioDistribution { get; set; } = [];
 }
 
+/// <summary>
+/// AnalyticsAppliedFilterDto。
+/// </summary>
 public sealed class AnalyticsAppliedFilterDto
 {
+    /// <summary>
+    /// 开始时间。
+    /// </summary>
     public DateTimeOffset StartTime { get; set; }
+    /// <summary>
+    /// 结束时间。
+    /// </summary>
     public DateTimeOffset EndTime { get; set; }
+    /// <summary>
+    /// 时间范围类型。
+    /// </summary>
     public string RangeType { get; set; } = string.Empty;
+    /// <summary>
+    /// 统计分桶类型。
+    /// </summary>
     public string BucketType { get; set; } = string.Empty;
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 模型名称。
+    /// </summary>
     public string ModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid? SiteId { get; set; }
 }
 
+/// <summary>
+/// AnalyticsSummaryDto。
+/// </summary>
 public sealed class AnalyticsSummaryDto
 {
+    /// <summary>
+    /// 请求总数。
+    /// </summary>
     public int TotalRequests { get; set; }
+    /// <summary>
+    /// 成功请求数。
+    /// </summary>
     public int SuccessRequests { get; set; }
+    /// <summary>
+    /// 失败请求数。
+    /// </summary>
     public int FailedRequests { get; set; }
+    /// <summary>
+    /// 成功率。
+    /// </summary>
     public double SuccessRate { get; set; }
+    /// <summary>
+    /// 失败率。
+    /// </summary>
     public double FailureRate { get; set; }
+    /// <summary>
+    /// 输入 Token 总数。
+    /// </summary>
     public int TotalInputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 总数。
+    /// </summary>
     public int TotalCachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 总数。
+    /// </summary>
     public int TotalOutputTokens { get; set; }
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
     public int TotalTokens { get; set; }
+    /// <summary>
+    /// 平均总耗时（毫秒）。
+    /// </summary>
     public double AverageTotalDurationMs { get; set; }
+    /// <summary>
+    /// 平均首 Token 延迟（毫秒）。
+    /// </summary>
     public double AverageFirstTokenLatencyMs { get; set; }
+    /// <summary>
+    /// 触发回退的请求数。
+    /// </summary>
     public int FallbackRequestCount { get; set; }
 }
 
+/// <summary>
+/// AnalyticsTrendPointDto。
+/// </summary>
 public sealed class AnalyticsTrendPointDto
 {
+    /// <summary>
+    /// 标签。
+    /// </summary>
     public string Label { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求数。
+    /// </summary>
     public int RequestCount { get; set; }
 }
 
+/// <summary>
+/// AnalyticsResultTrendPointDto。
+/// </summary>
 public sealed class AnalyticsResultTrendPointDto
 {
+    /// <summary>
+    /// 标签。
+    /// </summary>
     public string Label { get; set; } = string.Empty;
+    /// <summary>
+    /// 成功数。
+    /// </summary>
     public int SuccessCount { get; set; }
+    /// <summary>
+    /// 失败数。
+    /// </summary>
     public int FailCount { get; set; }
+    /// <summary>
+    /// 成功率。
+    /// </summary>
     public double SuccessRate { get; set; }
+    /// <summary>
+    /// 失败率。
+    /// </summary>
     public double FailureRate { get; set; }
 }
 
+/// <summary>
+/// AnalyticsTokenTrendPointDto。
+/// </summary>
 public sealed class AnalyticsTokenTrendPointDto
 {
+    /// <summary>
+    /// 标签。
+    /// </summary>
     public string Label { get; set; } = string.Empty;
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
     public int TotalTokens { get; set; }
 }
 
+/// <summary>
+/// AnalyticsDurationTrendPointDto。
+/// </summary>
 public sealed class AnalyticsDurationTrendPointDto
 {
+    /// <summary>
+    /// 标签。
+    /// </summary>
     public string Label { get; set; } = string.Empty;
+    /// <summary>
+    /// 平均总耗时（毫秒）。
+    /// </summary>
     public double AverageTotalDurationMs { get; set; }
+    /// <summary>
+    /// 平均首 Token 延迟（毫秒）。
+    /// </summary>
     public double AverageFirstTokenLatencyMs { get; set; }
 }
 
+/// <summary>
+/// AnalyticsFallbackTrendPointDto。
+/// </summary>
 public sealed class AnalyticsFallbackTrendPointDto
 {
+    /// <summary>
+    /// 标签。
+    /// </summary>
     public string Label { get; set; } = string.Empty;
+    /// <summary>
+    /// 回退次数。
+    /// </summary>
     public int FallbackCount { get; set; }
+    /// <summary>
+    /// 回退率。
+    /// </summary>
     public double FallbackRate { get; set; }
 }
 
+/// <summary>
+/// AnalyticsDistributionPointDto。
+/// </summary>
 public sealed class AnalyticsDistributionPointDto
 {
+    /// <summary>
+    /// 标签。
+    /// </summary>
     public string Label { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求数。
+    /// </summary>
     public int RequestCount { get; set; }
+    /// <summary>
+    /// 成功数。
+    /// </summary>
     public int SuccessCount { get; set; }
+    /// <summary>
+    /// 失败数。
+    /// </summary>
     public int FailedCount { get; set; }
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
     public int TotalTokens { get; set; }
+    /// <summary>
+    /// 平均总耗时（毫秒）。
+    /// </summary>
     public double AverageTotalDurationMs { get; set; }
 }
 
+/// <summary>
+/// AnalyticsCacheRatioPointDto。
+/// </summary>
 public sealed class AnalyticsCacheRatioPointDto
 {
+    /// <summary>
+    /// 标签。
+    /// </summary>
     public string Label { get; set; } = string.Empty;
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输入统计范围总量。
+    /// </summary>
     public int TotalInputScope { get; set; }
+    /// <summary>
+    /// 缓存命中率。
+    /// </summary>
     public double CacheHitRate { get; set; }
 }
 
-// 可视化分析 API，统一输出图表和汇总统计所需的数据。
+/// <summary>
+/// AnalyticsApiController。
+/// </summary>
 [ApiController]
 [Route("api/admin/analytics")]
 public sealed class AnalyticsApiController : ControllerBase
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 服务作用域工厂。
+    /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
+    /// <summary>
+    /// 统计后台查询执行器。
+    /// </summary>
     private readonly AnalyticsBackgroundQueryExecutor _queryExecutor;
+    /// <summary>
+    /// 当前宿主环境。
+    /// </summary>
     private readonly IHostEnvironment _hostEnvironment;
 
+    /// <summary>
+    /// 创建统计分析控制器。
+    /// </summary>
     public AnalyticsApiController(
         AppDbContext dbContext,
         IServiceScopeFactory scopeFactory,
@@ -153,7 +422,9 @@ public sealed class AnalyticsApiController : ControllerBase
         _hostEnvironment = hostEnvironment;
     }
 
-    // 返回筛选器所需的站点和模型列表。
+    /// <summary>
+    /// 获取统计筛选项。
+    /// </summary>
     [HttpGet("options")]
     public async Task<ActionResult<AnalyticsFilterOptionsDto>> GetOptions(CancellationToken cancellationToken)
     {
@@ -183,7 +454,9 @@ public sealed class AnalyticsApiController : ControllerBase
         });
     }
 
-    // 返回可视化大盘首版所需的全部统计结果。
+    /// <summary>
+    /// 获取统计看板数据。
+    /// </summary>
     [HttpGet("dashboard")]
     public async Task<ActionResult<AnalyticsDashboardResponseDto>> GetDashboard([FromQuery] AnalyticsQueryDto query, CancellationToken cancellationToken)
     {
@@ -218,7 +491,9 @@ public sealed class AnalyticsApiController : ControllerBase
         };
     }
 
-    // 统计聚合实际在后台长任务线程里执行，并使用独立作用域的 DbContext。
+    /// <summary>
+    /// 构建统计看板返回结果。
+    /// </summary>
     private static async Task<AnalyticsDashboardResponseDto> BuildDashboardResponseAsync(
         AppDbContext dbContext,
         AnalyticsQueryDto query,
@@ -312,7 +587,9 @@ public sealed class AnalyticsApiController : ControllerBase
         };
     }
 
-    // 汇总卡片基于请求最终结果统计，避免多次尝试重复计数。
+    /// <summary>
+    /// 构建汇总统计。
+    /// </summary>
     private static AnalyticsSummaryDto BuildSummary(List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs, HashSet<Guid> fallbackRequestIds)
     {
         var totalRequests = finalLogs.Count;
@@ -336,7 +613,9 @@ public sealed class AnalyticsApiController : ControllerBase
         };
     }
 
-    // 请求趋势图展示每个时间桶内的请求总量。
+    /// <summary>
+    /// 构建请求趋势。
+    /// </summary>
     private static List<AnalyticsTrendPointDto> BuildRequestTrend(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
         DateTimeOffset startTime,
@@ -352,7 +631,9 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToList();
     }
 
-    // 成功失败趋势图同时输出数量和比率，方便前端切换展示方式。
+    /// <summary>
+    /// 构建结果趋势。
+    /// </summary>
     private static List<AnalyticsResultTrendPointDto> BuildResultTrend(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
         DateTimeOffset startTime,
@@ -381,7 +662,9 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToList();
     }
 
-    // Token 用量趋势图拆分输入、缓存、输出和总量，便于后续扩展堆叠图。
+    /// <summary>
+    /// 构建 Token 趋势。
+    /// </summary>
     private static List<AnalyticsTokenTrendPointDto> BuildTokenTrend(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
         DateTimeOffset startTime,
@@ -407,7 +690,9 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToList();
     }
 
-    // 耗时趋势图同时输出总耗时和首字耗时的平均值。
+    /// <summary>
+    /// 构建耗时趋势。
+    /// </summary>
     private static List<AnalyticsDurationTrendPointDto> BuildDurationTrend(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
         DateTimeOffset startTime,
@@ -431,7 +716,9 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToList();
     }
 
-    // Fallback 趋势图用于观察回退链路是否频繁触发。
+    /// <summary>
+    /// 构建回退趋势。
+    /// </summary>
     private static List<AnalyticsFallbackTrendPointDto> BuildFallbackTrend(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
         HashSet<Guid> fallbackRequestIds,
@@ -458,7 +745,9 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToList();
     }
 
-    // 站点分布图展示各站点的请求量、成功失败和平均耗时。
+    /// <summary>
+    /// 构建站点分布。
+    /// </summary>
     private static List<AnalyticsDistributionPointDto> BuildSiteDistribution(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
         IReadOnlyDictionary<Guid, string> siteNames)
@@ -479,7 +768,9 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToList();
     }
 
-    // 模型分布图展示各真实模型的调用热度和用量。
+    /// <summary>
+    /// 构建模型分布。
+    /// </summary>
     private static List<AnalyticsDistributionPointDto> BuildModelDistribution(List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs)
     {
         return finalLogs
@@ -500,7 +791,9 @@ public sealed class AnalyticsApiController : ControllerBase
     }
 
 
-    // 缓存命中图按 UsageLogs 实际模型聚合，展示每个真实模型的缓存命中率。
+    /// <summary>
+    /// 构建模型缓存命中分布。
+    /// </summary>
     private static List<AnalyticsCacheRatioPointDto> BuildModelCacheRatioDistribution(List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs)
     {
         return finalLogs
@@ -528,7 +821,9 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToList();
     }
 
-    // 统一生成时间桶，避免前后端对时间边界理解不一致。
+    /// <summary>
+    /// 按分桶类型生成时间区间。
+    /// </summary>
     private static List<AnalyticsBucket> BuildBuckets(DateTimeOffset startTime, DateTimeOffset endTime, string bucketType)
     {
         var buckets = new List<AnalyticsBucket>();
@@ -560,6 +855,9 @@ public sealed class AnalyticsApiController : ControllerBase
         return buckets;
     }
 
+    /// <summary>
+    /// 解析时间范围。
+    /// </summary>
     private static (DateTimeOffset StartTime, DateTimeOffset EndTime) ResolveTimeRange(string? rangeType, DateTimeOffset? startTime, DateTimeOffset? endTime)
     {
         var now = DateTimeOffset.Now;
@@ -588,6 +886,9 @@ public sealed class AnalyticsApiController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// 解析统计分桶类型。
+    /// </summary>
     private static string ResolveBucketType(string? bucketType, string? rangeType, DateTimeOffset startTime, DateTimeOffset endTime)
     {
         var normalized = string.IsNullOrWhiteSpace(bucketType) ? "auto" : bucketType.Trim().ToLowerInvariant();
@@ -616,11 +917,17 @@ public sealed class AnalyticsApiController : ControllerBase
         return "day";
     }
 
+    /// <summary>
+    /// 判断请求是否成功。
+    /// </summary>
     private static bool IsSuccess(string status)
     {
         return string.Equals(status, "success", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// 对齐分桶起始时间。
+    /// </summary>
     private static DateTimeOffset AlignBucketStart(DateTimeOffset value, string bucketType)
     {
         return bucketType switch
@@ -632,6 +939,9 @@ public sealed class AnalyticsApiController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// 计算下一个时间桶边界。
+    /// </summary>
     private static DateTimeOffset AddBucket(DateTimeOffset value, string bucketType)
     {
         return bucketType switch
@@ -643,6 +953,9 @@ public sealed class AnalyticsApiController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// 生成时间桶标签。
+    /// </summary>
     private static string FormatBucketLabel(DateTimeOffset value, string bucketType)
     {
         return bucketType switch
@@ -654,17 +967,25 @@ public sealed class AnalyticsApiController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// 获取当天起始时间。
+    /// </summary>
     private static DateTimeOffset StartOfDay(DateTimeOffset value)
     {
         return new DateTimeOffset(value.Year, value.Month, value.Day, 0, 0, 0, value.Offset);
     }
 
+    /// <summary>
+    /// 获取当前小时起始时间。
+    /// </summary>
     private static DateTimeOffset StartOfHour(DateTimeOffset value)
     {
         return new DateTimeOffset(value.Year, value.Month, value.Day, value.Hour, 0, 0, value.Offset);
     }
 
-    // 缓存键按筛选参数收敛，降低重复统计开销。
+    /// <summary>
+    /// 构建统计缓存键。
+    /// </summary>
     private static string BuildCacheKey(AnalyticsQueryDto query)
     {
         return string.Join('|',
@@ -677,7 +998,9 @@ public sealed class AnalyticsApiController : ControllerBase
             query.SiteId?.ToString() ?? "-");
     }
 
-    // 全量范围默认不在请求线程等待，普通范围也只给极短预算。
+    /// <summary>
+    /// 计算统计查询等待时长。
+    /// </summary>
     private static TimeSpan ResolveWaitBudget(string? rangeType, IHostEnvironment hostEnvironment)
     {
         if (hostEnvironment.IsEnvironment("Testing"))
@@ -691,10 +1014,22 @@ public sealed class AnalyticsApiController : ControllerBase
             : TimeSpan.FromMilliseconds(120);
     }
 
+    /// <summary>
+    /// AnalyticsBucket。
+    /// </summary>
     private sealed class AnalyticsBucket
     {
+        /// <summary>
+        /// 区间开始时间。
+        /// </summary>
         public DateTimeOffset Start { get; set; }
+        /// <summary>
+        /// 区间结束时间。
+        /// </summary>
         public DateTimeOffset End { get; set; }
+        /// <summary>
+        /// 标签。
+        /// </summary>
         public string Label { get; set; } = string.Empty;
     }
 }

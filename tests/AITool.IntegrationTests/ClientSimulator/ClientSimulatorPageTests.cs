@@ -10,9 +10,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AITool.IntegrationTests.ClientSimulator;
 
-// 客户端模拟页测试，验证页面会区分 OpenAI 与 Anthropic 的可用模型能力。
+/// <summary>
+/// 客户端模拟页测试，验证页面会区分 OpenAI 与 Anthropic 的可用模型能力。
+/// </summary>
 public sealed class ClientSimulatorPageTests
 {
+    /// <summary>
+    /// 验证页面会按协议展示模型能力，并设置对应的默认模型。
+    /// </summary>
     [Fact]
     public async Task Get_page_renders_protocol_specific_model_capabilities_and_defaults()
     {
@@ -31,6 +36,9 @@ public sealed class ClientSimulatorPageTests
         html.Should().Contain("var defaultAnthropicModel = \"claude-only\"");
     }
 
+    /// <summary>
+    /// 验证缺少 Anthropic 路由时，页面会回退到可桥接的 OpenAI 模型作为默认值。
+    /// </summary>
     [Fact]
     public async Task Get_page_falls_back_anthropic_default_to_openai_only_model_via_bridge()
     {
@@ -49,16 +57,31 @@ public sealed class ClientSimulatorPageTests
     }
 }
 
+/// <summary>
+/// 用于构建 ClientSimulatorWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// </summary>
 internal sealed class ClientSimulatorWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 保存当前测试使用的临时数据库路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-client-simulator-{Guid.NewGuid():N}.db");
+    /// <summary>
+    /// 标记当前测试是否需要写入 Anthropic 路由。
+    /// </summary>
     private readonly bool _includeAnthropicRoute;
 
+    /// <summary>
+    /// 创建客户端模拟页面测试宿主，并记录当前是否包含 Anthropic 路由。
+    /// </summary>
     public ClientSimulatorWebApplicationFactory(bool includeAnthropicRoute = true)
     {
         _includeAnthropicRoute = includeAnthropicRoute;
     }
 
+    /// <summary>
+    /// 配置客户端模拟页面测试所需的数据库。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -70,12 +93,18 @@ internal sealed class ClientSimulatorWebApplicationFactory : WebApplicationFacto
         });
     }
 
+    /// <summary>
+    /// 创建客户端后初始化当前测试场景的数据。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();

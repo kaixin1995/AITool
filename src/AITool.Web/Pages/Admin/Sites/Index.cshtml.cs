@@ -9,12 +9,23 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.Sites;
 
-// 站点管理列表页模型
+/// <summary>
+/// 站点管理页面模型。
+/// </summary>
 public class IndexModel : PageModel
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache? _metadataCache;
 
+    /// <summary>
+    /// 站点管理页面模型。
+    /// </summary>
     [ActivatorUtilitiesConstructor]
     public IndexModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
@@ -22,23 +33,37 @@ public class IndexModel : PageModel
         _metadataCache = metadataCache;
     }
 
+    /// <summary>
+    /// 站点管理页面模型。
+    /// </summary>
     public IndexModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
-    // 站点列表数据
+    /// <summary>
+    /// 站点列表。
+    /// </summary>
     public List<Site> Sites { get; set; } = [];
 
-    // 批量删除选择的站点 ID
+    /// <summary>
+    /// 选中的站点标识列表。
+    /// </summary>
     [BindProperty]
     public List<Guid> SelectedSiteIds { get; set; } = [];
 
-    // 状态消息
+    /// <summary>
+    /// 状态提示。
+    /// </summary>
     public string? StatusMessage { get; set; }
+    /// <summary>
+    /// 操作是否成功。
+    /// </summary>
     public bool StatusSuccess { get; set; }
 
-    // 加载站点列表
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         Sites = await _dbContext.Sites
@@ -46,7 +71,9 @@ public class IndexModel : PageModel
             .ToListAsync(cancellationToken);
     }
 
-    // 切换站点启用/禁用状态
+    /// <summary>
+    /// 切换启用状态。
+    /// </summary>
     public async Task<IActionResult> OnPostToggleAsync(Guid siteId, CancellationToken cancellationToken)
     {
         try
@@ -68,7 +95,9 @@ public class IndexModel : PageModel
         return Page();
     }
 
-    // 批量删除站点，并同步清理关联映射
+    /// <summary>
+    /// 批量删除站点。
+    /// </summary>
     public async Task<IActionResult> OnPostBulkDeleteAsync(CancellationToken cancellationToken)
     {
         if (SelectedSiteIds.Count == 0)
@@ -107,7 +136,9 @@ public class IndexModel : PageModel
         return Page();
     }
 
-    // 删除站点
+    /// <summary>
+    /// 处理删除请求。
+    /// </summary>
     public async Task<IActionResult> OnPostDeleteAsync(Guid siteId, CancellationToken cancellationToken)
     {
         try
@@ -130,12 +161,23 @@ public class IndexModel : PageModel
     }
 }
 
-// 站点创建页模型
+/// <summary>
+/// 站点新建页面模型。
+/// </summary>
 public class CreateModel : PageModel
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache? _metadataCache;
 
+    /// <summary>
+    /// 站点新建页面模型。
+    /// </summary>
     [ActivatorUtilitiesConstructor]
     public CreateModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
@@ -143,18 +185,28 @@ public class CreateModel : PageModel
         _metadataCache = metadataCache;
     }
 
+    /// <summary>
+    /// 站点新建页面模型。
+    /// </summary>
     public CreateModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
+    /// <summary>
+    /// new。
+    /// </summary>
     [BindProperty]
     public CreateSiteCommand Command { get; set; } = new();
 
-    // 显示创建表单
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public void OnGet() { }
 
-    // 提交站点创建
+    /// <summary>
+    /// 处理页面提交请求。
+    /// </summary>
     public async Task<IActionResult> OnPostAsync(CancellationToken cancellationToken)
     {
         if (!Command.SupportsOpenAi && !Command.SupportsAnthropic)
@@ -181,6 +233,9 @@ public class CreateModel : PageModel
         return RedirectToPage("./Index");
     }
 
+    /// <summary>
+    /// 根据站点能力推导协议类型。
+    /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
         return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";

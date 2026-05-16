@@ -9,23 +9,55 @@ using AITool.Web.Services;
 
 namespace AITool.Web.Controllers.Proxy;
 
-// Anthropic 协议兼容代理控制器，转发 messages 请求并集成熔断机制
+/// <summary>
+/// 处理 Anthropic 协议代理请求，并在需要时完成与 OpenAI 协议之间的兼容转换。
+/// </summary>
 [ApiController]
 public sealed class AnthropicProxyController : ControllerBase
 {
+    /// <summary>
+    /// 表示一次流式转发的执行结果，以及当前响应是否还能继续回退到下一条路由。
+    /// </summary>
     private sealed class StreamForwardOutcome
     {
+        /// <summary>
+        /// 保存本次流式转发返回的结果。
+        /// </summary>
         public ProxyForwardResult Result { get; init; } = new();
+        /// <summary>
+        /// 指示当前流是否还允许继续尝试下一条候选路由。
+        /// </summary>
         public bool CanFallback { get; init; }
     }
 
+    /// <summary>
+    /// 负责把代理请求转发到上游站点。
+    /// </summary>
     private readonly IProxyForwardService _forwardService;
+    /// <summary>
+    /// 负责记录代理请求的用量与结果。
+    /// </summary>
     private readonly IUsageLogService _usageLogService;
+    /// <summary>
+    /// 负责维护路由熔断状态，避免持续命中异常站点。
+    /// </summary>
     private readonly RouteCircuitStateStore _circuitStore;
+    /// <summary>
+    /// 提供访问密钥、路由和运行时设置等缓存数据。
+    /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
+    /// <summary>
+    /// 保存开发者调试页需要展示的调用追踪信息。
+    /// </summary>
     private readonly DeveloperInvocationTraceStore _traceStore;
+    /// <summary>
+    /// 记录代理过程中的诊断日志。
+    /// </summary>
     private readonly ILogger<AnthropicProxyController> _logger;
 
+    /// <summary>
+    /// 初始化 Anthropic 代理控制器依赖。
+    /// </summary>
     public AnthropicProxyController(
         IProxyForwardService forwardService,
         IUsageLogService usageLogService,
@@ -42,7 +74,9 @@ public sealed class AnthropicProxyController : ControllerBase
         _logger = logger;
     }
 
-    // 兼容 Anthropic count_tokens 接口，按当前路由可解析请求格式估算 token。
+    /// <summary>
+    /// 估算 Anthropic 请求中的输入 token 数量。
+    /// </summary>
     [HttpPost("/v1/messages/count_tokens")]
     public async Task<IActionResult> CountTokens(CancellationToken cancellationToken)
     {
@@ -71,7 +105,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
-    // 代理 Anthropic messages 请求
+    /// <summary>
+    /// 处理 Anthropic 消息请求，并按路由配置转发到可用上游。
+    /// </summary>
     [HttpPost("/v1/messages")]
     public async Task<IActionResult> Messages(CancellationToken cancellationToken)
     {
@@ -321,6 +357,9 @@ public sealed class AnthropicProxyController : ControllerBase
             new { error = new { type = "api_error", message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
     }
 
+    /// <summary>
+    /// 透传 Anthropic 原生流式响应，并在透传过程中提取用量信息。
+    /// </summary>
     private async Task<StreamForwardOutcome> ForwardAnthropicStreamPassthroughAsync(
         ProxyForwardRequest forwardRequest,
         Guid? traceId,
@@ -446,6 +485,9 @@ public sealed class AnthropicProxyController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// 把 OpenAI 流式响应转换成 Anthropic 事件流后返回给客户端。
+    /// </summary>
     private async Task<StreamForwardOutcome> ForwardOpenAiStreamAsAnthropicAsync(
         ProxyForwardRequest forwardRequest,
         string modelName,
@@ -605,7 +647,9 @@ public sealed class AnthropicProxyController : ControllerBase
         };
     }
 
-    // 优先使用自定义来源头，无法识别时再退回通用 proxy。
+    /// <summary>
+    /// 根据显式来源标记和 User-Agent 推断请求来源。
+    /// </summary>
     private static string ResolveRequestSource(HttpRequest request)
     {
         var explicitSource = request.Headers.TryGetValue("X-AITool-Source", out var sourceHeader)
@@ -641,6 +685,9 @@ public sealed class AnthropicProxyController : ControllerBase
         return "proxy";
     }
 
+    /// <summary>
+    /// 判断当前负载是否是以完整响应对象返回的 OpenAI 流式包裹体。
+    /// </summary>
     private static bool IsOpenAiStreamingResponseEnvelope(string jsonText)
     {
         try
@@ -658,6 +705,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 从一组 SSE 行中提取合并后的 data 负载。
+    /// </summary>
     private static bool TryExtractSseDataPayload(List<string> sseLines, out string payload)
     {
         payload = string.Empty;
@@ -690,6 +740,9 @@ public sealed class AnthropicProxyController : ControllerBase
         return true;
     }
 
+    /// <summary>
+    /// 从一组 Anthropic SSE 行中提取事件名和 data 负载。
+    /// </summary>
     private static bool TryExtractSseEventPayload(List<string> sseLines, out string eventName, out string payload)
     {
         eventName = string.Empty;
@@ -731,6 +784,9 @@ public sealed class AnthropicProxyController : ControllerBase
         return true;
     }
 
+    /// <summary>
+    /// 从 Anthropic 事件负载中刷新当前流的 token 统计。
+    /// </summary>
     private static void UpdateAnthropicUsageFromPayload(
         string eventName,
         string payload,
@@ -795,6 +851,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 在开发者追踪开启时创建一次请求级追踪记录。
+    /// </summary>
     private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
     {
         if (!runtimeSettings.DeveloperFeaturesEnabled)
@@ -816,6 +875,9 @@ public sealed class AnthropicProxyController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// 安全地创建开发者追踪，避免追踪失败影响正常代理。
+    /// </summary>
     private Guid? TryCreateDeveloperTraceSafely(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
     {
         try
@@ -832,6 +894,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 为当前追踪追加一次路由尝试记录。
+    /// </summary>
     private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
     {
         if (!traceId.HasValue)
@@ -849,6 +914,9 @@ public sealed class AnthropicProxyController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// 安全地记录一次路由尝试，避免追踪异常中断主流程。
+    /// </summary>
     private Guid AddDeveloperTraceAttemptSafely(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
     {
         try
@@ -865,6 +933,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 安全地写入用量日志，记录失败时不影响响应返回。
+    /// </summary>
     private async Task SafeLogUsageAsync(UsageLogEntry entry, CancellationToken cancellationToken)
     {
         try
@@ -881,6 +952,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 安全地读取路由熔断状态。
+    /// </summary>
     private bool IsRouteBlockedSafely(Guid routeId)
     {
         try
@@ -896,6 +970,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 安全地标记路由调用成功。
+    /// </summary>
     private void SafeSucceedRoute(Guid routeId)
     {
         try
@@ -910,6 +987,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 安全地累计路由失败状态。
+    /// </summary>
     private void SafeBlockRoute(Guid routeId)
     {
         try
@@ -924,6 +1004,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 安全地补全一次开发者追踪尝试记录。
+    /// </summary>
     private void SafeCompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)
     {
         try
@@ -939,6 +1022,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 安全地记录失败的代理请求明细。
+    /// </summary>
     private void SafeLogFailedProxyAttempt(
         string requestSource,
         string modelName,
@@ -960,6 +1046,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 安全地输出控制台代理摘要日志。
+    /// </summary>
     private void SafeWriteConsoleProxyLog(
         string clientProtocol,
         string requestSource,
@@ -989,6 +1078,9 @@ public sealed class AnthropicProxyController : ControllerBase
         }
     }
 
+    /// <summary>
+    /// 将一次路由尝试的结果写回开发者追踪。
+    /// </summary>
     private void CompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)
     {
         if (!traceId.HasValue || traceAttemptId == Guid.Empty)
@@ -999,6 +1091,9 @@ public sealed class AnthropicProxyController : ControllerBase
         _traceStore.CompleteAttempt(traceId.Value, traceAttemptId, result);
     }
 
+    /// <summary>
+    /// 输出一次失败代理尝试的完整上下文日志。
+    /// </summary>
     private void LogFailedProxyAttempt(
         string requestSource,
         string modelName,
@@ -1024,6 +1119,9 @@ public sealed class AnthropicProxyController : ControllerBase
             HttpLogFormatter.FormatBody(result.ResponseBody));
     }
 
+    /// <summary>
+    /// 根据客户端协议和上游协议判断当前是直连还是兼容转发。
+    /// </summary>
     private static string ResolveForwardingMode(string clientProtocolType, string upstreamProtocolType)
     {
         return string.Equals(clientProtocolType, upstreamProtocolType, StringComparison.OrdinalIgnoreCase)
@@ -1031,7 +1129,9 @@ public sealed class AnthropicProxyController : ControllerBase
             : "bridge";
     }
 
-    // 兼容更多 Anthropic 客户端的鉴权写法，优先读取 x-api-key，再回退 bearer。
+    /// <summary>
+    /// 从请求头中提取并校验代理访问密钥。
+    /// </summary>
     private async Task<CachedProxyAccessKey?> ValidateAccessKeyAsync(CancellationToken cancellationToken)
     {
         var accessToken = Request.Headers.TryGetValue("x-api-key", out var keyHeader)
@@ -1048,7 +1148,9 @@ public sealed class AnthropicProxyController : ControllerBase
         return await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
     }
 
-    // 透传 Anthropic 客户端特有请求头，避免能力协商信息在代理层丢失。
+    /// <summary>
+    /// 收集需要继续透传给 Anthropic 上游的协议相关请求头。
+    /// </summary>
     private static Dictionary<string, string> CollectAnthropicForwardHeaders(HttpRequest request)
     {
         var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -1063,7 +1165,9 @@ public sealed class AnthropicProxyController : ControllerBase
         return headers;
     }
 
-    // 这里先做近似估算，满足客户端前置探测需要，避免缺失接口直接报错。
+    /// <summary>
+    /// 根据请求中的文本内容粗略估算输入 token 数量。
+    /// </summary>
     private static int EstimateInputTokens(JsonElement root)
     {
         var builder = new StringBuilder();
@@ -1092,6 +1196,9 @@ public sealed class AnthropicProxyController : ControllerBase
         return Math.Max(1, (int)Math.Ceiling(text.Length / 4d));
     }
 
+    /// <summary>
+    /// 将不同形态的消息内容展开为纯文本。
+    /// </summary>
     private static string FlattenText(JsonElement element)
     {
         return element.ValueKind switch
@@ -1103,6 +1210,9 @@ public sealed class AnthropicProxyController : ControllerBase
         };
     }
 
+    /// <summary>
+    /// 优先提取对象中的文本字段，并回退到递归拼接所有子字段。
+    /// </summary>
     private static string FlattenObjectText(JsonElement element)
     {
         foreach (var propertyName in new[] { "text", "thinking", "content" })

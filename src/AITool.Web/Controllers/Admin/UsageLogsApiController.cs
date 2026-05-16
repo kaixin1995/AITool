@@ -4,106 +4,327 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
+/// <summary>
+/// UsageLogListQueryDto。
+/// </summary>
 public sealed class UsageLogListQueryDto
 {
+    /// <summary>
+    /// 页码。
+    /// </summary>
     public int Page { get; set; } = 1;
+    /// <summary>
+    /// 每页条数。
+    /// </summary>
     public int PageSize { get; set; } = 20;
+    /// <summary>
+    /// 时间范围类型。
+    /// </summary>
     public string RangeType { get; set; } = "day";
+    /// <summary>
+    /// 开始时间。
+    /// </summary>
     public DateTimeOffset? StartTime { get; set; }
+    /// <summary>
+    /// 结束时间。
+    /// </summary>
     public DateTimeOffset? EndTime { get; set; }
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid? SiteId { get; set; }
+    /// <summary>
+    /// 来源标识。
+    /// </summary>
     public string Source { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// UsageLogListResponseDto。
+/// </summary>
 public sealed class UsageLogListResponseDto
 {
+    /// <summary>
+    /// 页码。
+    /// </summary>
     public int Page { get; set; }
+    /// <summary>
+    /// 每页条数。
+    /// </summary>
     public int PageSize { get; set; }
+    /// <summary>
+    /// 总记录数。
+    /// </summary>
     public int TotalCount { get; set; }
+    /// <summary>
+    /// 总页数。
+    /// </summary>
     public int TotalPages { get; set; }
+    /// <summary>
+    /// 列表项。
+    /// </summary>
     public List<UsageLogListItemDto> Items { get; set; } = [];
 }
 
+/// <summary>
+/// UsageLogListItemDto。
+/// </summary>
 public sealed class UsageLogListItemDto
 {
+    /// <summary>
+    /// 记录标识。
+    /// </summary>
     public Guid Id { get; set; }
+    /// <summary>
+    /// 请求标识。
+    /// </summary>
     public Guid RequestId { get; set; }
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求模型名称。
+    /// </summary>
     public string RequestModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 尝试调用的模型名称。
+    /// </summary>
     public string AttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// 来源标识。
+    /// </summary>
     public string Source { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 重试次数。
+    /// </summary>
     public int RetryCount { get; set; }
+    /// <summary>
+    /// 尝试序号。
+    /// </summary>
     public int AttemptIndex { get; set; }
+    /// <summary>
+    /// 是否为最终结果。
+    /// </summary>
     public bool IsFinalResult { get; set; }
+    /// <summary>
+    /// 是否触发回退。
+    /// </summary>
     public bool FallbackTriggered { get; set; }
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
     public int TotalTokens { get; set; }
+    /// <summary>
+    /// 是否流式返回。
+    /// </summary>
     public bool IsStreaming { get; set; }
+    /// <summary>
+    /// 流是否中断。
+    /// </summary>
     public bool IsStreamInterrupted { get; set; }
+    /// <summary>
+    /// 首 Token 延迟（毫秒）。
+    /// </summary>
     public int FirstTokenLatencyMs { get; set; }
+    /// <summary>
+    /// 流式耗时（毫秒）。
+    /// </summary>
     public int StreamDurationMs { get; set; }
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
+    /// <summary>
+    /// 请求时间。
+    /// </summary>
     public DateTimeOffset RequestedAt { get; set; }
 }
 
+/// <summary>
+/// UsageLogAttemptDto。
+/// </summary>
 public sealed class UsageLogAttemptDto
 {
+    /// <summary>
+    /// 记录标识。
+    /// </summary>
     public Guid Id { get; set; }
+    /// <summary>
+    /// 尝试序号。
+    /// </summary>
     public int AttemptIndex { get; set; }
+    /// <summary>
+    /// 尝试调用的模型名称。
+    /// </summary>
     public string AttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否为最终结果。
+    /// </summary>
     public bool IsFinalResult { get; set; }
+    /// <summary>
+    /// 是否触发回退。
+    /// </summary>
     public bool FallbackTriggered { get; set; }
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string ErrorMessage { get; set; } = string.Empty;
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
     public int TotalTokens { get; set; }
+    /// <summary>
+    /// 是否流式返回。
+    /// </summary>
     public bool IsStreaming { get; set; }
+    /// <summary>
+    /// 流是否中断。
+    /// </summary>
     public bool IsStreamInterrupted { get; set; }
+    /// <summary>
+    /// 首 Token 延迟（毫秒）。
+    /// </summary>
     public int FirstTokenLatencyMs { get; set; }
+    /// <summary>
+    /// 流式耗时（毫秒）。
+    /// </summary>
     public int StreamDurationMs { get; set; }
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
+    /// <summary>
+    /// 思考强度。
+    /// </summary>
     public string ReasoningEffort { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求时间。
+    /// </summary>
     public DateTimeOffset RequestedAt { get; set; }
 }
 
+/// <summary>
+/// UsageLogRequestDetailDto。
+/// </summary>
 public sealed class UsageLogRequestDetailDto
 {
+    /// <summary>
+    /// 请求标识。
+    /// </summary>
     public Guid RequestId { get; set; }
+    /// <summary>
+    /// 请求模型名称。
+    /// </summary>
     public string RequestModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 尝试明细。
+    /// </summary>
     public List<UsageLogAttemptDto> Attempts { get; set; } = [];
 }
 
+/// <summary>
+/// UsageLogSummaryDto。
+/// </summary>
 public sealed class UsageLogSummaryDto
 {
+    /// <summary>
+    /// 请求总数。
+    /// </summary>
     public int TotalRequests { get; set; }
+    /// <summary>
+    /// 失败请求数。
+    /// </summary>
     public int FailedRequests { get; set; }
+    /// <summary>
+    /// 成功率。
+    /// </summary>
     public double SuccessRate { get; set; }
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
     public int TotalTokens { get; set; }
+    /// <summary>
+    /// 最大耗时（毫秒）。
+    /// </summary>
     public int MaxDurationMs { get; set; }
 }
 
-// 使用日志查询 API，提供列表、请求详情和汇总统计接口
+/// <summary>
+/// UsageLogsApiController。
+/// </summary>
 [ApiController]
 [Route("api/admin/usage-logs")]
 public sealed class UsageLogsApiController : ControllerBase
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
 
+    /// <summary>
+    /// 创建用量日志控制器。
+    /// </summary>
     public UsageLogsApiController(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
+    /// <summary>
+    /// 获取用量日志列表。
+    /// </summary>
     [HttpGet("list")]
     public async Task<ActionResult<UsageLogListResponseDto>> GetList([FromQuery] UsageLogListQueryDto query, CancellationToken cancellationToken)
     {
@@ -165,6 +386,9 @@ public sealed class UsageLogsApiController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// 获取请求明细。
+    /// </summary>
     [HttpGet("request-detail/{requestId:guid}")]
     public async Task<ActionResult<UsageLogRequestDetailDto>> GetRequestDetail(Guid requestId, CancellationToken cancellationToken)
     {
@@ -220,6 +444,9 @@ public sealed class UsageLogsApiController : ControllerBase
         return Ok(detail);
     }
 
+    /// <summary>
+    /// 获取用量统计摘要。
+    /// </summary>
     [HttpGet("summary")]
     public async Task<ActionResult<UsageLogSummaryDto>> GetSummary([FromQuery] UsageLogListQueryDto query, CancellationToken cancellationToken)
     {
@@ -267,7 +494,9 @@ public sealed class UsageLogsApiController : ControllerBase
         }
     }
 
-    // 根据预设范围或指定起止时间生成过滤区间。
+    /// <summary>
+    /// 解析查询时间范围。
+    /// </summary>
     private static (DateTimeOffset StartTime, DateTimeOffset EndTime) ResolveTimeRange(string? rangeType, DateTimeOffset? startTime, DateTimeOffset? endTime)
     {
         var now = DateTimeOffset.Now;
@@ -294,7 +523,9 @@ public sealed class UsageLogsApiController : ControllerBase
         };
     }
 
-    // 使用路由规则反查站点实际命中的站点模型名，便于前端展示尝试链路。
+    /// <summary>
+    /// 解析站点模型名称。
+    /// </summary>
     private static string ResolveSiteModelName(IEnumerable<AITool.Domain.Proxy.ProxyRouteRule> routeRules, Guid siteId, string attemptedModel)
     {
         return routeRules

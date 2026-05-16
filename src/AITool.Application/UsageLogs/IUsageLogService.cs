@@ -1,78 +1,128 @@
 namespace AITool.Application.UsageLogs;
 
-// 使用日志服务接口，记录代理请求的使用情况
+/// <summary>
+/// 使用日志服务接口，负责写入代理调用过程中的统计与状态信息。
+/// </summary>
 public interface IUsageLogService
 {
-    // 记录一次代理请求的使用日志
+    /// <summary>
+    /// 记录一条完整的使用日志条目，供后续查询、统计和排障使用。
+    /// </summary>
     Task LogAsync(UsageLogEntry entry, CancellationToken cancellationToken = default);
 }
 
-// 使用日志条目
+/// <summary>
+/// 使用日志条目，用于描述一次请求链路中某次实际调用的关键数据。
+/// </summary>
 public sealed class UsageLogEntry
 {
-    // 同一条代理请求链路的唯一标识
+    /// <summary>
+    /// 标识同一条代理请求链路，便于将多次重试记录串联起来。
+    /// </summary>
     public Guid RequestId { get; set; }
 
-    // 平台访问密钥标识
+    /// <summary>
+    /// 记录发起请求所使用的平台访问密钥。
+    /// </summary>
     public Guid AccessKeyId { get; set; }
 
-    // 协议类型
+    /// <summary>
+    /// 标识本次调用所走的协议类型，例如 OpenAI 或 Anthropic。
+    /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
 
-    // 请求模型名称
+    /// <summary>
+    /// 记录客户端原始请求中的模型名称。
+    /// </summary>
     public string RequestModel { get; set; } = string.Empty;
 
-    // 当前尝试的上游模型名称
+    /// <summary>
+    /// 记录本次实际尝试转发到上游的模型名称。
+    /// </summary>
     public string AttemptedModel { get; set; } = string.Empty;
 
-    // 目标站点标识
+    /// <summary>
+    /// 标识当前尝试命中的目标站点。
+    /// </summary>
     public Guid TargetSiteId { get; set; }
 
-    // 处理状态
+    /// <summary>
+    /// 保存本次处理结果状态，例如成功、失败或中断。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
 
-    // 请求来源，例如 "proxy" 或 "chat"
+    /// <summary>
+    /// 标记日志来源，便于区分代理转发、聊天调试等不同入口。
+    /// </summary>
     public string Source { get; set; } = "proxy";
 
-    // 尝试的路由数量（重试次数）
+    /// <summary>
+    /// 记录请求链路中累计尝试过多少条路由，便于分析重试情况。
+    /// </summary>
     public int RetryCount { get; set; }
 
-    // 当前是链路中的第几次尝试
+    /// <summary>
+    /// 标记当前是该请求链路中的第几次实际尝试。
+    /// </summary>
     public int AttemptIndex { get; set; }
 
-    // 当前日志是否为最终结果
+    /// <summary>
+    /// 指示当前这条日志是否代表整条请求链路的最终结果。
+    /// </summary>
     public bool IsFinalResult { get; set; }
 
-    // 当前失败后是否触发了 fallback
+    /// <summary>
+    /// 标记本次失败后是否继续触发了后续 fallback 逻辑。
+    /// </summary>
     public bool FallbackTriggered { get; set; }
 
-    // 当前尝试的错误信息
+    /// <summary>
+    /// 保存本次尝试产生的错误信息；成功时通常为空。
+    /// </summary>
     public string ErrorMessage { get; set; } = string.Empty;
 
-    // 输入 Token 数
+    /// <summary>
+    /// 记录输入消耗的 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
 
-    // 缓存 Token 数
+    /// <summary>
+    /// 记录命中缓存所对应的 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
 
-    // 输出 Token 数
+    /// <summary>
+    /// 记录输出生成的 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
 
-    // 是否为流式响应
+    /// <summary>
+    /// 标记本次请求是否采用流式返回。
+    /// </summary>
     public bool IsStreaming { get; set; }
 
-    // 是否发生流式异常中断
+    /// <summary>
+    /// 标记流式过程中是否发生了异常中断。
+    /// </summary>
     public bool IsStreamInterrupted { get; set; }
 
-    // 首字耗时（毫秒）
+    /// <summary>
+    /// 记录从发起请求到收到首个输出片段的耗时，单位为毫秒。
+    /// </summary>
     public int FirstTokenLatencyMs { get; set; }
 
-    // 首字后的后续耗时（毫秒）
+    /// <summary>
+    /// 记录首个输出片段之后到流结束的持续时间，单位为毫秒。
+    /// </summary>
     public int StreamDurationMs { get; set; }
 
-    // 请求总耗时（毫秒）
+    /// <summary>
+    /// 记录本次请求从开始到结束的整体耗时，单位为毫秒。
+    /// </summary>
     public int TotalDurationMs { get; set; }
 
-    // 思考等级
+    /// <summary>
+    /// 记录请求使用的思考强度配置，便于后续做成本与效果分析。
+    /// </summary>
     public string ReasoningEffort { get; set; } = string.Empty;
 }

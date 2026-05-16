@@ -17,9 +17,14 @@ using System.Net.Http.Headers;
 
 namespace AITool.IntegrationTests.Chat;
 
-// 聊天测试接口集成测试，覆盖跨协议非流式发送的准确性。
+/// <summary>
+/// 聊天测试接口集成测试，覆盖跨协议非流式发送的准确性。
+/// </summary>
 public sealed class ChatApiTests
 {
+    /// <summary>
+    /// 验证发送聊天消息到 Anthropic 目标时，会按路由协议构造请求。
+    /// </summary>
     [Fact]
     public async Task Post_send_uses_route_protocol_for_anthropic_targets()
     {
@@ -47,6 +52,9 @@ public sealed class ChatApiTests
         document.RootElement.GetProperty("outputTokens").GetInt32().Should().Be(5);
     }
 
+    /// <summary>
+    /// 验证流式聊天会使用 Anthropic SSE 协议，并返回解析后的事件流。
+    /// </summary>
     [Fact]
     public async Task Post_send_stream_uses_anthropic_sse_protocol_and_returns_stream_events()
     {
@@ -81,24 +89,48 @@ public sealed class ChatApiTests
     }
 }
 
+/// <summary>
+/// 用于构建 ChatWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// </summary>
 internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 当前测试使用的模型标识。
+    /// </summary>
     internal static readonly Guid ModelId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    /// <summary>
+    /// 保存当前测试使用的临时数据库路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-chat-{Guid.NewGuid():N}.db");
+    /// <summary>
+    /// 保存当前测试注入的模拟代理转发服务。
+    /// </summary>
     private readonly ChatFakeProxyForwardService _fakeForwardService;
+    /// <summary>
+    /// 保存当前测试注入的 HttpClientFactory。
+    /// </summary>
     private readonly IHttpClientFactory? _httpClientFactory;
 
+    /// <summary>
+    /// 创建聊天接口测试宿主，并使用默认的 HTTP 客户端工厂。
+    /// </summary>
     public ChatWebApplicationFactory(ChatFakeProxyForwardService fakeForwardService)
         : this(fakeForwardService, null)
     {
     }
 
+    /// <summary>
+    /// 创建聊天接口测试宿主，并注入模拟转发服务和可选的 HTTP 客户端工厂。
+    /// </summary>
     public ChatWebApplicationFactory(ChatFakeProxyForwardService fakeForwardService, IHttpClientFactory? httpClientFactory)
     {
         _fakeForwardService = fakeForwardService;
         _httpClientFactory = httpClientFactory;
     }
 
+    /// <summary>
+    /// 配置聊天接口测试所需的服务和数据库。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -117,12 +149,18 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
         });
     }
 
+    /// <summary>
+    /// 创建客户端后初始化当前测试场景的数据。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();
@@ -181,11 +219,19 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     }
 }
 
+/// <summary>
+/// 用于模拟代理转发结果，支撑 ChatFakeProxyForwardService 相关断言。
+/// </summary>
 internal sealed class ChatFakeProxyForwardService : IProxyForwardService
 {
+    /// <summary>
+    /// 记录测试期间收到的代理转发请求。
+    /// </summary>
     public List<ProxyForwardRequest> Requests { get; } = [];
 
-    // 根据请求协议返回对应的兼容响应，验证聊天页非流式调用不会误用 OpenAI 协议。
+    /// <summary>
+    /// 根据请求协议返回对应的兼容响应，验证聊天页非流式调用不会误用 OpenAI 协议。
+    /// </summary>
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         Requests.Add(new ProxyForwardRequest
@@ -223,6 +269,9 @@ internal sealed class ChatFakeProxyForwardService : IProxyForwardService
         });
     }
 
+    /// <summary>
+    /// 复用非流式结果，并按行回放为模拟的流式数据。
+    /// </summary>
     public async Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,
@@ -239,26 +288,46 @@ internal sealed class ChatFakeProxyForwardService : IProxyForwardService
     }
 }
 
+/// <summary>
+/// 用于为 ChatFakeHttpClientFactory 提供可控的 HttpClient 实例。
+/// </summary>
 internal sealed class ChatFakeHttpClientFactory : IHttpClientFactory
 {
+    /// <summary>
+    /// 保存供测试断言使用的流式消息处理器。
+    /// </summary>
     public ChatStreamingHttpMessageHandler Handler { get; }
 
+    /// <summary>
+    /// 创建可返回指定消息处理器的 HTTP 客户端工厂。
+    /// </summary>
     public ChatFakeHttpClientFactory(ChatStreamingHttpMessageHandler handler)
     {
         Handler = handler;
     }
 
+    /// <summary>
+    /// 创建使用固定消息处理器的 HttpClient 实例。
+    /// </summary>
     public HttpClient CreateClient(string name)
     {
         return new HttpClient(Handler, disposeHandler: false);
     }
 }
 
+/// <summary>
+/// 用于模拟 ChatStreamingHttpMessageHandler 的底层 HTTP 响应。
+/// </summary>
 internal sealed class ChatStreamingHttpMessageHandler : HttpMessageHandler
 {
+    /// <summary>
+    /// 记录测试期间发送出去的 HTTP 请求。
+    /// </summary>
     public List<HttpRequestMessage> Requests { get; } = [];
 
-    // 模拟 Anthropic SSE，验证流式聊天链路会按真实协议解析思考与正文。
+    /// <summary>
+    /// 模拟 Anthropic SSE，验证流式聊天链路会按真实协议解析思考与正文。
+    /// </summary>
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Requests.Add(CloneRequest(request));
@@ -288,6 +357,9 @@ internal sealed class ChatStreamingHttpMessageHandler : HttpMessageHandler
         return Task.FromResult(response);
     }
 
+    /// <summary>
+    /// 复制请求对象，便于在断言阶段读取请求内容。
+    /// </summary>
     private static HttpRequestMessage CloneRequest(HttpRequestMessage request)
     {
         var clone = new HttpRequestMessage(request.Method, request.RequestUri);

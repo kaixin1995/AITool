@@ -7,17 +7,27 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Infrastructure.Scheduling;
 
-// 基于 Hangfire 的定时检测调度器，负责注册和执行周期性检测任务
+/// <summary>
+/// 基于 Hangfire 的定时检测调度器，负责注册和执行周期性检测任务
+/// </summary>
 public sealed class HangfireDetectionScheduler
 {
+    /// <summary>
+    /// 字段 _scopeFactory。
+    /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
 
+    /// <summary>
+    /// 初始化 HangfireDetectionScheduler。
+    /// </summary>
     public HangfireDetectionScheduler(IServiceScopeFactory scopeFactory)
     {
         _scopeFactory = scopeFactory;
     }
 
-    // 将所有启用的检测任务注册到 Hangfire 调度队列
+    /// <summary>
+    /// 将所有启用的检测任务注册到 Hangfire 调度队列
+    /// </summary>
     public async Task ScheduleAllAsync(CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();
@@ -39,7 +49,9 @@ public sealed class HangfireDetectionScheduler
         }
     }
 
-    // 执行单次检测任务，遍历所有站点模型映射并逐一发起真实代理请求
+    /// <summary>
+    /// 执行单次检测任务，遍历所有站点模型映射并逐一发起真实代理请求
+    /// </summary>
     public async Task ExecuteDetectionTaskAsync(Guid detectionTaskId, CancellationToken cancellationToken)
     {
         using var scope = _scopeFactory.CreateScope();

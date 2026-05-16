@@ -10,9 +10,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AITool.IntegrationTests.Analytics;
 
-// 可视化页面集成测试，验证页面入口和聚合接口都可正常工作。
+/// <summary>
+/// 可视化页面集成测试，验证页面入口和聚合接口都可正常工作。
+/// </summary>
 public sealed class AnalyticsPageTests
 {
+    /// <summary>
+    /// 验证统计页面会展示图表区域和筛选条件。
+    /// </summary>
     [Fact]
     public async Task Get_analytics_page_contains_chart_sections_and_filters()
     {
@@ -33,6 +38,9 @@ public sealed class AnalyticsPageTests
         html.Should().Contain("/api/admin/analytics/dashboard");
     }
 
+    /// <summary>
+    /// 验证统计接口会返回预期的汇总数据和分布结果。
+    /// </summary>
     [Fact]
     public async Task Get_dashboard_returns_expected_summary_and_distributions()
     {
@@ -52,6 +60,9 @@ public sealed class AnalyticsPageTests
         root.GetProperty("modelDistribution").GetArrayLength().Should().Be(2);
     }
 
+    /// <summary>
+    /// 验证按站点筛选时会基于尝试记录而不是最终结果统计数据。
+    /// </summary>
     [Fact]
     public async Task Get_dashboard_filters_site_by_attempt_scope_instead_of_final_result_scope()
     {
@@ -73,6 +84,9 @@ public sealed class AnalyticsPageTests
         siteDistribution[0].GetProperty("label").GetString().Should().Be("Alpha");
     }
 
+    /// <summary>
+    /// 验证按第二个站点筛选时，只返回该站点相关的统计结果。
+    /// </summary>
     [Fact]
     public async Task Get_dashboard_filters_site_by_attempt_scope_for_second_site()
     {
@@ -93,6 +107,9 @@ public sealed class AnalyticsPageTests
         modelDistribution[0].GetProperty("label").GetString().Should().Be("glm-5.1");
     }
 
+    /// <summary>
+    /// 验证模型筛选项来自模型库，模型分布统计基于实际尝试的模型。
+    /// </summary>
     [Fact]
     public async Task Get_dashboard_uses_model_library_options_and_attempted_model_distribution()
     {
@@ -118,6 +135,9 @@ public sealed class AnalyticsPageTests
         root.GetProperty("modelDistribution")[0].GetProperty("label").GetString().Should().Be("glm-5.1");
     }
 
+    /// <summary>
+    /// 验证统计接口支持按自定义时间范围和模型条件组合筛选。
+    /// </summary>
     [Fact]
     public async Task Get_dashboard_supports_custom_range_with_model_filter()
     {
@@ -154,7 +174,9 @@ public sealed class AnalyticsPageTests
             .Should().Be(30);
     }
 
-    // 后台统计允许先返回 pending，因此测试按短轮询等待最终结果。
+    /// <summary>
+    /// 后台统计允许先返回 pending，因此测试按短轮询等待最终结果。
+    /// </summary>
     private static async Task<string> GetDashboardBodyAsync(HttpClient client, string url)
     {
         for (var attempt = 0; attempt < 8; attempt++)
@@ -174,13 +196,31 @@ public sealed class AnalyticsPageTests
     }
 }
 
+/// <summary>
+/// 用于构建 AnalyticsWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// </summary>
 internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 第一个测试站点的固定标识。
+    /// </summary>
     internal static readonly Guid FirstSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    /// <summary>
+    /// 第二个测试站点的固定标识。
+    /// </summary>
     internal static readonly Guid SecondSiteId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+    /// <summary>
+    /// 记录流式成功请求的时间，供自定义时间范围测试复用。
+    /// </summary>
     internal DateTimeOffset StreamSuccessRequestedAt { get; private set; }
+    /// <summary>
+    /// 保存当前测试使用的临时数据库路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-analytics-{Guid.NewGuid():N}.db");
 
+    /// <summary>
+    /// 配置统计页面测试所需的数据库。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -192,12 +232,18 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Pro
         });
     }
 
+    /// <summary>
+    /// 创建客户端后初始化当前测试场景的数据。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();

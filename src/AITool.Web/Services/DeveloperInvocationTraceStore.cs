@@ -3,16 +3,35 @@ using Microsoft.AspNetCore.Http;
 
 namespace AITool.Web.Services;
 
-// 开发者调用调试记录存储，仅保留内存中的最近 100 条请求链路。
+/// <summary>
+/// 开发者调用跟踪存储。
+/// </summary>
 public sealed class DeveloperInvocationTraceStore
 {
+    /// <summary>
+    /// 最大保留记录数。
+    /// </summary>
     private const int MaxEntryCount = 100;
+    /// <summary>
+    /// FromHours。
+    /// </summary>
     private static readonly TimeSpan EntryRetention = TimeSpan.FromHours(6);
+    /// <summary>
+    /// new。
+    /// </summary>
     private readonly object _gate = new();
+    /// <summary>
+    /// 调用跟踪记录列表。
+    /// </summary>
     private readonly LinkedList<DeveloperInvocationTraceEntry> _entries = [];
+    /// <summary>
+    /// 调用跟踪节点索引。
+    /// </summary>
     private readonly Dictionary<Guid, LinkedListNode<DeveloperInvocationTraceEntry>> _nodes = [];
 
-    // 请求刚到达时先创建一条记录，保证页面能立即看到请求信息。
+    /// <summary>
+    /// 添加调用请求记录。
+    /// </summary>
     public Guid AddRequest(DeveloperInvocationTraceRequest request)
     {
         var entry = new DeveloperInvocationTraceEntry
@@ -42,7 +61,9 @@ public sealed class DeveloperInvocationTraceStore
         }
     }
 
-    // 每次真实路由尝试都单独记录，避免前面的失败被最后一次成功覆盖。
+    /// <summary>
+    /// 添加调用尝试记录。
+    /// </summary>
     public Guid AddAttempt(Guid traceId, DeveloperInvocationAttempt attempt)
     {
         lock (_gate)
@@ -75,7 +96,9 @@ public sealed class DeveloperInvocationTraceStore
         }
     }
 
-    // 收到上游响应或失败后更新对应尝试结果，并同步更新整条请求的最终状态。
+    /// <summary>
+    /// 完成一次调用尝试并回写结果。
+    /// </summary>
     public void CompleteAttempt(Guid traceId, Guid attemptId, DeveloperInvocationResult result)
     {
         lock (_gate)
@@ -122,6 +145,9 @@ public sealed class DeveloperInvocationTraceStore
         }
     }
 
+    /// <summary>
+    /// 返回当前调用记录列表。
+    /// </summary>
     public IReadOnlyList<DeveloperInvocationTraceEntry> List()
     {
         lock (_gate)
@@ -131,7 +157,9 @@ public sealed class DeveloperInvocationTraceStore
         }
     }
 
-    // 展开详情时按 traceId 单独读取，避免列表阶段一次返回大量明细数据。
+    /// <summary>
+    /// 按跟踪标识获取调用记录。
+    /// </summary>
     public DeveloperInvocationTraceEntry? Get(Guid traceId)
     {
         lock (_gate)
@@ -141,7 +169,9 @@ public sealed class DeveloperInvocationTraceStore
         }
     }
 
-    // 清理超过保留时长的旧记录，避免页面和内存长期累积无意义数据。
+    /// <summary>
+    /// 清理过期记录。
+    /// </summary>
     private void PurgeExpiredUnsafe()
     {
         var expireBefore = DateTimeOffset.UtcNow - EntryRetention;
@@ -152,6 +182,9 @@ public sealed class DeveloperInvocationTraceStore
         }
     }
 
+    /// <summary>
+    /// 裁剪超出上限的记录。
+    /// </summary>
     private void TrimUnsafe()
     {
         while (_entries.Count > MaxEntryCount)
@@ -167,6 +200,9 @@ public sealed class DeveloperInvocationTraceStore
         }
     }
 
+    /// <summary>
+    /// 复制调用记录。
+    /// </summary>
     private static DeveloperInvocationTraceEntry Clone(DeveloperInvocationTraceEntry entry)
     {
         return new DeveloperInvocationTraceEntry
@@ -201,6 +237,9 @@ public sealed class DeveloperInvocationTraceStore
         };
     }
 
+    /// <summary>
+    /// 复制调用尝试记录。
+    /// </summary>
     private static DeveloperInvocationTraceAttempt CloneAttempt(DeveloperInvocationTraceAttempt attempt)
     {
         return new DeveloperInvocationTraceAttempt
@@ -226,6 +265,9 @@ public sealed class DeveloperInvocationTraceStore
         };
     }
 
+    /// <summary>
+    /// 提取请求头。
+    /// </summary>
     public static Dictionary<string, string> CaptureHeaders(IHeaderDictionary headers)
     {
         return headers
@@ -233,6 +275,9 @@ public sealed class DeveloperInvocationTraceStore
             .ToDictionary(x => x.Key, x => x.Value.ToString(), StringComparer.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// 格式化请求或响应内容。
+    /// </summary>
     public static string FormatBody(string body)
     {
         if (string.IsNullOrWhiteSpace(body))
@@ -252,91 +297,313 @@ public sealed class DeveloperInvocationTraceStore
     }
 }
 
+/// <summary>
+/// 开发者调用请求信息。
+/// </summary>
 public sealed class DeveloperInvocationTraceRequest
 {
+    /// <summary>
+    /// 请求标识。
+    /// </summary>
     public Guid RequestId { get; set; }
+    /// <summary>
+    /// 来源。
+    /// </summary>
     public string Source { get; set; } = string.Empty;
+    /// <summary>
+    /// 用户代理。
+    /// </summary>
     public string UserAgent { get; set; } = string.Empty;
+    /// <summary>
+    /// 客户端 IP。
+    /// </summary>
     public string ClientIp { get; set; } = string.Empty;
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求路径。
+    /// </summary>
     public string RequestPath { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求模型名称。
+    /// </summary>
     public string RequestModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求体。
+    /// </summary>
     public string RequestBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求头。
+    /// </summary>
     public Dictionary<string, string> RequestHeaders { get; set; } = [];
 }
 
+/// <summary>
+/// 开发者调用尝试信息。
+/// </summary>
 public sealed class DeveloperInvocationAttempt
 {
+    /// <summary>
+    /// 尝试调用的模型。
+    /// </summary>
     public string AttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 上游协议类型。
+    /// </summary>
     public string UpstreamProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 转发模式。
+    /// </summary>
     public string ForwardingMode { get; set; } = string.Empty;
+    /// <summary>
+    /// 目标站点标识。
+    /// </summary>
     public Guid? TargetSiteId { get; set; }
+    /// <summary>
+    /// 目标站点名称。
+    /// </summary>
     public string TargetSiteName { get; set; } = string.Empty;
 }
 
+/// <summary>
+/// 开发者调用结果。
+/// </summary>
 public sealed class DeveloperInvocationResult
 {
+    /// <summary>
+    /// 状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态码。
+    /// </summary>
     public int StatusCode { get; set; }
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string ErrorMessage { get; set; } = string.Empty;
+    /// <summary>
+    /// 响应体。
+    /// </summary>
     public string ResponseBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 响应内容类型。
+    /// </summary>
     public string ResponseContentType { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否为流式响应。
+    /// </summary>
     public bool IsStreaming { get; set; }
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
 }
 
+/// <summary>
+/// 开发者调用跟踪记录。
+/// </summary>
 public sealed class DeveloperInvocationTraceEntry
 {
+    /// <summary>
+    /// 跟踪标识。
+    /// </summary>
     public Guid TraceId { get; set; }
+    /// <summary>
+    /// 请求标识。
+    /// </summary>
     public Guid RequestId { get; set; }
+    /// <summary>
+    /// 创建时间。
+    /// </summary>
     public DateTimeOffset CreatedAt { get; set; }
+    /// <summary>
+    /// 更新时间。
+    /// </summary>
     public DateTimeOffset UpdatedAt { get; set; }
+    /// <summary>
+    /// 来源。
+    /// </summary>
     public string Source { get; set; } = string.Empty;
+    /// <summary>
+    /// 用户代理。
+    /// </summary>
     public string UserAgent { get; set; } = string.Empty;
+    /// <summary>
+    /// 客户端 IP。
+    /// </summary>
     public string ClientIp { get; set; } = string.Empty;
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 上游协议类型。
+    /// </summary>
     public string UpstreamProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求路径。
+    /// </summary>
     public string RequestPath { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求模型名称。
+    /// </summary>
     public string RequestModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 尝试调用的模型。
+    /// </summary>
     public string AttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 目标站点标识。
+    /// </summary>
     public Guid? TargetSiteId { get; set; }
+    /// <summary>
+    /// 目标站点名称。
+    /// </summary>
     public string TargetSiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求体。
+    /// </summary>
     public string RequestBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求头。
+    /// </summary>
     public Dictionary<string, string> RequestHeaders { get; set; } = [];
+    /// <summary>
+    /// 状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态码。
+    /// </summary>
     public int StatusCode { get; set; }
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string ErrorMessage { get; set; } = string.Empty;
+    /// <summary>
+    /// 响应体。
+    /// </summary>
     public string ResponseBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 响应内容类型。
+    /// </summary>
     public string ResponseContentType { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否为流式响应。
+    /// </summary>
     public bool IsStreaming { get; set; }
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
+    /// <summary>
+    /// 尝试记录列表。
+    /// </summary>
     public List<DeveloperInvocationTraceAttempt> Attempts { get; set; } = [];
 }
 
+/// <summary>
+/// 开发者调用尝试记录。
+/// </summary>
 public sealed class DeveloperInvocationTraceAttempt
 {
+    /// <summary>
+    /// AttemptId。
+    /// </summary>
     public Guid AttemptId { get; set; }
+    /// <summary>
+    /// 创建时间。
+    /// </summary>
     public DateTimeOffset CreatedAt { get; set; }
+    /// <summary>
+    /// 更新时间。
+    /// </summary>
     public DateTimeOffset UpdatedAt { get; set; }
+    /// <summary>
+    /// 尝试调用的模型。
+    /// </summary>
     public string AttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 上游协议类型。
+    /// </summary>
     public string UpstreamProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 转发模式。
+    /// </summary>
     public string ForwardingMode { get; set; } = string.Empty;
+    /// <summary>
+    /// 目标站点标识。
+    /// </summary>
     public Guid? TargetSiteId { get; set; }
+    /// <summary>
+    /// 目标站点名称。
+    /// </summary>
     public string TargetSiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态码。
+    /// </summary>
     public int StatusCode { get; set; }
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string ErrorMessage { get; set; } = string.Empty;
+    /// <summary>
+    /// 响应体。
+    /// </summary>
     public string ResponseBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 响应内容类型。
+    /// </summary>
     public string ResponseContentType { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否为流式响应。
+    /// </summary>
     public bool IsStreaming { get; set; }
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
 }

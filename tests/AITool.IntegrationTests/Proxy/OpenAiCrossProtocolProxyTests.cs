@@ -17,9 +17,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AITool.IntegrationTests.Proxy;
 
-// OpenAI 代理入口跨协议测试，验证 OpenAI 客户端也能转发到 Anthropic 站点。
+/// <summary>
+/// OpenAI 代理入口跨协议测试，验证 OpenAI 客户端也能转发到 Anthropic 站点。
+/// </summary>
 public sealed class OpenAiCrossProtocolProxyTests
 {
+    /// <summary>
+    /// 验证仅存在 Anthropic 站点时，OpenAI 入口会自动走兼容转发。
+    /// </summary>
     [Fact]
     public async Task Post_chat_completions_bridges_to_anthropic_route_when_only_anthropic_site_exists()
     {
@@ -49,6 +54,9 @@ public sealed class OpenAiCrossProtocolProxyTests
         document.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32().Should().Be(8);
     }
 
+    /// <summary>
+    /// 验证 Anthropic 流式事件能够实时转换为 OpenAI SSE 分片。
+    /// </summary>
     [Fact]
     public async Task Post_chat_completions_stream_bridges_anthropic_events_to_openai_sse_chunks()
     {
@@ -101,16 +109,31 @@ public sealed class OpenAiCrossProtocolProxyTests
     }
 }
 
+/// <summary>
+/// 用于构建 OpenAiCrossProtocolWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// </summary>
 internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 保存当前测试使用的临时数据库文件路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-openai-cross-{Guid.NewGuid():N}.db");
+    /// <summary>
+    /// 保存当前测试使用的伪造转发服务。
+    /// </summary>
     private readonly OpenAiCrossProtocolFakeProxyForwardService _fakeForwardService;
 
+    /// <summary>
+    /// 初始化跨协议代理测试宿主。
+    /// </summary>
     public OpenAiCrossProtocolWebApplicationFactory(OpenAiCrossProtocolFakeProxyForwardService fakeForwardService)
     {
         _fakeForwardService = fakeForwardService;
     }
 
+    /// <summary>
+    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -124,12 +147,18 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
         });
     }
 
+    /// <summary>
+    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();
@@ -194,13 +223,27 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
     }
 }
 
+/// <summary>
+/// 用于模拟代理转发结果，支撑 OpenAiCrossProtocolFakeProxyForwardService 相关断言。
+/// </summary>
 internal sealed class OpenAiCrossProtocolFakeProxyForwardService : IProxyForwardService
 {
+    /// <summary>
+    /// 记录测试期间收到的转发请求。
+    /// </summary>
     public List<ProxyForwardRequest> Requests { get; } = [];
+    /// <summary>
+    /// 保存测试时返回的 Anthropic 流式响应片段。
+    /// </summary>
     public List<string>? AnthropicStreamingLines { get; set; }
+    /// <summary>
+    /// 允许按请求动态生成流式转发结果，便于覆盖特殊断言场景。
+    /// </summary>
     public Func<ProxyForwardRequest, ProxyForwardResult>? StreamingResultFactory { get; set; }
 
-    // 用固定 Anthropic 响应验证 OpenAI 入口收到的最终格式已经转换回 OpenAI。
+    /// <summary>
+    /// 用固定 Anthropic 响应验证 OpenAI 入口收到的最终格式已经转换回 OpenAI。
+    /// </summary>
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         Requests.Add(CloneRequest(request));
@@ -216,6 +259,9 @@ internal sealed class OpenAiCrossProtocolFakeProxyForwardService : IProxyForward
         });
     }
 
+    /// <summary>
+    /// 模拟流式转发过程，并按测试设定回放 Anthropic 事件流。
+    /// </summary>
     public async Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,
@@ -263,6 +309,9 @@ internal sealed class OpenAiCrossProtocolFakeProxyForwardService : IProxyForward
         return result;
     }
 
+    /// <summary>
+    /// 创建 CloneRequest 对应的测试对象。
+    /// </summary>
     private static ProxyForwardRequest CloneRequest(ProxyForwardRequest request)
     {
         return new ProxyForwardRequest

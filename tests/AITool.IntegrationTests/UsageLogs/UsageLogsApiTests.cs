@@ -12,9 +12,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AITool.IntegrationTests.UsageLogs;
 
-// 使用日志集成测试，覆盖 Task 3 API 与 Task 4 页面基础文案
+/// <summary>
+/// 使用日志集成测试，覆盖 Task 3 API 与 Task 4 页面基础文案
+/// </summary>
 public sealed class UsageLogsApiTests
 {
+    /// <summary>
+    /// 验证日志列表接口会返回最新记录及其尝试相关字段。
+    /// </summary>
     [Fact]
     public async Task Get_list_returns_latest_items_with_attempt_fields()
     {
@@ -45,6 +50,9 @@ public sealed class UsageLogsApiTests
         fallbackAttemptItem.GetProperty("siteModelName").GetString().Should().Be("gpt-5.5-a");
     }
 
+    /// <summary>
+    /// 验证日志列表接口支持按站点筛选记录。
+    /// </summary>
     [Fact]
     public async Task Get_list_filters_by_site_id()
     {
@@ -63,6 +71,9 @@ public sealed class UsageLogsApiTests
         items.Should().OnlyContain(x => x.GetProperty("siteName").GetString() == "Primary OpenAI");
     }
 
+    /// <summary>
+    /// 验证请求详情接口会按请求标识聚合尝试记录，并按尝试序号排序。
+    /// </summary>
     [Fact]
     public async Task Get_request_detail_groups_attempts_by_request_id_and_orders_by_attempt_index()
     {
@@ -89,6 +100,9 @@ public sealed class UsageLogsApiTests
         attempts[1].GetProperty("siteName").GetString().Should().Be("Fallback GLM");
     }
 
+    /// <summary>
+    /// 验证汇总接口会基于最终结果日志统计请求级指标。
+    /// </summary>
     [Fact]
     public async Task Get_summary_returns_request_level_metrics_from_final_result_logs()
     {
@@ -108,6 +122,9 @@ public sealed class UsageLogsApiTests
         document.RootElement.GetProperty("maxDurationMs").GetInt32().Should().Be(8000);
     }
 
+    /// <summary>
+    /// 验证汇总接口支持按站点筛选统计结果。
+    /// </summary>
     [Fact]
     public async Task Get_summary_filters_by_site_id()
     {
@@ -127,6 +144,9 @@ public sealed class UsageLogsApiTests
         document.RootElement.GetProperty("maxDurationMs").GetInt32().Should().Be(3200);
     }
 
+    /// <summary>
+    /// 验证使用日志页面会展示自动刷新、链路入口和汇总卡片文案。
+    /// </summary>
     [Fact]
     public async Task Get_usage_logs_page_contains_task4_ui_labels()
     {
@@ -145,15 +165,39 @@ public sealed class UsageLogsApiTests
     }
 }
 
+/// <summary>
+/// 用于构建 UsageLogsWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// </summary>
 internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 带有两次尝试记录的请求标识。
+    /// </summary>
     internal static readonly Guid RequestChainId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    /// <summary>
+    /// 第一个测试站点的固定标识。
+    /// </summary>
     internal static readonly Guid FirstSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    /// <summary>
+    /// 第二个测试站点的固定标识。
+    /// </summary>
     internal static readonly Guid SecondSiteId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+    /// <summary>
+    /// 汇总统计中成功请求的固定标识。
+    /// </summary>
     private static readonly Guid SummarySuccessRequestId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    /// <summary>
+    /// 汇总统计中失败请求的固定标识。
+    /// </summary>
     private static readonly Guid SummaryFailRequestId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+    /// <summary>
+    /// 保存当前测试使用的临时数据库路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-usage-logs-{Guid.NewGuid():N}.db");
 
+    /// <summary>
+    /// 配置使用日志测试所需的数据库。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -165,12 +209,18 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
         });
     }
 
+    /// <summary>
+    /// 创建客户端后初始化当前测试场景的数据。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();
@@ -327,6 +377,9 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
         await db.SaveChangesAsync();
     }
 
+    /// <summary>
+    /// 释放测试过程中创建的资源。
+    /// </summary>
     public new async ValueTask DisposeAsync()
     {
         await base.DisposeAsync();

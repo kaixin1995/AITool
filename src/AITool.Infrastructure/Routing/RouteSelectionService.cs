@@ -5,17 +5,27 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Routing;
 
-// 基于数据库查询的路由选择服务，按优先级筛选最优路由
+/// <summary>
+/// 基于数据库查询的路由选择服务，按优先级筛选最优路由
+/// </summary>
 public sealed class RouteSelectionService : IRouteSelectionService
 {
+    /// <summary>
+    /// 字段 _dbContext。
+    /// </summary>
     private readonly AppDbContext _dbContext;
 
+    /// <summary>
+    /// 初始化 RouteSelectionService。
+    /// </summary>
     public RouteSelectionService(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
-    // 查询所有匹配外部模型名称的启用路由，返回优先级最高的那条
+    /// <summary>
+    /// 查询所有匹配外部模型名称的启用路由，返回优先级最高的那条
+    /// </summary>
     public async Task<RouteSelectionResult> SelectRouteAsync(
         string externalModelName,
         CancellationToken cancellationToken = default)
@@ -23,7 +33,9 @@ public sealed class RouteSelectionService : IRouteSelectionService
         return await SelectRouteAsync(externalModelName, [], cancellationToken);
     }
 
-    // 查询匹配的启用路由，排除指定站点集合（用于熔断跳过）
+    /// <summary>
+    /// 查询匹配的启用路由，排除指定站点集合（用于熔断跳过）
+    /// </summary>
     public async Task<RouteSelectionResult> SelectRouteAsync(
         string externalModelName,
         HashSet<Guid> excludedSiteIds,
@@ -46,7 +58,9 @@ public sealed class RouteSelectionService : IRouteSelectionService
         return new RouteSelectionResult { Route = route };
     }
 
-    // 获取指定模型名称的所有启用路由，按优先级升序排列
+    /// <summary>
+    /// 获取指定模型名称的所有启用路由，按优先级升序排列
+    /// </summary>
     public async Task<List<RouteSelectionResult>> SelectAllRoutesAsync(
         string externalModelName,
         CancellationToken cancellationToken = default)

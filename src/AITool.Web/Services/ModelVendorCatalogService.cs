@@ -4,42 +4,101 @@ using System.Text.RegularExpressions;
 
 namespace AITool.Web.Services;
 
+/// <summary>
+/// 模型厂商目录。
+/// </summary>
 public sealed class ModelVendorCatalog
 {
+    /// <summary>
+    /// Vendors。
+    /// </summary>
     public List<ModelVendorDefinition> Vendors { get; set; } = [];
+    /// <summary>
+    /// Rules。
+    /// </summary>
     public List<ModelVendorRuleDefinition> Rules { get; set; } = [];
 }
 
+/// <summary>
+/// 模型厂商定义。
+/// </summary>
 public sealed class ModelVendorDefinition
 {
+    /// <summary>
+    /// 厂商名称。
+    /// </summary>
     public string VendorName { get; set; } = string.Empty;
+    /// <summary>
+    /// 图标 SVG 内容。
+    /// </summary>
     public string IconSvgBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 头部背景色。
+    /// </summary>
     public string HeaderBackground { get; set; } = string.Empty;
+    /// <summary>
+    /// 排序顺序。
+    /// </summary>
     public int SortOrder { get; set; }
 }
 
+/// <summary>
+/// 模型厂商匹配规则。
+/// </summary>
 public sealed class ModelVendorRuleDefinition
 {
+    /// <summary>
+    /// 厂商名称。
+    /// </summary>
     public string VendorName { get; set; } = string.Empty;
+    /// <summary>
+    /// 匹配类型。
+    /// </summary>
     public string MatchType { get; set; } = "wildcard";
+    /// <summary>
+    /// 匹配模式。
+    /// </summary>
     public string Pattern { get; set; } = string.Empty;
+    /// <summary>
+    /// 优先级。
+    /// </summary>
     public int Priority { get; set; }
 }
 
-// 模型厂商分组配置服务，统一从独立 JSON 文件读取并保存厂商定义与匹配规则。
+/// <summary>
+/// 模型厂商目录服务。
+/// </summary>
 public sealed class ModelVendorCatalogService
 {
+    /// <summary>
+    /// 厂商目录文件名。
+    /// </summary>
     private const string CatalogFileName = "model-vendor-catalog.json";
+    /// <summary>
+    /// 未分类厂商名称。
+    /// </summary>
     private const string UncategorizedVendorName = "未分类";
+    /// <summary>
+    /// new。
+    /// </summary>
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         WriteIndented = true,
         PropertyNameCaseInsensitive = true
     };
 
+    /// <summary>
+    /// 运行时厂商目录文件路径。
+    /// </summary>
     private readonly string _catalogPath;
+    /// <summary>
+    /// 模板厂商目录文件路径。
+    /// </summary>
     private readonly string _templateCatalogPath;
 
+    /// <summary>
+    /// 初始化模型厂商目录服务。
+    /// </summary>
     public ModelVendorCatalogService(IWebHostEnvironment environment)
     {
         // 厂商配置以软件运行目录中的文件为准，源码目录中的文件只作为首次生成模板。
@@ -47,6 +106,9 @@ public sealed class ModelVendorCatalogService
         _templateCatalogPath = Path.Combine(environment.ContentRootPath, CatalogFileName);
     }
 
+    /// <summary>
+    /// 获取厂商目录，不存在时自动初始化。
+    /// </summary>
     public async Task<ModelVendorCatalog> GetOrCreateAsync(CancellationToken cancellationToken = default)
     {
         if (!File.Exists(_catalogPath))
@@ -68,7 +130,9 @@ public sealed class ModelVendorCatalogService
         return NormalizeCatalog(catalog);
     }
 
-    // 运行目录缺少配置时，优先用源码目录模板初始化；模板不存在时再退回空配置。
+    /// <summary>
+    /// 初始化厂商目录。
+    /// </summary>
     private async Task<ModelVendorCatalog> InitializeCatalogAsync(CancellationToken cancellationToken)
     {
         var runtimePath = Path.GetFullPath(_catalogPath);
@@ -87,6 +151,9 @@ public sealed class ModelVendorCatalogService
         return NormalizeCatalog(new ModelVendorCatalog());
     }
 
+    /// <summary>
+    /// 保存厂商目录。
+    /// </summary>
     public async Task<ModelVendorCatalog> SaveAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken = default)
     {
         var normalized = NormalizeCatalog(catalog, validateRuleReferences: true);
@@ -94,7 +161,9 @@ public sealed class ModelVendorCatalogService
         return normalized;
     }
 
-    // 规则按优先级顺序匹配，命中后返回对应厂商；未命中则归到未分类。
+    /// <summary>
+    /// 根据模型名称解析厂商。
+    /// </summary>
     public static ModelVendorDefinition ResolveVendor(ModelVendorCatalog catalog, string modelName)
     {
         var normalizedName = modelName?.Trim() ?? string.Empty;
@@ -119,6 +188,9 @@ public sealed class ModelVendorCatalogService
             : CreateFallbackVendor();
     }
 
+    /// <summary>
+    /// 规范化厂商目录数据。
+    /// </summary>
     private static ModelVendorCatalog NormalizeCatalog(ModelVendorCatalog catalog, bool validateRuleReferences = false)
     {
         catalog ??= new ModelVendorCatalog();
@@ -196,6 +268,9 @@ public sealed class ModelVendorCatalogService
         };
     }
 
+    /// <summary>
+    /// 创建未分类厂商。
+    /// </summary>
     private static ModelVendorDefinition CreateFallbackVendor()
     {
         return new ModelVendorDefinition
@@ -206,6 +281,9 @@ public sealed class ModelVendorCatalogService
         };
     }
 
+    /// <summary>
+    /// 判断模型名称是否命中规则。
+    /// </summary>
     private static bool IsMatch(string modelName, ModelVendorRuleDefinition rule)
     {
         if (string.IsNullOrWhiteSpace(modelName) || string.IsNullOrWhiteSpace(rule.Pattern))
@@ -231,7 +309,9 @@ public sealed class ModelVendorCatalogService
         return false;
     }
 
-    // 单条规则支持用半角逗号或中文逗号同时维护多个匹配表达式。
+    /// <summary>
+    /// 拆分多条匹配模式。
+    /// </summary>
     private static IEnumerable<string> SplitPatterns(string pattern)
     {
         return pattern
@@ -239,7 +319,9 @@ public sealed class ModelVendorCatalogService
             .Where(x => !string.IsNullOrWhiteSpace(x));
     }
 
-    // 兼容直接粘贴完整 svg 标签；若存在原始 viewBox，则以内层 svg 保留坐标系，避免大尺寸图标被 24x24 外层裁掉。
+    /// <summary>
+    /// 规范化图标 SVG 内容。
+    /// </summary>
     private static string NormalizeIconSvgBody(string? iconSvgBody)
     {
         var normalized = iconSvgBody?.Trim() ?? string.Empty;
@@ -268,6 +350,9 @@ public sealed class ModelVendorCatalogService
             : $"<svg viewBox=\"{viewBox}\">{body}</svg>";
     }
 
+    /// <summary>
+    /// 规范化匹配类型。
+    /// </summary>
     private static string NormalizeMatchType(string? matchType)
     {
         return matchType?.Trim().ToLowerInvariant() switch
@@ -278,6 +363,9 @@ public sealed class ModelVendorCatalogService
         };
     }
 
+    /// <summary>
+    /// 写入厂商目录文件。
+    /// </summary>
     private async Task WriteCatalogAsync(ModelVendorCatalog catalog, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(catalog, JsonOptions);

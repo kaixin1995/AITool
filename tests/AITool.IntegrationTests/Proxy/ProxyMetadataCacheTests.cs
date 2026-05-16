@@ -12,12 +12,23 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.IntegrationTests.Proxy;
 
-// 代理元数据缓存测试，验证失效后能及时读取到最新配置。
+/// <summary>
+/// 代理元数据缓存测试，验证失效后能及时读取到最新配置。
+/// </summary>
 public sealed class ProxyMetadataCacheTests : IAsyncDisposable
 {
+    /// <summary>
+    /// 保存测试使用的服务提供器。
+    /// </summary>
     private readonly ServiceProvider _serviceProvider;
+    /// <summary>
+    /// 保存当前测试使用的临时数据库文件路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-proxy-metadata-cache-{Guid.NewGuid():N}.db");
 
+    /// <summary>
+    /// 初始化代理元数据缓存测试所需的服务容器。
+    /// </summary>
     public ProxyMetadataCacheTests()
     {
         var services = new ServiceCollection();
@@ -27,6 +38,9 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         _serviceProvider = services.BuildServiceProvider();
     }
 
+    /// <summary>
+    /// 验证访问密钥缓存失效后会重新读取最新启用状态。
+    /// </summary>
     [Fact]
     public async Task InvalidateAccessKeys_refreshes_validation_result()
     {
@@ -63,6 +77,9 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         (await cache.ValidateAccessKeyAsync(rawKey, CancellationToken.None)).Should().BeNull();
     }
 
+    /// <summary>
+    /// 验证运行时设置缓存失效后会刷新超时和重试配置。
+    /// </summary>
     [Fact]
     public async Task InvalidateRuntimeSettings_refreshes_timeout_and_retry_values()
     {
@@ -118,6 +135,9 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         after.UsageLogAutoCleanupEnabled.Should().BeFalse();
     }
 
+    /// <summary>
+    /// 验证路由缓存失效后会反映最新的启用状态。
+    /// </summary>
     [Fact]
     public async Task InvalidateRouteTargets_refreshes_enabled_route_snapshot()
     {
@@ -165,6 +185,9 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         (await cache.GetRouteTargetsForModelAsync("OpenAI", "cache-route-model", CancellationToken.None)).Should().BeEmpty();
     }
 
+    /// <summary>
+    /// 验证候选路由会保持后台配置顺序，并把协议兼容处理留给控制器。
+    /// </summary>
     [Fact]
     public async Task Get_route_targets_for_model_prioritizes_matching_protocol_before_bridge_targets()
     {
@@ -244,6 +267,9 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         openAiRoutes[1].ResolveProtocolForClient("OpenAI").Should().Be("Anthropic");
     }
 
+    /// <summary>
+    /// 释放测试过程中创建的资源。
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
         await _serviceProvider.DisposeAsync();

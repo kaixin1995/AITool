@@ -7,58 +7,124 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.DetectionTasks;
 
-// 检测任务视图模型
+/// <summary>
+/// 检测任务视图项。
+/// </summary>
 public class DetectionTaskViewModel
 {
+    /// <summary>
+    /// 任务标识。
+    /// </summary>
     public Guid TaskId { get; set; }
+    /// <summary>
+    /// Name。
+    /// </summary>
     public string Name { get; set; } = string.Empty;
+    /// <summary>
+    /// Cron 表达式。
+    /// </summary>
     public string CronExpression { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
     public bool IsEnabled { get; set; }
+    /// <summary>
+    /// 模型名称。
+    /// </summary>
     public string? ModelName { get; set; }
+    /// <summary>
+    /// 最近一次执行摘要。
+    /// </summary>
     public string? LastExecutionSummary { get; set; }
-    // 该任务的执行历史记录
+    /// <summary>
+    /// 执行历史。
+    /// </summary>
     public List<ExecutionHistoryItem> ExecutionHistory { get; set; } = [];
 }
 
-// 执行历史条目
+/// <summary>
+/// 任务执行历史项。
+/// </summary>
 public class ExecutionHistoryItem
 {
+    /// <summary>
+    /// StartedAt。
+    /// </summary>
     public DateTimeOffset StartedAt { get; set; }
+    /// <summary>
+    /// 结束时间。
+    /// </summary>
     public DateTimeOffset? FinishedAt { get; set; }
+    /// <summary>
+    /// 状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// 摘要。
+    /// </summary>
     public string? Summary { get; set; }
 }
 
-// 模型下拉选项（复用轻量结构）
+/// <summary>
+/// 任务可选模型项。
+/// </summary>
 public class TaskModelSelectItem
 {
+    /// <summary>
+    /// 标识。
+    /// </summary>
     public Guid Id { get; set; }
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
     public string DisplayName { get; set; } = string.Empty;
 }
 
-// 检测任务管理页面模型
+/// <summary>
+/// 检测任务页面模型。
+/// </summary>
 public class IndexModel : PageModel
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 检测任务调度器。
+    /// </summary>
     private readonly HangfireDetectionScheduler _scheduler;
 
+    /// <summary>
+    /// 检测任务页面模型。
+    /// </summary>
     public IndexModel(AppDbContext dbContext, HangfireDetectionScheduler scheduler)
     {
         _dbContext = dbContext;
         _scheduler = scheduler;
     }
 
-    // 检测任务列表
+    /// <summary>
+    /// 任务列表。
+    /// </summary>
     public List<DetectionTaskViewModel> Tasks { get; set; } = [];
 
-    // 模型下拉选项列表
+    /// <summary>
+    /// 可选模型列表。
+    /// </summary>
     public List<TaskModelSelectItem> AvailableModels { get; set; } = [];
 
-    // 操作结果提示
+    /// <summary>
+    /// 状态提示。
+    /// </summary>
     public string? StatusMessage { get; set; }
+    /// <summary>
+    /// 操作是否成功。
+    /// </summary>
     public bool StatusSuccess { get; set; }
 
-    // 加载检测任务列表及执行记录
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         // 加载所有模型供创建表单选择
@@ -153,7 +219,9 @@ public class IndexModel : PageModel
         }).ToList();
     }
 
-    // 创建新的检测任务
+    /// <summary>
+    /// 创建新记录。
+    /// </summary>
     public async Task<IActionResult> OnPostCreateAsync(string name, string cronExpression, Guid? modelId, CancellationToken cancellationToken)
     {
         try
@@ -192,7 +260,9 @@ public class IndexModel : PageModel
         return Page();
     }
 
-    // 切换任务启用/禁用状态
+    /// <summary>
+    /// 切换启用状态。
+    /// </summary>
     public async Task<IActionResult> OnPostToggleAsync(Guid taskId, CancellationToken cancellationToken)
     {
         try
@@ -216,7 +286,9 @@ public class IndexModel : PageModel
         return Page();
     }
 
-    // 手动触发任务立即执行
+    /// <summary>
+    /// 立即执行任务。
+    /// </summary>
     public async Task<IActionResult> OnPostExecuteAsync(Guid taskId, CancellationToken cancellationToken)
     {
         try

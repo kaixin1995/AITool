@@ -8,22 +8,50 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace AITool.Web.Pages.Admin.Sites;
 
-// 站点导入数据传输模型
+/// <summary>
+/// 导入站点项。
+/// </summary>
 public class ImportSiteItem
 {
+    /// <summary>
+    /// Name。
+    /// </summary>
     public string Name { get; set; } = string.Empty;
+    /// <summary>
+    /// 基础地址。
+    /// </summary>
     public string BaseUrl { get; set; } = string.Empty;
+    /// <summary>
+    /// 接口密钥。
+    /// </summary>
     public string ApiKey { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否支持 OpenAI 协议。
+    /// </summary>
     public bool SupportsOpenAi { get; set; } = true;
+    /// <summary>
+    /// 是否支持 Anthropic 协议。
+    /// </summary>
     public bool SupportsAnthropic { get; set; }
 }
 
-// 站点批量导入页模型
+/// <summary>
+/// 站点导入页面模型。
+/// </summary>
 public class ImportModel : PageModel
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache? _metadataCache;
 
+    /// <summary>
+    /// 站点导入页面模型。
+    /// </summary>
     [ActivatorUtilitiesConstructor]
     public ImportModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
@@ -31,18 +59,31 @@ public class ImportModel : PageModel
         _metadataCache = metadataCache;
     }
 
+    /// <summary>
+    /// 站点导入页面模型。
+    /// </summary>
     public ImportModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
-    // 操作结果提示
+    /// <summary>
+    /// 状态提示。
+    /// </summary>
     public string? StatusMessage { get; set; }
+    /// <summary>
+    /// 操作是否成功。
+    /// </summary>
     public bool StatusSuccess { get; set; }
 
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public void OnGet() { }
 
-    // 批量导入站点
+    /// <summary>
+    /// 处理页面提交请求。
+    /// </summary>
     public async Task<IActionResult> OnPostAsync(string jsonData, CancellationToken cancellationToken)
     {
         try
@@ -98,6 +139,9 @@ public class ImportModel : PageModel
         return Page();
     }
 
+    /// <summary>
+    /// 根据站点能力推导协议类型。
+    /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
         return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";

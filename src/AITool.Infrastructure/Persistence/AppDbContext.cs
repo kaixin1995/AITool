@@ -8,44 +8,74 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Persistence;
 
-// 统一数据库上下文，管理所有实体映射
+/// <summary>
+/// 统一数据库上下文，管理所有实体映射
+/// </summary>
 public sealed class AppDbContext : DbContext
 {
+    /// <summary>
+    /// 初始化 AppDbContext。
+    /// </summary>
     public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
 
-    // 站点数据集
+    /// <summary>
+    /// 站点数据集
+    /// </summary>
     public DbSet<Site> Sites => Set<Site>();
 
-    // 模型库数据集
+    /// <summary>
+    /// 模型库数据集
+    /// </summary>
     public DbSet<ModelLibraryItem> ModelLibraryItems => Set<ModelLibraryItem>();
 
-    // 站点模型映射数据集
+    /// <summary>
+    /// 站点模型映射数据集
+    /// </summary>
     public DbSet<SiteModelMapping> SiteModelMappings => Set<SiteModelMapping>();
 
-    // 定时检测任务数据集
+    /// <summary>
+    /// 定时检测任务数据集
+    /// </summary>
     public DbSet<DetectionTask> DetectionTasks => Set<DetectionTask>();
 
-    // 检测任务执行记录数据集
+    /// <summary>
+    /// 检测任务执行记录数据集
+    /// </summary>
     public DbSet<DetectionTaskExecution> DetectionTaskExecutions => Set<DetectionTaskExecution>();
 
-    // 代理主入口数据集
+    /// <summary>
+    /// 代理主入口数据集
+    /// </summary>
     public DbSet<ProxyRouteEntry> ProxyRouteEntries => Set<ProxyRouteEntry>();
 
-    // 代理路由规则数据集
+    /// <summary>
+    /// 代理路由规则数据集
+    /// </summary>
     public DbSet<ProxyRouteRule> ProxyRouteRules => Set<ProxyRouteRule>();
 
-    // 平台访问密钥数据集
+    /// <summary>
+    /// 平台访问密钥数据集
+    /// </summary>
     public DbSet<ProxyAccessKey> ProxyAccessKeys => Set<ProxyAccessKey>();
 
-    // 代理使用日志数据集
+    /// <summary>
+    /// 代理使用日志数据集
+    /// </summary>
     public DbSet<ProxyUsageLog> ProxyUsageLogs => Set<ProxyUsageLog>();
 
-    // 模型健康监控配置数据集
+    /// <summary>
+    /// 模型健康监控配置数据集
+    /// </summary>
     public DbSet<ModelHealthMonitor> ModelHealthMonitors => Set<ModelHealthMonitor>();
 
-    // 系统运行时设置数据集
+    /// <summary>
+    /// 系统运行时设置数据集
+    /// </summary>
     public DbSet<SystemRuntimeSettings> SystemRuntimeSettings => Set<SystemRuntimeSettings>();
 
+    /// <summary>
+    /// 方法 OnModelCreating。
+    /// </summary>
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         // 站点实体配置
@@ -162,31 +192,45 @@ public sealed class AppDbContext : DbContext
         base.OnModelCreating(modelBuilder);
     }
 
+    /// <summary>
+    /// 方法 SaveChanges。
+    /// </summary>
     public override int SaveChanges()
     {
         ApplyLegacyModelTypeCompatibility();
         return base.SaveChanges();
     }
 
+    /// <summary>
+    /// 方法 SaveChanges。
+    /// </summary>
     public override int SaveChanges(bool acceptAllChangesOnSuccess)
     {
         ApplyLegacyModelTypeCompatibility();
         return base.SaveChanges(acceptAllChangesOnSuccess);
     }
 
+    /// <summary>
+    /// 方法 SaveChangesAsync。
+    /// </summary>
     public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         ApplyLegacyModelTypeCompatibility();
         return base.SaveChangesAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// 方法 SaveChangesAsync。
+    /// </summary>
     public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
     {
         ApplyLegacyModelTypeCompatibility();
         return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
     }
 
-    // 旧数据库还保留 ModelType 非空列时，为新增模型补一个兼容值，避免写库失败。
+    /// <summary>
+    /// 旧数据库还保留 ModelType 非空列时，为新增模型补一个兼容值，避免写库失败。
+    /// </summary>
     private void ApplyLegacyModelTypeCompatibility()
     {
         foreach (var entry in ChangeTracker.Entries<ModelLibraryItem>())

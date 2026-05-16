@@ -6,50 +6,95 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
-// 单条检测结果
+/// <summary>
+/// ProbeResultItem。
+/// </summary>
 public sealed class ProbeResultItem
 {
-    // 映射ID
+    /// <summary>
+    /// 映射标识。
+    /// </summary>
     public Guid MappingId { get; set; }
-    // 站点名称
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
-    // 远程模型名
+    /// <summary>
+    /// 远端模型名称。
+    /// </summary>
     public string RemoteModelName { get; set; } = string.Empty;
-    // 检测状态
+    /// <summary>
+    /// 探测状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
-    // 耗时毫秒
+    /// <summary>
+    /// 耗时（毫秒）。
+    /// </summary>
     public int? DurationMs { get; set; }
-    // 错误信息
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string? Error { get; set; }
 }
 
-// 模型检测进度
+/// <summary>
+/// ProbeProgress。
+/// </summary>
 public sealed class ProbeProgress
 {
+    /// <summary>
+    /// 任务标识。
+    /// </summary>
     public string TaskId { get; set; } = string.Empty;
+    /// <summary>
+    /// 总任务数。
+    /// </summary>
     public int Total { get; set; }
+    /// <summary>
+    /// 已完成任务数。
+    /// </summary>
     public int Completed { get; set; }
+    /// <summary>
+    /// 是否已完成。
+    /// </summary>
     public bool IsCompleted { get; set; }
-    // 所有已完成结果（完整列表）
+    /// <summary>
+    /// 全部探测结果。
+    /// </summary>
     public List<ProbeResultItem> AllResults { get; set; } = [];
-    // 上次被查询时已完成的数量
+    /// <summary>
+    /// 上次已返回的结果数。
+    /// </summary>
     public int LastReportedCount { get; set; }
 }
 
-// 模型检测 API，提供 AJAX 检测与进度查询
+/// <summary>
+/// DetectionApiController。
+/// </summary>
 [ApiController]
 [Route("api/admin/detection")]
 public sealed class DetectionApiController : ControllerBase
 {
+    /// <summary>
+    /// 服务作用域工厂。
+    /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
+    /// <summary>
+    /// 探测进度缓存。
+    /// </summary>
     private static readonly ConcurrentDictionary<string, ProbeProgress> _progressStore = new();
 
+    /// <summary>
+    /// 创建模型探测控制器。
+    /// </summary>
     public DetectionApiController(IServiceScopeFactory scopeFactory)
     {
         _scopeFactory = scopeFactory;
     }
 
-    // 检测单个映射
+    /// <summary>
+    /// 探测单个映射。
+    /// </summary>
     [HttpPost("probe/{mappingId}")]
     public async Task<IActionResult> ProbeSingle(Guid mappingId, CancellationToken cancellationToken)
     {
@@ -73,7 +118,9 @@ public sealed class DetectionApiController : ControllerBase
         });
     }
 
-    // 检测指定模型的所有映射
+    /// <summary>
+    /// 探测指定模型的全部映射。
+    /// </summary>
     [HttpPost("probe-model/{modelId}")]
     public IActionResult ProbeModel(Guid modelId)
     {
@@ -142,7 +189,9 @@ public sealed class DetectionApiController : ControllerBase
         return Ok(new { taskId });
     }
 
-    // 检测全部映射
+    /// <summary>
+    /// 探测全部映射。
+    /// </summary>
     [HttpPost("probe-all")]
     public IActionResult ProbeAll()
     {
@@ -209,7 +258,9 @@ public sealed class DetectionApiController : ControllerBase
         return Ok(new { taskId });
     }
 
-    // 查询检测进度，返回自上次查询以来的新增结果
+    /// <summary>
+    /// 获取探测进度。
+    /// </summary>
     [HttpGet("progress/{taskId}")]
     public IActionResult GetProgress(string taskId)
     {

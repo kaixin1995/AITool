@@ -6,13 +6,27 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Health;
 
-// 真实请求式模型检测服务，使用与正常调用一致的请求方式并写入 UsageLogs。
+/// <summary>
+/// 真实请求式模型检测服务，使用与正常调用一致的请求方式并写入 UsageLogs。
+/// </summary>
 public sealed class ModelHealthRequestService
 {
+    /// <summary>
+    /// 字段 _dbContext。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 字段 _forwardService。
+    /// </summary>
     private readonly IProxyForwardService _forwardService;
+    /// <summary>
+    /// 字段 _usageLogService。
+    /// </summary>
     private readonly IUsageLogService _usageLogService;
 
+    /// <summary>
+    /// 初始化 ModelHealthRequestService。
+    /// </summary>
     public ModelHealthRequestService(
         AppDbContext dbContext,
         IProxyForwardService forwardService,
@@ -23,7 +37,9 @@ public sealed class ModelHealthRequestService
         _usageLogService = usageLogService;
     }
 
-    // 对指定映射发起一次真实请求式检测，并记录到 UsageLogs。
+    /// <summary>
+    /// 对指定映射发起一次真实请求式检测，并记录到 UsageLogs。
+    /// </summary>
     public async Task<ModelHealthProbeResult> ProbeMappingAsync(Guid mappingId, string source, CancellationToken cancellationToken)
     {
         var mapping = await _dbContext.SiteModelMappings
@@ -112,7 +128,9 @@ public sealed class ModelHealthRequestService
         };
     }
 
-    // 生成随机四则运算题，避免固定请求内容过于单一。
+    /// <summary>
+    /// 生成随机四则运算题，避免固定请求内容过于单一。
+    /// </summary>
     private static string BuildRandomMathPrompt()
     {
         var left = Random.Shared.Next(1, 100);
@@ -128,13 +146,17 @@ public sealed class ModelHealthRequestService
         };
     }
 
-    // 按站点支持能力推导一次普通非流式聊天请求协议。
+    /// <summary>
+    /// 按站点支持能力推导一次普通非流式聊天请求协议。
+    /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
         return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
     }
 
-    // 按站点协议构建一次普通非流式聊天请求。
+    /// <summary>
+    /// 按站点协议构建一次普通非流式聊天请求。
+    /// </summary>
     private static string BuildProbeRequestBody(string protocolType, string modelName, string message)
     {
         if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
@@ -172,13 +194,33 @@ public sealed class ModelHealthRequestService
     }
 }
 
-// 单次真实请求式检测结果。
+/// <summary>
+/// 单次真实请求式检测结果。
+/// </summary>
 public sealed class ModelHealthProbeResult
 {
+    /// <summary>
+    /// 属性 MappingId。
+    /// </summary>
     public Guid MappingId { get; set; }
+    /// <summary>
+    /// 属性 SiteName。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 属性 RemoteModelName。
+    /// </summary>
     public string RemoteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 属性 Status。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// 属性 DurationMs。
+    /// </summary>
     public int? DurationMs { get; set; }
+    /// <summary>
+    /// 属性 ErrorMessage。
+    /// </summary>
     public string? ErrorMessage { get; set; }
 }

@@ -4,25 +4,48 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.UsageLogs;
 
-// 页面初始化所需的站点筛选项
+/// <summary>
+/// 调用日志页面的站点筛选项，用于初始化筛选下拉框。
+/// </summary>
 public sealed class UsageLogSiteFilterItem
 {
+    /// <summary>
+    /// 站点主键。
+    /// </summary>
     public Guid Id { get; set; }
+
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string Name { get; set; } = string.Empty;
 }
 
-// 调用日志页面模型，提供站点筛选初始化数据
+/// <summary>
+/// 调用日志页面模型，负责提供初始筛选数据。
+/// </summary>
 public class IndexModel : PageModel
 {
+    /// <summary>
+    /// 数据库上下文，用于读取站点列表。
+    /// </summary>
     private readonly AppDbContext _dbContext;
 
+    /// <summary>
+    /// 初始化调用日志页面模型。
+    /// </summary>
     public IndexModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
+    /// <summary>
+    /// 页面可选的站点筛选项。
+    /// </summary>
     public List<UsageLogSiteFilterItem> SiteFilters { get; set; } = [];
 
+    /// <summary>
+    /// 加载站点筛选项，并按名称排序。
+    /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         SiteFilters = await _dbContext.Sites

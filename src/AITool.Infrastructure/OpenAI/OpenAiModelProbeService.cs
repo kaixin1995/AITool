@@ -7,17 +7,27 @@ using AITool.Domain.Sites;
 
 namespace AITool.Infrastructure.OpenAI;
 
-// OpenAI 兼容站点的模型探测实现，通过发送最小化聊天请求验证模型可用性
+/// <summary>
+/// OpenAI 兼容站点的模型探测实现，通过发送最小化聊天请求验证模型可用性
+/// </summary>
 public sealed class OpenAiModelProbeService : IModelProbeService
 {
+    /// <summary>
+    /// 字段 _httpClient。
+    /// </summary>
     private readonly HttpClient _httpClient;
 
+    /// <summary>
+    /// 初始化 OpenAiModelProbeService。
+    /// </summary>
     public OpenAiModelProbeService(HttpClient httpClient)
     {
         _httpClient = httpClient;
     }
 
-    // 向站点发送一次最小化 chat completion 请求，测量响应耗时并判断模型是否可用
+    /// <summary>
+    /// 向站点发送一次最小化 chat completion 请求，测量响应耗时并判断模型是否可用
+    /// </summary>
     public async Task<ModelProbeResult> ProbeAsync(Site site, ModelLibraryItem model, CancellationToken cancellationToken)
     {
         var url = $"{site.BaseUrl.TrimEnd('/')}/v1/chat/completions";
@@ -61,7 +71,9 @@ public sealed class OpenAiModelProbeService : IModelProbeService
         }
     }
 
-    // 从 OpenAI 错误响应体中提取可读的错误信息
+    /// <summary>
+    /// 从 OpenAI 错误响应体中提取可读的错误信息
+    /// </summary>
     private static string? ExtractErrorMessage(string body)
     {
         try

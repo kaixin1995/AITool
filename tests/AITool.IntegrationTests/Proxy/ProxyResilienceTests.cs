@@ -17,9 +17,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AITool.IntegrationTests.Proxy;
 
-// 使用日志记录失败时，代理请求仍应继续返回，避免内部异常打断正常中转。
+/// <summary>
+/// 使用日志记录失败时，代理请求仍应继续返回，避免内部异常打断正常中转。
+/// </summary>
 public sealed class ProxyResilienceTests
 {
+    /// <summary>
+    /// 验证写入使用日志失败时，OpenAI 代理请求仍会继续返回成功结果。
+    /// </summary>
     [Fact]
     public async Task OpenAi_proxy_keeps_returning_success_when_usage_log_write_throws()
     {
@@ -40,6 +45,9 @@ public sealed class ProxyResilienceTests
         body.Should().Contain("resilience-ok");
     }
 
+    /// <summary>
+    /// 验证写入使用日志失败时，Anthropic 代理请求仍会继续返回成功结果。
+    /// </summary>
     [Fact]
     public async Task Anthropic_proxy_keeps_returning_success_when_usage_log_write_throws()
     {
@@ -61,16 +69,31 @@ public sealed class ProxyResilienceTests
     }
 }
 
+/// <summary>
+/// 用于构建 ProxyResilienceWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// </summary>
 internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 保存当前测试使用的临时数据库路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-proxy-resilience-{Guid.NewGuid():N}.db");
+    /// <summary>
+    /// 保存当前测试注入的模拟转发服务。
+    /// </summary>
     private readonly ProxyResilienceFakeForwardService _fakeForwardService;
 
+    /// <summary>
+    /// 创建代理容错测试宿主，并注入当前场景要使用的模拟转发服务。
+    /// </summary>
     public ProxyResilienceWebApplicationFactory(ProxyResilienceFakeForwardService fakeForwardService)
     {
         _fakeForwardService = fakeForwardService;
     }
 
+    /// <summary>
+    /// 配置代理容错测试所需的服务和数据库。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -86,12 +109,18 @@ internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFacto
         });
     }
 
+    /// <summary>
+    /// 创建客户端后初始化当前测试场景的数据。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();
@@ -186,8 +215,14 @@ internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFacto
     }
 }
 
+/// <summary>
+/// 用于模拟代理转发结果，支撑 ProxyResilienceFakeForwardService 相关断言。
+/// </summary>
 internal sealed class ProxyResilienceFakeForwardService : IProxyForwardService
 {
+    /// <summary>
+    /// 根据请求协议返回固定的成功响应。
+    /// </summary>
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         if (string.Equals(request.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
@@ -212,6 +247,9 @@ internal sealed class ProxyResilienceFakeForwardService : IProxyForwardService
         });
     }
 
+    /// <summary>
+    /// 复用非流式结果，模拟流式转发也能成功返回。
+    /// </summary>
     public Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,
@@ -221,8 +259,14 @@ internal sealed class ProxyResilienceFakeForwardService : IProxyForwardService
     }
 }
 
+/// <summary>
+/// 用于模拟写入使用日志时抛出异常的场景。
+/// </summary>
 internal sealed class ThrowingUsageLogService : IUsageLogService
 {
+    /// <summary>
+    /// 模拟写入使用日志时抛出异常。
+    /// </summary>
     public Task LogAsync(UsageLogEntry entry, CancellationToken cancellationToken = default)
     {
         throw new InvalidOperationException("usage log write failed");

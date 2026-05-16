@@ -6,126 +6,217 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
-// 可用模型列表项
+/// <summary>
+/// RouteModelItem。
+/// </summary>
 public sealed class RouteModelItem
 {
-    // 模型名称（用作 ExternalModelName）
+    /// <summary>
+    /// 模型名称。
+    /// </summary>
     public string ModelName { get; set; } = string.Empty;
-    // 显示名称
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
     public string DisplayName { get; set; } = string.Empty;
-    // 拥有该模型的站点数量
+    /// <summary>
+    /// 站点数量。
+    /// </summary>
     public int SiteCount { get; set; }
-    // 是否已配置路由规则
+    /// <summary>
+    /// 是否已配置路由规则。
+    /// </summary>
     public bool HasRouteRules { get; set; }
 }
 
-// 主入口列表项
+/// <summary>
+/// RouteEntryListItem。
+/// </summary>
 public sealed class RouteEntryListItem
 {
-    // 主入口名称
+    /// <summary>
+    /// 主入口名称。
+    /// </summary>
     public string EntryName { get; set; } = string.Empty;
-    // 当前候选数量
+    /// <summary>
+    /// 候选实例数量。
+    /// </summary>
     public int CandidateCount { get; set; }
 }
 
-// 创建主入口请求
+/// <summary>
+/// CreateRouteEntryRequest。
+/// </summary>
 public sealed class CreateRouteEntryRequest
 {
-    // 主入口名称
+    /// <summary>
+    /// 主入口名称。
+    /// </summary>
     public string EntryName { get; set; } = string.Empty;
 }
 
-// 删除主入口请求
+/// <summary>
+/// DeleteRouteEntryRequest。
+/// </summary>
 public sealed class DeleteRouteEntryRequest
 {
-    // 主入口名称
+    /// <summary>
+    /// 主入口名称。
+    /// </summary>
     public string EntryName { get; set; } = string.Empty;
 }
 
-// 可添加的站点实例项
+/// <summary>
+/// SiteInstanceItem。
+/// </summary>
 public sealed class SiteInstanceItem
 {
-    // 站点ID
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid SiteId { get; set; }
-    // 站点名称
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
-    // 上游模型实例名称
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
-    // 站点协议类型
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
 }
 
-// 自动发现的站点信息
+/// <summary>
+/// DiscoveredSiteItem。
+/// </summary>
 public sealed class DiscoveredSiteItem
 {
-    // 站点ID
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid SiteId { get; set; }
-    // 站点名称
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
-    // 站点上的远程模型名称
+    /// <summary>
+    /// 远端模型名称。
+    /// </summary>
     public string RemoteModelName { get; set; } = string.Empty;
-    // 站点是否启用
+    /// <summary>
+    /// 站点是否启用。
+    /// </summary>
     public bool SiteEnabled { get; set; }
 }
 
-// 路由规则列表项
+/// <summary>
+/// RouteRuleListItem。
+/// </summary>
 public sealed class RouteRuleListItem
 {
-    // 规则ID
+    /// <summary>
+    /// 规则标识。
+    /// </summary>
     public Guid RuleId { get; set; }
-    // 站点ID
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid SiteId { get; set; }
-    // 站点名称
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
-    // 上游模型名称
+    /// <summary>
+    /// 上游模型名称。
+    /// </summary>
     public string UpstreamModelName { get; set; } = string.Empty;
-    // 站点模型名称
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
-    // 全局优先级
+    /// <summary>
+    /// 全局优先级。
+    /// </summary>
     public int Priority { get; set; }
-    // 上游模型组优先级
+    /// <summary>
+    /// 模型优先级。
+    /// </summary>
     public int ModelPriority { get; set; }
-    // 组内实例优先级
+    /// <summary>
+    /// 实例优先级。
+    /// </summary>
     public int InstancePriority { get; set; }
-    // 是否启用
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
     public bool IsEnabled { get; set; }
 }
 
-// 保存路由规则的请求体
+/// <summary>
+/// SaveRouteRulesRequest。
+/// </summary>
 public sealed class SaveRouteRulesRequest
 {
-    // 外部模型名称
+    /// <summary>
+    /// 外部模型名称。
+    /// </summary>
     public string ExternalModelName { get; set; } = string.Empty;
-    // 排好序的规则列表
+    /// <summary>
+    /// 路由规则列表。
+    /// </summary>
     public List<SaveRouteRuleEntry> Rules { get; set; } = [];
 }
 
-// 单条规则条目
+/// <summary>
+/// SaveRouteRuleEntry。
+/// </summary>
 public sealed class SaveRouteRuleEntry
 {
-    // 上游模型名称
+    /// <summary>
+    /// 上游模型名称。
+    /// </summary>
     public string UpstreamModelName { get; set; } = string.Empty;
-    // 目标站点ID
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid SiteId { get; set; }
-    // 站点上的模型名称
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
 }
 
-// 路由规则管理 API，提供模型自动发现、拖拽排序保存等功能
+/// <summary>
+/// RouteRulesApiController。
+/// </summary>
 [ApiController]
 [Route("api/admin/route-rules")]
 public sealed class RouteRulesApiController : ControllerBase
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
 
+    /// <summary>
+    /// 创建路由规则控制器。
+    /// </summary>
     public RouteRulesApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
     }
 
-    // 获取主入口列表，包含当前候选数量
+    /// <summary>
+    /// 获取主入口列表。
+    /// </summary>
     [HttpGet("entries")]
     public async Task<IActionResult> GetEntries(CancellationToken cancellationToken)
     {
@@ -155,7 +246,9 @@ public sealed class RouteRulesApiController : ControllerBase
         return Ok(result);
     }
 
-    // 创建可独立存在的主入口
+    /// <summary>
+    /// 创建主入口。
+    /// </summary>
     [HttpPost("entries")]
     public async Task<IActionResult> CreateEntry(
         [FromBody] CreateRouteEntryRequest request,
@@ -181,7 +274,9 @@ public sealed class RouteRulesApiController : ControllerBase
         return Ok(new { message = "创建成功" });
     }
 
-    // 删除主入口及其下所有候选规则
+    /// <summary>
+    /// 删除主入口。
+    /// </summary>
     [HttpPost("entries/delete")]
     public async Task<IActionResult> DeleteEntry(
         [FromBody] DeleteRouteEntryRequest request,
@@ -216,7 +311,9 @@ public sealed class RouteRulesApiController : ControllerBase
         return Ok(new { message = "删除成功" });
     }
 
-    // 返回全部可供追加的站点模型实例
+    /// <summary>
+    /// 获取可选站点实例。
+    /// </summary>
     [HttpGet("site-instances")]
     public async Task<IActionResult> GetSiteInstances(CancellationToken cancellationToken)
     {
@@ -239,7 +336,9 @@ public sealed class RouteRulesApiController : ControllerBase
         return Ok(result);
     }
 
-    // 获取所有有站点映射的模型名称列表，用于下拉选择
+    /// <summary>
+    /// 获取可配置路由的模型。
+    /// </summary>
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
@@ -311,7 +410,9 @@ public sealed class RouteRulesApiController : ControllerBase
         return Ok(models);
     }
 
-    // 根据模型名称自动发现拥有该模型的站点
+    /// <summary>
+    /// 按模型发现可用站点。
+    /// </summary>
     [HttpGet("discover-sites")]
     public async Task<IActionResult> DiscoverSites(
         [FromQuery] string modelName,
@@ -374,7 +475,9 @@ public sealed class RouteRulesApiController : ControllerBase
         return Ok(results);
     }
 
-    // 获取指定模型已配置的路由规则列表
+    /// <summary>
+    /// 获取路由规则列表。
+    /// </summary>
     [HttpGet("list")]
     public async Task<IActionResult> ListRules(
         [FromQuery] string modelName,
@@ -408,7 +511,9 @@ public sealed class RouteRulesApiController : ControllerBase
         return Ok(result);
     }
 
-    // 保存路由规则（删除旧的，按新顺序创建）
+    /// <summary>
+    /// 保存路由规则。
+    /// </summary>
     [HttpPost("save")]
     public async Task<IActionResult> SaveRules(
         [FromBody] SaveRouteRulesRequest request,
@@ -479,7 +584,9 @@ public sealed class RouteRulesApiController : ControllerBase
         return Ok(new { message = "保存成功" });
     }
 
-    // 切换路由规则的启用/禁用状态
+    /// <summary>
+    /// 切换规则启用状态。
+    /// </summary>
     [HttpPost("toggle/{ruleId}")]
     public async Task<IActionResult> ToggleRule(Guid ruleId, CancellationToken cancellationToken)
     {
@@ -494,7 +601,9 @@ public sealed class RouteRulesApiController : ControllerBase
         return Ok(new { message = "状态已切换", isEnabled = rule.IsEnabled });
     }
 
-    // 删除单条路由规则
+    /// <summary>
+    /// 删除路由规则。
+    /// </summary>
     [HttpPost("delete/{ruleId}")]
     public async Task<IActionResult> DeleteRule(Guid ruleId, CancellationToken cancellationToken)
     {

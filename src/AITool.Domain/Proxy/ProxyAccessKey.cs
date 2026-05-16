@@ -1,23 +1,37 @@
 namespace AITool.Domain.Proxy;
 
-// 平台访问密钥，用于验证传入的代理请求
+/// <summary>
+/// 表示一条代理访问密钥配置，用于识别和校验进入代理入口的调用方身份。
+/// </summary>
 public sealed class ProxyAccessKey
 {
-    // 密钥主键
+    /// <summary>
+    /// 密钥唯一标识，用于在日志、配置管理和鉴权逻辑中引用该密钥。
+    /// </summary>
     public Guid Id { get; set; } = Guid.NewGuid();
 
-    // 密钥名称，便于管理区分
+    /// <summary>
+    /// 密钥名称，用于后台管理时区分不同用途或不同调用方的密钥。
+    /// </summary>
     public string KeyName { get; set; } = string.Empty;
 
-    // 明文密钥值
+    /// <summary>
+    /// 明文密钥值，用于系统保存或展示当前可直接使用的访问密钥内容。
+    /// </summary>
     public string PlainKey { get; set; } = string.Empty;
 
-    // 密钥哈希值，兼容历史数据
+    /// <summary>
+    /// 密钥哈希值，用于兼容历史数据或在不直接比较明文的场景下完成校验。
+    /// </summary>
     public string AccessKeyHash { get; set; } = string.Empty;
 
-    // 掩码显示值，兼容历史数据
+    /// <summary>
+    /// 掩码后的显示值，用于在界面上安全展示密钥的大致信息并兼容历史存储结构。
+    /// </summary>
     public string MaskedValue { get; set; } = string.Empty;
 
-    // 是否启用该密钥
+    /// <summary>
+    /// 标记该密钥当前是否可用，禁用后不应再通过该密钥访问代理能力。
+    /// </summary>
     public bool IsEnabled { get; set; } = true;
 }

@@ -1,23 +1,37 @@
 namespace AITool.Application.Sites;
 
-// 站点创建命令，对应后台表单提交
+/// <summary>
+/// 站点创建命令，用于承载新增站点时提交的基础配置。
+/// </summary>
 public sealed class CreateSiteCommand
 {
-    // 站点名称
+    /// <summary>
+    /// 站点名称，通常用于后台列表展示和人工识别。
+    /// </summary>
     public string Name { get; set; } = string.Empty;
 
-    // 站点根地址
+    /// <summary>
+    /// 站点根地址，后续转发请求时会基于该地址拼接具体接口路径。
+    /// </summary>
     public string BaseUrl { get; set; } = string.Empty;
 
-    // 站点访问密钥
+    /// <summary>
+    /// 站点访问密钥，用于调用上游站点接口。
+    /// </summary>
     public string ApiKey { get; set; } = string.Empty;
 
-    // 是否支持 OpenAI 原协议
+    /// <summary>
+    /// 标记该站点是否支持 OpenAI 原生协议。
+    /// </summary>
     public bool SupportsOpenAi { get; set; } = true;
 
-    // 是否支持 Anthropic 原协议
+    /// <summary>
+    /// 标记该站点是否支持 Anthropic 原生协议。
+    /// </summary>
     public bool SupportsAnthropic { get; set; }
 
-    // 是否启用
+    /// <summary>
+    /// 控制站点创建后是否立即参与后续路由与调用。
+    /// </summary>
     public bool IsEnabled { get; set; } = true;
 }

@@ -2,16 +2,27 @@ using Microsoft.AspNetCore.Mvc.Filters;
 
 namespace AITool.Web.Services;
 
-// 仅记录异常请求，避免把正常访问写入磁盘日志。
+/// <summary>
+/// 仅在请求发生异常时记录详细上下文，避免正常访问大量写入日志。
+/// </summary>
 public sealed class HttpExceptionLoggingFilter : IAsyncExceptionFilter
 {
+    /// <summary>
+    /// 异常日志记录器。
+    /// </summary>
     private readonly ILogger<HttpExceptionLoggingFilter> _logger;
 
+    /// <summary>
+    /// 初始化异常日志过滤器。
+    /// </summary>
     public HttpExceptionLoggingFilter(ILogger<HttpExceptionLoggingFilter> logger)
     {
         _logger = logger;
     }
 
+    /// <summary>
+    /// 捕获请求处理异常，并补充请求上下文写入日志。
+    /// </summary>
     public async Task OnExceptionAsync(ExceptionContext context)
     {
         if (context.Exception is OperationCanceledException)
@@ -19,6 +30,7 @@ public sealed class HttpExceptionLoggingFilter : IAsyncExceptionFilter
             return;
         }
 
+        // 发生异常时记录当前请求对象，便于还原请求现场。
         var request = context.HttpContext.Request;
         var requestBody = await TryReadRequestBodyAsync(request, context.HttpContext.RequestAborted);
 
@@ -31,6 +43,9 @@ public sealed class HttpExceptionLoggingFilter : IAsyncExceptionFilter
             HttpLogFormatter.FormatBody(requestBody));
     }
 
+    /// <summary>
+    /// 在不影响后续请求处理的前提下，尽量读取原始请求正文。
+    /// </summary>
     private static async Task<string> TryReadRequestBodyAsync(HttpRequest request, CancellationToken cancellationToken)
     {
         try

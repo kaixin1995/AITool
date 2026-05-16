@@ -7,12 +7,23 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.Sites;
 
-// 站点编辑页模型，加载现有站点数据并提供更新功能
+/// <summary>
+/// 站点编辑页面模型。
+/// </summary>
 public class EditModel : PageModel
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache? _metadataCache;
 
+    /// <summary>
+    /// 站点编辑页面模型。
+    /// </summary>
     [ActivatorUtilitiesConstructor]
     public EditModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
@@ -20,34 +31,62 @@ public class EditModel : PageModel
         _metadataCache = metadataCache;
     }
 
+    /// <summary>
+    /// 站点编辑页面模型。
+    /// </summary>
     public EditModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
+    /// <summary>
+    /// Name。
+    /// </summary>
     [BindProperty]
     public string Name { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 基础地址。
+    /// </summary>
     [BindProperty]
     public string BaseUrl { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 接口密钥。
+    /// </summary>
     [BindProperty]
     public string? ApiKey { get; set; }
 
+    /// <summary>
+    /// 是否支持 OpenAI 协议。
+    /// </summary>
     [BindProperty]
     public bool SupportsOpenAi { get; set; } = true;
 
+    /// <summary>
+    /// 是否支持 Anthropic 协议。
+    /// </summary>
     [BindProperty]
     public bool SupportsAnthropic { get; set; }
 
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
     [BindProperty]
     public bool IsEnabled { get; set; }
 
-    // 状态消息
+    /// <summary>
+    /// 状态提示。
+    /// </summary>
     public string? StatusMessage { get; set; }
+    /// <summary>
+    /// 操作是否成功。
+    /// </summary>
     public bool StatusSuccess { get; set; }
 
-    // 加载站点数据填充表单
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public async Task<IActionResult> OnGetAsync(Guid id, CancellationToken cancellationToken)
     {
         var site = await _dbContext.Sites.FindAsync([id], cancellationToken);
@@ -63,7 +102,9 @@ public class EditModel : PageModel
         return Page();
     }
 
-    // 提交站点更新
+    /// <summary>
+    /// 处理页面提交请求。
+    /// </summary>
     public async Task<IActionResult> OnPostAsync(Guid id, CancellationToken cancellationToken)
     {
         if (!SupportsOpenAi && !SupportsAnthropic)
@@ -104,6 +145,9 @@ public class EditModel : PageModel
         return Page();
     }
 
+    /// <summary>
+    /// 根据站点能力推导协议类型。
+    /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
         return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";

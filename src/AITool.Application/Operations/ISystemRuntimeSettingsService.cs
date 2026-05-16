@@ -2,62 +2,100 @@ using AITool.Domain.Operations;
 
 namespace AITool.Application.Operations;
 
-// 系统运行时设置服务接口，统一读取和更新持久化配置
+/// <summary>
+/// 系统运行时设置服务接口，负责统一读取、更新和维护系统级持久化配置。
+/// </summary>
 public interface ISystemRuntimeSettingsService
 {
-    // 获取当前系统设置，不存在时按默认值创建
+    /// <summary>
+    /// 获取当前系统设置；当数据库中还没有记录时，按默认值自动创建一份。
+    /// </summary>
     Task<SystemRuntimeSettings> GetOrCreateAsync(CancellationToken cancellationToken = default);
 
-    // 更新系统运行时设置并持久化到数据库
+    /// <summary>
+    /// 按请求内容更新系统运行时设置，并返回保存后的最新结果。
+    /// </summary>
     Task<SystemRuntimeSettings> UpdateAsync(UpdateSystemRuntimeSettingsRequest request, CancellationToken cancellationToken = default);
 
-    // 按条件清空使用日志并返回删除数量
+    /// <summary>
+    /// 按给定条件清空使用日志，并返回本次实际删除的记录数量。
+    /// </summary>
     Task<int> ClearUsageLogsAsync(ClearUsageLogsRequest request, CancellationToken cancellationToken = default);
 }
 
-// 系统运行时设置更新请求
+/// <summary>
+/// 系统运行时设置更新请求，用于承载后台配置页提交的各项参数。
+/// </summary>
 public sealed class UpdateSystemRuntimeSettingsRequest
 {
-    // 代理请求超时时间（秒）
+    /// <summary>
+    /// 控制代理转发请求的超时时间，单位为秒。
+    /// </summary>
     public int ProxyRequestTimeoutSeconds { get; set; }
 
-    // 代理失败重试次数
+    /// <summary>
+    /// 控制代理转发在失败时的重试次数。
+    /// </summary>
     public int ProxyRetryCount { get; set; }
 
-    // 检测请求超时时间（秒）
+    /// <summary>
+    /// 控制模型检测请求的超时时间，单位为秒。
+    /// </summary>
     public int DetectionRequestTimeoutSeconds { get; set; }
 
-    // 检测失败重试次数
+    /// <summary>
+    /// 控制模型检测失败后的重试次数。
+    /// </summary>
     public int DetectionRetryCount { get; set; }
 
-    // 检测并发数
+    /// <summary>
+    /// 控制批量检测时允许的最大并发数。
+    /// </summary>
     public int DetectionConcurrency { get; set; }
 
-    // 熔断连续失败阈值
+    /// <summary>
+    /// 配置熔断器触发所需的连续失败次数阈值。
+    /// </summary>
     public int CircuitBreakerFailureThreshold { get; set; }
 
-    // 熔断恢复时间（分钟）
+    /// <summary>
+    /// 配置熔断后等待多久再尝试恢复，单位为分钟。
+    /// </summary>
     public int CircuitBreakerRecoveryMinutes { get; set; }
 
-    // 使用日志保留天数
+    /// <summary>
+    /// 指定使用日志的保留天数，超过该范围的数据可被清理。
+    /// </summary>
     public int UsageLogRetentionDays { get; set; }
 
-    // 是否启用使用日志自动清理
+    /// <summary>
+    /// 控制是否开启使用日志的自动清理任务。
+    /// </summary>
     public bool UsageLogAutoCleanupEnabled { get; set; }
 
-    // 是否启用开发者功能
+    /// <summary>
+    /// 控制系统中面向开发调试的功能开关是否启用。
+    /// </summary>
     public bool DeveloperFeaturesEnabled { get; set; }
 }
 
-// 使用日志清空请求
+/// <summary>
+/// 使用日志清空请求，用于描述本次删除操作的筛选范围。
+/// </summary>
 public sealed class ClearUsageLogsRequest
 {
-    // 指定来源时只清空该来源的数据
+    /// <summary>
+    /// 指定来源时，仅清空该来源下的日志数据。
+    /// </summary>
     public string Source { get; set; } = string.Empty;
 
-    // 指定开始时间时只清空区间内数据
+    /// <summary>
+    /// 指定开始时间后，仅清空该时间点及之后的日志。
+    /// </summary>
     public DateTimeOffset? StartTime { get; set; }
 
-    // 指定结束时间时只清空区间内数据
+    /// <summary>
+    /// 指定结束时间后，仅清空该时间点及之前的日志。
+    /// </summary>
     public DateTimeOffset? EndTime { get; set; }
 }

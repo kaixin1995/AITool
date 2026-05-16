@@ -7,29 +7,59 @@ using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace AITool.Web.Pages;
 
+/// <summary>
+/// 登录页面模型。
+/// </summary>
 public sealed class LoginModel : PageModel
 {
+    /// <summary>
+    /// 后台认证服务。
+    /// </summary>
     private readonly AdminAuthService _adminAuthService;
 
+    /// <summary>
+    /// 初始化登录页面模型。
+    /// </summary>
     public LoginModel(AdminAuthService adminAuthService)
     {
         _adminAuthService = adminAuthService;
     }
 
+    /// <summary>
+    /// 登录密码。
+    /// </summary>
     [BindProperty]
     public string Password { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 确认密码。
+    /// </summary>
     [BindProperty]
     public string ConfirmPassword { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 登录后的返回地址。
+    /// </summary>
     public string ReturnUrl { get; private set; } = "/";
 
+    /// <summary>
+    /// 是否为首次设置模式。
+    /// </summary>
     public bool IsSetupMode { get; private set; }
 
+    /// <summary>
+    /// 状态提示。
+    /// </summary>
     public string StatusMessage { get; private set; } = string.Empty;
 
+    /// <summary>
+    /// 状态是否为错误。
+    /// </summary>
     public bool StatusIsError { get; private set; }
 
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public IActionResult OnGet(string? returnUrl = null)
     {
         ReturnUrl = NormalizeReturnUrl(returnUrl);
@@ -42,6 +72,9 @@ public sealed class LoginModel : PageModel
         return Page();
     }
 
+    /// <summary>
+    /// 处理登录提交。
+    /// </summary>
     public async Task<IActionResult> OnPostLoginAsync(string? returnUrl = null)
     {
         ReturnUrl = NormalizeReturnUrl(returnUrl);
@@ -64,6 +97,9 @@ public sealed class LoginModel : PageModel
         return LocalRedirect(ReturnUrl);
     }
 
+    /// <summary>
+    /// 处理首次密码设置。
+    /// </summary>
     public async Task<IActionResult> OnPostSetupAsync(string? returnUrl = null, CancellationToken cancellationToken = default)
     {
         ReturnUrl = NormalizeReturnUrl(returnUrl);
@@ -92,6 +128,9 @@ public sealed class LoginModel : PageModel
         return LocalRedirect(ReturnUrl);
     }
 
+    /// <summary>
+    /// 完成后台登录。
+    /// </summary>
     private async Task SignInAsync()
     {
         var claims = new[]
@@ -103,6 +142,9 @@ public sealed class LoginModel : PageModel
         await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal);
     }
 
+    /// <summary>
+    /// 规范化返回地址。
+    /// </summary>
     private string NormalizeReturnUrl(string? returnUrl)
     {
         return !string.IsNullOrWhiteSpace(returnUrl) && Url.IsLocalUrl(returnUrl)

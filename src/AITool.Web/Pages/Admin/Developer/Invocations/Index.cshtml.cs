@@ -8,15 +8,32 @@ using AITool.Web.Services;
 
 namespace AITool.Web.Pages.Admin.Developer.Invocations;
 
-// 调用调试页模型，按运行时开关展示内存中的最近调用信息。
+/// <summary>
+/// 开发者调用记录页面模型。
+/// </summary>
 public sealed class IndexModel : PageModel
 {
+    /// <summary>
+    /// 每页记录数。
+    /// </summary>
     public const int PageSize = 20;
 
+    /// <summary>
+    /// 系统运行时设置服务。
+    /// </summary>
     private readonly ISystemRuntimeSettingsService _runtimeSettingsService;
+    /// <summary>
+    /// 调用跟踪存储。
+    /// </summary>
     private readonly DeveloperInvocationTraceStore _traceStore;
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
 
+    /// <summary>
+    /// 开发者调用记录页面模型。
+    /// </summary>
     public IndexModel(ISystemRuntimeSettingsService runtimeSettingsService, DeveloperInvocationTraceStore traceStore, AppDbContext dbContext)
     {
         _runtimeSettingsService = runtimeSettingsService;
@@ -24,16 +41,46 @@ public sealed class IndexModel : PageModel
         _dbContext = dbContext;
     }
 
+    /// <summary>
+    /// 初始总记录数。
+    /// </summary>
     public int InitialTotalCount { get; private set; }
+    /// <summary>
+    /// 初始失败记录数。
+    /// </summary>
     public int InitialFailedCount { get; private set; }
+    /// <summary>
+    /// 初始等待记录数。
+    /// </summary>
     public int InitialPendingCount { get; private set; }
+    /// <summary>
+    /// 当前激活页签。
+    /// </summary>
     public string ActiveTab { get; private set; } = "invocations";
+    /// <summary>
+    /// 默认请求地址。
+    /// </summary>
     public string DefaultBaseUrl { get; private set; } = string.Empty;
+    /// <summary>
+    /// 默认访问密钥。
+    /// </summary>
     public string DefaultAccessKey { get; private set; } = string.Empty;
+    /// <summary>
+    /// 默认 OpenAI 模型。
+    /// </summary>
     public string DefaultOpenAiModel { get; private set; } = string.Empty;
+    /// <summary>
+    /// 默认 Anthropic 模型。
+    /// </summary>
     public string DefaultAnthropicModel { get; private set; } = string.Empty;
+    /// <summary>
+    /// 模型列表。
+    /// </summary>
     public List<ClientSimulatorModelItemViewModel> Models { get; private set; } = [];
 
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
     {
         var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
@@ -52,6 +99,9 @@ public sealed class IndexModel : PageModel
         return Page();
     }
 
+    /// <summary>
+    /// 返回调用记录列表。
+    /// </summary>
     public async Task<IActionResult> OnGetListAsync(int pageNumber = 1, CancellationToken cancellationToken = default)
     {
         var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
@@ -84,6 +134,9 @@ public sealed class IndexModel : PageModel
         return new JsonResult(payload);
     }
 
+    /// <summary>
+    /// 返回调用记录详情。
+    /// </summary>
     public async Task<IActionResult> OnGetDetailAsync(Guid traceId, CancellationToken cancellationToken = default)
     {
         var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
@@ -101,7 +154,9 @@ public sealed class IndexModel : PageModel
         return new JsonResult(ToDetailDto(entry));
     }
 
-    // 列表阶段只返回摘要字段，避免一次性传输大块请求体、返回体和完整尝试链路。
+    /// <summary>
+    /// 转换为摘要数据。
+    /// </summary>
     private static DeveloperInvocationTraceSummaryDto ToSummaryDto(DeveloperInvocationTraceEntry entry)
     {
         return new DeveloperInvocationTraceSummaryDto
@@ -126,7 +181,9 @@ public sealed class IndexModel : PageModel
         };
     }
 
-    // 展开卡片后再单独返回完整详情，减少列表刷新和自动刷新时的无效负载。
+    /// <summary>
+    /// 转换为详情数据。
+    /// </summary>
     private static DeveloperInvocationTraceDto ToDetailDto(DeveloperInvocationTraceEntry entry)
     {
         return new DeveloperInvocationTraceDto
@@ -170,6 +227,9 @@ public sealed class IndexModel : PageModel
         };
     }
 
+    /// <summary>
+    /// 转换为尝试详情数据。
+    /// </summary>
     private static DeveloperInvocationTraceAttemptDto ToAttemptDto(DeveloperInvocationTraceAttempt attempt)
     {
         return new DeveloperInvocationTraceAttemptDto
@@ -201,6 +261,9 @@ public sealed class IndexModel : PageModel
         };
     }
 
+    /// <summary>
+    /// 加载调试调用的默认参数。
+    /// </summary>
     private async Task LoadClientSimulatorAsync(CancellationToken cancellationToken)
     {
         DefaultBaseUrl = $"{Request.Scheme}://{Request.Host}";
@@ -238,6 +301,9 @@ public sealed class IndexModel : PageModel
         DefaultAnthropicModel = routeModels.FirstOrDefault(x => x.CanUseAnthropic)?.ModelName ?? string.Empty;
     }
 
+    /// <summary>
+    /// 返回状态样式。
+    /// </summary>
     private static string GetStatusClass(string status)
     {
         return status?.ToLowerInvariant() switch
@@ -248,6 +314,9 @@ public sealed class IndexModel : PageModel
         };
     }
 
+    /// <summary>
+    /// 返回状态文本。
+    /// </summary>
     private static string GetStatusText(string status)
     {
         return status?.ToLowerInvariant() switch
@@ -262,102 +331,366 @@ public sealed class IndexModel : PageModel
     }
 }
 
+/// <summary>
+/// 开发者调用列表响应。
+/// </summary>
 public sealed class DeveloperInvocationListResponse
 {
+    /// <summary>
+    /// TotalCount。
+    /// </summary>
     public int TotalCount { get; set; }
+    /// <summary>
+    /// 失败记录数。
+    /// </summary>
     public int FailedCount { get; set; }
+    /// <summary>
+    /// 等待记录数。
+    /// </summary>
     public int PendingCount { get; set; }
+    /// <summary>
+    /// 页码。
+    /// </summary>
     public int PageNumber { get; set; }
+    /// <summary>
+    /// 每页记录数。
+    /// </summary>
     public int PageSize { get; set; }
+    /// <summary>
+    /// 总页数。
+    /// </summary>
     public int TotalPages { get; set; }
+    /// <summary>
+    /// 记录列表。
+    /// </summary>
     public List<DeveloperInvocationTraceSummaryDto> Entries { get; set; } = [];
 }
 
+/// <summary>
+/// 开发者调用摘要。
+/// </summary>
 public sealed class DeveloperInvocationTraceSummaryDto
 {
+    /// <summary>
+    /// 跟踪标识。
+    /// </summary>
     public Guid TraceId { get; set; }
+    /// <summary>
+    /// 创建时间。
+    /// </summary>
     public DateTimeOffset CreatedAt { get; set; }
+    /// <summary>
+    /// 格式化后的创建时间。
+    /// </summary>
     public string CreatedAtText { get; set; } = string.Empty;
+    /// <summary>
+    /// 来源。
+    /// </summary>
     public string Source { get; set; } = string.Empty;
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求路径。
+    /// </summary>
     public string RequestPath { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求模型名称。
+    /// </summary>
     public string RequestModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 摘要中的站点名称。
+    /// </summary>
     public string SummarySite { get; set; } = string.Empty;
+    /// <summary>
+    /// 摘要中的模型名称。
+    /// </summary>
     public string SummaryAttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// StatusText。
+    /// </summary>
     public string StatusText { get; set; } = string.Empty;
+    /// <summary>
+    /// StatusClass。
+    /// </summary>
     public string StatusClass { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态码。
+    /// </summary>
     public int StatusCode { get; set; }
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
+    /// <summary>
+    /// 失败尝试次数。
+    /// </summary>
     public int FailedAttemptCount { get; set; }
+    /// <summary>
+    /// 等待中的尝试次数。
+    /// </summary>
     public int PendingAttemptCount { get; set; }
+    /// <summary>
+    /// 成功尝试次数。
+    /// </summary>
     public int SuccessAttemptCount { get; set; }
 }
 
+/// <summary>
+/// 开发者调用详情。
+/// </summary>
 public sealed class DeveloperInvocationTraceDto
 {
+    /// <summary>
+    /// 跟踪标识。
+    /// </summary>
     public Guid TraceId { get; set; }
+    /// <summary>
+    /// 请求标识。
+    /// </summary>
     public Guid RequestId { get; set; }
+    /// <summary>
+    /// 创建时间。
+    /// </summary>
     public DateTimeOffset CreatedAt { get; set; }
+    /// <summary>
+    /// 格式化后的创建时间。
+    /// </summary>
     public string CreatedAtText { get; set; } = string.Empty;
+    /// <summary>
+    /// 更新时间。
+    /// </summary>
     public DateTimeOffset UpdatedAt { get; set; }
+    /// <summary>
+    /// 格式化后的更新时间。
+    /// </summary>
     public string UpdatedAtText { get; set; } = string.Empty;
+    /// <summary>
+    /// 来源。
+    /// </summary>
     public string Source { get; set; } = string.Empty;
+    /// <summary>
+    /// 用户代理。
+    /// </summary>
     public string UserAgent { get; set; } = string.Empty;
+    /// <summary>
+    /// 客户端 IP。
+    /// </summary>
     public string ClientIp { get; set; } = string.Empty;
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 上游协议类型。
+    /// </summary>
     public string UpstreamProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求路径。
+    /// </summary>
     public string RequestPath { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求模型名称。
+    /// </summary>
     public string RequestModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 尝试调用的模型。
+    /// </summary>
     public string AttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 目标站点标识。
+    /// </summary>
     public Guid? TargetSiteId { get; set; }
+    /// <summary>
+    /// 目标站点名称。
+    /// </summary>
     public string TargetSiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 摘要中的站点名称。
+    /// </summary>
     public string SummarySite { get; set; } = string.Empty;
+    /// <summary>
+    /// 摘要中的模型名称。
+    /// </summary>
     public string SummaryAttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求体。
+    /// </summary>
     public string RequestBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求头。
+    /// </summary>
     public Dictionary<string, string> RequestHeaders { get; set; } = [];
+    /// <summary>
+    /// 状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// StatusText。
+    /// </summary>
     public string StatusText { get; set; } = string.Empty;
+    /// <summary>
+    /// StatusClass。
+    /// </summary>
     public string StatusClass { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态码。
+    /// </summary>
     public int StatusCode { get; set; }
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string ErrorMessage { get; set; } = string.Empty;
+    /// <summary>
+    /// 响应体。
+    /// </summary>
     public string ResponseBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 响应内容类型。
+    /// </summary>
     public string ResponseContentType { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否为流式响应。
+    /// </summary>
     public bool IsStreaming { get; set; }
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
+    /// <summary>
+    /// 失败尝试次数。
+    /// </summary>
     public int FailedAttemptCount { get; set; }
+    /// <summary>
+    /// 等待中的尝试次数。
+    /// </summary>
     public int PendingAttemptCount { get; set; }
+    /// <summary>
+    /// 成功尝试次数。
+    /// </summary>
     public int SuccessAttemptCount { get; set; }
+    /// <summary>
+    /// 尝试记录列表。
+    /// </summary>
     public List<DeveloperInvocationTraceAttemptDto> Attempts { get; set; } = [];
 }
 
+/// <summary>
+/// 开发者调用尝试详情。
+/// </summary>
 public sealed class DeveloperInvocationTraceAttemptDto
 {
+    /// <summary>
+    /// AttemptId。
+    /// </summary>
     public Guid AttemptId { get; set; }
+    /// <summary>
+    /// 创建时间。
+    /// </summary>
     public DateTimeOffset CreatedAt { get; set; }
+    /// <summary>
+    /// 格式化后的创建时间。
+    /// </summary>
     public string CreatedAtText { get; set; } = string.Empty;
+    /// <summary>
+    /// 更新时间。
+    /// </summary>
     public DateTimeOffset UpdatedAt { get; set; }
+    /// <summary>
+    /// 格式化后的更新时间。
+    /// </summary>
     public string UpdatedAtText { get; set; } = string.Empty;
+    /// <summary>
+    /// 尝试调用的模型。
+    /// </summary>
     public string AttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 上游协议类型。
+    /// </summary>
     public string UpstreamProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 转发模式。
+    /// </summary>
     public string ForwardingMode { get; set; } = string.Empty;
+    /// <summary>
+    /// 目标站点标识。
+    /// </summary>
     public Guid? TargetSiteId { get; set; }
+    /// <summary>
+    /// 目标站点名称。
+    /// </summary>
     public string TargetSiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 摘要中的站点名称。
+    /// </summary>
     public string SummarySite { get; set; } = string.Empty;
+    /// <summary>
+    /// 摘要中的模型名称。
+    /// </summary>
     public string SummaryAttemptedModel { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态。
+    /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// StatusText。
+    /// </summary>
     public string StatusText { get; set; } = string.Empty;
+    /// <summary>
+    /// StatusClass。
+    /// </summary>
     public string StatusClass { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态码。
+    /// </summary>
     public int StatusCode { get; set; }
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
     public string ErrorMessage { get; set; } = string.Empty;
+    /// <summary>
+    /// 响应体。
+    /// </summary>
     public string ResponseBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 响应内容类型。
+    /// </summary>
     public string ResponseContentType { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否为流式响应。
+    /// </summary>
     public bool IsStreaming { get; set; }
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
     public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
     public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
     public int OutputTokens { get; set; }
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
     public int TotalDurationMs { get; set; }
 }

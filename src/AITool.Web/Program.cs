@@ -265,32 +265,50 @@ app.MapControllers();
 
 app.Run();
 
+/// <summary>
+/// 判断是否为后台请求。
+/// </summary>
 static bool IsAdminRequest(HttpRequest request)
 {
     return IsAdminPageRequest(request) || IsAdminApiRequest(request) || IsHangfireRequest(request);
 }
 
+/// <summary>
+/// 判断是否为后台页面请求。
+/// </summary>
 static bool IsAdminPageRequest(HttpRequest request)
 {
     var path = request.Path;
     return path == "/" || path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase);
 }
 
+/// <summary>
+/// 判断是否为登录页请求。
+/// </summary>
 static bool IsLoginPageRequest(HttpRequest request)
 {
     return request.Path == "/Login";
 }
 
+/// <summary>
+/// 判断是否为后台接口请求。
+/// </summary>
 static bool IsAdminApiRequest(HttpRequest request)
 {
     return request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase);
 }
 
+/// <summary>
+/// 判断是否为 Hangfire 请求。
+/// </summary>
 static bool IsHangfireRequest(HttpRequest request)
 {
     return request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase);
 }
 
+/// <summary>
+/// 获取本机 IPv4 地址。
+/// </summary>
 static string GetLocalIpAddress()
 {
     try
@@ -305,6 +323,9 @@ static string GetLocalIpAddress()
     }
 }
 
+/// <summary>
+/// 安全读取请求体。
+/// </summary>
 static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, CancellationToken cancellationToken)
 {
     try
@@ -326,5 +347,7 @@ static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, Can
     }
 }
 
-// 暴露 Program 类供集成测试引用。
+/// <summary>
+/// 程序入口。
+/// </summary>
 public partial class Program;

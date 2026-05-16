@@ -1,23 +1,43 @@
 namespace AITool.Infrastructure.Proxy;
 
-// 路由级熔断状态存储，单条路由连续失败达到阈值后被临时屏蔽
+/// <summary>
+/// 路由级熔断状态存储，单条路由连续失败达到阈值后被临时屏蔽
+/// </summary>
 public sealed class RouteCircuitStateStore
 {
+    /// <summary>
+    /// 方法 new。
+    /// </summary>
     private readonly object _syncRoot = new();
+    /// <summary>
+    /// 字段 _blockDuration。
+    /// </summary>
     private TimeSpan _blockDuration;
+    /// <summary>
+    /// 字段 _failThreshold。
+    /// </summary>
     private int _failThreshold;
-    // 路由连续失败次数记录
+    /// <summary>
+    /// 路由连续失败次数记录
+    /// </summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, int> _failCounts = [];
-    // 被熔断的路由及其解除时间
+    /// <summary>
+    /// 被熔断的路由及其解除时间
+    /// </summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, DateTimeOffset> _blockedRoutes = [];
 
+    /// <summary>
+    /// 初始化 RouteCircuitStateStore。
+    /// </summary>
     public RouteCircuitStateStore(TimeSpan? blockDuration = null, int failThreshold = 5)
     {
         _blockDuration = blockDuration ?? TimeSpan.FromMinutes(2);
         _failThreshold = failThreshold;
     }
 
-    // 动态更新熔断参数，新配置应尽快影响后续请求。
+    /// <summary>
+    /// 动态更新熔断参数，新配置应尽快影响后续请求。
+    /// </summary>
     public void UpdateOptions(TimeSpan blockDuration, int failThreshold)
     {
         lock (_syncRoot)
@@ -27,7 +47,9 @@ public sealed class RouteCircuitStateStore
         }
     }
 
-    // 记录一次失败，连续失败达到阈值时触发熔断
+    /// <summary>
+    /// 记录一次失败，连续失败达到阈值时触发熔断
+    /// </summary>
     public void Block(Guid routeId)
     {
         // 如果已经被熔断，不再重复计数
@@ -43,13 +65,17 @@ public sealed class RouteCircuitStateStore
         }
     }
 
-    // 记录一次成功，清除该路由的连续失败计数
+    /// <summary>
+    /// 记录一次成功，清除该路由的连续失败计数
+    /// </summary>
     public void Succeed(Guid routeId)
     {
         _failCounts.TryRemove(routeId, out _);
     }
 
-    // 判断路由当前是否仍处于熔断窗口内
+    /// <summary>
+    /// 判断路由当前是否仍处于熔断窗口内
+    /// </summary>
     public bool IsBlocked(Guid routeId)
     {
         if (_blockedRoutes.TryGetValue(routeId, out var until))

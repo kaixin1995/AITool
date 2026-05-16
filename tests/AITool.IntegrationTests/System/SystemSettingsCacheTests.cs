@@ -12,12 +12,23 @@ using Microsoft.Extensions.Caching.Memory;
 
 namespace AITool.IntegrationTests.System;
 
-// 系统设置缓存测试，验证保存后代理运行时缓存会立刻刷新。
+/// <summary>
+/// 系统设置缓存测试，验证保存后代理运行时缓存会立刻刷新。
+/// </summary>
 public sealed class SystemSettingsCacheTests : IAsyncDisposable
 {
+    /// <summary>
+    /// 保存测试使用的服务提供器。
+    /// </summary>
     private readonly ServiceProvider _serviceProvider;
+    /// <summary>
+    /// 保存当前测试使用的临时数据库路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-system-settings-cache-{Guid.NewGuid():N}.db");
 
+    /// <summary>
+    /// 创建系统设置缓存测试所需的服务容器和数据库配置。
+    /// </summary>
     public SystemSettingsCacheTests()
     {
         var services = new ServiceCollection();
@@ -30,6 +41,9 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         _serviceProvider = services.BuildServiceProvider();
     }
 
+    /// <summary>
+    /// 验证保存系统设置后，运行时设置缓存会立即失效并重新加载。
+    /// </summary>
     [Fact]
     public async Task OnPostAsync_invalidates_runtime_settings_cache_immediately()
     {
@@ -94,6 +108,9 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         after.DeveloperFeaturesEnabled.Should().BeTrue();
     }
 
+    /// <summary>
+    /// 释放测试过程中创建的资源。
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
         await _serviceProvider.DisposeAsync();

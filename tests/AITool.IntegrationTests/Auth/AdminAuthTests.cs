@@ -16,9 +16,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AITool.IntegrationTests.Auth;
 
-// 后台登录鉴权集成测试，验证仅管理端受保护，代理路由仍只按访问密钥工作。
+/// <summary>
+/// 后台登录鉴权集成测试，验证仅管理端受保护，代理路由仍只按访问密钥工作。
+/// </summary>
 public sealed class AdminAuthTests
 {
+    /// <summary>
+    /// 验证未登录访问首页时会跳转到登录页。
+    /// </summary>
     [Fact]
     public async Task Get_root_redirects_to_login_when_not_authenticated()
     {
@@ -35,6 +40,9 @@ public sealed class AdminAuthTests
         response.Headers.Location!.OriginalString.Should().StartWith("/Login?returnUrl=");
     }
 
+    /// <summary>
+    /// 验证未配置后台密码时，登录页会提示先完成初始化设置。
+    /// </summary>
     [Fact]
     public async Task Get_login_shows_setup_message_when_password_not_configured()
     {
@@ -52,6 +60,9 @@ public sealed class AdminAuthTests
         html.Should().Contain("保存并登录");
     }
 
+    /// <summary>
+    /// 验证未登录访问后台接口时会返回未授权。
+    /// </summary>
     [Fact]
     public async Task Get_admin_api_returns_unauthorized_when_not_authenticated()
     {
@@ -66,6 +77,9 @@ public sealed class AdminAuthTests
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
+    /// <summary>
+    /// 验证代理路由仍只校验访问密钥，不会跳转到后台登录页。
+    /// </summary>
     [Fact]
     public async Task Proxy_route_still_uses_access_key_without_login_redirect()
     {
@@ -88,23 +102,44 @@ public sealed class AdminAuthTests
         body.Should().Contain("auth-proxy-ok");
     }
 
+    /// <summary>
+    /// 计算后台密码配置要使用的 MD5 值。
+    /// </summary>
     private static string ComputeMd5(string value)
     {
         return Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
     }
 }
 
+/// <summary>
+/// 用于构建 AdminAuthWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// </summary>
 internal sealed class AdminAuthWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 保存当前测试使用的临时数据库路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-admin-auth-{Guid.NewGuid():N}.db");
+    /// <summary>
+    /// 保存当前测试注入的后台密码哈希。
+    /// </summary>
     private readonly string _passwordHash;
+    /// <summary>
+    /// 提供固定代理响应，供鉴权测试复用。
+    /// </summary>
     private readonly AdminAuthFakeProxyForwardService _fakeForwardService = new();
 
+    /// <summary>
+    /// 创建后台鉴权测试宿主，并记录当前要使用的后台密码配置。
+    /// </summary>
     public AdminAuthWebApplicationFactory(string passwordHash)
     {
         _passwordHash = passwordHash;
     }
 
+    /// <summary>
+    /// 配置后台鉴权测试所需的应用参数、服务和数据库。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
@@ -126,12 +161,18 @@ internal sealed class AdminAuthWebApplicationFactory : WebApplicationFactory<Pro
         });
     }
 
+    /// <summary>
+    /// 创建客户端后初始化当前测试场景的数据。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();
@@ -201,8 +242,14 @@ internal sealed class AdminAuthWebApplicationFactory : WebApplicationFactory<Pro
     }
 }
 
+/// <summary>
+/// 用于模拟代理转发结果，支撑 AdminAuthFakeProxyForwardService 相关断言。
+/// </summary>
 internal sealed class AdminAuthFakeProxyForwardService : IProxyForwardService
 {
+    /// <summary>
+    /// 返回固定的 Anthropic 成功响应，供代理鉴权场景断言。
+    /// </summary>
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         return Task.FromResult(new ProxyForwardResult
@@ -215,6 +262,9 @@ internal sealed class AdminAuthFakeProxyForwardService : IProxyForwardService
         });
     }
 
+    /// <summary>
+    /// 复用非流式结果，模拟流式转发也能成功返回。
+    /// </summary>
     public Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,

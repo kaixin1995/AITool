@@ -5,25 +5,40 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Retention;
 
-// 日志保留策略服务实现，按运行时配置清理使用日志并回写结果
+/// <summary>
+/// 日志保留策略服务实现，按运行时配置清理使用日志并回写结果
+/// </summary>
 public sealed class LogRetentionService : ILogRetentionService
 {
+    /// <summary>
+    /// 字段 _dbContext。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 字段 _utcNowProvider。
+    /// </summary>
     private readonly Func<DateTimeOffset> _utcNowProvider;
 
+    /// <summary>
+    /// 初始化 LogRetentionService。
+    /// </summary>
     public LogRetentionService(AppDbContext dbContext)
         : this(dbContext, () => DateTimeOffset.UtcNow)
     {
     }
 
-    // 为测试提供固定时间入口，避免边界场景受当前时间漂移影响
+    /// <summary>
+    /// 为测试提供固定时间入口，避免边界场景受当前时间漂移影响
+    /// </summary>
     public LogRetentionService(AppDbContext dbContext, Func<DateTimeOffset> utcNowProvider)
     {
         _dbContext = dbContext;
         _utcNowProvider = utcNowProvider;
     }
 
-    // 删除超过保留天数的使用日志，并回写本次清理结果
+    /// <summary>
+    /// 删除超过保留天数的使用日志，并回写本次清理结果
+    /// </summary>
     public async Task<LogPruneResult> PruneAsync(CancellationToken cancellationToken = default)
     {
         var settings = await _dbContext.SystemRuntimeSettings

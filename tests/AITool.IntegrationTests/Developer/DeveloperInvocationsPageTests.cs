@@ -16,9 +16,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AITool.IntegrationTests.Developer;
 
-// 调用调试页集成测试，验证开关控制与内存记录展示。
+/// <summary>
+/// 调用调试页集成测试，验证开关控制与内存记录展示。
+/// </summary>
 public sealed class DeveloperInvocationsPageTests
 {
+    /// <summary>
+    /// 验证关闭开发者功能后，请求调用调试页会返回未找到。
+    /// </summary>
     [Fact]
     public async Task Get_invocations_page_returns_not_found_when_feature_is_disabled()
     {
@@ -30,6 +35,9 @@ public sealed class DeveloperInvocationsPageTests
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
+    /// <summary>
+    /// 验证启用开发者功能后，调用调试页会展示最新的请求和响应内容。
+    /// </summary>
     [Fact]
     public async Task Get_invocations_page_shows_latest_request_and_response_when_feature_is_enabled()
     {
@@ -68,6 +76,9 @@ public sealed class DeveloperInvocationsPageTests
         payload.Should().Contain("hello debug");
     }
 
+    /// <summary>
+    /// 验证调用调试页包含自动刷新相关脚本标记。
+    /// </summary>
     [Fact]
     public async Task Get_invocations_page_contains_auto_refresh_script_markers()
     {
@@ -87,6 +98,9 @@ public sealed class DeveloperInvocationsPageTests
         html.Should().NotContain("' + renderAttempts(entry, index) + '");
     }
 
+    /// <summary>
+    /// 验证调用调试页默认不会自动开启刷新。
+    /// </summary>
     [Fact]
     public async Task Get_invocations_page_does_not_enable_auto_refresh_by_default()
     {
@@ -102,6 +116,9 @@ public sealed class DeveloperInvocationsPageTests
         html.Should().NotContain("id=\"autoRefreshToggle\" checked");
     }
 
+    /// <summary>
+    /// 验证启用开发者功能后，列表接口会返回调用记录数据。
+    /// </summary>
     [Fact]
     public async Task Get_list_returns_entries_payload_when_feature_is_enabled()
     {
@@ -129,6 +146,9 @@ public sealed class DeveloperInvocationsPageTests
         payload.Should().Contain("debug-upstream-model");
     }
 
+    /// <summary>
+    /// 验证调用调试页会展示最终成功前的全部路由尝试记录。
+    /// </summary>
     [Fact]
     public async Task Get_invocations_page_shows_all_route_attempts_before_final_success()
     {
@@ -172,6 +192,9 @@ public sealed class DeveloperInvocationsPageTests
         payload.Should().Contain("\"forwardingMode\":\"direct\"");
     }
 
+    /// <summary>
+    /// 验证启用开发者功能后，Anthropic 流式调用会返回带事件类型的调试数据。
+    /// </summary>
     [Fact]
     public async Task Get_list_returns_anthropic_stream_payload_with_typed_events_when_feature_is_enabled()
     {
@@ -219,6 +242,9 @@ public sealed class DeveloperInvocationsPageTests
         payload.Should().Contain("\"cache_creation_input_tokens\":0");
     }
 
+    /// <summary>
+    /// 验证上游缺少 DONE 事件时，系统仍会补齐 Anthropic 流式结束事件。
+    /// </summary>
     [Fact]
     public async Task Get_anthropic_stream_appends_closing_events_when_upstream_done_is_missing()
     {
@@ -264,16 +290,31 @@ public sealed class DeveloperInvocationsPageTests
 }
 internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 保存当前测试使用的临时数据库路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-developer-invocations-{Guid.NewGuid():N}.db");
+    /// <summary>
+    /// 标记当前测试是否启用开发者功能。
+    /// </summary>
     private readonly bool _developerFeaturesEnabled;
+    /// <summary>
+    /// 保存当前测试注入的模拟代理转发服务。
+    /// </summary>
     private readonly DeveloperInvocationsFakeProxyForwardService _fakeForwardService;
 
+    /// <summary>
+    /// 创建调用调试页测试宿主，并记录功能开关和模拟转发服务。
+    /// </summary>
     public DeveloperInvocationsWebApplicationFactory(bool developerFeaturesEnabled, DeveloperInvocationsFakeProxyForwardService fakeForwardService)
     {
         _developerFeaturesEnabled = developerFeaturesEnabled;
         _fakeForwardService = fakeForwardService;
     }
 
+    /// <summary>
+    /// 配置调用调试页测试所需的服务和数据库。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -287,12 +328,18 @@ internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplication
         });
     }
 
+    /// <summary>
+    /// 创建客户端后初始化当前测试场景的数据。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();
@@ -373,8 +420,14 @@ internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplication
 
 internal sealed class DeveloperInvocationsFakeProxyForwardService : IProxyForwardService
 {
+    /// <summary>
+    /// 按顺序保存待返回的模拟转发结果。
+    /// </summary>
     private readonly Queue<ProxyForwardResult> _queuedResults = new();
 
+    /// <summary>
+    /// 保存默认返回的模拟转发结果。
+    /// </summary>
     public ProxyForwardResult Result { get; set; } = new()
     {
         Success = true,
@@ -386,11 +439,17 @@ internal sealed class DeveloperInvocationsFakeProxyForwardService : IProxyForwar
         TotalDurationMs = 123
     };
 
+    /// <summary>
+    /// 向模拟结果队列追加待返回的结果。
+    /// </summary>
     public void EnqueueResult(ProxyForwardResult result)
     {
         _queuedResults.Enqueue(result);
     }
 
+    /// <summary>
+    /// 优先返回排队的模拟结果，否则返回默认结果。
+    /// </summary>
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         if (_queuedResults.Count > 0)
@@ -401,6 +460,9 @@ internal sealed class DeveloperInvocationsFakeProxyForwardService : IProxyForwar
         return Task.FromResult(Result);
     }
 
+    /// <summary>
+    /// 按行回放模拟响应内容，供流式调用调试场景使用。
+    /// </summary>
     public async Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,

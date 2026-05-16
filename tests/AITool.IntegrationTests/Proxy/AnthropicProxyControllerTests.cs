@@ -16,9 +16,14 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AITool.IntegrationTests.Proxy;
 
-// Anthropic 代理入口集成测试，验证鉴权、缓存失效和运行时设置都会按真实入口生效。
+/// <summary>
+/// Anthropic 代理入口集成测试，验证鉴权、缓存失效和运行时设置都会按真实入口生效。
+/// </summary>
 public sealed class AnthropicProxyControllerTests
 {
+    /// <summary>
+    /// 验证 Anthropic 客户端获取模型列表时会返回兼容格式的数据。
+    /// </summary>
     [Fact]
     public async Task Get_models_returns_anthropic_model_list()
     {
@@ -39,6 +44,9 @@ public sealed class AnthropicProxyControllerTests
         document.RootElement.GetProperty("has_more").GetBoolean().Should().BeFalse();
     }
 
+    /// <summary>
+    /// 验证 count_tokens 接口会返回基于请求文本估算出的输入 token 数量。
+    /// </summary>
     [Fact]
     public async Task Post_count_tokens_returns_estimated_input_tokens()
     {
@@ -60,6 +68,9 @@ public sealed class AnthropicProxyControllerTests
         document.RootElement.GetProperty("input_tokens").GetInt32().Should().BeGreaterThan(0);
     }
 
+    /// <summary>
+    /// 验证 Messages 接口会使用 x-api-key 鉴权，并把运行时参数传给转发层。
+    /// </summary>
     [Fact]
     public async Task Post_messages_uses_x_api_key_and_runtime_settings_for_forward_request()
     {
@@ -87,6 +98,9 @@ public sealed class AnthropicProxyControllerTests
         document.RootElement.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("anthropic-proxy-ok");
     }
 
+    /// <summary>
+    /// 验证 Bearer 鉴权和 Anthropic 协议头都会被正确透传。
+    /// </summary>
     [Fact]
     public async Task Post_messages_accepts_bearer_key_and_forwards_anthropic_headers()
     {
@@ -110,6 +124,9 @@ public sealed class AnthropicProxyControllerTests
         fakeForwardService.Requests[0].ForwardHeaders["anthropic-beta"].Should().Be("token-counting-2024-11-01");
     }
 
+    /// <summary>
+    /// 验证 Anthropic 原生流式透传会返回完整事件流，并正确记录用量。
+    /// </summary>
     [Fact]
     public async Task Post_messages_stream_passthroughs_anthropic_sse_and_records_usage()
     {
@@ -171,6 +188,9 @@ public sealed class AnthropicProxyControllerTests
         logs[0].OutputTokens.Should().Be(5);
     }
 
+    /// <summary>
+    /// 验证 OpenAI 流式桥接到 Anthropic 时会保留仅包含换行的分片内容。
+    /// </summary>
     [Fact]
     public async Task Post_messages_preserves_whitespace_only_stream_chunks_when_bridging_openai_stream()
     {
@@ -208,6 +228,9 @@ public sealed class AnthropicProxyControllerTests
         body.Should().NotContain("bashcurl");
     }
 
+    /// <summary>
+    /// 验证 OpenAI 流式桥接到 Anthropic 时会保留仅包含空格的分片内容。
+    /// </summary>
     [Fact]
     public async Task Post_messages_preserves_space_only_stream_chunks_when_bridging_openai_stream()
     {
@@ -243,6 +266,9 @@ public sealed class AnthropicProxyControllerTests
         body.Should().NotContain("\"text\":\"AB\"");
     }
 
+    /// <summary>
+    /// 验证访问密钥被禁用后，Messages 请求会返回未授权。
+    /// </summary>
     [Fact]
     public async Task Post_messages_returns_unauthorized_after_access_key_is_disabled()
     {
@@ -260,6 +286,9 @@ public sealed class AnthropicProxyControllerTests
         disabledResponse.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
 
+    /// <summary>
+    /// 验证删除路由入口后，再次请求会返回找不到可用路由。
+    /// </summary>
     [Fact]
     public async Task Post_messages_returns_not_found_after_route_entry_is_deleted()
     {
@@ -282,6 +311,9 @@ public sealed class AnthropicProxyControllerTests
         body.Should().Contain("No available route for model: claude-proxy");
     }
 
+    /// <summary>
+    /// 验证混合路由场景下，请求会按配置顺序尝试并最终切换到可用的 Anthropic 直连流。
+    /// </summary>
     [Fact]
     public async Task Post_messages_prefers_anthropic_route_before_openai_bridge_when_available()
     {
@@ -308,6 +340,9 @@ public sealed class AnthropicProxyControllerTests
         body.Should().Contain("event: message_stop");
     }
 
+    /// <summary>
+    /// 验证 tool_result 内容块会被转换回 OpenAI 协议中的 tool 消息。
+    /// </summary>
     [Fact]
     public async Task Post_messages_converts_tool_result_content_blocks_back_to_openai_tool_message()
     {
@@ -332,6 +367,9 @@ public sealed class AnthropicProxyControllerTests
         fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("file-a.txt\\nfile-b.txt");
     }
 
+    /// <summary>
+    /// 验证 OpenAI 工具调用流能够桥接成 Anthropic 的 tool_use 事件序列。
+    /// </summary>
     [Fact]
     public async Task Post_messages_bridges_openai_tool_call_stream_to_anthropic_tool_use_events()
     {
@@ -371,6 +409,9 @@ public sealed class AnthropicProxyControllerTests
         body.Should().Contain("event: message_stop");
     }
 
+    /// <summary>
+    /// 验证多个 OpenAI 工具调用增量可以分别桥接成对应的 Anthropic 工具事件。
+    /// </summary>
     [Fact]
     public async Task Post_messages_bridges_multiple_openai_tool_call_deltas_to_anthropic_tool_use_events()
     {
@@ -407,6 +448,9 @@ public sealed class AnthropicProxyControllerTests
         body.Should().Contain("event: message_stop");
     }
 
+    /// <summary>
+    /// 验证带多行结构的 OpenAI SSE 块能够正确桥接成 Anthropic 事件流。
+    /// </summary>
     [Fact]
     public async Task Post_messages_bridges_multiline_openai_sse_block_to_anthropic_events()
     {
@@ -444,6 +488,9 @@ public sealed class AnthropicProxyControllerTests
         body.Should().Contain("event: message_stop");
     }
 
+    /// <summary>
+    /// 验证多个 Anthropic 文本块和思考块会合并成 OpenAI 响应内容。
+    /// </summary>
     [Fact]
     public async Task Post_messages_accumulates_multiple_anthropic_text_and_thinking_blocks_into_openai_response()
     {
@@ -477,6 +524,9 @@ public sealed class AnthropicProxyControllerTests
         document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("reasoning_content").GetString().Should().Be("step-1\nstep-2");
     }
 
+    /// <summary>
+    /// 验证即使上游返回的是完整 OpenAI 响应对象，也能桥接成 Anthropic 事件流。
+    /// </summary>
     [Fact]
     public async Task Post_messages_bridges_non_chunked_openai_stream_response_to_anthropic_events()
     {
@@ -510,6 +560,9 @@ public sealed class AnthropicProxyControllerTests
         body.Should().Contain("event: message_stop");
     }
 
+    /// <summary>
+    /// 验证首个 OpenAI choice 为空时，会回退到后续非空 choice 作为结果。
+    /// </summary>
     [Fact]
     public async Task Post_messages_prefers_non_empty_openai_choice_when_first_choice_is_empty()
     {
@@ -536,6 +589,9 @@ public sealed class AnthropicProxyControllerTests
         document.RootElement.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("openai-second-choice");
     }
 
+    /// <summary>
+    /// 验证多 choice 的 OpenAI 流式内容能够桥接成 Anthropic 事件流。
+    /// </summary>
     [Fact]
     public async Task Post_messages_bridges_multi_choice_openai_stream_content_to_anthropic_events()
     {
@@ -567,6 +623,9 @@ public sealed class AnthropicProxyControllerTests
         body.Should().Contain("event: message_stop");
     }
 
+    /// <summary>
+    /// 验证仅存在 OpenAI 站点时，Anthropic 入口会自动走兼容转发。
+    /// </summary>
     [Fact]
     public async Task Post_messages_bridges_to_openai_route_when_only_openai_site_exists()
     {
@@ -590,6 +649,9 @@ public sealed class AnthropicProxyControllerTests
         document.RootElement.GetProperty("usage").GetProperty("output_tokens").GetInt32().Should().Be(9);
     }
 
+    /// <summary>
+    /// 发送一条默认的 Anthropic Messages 请求，便于复用基础测试输入。
+    /// </summary>
     private static Task<HttpResponseMessage> SendMessagesAsync(HttpClient client)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
@@ -603,16 +665,31 @@ public sealed class AnthropicProxyControllerTests
 
 internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 保存当前测试使用的临时数据库文件路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-anthropic-proxy-{Guid.NewGuid():N}.db");
+    /// <summary>
+    /// 保存当前测试使用的伪造转发服务。
+    /// </summary>
     private readonly AnthropicFakeProxyForwardService _fakeForwardService;
+    /// <summary>
+    /// 保存当前测试站点声明的协议类型。
+    /// </summary>
     private readonly string _siteProtocol;
 
+    /// <summary>
+    /// 初始化 Anthropic 代理测试宿主。
+    /// </summary>
     public AnthropicProxyWebApplicationFactory(AnthropicFakeProxyForwardService fakeForwardService, string siteProtocol = "Anthropic")
     {
         _fakeForwardService = fakeForwardService;
         _siteProtocol = siteProtocol;
     }
 
+    /// <summary>
+    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -626,12 +703,18 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
         });
     }
 
+    /// <summary>
+    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();
@@ -703,14 +786,26 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
 
 internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicationFactory<Program>
 {
+    /// <summary>
+    /// 保存当前测试使用的临时数据库文件路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-anthropic-proxy-fallback-{Guid.NewGuid():N}.db");
+    /// <summary>
+    /// 保存混合路由回退场景下使用的伪造转发服务。
+    /// </summary>
     private readonly AnthropicFallbackStreamProxyForwardService _fakeForwardService;
 
+    /// <summary>
+    /// 初始化混合路由回退测试宿主。
+    /// </summary>
     public AnthropicProxyFallbackWebApplicationFactory(AnthropicFallbackStreamProxyForwardService fakeForwardService)
     {
         _fakeForwardService = fakeForwardService;
     }
 
+    /// <summary>
+    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -724,12 +819,18 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
         });
     }
 
+    /// <summary>
+    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();
@@ -827,13 +928,30 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
 
 internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
 {
+    /// <summary>
+    /// 记录测试期间收到的转发请求。
+    /// </summary>
     public List<ProxyForwardRequest> Requests { get; } = [];
+    /// <summary>
+    /// 保存测试时返回的 OpenAI 流式响应片段。
+    /// </summary>
     public List<string>? OpenAiStreamingLines { get; set; }
+    /// <summary>
+    /// 保存测试时返回的 Anthropic 流式响应片段。
+    /// </summary>
     public List<string>? AnthropicStreamingLines { get; set; }
+    /// <summary>
+    /// 允许按请求动态生成非流式转发结果，便于覆盖特定断言场景。
+    /// </summary>
     public Func<ProxyForwardRequest, ProxyForwardResult>? ForwardResultFactory { get; set; }
+    /// <summary>
+    /// 允许按请求动态生成流式转发结果，便于覆盖中断、补尾等特殊场景。
+    /// </summary>
     public Func<ProxyForwardRequest, ProxyForwardResult>? StreamingResultFactory { get; set; }
 
-    // 使用固定成功响应，验证 Anthropic 入口会把真实运行时参数传递到转发层。
+    /// <summary>
+    /// 使用固定成功响应，验证 Anthropic 入口会把真实运行时参数传递到转发层。
+    /// </summary>
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         Requests.Add(new ProxyForwardRequest
@@ -880,6 +998,9 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
         });
     }
 
+    /// <summary>
+    /// 模拟流式转发过程，并按协议回放测试设定的事件流。
+    /// </summary>
     public async Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,
@@ -990,9 +1111,18 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
 
 internal sealed class AnthropicFallbackStreamProxyForwardService : IProxyForwardService
 {
+    /// <summary>
+    /// 记录流式转发路径被调用的次数。
+    /// </summary>
     public int StreamAttemptCount { get; private set; }
+    /// <summary>
+    /// 记录非流式转发路径被调用的次数。
+    /// </summary>
     public int NonStreamAttemptCount { get; private set; }
 
+    /// <summary>
+    /// 模拟非流式转发结果，便于验证回退后的最终响应。
+    /// </summary>
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         NonStreamAttemptCount++;
@@ -1007,6 +1137,9 @@ internal sealed class AnthropicFallbackStreamProxyForwardService : IProxyForward
         });
     }
 
+    /// <summary>
+    /// 模拟混合路由场景下的流式转发结果，用于验证失败后继续尝试后续流式路由。
+    /// </summary>
     public async Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
         Func<string, CancellationToken, Task> onSseDataAsync,

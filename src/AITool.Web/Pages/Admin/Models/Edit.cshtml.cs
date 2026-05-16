@@ -7,22 +7,50 @@ using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Web.Pages.Admin.Models;
 
-// 模型编辑页关联站点视图模型
+/// <summary>
+/// 模型关联站点信息。
+/// </summary>
 public class ModelSiteMappingViewModel
 {
+    /// <summary>
+    /// 关联标识。
+    /// </summary>
     public Guid MappingId { get; set; }
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
     public Guid SiteId { get; set; }
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 远程模型名称。
+    /// </summary>
     public string RemoteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
     public bool IsEnabled { get; set; }
 }
 
-// 模型编辑页模型，加载现有模型数据并提供更新功能
+/// <summary>
+/// 模型编辑页面模型。
+/// </summary>
 public class EditModel : PageModel
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache? _metadataCache;
 
+    /// <summary>
+    /// 模型编辑页面模型。
+    /// </summary>
     [ActivatorUtilitiesConstructor]
     public EditModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
@@ -30,31 +58,54 @@ public class EditModel : PageModel
         _metadataCache = metadataCache;
     }
 
+    /// <summary>
+    /// 模型编辑页面模型。
+    /// </summary>
     public EditModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
+    /// <summary>
+    /// 模型名称。
+    /// </summary>
     [BindProperty]
     public string ModelName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
     [BindProperty]
     public string DisplayName { get; set; } = string.Empty;
 
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
     [BindProperty]
     public bool IsEnabled { get; set; }
 
-    // 状态消息
+    /// <summary>
+    /// 状态提示。
+    /// </summary>
     public string? StatusMessage { get; set; }
+    /// <summary>
+    /// 操作是否成功。
+    /// </summary>
     public bool StatusSuccess { get; set; }
 
-    // 当前模型标识，供页面内的关联操作复用
+    /// <summary>
+    /// 当前模型标识。
+    /// </summary>
     public Guid CurrentModelId { get; set; }
 
-    // 当前模型关联的站点列表
+    /// <summary>
+    /// 站点关联列表。
+    /// </summary>
     public List<ModelSiteMappingViewModel> SiteMappings { get; set; } = [];
 
-    // 加载模型数据填充表单
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public async Task<IActionResult> OnGetAsync(Guid id, CancellationToken cancellationToken)
     {
         var loaded = await LoadPageDataAsync(id, cancellationToken);
@@ -66,7 +117,9 @@ public class EditModel : PageModel
         return Page();
     }
 
-    // 提交模型更新
+    /// <summary>
+    /// 处理页面提交请求。
+    /// </summary>
     public async Task<IActionResult> OnPostAsync(Guid id, CancellationToken cancellationToken)
     {
         if (!ModelState.IsValid)
@@ -100,7 +153,9 @@ public class EditModel : PageModel
         return Page();
     }
 
-    // 删除模型关联站点时，同时清理对应的路由规则与空路由入口。
+    /// <summary>
+    /// 删除模型与站点的关联。
+    /// </summary>
     public async Task<IActionResult> OnPostDeleteMappingAsync(Guid id, Guid mappingId, CancellationToken cancellationToken)
     {
         try
@@ -156,7 +211,9 @@ public class EditModel : PageModel
         return Page();
     }
 
-    // 统一加载模型表单和关联站点，避免各个处理器重复拼装页面数据。
+    /// <summary>
+    /// 加载页面所需数据。
+    /// </summary>
     private async Task<bool> LoadPageDataAsync(Guid id, CancellationToken cancellationToken)
     {
         var model = await _dbContext.ModelLibraryItems.FindAsync([id], cancellationToken);
@@ -172,7 +229,9 @@ public class EditModel : PageModel
         return true;
     }
 
-    // 关联站点列表仅按当前模型读取，供编辑页单独管理。
+    /// <summary>
+    /// 加载模型关联的站点列表。
+    /// </summary>
     private async Task LoadSiteMappingsAsync(Guid modelId, CancellationToken cancellationToken)
     {
         SiteMappings = await (
@@ -191,6 +250,9 @@ public class EditModel : PageModel
             .ToListAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// 清理空的路由入口。
+    /// </summary>
     private async Task CleanupEmptyRouteEntriesAsync(IEnumerable<string> entryNames, CancellationToken cancellationToken)
     {
         var normalizedNames = entryNames

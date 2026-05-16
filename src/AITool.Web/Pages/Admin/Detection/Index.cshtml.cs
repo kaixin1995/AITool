@@ -5,50 +5,106 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.Detection;
 
-// 按模型分组的检测视图模型
+/// <summary>
+/// 检测页中的模型分组。
+/// </summary>
 public class DetectionModelGroupViewModel
 {
+    /// <summary>
+    /// 模型库项标识。
+    /// </summary>
     public Guid ModelLibraryItemId { get; set; }
+    /// <summary>
+    /// 模型名称。
+    /// </summary>
     public string ModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
     public string DisplayName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点列表。
+    /// </summary>
     public List<DetectionSiteStatusViewModel> Sites { get; set; } = [];
 }
 
-// 单个站点在某个模型上的检测状态
+/// <summary>
+/// 检测页中的站点状态。
+/// </summary>
 public class DetectionSiteStatusViewModel
 {
+    /// <summary>
+    /// 关联标识。
+    /// </summary>
     public Guid MappingId { get; set; }
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 远程模型名称。
+    /// </summary>
     public string RemoteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 最近状态。
+    /// </summary>
     public string LastStatus { get; set; } = string.Empty;
+    /// <summary>
+    /// 最近检测时间。
+    /// </summary>
     public DateTimeOffset? LastCheckedAt { get; set; }
+    /// <summary>
+    /// 最近耗时（毫秒）。
+    /// </summary>
     public int? LastDurationMs { get; set; }
 }
 
-// 搜索过滤用的模型项
+/// <summary>
+/// 检测页的模型筛选项。
+/// </summary>
 public class DetectionFilterModelItem
 {
+    /// <summary>
+    /// 标识。
+    /// </summary>
     public Guid Id { get; set; }
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
     public string DisplayName { get; set; } = string.Empty;
 }
 
-// 模型检测页面模型，按模型分组展示各站点检测状态
+/// <summary>
+/// 模型检测页面模型。
+/// </summary>
 public class IndexModel : PageModel
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
 
+    /// <summary>
+    /// 模型检测页面模型。
+    /// </summary>
     public IndexModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
     }
 
-    // 按模型分组的检测数据
+    /// <summary>
+    /// 模型分组列表。
+    /// </summary>
     public List<DetectionModelGroupViewModel> ModelGroups { get; set; } = [];
 
-    // 用于搜索过滤的模型下拉列表
+    /// <summary>
+    /// 模型筛选项。
+    /// </summary>
     public List<DetectionFilterModelItem> FilterModels { get; set; } = [];
 
-    // 加载所有映射按模型分组展示
+    /// <summary>
+    /// 处理页面加载请求。
+    /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
         var allLogs = await _dbContext.ProxyUsageLogs

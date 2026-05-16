@@ -8,54 +8,91 @@ using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
-// 创建密钥的请求体
+/// <summary>
+/// CreateAccessKeyRequest。
+/// </summary>
 public sealed class CreateAccessKeyRequest
 {
-    // 密钥名称
+    /// <summary>
+    /// 密钥名称。
+    /// </summary>
     public string KeyName { get; set; } = string.Empty;
 }
 
-// 创建密钥的返回结果
+/// <summary>
+/// CreateAccessKeyResult。
+/// </summary>
 public sealed class CreateAccessKeyResult
 {
-    // 密钥ID
+    /// <summary>
+    /// 密钥标识。
+    /// </summary>
     public Guid KeyId { get; set; }
-    // 密钥名称
+    /// <summary>
+    /// 密钥名称。
+    /// </summary>
     public string KeyName { get; set; } = string.Empty;
-    // 原始密钥值
+    /// <summary>
+    /// 明文密钥。
+    /// </summary>
     public string PlainKey { get; set; } = string.Empty;
-    // 是否启用
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
     public bool IsEnabled { get; set; }
 }
 
-// 密钥列表项
+/// <summary>
+/// AccessKeyListItem。
+/// </summary>
 public sealed class AccessKeyListItem
 {
-    // 密钥ID
+    /// <summary>
+    /// 密钥标识。
+    /// </summary>
     public Guid KeyId { get; set; }
-    // 密钥名称
+    /// <summary>
+    /// 密钥名称。
+    /// </summary>
     public string KeyName { get; set; } = string.Empty;
-    // 原始密钥值
+    /// <summary>
+    /// 明文密钥。
+    /// </summary>
     public string PlainKey { get; set; } = string.Empty;
-    // 是否启用
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
     public bool IsEnabled { get; set; }
 }
 
-// 访问密钥管理 API，支持 AJAX 创建/切换/删除密钥
+/// <summary>
+/// AccessKeysApiController。
+/// </summary>
 [ApiController]
 [Route("api/admin/access-keys")]
 public sealed class AccessKeysApiController : ControllerBase
 {
+    /// <summary>
+    /// 数据库上下文。
+    /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理元数据缓存。
+    /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
 
+    /// <summary>
+    /// 创建访问密钥管理控制器。
+    /// </summary>
     public AccessKeysApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
     }
 
-    // 获取所有密钥列表
+    /// <summary>
+    /// 获取访问密钥列表。
+    /// </summary>
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken cancellationToken)
     {
@@ -72,7 +109,9 @@ public sealed class AccessKeysApiController : ControllerBase
         return Ok(keys);
     }
 
-    // 创建密钥，自动生成密钥值并返回明文
+    /// <summary>
+    /// 创建访问密钥。
+    /// </summary>
     [HttpPost("create")]
     public async Task<IActionResult> Create([FromBody] CreateAccessKeyRequest request, CancellationToken cancellationToken)
     {
@@ -110,7 +149,9 @@ public sealed class AccessKeysApiController : ControllerBase
         });
     }
 
-    // 切换密钥启用/禁用状态
+    /// <summary>
+    /// 切换访问密钥启用状态。
+    /// </summary>
     [HttpPost("toggle/{keyId}")]
     public async Task<IActionResult> Toggle(Guid keyId, CancellationToken cancellationToken)
     {
@@ -124,7 +165,9 @@ public sealed class AccessKeysApiController : ControllerBase
         return Ok(new { keyId, isEnabled = key.IsEnabled });
     }
 
-    // 删除密钥
+    /// <summary>
+    /// 删除访问密钥。
+    /// </summary>
     [HttpPost("delete/{keyId}")]
     public async Task<IActionResult> Delete(Guid keyId, CancellationToken cancellationToken)
     {
