@@ -707,7 +707,7 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
     }
 
     /// <summary>
-    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// 在客户端配置完成后执行测试数据初始化。
     /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
@@ -826,7 +826,7 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
     }
 
     /// <summary>
-    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// 在客户端配置完成后执行测试数据初始化。
     /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
@@ -1118,6 +1118,9 @@ internal sealed class AnthropicFakeProxyForwardService : IProxyForwardService
     }
 }
 
+/// <summary>
+/// 混合路由回退场景下模拟 OpenAI 失败、Anthropic 成功的伪造转发服务。
+/// </summary>
 internal sealed class AnthropicFallbackStreamProxyForwardService : IProxyForwardService
 {
     /// <summary>

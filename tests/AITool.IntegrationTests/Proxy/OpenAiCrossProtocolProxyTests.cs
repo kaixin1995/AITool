@@ -148,7 +148,7 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
     }
 
     /// <summary>
-    /// 重写测试宿主依赖，接入隔离数据库和伪造转发服务。
+    /// 在客户端配置完成后执行测试数据初始化。
     /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
@@ -310,7 +310,7 @@ internal sealed class OpenAiCrossProtocolFakeProxyForwardService : IProxyForward
     }
 
     /// <summary>
-    /// 创建 CloneRequest 对应的测试对象。
+    /// 复制转发请求的关键字段，避免测试断言读到被后续修改的引用。
     /// </summary>
     private static ProxyForwardRequest CloneRequest(ProxyForwardRequest request)
     {

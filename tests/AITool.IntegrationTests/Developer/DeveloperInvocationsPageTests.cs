@@ -288,6 +288,9 @@ public sealed class DeveloperInvocationsPageTests
         listPayload.Should().Contain("\"forwardingMode\":\"bridge\"");
     }
 }
+/// <summary>
+/// 开发者调用追踪页面的集成测试宿主，提供隔离数据库和伪造转发服务。
+/// </summary>
 internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplicationFactory<Program>
 {
     /// <summary>
@@ -418,6 +421,9 @@ internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplication
     }
 }
 
+/// <summary>
+/// 伪造的代理转发服务，用于在集成测试中模拟转发行为并记录调用参数。
+/// </summary>
 internal sealed class DeveloperInvocationsFakeProxyForwardService : IProxyForwardService
 {
     /// <summary>

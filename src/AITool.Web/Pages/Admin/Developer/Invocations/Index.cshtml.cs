@@ -337,7 +337,7 @@ public sealed class IndexModel : PageModel
 public sealed class DeveloperInvocationListResponse
 {
     /// <summary>
-    /// TotalCount。
+    /// 调用记录总数。
     /// </summary>
     public int TotalCount { get; set; }
     /// <summary>
@@ -412,11 +412,11 @@ public sealed class DeveloperInvocationTraceSummaryDto
     /// </summary>
     public string Status { get; set; } = string.Empty;
     /// <summary>
-    /// StatusText。
+    /// 状态显示文本。
     /// </summary>
     public string StatusText { get; set; } = string.Empty;
     /// <summary>
-    /// StatusClass。
+    /// 状态样式类名。
     /// </summary>
     public string StatusClass { get; set; } = string.Empty;
     /// <summary>
@@ -531,11 +531,11 @@ public sealed class DeveloperInvocationTraceDto
     /// </summary>
     public string Status { get; set; } = string.Empty;
     /// <summary>
-    /// StatusText。
+    /// 状态显示文本。
     /// </summary>
     public string StatusText { get; set; } = string.Empty;
     /// <summary>
-    /// StatusClass。
+    /// 状态样式类名。
     /// </summary>
     public string StatusClass { get; set; } = string.Empty;
     /// <summary>
@@ -598,7 +598,7 @@ public sealed class DeveloperInvocationTraceDto
 public sealed class DeveloperInvocationTraceAttemptDto
 {
     /// <summary>
-    /// AttemptId。
+    /// 尝试记录标识。
     /// </summary>
     public Guid AttemptId { get; set; }
     /// <summary>
@@ -650,11 +650,11 @@ public sealed class DeveloperInvocationTraceAttemptDto
     /// </summary>
     public string Status { get; set; } = string.Empty;
     /// <summary>
-    /// StatusText。
+    /// 状态显示文本。
     /// </summary>
     public string StatusText { get; set; } = string.Empty;
     /// <summary>
-    /// StatusClass。
+    /// 状态样式类名。
     /// </summary>
     public string StatusClass { get; set; } = string.Empty;
     /// <summary>

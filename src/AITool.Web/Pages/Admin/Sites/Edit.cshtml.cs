@@ -22,7 +22,7 @@ public class EditModel : PageModel
     private readonly ProxyRequestMetadataCache? _metadataCache;
 
     /// <summary>
-    /// 站点编辑页面模型。
+    /// 注入依赖并初始化编辑表单。
     /// </summary>
     [ActivatorUtilitiesConstructor]
     public EditModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
@@ -32,7 +32,7 @@ public class EditModel : PageModel
     }
 
     /// <summary>
-    /// 站点编辑页面模型。
+    /// 用于 Razor 页面模型绑定。
     /// </summary>
     public EditModel(AppDbContext dbContext)
     {
@@ -40,7 +40,7 @@ public class EditModel : PageModel
     }
 
     /// <summary>
-    /// Name。
+    /// 站点名称。
     /// </summary>
     [BindProperty]
     public string Name { get; set; } = string.Empty;

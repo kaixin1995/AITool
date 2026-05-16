@@ -91,7 +91,7 @@ public class IndexModel : PageModel
     private readonly ModelVendorCatalogService? _vendorCatalogService;
 
     /// <summary>
-    /// 模型管理页面模型。
+    /// 注入元数据缓存和厂商目录服务。
     /// </summary>
     [ActivatorUtilitiesConstructor]
     public IndexModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache, ModelVendorCatalogService vendorCatalogService)
@@ -102,7 +102,7 @@ public class IndexModel : PageModel
     }
 
     /// <summary>
-    /// 模型管理页面模型。
+    /// 注入元数据缓存。
     /// </summary>
     public IndexModel(AppDbContext dbContext, ModelVendorCatalogService vendorCatalogService)
     {
@@ -111,7 +111,7 @@ public class IndexModel : PageModel
     }
 
     /// <summary>
-    /// 模型管理页面模型。
+    /// Razor 页面模型绑定。
     /// </summary>
     public IndexModel(AppDbContext dbContext)
     {

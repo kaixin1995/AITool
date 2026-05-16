@@ -156,11 +156,11 @@ public class ModelSelectItem
 public sealed class ModelHealthRangeOption
 {
     /// <summary>
-    /// 值。
+    /// 时间范围选项的实际值，如 1d/7d/30d。
     /// </summary>
     public string Value { get; set; } = string.Empty;
     /// <summary>
-    /// 标签。
+    /// 时间范围选项的显示文本。
     /// </summary>
     public string Label { get; set; } = string.Empty;
 }

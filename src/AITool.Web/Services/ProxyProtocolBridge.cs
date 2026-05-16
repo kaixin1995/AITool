@@ -1473,22 +1473,22 @@ public static class ProxyProtocolBridge
 
         var builder = new StringBuilder();
 
-        // 0) role chunk
+        // role chunk
         AppendOpenAiChunk(builder, modelName, new JsonObject { ["role"] = "assistant", ["content"] = "" });
 
-        // 1) thinking / reasoning_content
+        // 思考/推理内容
         if (reasoningText.Length > 0)
         {
             AppendOpenAiChunk(builder, modelName, new JsonObject { ["reasoning_content"] = reasoningText });
         }
 
-        // 2) text content
+        // 文本内容
         if (contentText is not null)
         {
             AppendOpenAiChunk(builder, modelName, new JsonObject { ["content"] = contentText });
         }
 
-        // 3) tool_calls
+        // 工具调用
         foreach (var tc in toolCalls)
         {
             var tcIdx = tc.Index;
@@ -1508,7 +1508,7 @@ public static class ProxyProtocolBridge
             });
         }
 
-        // 4) finish chunk with usage
+        // 结束 chunk（含用量信息）
         builder.Append("data: ");
         builder.Append(new JsonObject
         {
