@@ -110,6 +110,10 @@ public sealed class OpenAiProxyController : ControllerBase
     /// </summary>
     private readonly DeveloperInvocationTraceStore _traceStore;
     /// <summary>
+    /// 模型并发限制器，按站点+模型粒度控制最大并发请求数。
+    /// </summary>
+    private readonly ModelConcurrencyLimiter _concurrencyLimiter;
+    /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
     private readonly ILogger<OpenAiProxyController> _logger;
@@ -123,6 +127,7 @@ public sealed class OpenAiProxyController : ControllerBase
         RouteCircuitStateStore circuitStore,
         ProxyRequestMetadataCache metadataCache,
         DeveloperInvocationTraceStore traceStore,
+        ModelConcurrencyLimiter concurrencyLimiter,
         ILogger<OpenAiProxyController> logger)
     {
         _forwardService = forwardService;
@@ -130,6 +135,7 @@ public sealed class OpenAiProxyController : ControllerBase
         _circuitStore = circuitStore;
         _metadataCache = metadataCache;
         _traceStore = traceStore;
+        _concurrencyLimiter = concurrencyLimiter;
         _logger = logger;
     }
 
@@ -272,6 +278,11 @@ public sealed class OpenAiProxyController : ControllerBase
 
             attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
+
+            // 按站点+模型粒度获取并发许可，达到上限时排队等待。
+            using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
+                HttpContext.RequestServices, route.SiteId, route.SiteModelName, cancellationToken);
+
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "OpenAI",

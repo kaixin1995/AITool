@@ -34,4 +34,10 @@ public sealed class SiteModelMapping
     /// 标记该站点下的模型映射是否启用，便于按站点维度单独控制模型可用性。
     /// </summary>
     public bool IsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 该站点上此模型的最大并发数，0 表示不限制。
+    /// 当多个路由入口指向同一站点的同一模型时，并发总数不会超过此值。
+    /// </summary>
+    public int MaxConcurrency { get; set; }
 }

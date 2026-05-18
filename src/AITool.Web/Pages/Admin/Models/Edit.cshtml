@@ -72,6 +72,7 @@
                         <th>站点</th>
                         <th>站点模型名</th>
                         <th>状态</th>
+                        <th>最大并发数</th>
                         <th class="text-end">操作</th>
                     </tr>
                 </thead>
@@ -86,6 +87,19 @@
                                     @(mapping.IsEnabled ? "启用" : "禁用")
                                 </span>
                             </td>
+                            <td>
+                                <div class="d-flex align-items-center gap-1">
+                                    <input type="number"
+                                           class="form-control form-control-sm concurrency-input"
+                                           value="@mapping.MaxConcurrency"
+                                           min="0"
+                                           style="width: 80px"
+                                           data-mapping-id="@mapping.MappingId" />
+                                    <button type="button"
+                                            class="btn btn-sm btn-outline-primary concurrency-save"
+                                            data-mapping-id="@mapping.MappingId">保存</button>
+                                </div>
+                            </td>
                             <td class="text-end">
                                 <form method="post" asp-page-handler="DeleteMapping" asp-route-id="@Model.CurrentModelId" asp-route-mappingId="@mapping.MappingId" class="d-inline">
                                     <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该站点关联？')">删除关联</button>
@@ -98,3 +112,49 @@
         </div>
     }
 </div>
+
+<script>
+document.querySelectorAll('.concurrency-save').forEach(function(btn) {
+    btn.addEventListener('click', async function() {
+        var mappingId = this.dataset.mappingId;
+        var input = document.querySelector('.concurrency-input[data-mapping-id="' + mappingId + '"]');
+        var value = parseInt(input.value) || 0;
+        var originalText = this.textContent;
+
+        try {
+            this.disabled = true;
+            this.textContent = '...';
+
+            var res = await fetch('/api/admin/models/mappings/' + mappingId + '/concurrency', {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ maxConcurrency: value })
+            });
+
+            if (res.ok) {
+                this.textContent = '✓';
+                this.classList.remove('btn-outline-primary');
+                this.classList.add('btn-outline-success');
+                setTimeout(function() {
+                    btn.textContent = originalText;
+                    btn.classList.remove('btn-outline-success');
+                    btn.classList.add('btn-outline-primary');
+                }, 1500);
+            } else {
+                throw new Error('保存失败');
+            }
+        } catch (e) {
+            this.textContent = '✗';
+            this.classList.remove('btn-outline-primary');
+            this.classList.add('btn-outline-danger');
+            setTimeout(function() {
+                btn.textContent = originalText;
+                btn.classList.remove('btn-outline-danger');
+                btn.classList.add('btn-outline-primary');
+            }, 1500);
+        } finally {
+            this.disabled = false;
+        }
+    });
+});
+</script>

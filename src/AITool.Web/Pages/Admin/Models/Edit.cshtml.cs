@@ -32,6 +32,10 @@ public class ModelSiteMappingViewModel
     /// 是否启用。
     /// </summary>
     public bool IsEnabled { get; set; }
+    /// <summary>
+    /// 该站点模型的最大并发数，0 表示不限制。
+    /// </summary>
+    public int MaxConcurrency { get; set; }
 }
 
 /// <summary>
@@ -245,7 +249,8 @@ public class EditModel : PageModel
                     SiteId = site.Id,
                     SiteName = site.Name,
                     RemoteModelName = mapping.RemoteModelName,
-                    IsEnabled = mapping.IsEnabled
+                    IsEnabled = mapping.IsEnabled,
+                    MaxConcurrency = mapping.MaxConcurrency
                 })
             .ToListAsync(cancellationToken);
     }

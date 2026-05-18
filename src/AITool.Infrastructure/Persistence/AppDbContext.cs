@@ -108,6 +108,7 @@ public sealed class AppDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.RemoteModelName).IsRequired().HasMaxLength(200);
             entity.Property(e => e.LastStatus).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.MaxConcurrency).IsRequired();
             entity.Property(e => e.IsEnabled).IsRequired();
             entity.HasIndex(e => new { e.SiteId, e.RemoteModelName }).IsUnique();
         });

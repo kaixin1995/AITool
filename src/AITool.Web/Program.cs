@@ -106,6 +106,7 @@ builder.Services.AddScoped<ModelHealthRequestService>();
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
+builder.Services.AddSingleton<ModelConcurrencyLimiter>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 
 // 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点。
@@ -367,6 +368,13 @@ static async Task EnsureProxyUsageLogSchemaAsync(AppDbContext dbContext)
         {
             await using var command = connection.CreateCommand();
             command.CommandText = "ALTER TABLE ProxyUsageLogs ADD COLUMN ForwardingMode TEXT NULL";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        if (!await ColumnExistsAsync(connection, "SiteModelMappings", "MaxConcurrency"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE SiteModelMappings ADD COLUMN MaxConcurrency INTEGER NOT NULL DEFAULT 0";
             await command.ExecuteNonQueryAsync();
         }
     }

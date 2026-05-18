@@ -56,4 +56,35 @@ public sealed class ModelsApiController : ControllerBase
             deletedMonitors = monitorCount
         });
     }
+
+    /// <summary>
+    /// 更新站点模型映射的最大并发数。
+    /// </summary>
+    [HttpPut("mappings/{mappingId:guid}/concurrency")]
+    public async Task<IActionResult> UpdateConcurrency(
+        Guid mappingId,
+        [FromBody] UpdateConcurrencyRequest request,
+        CancellationToken cancellationToken)
+    {
+        var mapping = await _dbContext.SiteModelMappings.FindAsync([mappingId], cancellationToken);
+        if (mapping is null)
+        {
+            return NotFound(new { message = "站点模型映射不存在" });
+        }
+
+        mapping.MaxConcurrency = Math.Max(0, request.MaxConcurrency);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return Ok(new { mapping.MaxConcurrency });
+    }
+}
+
+/// <summary>
+/// 更新并发数请求体。
+/// </summary>
+public sealed class UpdateConcurrencyRequest
+{
+    /// <summary>
+    /// 最大并发数，0 表示不限制。
+    /// </summary>
+    public int MaxConcurrency { get; set; }
 }
