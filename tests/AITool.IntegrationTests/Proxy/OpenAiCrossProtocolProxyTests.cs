@@ -34,7 +34,7 @@ public sealed class OpenAiCrossProtocolProxyTests
 
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
         {
-            Content = new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+            Content = new StringContent("{\"model\":\"auto\",\"effort\":\"high\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
         };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "openai-cross-key");
 
@@ -52,6 +52,12 @@ public sealed class OpenAiCrossProtocolProxyTests
         document.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32().Should().Be(8);
         document.RootElement.GetProperty("usage").GetProperty("prompt_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(1);
         document.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32().Should().Be(8);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].ReasoningEffort.Should().Be("high");
     }
 
     /// <summary>

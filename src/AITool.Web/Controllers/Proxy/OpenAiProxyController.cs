@@ -217,6 +217,7 @@ public sealed class OpenAiProxyController : ControllerBase
         // 解析请求中的模型名称
         string modelName;
         var enableStreaming = false;
+        var reasoningEffort = string.Empty;
         try
         {
             using var doc = JsonDocument.Parse(requestBody);
@@ -224,6 +225,7 @@ public sealed class OpenAiProxyController : ControllerBase
             enableStreaming = doc.RootElement.TryGetProperty("stream", out var streamValue)
                 && streamValue.ValueKind is JsonValueKind.True or JsonValueKind.False
                 && streamValue.GetBoolean();
+            reasoningEffort = ResolveReasoningEffort(doc.RootElement);
         }
         catch
         {
@@ -321,7 +323,8 @@ public sealed class OpenAiProxyController : ControllerBase
                     IsStreamInterrupted = streamResult.IsStreamInterrupted,
                     FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
                     StreamDurationMs = streamResult.StreamDurationMs,
-                    TotalDurationMs = streamResult.TotalDurationMs
+                    TotalDurationMs = streamResult.TotalDurationMs,
+                    ReasoningEffort = reasoningEffort
                 }, CancellationToken.None);
 
                 if (streamResult.Success)
@@ -375,6 +378,7 @@ public sealed class OpenAiProxyController : ControllerBase
                 RequestId = requestId,
                 AccessKeyId = accessKey.Id,
                 ProtocolType = "OpenAI",
+                ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
                 RequestModel = modelName,
                 AttemptedModel = route.UpstreamModelName,
                 TargetSiteId = route.SiteId,
@@ -392,7 +396,8 @@ public sealed class OpenAiProxyController : ControllerBase
                 IsStreamInterrupted = result.IsStreamInterrupted,
                 FirstTokenLatencyMs = result.FirstTokenLatencyMs,
                 StreamDurationMs = result.StreamDurationMs,
-                TotalDurationMs = result.TotalDurationMs
+                TotalDurationMs = result.TotalDurationMs,
+                ReasoningEffort = reasoningEffort
             }, cancellationToken);
 
             if (result.Success)
@@ -1213,6 +1218,65 @@ public sealed class OpenAiProxyController : ControllerBase
         return string.Equals(clientProtocolType, upstreamProtocolType, StringComparison.OrdinalIgnoreCase)
             ? "direct"
             : "bridge";
+    }
+
+    /// <summary>
+    /// 从代理请求体中提取思考等级，兼容不同客户端协议的字段命名。
+    /// </summary>
+    private static string ResolveReasoningEffort(JsonElement rootElement)
+    {
+        if (TryGetNormalizedString(rootElement, "reasoning_effort", out var directEffort))
+        {
+            return directEffort;
+        }
+
+        if (TryGetNormalizedString(rootElement, "effort", out var effort))
+        {
+            return effort;
+        }
+
+        if (rootElement.TryGetProperty("reasoning", out var reasoningElement) &&
+            reasoningElement.ValueKind == JsonValueKind.Object &&
+            TryGetNormalizedString(reasoningElement, "effort", out var nestedEffort))
+        {
+            return nestedEffort;
+        }
+
+        if (rootElement.TryGetProperty("thinking", out var thinkingElement) &&
+            thinkingElement.ValueKind == JsonValueKind.Object &&
+            thinkingElement.TryGetProperty("budget_tokens", out var budgetTokensElement) &&
+            budgetTokensElement.TryGetInt32(out var budgetTokens))
+        {
+            return budgetTokens switch
+            {
+                <= 1280 => "low",
+                <= 2048 => "medium",
+                _ => "high"
+            };
+        }
+
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// 读取并规范化请求体中的字符串字段。
+    /// </summary>
+    private static bool TryGetNormalizedString(JsonElement rootElement, string propertyName, out string value)
+    {
+        value = string.Empty;
+        if (!rootElement.TryGetProperty(propertyName, out var propertyElement) || propertyElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var rawValue = propertyElement.GetString()?.Trim().ToLowerInvariant();
+        if (string.IsNullOrWhiteSpace(rawValue))
+        {
+            return false;
+        }
+
+        value = rawValue;
+        return true;
     }
 
     /// <summary>
