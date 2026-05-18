@@ -66,21 +66,26 @@
 
     .health-status-bars {
         display: flex;
-        align-items: flex-end;
-        gap: 4px;
-        height: 42px;
-        min-width: 120px;
+        align-items: stretch;
+        gap: 3px;
+        width: 216px;
+        min-width: 216px;
     }
 
     .health-status-bar-item {
-        width: 8px;
-        border-radius: 999px;
+        width: 10px;
+        height: 36px;
+        border-radius: 3px;
         background: var(--success);
         flex: 0 0 auto;
     }
 
     .health-status-bar-item.fail {
         background: var(--danger);
+    }
+
+    .health-status-bar-item.empty {
+        background: #e2e8f0;
     }
 
     .health-row-actions {
@@ -344,6 +349,7 @@
                     <th>模型</th>
                     <th>最近状态</th>
                     <th>成功率</th>
+                    <th>成功/失败</th>
                     <th>总调用</th>
                     <th>平均延迟</th>
                     <th style="text-align:right;">操作</th>
@@ -354,12 +360,7 @@
                 {
                     var healths = Model.HealthData.GetValueOrDefault(monitored.ModelLibraryItemId) ?? [];
                     var detailId = $"health-detail-{monitored.ModelLibraryItemId:N}";
-                    var modelRecentLogs = healths
-                        .SelectMany(x => x.RecentLogs)
-                        .OrderByDescending(x => x.CheckedAt)
-                        .Take(12)
-                        .OrderBy(x => x.CheckedAt)
-                        .ToList();
+                    var overviewStatusSlots = BuildOverviewStatusSlots(monitored.TimelineSegments);
 
                     <tr class="health-model-group" data-display-name="@monitored.DisplayName" data-detail-id="@detailId">
                         <td class="health-model-cell">
@@ -367,14 +368,17 @@
                             <div class="health-model-meta">@monitored.SiteCount 个关联站点</div>
                         </td>
                         <td>
-                            @if (modelRecentLogs.Any())
+                            @if (overviewStatusSlots.Any())
                             {
                                 <div class="health-status-bars">
-                                    @foreach (var log in modelRecentLogs)
+                                    @foreach (var slot in overviewStatusSlots)
                                     {
-                                        var barHeight = Math.Max(Math.Min(log.DurationMs / 10, 36), 12);
-                                        var barClass = log.Status == "success" ? string.Empty : "fail";
-                                        <div class="health-status-bar-item @barClass" style="height:@(barHeight)px;" title="@log.CheckedAt.ToString("MM-dd HH:mm") | @log.Status | @log.DurationMs ms@(log.ErrorMessage is not null ? " | " + log.ErrorMessage : "")"></div>
+                                        var barClass = slot.Status == "fail"
+                                            ? "fail"
+                                            : slot.Status == "empty"
+                                                ? "empty"
+                                                : string.Empty;
+                                        <div class="health-status-bar-item @barClass" title="@slot.Title"></div>
                                     }
                                 </div>
                             }
@@ -385,6 +389,10 @@
                         </td>
                         <td>
                             <span class="health-kpi-value success-rate">@((monitored.AverageSuccessRate * 100).ToString("F1"))%</span>
+                        </td>
+                        <td>
+                            <div class="health-kpi-value">@monitored.SuccessCount / @monitored.FailureCount</div>
+                            <div class="health-model-meta">成功 / 失败</div>
                         </td>
                         <td>
                             <span class="health-kpi-value">@monitored.TotalRequestCount</span>
@@ -402,7 +410,7 @@
                         </td>
                     </tr>
                     <tr id="@detailId" class="health-detail-row" style="display:none;">
-                        <td colspan="6">
+                        <td colspan="7">
                             <div class="health-detail-panel">
                                 @if (healths.Any())
                                 {
@@ -410,6 +418,9 @@
                                         <span class="badge bg-light text-dark">@monitored.SiteCount 个关联站点</span>
                                         <span class="badge bg-success">@monitored.HealthySiteCount 个正常站点</span>
                                         <span class="badge bg-danger">@monitored.UnhealthySiteCount 个异常站点</span>
+                                        <span class="badge bg-success-subtle text-success-emphasis">成功 @monitored.SuccessCount 次</span>
+                                        <span class="badge bg-danger-subtle text-danger-emphasis">失败 @monitored.FailureCount 次</span>
+                                        <span class="badge bg-light text-dark">总请求 @monitored.TotalRequestCount 次</span>
                                     </div>
 
                                     foreach (var site in healths)
@@ -425,6 +436,9 @@
                                                 </div>
                                                 <div class="health-site-meta">
                                                     成功率 @((site.SuccessRate * 100).ToString("F1"))%
+                                                    <span class="text-secondary">· 成功 @site.SuccessCount 次</span>
+                                                    <span class="text-secondary">· 失败 @site.FailureCount 次</span>
+                                                    <span class="text-secondary">· 总请求 @site.RecentLogs.Count 次</span>
                                                     @if (site.LastDurationMs.HasValue)
                                                     {
                                                         <span class="text-secondary">· @site.LastDurationMs ms</span>
@@ -443,12 +457,12 @@
                                             @if (site.RecentLogs.Any())
                                             {
                                                 <div class="health-timeline">
-                                                    <div class="health-timeline-label">@GetTimelineTitle(Model.Range, site.RecentLogs.Count) 次请求（线段统计，失败段优先标红）</div>
+                                                    <div class="health-timeline-label">@GetTimelineTitle(Model.Range, site.RecentLogs.Count, site.SuccessCount, site.FailureCount)（线段按时间段聚合，出现失败即标红）</div>
                                                     <div class="health-timeline-line">
                                                         @foreach (var segment in site.TimelineSegments)
                                                         {
                                                             var segmentClass = segment.Status == "success" ? string.Empty : "fail";
-                                                            <div class="health-timeline-segment @segmentClass" title="@segment.StartAt.ToString("MM-dd HH:mm") ~ @segment.EndAt.ToString("MM-dd HH:mm") | @segment.Status | @segment.Count 次请求"></div>
+                                                            <div class="health-timeline-segment @segmentClass" title="@GetTimelineSegmentTitle(segment)"></div>
                                                         }
                                                     </div>
                                                     <div class="health-timeline-range">
@@ -483,6 +497,15 @@
 }
 
 @functions {
+    /// <summary>
+    /// 折叠态概览中的单个时间槽位。
+    /// </summary>
+    private sealed class OverviewStatusSlot
+    {
+        public string Status { get; set; } = string.Empty;
+        public string Title { get; set; } = string.Empty;
+    }
+
     private static string FormatDuration(int durationMs)
     {
         if (durationMs >= 60000)
@@ -500,14 +523,78 @@
         return $"{durationMs}ms";
     }
 
-    private static string GetTimelineTitle(string range, int count)
+    /// <summary>
+    /// 把概览时间线压缩成最多 12 个时间槽位，保持时间顺序不变。
+    /// </summary>
+    private static List<OverviewStatusSlot> BuildOverviewStatusSlots(List<ModelHealthTimelineSegment> segments)
     {
-        return (range ?? "7d") switch
+        const int maxSlotCount = 12;
+        if (segments.Count == 0)
         {
-            "1d" => $"最近 24 小时 {count}",
-            "30d" => $"最近 30 天 {count}",
-            _ => $"最近 7 天 {count}"
+            return [];
+        }
+
+        var orderedSegments = segments
+            .OrderBy(x => x.StartAt)
+            .ToList();
+        if (orderedSegments.Count <= maxSlotCount)
+        {
+            return orderedSegments
+                .Select(segment => new OverviewStatusSlot
+                {
+                    Status = ResolveOverviewSlotStatus(segment.FailureCount, segment.Count),
+                    Title = GetTimelineSegmentTitle(segment)
+                })
+                .ToList();
+        }
+
+        var slots = new List<OverviewStatusSlot>(maxSlotCount);
+        var groupSize = (int)Math.Ceiling(orderedSegments.Count / (double)maxSlotCount);
+
+        // 超过展示上限时，把相邻时间段合并到同一个槽位里，继续保持先后顺序。
+        for (var i = 0; i < orderedSegments.Count; i += groupSize)
+        {
+            var groupedSegments = orderedSegments
+                .Skip(i)
+                .Take(groupSize)
+                .ToList();
+            var successCount = groupedSegments.Sum(x => x.SuccessCount);
+            var failureCount = groupedSegments.Sum(x => x.FailureCount);
+            var totalCount = groupedSegments.Sum(x => x.Count);
+            slots.Add(new OverviewStatusSlot
+            {
+                Status = ResolveOverviewSlotStatus(failureCount, totalCount),
+                Title = $"{groupedSegments.First().StartAt:MM-dd HH:mm} ~ {groupedSegments.Last().EndAt:MM-dd HH:mm} | 总请求 {totalCount} 次 | 成功 {successCount} 次 | 失败 {failureCount} 次"
+            });
+        }
+
+        return slots;
+    }
+
+    /// <summary>
+    /// 概览槽位只区分成功或失败，有失败就标红。
+    /// </summary>
+    private static string ResolveOverviewSlotStatus(int failureCount, int totalCount)
+    {
+        return totalCount > 0 && failureCount > 0 ? "fail" : "success";
+    }
+
+    private static string GetTimelineTitle(string range, int totalCount, int successCount, int failureCount)
+    {
+        var prefix = (range ?? "7d") switch
+        {
+            "1d" => "最近 24 小时",
+            "30d" => "最近 30 天",
+            _ => "最近 7 天"
         };
+
+        return $"{prefix}共 {totalCount} 次请求（成功 {successCount} 次，失败 {failureCount} 次）";
+    }
+
+    private static string GetTimelineSegmentTitle(ModelHealthTimelineSegment segment)
+    {
+        var timeRange = $"{segment.StartAt:MM-dd HH:mm} ~ {segment.EndAt:MM-dd HH:mm}";
+        return $"{timeRange} | 总请求 {segment.Count} 次 | 成功 {segment.SuccessCount} 次 | 失败 {segment.FailureCount} 次";
     }
 }
 

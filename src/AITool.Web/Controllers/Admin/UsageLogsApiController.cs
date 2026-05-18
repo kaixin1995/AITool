@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// 前端查询用量日志列表时的请求参数，支持分页、时间范围和站点筛选。
+/// 前端查询用量日志列表时的请求参数，支持分页、时间范围、站点、来源和状态筛选。
 /// </summary>
 public sealed class UsageLogListQueryDto
 {
@@ -37,6 +37,10 @@ public sealed class UsageLogListQueryDto
     /// 来源标识。
     /// </summary>
     public string Source { get; set; } = string.Empty;
+    /// <summary>
+    /// 状态筛选。
+    /// </summary>
+    public string Status { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -341,6 +345,7 @@ public sealed class UsageLogsApiController : ControllerBase
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
             .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
             .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
+            .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
             .OrderByDescending(x => x.RequestedAt)
             .ToList();
 
@@ -459,6 +464,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
                 .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
                 .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
+                .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             // 按 RequestId 分组，每组取最后一条记录作为该请求的最终状态

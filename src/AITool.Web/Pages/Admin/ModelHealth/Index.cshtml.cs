@@ -44,6 +44,14 @@ public class ModelHealthSiteViewModel
     /// 成功率。
     /// </summary>
     public double SuccessRate { get; set; }
+    /// <summary>
+    /// 成功次数。
+    /// </summary>
+    public int SuccessCount { get; set; }
+    /// <summary>
+    /// 失败次数。
+    /// </summary>
+    public int FailureCount { get; set; }
 }
 
 /// <summary>
@@ -79,9 +87,17 @@ public class ModelHealthTimelineSegment
     /// </summary>
     public string Status { get; set; } = string.Empty;
     /// <summary>
-    /// 数量。
+    /// 时间段内的总请求数。
     /// </summary>
     public int Count { get; set; }
+    /// <summary>
+    /// 时间段内的成功次数。
+    /// </summary>
+    public int SuccessCount { get; set; }
+    /// <summary>
+    /// 时间段内的失败次数。
+    /// </summary>
+    public int FailureCount { get; set; }
     /// <summary>
     /// 开始时间。
     /// </summary>
@@ -133,6 +149,18 @@ public class MonitoredModelItem
     /// 请求总数。
     /// </summary>
     public int TotalRequestCount { get; set; }
+    /// <summary>
+    /// 成功次数。
+    /// </summary>
+    public int SuccessCount { get; set; }
+    /// <summary>
+    /// 失败次数。
+    /// </summary>
+    public int FailureCount { get; set; }
+    /// <summary>
+    /// 未展开列表使用的模型级时间线片段。
+    /// </summary>
+    public List<ModelHealthTimelineSegment> TimelineSegments { get; set; } = [];
 }
 
 /// <summary>
@@ -305,7 +333,6 @@ public class IndexModel : PageModel
             var recentCutoff = ResolveRecentCutoff(Range);
             // 先全量加载到内存，再按最近时间窗口过滤，避免 SQLite 无法翻译 DateTimeOffset 比较。
             var allLogs = await _dbContext.ProxyUsageLogs
-                .Where(x => x.IsFinalResult)
                 .ToListAsync(cancellationToken);
             allLogs = allLogs
                 .Where(x => x.RequestedAt >= recentCutoff)
@@ -347,7 +374,8 @@ public class IndexModel : PageModel
                     sites.TryGetValue(map.SiteId, out var site);
                     var siteLogs = modelLogs
                         .Where(l => l.TargetSiteId == map.SiteId
-                            || string.Equals(l.AttemptedModel, map.RemoteModelName, StringComparison.Ordinal))
+                            || (l.TargetSiteId == Guid.Empty
+                                && string.Equals(l.AttemptedModel, map.RemoteModelName, StringComparison.Ordinal)))
                         .OrderByDescending(l => l.RequestedAt)
                         .ToList();
 
@@ -371,7 +399,9 @@ public class IndexModel : PageModel
                             ErrorMessage = l.ErrorMessage
                         }).ToList(),
                         TimelineSegments = timelineSegments,
-                        SuccessRate = totalLogs > 0 ? (double)successCount / totalLogs : 0
+                        SuccessRate = totalLogs > 0 ? (double)successCount / totalLogs : 0,
+                        SuccessCount = successCount,
+                        FailureCount = totalLogs - successCount
                     };
                 })
                 .OrderBy(s => s.SiteName)
@@ -383,11 +413,20 @@ public class IndexModel : PageModel
             foreach (var monitored in MonitoredModels)
             {
                 var healths = HealthData.GetValueOrDefault(monitored.ModelLibraryItemId) ?? [];
+                var modelLogs = healths
+                    .SelectMany(x => x.RecentLogs)
+                    .Select(x => new ProxyUsageLog
+                    {
+                        Status = x.Status,
+                        TotalDurationMs = x.DurationMs,
+                        RequestedAt = x.CheckedAt,
+                        ErrorMessage = x.ErrorMessage ?? string.Empty
+                    })
+                    .ToList();
 
                 monitored.SiteCount = healths.Count;
                 monitored.HealthySiteCount = healths.Count(x => x.LastStatus == "success");
                 monitored.UnhealthySiteCount = healths.Count(x => x.LastStatus == "fail");
-                monitored.AverageSuccessRate = healths.Count > 0 ? healths.Average(x => x.SuccessRate) : 0;
                 monitored.LastCheckedAt = healths
                     .Where(x => x.LastCheckedAt.HasValue)
                     .Select(x => x.LastCheckedAt)
@@ -396,8 +435,14 @@ public class IndexModel : PageModel
                 monitored.AverageDurationMs = healths.Any(x => x.LastDurationMs.HasValue)
                     ? (int)Math.Round(healths.Where(x => x.LastDurationMs.HasValue).Average(x => x.LastDurationMs ?? 0), MidpointRounding.AwayFromZero)
                     : null;
+                monitored.SuccessCount = healths.Sum(x => x.SuccessCount);
+                monitored.FailureCount = healths.Sum(x => x.FailureCount);
                 // 汇总最近展示窗口内的请求数，供列表模式直接展示。
-                monitored.TotalRequestCount = healths.Sum(x => x.RecentLogs.Count);
+                monitored.TotalRequestCount = monitored.SuccessCount + monitored.FailureCount;
+                monitored.AverageSuccessRate = monitored.TotalRequestCount > 0
+                    ? (double)monitored.SuccessCount / monitored.TotalRequestCount
+                    : 0;
+                monitored.TimelineSegments = BuildTimelineSegments(modelLogs);
             }
         }
     }
@@ -435,12 +480,15 @@ public class IndexModel : PageModel
 
         if (startAt >= endAt)
         {
+            var successCount = orderedLogs.Count(log => string.Equals(log.Status, "success", StringComparison.OrdinalIgnoreCase));
             return
             [
                 new ModelHealthTimelineSegment
                 {
-                    Status = string.Equals(orderedLogs[0].Status, "success", StringComparison.OrdinalIgnoreCase) ? "success" : "fail",
+                    Status = successCount == orderedLogs.Count ? "success" : "fail",
                     Count = orderedLogs.Count,
+                    SuccessCount = successCount,
+                    FailureCount = orderedLogs.Count - successCount,
                     StartAt = startAt,
                     EndAt = endAt
                 }
@@ -472,10 +520,13 @@ public class IndexModel : PageModel
                 continue;
             }
 
+            var successCount = bucketLogs.Count(log => string.Equals(log.Status, "success", StringComparison.OrdinalIgnoreCase));
             buckets.Add(new ModelHealthTimelineSegment
             {
-                Status = bucketLogs.Any(log => !string.Equals(log.Status, "success", StringComparison.OrdinalIgnoreCase)) ? "fail" : "success",
+                Status = successCount == bucketLogs.Count ? "success" : "fail",
                 Count = bucketLogs.Count,
+                SuccessCount = successCount,
+                FailureCount = bucketLogs.Count - successCount,
                 StartAt = bucketLogs.First().RequestedAt,
                 EndAt = bucketLogs.Last().RequestedAt
             });
