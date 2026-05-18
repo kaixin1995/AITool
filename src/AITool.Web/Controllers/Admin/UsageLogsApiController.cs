@@ -274,9 +274,21 @@ public sealed class UsageLogRequestDetailDto
     /// </summary>
     public string RequestModel { get; set; } = string.Empty;
     /// <summary>
+    /// 路由入口名称。
+    /// </summary>
+    public string RouteEntry { get; set; } = string.Empty;
+    /// <summary>
     /// 协议类型。
     /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 调用方式。
+    /// </summary>
+    public string ForwardingMode { get; set; } = string.Empty;
+    /// <summary>
+    /// 思考等级。
+    /// </summary>
+    public string ReasoningEffort { get; set; } = string.Empty;
     /// <summary>
     /// 尝试明细。
     /// </summary>
@@ -422,7 +434,10 @@ public sealed class UsageLogsApiController : ControllerBase
         {
             RequestId = requestId,
             RequestModel = orderedLogs[0].RequestModel,
+            RouteEntry = orderedLogs[0].RequestModel,
             ProtocolType = orderedLogs[0].ProtocolType,
+            ForwardingMode = orderedLogs.Select(x => x.ForwardingMode).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty,
+            ReasoningEffort = orderedLogs.Select(x => x.ReasoningEffort).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty,
             Attempts = orderedLogs
                 .Select(x => new UsageLogAttemptDto
                 {

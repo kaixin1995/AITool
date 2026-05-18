@@ -501,6 +501,9 @@
     function renderRequestDetail(requestId, data) {
         var attempts = readValue(data, ['attempts', 'logs', 'items']) || [];
         var protocolType = readValue(data, ['protocolType']) || '';
+        var routeEntry = readValue(data, ['routeEntry', 'requestModel']) || '';
+        var forwardingMode = readValue(data, ['forwardingMode']) || '';
+        var reasoningEffort = readValue(data, ['reasoningEffort']) || '';
         document.getElementById('requestDetailMeta').textContent = 'RequestId: ' + requestId;
 
         if (!Array.isArray(attempts) || !attempts.length) {
@@ -508,12 +511,20 @@
             return;
         }
 
-        var html = attempts.map(function(item, index) {
+        var summaryHtml = '' +
+            '<div class="card">' +
+                '<div class="card-body">' +
+                    '<div class="small text-secondary mb-1">路由入口：' + escHtml(routeEntry || '-') + '</div>' +
+                    '<div class="small text-secondary mb-1">请求协议：' + escHtml(formatProtocolType(protocolType)) + '</div>' +
+                    '<div class="small text-secondary mb-1">调用方式：' + escHtml(formatForwardingMode(forwardingMode)) + '</div>' +
+                    '<div class="small text-secondary">思考等级：' + escHtml(reasoningEffort || '-') + '</div>' +
+                '</div>' +
+            '</div>';
+
+        var html = summaryHtml + attempts.map(function(item, index) {
             var status = readValue(item, ['status']) || '-';
             var attemptedModel = readValue(item, ['attemptedModel', 'requestModel']) || '-';
-            var reasoningEffort = readValue(item, ['reasoningEffort']) || '';
             var errorMessage = readValue(item, ['errorMessage']) || '';
-            var forwardingMode = readValue(item, ['forwardingMode']) || '';
             return '' +
                 '<div class="card">' +
                     '<div class="card-body">' +
@@ -525,11 +536,8 @@
                             renderStatusBadge(status, item) +
                         '</div>' +
                         '<div class="small text-secondary mb-1">站点：' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</div>' +
-                        '<div class="small text-secondary mb-1">请求协议：' + escHtml(formatProtocolType(protocolType)) + '</div>' +
-                        '<div class="small text-secondary mb-1">调用方式：' + escHtml(formatForwardingMode(forwardingMode)) + '</div>' +
                         '<div class="small text-secondary mb-1">时间：' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</div>' +
                         '<div class="small text-secondary mb-1">Tokens：' + escHtml(formatNumber(readValue(item, ['totalTokens']) || 0)) + '</div>' +
-                        '<div class="small text-secondary mb-1">思考等级：' + escHtml(reasoningEffort || '-') + '</div>' +
                         '<div class="small text-secondary">错误：' + escHtml(errorMessage || '-') + '</div>' +
                     '</div>' +
                 '</div>';

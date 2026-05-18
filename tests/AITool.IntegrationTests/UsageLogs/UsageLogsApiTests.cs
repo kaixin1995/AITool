@@ -110,6 +110,10 @@ public sealed class UsageLogsApiTests
 
         using var document = JsonDocument.Parse(body);
         document.RootElement.GetProperty("requestId").GetGuid().Should().Be(UsageLogsWebApplicationFactory.RequestChainId);
+        document.RootElement.GetProperty("routeEntry").GetString().Should().Be("chat-prod");
+        document.RootElement.GetProperty("protocolType").GetString().Should().Be("OpenAI");
+        document.RootElement.GetProperty("forwardingMode").GetString().Should().Be("direct");
+        document.RootElement.GetProperty("reasoningEffort").GetString().Should().BeEmpty();
 
         var attempts = document.RootElement.GetProperty("attempts").EnumerateArray().ToList();
         attempts.Should().HaveCount(2);
