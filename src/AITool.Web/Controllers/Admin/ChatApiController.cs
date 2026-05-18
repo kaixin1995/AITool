@@ -374,6 +374,7 @@ public sealed class ChatApiController : ControllerBase
                 {
                     RequestId = requestId,
                     ProtocolType = route.ProtocolType,
+                    ForwardingMode = "direct",
                     RequestModel = model.ModelName,
                     AttemptedModel = route.UpstreamModelName,
                     TargetSiteId = route.SiteId,
@@ -601,6 +602,7 @@ public sealed class ChatApiController : ControllerBase
         {
             RequestId = requestId,
             ProtocolType = mapping.ProtocolType,
+            ForwardingMode = "direct",
             RequestModel = model.ModelName,
             AttemptedModel = mapping.SiteModelName,
             TargetSiteId = mapping.SiteId,
@@ -701,6 +703,7 @@ public sealed class ChatApiController : ControllerBase
         {
             RequestId = requestId,
             ProtocolType = mapping.ProtocolType,
+            ForwardingMode = "direct",
             RequestModel = model.ModelName,
             AttemptedModel = mapping.SiteModelName,
             TargetSiteId = mapping.SiteId,

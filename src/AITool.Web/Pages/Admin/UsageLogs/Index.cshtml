@@ -500,6 +500,7 @@
 
     function renderRequestDetail(requestId, data) {
         var attempts = readValue(data, ['attempts', 'logs', 'items']) || [];
+        var protocolType = readValue(data, ['protocolType']) || '';
         document.getElementById('requestDetailMeta').textContent = 'RequestId: ' + requestId;
 
         if (!Array.isArray(attempts) || !attempts.length) {
@@ -512,6 +513,7 @@
             var attemptedModel = readValue(item, ['attemptedModel', 'requestModel']) || '-';
             var reasoningEffort = readValue(item, ['reasoningEffort']) || '';
             var errorMessage = readValue(item, ['errorMessage']) || '';
+            var forwardingMode = readValue(item, ['forwardingMode']) || '';
             return '' +
                 '<div class="card">' +
                     '<div class="card-body">' +
@@ -523,6 +525,8 @@
                             renderStatusBadge(status, item) +
                         '</div>' +
                         '<div class="small text-secondary mb-1">站点：' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</div>' +
+                        '<div class="small text-secondary mb-1">请求协议：' + escHtml(formatProtocolType(protocolType)) + '</div>' +
+                        '<div class="small text-secondary mb-1">调用方式：' + escHtml(formatForwardingMode(forwardingMode)) + '</div>' +
                         '<div class="small text-secondary mb-1">时间：' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</div>' +
                         '<div class="small text-secondary mb-1">Tokens：' + escHtml(formatNumber(readValue(item, ['totalTokens']) || 0)) + '</div>' +
                         '<div class="small text-secondary mb-1">思考等级：' + escHtml(reasoningEffort || '-') + '</div>' +
@@ -538,6 +542,23 @@
         var normalized = String(status || '').toLowerCase();
         var success = normalized === 'success' || normalized === 'ok';
         return '<span class="badge bg-' + (success ? 'success' : 'danger') + '">' + escHtml(success ? '成功' : (status || '失败')) + '</span>';
+    }
+
+    function formatProtocolType(protocolType) {
+        return protocolType ? String(protocolType) : '-';
+    }
+
+    function formatForwardingMode(forwardingMode) {
+        var normalized = String(forwardingMode || '').trim().toLowerCase();
+        if (normalized === 'direct') {
+            return '直接透传';
+        }
+
+        if (normalized === 'bridge') {
+            return '兼容中转';
+        }
+
+        return '-';
     }
 
     function renderSourceBadge(source) {

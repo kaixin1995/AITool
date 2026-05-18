@@ -26,6 +26,11 @@ public sealed class ProxyUsageLog
     public string ProtocolType { get; set; } = string.Empty;
 
     /// <summary>
+    /// 调用模式，用于记录本次请求是直接透传还是兼容中转。
+    /// </summary>
+    public string? ForwardingMode { get; set; }
+
+    /// <summary>
     /// 客户端请求的模型名称，用于保留调用方原始指定的目标模型。
     /// </summary>
     public string RequestModel { get; set; } = string.Empty;

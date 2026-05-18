@@ -165,6 +165,7 @@ public sealed class AppDbContext : DbContext
         {
             entity.HasKey(e => e.Id);
             entity.Property(e => e.ProtocolType).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.ForwardingMode).HasMaxLength(50);
             entity.Property(e => e.RequestModel).IsRequired().HasMaxLength(200);
             entity.Property(e => e.AttemptedModel).IsRequired().HasMaxLength(200);
             entity.Property(e => e.Status).IsRequired().HasMaxLength(50);

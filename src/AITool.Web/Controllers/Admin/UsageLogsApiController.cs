@@ -187,6 +187,10 @@ public sealed class UsageLogAttemptDto
     /// </summary>
     public string AttemptedModel { get; set; } = string.Empty;
     /// <summary>
+    /// 调用模式，例如 direct 或 bridge。
+    /// </summary>
+    public string ForwardingMode { get; set; } = string.Empty;
+    /// <summary>
     /// 站点模型名称。
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
@@ -425,6 +429,7 @@ public sealed class UsageLogsApiController : ControllerBase
                     Id = x.Id,
                     AttemptIndex = x.AttemptIndex,
                     AttemptedModel = x.AttemptedModel,
+                    ForwardingMode = x.ForwardingMode ?? string.Empty,
                     SiteModelName = ResolveSiteModelName(routeRules, x.TargetSiteId, x.AttemptedModel),
                     SiteName = sites.TryGetValue(x.TargetSiteId, out var siteName) ? siteName : "-",
                     Status = x.Status,

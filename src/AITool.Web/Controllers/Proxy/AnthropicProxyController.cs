@@ -210,6 +210,7 @@ public sealed class AnthropicProxyController : ControllerBase
                     RequestId = requestId,
                     AccessKeyId = accessKey.Id,
                     ProtocolType = "Anthropic",
+                    ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType),
                     RequestModel = modelName,
                     AttemptedModel = route.UpstreamModelName,
                     TargetSiteId = route.SiteId,

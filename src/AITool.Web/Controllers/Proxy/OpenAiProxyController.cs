@@ -303,6 +303,7 @@ public sealed class OpenAiProxyController : ControllerBase
                     RequestId = requestId,
                     AccessKeyId = accessKey.Id,
                     ProtocolType = "OpenAI",
+                    ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
                     RequestModel = modelName,
                     AttemptedModel = route.UpstreamModelName,
                     TargetSiteId = route.SiteId,

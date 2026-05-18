@@ -143,6 +143,7 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             RequestId = entry.RequestId,
             AccessKeyId = entry.AccessKeyId,
             ProtocolType = entry.ProtocolType,
+            ForwardingMode = entry.ForwardingMode,
             RequestModel = entry.RequestModel,
             AttemptedModel = entry.AttemptedModel,
             TargetSiteId = entry.TargetSiteId,

@@ -113,12 +113,15 @@ public sealed class UsageLogsApiTests
 
         var attempts = document.RootElement.GetProperty("attempts").EnumerateArray().ToList();
         attempts.Should().HaveCount(2);
+        document.RootElement.GetProperty("protocolType").GetString().Should().Be("OpenAI");
         attempts[0].GetProperty("attemptIndex").GetInt32().Should().Be(1);
         attempts[0].GetProperty("attemptedModel").GetString().Should().Be("gpt-5.5");
+        attempts[0].GetProperty("forwardingMode").GetString().Should().Be("direct");
         attempts[0].GetProperty("siteModelName").GetString().Should().Be("gpt-5.5-a");
         attempts[0].GetProperty("siteName").GetString().Should().Be("Primary OpenAI");
         attempts[1].GetProperty("attemptIndex").GetInt32().Should().Be(2);
         attempts[1].GetProperty("attemptedModel").GetString().Should().Be("glm-5.1");
+        attempts[1].GetProperty("forwardingMode").GetString().Should().Be("bridge");
         attempts[1].GetProperty("siteModelName").GetString().Should().Be("glm-5.1-a");
         attempts[1].GetProperty("siteName").GetString().Should().Be("Fallback GLM");
     }
@@ -379,6 +382,7 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 RequestId = RequestChainId,
                 AccessKeyId = Guid.NewGuid(),
                 ProtocolType = "OpenAI",
+                ForwardingMode = "direct",
                 RequestModel = "chat-prod",
                 AttemptedModel = "gpt-5.5",
                 TargetSiteId = FirstSiteId,
@@ -404,6 +408,7 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 RequestId = RequestChainId,
                 AccessKeyId = Guid.NewGuid(),
                 ProtocolType = "OpenAI",
+                ForwardingMode = "bridge",
                 RequestModel = "chat-prod",
                 AttemptedModel = "glm-5.1",
                 TargetSiteId = SecondSiteId,

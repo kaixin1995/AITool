@@ -32,6 +32,11 @@ public sealed class UsageLogEntry
     public string ProtocolType { get; set; } = string.Empty;
 
     /// <summary>
+    /// 标识当前调用是直接透传还是兼容中转。
+    /// </summary>
+    public string ForwardingMode { get; set; } = string.Empty;
+
+    /// <summary>
     /// 记录客户端原始请求中的模型名称。
     /// </summary>
     public string RequestModel { get; set; } = string.Empty;

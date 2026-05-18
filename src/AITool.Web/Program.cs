@@ -1,3 +1,4 @@
+using System.Data.Common;
 using AITool.Application.Common;
 using AITool.Application.Detection;
 using AITool.Application.Operations;
@@ -136,6 +137,7 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
+    await EnsureProxyUsageLogSchemaAsync(db);
 
     var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
     try
@@ -345,6 +347,55 @@ static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, Can
     {
         return "<unavailable>";
     }
+}
+
+/// <summary>
+/// 为历史数据库补齐代理日志新增列，避免旧库因 EnsureCreated 不重建而缺字段。
+/// </summary>
+static async Task EnsureProxyUsageLogSchemaAsync(AppDbContext dbContext)
+{
+    var connection = dbContext.Database.GetDbConnection();
+    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
+    if (shouldCloseConnection)
+    {
+        await connection.OpenAsync();
+    }
+
+    try
+    {
+        if (!await ColumnExistsAsync(connection, "ProxyUsageLogs", "ForwardingMode"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE ProxyUsageLogs ADD COLUMN ForwardingMode TEXT NULL";
+            await command.ExecuteNonQueryAsync();
+        }
+    }
+    finally
+    {
+        if (shouldCloseConnection)
+        {
+            await connection.CloseAsync();
+        }
+    }
+}
+
+/// <summary>
+/// 检查指定表是否已经存在目标列。
+/// </summary>
+static async Task<bool> ColumnExistsAsync(DbConnection connection, string tableName, string columnName)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandText = $"PRAGMA table_info({tableName})";
+    await using var reader = await command.ExecuteReaderAsync();
+    while (await reader.ReadAsync())
+    {
+        if (string.Equals(reader[1]?.ToString(), columnName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 /// <summary>
