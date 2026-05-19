@@ -512,7 +512,8 @@ public sealed class ProxyForwardService : IProxyForwardService
             using var doc = JsonDocument.Parse(responseBody);
             var root = doc.RootElement;
 
-            if (root.TryGetProperty("error", out _))
+            // error 属性存在且非 null 时才视为错误（Responses 格式中 error 为 null 是正常情况）
+            if (root.TryGetProperty("error", out var error) && error.ValueKind != JsonValueKind.Null)
             {
                 return false;
             }
@@ -524,9 +525,23 @@ public sealed class ProxyForwardService : IProxyForwardService
                     && content.GetArrayLength() > 0;
             }
 
-            return root.TryGetProperty("choices", out var choices)
+            // Chat Completions 格式：检查 choices 数组
+            if (root.TryGetProperty("choices", out var choices)
                 && choices.ValueKind == JsonValueKind.Array
-                && choices.GetArrayLength() > 0;
+                && choices.GetArrayLength() > 0)
+            {
+                return true;
+            }
+
+            // Responses 格式：检查 output 数组
+            if (root.TryGetProperty("output", out var output)
+                && output.ValueKind == JsonValueKind.Array
+                && output.GetArrayLength() > 0)
+            {
+                return true;
+            }
+
+            return false;
         }
         catch
         {
@@ -549,7 +564,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             using var doc = JsonDocument.Parse(responseBody);
             var root = doc.RootElement;
 
-            if (root.TryGetProperty("error", out var error))
+            if (root.TryGetProperty("error", out var error) && error.ValueKind != JsonValueKind.Null)
             {
                 return error.ValueKind == JsonValueKind.String
                     ? error.GetString() ?? responseBody

@@ -476,6 +476,435 @@ public sealed class OpenAiProxyController : ControllerBase
     }
 
     /// <summary>
+    /// 处理 OpenAI Responses API 请求，按路由配置转发到可用上游。
+    /// </summary>
+    [HttpPost("/v1/responses")]
+    public async Task<IActionResult> Responses(CancellationToken cancellationToken)
+    {
+        using var reader = new StreamReader(Request.Body, Encoding.UTF8);
+        var requestBody = await reader.ReadToEndAsync(cancellationToken);
+
+        var modelName = ProxyProtocolBridge.ExtractResponsesModel(requestBody);
+        var enableStreaming = ProxyProtocolBridge.ExtractResponsesStream(requestBody);
+        var reasoningEffort = ProxyProtocolBridge.ExtractResponsesReasoningEffort(requestBody);
+
+        if (string.IsNullOrWhiteSpace(modelName))
+        {
+            return BadRequest(new { error = new { message = "Invalid request body: model is required" } });
+        }
+
+        var authHeader = Request.Headers.Authorization.ToString();
+        var accessToken = authHeader.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
+            ? authHeader[7..]
+            : string.Empty;
+
+        var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
+        if (accessKey is null)
+        {
+            return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
+        }
+
+        var requestSource = ResolveRequestSource(Request);
+        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+        var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, "Responses", modelName, requestBody);
+
+        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
+        if (allRoutes.Count == 0)
+        {
+            return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
+        }
+
+        ProxyForwardResult? lastResult = null;
+        var requestId = Guid.NewGuid();
+        var attemptIndex = 0;
+        var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
+        var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
+
+        foreach (var route in allRoutes)
+        {
+            if (IsRouteBlockedSafely(route.RouteId))
+                continue;
+
+            attemptIndex++;
+            var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
+
+            using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
+                HttpContext.RequestServices, route.SiteId, route.SiteModelName,
+                concurrencyMode, concurrencyQueueTimeout, cancellationToken);
+
+            if (!concurrencyHandle.Acquired)
+            {
+                continue;
+            }
+
+            // Responses 端点的转发逻辑：
+            // - 上游 OpenAI：直接透传原始 Responses 请求体，响应也直接透传
+            // - 上游 Anthropic：先将 Responses 转为 Chat Completions，再走兼容中转
+            var isPassthrough = string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase);
+            string preparedRequestBody;
+
+            if (isPassthrough)
+            {
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", "OpenAI", requestBody, route.SiteModelName, enableStreaming);
+            }
+            else
+            {
+                // Responses → Chat Completions → Anthropic：先转为 Chat Completions，再由协议桥接转为目标格式
+                var chatBody = ProxyProtocolBridge.ConvertResponsesRequestToChat(requestBody, route.SiteModelName, enableStreaming);
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", actualProtocolType, chatBody, route.SiteModelName, enableStreaming);
+            }
+
+            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
+
+            var forwardRequest = new ProxyForwardRequest
+            {
+                TargetBaseUrl = route.BaseUrl,
+                TargetApiKey = route.ApiKey,
+                ProtocolType = actualProtocolType,
+                TargetModelName = route.SiteModelName,
+                RequestBody = requestBody,
+                PreparedRequestBody = preparedRequestBody,
+                EnableStreaming = enableStreaming,
+                RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
+                RetryCount = runtimeSettings.ProxyRetryCount,
+                TargetPath = isPassthrough ? "/v1/responses" : null
+            };
+
+            if (enableStreaming)
+            {
+                StreamForwardOutcome streamOutcome;
+                if (isPassthrough)
+                {
+                    // OpenAI 上游直接透传
+                    streamOutcome = await ForwardOpenAiStreamPassthroughAsync(forwardRequest, CancellationToken.None);
+                }
+                else
+                {
+                    // Anthropic 上游：流式 Anthropic → Responses
+                    streamOutcome = await ForwardAnthropicStreamAsResponsesAsync(forwardRequest, modelName, CancellationToken.None);
+                }
+
+                var streamResult = streamOutcome.Result;
+                SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
+
+                await SafeLogUsageAsync(new UsageLogEntry
+                {
+                    RequestId = requestId,
+                    AccessKeyId = accessKey.Id,
+                    ProtocolType = "OpenAI",
+                    ForwardingMode = isPassthrough ? "direct" : "bridge",
+                    RequestModel = modelName,
+                    AttemptedModel = route.UpstreamModelName,
+                    TargetSiteId = route.SiteId,
+                    Status = streamResult.Success ? "success" : "fail",
+                    Source = requestSource,
+                    RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
+                    AttemptIndex = attemptIndex,
+                    IsFinalResult = streamResult.Success,
+                    FallbackTriggered = !streamResult.Success,
+                    ErrorMessage = streamResult.Success ? string.Empty : (streamResult.ErrorMessage ?? string.Empty),
+                    InputTokens = streamResult.InputTokens,
+                    CachedTokens = streamResult.CachedTokens,
+                    OutputTokens = streamResult.OutputTokens,
+                    IsStreaming = true,
+                    IsStreamInterrupted = streamResult.IsStreamInterrupted,
+                    FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
+                    StreamDurationMs = streamResult.StreamDurationMs,
+                    TotalDurationMs = streamResult.TotalDurationMs,
+                    ReasoningEffort = reasoningEffort
+                }, CancellationToken.None);
+
+                if (streamResult.Success)
+                {
+                    SafeSucceedRoute(route.RouteId);
+                    SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                    {
+                        Status = "success",
+                        StatusCode = streamResult.StatusCode,
+                        ResponseBody = DeveloperInvocationTraceStore.FormatBody(streamResult.ResponseBody),
+                        ResponseContentType = "text/event-stream",
+                        IsStreaming = true,
+                        InputTokens = streamResult.InputTokens,
+                        CachedTokens = streamResult.CachedTokens,
+                        OutputTokens = streamResult.OutputTokens,
+                        TotalDurationMs = streamResult.TotalDurationMs
+                    });
+                    return new EmptyResult();
+                }
+
+                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                {
+                    Status = "fail",
+                    StatusCode = streamResult.StatusCode,
+                    ErrorMessage = streamResult.ErrorMessage ?? string.Empty,
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(streamResult.ResponseBody),
+                    ResponseContentType = "text/event-stream",
+                    IsStreaming = true,
+                    InputTokens = streamResult.InputTokens,
+                    CachedTokens = streamResult.CachedTokens,
+                    OutputTokens = streamResult.OutputTokens,
+                    TotalDurationMs = streamResult.TotalDurationMs
+                });
+                SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
+                SafeBlockRoute(route.RouteId);
+                lastResult = streamResult;
+                if (!streamOutcome.CanFallback)
+                {
+                    return new EmptyResult();
+                }
+
+                continue;
+            }
+
+            // 非流式
+            var result = await _forwardService.ForwardAsync(forwardRequest, CancellationToken.None);
+            SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
+
+            await SafeLogUsageAsync(new UsageLogEntry
+            {
+                RequestId = requestId,
+                AccessKeyId = accessKey.Id,
+                ProtocolType = "OpenAI",
+                ForwardingMode = isPassthrough ? "direct" : "bridge",
+                RequestModel = modelName,
+                AttemptedModel = route.UpstreamModelName,
+                TargetSiteId = route.SiteId,
+                Status = result.Success ? "success" : "fail",
+                Source = requestSource,
+                RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
+                AttemptIndex = attemptIndex,
+                IsFinalResult = result.Success,
+                FallbackTriggered = !result.Success,
+                ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty),
+                InputTokens = result.InputTokens,
+                CachedTokens = result.CachedTokens,
+                OutputTokens = result.OutputTokens,
+                IsStreaming = result.IsStreaming,
+                IsStreamInterrupted = result.IsStreamInterrupted,
+                FirstTokenLatencyMs = result.FirstTokenLatencyMs,
+                StreamDurationMs = result.StreamDurationMs,
+                TotalDurationMs = result.TotalDurationMs,
+                ReasoningEffort = reasoningEffort
+            }, cancellationToken);
+
+            if (result.Success)
+            {
+                SafeSucceedRoute(route.RouteId);
+                var responseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
+
+                if (isPassthrough)
+                {
+                    // OpenAI 上游直接透传
+                    SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                    {
+                        Status = "success",
+                        StatusCode = result.StatusCode,
+                        ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
+                        ResponseContentType = responseContentType,
+                        IsStreaming = result.IsStreaming,
+                        InputTokens = result.InputTokens,
+                        CachedTokens = result.CachedTokens,
+                        OutputTokens = result.OutputTokens,
+                        TotalDurationMs = result.TotalDurationMs
+                    });
+                    return Content(result.ResponseBody, responseContentType);
+                }
+
+                // Anthropic 上游：将 Chat Completions 响应转为 Responses 格式
+                var chatResponseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
+                    "OpenAI", actualProtocolType, result.ResponseBody,
+                    result.IsStreaming, modelName,
+                    result.InputTokens, result.CachedTokens, result.OutputTokens);
+                var responsesBody = ProxyProtocolBridge.ConvertChatResponseToResponses(chatResponseBody);
+                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                {
+                    Status = "success",
+                    StatusCode = result.StatusCode,
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(responsesBody),
+                    ResponseContentType = "application/json",
+                    IsStreaming = false,
+                    InputTokens = result.InputTokens,
+                    CachedTokens = result.CachedTokens,
+                    OutputTokens = result.OutputTokens,
+                    TotalDurationMs = result.TotalDurationMs
+                });
+                return Content(responsesBody, "application/json");
+            }
+
+            SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+            {
+                Status = "fail",
+                StatusCode = result.StatusCode,
+                ErrorMessage = result.ErrorMessage ?? string.Empty,
+                ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
+                ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json",
+                IsStreaming = result.IsStreaming,
+                InputTokens = result.InputTokens,
+                CachedTokens = result.CachedTokens,
+                OutputTokens = result.OutputTokens,
+                TotalDurationMs = result.TotalDurationMs
+            });
+            SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
+            SafeBlockRoute(route.RouteId);
+            lastResult = result;
+        }
+
+        var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
+        return StatusCode(statusCode,
+            new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+    }
+
+    /// <summary>
+    /// 把 Anthropic 流式响应转换为 Responses API 流式事件后返回给客户端。
+    /// </summary>
+    private async Task<StreamForwardOutcome> ForwardAnthropicStreamAsResponsesAsync(
+        ProxyForwardRequest forwardRequest,
+        string modelName,
+        CancellationToken cancellationToken)
+    {
+        if (!Response.HasStarted)
+        {
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+
+        // 先走 Anthropic → OpenAI 的流式转换，收集完整响应后转为 Responses 事件
+        var responseBuilder = new StringBuilder();
+        var pendingSseLines = new List<string>();
+        var startedWriting = false;
+        var inputTokens = 0;
+        var cachedTokens = 0;
+        var outputTokens = 0;
+
+        // Responses 流式状态
+        var responsesState = new ChatToResponsesStreamState
+        {
+            Model = forwardRequest.TargetModelName
+        };
+
+        async Task FlushAnthropicSseBlockAsync(CancellationToken token)
+        {
+            if (!TryExtractSseEventPayload(pendingSseLines, out var eventName, out var payload))
+            {
+                pendingSseLines.Clear();
+                return;
+            }
+
+            pendingSseLines.Clear();
+            if (string.IsNullOrEmpty(payload) || string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            // 直接把 Anthropic SSE 事件转为 Responses 事件
+            var responsesChunk = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
+            if (!string.IsNullOrEmpty(responsesChunk))
+            {
+                responseBuilder.Append(responsesChunk);
+                await Response.WriteAsync(responsesChunk, token);
+                await Response.Body.FlushAsync(token);
+                startedWriting = true;
+            }
+
+            // 提取用量
+            try
+            {
+                using var doc = JsonDocument.Parse(payload);
+                var root = doc.RootElement;
+                UpdateAnthropicUsageFromSseEvent(eventName, root, ref inputTokens, ref cachedTokens, ref outputTokens);
+            }
+            catch
+            {
+            }
+        }
+
+        var result = await _forwardService.ForwardStreamingAsync(
+            forwardRequest,
+            async (line, token) =>
+            {
+                if (string.IsNullOrEmpty(line))
+                {
+                    await FlushAnthropicSseBlockAsync(token);
+                    return;
+                }
+
+                pendingSseLines.Add(line);
+            },
+            cancellationToken);
+
+        if (pendingSseLines.Count > 0)
+        {
+            await FlushAnthropicSseBlockAsync(cancellationToken);
+        }
+
+        result.ResponseBody = responseBuilder.ToString();
+        result.IsStreaming = true;
+        result.HasStartedStreaming = startedWriting;
+        result.InputTokens = inputTokens;
+        result.CachedTokens = cachedTokens;
+        result.OutputTokens = outputTokens;
+
+        if (result.Success && !responsesState.Done && startedWriting)
+        {
+            result.Success = false;
+            result.IsStreamInterrupted = true;
+            result.ErrorMessage ??= "stream interrupted before response.completed";
+        }
+
+        // 控制器层检测到 Responses 转换正常完成时，清除基础设施层可能误设的中断标记
+        if (responsesState.Done)
+        {
+            result.IsStreamInterrupted = false;
+            result.ErrorMessage = null;
+        }
+
+        if (!result.Success && startedWriting)
+        {
+            result.IsStreamInterrupted = true;
+        }
+
+        return new StreamForwardOutcome
+        {
+            Result = result,
+            CanFallback = !startedWriting
+        };
+    }
+
+    /// <summary>
+    /// 从 Anthropic SSE 事件中提取用量信息。
+    /// </summary>
+    private static void UpdateAnthropicUsageFromSseEvent(string eventName, JsonElement root, ref int inputTokens, ref int cachedTokens, ref int outputTokens)
+    {
+        if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
+        {
+            if (root.TryGetProperty("message", out var message) && message.TryGetProperty("usage", out var usage))
+            {
+                if (usage.TryGetProperty("input_tokens", out var it))
+                {
+                    inputTokens = it.GetInt32();
+                }
+
+                if (usage.TryGetProperty("cache_read_input_tokens", out var ct))
+                {
+                    cachedTokens = ct.GetInt32();
+                }
+            }
+        }
+        else if (string.Equals(eventName, "message_delta", StringComparison.OrdinalIgnoreCase))
+        {
+            if (root.TryGetProperty("usage", out var usage))
+            {
+                if (usage.TryGetProperty("output_tokens", out var ot))
+                {
+                    outputTokens = ot.GetInt32();
+                }
+            }
+        }
+    }
+
+    /// <summary>
     /// 透传 OpenAI 原生流式响应，并在透传过程中提取用量信息。
     /// </summary>
     private async Task<StreamForwardOutcome> ForwardOpenAiStreamPassthroughAsync(
@@ -535,6 +964,23 @@ public sealed class OpenAiProxyController : ControllerBase
                 else
                 {
                     UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+
+                    // 兼容 Responses API：上游可能以 response.completed 事件而非 [DONE] 结束流
+                    if (!receivedDoneEvent)
+                    {
+                        try
+                        {
+                            using var doc = JsonDocument.Parse(payload);
+                            if (doc.RootElement.TryGetProperty("type", out var typeEl)
+                                && string.Equals(typeEl.GetString(), "response.completed", StringComparison.OrdinalIgnoreCase))
+                            {
+                                receivedDoneEvent = true;
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
                 }
             }
 
@@ -575,6 +1021,13 @@ public sealed class OpenAiProxyController : ControllerBase
             result.ErrorMessage ??= startedWriting
                 ? "stream interrupted before [DONE]"
                 : "stream ended before any complete SSE event";
+        }
+
+        // 控制器层检测到流正常结束时，清除基础设施层可能误设的中断标记
+        if (receivedDoneEvent)
+        {
+            result.IsStreamInterrupted = false;
+            result.ErrorMessage = null;
         }
 
         if (!result.Success && startedWriting)

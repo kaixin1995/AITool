@@ -93,6 +93,9 @@
                                 <li class="nav-item" role="presentation">
                                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabAnthropic" type="button" role="tab">Anthropic 聊天</button>
                                 </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabResponses" type="button" role="tab">Responses</button>
+                                </li>
                             </ul>
                         </div>
                         <div class="card-body">
@@ -161,6 +164,30 @@
                                         <div>
                                             <div class="simulator-section-title">响应结果</div>
                                             <pre id="anthropicChatResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="tab-pane fade" id="tabResponses" role="tabpanel">
+                                    <div class="d-flex justify-content-between align-items-center mb-3">
+                                        <code id="responsesUrl" class="simulator-endpoint-code"></code>
+                                        <div class="d-flex gap-2 align-items-center">
+                                            <div class="form-check form-switch mb-0">
+                                                <input class="form-check-input" type="checkbox" id="responsesStreamToggle">
+                                                <label class="form-check-label" for="responsesStreamToggle">流式</label>
+                                            </div>
+                                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('responsesUrl').textContent)">复制 URL</button>
+                                            <button type="button" class="btn btn-sm btn-primary" id="btnResponsesChat" onclick="sendResponsesChat()">发送请求</button>
+                                        </div>
+                                    </div>
+                                    <div class="simulator-panel-grid">
+                                        <div>
+                                            <div class="simulator-section-title">请求示例</div>
+                                            <pre id="responsesChatRequest" class="simulator-pre"></pre>
+                                        </div>
+                                        <div>
+                                            <div class="simulator-section-title">响应结果</div>
+                                            <pre id="responsesChatResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
                                         </div>
                                     </div>
                                 </div>
@@ -272,6 +299,8 @@
     }
 
     .simulator-result-pre {
+        max-height: 400px;
+        overflow-y: auto;
         background: #111827;
     }
 
@@ -855,12 +884,17 @@
             if (anthropicChatUrl) {
                 anthropicChatUrl.textContent = baseUrl ? baseUrl + '/v1/messages' : '/v1/messages';
             }
+            var responsesUrl = document.getElementById('responsesUrl');
+            if (responsesUrl) {
+                responsesUrl.textContent = baseUrl ? baseUrl + '/v1/responses' : '/v1/responses';
+            }
         }
 
         function renderRequestExamples() {
             var openAiModelsRequest = document.getElementById('openAiModelsRequest');
             var openAiChatRequest = document.getElementById('openAiChatRequest');
             var anthropicChatRequest = document.getElementById('anthropicChatRequest');
+            var responsesChatRequest = document.getElementById('responsesChatRequest');
             if (!openAiModelsRequest || !openAiChatRequest || !anthropicChatRequest) {
                 return;
             }
@@ -870,6 +904,7 @@
             var accessKey = getAccessKey();
             var openAiStream = !!document.getElementById('openAiStreamToggle')?.checked;
             var anthropicStream = !!document.getElementById('anthropicStreamToggle')?.checked;
+            var responsesStream = !!document.getElementById('responsesStreamToggle')?.checked;
 
             var openAiModelsExample = {
                 method: 'GET',
@@ -913,9 +948,27 @@
                 }
             };
 
+            // Responses 端点请求示例
+            var responsesChatExample = {
+                method: 'POST',
+                url: document.getElementById('responsesUrl').textContent,
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Bearer ' + accessKey
+                },
+                body: {
+                    model: modelName,
+                    input: message,
+                    stream: responsesStream
+                }
+            };
+
             openAiModelsRequest.textContent = prettyJson(openAiModelsExample);
             openAiChatRequest.textContent = prettyJson(openAiChatExample);
             anthropicChatRequest.textContent = prettyJson(anthropicChatExample);
+            if (responsesChatRequest) {
+                responsesChatRequest.textContent = prettyJson(responsesChatExample);
+            }
         }
 
         function prettyJson(value) {
@@ -1043,6 +1096,27 @@
                 },
                 protocolName: 'Anthropic',
                 isStreaming: document.getElementById('anthropicStreamToggle').checked
+            });
+        }
+
+        // Responses 端点发送请求
+        async function sendResponsesChat() {
+            if (!validateInputs(true)) return;
+            await sendJsonRequest({
+                buttonId: 'btnResponsesChat',
+                outputId: 'responsesChatResponse',
+                path: '/v1/responses',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Bearer ' + getAccessKey()
+                },
+                body: {
+                    model: getModelName(),
+                    input: getMessage(),
+                    stream: document.getElementById('responsesStreamToggle').checked
+                },
+                protocolName: 'Responses',
+                isStreaming: document.getElementById('responsesStreamToggle').checked
             });
         }
 
@@ -1619,11 +1693,15 @@
             document.getElementById('messageInput')?.addEventListener('input', renderAllExamples);
             document.getElementById('openAiStreamToggle')?.addEventListener('change', renderAllExamples);
             document.getElementById('anthropicStreamToggle')?.addEventListener('change', renderAllExamples);
+            document.getElementById('responsesStreamToggle')?.addEventListener('change', renderAllExamples);
             document.querySelector('button[data-bs-target="#tabOpenAi"]')?.addEventListener('shown.bs.tab', function () {
                 ensureProtocolModel('OpenAI', true);
             });
             document.querySelector('button[data-bs-target="#tabAnthropic"]')?.addEventListener('shown.bs.tab', function () {
                 ensureProtocolModel('Anthropic', true);
+            });
+            document.querySelector('button[data-bs-target="#tabResponses"]')?.addEventListener('shown.bs.tab', function () {
+                renderAllExamples();
             });
 
             ensureProtocolModel('OpenAI', true);
