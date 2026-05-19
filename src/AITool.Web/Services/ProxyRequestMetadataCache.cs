@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Controllers.Admin;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -35,6 +36,26 @@ public sealed class ProxyRequestMetadataCache
     /// 模型并发限制缓存键。
     /// </summary>
     private const string ModelConcurrencyLimitsCacheKey = "model-concurrency-limits";
+    /// <summary>
+    /// 路由主入口列表缓存键。
+    /// </summary>
+    private const string RouteEntriesCacheKey = "admin-route-entries";
+    /// <summary>
+    /// 路由候选站点实例缓存键。
+    /// </summary>
+    private const string RouteSiteInstancesCacheKey = "admin-route-site-instances";
+    /// <summary>
+    /// 路由可配置模型缓存键。
+    /// </summary>
+    private const string RouteModelsCacheKey = "admin-route-models";
+    /// <summary>
+    /// 路由模型发现结果缓存键。
+    /// </summary>
+    private const string RouteDiscoveredSitesCacheKey = "admin-route-discovered-sites";
+    /// <summary>
+    /// 路由规则列表缓存键。
+    /// </summary>
+    private const string RouteRulesByEntryCacheKey = "admin-route-rules-by-entry";
     /// <summary>
     /// 启用模型缓存键。
     /// </summary>
@@ -246,6 +267,274 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 获取路由主入口列表缓存。
+    /// </summary>
+    public async Task<IReadOnlyList<RouteEntryListItem>> GetRouteEntriesAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                RouteEntriesCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var candidateCounts = await dbContext.ProxyRouteRules
+                        .AsNoTracking()
+                        .GroupBy(x => x.ExternalModelName)
+                        .Select(g => new { EntryName = g.Key, CandidateCount = g.Count() })
+                        .ToListAsync(cancellationToken);
+
+                    var storedEntries = await dbContext.ProxyRouteEntries
+                        .AsNoTracking()
+                        .OrderBy(x => x.EntryName)
+                        .Select(x => x.EntryName)
+                        .ToListAsync(cancellationToken);
+
+                    var countsByName = candidateCounts.ToDictionary(x => x.EntryName, x => x.CandidateCount, StringComparer.Ordinal);
+                    return storedEntries
+                        .Concat(candidateCounts.Select(x => x.EntryName))
+                        .Distinct(StringComparer.Ordinal)
+                        .OrderBy(x => x, StringComparer.Ordinal)
+                        .Select(entryName => new RouteEntryListItem
+                        {
+                            EntryName = entryName,
+                            CandidateCount = countsByName.GetValueOrDefault(entryName, 0)
+                        })
+                        .ToList();
+                })
+            ?? [];
+    }
+
+    /// <summary>
+    /// 获取可选站点实例缓存。
+    /// </summary>
+    public async Task<IReadOnlyList<SiteInstanceItem>> GetRouteSiteInstancesAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                RouteSiteInstancesCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    return await (
+                            from mapping in dbContext.SiteModelMappings.AsNoTracking()
+                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
+                            join model in dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
+                            where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
+                            orderby site.Name, mapping.RemoteModelName
+                            select new SiteInstanceItem
+                            {
+                                SiteId = site.Id,
+                                SiteName = site.Name,
+                                SiteModelName = mapping.RemoteModelName,
+                                ProtocolType = site.ProtocolType
+                            })
+                        .ToListAsync(cancellationToken);
+                })
+            ?? [];
+    }
+
+    /// <summary>
+    /// 获取可配置路由模型缓存。
+    /// </summary>
+    public async Task<IReadOnlyList<RouteModelItem>> GetRouteModelsAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                RouteModelsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var enabledMappings = await dbContext.SiteModelMappings
+                        .AsNoTracking()
+                        .Where(m => m.IsEnabled)
+                        .Select(m => new
+                        {
+                            m.ModelLibraryItemId
+                        })
+                        .ToListAsync(cancellationToken);
+
+                    var modelIds = enabledMappings
+                        .Select(m => m.ModelLibraryItemId)
+                        .Distinct()
+                        .ToList();
+                    if (modelIds.Count == 0)
+                    {
+                        return [];
+                    }
+
+                    var models = await dbContext.ModelLibraryItems
+                        .AsNoTracking()
+                        .Where(m => modelIds.Contains(m.Id) && m.IsEnabled)
+                        .OrderBy(m => m.DisplayName)
+                        .Select(m => new RouteModelItem
+                        {
+                            ModelName = m.ModelName,
+                            DisplayName = m.DisplayName
+                        })
+                        .ToListAsync(cancellationToken);
+
+                    var modelNameById = await dbContext.ModelLibraryItems
+                        .AsNoTracking()
+                        .Where(m => modelIds.Contains(m.Id))
+                        .ToDictionaryAsync(m => m.Id, m => m.ModelName, cancellationToken);
+                    var routedModels = (await dbContext.ProxyRouteRules
+                        .AsNoTracking()
+                        .Select(r => r.ExternalModelName)
+                        .Distinct()
+                        .ToListAsync(cancellationToken))
+                        .ToHashSet(StringComparer.Ordinal);
+
+                    foreach (var model in models)
+                    {
+                        model.SiteCount = enabledMappings.Count(em => modelNameById.TryGetValue(em.ModelLibraryItemId, out var modelName)
+                            && string.Equals(modelName, model.ModelName, StringComparison.Ordinal));
+                        model.HasRouteRules = routedModels.Contains(model.ModelName);
+                    }
+
+                    return models;
+                })
+            ?? [];
+    }
+
+    /// <summary>
+    /// 获取按模型名发现的可用站点缓存。
+    /// </summary>
+    public async Task<IReadOnlyList<DiscoveredSiteItem>> GetDiscoveredSitesAsync(string modelName, CancellationToken cancellationToken)
+    {
+        var normalizedModelName = modelName.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedModelName))
+        {
+            return [];
+        }
+
+        var allDiscoveredSites = await _memoryCache.GetOrCreateAsync(
+                RouteDiscoveredSitesCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var sites = await dbContext.Sites
+                        .AsNoTracking()
+                        .Where(s => s.IsEnabled)
+                        .Select(s => new CachedSiteSnapshot
+                        {
+                            Id = s.Id,
+                            Name = s.Name
+                        })
+                        .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
+                    var modelNamesById = await dbContext.ModelLibraryItems
+                        .AsNoTracking()
+                        .Where(m => m.IsEnabled)
+                        .ToDictionaryAsync(m => m.Id, m => m.ModelName, cancellationToken);
+                    var mappings = await dbContext.SiteModelMappings
+                        .AsNoTracking()
+                        .Where(m => m.IsEnabled)
+                        .Select(m => new
+                        {
+                            m.SiteId,
+                            m.ModelLibraryItemId,
+                            m.RemoteModelName
+                        })
+                        .ToListAsync(cancellationToken);
+
+                    var results = new Dictionary<string, List<DiscoveredSiteItem>>(StringComparer.Ordinal);
+                    foreach (var mapping in mappings)
+                    {
+                        if (!sites.TryGetValue(mapping.SiteId, out var site))
+                        {
+                            continue;
+                        }
+
+                        AddDiscoveredSite(results, mapping.RemoteModelName, site, mapping.RemoteModelName);
+                        if (modelNamesById.TryGetValue(mapping.ModelLibraryItemId, out var libraryModelName))
+                        {
+                            AddDiscoveredSite(results, libraryModelName, site, mapping.RemoteModelName);
+                        }
+                    }
+
+                    return results;
+                })
+            ?? new Dictionary<string, List<DiscoveredSiteItem>>(StringComparer.Ordinal);
+
+        return allDiscoveredSites.TryGetValue(normalizedModelName, out var items)
+            ? items
+            : [];
+    }
+
+    /// <summary>
+    /// 获取按主入口聚合的路由规则缓存。
+    /// </summary>
+    public async Task<IReadOnlyList<RouteRuleListItem>> GetRouteRulesAsync(string modelName, CancellationToken cancellationToken)
+    {
+        var normalizedModelName = modelName.Trim();
+        if (string.IsNullOrWhiteSpace(normalizedModelName))
+        {
+            return [];
+        }
+
+        var rulesByEntry = await _memoryCache.GetOrCreateAsync(
+                RouteRulesByEntryCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var sites = await dbContext.Sites
+                        .AsNoTracking()
+                        .Where(s => s.IsEnabled)
+                        .ToDictionaryAsync(s => s.Id, s => s.Name, cancellationToken);
+                    var rules = await dbContext.ProxyRouteRules
+                        .AsNoTracking()
+                        .OrderBy(r => r.Priority)
+                        .Select(r => new
+                        {
+                            r.ExternalModelName,
+                            r.Id,
+                            r.SiteId,
+                            r.UpstreamModelName,
+                            r.SiteModelName,
+                            r.Priority,
+                            r.ModelPriority,
+                            r.InstancePriority,
+                            r.IsEnabled
+                        })
+                        .ToListAsync(cancellationToken);
+
+                    return rules
+                        .GroupBy(r => r.ExternalModelName, StringComparer.Ordinal)
+                        .ToDictionary(
+                            g => g.Key,
+                            g => g.Select(r => new RouteRuleListItem
+                            {
+                                RuleId = r.Id,
+                                SiteId = r.SiteId,
+                                SiteName = sites.TryGetValue(r.SiteId, out var siteName) ? siteName : "(未知站点)",
+                                UpstreamModelName = r.UpstreamModelName,
+                                SiteModelName = r.SiteModelName,
+                                Priority = r.Priority,
+                                ModelPriority = r.ModelPriority,
+                                InstancePriority = r.InstancePriority,
+                                IsEnabled = r.IsEnabled
+                            }).ToList(),
+                            StringComparer.Ordinal);
+                })
+            ?? new Dictionary<string, List<RouteRuleListItem>>(StringComparer.Ordinal);
+
+        return rulesByEntry.TryGetValue(normalizedModelName, out var items)
+            ? items
+            : [];
+    }
+
+    /// <summary>
     /// 获取已启用模型信息。
     /// </summary>
     public async Task<CachedEnabledModel?> GetEnabledModelAsync(Guid modelId, CancellationToken cancellationToken)
@@ -293,6 +582,11 @@ public sealed class ProxyRequestMetadataCache
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "all");
         _memoryCache.Remove(ChatModelsCacheKey);
         _memoryCache.Remove(ModelConcurrencyLimitsCacheKey);
+        _memoryCache.Remove(RouteEntriesCacheKey);
+        _memoryCache.Remove(RouteSiteInstancesCacheKey);
+        _memoryCache.Remove(RouteModelsCacheKey);
+        _memoryCache.Remove(RouteDiscoveredSitesCacheKey);
+        _memoryCache.Remove(RouteRulesByEntryCacheKey);
         _memoryCache.Remove(FallbackMappingsCacheKey);
         _memoryCache.Remove(EnabledModelsCacheKey);
     }
@@ -466,12 +760,61 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 将一个站点模型结果追加到按模型名聚合的发现缓存中，并自动去重。
+    /// </summary>
+    private static void AddDiscoveredSite(
+        IDictionary<string, List<DiscoveredSiteItem>> results,
+        string modelName,
+        CachedSiteSnapshot site,
+        string remoteModelName)
+    {
+        if (string.IsNullOrWhiteSpace(modelName))
+        {
+            return;
+        }
+
+        if (!results.TryGetValue(modelName, out var items))
+        {
+            items = [];
+            results[modelName] = items;
+        }
+
+        if (items.Any(x => x.SiteId == site.Id && string.Equals(x.RemoteModelName, remoteModelName, StringComparison.Ordinal)))
+        {
+            return;
+        }
+
+        items.Add(new DiscoveredSiteItem
+        {
+            SiteId = site.Id,
+            SiteName = site.Name,
+            RemoteModelName = remoteModelName,
+            SiteEnabled = true
+        });
+    }
+
+    /// <summary>
     /// 根据站点能力推导协议类型。
     /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
         return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
     }
+}
+
+/// <summary>
+/// 缓存中的站点快照。
+/// </summary>
+internal sealed class CachedSiteSnapshot
+{
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
+    public Guid Id { get; set; }
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
+    public string Name { get; set; } = string.Empty;
 }
 
 /// <summary>

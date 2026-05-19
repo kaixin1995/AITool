@@ -115,15 +115,9 @@ public class IndexModel : PageModel
                 .ToListAsync(cancellationToken);
             if (sites.Count == 0) return RedirectToPage();
 
-            var mappings = await _dbContext.SiteModelMappings
-                .Where(x => SelectedSiteIds.Contains(x.SiteId))
-                .ToListAsync(cancellationToken);
-
-            _dbContext.SiteModelMappings.RemoveRange(mappings);
-            _dbContext.Sites.RemoveRange(sites);
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            var deletedCount = await RemoveSitesAsync(sites.Select(x => x.Id), cancellationToken);
             _metadataCache?.InvalidateRouteTargets();
-            StatusMessage = $"已批量删除 {sites.Count} 个站点";
+            StatusMessage = $"已批量删除 {deletedCount} 个站点";
             StatusSuccess = true;
         }
         catch (Exception ex)
@@ -145,8 +139,8 @@ public class IndexModel : PageModel
         {
             var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
             if (site is null) return RedirectToPage();
-            _dbContext.Sites.Remove(site);
-            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            await RemoveSitesAsync([siteId], cancellationToken);
             _metadataCache?.InvalidateRouteTargets();
             StatusMessage = "站点已删除";
             StatusSuccess = true;
@@ -158,6 +152,91 @@ public class IndexModel : PageModel
         }
         await OnGetAsync(cancellationToken);
         return Page();
+    }
+
+    /// <summary>
+    /// 删除站点时同步清理其关联映射、路由规则以及已空置的路由入口，避免留下孤儿数据。
+    /// </summary>
+    private async Task<int> RemoveSitesAsync(IEnumerable<Guid> siteIds, CancellationToken cancellationToken)
+    {
+        var normalizedSiteIds = siteIds.Distinct().ToList();
+        if (normalizedSiteIds.Count == 0)
+        {
+            return 0;
+        }
+
+        var sites = await _dbContext.Sites
+            .Where(x => normalizedSiteIds.Contains(x.Id))
+            .ToListAsync(cancellationToken);
+        if (sites.Count == 0)
+        {
+            return 0;
+        }
+
+        var mappings = await _dbContext.SiteModelMappings
+            .Where(x => normalizedSiteIds.Contains(x.SiteId))
+            .ToListAsync(cancellationToken);
+        var rules = await _dbContext.ProxyRouteRules
+            .Where(x => normalizedSiteIds.Contains(x.SiteId))
+            .ToListAsync(cancellationToken);
+        var affectedEntryNames = rules
+            .Select(x => x.ExternalModelName)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+
+        if (mappings.Count > 0)
+        {
+            _dbContext.SiteModelMappings.RemoveRange(mappings);
+        }
+
+        if (rules.Count > 0)
+        {
+            _dbContext.ProxyRouteRules.RemoveRange(rules);
+        }
+
+        _dbContext.Sites.RemoveRange(sites);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
+        return sites.Count;
+    }
+
+    /// <summary>
+    /// 删除失去全部候选规则的路由入口，避免路由管理页继续看到空壳入口。
+    /// </summary>
+    private async Task CleanupEmptyRouteEntriesAsync(IEnumerable<string> entryNames, CancellationToken cancellationToken)
+    {
+        var normalizedNames = entryNames
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        if (normalizedNames.Count == 0)
+        {
+            return;
+        }
+
+        var remainingEntryNames = await _dbContext.ProxyRouteRules
+            .Where(x => normalizedNames.Contains(x.ExternalModelName))
+            .Select(x => x.ExternalModelName)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var emptyEntryNames = normalizedNames
+            .Except(remainingEntryNames, StringComparer.Ordinal)
+            .ToList();
+        if (emptyEntryNames.Count == 0)
+        {
+            return;
+        }
+
+        var emptyEntries = await _dbContext.ProxyRouteEntries
+            .Where(x => emptyEntryNames.Contains(x.EntryName))
+            .ToListAsync(cancellationToken);
+        if (emptyEntries.Count == 0)
+        {
+            return;
+        }
+
+        _dbContext.ProxyRouteEntries.RemoveRange(emptyEntries);
+        await _dbContext.SaveChangesAsync(cancellationToken);
     }
 }
 

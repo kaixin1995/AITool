@@ -118,6 +118,34 @@ public sealed class ProxyFallbackFlowTests
     }
 
     /// <summary>
+    /// 验证规则列表在首次读取后，再次保存路由仍会立即返回最新顺序。
+    /// </summary>
+    [Fact]
+    public async Task Get_route_rule_list_refreshes_immediately_after_save()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var warmupResponse = await client.GetAsync("/api/admin/route-rules/list?modelName=chat-prod");
+        var warmupBody = await warmupResponse.Content.ReadAsStringAsync();
+        warmupResponse.StatusCode.Should().Be(HttpStatusCode.OK, warmupBody);
+        warmupBody.IndexOf("gpt-5.5-a", StringComparison.Ordinal).Should().BeLessThan(warmupBody.IndexOf("glm-5.1-a", StringComparison.Ordinal));
+
+        var saveResponse = await client.PostAsync(
+            "/api/admin/route-rules/save",
+            new StringContent(
+                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"glm-5.1\",\"siteId\":\"22222222-2222-2222-2222-222222222222\",\"siteModelName\":\"glm-5.1-a\"},{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\"}]}",
+                Encoding.UTF8,
+                "application/json"));
+        saveResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        var refreshedResponse = await client.GetAsync("/api/admin/route-rules/list?modelName=chat-prod");
+        var refreshedBody = await refreshedResponse.Content.ReadAsStringAsync();
+        refreshedResponse.StatusCode.Should().Be(HttpStatusCode.OK, refreshedBody);
+        refreshedBody.IndexOf("glm-5.1-a", StringComparison.Ordinal).Should().BeLessThan(refreshedBody.IndexOf("gpt-5.5-a", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// 验证路由页面包含搜索框，并且不会直接渲染调试用协议表达式。
     /// </summary>
     [Fact]

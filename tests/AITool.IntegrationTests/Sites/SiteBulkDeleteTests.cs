@@ -1,3 +1,4 @@
+using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
@@ -36,11 +37,40 @@ public sealed class SiteBulkDeleteTests
 
         var remainingSites = await db.Sites.OrderBy(x => x.Name).ToListAsync();
         var remainingMappings = await db.SiteModelMappings.OrderBy(x => x.SiteId).ToListAsync();
+        var remainingRules = await db.ProxyRouteRules.OrderBy(x => x.Priority).ToListAsync();
+        var remainingEntries = await db.ProxyRouteEntries.OrderBy(x => x.EntryName).ToListAsync();
 
         remainingSites.Should().ContainSingle();
         remainingSites[0].Name.Should().Be("Site C");
         remainingMappings.Should().ContainSingle();
         remainingMappings[0].SiteId.Should().Be(Guid.Parse("33333333-3333-3333-3333-333333333333"));
+        remainingRules.Should().ContainSingle();
+        remainingRules[0].SiteId.Should().Be(Guid.Parse("33333333-3333-3333-3333-333333333333"));
+        remainingEntries.Should().ContainSingle();
+        remainingEntries[0].EntryName.Should().Be("chat-keep");
+    }
+
+    /// <summary>
+    /// 验证删除单个站点时，也会同步清理关联映射、路由规则与空路由入口。
+    /// </summary>
+    [Fact]
+    public async Task OnPostDeleteAsync_removes_related_rules_and_empty_entries()
+    {
+        await using var db = CreateDbContext();
+        await SeedAsync(db);
+        var page = new IndexModel(db);
+
+        var result = await page.OnPostDeleteAsync(Guid.Parse("11111111-1111-1111-1111-111111111111"), CancellationToken.None);
+
+        result.Should().BeOfType<PageResult>();
+
+        var remainingMappings = await db.SiteModelMappings.OrderBy(x => x.SiteId).ToListAsync();
+        var remainingRules = await db.ProxyRouteRules.OrderBy(x => x.Priority).ToListAsync();
+        var remainingEntries = await db.ProxyRouteEntries.OrderBy(x => x.EntryName).ToListAsync();
+
+        remainingMappings.Should().NotContain(x => x.SiteId == Guid.Parse("11111111-1111-1111-1111-111111111111"));
+        remainingRules.Should().NotContain(x => x.SiteId == Guid.Parse("11111111-1111-1111-1111-111111111111"));
+        remainingEntries.Should().NotContain(x => x.EntryName == "chat-a");
     }
 
     /// <summary>
@@ -115,6 +145,53 @@ public sealed class SiteBulkDeleteTests
                 ModelLibraryItemId = Guid.NewGuid(),
                 RemoteModelName = "gpt-c",
                 LastStatus = "ok",
+                IsEnabled = true
+            });
+        db.ProxyRouteEntries.AddRange(
+            new ProxyRouteEntry
+            {
+                EntryName = "chat-a"
+            },
+            new ProxyRouteEntry
+            {
+                EntryName = "chat-b"
+            },
+            new ProxyRouteEntry
+            {
+                EntryName = "chat-keep"
+            });
+        db.ProxyRouteRules.AddRange(
+            new ProxyRouteRule
+            {
+                ExternalModelName = "chat-a",
+                UpstreamModelName = "gpt-a",
+                SiteId = siteA.Id,
+                SiteModelName = "gpt-a",
+                Priority = 0,
+                ModelPriority = 0,
+                InstancePriority = 0,
+                IsEnabled = true
+            },
+            new ProxyRouteRule
+            {
+                ExternalModelName = "chat-b",
+                UpstreamModelName = "gpt-b",
+                SiteId = siteB.Id,
+                SiteModelName = "gpt-b",
+                Priority = 0,
+                ModelPriority = 0,
+                InstancePriority = 0,
+                IsEnabled = true
+            },
+            new ProxyRouteRule
+            {
+                ExternalModelName = "chat-keep",
+                UpstreamModelName = "gpt-c",
+                SiteId = siteC.Id,
+                SiteModelName = "gpt-c",
+                Priority = 0,
+                ModelPriority = 0,
+                InstancePriority = 0,
                 IsEnabled = true
             });
 

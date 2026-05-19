@@ -220,29 +220,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpGet("entries")]
     public async Task<IActionResult> GetEntries(CancellationToken cancellationToken)
     {
-        var candidateCounts = await _dbContext.ProxyRouteRules
-            .GroupBy(x => x.ExternalModelName)
-            .Select(g => new { EntryName = g.Key, CandidateCount = g.Count() })
-            .ToListAsync(cancellationToken);
-
-        var storedEntries = await _dbContext.ProxyRouteEntries
-            .OrderBy(x => x.EntryName)
-            .Select(x => x.EntryName)
-            .ToListAsync(cancellationToken);
-
-        var countsByName = candidateCounts.ToDictionary(x => x.EntryName, x => x.CandidateCount, StringComparer.Ordinal);
-        var mergedNames = storedEntries
-            .Concat(candidateCounts.Select(x => x.EntryName))
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(x => x, StringComparer.Ordinal)
-            .ToList();
-
-        var result = mergedNames.Select(entryName => new RouteEntryListItem
-        {
-            EntryName = entryName,
-            CandidateCount = countsByName.GetValueOrDefault(entryName, 0)
-        }).ToList();
-
+        var result = await _metadataCache.GetRouteEntriesAsync(cancellationToken);
         return Ok(result);
     }
 
@@ -270,6 +248,7 @@ public sealed class RouteRulesApiController : ControllerBase
             EntryName = entryName
         });
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "创建成功" });
     }
@@ -317,22 +296,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpGet("site-instances")]
     public async Task<IActionResult> GetSiteInstances(CancellationToken cancellationToken)
     {
-        // 候选实例池只保留仍然挂在启用模型上的有效站点映射，避免显示孤儿映射。
-        var result = await (
-                from mapping in _dbContext.SiteModelMappings
-                join site in _dbContext.Sites on mapping.SiteId equals site.Id
-                join model in _dbContext.ModelLibraryItems on mapping.ModelLibraryItemId equals model.Id
-                where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
-                orderby site.Name, mapping.RemoteModelName
-                select new SiteInstanceItem
-                {
-                    SiteId = site.Id,
-                    SiteName = site.Name,
-                    SiteModelName = mapping.RemoteModelName,
-                    ProtocolType = site.ProtocolType
-                })
-            .ToListAsync(cancellationToken);
-
+        var result = await _metadataCache.GetRouteSiteInstancesAsync(cancellationToken);
         return Ok(result);
     }
 
@@ -342,71 +306,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
-        // 查询有启用的站点映射的模型
-        var enabledMappings = await _dbContext.SiteModelMappings
-            .Where(m => m.IsEnabled)
-            .ToListAsync(cancellationToken);
-
-        var modelIds = enabledMappings.Select(m => m.ModelLibraryItemId).Distinct().ToList();
-
-        var models = await _dbContext.ModelLibraryItems
-            .Where(m => modelIds.Contains(m.Id) && m.IsEnabled)
-            .OrderBy(m => m.DisplayName)
-            .Select(m => new RouteModelItem
-            {
-                ModelName = m.ModelName,
-                DisplayName = m.DisplayName
-            })
-            .ToListAsync(cancellationToken);
-
-        // 统计每个模型的站点数量
-        var siteCounts = enabledMappings
-            .GroupBy(m => m.ModelLibraryItemId)
-            .ToDictionary(g => g.Key, g => g.Count());
-
-        // 查询已配置路由规则的模型名称
-        var routedModels = (await _dbContext.ProxyRouteRules
-            .Select(r => r.ExternalModelName)
-            .Distinct()
-            .ToListAsync(cancellationToken))
-            .ToHashSet();
-
-        // 通过 ModelName 关联
-        var modelNames = models.Select(m => m.ModelName).ToHashSet();
-
-        foreach (var model in models)
-        {
-            var modelId = enabledMappings
-                .FirstOrDefault(m => m.ModelLibraryItemId != Guid.Empty)?
-                .ModelLibraryItemId ?? Guid.Empty;
-
-            model.SiteCount = enabledMappings
-                .Count(m => modelNames.Contains(model.ModelName));
-
-            // 检查该模型名是否有路由规则
-            model.HasRouteRules = routedModels.Contains(model.ModelName);
-        }
-
-        // 填充站点数量
-        var modelItems = await _dbContext.ModelLibraryItems
-            .Where(m => modelIds.Contains(m.Id))
-            .ToDictionaryAsync(m => m.Id, m => m, cancellationToken);
-
-        foreach (var model in models)
-        {
-            var matchingIds = enabledMappings
-                .Where(em => modelItems.TryGetValue(em.ModelLibraryItemId, out var item)
-                    && item.ModelName == model.ModelName)
-                .Select(em => em.ModelLibraryItemId)
-                .Distinct()
-                .Count();
-
-            model.SiteCount = enabledMappings
-                .Where(em => modelItems.TryGetValue(em.ModelLibraryItemId, out var item)
-                    && item.ModelName == model.ModelName)
-                .Count();
-        }
-
+        var models = await _metadataCache.GetRouteModelsAsync(cancellationToken);
         return Ok(models);
     }
 
@@ -418,60 +318,7 @@ public sealed class RouteRulesApiController : ControllerBase
         [FromQuery] string modelName,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(modelName))
-            return Ok(new List<DiscoveredSiteItem>());
-
-        var sites = await _dbContext.Sites
-            .Where(s => s.IsEnabled)
-            .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
-        var normalizedModelName = modelName.Trim();
-        List<DiscoveredSiteItem> results = [];
-
-        var libraryModelIds = await _dbContext.ModelLibraryItems
-            .Where(m => m.ModelName == normalizedModelName && m.IsEnabled)
-            .Select(m => m.Id)
-            .ToListAsync(cancellationToken);
-
-        if (libraryModelIds.Count > 0)
-        {
-            var mappings = await _dbContext.SiteModelMappings
-                .Where(m => libraryModelIds.Contains(m.ModelLibraryItemId) && m.IsEnabled)
-                .ToListAsync(cancellationToken);
-
-            foreach (var mapping in mappings)
-            {
-                if (sites.TryGetValue(mapping.SiteId, out var site))
-                {
-                    results.Add(new DiscoveredSiteItem
-                    {
-                        SiteId = site.Id,
-                        SiteName = site.Name,
-                        RemoteModelName = mapping.RemoteModelName,
-                        SiteEnabled = site.IsEnabled
-                    });
-                }
-            }
-        }
-
-        var directMappings = await _dbContext.SiteModelMappings
-            .Where(m => m.RemoteModelName == normalizedModelName && m.IsEnabled)
-            .ToListAsync(cancellationToken);
-
-        foreach (var mapping in directMappings)
-        {
-            var exists = results.Any(x => x.SiteId == mapping.SiteId && x.RemoteModelName == mapping.RemoteModelName);
-            if (!exists && sites.TryGetValue(mapping.SiteId, out var site))
-            {
-                results.Add(new DiscoveredSiteItem
-                {
-                    SiteId = site.Id,
-                    SiteName = site.Name,
-                    RemoteModelName = mapping.RemoteModelName,
-                    SiteEnabled = site.IsEnabled
-                });
-            }
-        }
-
+        var results = await _metadataCache.GetDiscoveredSitesAsync(modelName, cancellationToken);
         return Ok(results);
     }
 
@@ -483,31 +330,7 @@ public sealed class RouteRulesApiController : ControllerBase
         [FromQuery] string modelName,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(modelName))
-            return Ok(new List<RouteRuleListItem>());
-
-        var sites = await _dbContext.Sites
-            .Where(s => s.IsEnabled)
-            .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
-
-        var rules = await _dbContext.ProxyRouteRules
-            .Where(r => r.ExternalModelName == modelName)
-            .OrderBy(r => r.Priority)
-            .ToListAsync(cancellationToken);
-
-        var result = rules.Select(r => new RouteRuleListItem
-        {
-            RuleId = r.Id,
-            SiteId = r.SiteId,
-            SiteName = sites.TryGetValue(r.SiteId, out var s) ? s.Name : "(未知站点)",
-            UpstreamModelName = r.UpstreamModelName,
-            SiteModelName = r.SiteModelName,
-            Priority = r.Priority,
-            ModelPriority = r.ModelPriority,
-            InstancePriority = r.InstancePriority,
-            IsEnabled = r.IsEnabled
-        }).ToList();
-
+        var result = await _metadataCache.GetRouteRulesAsync(modelName, cancellationToken);
         return Ok(result);
     }
 
