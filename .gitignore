@@ -375,3 +375,4 @@ FodyWeavers.xsd
 /.artifacts
 *.lscache
 *.py
+/tests/.tmp-usage-layout-obj
