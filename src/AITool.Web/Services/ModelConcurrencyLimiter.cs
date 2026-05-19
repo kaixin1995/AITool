@@ -1,8 +1,5 @@
 using System.Collections.Concurrent;
 using System.Threading;
-using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Web.Services;
 
@@ -31,26 +28,24 @@ public sealed class ConcurrencyAcquireResult : IDisposable
     /// </summary>
     public bool Acquired { get; }
 
-    private readonly SemaphoreSlim? _semaphore;
     private readonly Action? _releaseAction;
     private int _disposed;
 
-    private ConcurrencyAcquireResult(bool acquired, SemaphoreSlim? semaphore, Action? releaseAction)
+    private ConcurrencyAcquireResult(bool acquired, Action? releaseAction)
     {
         Acquired = acquired;
-        _semaphore = semaphore;
         _releaseAction = releaseAction;
     }
 
     /// <summary>
     /// 未获取到许可的实例。
     /// </summary>
-    public static ConcurrencyAcquireResult NotAcquired { get; } = new(false, null, null);
+    public static ConcurrencyAcquireResult NotAcquired { get; } = new(false, null);
 
     /// <summary>
     /// 成功获取许可的实例。
     /// </summary>
-    public static ConcurrencyAcquireResult AcquiredSlot(SemaphoreSlim? semaphore, Action? releaseAction = null) => new(true, semaphore, releaseAction);
+    public static ConcurrencyAcquireResult AcquiredSlot(Action? releaseAction = null) => new(true, releaseAction);
 
     /// <summary>
     /// 释放并发许可，无论成功或异常都会正确释放。
@@ -62,7 +57,6 @@ public sealed class ConcurrencyAcquireResult : IDisposable
             return;
         }
 
-        _semaphore?.Release();
         _releaseAction?.Invoke();
     }
 }
@@ -97,14 +91,17 @@ public sealed class ActiveModelConcurrencyEntry
 public sealed class ModelConcurrencyLimiter
 {
     /// <summary>
-    /// 每个 SiteId + RemoteModelName 组合对应的信号量。
+    /// 初始化模型并发限制器。
     /// </summary>
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _semaphores = new(StringComparer.Ordinal);
+    public ModelConcurrencyLimiter(ProxyRequestMetadataCache metadataCache)
+    {
+        _metadataCache = metadataCache;
+    }
 
     /// <summary>
-    /// 当前活跃中的真实并发计数，只在成功拿到槽位后递增，请求结束时递减。
+    /// 每个 SiteId + RemoteModelName 组合对应的并发状态。
     /// </summary>
-    private readonly ConcurrentDictionary<string, int> _activeCounts = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, ModelConcurrencyState> _states = new(StringComparer.Ordinal);
 
     /// <summary>
     /// 最近出现过的模型并发展示元数据，归零后仍会保留一段时间，避免调试页瞬间清空。
@@ -112,19 +109,9 @@ public sealed class ModelConcurrencyLimiter
     private readonly ConcurrentDictionary<string, ActiveModelConcurrencyEntry> _activeEntries = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// 缓存每个 SiteId + RemoteModelName 组合的最大并发数。
+    /// 代理请求元数据缓存，用于统一复用内存中的并发配置。
     /// </summary>
-    private volatile Dictionary<string, int> _limits = [];
-
-    /// <summary>
-    /// 上次刷新时间的 UTC Ticks，用 long 支持 Interlocked 原子操作。
-    /// </summary>
-    private long _lastRefreshedAtTicks = DateTimeOffset.MinValue.UtcTicks;
-
-    /// <summary>
-    /// 刷新间隔。
-    /// </summary>
-    private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(10);
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
     /// <summary>
     /// 调试页默认保留最近 6 小时内出现过的模型并发记录。
@@ -144,39 +131,107 @@ public sealed class ModelConcurrencyLimiter
         TimeSpan queueTimeout,
         CancellationToken cancellationToken)
     {
-        var limits = GetOrRefreshLimits(serviceProvider);
+        var limits = await _metadataCache.GetModelConcurrencyLimitsAsync(cancellationToken);
         var key = BuildKey(siteId, remoteModelName);
+        var maxConcurrency = limits.TryGetValue(key, out var configuredLimit)
+            ? configuredLimit
+            : 0;
+        var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
 
-        if (!limits.TryGetValue(key, out var maxConcurrency) || maxConcurrency <= 0)
+        List<QueuedAcquireWaiter>? promotedWaiters = null;
+        LinkedListNode<QueuedAcquireWaiter>? waiterNode = null;
+        QueuedAcquireWaiter? waiter = null;
+        var acquired = false;
+        var activeCount = 0;
+
+        lock (state.SyncRoot)
         {
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, null);
+            state.MaxConcurrency = maxConcurrency;
+            promotedWaiters = PromoteQueuedWaitersLocked(state);
+
+            if (CanAcquireImmediatelyLocked(state))
+            {
+                state.ActiveCount++;
+                activeCount = state.ActiveCount;
+                acquired = true;
+            }
+            else if (mode == ConcurrencyAcquireMode.WaitForSlot)
+            {
+                waiter = new QueuedAcquireWaiter();
+                waiterNode = state.Waiters.AddLast(waiter);
+            }
         }
 
-        var semaphore = _semaphores.GetOrAdd(key, _ => new SemaphoreSlim(maxConcurrency, maxConcurrency));
+        ReleaseQueuedWaiters(promotedWaiters, key, siteId, remoteModelName, state.ActiveCount);
+
+        if (acquired)
+        {
+            UpdateActiveEntry(key, siteId, remoteModelName, activeCount);
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName);
+        }
 
         if (mode == ConcurrencyAcquireMode.SkipOnFull)
         {
-            // 打满则立即跳过，不排队。
-            var acquired = await semaphore.WaitAsync(0, cancellationToken);
-            return acquired
-                ? CreateTrackedAcquireResult(key, siteId, remoteModelName, semaphore)
-                : ConcurrencyAcquireResult.NotAcquired;
-        }
-
-        // WaitForSlot：排队等待，超时后返回 NotAcquired。
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(queueTimeout);
-
-        try
-        {
-            await semaphore.WaitAsync(cts.Token);
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, semaphore);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            // 排队超时，但原始请求未被取消。
             return ConcurrencyAcquireResult.NotAcquired;
         }
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(queueTimeout);
+        var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, cts.Token);
+        var completedTask = await Task.WhenAny(waiter!.Completion.Task, cancellationTask);
+
+        if (completedTask == waiter.Completion.Task)
+        {
+            UpdateActiveEntry(key, siteId, remoteModelName, GetActiveCount(state));
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName);
+        }
+
+        var grantedDuringCancellation = false;
+        lock (state.SyncRoot)
+        {
+            if (waiter.Granted)
+            {
+                grantedDuringCancellation = true;
+            }
+            else if (waiterNode?.List is not null)
+            {
+                state.Waiters.Remove(waiterNode);
+            }
+        }
+
+        if (grantedDuringCancellation)
+        {
+            await waiter.Completion.Task;
+            UpdateActiveEntry(key, siteId, remoteModelName, GetActiveCount(state));
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName);
+        }
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            throw new OperationCanceledException(cancellationToken);
+        }
+
+        return ConcurrencyAcquireResult.NotAcquired;
+    }
+
+    /// <summary>
+    /// 配置变更后同步新的最大并发数，并尽快唤醒可立即放行的等待请求。
+    /// </summary>
+    public void UpdateLimit(Guid siteId, string remoteModelName, int maxConcurrency)
+    {
+        var key = BuildKey(siteId, remoteModelName);
+        var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
+        List<QueuedAcquireWaiter>? promotedWaiters;
+        int activeCount;
+
+        lock (state.SyncRoot)
+        {
+            state.MaxConcurrency = Math.Max(0, maxConcurrency);
+            promotedWaiters = PromoteQueuedWaitersLocked(state);
+            activeCount = state.ActiveCount;
+        }
+
+        ReleaseQueuedWaiters(promotedWaiters, key, siteId, remoteModelName, activeCount);
     }
 
     /// <summary>
@@ -217,57 +272,50 @@ public sealed class ModelConcurrencyLimiter
     }
 
     /// <summary>
-    /// 从数据库加载最新的并发配置，超过刷新间隔才真正查询。
+    /// 创建带真实活跃计数的并发句柄，只在请求真正开始占用模型时才记数。
     /// </summary>
-    private Dictionary<string, int> GetOrRefreshLimits(IServiceProvider serviceProvider)
+    private ConcurrencyAcquireResult CreateTrackedAcquireResult(string key, Guid siteId, string remoteModelName)
     {
-        var lastTicks = Interlocked.Read(ref _lastRefreshedAtTicks);
-        if (_limits.Count > 0 && DateTimeOffset.UtcNow.UtcTicks - lastTicks < RefreshInterval.Ticks)
-        {
-            return _limits;
-        }
-
-        try
-        {
-            using var scope = serviceProvider.CreateScope();
-            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var mappings = db.SiteModelMappings
-                .Where(m => m.IsEnabled && m.MaxConcurrency > 0)
-                .ToList();
-
-            var newLimits = new Dictionary<string, int>(mappings.Count, StringComparer.Ordinal);
-            foreach (var mapping in mappings)
-            {
-                var key = BuildKey(mapping.SiteId, mapping.RemoteModelName);
-                newLimits[key] = mapping.MaxConcurrency;
-            }
-
-            _limits = newLimits;
-            Interlocked.Exchange(ref _lastRefreshedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
-        }
-        catch
-        {
-            // 查询失败时保留旧配置，不影响正常转发。
-        }
-
-        return _limits;
+        return ConcurrencyAcquireResult.AcquiredSlot(() => ReleaseActiveCount(key, siteId, remoteModelName));
     }
 
     /// <summary>
-    /// 创建带真实活跃计数的并发句柄，只在请求真正开始占用模型时才记数。
+    /// 当前配置允许时，优先按先进先出放行已排队请求。
     /// </summary>
-    private ConcurrencyAcquireResult CreateTrackedAcquireResult(string key, Guid siteId, string remoteModelName, SemaphoreSlim? semaphore)
+    private static List<QueuedAcquireWaiter> PromoteQueuedWaitersLocked(ModelConcurrencyState state)
     {
-        var activeCount = _activeCounts.AddOrUpdate(key, 1, static (_, current) => current + 1);
-        _activeEntries[key] = new ActiveModelConcurrencyEntry
+        List<QueuedAcquireWaiter>? promoted = null;
+        while (CanAcquireImmediatelyLocked(state) && TryDequeueNextWaiterLocked(state, out var waiter))
         {
-            SiteId = siteId,
-            SiteModelName = remoteModelName,
-            ActiveCount = activeCount,
-            LastSeenAt = DateTimeOffset.UtcNow
-        };
+            state.ActiveCount++;
+            waiter.Granted = true;
+            promoted ??= [];
+            promoted.Add(waiter);
+        }
 
-        return ConcurrencyAcquireResult.AcquiredSlot(semaphore, () => ReleaseActiveCount(key, siteId, remoteModelName));
+        return promoted ?? [];
+    }
+
+    /// <summary>
+    /// 释放等待中的请求，使其沿用已预留的并发槽位继续执行。
+    /// </summary>
+    private void ReleaseQueuedWaiters(
+        IReadOnlyList<QueuedAcquireWaiter> waiters,
+        string key,
+        Guid siteId,
+        string remoteModelName,
+        int activeCount)
+    {
+        if (waiters.Count == 0)
+        {
+            return;
+        }
+
+        UpdateActiveEntry(key, siteId, remoteModelName, activeCount);
+        foreach (var waiter in waiters)
+        {
+            waiter.Completion.TrySetResult(true);
+        }
     }
 
     /// <summary>
@@ -275,50 +323,81 @@ public sealed class ModelConcurrencyLimiter
     /// </summary>
     private void ReleaseActiveCount(string key, Guid siteId, string remoteModelName)
     {
-        while (true)
+        var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
+        List<QueuedAcquireWaiter>? promotedWaiters;
+        int activeCount;
+
+        lock (state.SyncRoot)
         {
-            if (!_activeCounts.TryGetValue(key, out var current))
+            if (state.ActiveCount > 0)
             {
-                _activeEntries[key] = new ActiveModelConcurrencyEntry
-                {
-                    SiteId = siteId,
-                    SiteModelName = remoteModelName,
-                    ActiveCount = 0,
-                    LastSeenAt = DateTimeOffset.UtcNow
-                };
-                return;
+                state.ActiveCount--;
             }
 
-            if (current <= 1)
-            {
-                if (_activeCounts.TryRemove(key, out _))
-                {
-                    _activeEntries[key] = new ActiveModelConcurrencyEntry
-                    {
-                        SiteId = siteId,
-                        SiteModelName = remoteModelName,
-                        ActiveCount = 0,
-                        LastSeenAt = DateTimeOffset.UtcNow
-                    };
-                    return;
-                }
+            promotedWaiters = PromoteQueuedWaitersLocked(state);
+            activeCount = state.ActiveCount;
+        }
 
-                continue;
-            }
+        if (promotedWaiters.Count > 0)
+        {
+            ReleaseQueuedWaiters(promotedWaiters, key, siteId, remoteModelName, activeCount);
+            return;
+        }
 
-            var next = current - 1;
-            if (_activeCounts.TryUpdate(key, next, current))
+        UpdateActiveEntry(key, siteId, remoteModelName, activeCount);
+    }
+
+    /// <summary>
+    /// 更新最近活跃快照，归零时保留最近一次出现时间。
+    /// </summary>
+    private void UpdateActiveEntry(string key, Guid siteId, string remoteModelName, int activeCount)
+    {
+        _activeEntries[key] = new ActiveModelConcurrencyEntry
+        {
+            SiteId = siteId,
+            SiteModelName = remoteModelName,
+            ActiveCount = activeCount,
+            LastSeenAt = DateTimeOffset.UtcNow
+        };
+    }
+
+    /// <summary>
+    /// 读取当前活跃并发数，用于等待中的请求被唤醒后刷新调试快照。
+    /// </summary>
+    private static int GetActiveCount(ModelConcurrencyState state)
+    {
+        lock (state.SyncRoot)
+        {
+            return state.ActiveCount;
+        }
+    }
+
+    /// <summary>
+    /// 当前状态下是否还能立刻拿到并发槽位。
+    /// </summary>
+    private static bool CanAcquireImmediatelyLocked(ModelConcurrencyState state)
+    {
+        return state.MaxConcurrency <= 0 || state.ActiveCount < state.MaxConcurrency;
+    }
+
+    /// <summary>
+    /// 从等待队列中取出下一个仍有效的请求，跳过已取消的节点。
+    /// </summary>
+    private static bool TryDequeueNextWaiterLocked(ModelConcurrencyState state, out QueuedAcquireWaiter waiter)
+    {
+        while (state.Waiters.First is not null)
+        {
+            var node = state.Waiters.First;
+            state.Waiters.RemoveFirst();
+            if (!node.Value.Completion.Task.IsCompleted)
             {
-                _activeEntries[key] = new ActiveModelConcurrencyEntry
-                {
-                    SiteId = siteId,
-                    SiteModelName = remoteModelName,
-                    ActiveCount = next,
-                    LastSeenAt = DateTimeOffset.UtcNow
-                };
-                return;
+                waiter = node.Value;
+                return true;
             }
         }
+
+        waiter = null!;
+        return false;
     }
 
     /// <summary>
@@ -327,5 +406,43 @@ public sealed class ModelConcurrencyLimiter
     private static string BuildKey(Guid siteId, string remoteModelName)
     {
         return $"{siteId:N}:{remoteModelName}";
+    }
+
+    /// <summary>
+    /// 单个站点模型的运行时并发状态。
+    /// </summary>
+    private sealed class ModelConcurrencyState
+    {
+        /// <summary>
+        /// 状态锁。
+        /// </summary>
+        public object SyncRoot { get; } = new();
+        /// <summary>
+        /// 当前活跃并发数。
+        /// </summary>
+        public int ActiveCount { get; set; }
+        /// <summary>
+        /// 当前生效的最大并发数，0 表示不限制。
+        /// </summary>
+        public int MaxConcurrency { get; set; }
+        /// <summary>
+        /// 等待中的请求队列。
+        /// </summary>
+        public LinkedList<QueuedAcquireWaiter> Waiters { get; } = [];
+    }
+
+    /// <summary>
+    /// 排队中的获取请求。
+    /// </summary>
+    private sealed class QueuedAcquireWaiter
+    {
+        /// <summary>
+        /// 请求被放行时完成。
+        /// </summary>
+        public TaskCompletionSource<bool> Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        /// <summary>
+        /// 是否已经为该请求预留并发槽位。
+        /// </summary>
+        public bool Granted { get; set; }
     }
 }

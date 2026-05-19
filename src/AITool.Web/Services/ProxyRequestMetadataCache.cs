@@ -32,6 +32,10 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private const string ChatModelsCacheKey = "chat-models";
     /// <summary>
+    /// 模型并发限制缓存键。
+    /// </summary>
+    private const string ModelConcurrencyLimitsCacheKey = "model-concurrency-limits";
+    /// <summary>
     /// 启用模型缓存键。
     /// </summary>
     private const string EnabledModelsCacheKey = "enabled-models";
@@ -207,6 +211,41 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 获取模型并发限制缓存。
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, int>> GetModelConcurrencyLimitsAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                ModelConcurrencyLimitsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var mappings = await dbContext.SiteModelMappings
+                        .AsNoTracking()
+                        .Where(x => x.IsEnabled && x.MaxConcurrency > 0)
+                        .Select(x => new
+                        {
+                            x.SiteId,
+                            x.RemoteModelName,
+                            x.MaxConcurrency
+                        })
+                        .ToListAsync(cancellationToken);
+
+                    var limits = new Dictionary<string, int>(mappings.Count, StringComparer.Ordinal);
+                    foreach (var mapping in mappings)
+                    {
+                        limits[$"{mapping.SiteId:N}:{mapping.RemoteModelName}"] = mapping.MaxConcurrency;
+                    }
+
+                    return limits;
+                })
+            ?? new Dictionary<string, int>(StringComparer.Ordinal);
+    }
+
+    /// <summary>
     /// 获取已启用模型信息。
     /// </summary>
     public async Task<CachedEnabledModel?> GetEnabledModelAsync(Guid modelId, CancellationToken cancellationToken)
@@ -253,6 +292,7 @@ public sealed class ProxyRequestMetadataCache
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "Anthropic");
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "all");
         _memoryCache.Remove(ChatModelsCacheKey);
+        _memoryCache.Remove(ModelConcurrencyLimitsCacheKey);
         _memoryCache.Remove(FallbackMappingsCacheKey);
         _memoryCache.Remove(EnabledModelsCacheKey);
     }

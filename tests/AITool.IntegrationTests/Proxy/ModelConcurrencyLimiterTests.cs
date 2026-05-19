@@ -38,11 +38,14 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     public ModelConcurrencyLimiterTests()
     {
         var services = new ServiceCollection();
+        services.AddMemoryCache();
         services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+        services.AddSingleton<ProxyRequestMetadataCache>();
+        services.AddSingleton<ModelConcurrencyLimiter>();
         _serviceProvider = services.BuildServiceProvider();
         _dbContext = _serviceProvider.GetRequiredService<AppDbContext>();
         _dbContext.Database.EnsureCreated();
-        _limiter = new ModelConcurrencyLimiter();
+        _limiter = _serviceProvider.GetRequiredService<ModelConcurrencyLimiter>();
     }
 
     /// <summary>
@@ -234,6 +237,71 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     }
 
     /// <summary>
+    /// 提高并发上限后，已在排队中的新请求应立即按新上限放行，无需等待旧请求先结束。
+    /// </summary>
+    [Fact]
+    public async Task WaitForSlot_is_released_immediately_when_limit_is_increased()
+    {
+        var siteId = Guid.NewGuid();
+        await SeedMappingAsync(siteId, "model-a", maxConcurrency: 1);
+
+        using var blockingHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.WaitForSlot, TimeSpan.FromSeconds(30), CancellationToken.None);
+        blockingHandle.Acquired.Should().BeTrue();
+
+        var waitingTask = _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.WaitForSlot, TimeSpan.FromSeconds(30), CancellationToken.None).AsTask();
+
+        await Task.Delay(200);
+        waitingTask.IsCompleted.Should().BeFalse();
+
+        await UpdateLimitAsync(siteId, "model-a", maxConcurrency: 2);
+
+        using var handle = await waitingTask.WaitAsync(TimeSpan.FromSeconds(5));
+        handle.Acquired.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 降低并发上限后，已在执行中的旧请求不受影响，但后续新请求应立即按新上限受限。
+    /// </summary>
+    [Fact]
+    public async Task AcquireAsync_uses_reduced_limit_for_new_requests_without_affecting_active_requests()
+    {
+        var siteId = Guid.NewGuid();
+        await SeedMappingAsync(siteId, "model-a", maxConcurrency: 2);
+
+        using var firstHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+        using var secondHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+        firstHandle.Acquired.Should().BeTrue();
+        secondHandle.Acquired.Should().BeTrue();
+
+        await UpdateLimitAsync(siteId, "model-a", maxConcurrency: 1);
+
+        using var blockedHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+        blockedHandle.Acquired.Should().BeFalse();
+
+        secondHandle.Dispose();
+        using var stillBlockedHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+        stillBlockedHandle.Acquired.Should().BeFalse();
+
+        firstHandle.Dispose();
+        using var acquiredAfterRelease = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+        acquiredAfterRelease.Acquired.Should().BeTrue();
+    }
+
+    /// <summary>
     /// 不同站点的同一个模型名应各自独立计数，互不影响。
     /// </summary>
     [Fact]
@@ -408,6 +476,20 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
             MaxConcurrency = maxConcurrency
         });
         await _dbContext.SaveChangesAsync();
+    }
+
+    /// <summary>
+    /// 更新现有站点模型映射的并发上限，并同步刷新缓存与运行中的限制器。
+    /// </summary>
+    private async Task UpdateLimitAsync(Guid siteId, string remoteModelName, int maxConcurrency)
+    {
+        var mapping = await _dbContext.SiteModelMappings.FirstAsync(x => x.SiteId == siteId && x.RemoteModelName == remoteModelName);
+        mapping.MaxConcurrency = maxConcurrency;
+        await _dbContext.SaveChangesAsync();
+
+        var metadataCache = _serviceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        metadataCache.InvalidateRouteTargets();
+        _limiter.UpdateLimit(siteId, remoteModelName, maxConcurrency);
     }
 
     /// <summary>

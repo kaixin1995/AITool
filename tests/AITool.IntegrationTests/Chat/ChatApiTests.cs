@@ -5,6 +5,7 @@ using AITool.Application.Proxy;
 using AITool.Domain.Models;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
+using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
@@ -124,6 +125,52 @@ public sealed class ChatApiTests
         limiter.ListRecent(ModelConcurrencyLimiter.RecentRetention)
             .Should().ContainSingle(x => x.SiteModelName == "claude-3-7-sonnet" && x.ActiveCount == 0);
     }
+
+    /// <summary>
+    /// 后台修改并发上限后，应立即影响后续新请求，而不必等待缓存自然过期。
+    /// </summary>
+    [Fact]
+    public async Task Put_concurrency_applies_new_limit_immediately()
+    {
+        var fakeForwardService = new ChatFakeProxyForwardService();
+        await using var factory = new ChatWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+        var limiter = factory.Services.GetRequiredService<ModelConcurrencyLimiter>();
+
+        using var firstHandle = await limiter.AcquireAsync(
+            factory.Services,
+            ChatWebApplicationFactory.SiteId,
+            ChatWebApplicationFactory.SiteModelName,
+            ConcurrencyAcquireMode.SkipOnFull,
+            TimeSpan.FromSeconds(10),
+            CancellationToken.None);
+        firstHandle.Acquired.Should().BeTrue();
+
+        using var blockedHandle = await limiter.AcquireAsync(
+            factory.Services,
+            ChatWebApplicationFactory.SiteId,
+            ChatWebApplicationFactory.SiteModelName,
+            ConcurrencyAcquireMode.SkipOnFull,
+            TimeSpan.FromSeconds(10),
+            CancellationToken.None);
+        blockedHandle.Acquired.Should().BeFalse();
+
+        using var response = await client.PutAsync(
+            $"/api/admin/models/mappings/{ChatWebApplicationFactory.MappingId}/concurrency",
+            new StringContent("{\"maxConcurrency\":2}", Encoding.UTF8, "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        using var secondHandle = await limiter.AcquireAsync(
+            factory.Services,
+            ChatWebApplicationFactory.SiteId,
+            ChatWebApplicationFactory.SiteModelName,
+            ConcurrencyAcquireMode.SkipOnFull,
+            TimeSpan.FromSeconds(10),
+            CancellationToken.None);
+        secondHandle.Acquired.Should().BeTrue();
+    }
 }
 
 /// <summary>
@@ -135,6 +182,18 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     /// 当前测试使用的模型标识。
     /// </summary>
     internal static readonly Guid ModelId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+    /// <summary>
+    /// 当前测试使用的站点标识。
+    /// </summary>
+    internal static readonly Guid SiteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    /// <summary>
+    /// 当前测试使用的站点模型映射标识。
+    /// </summary>
+    internal static readonly Guid MappingId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+    /// <summary>
+    /// 当前测试使用的站点模型名称。
+    /// </summary>
+    internal const string SiteModelName = "claude-3-7-sonnet";
     /// <summary>
     /// 保存当前测试使用的临时数据库路径。
     /// </summary>
@@ -205,10 +264,9 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
 
-        var siteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
         db.Sites.Add(new Site
         {
-            Id = siteId,
+            Id = SiteId,
             Name = "Anthropic Site",
             BaseUrl = "https://anthropic.example.com",
             ApiKey = "anthropic-key",
@@ -229,13 +287,23 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
         db.ProxyRouteRules.Add(new ProxyRouteRule
         {
             ExternalModelName = "chat-anthropic",
-            UpstreamModelName = "claude-3-7-sonnet",
-            SiteId = siteId,
-            SiteModelName = "claude-3-7-sonnet",
+            UpstreamModelName = SiteModelName,
+            SiteId = SiteId,
+            SiteModelName = SiteModelName,
             Priority = 0,
             ModelPriority = 0,
             InstancePriority = 0,
             IsEnabled = true
+        });
+
+        db.SiteModelMappings.Add(new SiteModelMapping
+        {
+            Id = MappingId,
+            SiteId = SiteId,
+            ModelLibraryItemId = ModelId,
+            RemoteModelName = SiteModelName,
+            IsEnabled = true,
+            MaxConcurrency = 1
         });
 
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings

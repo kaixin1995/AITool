@@ -20,14 +20,22 @@ public sealed class ModelsApiController : ControllerBase
     /// 代理元数据缓存。
     /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
+    /// <summary>
+    /// 模型并发限制器。
+    /// </summary>
+    private readonly ModelConcurrencyLimiter _concurrencyLimiter;
 
     /// <summary>
     /// 创建模型管理控制器。
     /// </summary>
-    public ModelsApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public ModelsApiController(
+        AppDbContext dbContext,
+        ProxyRequestMetadataCache metadataCache,
+        ModelConcurrencyLimiter concurrencyLimiter)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
+        _concurrencyLimiter = concurrencyLimiter;
     }
 
     /// <summary>
@@ -74,6 +82,11 @@ public sealed class ModelsApiController : ControllerBase
 
         mapping.MaxConcurrency = Math.Max(0, request.MaxConcurrency);
         await _dbContext.SaveChangesAsync(cancellationToken);
+
+        // 配置保存后立即失效缓存，并同步更新运行中的限制器状态，仅影响后续新请求。
+        _metadataCache.InvalidateRouteTargets();
+        _concurrencyLimiter.UpdateLimit(mapping.SiteId, mapping.RemoteModelName, mapping.MaxConcurrency);
+
         return Ok(new { mapping.MaxConcurrency });
     }
 }
