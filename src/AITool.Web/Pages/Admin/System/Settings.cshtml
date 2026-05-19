@@ -58,6 +58,20 @@
                     <input asp-for="Input.CircuitBreakerRecoveryMinutes" class="form-control" type="number" min="1" />
                 </div>
             </div>
+            <div class="row g-3 mt-1">
+                <div class="col-md-4">
+                    <label asp-for="Input.ConcurrencyMode" class="form-label">并发打满策略</label>
+                    <select asp-for="Input.ConcurrencyMode" class="form-select">
+                        <option value="0">跳过 → 尝试下一顺位模型</option>
+                        <option value="1">排队等待 → 直到释放或超时</option>
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="Input.ConcurrencyQueueTimeoutSeconds" class="form-label">排队等待超时（秒）</label>
+                    <input asp-for="Input.ConcurrencyQueueTimeoutSeconds" class="form-control" type="number" min="1" />
+                    <div class="form-text">仅在"排队等待"模式下生效，超时后顺延到下一顺位模型。</div>
+                </div>
+            </div>
         </div>
     </div>
 

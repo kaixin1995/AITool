@@ -269,6 +269,8 @@ public sealed class OpenAiProxyController : ControllerBase
         ProxyForwardResult? lastResult = null;
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
+        var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
+        var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
         foreach (var route in allRoutes)
         {
@@ -279,9 +281,15 @@ public sealed class OpenAiProxyController : ControllerBase
             attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
 
-            // 按站点+模型粒度获取并发许可，达到上限时排队等待。
+            // 按站点+模型粒度获取并发许可，根据配置决定跳过或排队。
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
-                HttpContext.RequestServices, route.SiteId, route.SiteModelName, cancellationToken);
+                HttpContext.RequestServices, route.SiteId, route.SiteModelName,
+                concurrencyMode, concurrencyQueueTimeout, cancellationToken);
+
+            if (!concurrencyHandle.Acquired)
+            {
+                continue;
+            }
 
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(

@@ -7,8 +7,60 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AITool.Web.Services;
 
 /// <summary>
+/// 并发打满时的处理策略。
+/// </summary>
+public enum ConcurrencyAcquireMode
+{
+    /// <summary>
+    /// 跳到下一顺位模型。
+    /// </summary>
+    SkipOnFull = 0,
+    /// <summary>
+    /// 排队等待直到释放或超时。
+    /// </summary>
+    WaitForSlot = 1
+}
+
+/// <summary>
+/// 并发获取结果，表示是否成功拿到许可，以及用于释放的句柄。
+/// </summary>
+public sealed class ConcurrencyAcquireResult : IDisposable
+{
+    /// <summary>
+    /// 是否成功获取到并发许可。
+    /// </summary>
+    public bool Acquired { get; }
+
+    private readonly SemaphoreSlim? _semaphore;
+
+    private ConcurrencyAcquireResult(bool acquired, SemaphoreSlim? semaphore)
+    {
+        Acquired = acquired;
+        _semaphore = semaphore;
+    }
+
+    /// <summary>
+    /// 未获取到许可的实例。
+    /// </summary>
+    public static ConcurrencyAcquireResult NotAcquired { get; } = new(false, null);
+
+    /// <summary>
+    /// 成功获取许可的实例。
+    /// </summary>
+    public static ConcurrencyAcquireResult AcquiredSlot(SemaphoreSlim semaphore) => new(true, semaphore);
+
+    /// <summary>
+    /// 释放并发许可，无论成功或异常都会正确释放。
+    /// </summary>
+    public void Dispose()
+    {
+        _semaphore?.Release();
+    }
+}
+
+/// <summary>
 /// 按 SiteId + RemoteModelName 粒度控制最大并发数。
-/// 限制为 0 表示不限制，请求直接通过；大于 0 时排队等待。
+/// 限制为 0 表示不限制，请求直接通过；大于 0 时根据模式跳过或排队。
 /// </summary>
 public sealed class ModelConcurrencyLimiter
 {
@@ -33,12 +85,16 @@ public sealed class ModelConcurrencyLimiter
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(10);
 
     /// <summary>
-    /// 获取指定站点模型的并发许可，如果已达到上限则排队等待。
+    /// 按模式获取指定站点模型的并发许可。
+    /// SkipOnFull：打满立即返回 NotAcquired；
+    /// WaitForSlot：排队等待直到释放或超时。
     /// </summary>
-    public async ValueTask<IDisposable> AcquireAsync(
+    public async ValueTask<ConcurrencyAcquireResult> AcquireAsync(
         IServiceProvider serviceProvider,
         Guid siteId,
         string remoteModelName,
+        ConcurrencyAcquireMode mode,
+        TimeSpan queueTimeout,
         CancellationToken cancellationToken)
     {
         var limits = GetOrRefreshLimits(serviceProvider);
@@ -46,13 +102,34 @@ public sealed class ModelConcurrencyLimiter
 
         if (!limits.TryGetValue(key, out var maxConcurrency) || maxConcurrency <= 0)
         {
-            return NoopDisposable.Instance;
+            return ConcurrencyAcquireResult.AcquiredSlot(new SemaphoreSlim(1));
         }
 
         var semaphore = _semaphores.GetOrAdd(key, _ => new SemaphoreSlim(maxConcurrency, maxConcurrency));
-        await semaphore.WaitAsync(cancellationToken);
 
-        return new SemaphoreReleaser(semaphore);
+        if (mode == ConcurrencyAcquireMode.SkipOnFull)
+        {
+            // 打满则立即跳过，不排队。
+            var acquired = await semaphore.WaitAsync(0, cancellationToken);
+            return acquired
+                ? ConcurrencyAcquireResult.AcquiredSlot(semaphore)
+                : ConcurrencyAcquireResult.NotAcquired;
+        }
+
+        // WaitForSlot：排队等待，超时后返回 NotAcquired。
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(queueTimeout);
+
+        try
+        {
+            await semaphore.WaitAsync(cts.Token);
+            return ConcurrencyAcquireResult.AcquiredSlot(semaphore);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // 排队超时，但原始请求未被取消。
+            return ConcurrencyAcquireResult.NotAcquired;
+        }
     }
 
     /// <summary>
@@ -98,22 +175,5 @@ public sealed class ModelConcurrencyLimiter
     private static string BuildKey(Guid siteId, string remoteModelName)
     {
         return $"{siteId:N}:{remoteModelName}";
-    }
-
-    /// <summary>
-    /// 信号量释放器。
-    /// </summary>
-    private sealed class SemaphoreReleaser(SemaphoreSlim semaphore) : IDisposable
-    {
-        public void Dispose() => semaphore.Release();
-    }
-
-    /// <summary>
-    /// 空操作占位，用于不限制并发时直接返回。
-    /// </summary>
-    private sealed class NoopDisposable : IDisposable
-    {
-        public static readonly NoopDisposable Instance = new();
-        public void Dispose() { }
     }
 }

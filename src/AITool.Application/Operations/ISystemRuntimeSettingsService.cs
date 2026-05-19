@@ -77,6 +77,16 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     /// 控制系统中面向开发调试的功能开关是否启用。
     /// </summary>
     public bool DeveloperFeaturesEnabled { get; set; }
+
+    /// <summary>
+    /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
+    /// </summary>
+    public int ConcurrencyMode { get; set; }
+
+    /// <summary>
+    /// 并发排队等待的最大时间（秒），仅在 WaitForSlot 模式下生效。
+    /// </summary>
+    public int ConcurrencyQueueTimeoutSeconds { get; set; }
 }
 
 /// <summary>

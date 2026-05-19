@@ -59,6 +59,8 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.UsageLogRetentionDays = Math.Max(1, request.UsageLogRetentionDays);
         settings.UsageLogAutoCleanupEnabled = request.UsageLogAutoCleanupEnabled;
         settings.DeveloperFeaturesEnabled = request.DeveloperFeaturesEnabled;
+        settings.ConcurrencyMode = Math.Max(0, Math.Min(1, request.ConcurrencyMode));
+        settings.ConcurrencyQueueTimeoutSeconds = Math.Max(1, request.ConcurrencyQueueTimeoutSeconds);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return settings;

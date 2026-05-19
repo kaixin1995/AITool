@@ -53,6 +53,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         settings.UsageLogRetentionDays.Should().Be(7);
         settings.UsageLogAutoCleanupEnabled.Should().BeTrue();
         settings.DeveloperFeaturesEnabled.Should().BeFalse();
+        settings.ConcurrencyMode.Should().Be(0);
+        settings.ConcurrencyQueueTimeoutSeconds.Should().Be(120);
     }
 
     /// <summary>
@@ -114,7 +116,9 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
             CircuitBreakerRecoveryMinutes = 9,
             UsageLogRetentionDays = 14,
             UsageLogAutoCleanupEnabled = false,
-            DeveloperFeaturesEnabled = true
+            DeveloperFeaturesEnabled = true,
+            ConcurrencyMode = 1,
+            ConcurrencyQueueTimeoutSeconds = 300
         });
 
         updated.Id.Should().Be(1);
@@ -128,6 +132,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         updated.UsageLogRetentionDays.Should().Be(14);
         updated.UsageLogAutoCleanupEnabled.Should().BeFalse();
         updated.DeveloperFeaturesEnabled.Should().BeTrue();
+        updated.ConcurrencyMode.Should().Be(1);
+        updated.ConcurrencyQueueTimeoutSeconds.Should().Be(300);
 
         // 再次读取设置，确认变更不仅返回正确，也已经持久化保存。
         var reloaded = await _service.GetOrCreateAsync();
@@ -142,6 +148,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         reloaded.UsageLogRetentionDays.Should().Be(14);
         reloaded.UsageLogAutoCleanupEnabled.Should().BeFalse();
         reloaded.DeveloperFeaturesEnabled.Should().BeTrue();
+        reloaded.ConcurrencyMode.Should().Be(1);
+        reloaded.ConcurrencyQueueTimeoutSeconds.Should().Be(300);
     }
 
     /// <summary>
@@ -162,7 +170,9 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
             CircuitBreakerRecoveryMinutes = 0,
             UsageLogRetentionDays = 0,
             UsageLogAutoCleanupEnabled = true,
-            DeveloperFeaturesEnabled = true
+            DeveloperFeaturesEnabled = true,
+            ConcurrencyMode = -1,
+            ConcurrencyQueueTimeoutSeconds = 0
         });
 
         updated.Id.Should().Be(1);
@@ -176,6 +186,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         updated.UsageLogRetentionDays.Should().Be(1);
         updated.UsageLogAutoCleanupEnabled.Should().BeTrue();
         updated.DeveloperFeaturesEnabled.Should().BeTrue();
+        updated.ConcurrencyMode.Should().Be(0);
+        updated.ConcurrencyQueueTimeoutSeconds.Should().Be(1);
     }
 
     /// <summary>

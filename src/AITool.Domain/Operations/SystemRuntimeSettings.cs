@@ -61,6 +61,20 @@ public sealed class SystemRuntimeSettings
     public bool DeveloperFeaturesEnabled { get; set; }
 
     /// <summary>
+    /// 并发打满时的处理策略。
+    /// 0 = SkipOnFull：跳到下一顺位模型；
+    /// 1 = WaitForSlot：排队等待直到释放或超时。
+    /// </summary>
+    public int ConcurrencyMode { get; set; }
+
+    /// <summary>
+    /// 并发排队等待的最大时间，单位为秒。
+    /// 仅在 WaitForSlot 模式下生效；超时后顺延到下一顺位模型。
+    /// 默认 120 秒。
+    /// </summary>
+    public int ConcurrencyQueueTimeoutSeconds { get; set; } = 120;
+
+    /// <summary>
     /// 最近一次执行使用日志清理的时间，用于展示或判断自动清理的运行情况。
     /// </summary>
     public DateTimeOffset? LastUsageLogPrunedAt { get; set; }

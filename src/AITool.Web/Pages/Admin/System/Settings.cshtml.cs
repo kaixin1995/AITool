@@ -126,7 +126,9 @@ public class SettingsModel : PageModel
             CircuitBreakerRecoveryMinutes = settings.CircuitBreakerRecoveryMinutes,
             UsageLogRetentionDays = settings.UsageLogRetentionDays,
             UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
-            DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled
+            DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled,
+            ConcurrencyMode = settings.ConcurrencyMode,
+            ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds
         };
         LastUsageLogPrunedCount = settings.LastUsageLogPrunedCount;
         StatusMessage = Request.Query["statusMessage"];

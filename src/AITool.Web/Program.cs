@@ -377,6 +377,20 @@ static async Task EnsureProxyUsageLogSchemaAsync(AppDbContext dbContext)
             command.CommandText = "ALTER TABLE SiteModelMappings ADD COLUMN MaxConcurrency INTEGER NOT NULL DEFAULT 0";
             await command.ExecuteNonQueryAsync();
         }
+
+        if (!await ColumnExistsAsync(connection, "SystemRuntimeSettings", "ConcurrencyMode"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE SystemRuntimeSettings ADD COLUMN ConcurrencyMode INTEGER NOT NULL DEFAULT 0";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        if (!await ColumnExistsAsync(connection, "SystemRuntimeSettings", "ConcurrencyQueueTimeoutSeconds"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE SystemRuntimeSettings ADD COLUMN ConcurrencyQueueTimeoutSeconds INTEGER NOT NULL DEFAULT 120";
+            await command.ExecuteNonQueryAsync();
+        }
     }
     finally
     {

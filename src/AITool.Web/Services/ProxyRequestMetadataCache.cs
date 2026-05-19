@@ -103,7 +103,9 @@ public sealed class ProxyRequestMetadataCache
                             CircuitBreakerFailureThreshold = settings.CircuitBreakerFailureThreshold,
                             CircuitBreakerRecoveryMinutes = settings.CircuitBreakerRecoveryMinutes,
                             UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
-                            DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled
+                            DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled,
+                            ConcurrencyMode = settings.ConcurrencyMode,
+                            ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds
                         };
                 })
             ?? new CachedProxyRuntimeSettings();
@@ -488,6 +490,14 @@ public sealed class CachedProxyRuntimeSettings
     /// 是否启用开发者功能。
     /// </summary>
     public bool DeveloperFeaturesEnabled { get; set; }
+    /// <summary>
+    /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
+    /// </summary>
+    public int ConcurrencyMode { get; set; }
+    /// <summary>
+    /// 并发排队等待的最大时间（秒）。
+    /// </summary>
+    public int ConcurrencyQueueTimeoutSeconds { get; set; } = 120;
 }
 
 /// <summary>
