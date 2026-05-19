@@ -41,6 +41,10 @@ public sealed class UsageLogListQueryDto
     /// 状态筛选。
     /// </summary>
     public string Status { get; set; } = string.Empty;
+    /// <summary>
+    /// 模型搜索关键字。
+    /// </summary>
+    public string ModelKeyword { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -352,7 +356,6 @@ public sealed class UsageLogsApiController : ControllerBase
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
-        var page = Math.Max(1, query.Page);
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
 
         // 先加载到内存再按时间过滤和排序，避免 SQLite 无法翻译 DateTimeOffset 比较与排序
@@ -362,10 +365,13 @@ public sealed class UsageLogsApiController : ControllerBase
             .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
             .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
             .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
+            .Where(x => IsModelMatched(x, query.ModelKeyword))
             .OrderByDescending(x => x.RequestedAt)
             .ToList();
 
         var totalCount = filteredLogs.Count;
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
+        var page = totalPages == 0 ? 1 : Math.Min(Math.Max(1, query.Page), totalPages);
         var items = filteredLogs
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
@@ -402,7 +408,7 @@ public sealed class UsageLogsApiController : ControllerBase
             Page = page,
             PageSize = pageSize,
             TotalCount = totalCount,
-            TotalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize),
+            TotalPages = totalPages,
             Items = items
         });
     }
@@ -485,6 +491,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
                 .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
                 .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
+                .Where(x => IsModelMatched(x, query.ModelKeyword))
                 .ToList();
 
             // 按 RequestId 分组，每组取最后一条记录作为该请求的最终状态
@@ -547,6 +554,30 @@ public sealed class UsageLogsApiController : ControllerBase
             "all" => (DateTimeOffset.MinValue, DateTimeOffset.MaxValue),
             _ => (now.Date, now)
         };
+    }
+
+    /// <summary>
+    /// 判断当前记录是否命中模型搜索关键字。
+    /// </summary>
+    private static bool IsModelMatched(AITool.Domain.Proxy.ProxyUsageLog log, string? modelKeyword)
+    {
+        if (string.IsNullOrWhiteSpace(modelKeyword))
+        {
+            return true;
+        }
+
+        var keyword = modelKeyword.Trim();
+        return ContainsIgnoreCase(log.AttemptedModel, keyword)
+            || ContainsIgnoreCase(log.RequestModel, keyword);
+    }
+
+    /// <summary>
+    /// 按大小写不敏感方式判断文本是否包含关键字。
+    /// </summary>
+    private static bool ContainsIgnoreCase(string? source, string keyword)
+    {
+        return !string.IsNullOrWhiteSpace(source)
+            && source.Contains(keyword, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

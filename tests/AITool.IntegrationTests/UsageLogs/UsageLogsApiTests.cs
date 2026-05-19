@@ -95,6 +95,29 @@ public sealed class UsageLogsApiTests
     }
 
     /// <summary>
+    /// 验证日志列表接口支持按模型关键字模糊搜索且忽略大小写。
+    /// </summary>
+    [Fact]
+    public async Task Get_list_filters_by_model_keyword_case_insensitively()
+    {
+        await using var factory = new UsageLogsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/admin/usage-logs/list?rangeType=all&modelKeyword=SuMmArY");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        using var document = JsonDocument.Parse(body);
+        var items = document.RootElement.GetProperty("items").EnumerateArray().ToList();
+
+        items.Should().HaveCount(2);
+        items.Should().OnlyContain(x =>
+            x.GetProperty("requestModel").GetString()!.Contains("summary", StringComparison.OrdinalIgnoreCase)
+            || x.GetProperty("attemptedModel").GetString()!.Contains("summary", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
     /// 验证请求详情接口会按请求标识聚合尝试记录，并按尝试序号排序。
     /// </summary>
     [Fact]
@@ -197,6 +220,28 @@ public sealed class UsageLogsApiTests
     }
 
     /// <summary>
+    /// 验证汇总接口支持按模型关键字模糊搜索且忽略大小写。
+    /// </summary>
+    [Fact]
+    public async Task Get_summary_filters_by_model_keyword_case_insensitively()
+    {
+        await using var factory = new UsageLogsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/api/admin/usage-logs/summary?rangeType=all&modelKeyword=SuMmArY");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("totalRequests").GetInt32().Should().Be(2);
+        document.RootElement.GetProperty("failedRequests").GetInt32().Should().Be(1);
+        document.RootElement.GetProperty("successRate").GetDouble().Should().BeApproximately(50d, 0.01d);
+        document.RootElement.GetProperty("totalTokens").GetInt32().Should().Be(8764);
+        document.RootElement.GetProperty("maxDurationMs").GetInt32().Should().Be(8000);
+    }
+
+    /// <summary>
     /// 验证使用日志页面会展示自动刷新、链路入口和汇总卡片文案。
     /// </summary>
     [Fact]
@@ -208,6 +253,11 @@ public sealed class UsageLogsApiTests
         var html = await client.GetStringAsync("/Admin/UsageLogs");
 
         html.Should().Contain("自动刷新");
+        html.Should().Contain("自动刷新固定每 5 秒执行一次");
+        html.Should().Contain("模型搜索");
+        html.Should().Contain("首页");
+        html.Should().Contain("末页");
+        html.Should().Contain("跳转");
         html.Should().Contain("查看链路");
         html.Should().Contain("成功率");
         html.Should().Contain("总 Tokens");

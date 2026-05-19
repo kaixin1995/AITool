@@ -19,6 +19,13 @@
             <span>筛选与汇总</span>
             <span id="usageLogsFilterToggleText">展开</span>
         </button>
+        <div class="usage-logs-filter-header-actions">
+            <div class="form-check form-switch mb-0 usage-logs-auto-refresh-wrap">
+                <input class="form-check-input" type="checkbox" id="autoRefreshToggle" checked>
+                <label class="form-check-label usage-logs-auto-refresh-label" for="autoRefreshToggle">自动刷新</label>
+                <button type="button" class="usage-logs-help-button" title="自动刷新固定每 5 秒执行一次。" aria-label="自动刷新说明">?</button>
+            </div>
+        </div>
     </div>
     <div class="card-body d-none" id="usageLogsFilterBody">
         <div class="row g-3 align-items-end">
@@ -71,12 +78,12 @@
                     <option value="fail">失败</option>
                 </select>
             </div>
-            <div class="col-sm-6 col-lg-2">
-                <div class="form-check form-switch mb-2">
-                    <input class="form-check-input" type="checkbox" id="autoRefreshToggle" checked>
-                    <label class="form-check-label" for="autoRefreshToggle">自动刷新（固定 5 秒）</label>
+            <div class="col-sm-12 col-lg-3 usage-logs-search-action-col">
+                <label class="form-label" for="modelKeywordInput">模型搜索</label>
+                <div class="usage-logs-search-action-row">
+                    <input id="modelKeywordInput" type="text" class="form-control" placeholder="模型模糊搜索" />
+                    <button type="button" class="btn btn-primary" id="usageLogsRefreshButton" onclick="loadUsageLogsPage(1)">刷新</button>
                 </div>
-                <button type="button" class="btn btn-primary w-100" onclick="loadUsageLogsPage(1)">刷新</button>
             </div>
         </div>
     </div>
@@ -148,10 +155,18 @@
 
 <div class="d-flex justify-content-between align-items-center mt-3 gap-3 flex-wrap">
     <div id="usageLogsPaginationSummary" class="text-secondary small">-</div>
-    <div class="d-flex align-items-center gap-2">
+    <div class="d-flex align-items-center gap-2 flex-wrap justify-content-end usage-logs-pagination-bar">
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="firstPageButton">首页</button>
         <button type="button" class="btn btn-outline-secondary btn-sm" id="prevPageButton">上一页</button>
+        <div id="usageLogsPageNumbers" class="d-flex align-items-center gap-2 flex-wrap"></div>
         <span id="usageLogsPaginationInfo" class="small text-secondary">-</span>
         <button type="button" class="btn btn-outline-secondary btn-sm" id="nextPageButton">下一页</button>
+        <button type="button" class="btn btn-outline-secondary btn-sm" id="lastPageButton">末页</button>
+        <div class="input-group input-group-sm usage-logs-page-jump-group">
+            <span class="input-group-text">跳转</span>
+            <input type="number" class="form-control" id="pageJumpInput" min="1" step="1" placeholder="页码" />
+            <button type="button" class="btn btn-outline-secondary" id="pageJumpButton">前往</button>
+        </div>
     </div>
 </div>
 
@@ -174,13 +189,18 @@
     }
 
     .usage-logs-filter-header {
+        display: flex;
+        align-items: center;
+        gap: 12px;
         background: #fff;
         padding: 0;
         border-bottom: 0;
+        min-width: 0;
     }
 
     .usage-logs-filter-toggle {
-        width: 100%;
+        flex: 1 1 auto;
+        min-width: 0;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -196,6 +216,34 @@
 
     .usage-logs-filter-toggle:hover {
         background: #f8fafc;
+    }
+
+    .usage-logs-filter-header-actions {
+        flex: 0 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        padding: 0 18px 0 0;
+    }
+
+    .usage-logs-auto-refresh-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        min-width: 0;
+        flex-wrap: nowrap;
+        white-space: nowrap;
+    }
+
+    .usage-logs-auto-refresh-label {
+        display: inline-block;
+        min-width: 0;
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        margin-right: 0;
     }
 
     .usage-logs-summary-row {
@@ -246,6 +294,79 @@
         background: #dc3545;
         box-shadow: 0 0 0 2px #fff;
     }
+
+    .usage-logs-help-button {
+        width: 20px;
+        height: 20px;
+        flex: 0 0 20px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 1px solid #cbd5e1;
+        border-radius: 999px;
+        background: #fff;
+        color: #475569;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1;
+        cursor: help;
+    }
+
+    .usage-logs-search-action-col {
+        min-width: 0;
+    }
+
+    .usage-logs-search-action-row {
+        display: flex;
+        align-items: stretch;
+        gap: 12px;
+        min-width: 0;
+    }
+
+    .usage-logs-search-action-row .form-control {
+        flex: 1 1 auto;
+        min-width: 0;
+        height: 38px;
+        text-overflow: ellipsis;
+    }
+
+    .usage-logs-search-action-row .btn {
+        flex: 0 0 108px;
+        height: 38px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding-top: 0.375rem;
+        padding-bottom: 0.375rem;
+        white-space: nowrap;
+    }
+
+    .usage-logs-page-number.is-active {
+        pointer-events: none;
+    }
+
+    .usage-logs-page-jump-group {
+        width: 170px;
+    }
+
+    @@media (max-width: 991.98px) {
+        .usage-logs-filter-header {
+            padding-right: 12px;
+        }
+
+        .usage-logs-filter-toggle {
+            padding-right: 12px;
+        }
+
+        .usage-logs-filter-header-actions {
+            padding-right: 0;
+        }
+
+        .usage-logs-auto-refresh-label {
+            max-width: 88px;
+        }
+    }
 </style>
 
 <script>
@@ -256,6 +377,7 @@
     var usageLogsTotalPages = 0;
     var usageLogsTotalCount = 0;
     var usageLogsFiltersCollapsed = true;
+    var usageLogsSearchTimer = null;
 
     document.addEventListener('DOMContentLoaded', function() {
         usageLogsDetailDrawer = new bootstrap.Offcanvas(document.getElementById('requestDetailDrawer'));
@@ -278,14 +400,46 @@
         document.getElementById('statusFilterSelect').addEventListener('change', function() {
             loadUsageLogsPage(1);
         });
-        document.getElementById('prevPageButton').addEventListener('click', function() {
-            if (usageLogsCurrentPage > 1) {
-                loadUsageLogsPage(usageLogsCurrentPage - 1);
+        document.getElementById('modelKeywordInput').addEventListener('input', function() {
+            if (usageLogsSearchTimer) {
+                clearTimeout(usageLogsSearchTimer);
             }
+
+            usageLogsSearchTimer = window.setTimeout(function() {
+                loadUsageLogsPage(1);
+            }, 300);
+        });
+        document.getElementById('modelKeywordInput').addEventListener('keydown', function(event) {
+            if (event.key !== 'Enter') {
+                return;
+            }
+
+            event.preventDefault();
+            if (usageLogsSearchTimer) {
+                clearTimeout(usageLogsSearchTimer);
+                usageLogsSearchTimer = null;
+            }
+            loadUsageLogsPage(1);
+        });
+        document.getElementById('firstPageButton').addEventListener('click', function() {
+            goToUsageLogsPage(1);
+        });
+        document.getElementById('prevPageButton').addEventListener('click', function() {
+            goToUsageLogsPage(usageLogsCurrentPage - 1);
         });
         document.getElementById('nextPageButton').addEventListener('click', function() {
-            if (usageLogsCurrentPage < usageLogsTotalPages) {
-                loadUsageLogsPage(usageLogsCurrentPage + 1);
+            goToUsageLogsPage(usageLogsCurrentPage + 1);
+        });
+        document.getElementById('lastPageButton').addEventListener('click', function() {
+            goToUsageLogsPage(usageLogsTotalPages);
+        });
+        document.getElementById('pageJumpButton').addEventListener('click', function() {
+            goToUsageLogsPage(document.getElementById('pageJumpInput').value);
+        });
+        document.getElementById('pageJumpInput').addEventListener('keydown', function(event) {
+            if (event.key === 'Enter') {
+                event.preventDefault();
+                goToUsageLogsPage(event.target.value);
             }
         });
         initializeCustomRange();
@@ -327,6 +481,19 @@
         summaryRow.classList.toggle('is-collapsed', usageLogsFiltersCollapsed);
         toggle.setAttribute('aria-expanded', usageLogsFiltersCollapsed ? 'false' : 'true');
         toggleText.textContent = usageLogsFiltersCollapsed ? '展开' : '收起';
+    }
+
+    function goToUsageLogsPage(page) {
+        var targetPage = Number(page || 1);
+        if (!isFinite(targetPage) || targetPage < 1) {
+            targetPage = 1;
+        }
+
+        if (usageLogsTotalPages > 0) {
+            targetPage = Math.min(targetPage, usageLogsTotalPages);
+        }
+
+        loadUsageLogsPage(targetPage);
     }
 
     function loadUsageLogsPage(page) {
@@ -387,6 +554,11 @@
         var status = document.getElementById('statusFilterSelect').value;
         if (status) {
             query.set('status', status);
+        }
+
+        var modelKeyword = (document.getElementById('modelKeywordInput').value || '').trim();
+        if (modelKeyword) {
+            query.set('modelKeyword', modelKeyword);
         }
 
         return query.toString();
@@ -455,14 +627,25 @@
     function renderPagination() {
         var summary = document.getElementById('usageLogsPaginationSummary');
         var info = document.getElementById('usageLogsPaginationInfo');
+        var firstButton = document.getElementById('firstPageButton');
         var prevButton = document.getElementById('prevPageButton');
         var nextButton = document.getElementById('nextPageButton');
+        var lastButton = document.getElementById('lastPageButton');
+        var pageJumpInput = document.getElementById('pageJumpInput');
+        var pageJumpButton = document.getElementById('pageJumpButton');
+        var pageNumbers = document.getElementById('usageLogsPageNumbers');
 
         if (usageLogsTotalCount <= 0) {
             summary.textContent = '共 0 条';
             info.textContent = '第 0 / 0 页';
+            firstButton.disabled = true;
             prevButton.disabled = true;
             nextButton.disabled = true;
+            lastButton.disabled = true;
+            pageJumpInput.disabled = true;
+            pageJumpInput.value = '';
+            pageJumpButton.disabled = true;
+            pageNumbers.innerHTML = '';
             return;
         }
 
@@ -470,8 +653,59 @@
         var end = Math.min(usageLogsCurrentPage * usageLogsPageSize, usageLogsTotalCount);
         summary.textContent = '显示第 ' + formatNumber(start) + ' - ' + formatNumber(end) + ' 条，共 ' + formatNumber(usageLogsTotalCount) + ' 条';
         info.textContent = '第 ' + usageLogsCurrentPage + ' / ' + usageLogsTotalPages + ' 页';
+        firstButton.disabled = usageLogsCurrentPage <= 1;
         prevButton.disabled = usageLogsCurrentPage <= 1;
         nextButton.disabled = usageLogsCurrentPage >= usageLogsTotalPages;
+        lastButton.disabled = usageLogsCurrentPage >= usageLogsTotalPages;
+        pageJumpInput.disabled = false;
+        pageJumpInput.value = usageLogsCurrentPage;
+        pageJumpInput.max = usageLogsTotalPages;
+        pageJumpButton.disabled = usageLogsTotalPages <= 1;
+        renderPageNumberButtons(pageNumbers);
+    }
+
+    function renderPageNumberButtons(container) {
+        if (!container) {
+            return;
+        }
+
+        container.innerHTML = '';
+        if (usageLogsTotalPages <= 0) {
+            return;
+        }
+
+        var pages = buildVisiblePageNumbers();
+        pages.forEach(function(page) {
+            var button = document.createElement('button');
+            var isActive = page === usageLogsCurrentPage;
+            button.type = 'button';
+            button.className = 'btn btn-sm ' + (isActive ? 'btn-primary usage-logs-page-number is-active' : 'btn-outline-secondary usage-logs-page-number');
+            button.textContent = page;
+            button.disabled = isActive;
+            if (!isActive) {
+                button.addEventListener('click', function() {
+                    goToUsageLogsPage(page);
+                });
+            }
+            container.appendChild(button);
+        });
+    }
+
+    function buildVisiblePageNumbers() {
+        if (usageLogsTotalPages <= 5) {
+            return Array.from({ length: usageLogsTotalPages }, function(_, index) {
+                return index + 1;
+            });
+        }
+
+        var start = Math.max(1, usageLogsCurrentPage - 2);
+        var end = Math.min(usageLogsTotalPages, start + 4);
+        start = Math.max(1, end - 4);
+        var pages = [];
+        for (var page = start; page <= end; page++) {
+            pages.push(page);
+        }
+        return pages;
     }
 
     async function openRequestDetail(requestId) {
