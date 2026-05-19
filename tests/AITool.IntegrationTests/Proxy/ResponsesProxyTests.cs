@@ -278,6 +278,347 @@ public sealed class ResponsesProxyTests
         var response = await client.SendAsync(request);
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
+
+    /// <summary>
+    /// 无效密钥应返回 401。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_returns_401_when_key_is_invalid()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\"}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "invalid-key");
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
+
+        // 不应调用转发服务
+        fakeForwardService.Requests.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// 透传非流式应返回完整 Responses 格式且 usage 日志记录正确。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_passthrough_non_streaming_logs_usage()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"stream\":false}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        // 返回体应为 Responses 格式
+        using var doc = JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("object").GetString().Should().Be("response");
+        doc.RootElement.GetProperty("output").GetArrayLength().Should().BeGreaterThan(0);
+
+        // 验证 usage 日志
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].ProtocolType.Should().Be("OpenAI");
+        logs[0].ForwardingMode.Should().Be("direct");
+        logs[0].IsStreaming.Should().BeFalse();
+        logs[0].Status.Should().Be("success");
+        logs[0].IsFinalResult.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 透传流式应返回 SSE 格式且 usage 日志记录正确。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_passthrough_streaming_logs_usage()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            StreamingLines =
+            [
+                "data: {\"id\":\"resp_test\",\"object\":\"response\",\"created\":1,\"model\":\"auto\",\"status\":\"in_progress\",\"output\":[],\"type\":\"response.created\"}",
+                string.Empty,
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\",\"output_index\":0,\"content_index\":0}",
+                string.Empty,
+                "data: {\"type\":\"response.completed\",\"id\":\"resp_test\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"stream\":true}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        // 验证 usage 日志
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].IsStreaming.Should().BeTrue();
+        logs[0].Status.Should().Be("success");
+        logs[0].IsFinalResult.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 兼容中转非流式应将 Anthropic 响应转为 Responses 格式且 usage 日志记录正确。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_bridge_non_streaming_logs_usage()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            IsAnthropicOnly = true
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"stream\":false}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        // 返回体应为 Responses 格式
+        using var doc = JsonDocument.Parse(body);
+        doc.RootElement.GetProperty("object").GetString().Should().Be("response");
+        doc.RootElement.GetProperty("status").GetString().Should().Be("completed");
+
+        // 转发到 Anthropic 上游
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Anthropic");
+
+        // 验证 usage 日志
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].ForwardingMode.Should().Be("bridge");
+        logs[0].IsStreaming.Should().BeFalse();
+        logs[0].Status.Should().Be("success");
+    }
+
+    /// <summary>
+    /// 兼容中转流式应将 Anthropic SSE 实时转为 Responses SSE 且 usage 日志记录正确。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_bridge_streaming_logs_usage()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            IsAnthropicOnly = true,
+            StreamingLines =
+            [
+                "event: message_start",
+                "data: {\"message\":{\"usage\":{\"input_tokens\":10,\"cache_read_input_tokens\":2,\"output_tokens\":0}}}",
+                string.Empty,
+                "event: content_block_start",
+                "data: {\"content_block\":{\"type\":\"text\",\"text\":\"\"},\"index\":0}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"delta\":{\"type\":\"text_delta\",\"text\":\"bridge-test\"},\"index\":0}",
+                string.Empty,
+                "event: content_block_stop",
+                "data: {\"index\":0}",
+                string.Empty,
+                "event: message_delta",
+                "data: {\"usage\":{\"output_tokens\":5},\"delta\":{\"stop_reason\":\"end_turn\"}}",
+                string.Empty,
+                "event: message_stop",
+                "data: {\"type\":\"message_stop\"}",
+                string.Empty
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"stream\":true}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        // 验证 usage 日志
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].ForwardingMode.Should().Be("bridge");
+        logs[0].IsStreaming.Should().BeTrue();
+        logs[0].Status.Should().Be("success");
+    }
+
+    /// <summary>
+    /// 缺少 model 字段应返回 400。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_returns_400_when_model_is_missing()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"input\":\"hello\"}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+
+        fakeForwardService.Requests.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// 兼容中转非流式时，转换后的请求体应包含 Anthropic 格式的 messages 和 system。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_bridge_converts_request_to_anthropic_format()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            IsAnthropicOnly = true
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"instructions\":\"be helpful\",\"stream\":false}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        // 验证转发到 Anthropic 的请求体是 Anthropic 原生格式
+        fakeForwardService.Requests.Should().ContainSingle();
+        var prepared = fakeForwardService.Requests[0].PreparedRequestBody;
+        using var preparedDoc = JsonDocument.Parse(prepared);
+
+        // 应包含 messages 数组
+        preparedDoc.RootElement.TryGetProperty("messages", out var messages).Should().BeTrue();
+        messages.GetArrayLength().Should().BeGreaterThan(0);
+
+        // Anthropic 格式应有 system 或 max_tokens 或 anthropic-version
+        var hasAnthropicFields = preparedDoc.RootElement.TryGetProperty("system", out _)
+            || preparedDoc.RootElement.TryGetProperty("max_tokens", out _);
+        hasAnthropicFields.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 透传非流式时返回的 Responses 格式应包含 usage 信息。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_passthrough_non_streaming_includes_usage()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\"}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        // 返回体应包含 usage
+        using var doc = JsonDocument.Parse(body);
+        doc.RootElement.TryGetProperty("usage", out var usage).Should().BeTrue();
+        usage.TryGetProperty("prompt_tokens", out _).Should().BeTrue();
+        usage.TryGetProperty("completion_tokens", out _).Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 兼容中转非流式时返回的 Responses 格式应包含 usage 信息。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_bridge_non_streaming_includes_usage()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            IsAnthropicOnly = true
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\"}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        // 返回体应包含 usage，Responses 格式用 prompt_tokens / completion_tokens
+        using var doc = JsonDocument.Parse(body);
+        doc.RootElement.TryGetProperty("usage", out var usage).Should().BeTrue();
+        usage.TryGetProperty("prompt_tokens", out _).Should().BeTrue();
+        usage.TryGetProperty("completion_tokens", out _).Should().BeTrue();
+    }
 }
 
 /// <summary>

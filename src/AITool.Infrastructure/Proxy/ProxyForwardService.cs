@@ -500,7 +500,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// <summary>
     /// 根据响应内容判断非流式响应是否真正返回了可用结果
     /// </summary>
-    private static bool HasUsableResponse(string responseBody, string protocolType)
+    internal static bool HasUsableResponse(string responseBody, string protocolType)
     {
         if (string.IsNullOrWhiteSpace(responseBody))
         {
@@ -552,7 +552,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// <summary>
     /// 为非流式失败结果构造更明确的错误信息
     /// </summary>
-    private static string BuildFailureMessage(string responseBody, string protocolType)
+    internal static string BuildFailureMessage(string responseBody, string protocolType)
     {
         if (string.IsNullOrWhiteSpace(responseBody))
         {
