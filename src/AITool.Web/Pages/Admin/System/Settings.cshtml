@@ -4,6 +4,30 @@
     ViewData["Title"] = "系统设置";
 }
 
+<style>
+    .form-label-tip {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+    }
+    .tip-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        font-size: 11px;
+        font-weight: 700;
+        font-style: normal;
+        line-height: 1;
+        color: #6c757d;
+        border: 1.5px solid #6c757d;
+        border-radius: 50%;
+        cursor: help;
+        flex-shrink: 0;
+    }
+</style>
+
 <div class="page-header">
     <div>
         <h2 class="page-title">系统设置</h2>
@@ -67,9 +91,8 @@
                     </select>
                 </div>
                 <div class="col-md-4">
-                    <label asp-for="Input.ConcurrencyQueueTimeoutSeconds" class="form-label">排队等待超时（秒）</label>
+                    <label asp-for="Input.ConcurrencyQueueTimeoutSeconds" class="form-label form-label-tip">排队等待超时（秒）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="仅在「排队等待」模式下生效。当模型的并发数打满时，后续请求会排队等待释放；等待超过该时间后自动顺延到下一顺位模型，如果没有下一顺位则返回失败。排队等待期间不占用代理超时时间。">?</span></label>
                     <input asp-for="Input.ConcurrencyQueueTimeoutSeconds" class="form-control" type="number" min="1" />
-                    <div class="form-text">仅在"排队等待"模式下生效，超时后顺延到下一顺位模型。</div>
                 </div>
             </div>
         </div>
@@ -101,9 +124,8 @@
             <h5 class="card-title">开发者功能</h5>
             <div class="form-check form-switch mt-1">
                 <input asp-for="Input.DeveloperFeaturesEnabled" class="form-check-input" type="checkbox" />
-                <label asp-for="Input.DeveloperFeaturesEnabled" class="form-check-label">启用开发者功能</label>
+                <label asp-for="Input.DeveloperFeaturesEnabled" class="form-check-label form-label-tip">启用开发者功能<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="开启后才会显示调试工具入口，其中包含调用调试与客户端模拟，并记录最近 100 条内存中的调用信息。">?</span></label>
             </div>
-            <div class="form-text">开启后才会显示调试工具入口，其中包含调用调试与客户端模拟，并记录最近 100 条内存中的调用信息。</div>
         </div>
     </div>
 
@@ -147,3 +169,12 @@
         </div>
     </div>
 </form>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    var tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
+    tooltipTriggerList.forEach(function(el) {
+        new bootstrap.Tooltip(el);
+    });
+});
+</script>
