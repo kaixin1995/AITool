@@ -55,9 +55,28 @@ public sealed class AnalyticsPageTests
         root.GetProperty("summary").GetProperty("successRequests").GetInt32().Should().Be(1);
         root.GetProperty("summary").GetProperty("failedRequests").GetInt32().Should().Be(1);
         root.GetProperty("summary").GetProperty("totalTokens").GetInt32().Should().Be(70);
+        root.GetProperty("summary").GetProperty("totalInputTokens").GetInt32().Should().Be(35);
+        root.GetProperty("summary").GetProperty("totalCachedTokens").GetInt32().Should().Be(3);
+        root.GetProperty("summary").GetProperty("totalOutputTokens").GetInt32().Should().Be(35);
         root.GetProperty("summary").GetProperty("fallbackRequestCount").GetInt32().Should().Be(1);
         root.GetProperty("siteDistribution").GetArrayLength().Should().Be(2);
         root.GetProperty("modelDistribution").GetArrayLength().Should().Be(2);
+
+        var glmPoint = root.GetProperty("modelDistribution")
+            .EnumerateArray()
+            .First(x => x.GetProperty("label").GetString() == "glm-5.1");
+        glmPoint.GetProperty("totalTokens").GetInt32().Should().Be(30);
+        glmPoint.GetProperty("inputTokens").GetInt32().Should().Be(12);
+        glmPoint.GetProperty("cachedTokens").GetInt32().Should().Be(3);
+        glmPoint.GetProperty("outputTokens").GetInt32().Should().Be(15);
+
+        var glmCachePoint = root.GetProperty("modelCacheRatioDistribution")
+            .EnumerateArray()
+            .First(x => x.GetProperty("label").GetString() == "glm-5.1");
+        glmCachePoint.GetProperty("inputTokens").GetInt32().Should().Be(12);
+        glmCachePoint.GetProperty("cachedTokens").GetInt32().Should().Be(3);
+        glmCachePoint.GetProperty("totalInputScope").GetInt32().Should().Be(15);
+        glmCachePoint.GetProperty("cacheHitRate").GetDouble().Should().Be(20);
     }
 
     /// <summary>
@@ -172,6 +191,115 @@ public sealed class AnalyticsPageTests
             .EnumerateArray()
             .Sum(x => x.GetProperty("totalTokens").GetInt32())
             .Should().Be(30);
+    }
+
+    /// <summary>
+    /// 验证自定义时间范围会包含结束时间所在分钟内的数据。
+    /// </summary>
+    [Fact]
+    public async Task Get_dashboard_custom_range_includes_selected_end_minute()
+    {
+        await using var factory = new AnalyticsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var target = factory.StreamSuccessRequestedAt;
+        var minuteStart = new DateTimeOffset(target.Year, target.Month, target.Day, target.Hour, target.Minute, 0, target.Offset);
+        var startTime = Uri.EscapeDataString(minuteStart.ToString("O"));
+        var endTime = Uri.EscapeDataString(minuteStart.ToString("O"));
+
+        var body = await GetDashboardBodyAsync(
+            client,
+            $"/api/admin/analytics/dashboard?rangeType=custom&bucketType=hour&startTime={startTime}&endTime={endTime}&protocolType=OpenAI&modelName=glm-5.1&siteId={AnalyticsWebApplicationFactory.SecondSiteId}");
+
+        using var document = JsonDocument.Parse(body);
+        var summary = document.RootElement.GetProperty("summary");
+        summary.GetProperty("totalRequests").GetInt32().Should().Be(1);
+        summary.GetProperty("totalTokens").GetInt32().Should().Be(30);
+    }
+
+    /// <summary>
+    /// 验证自定义时间范围覆盖整天时，自动粒度会退化为按小时，避免趋势折线只剩单点。
+    /// </summary>
+    [Fact]
+    public async Task Get_dashboard_custom_full_day_uses_hour_bucket_for_auto_mode()
+    {
+        await using var factory = new AnalyticsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var target = factory.StreamSuccessRequestedAt;
+        var dayStart = new DateTimeOffset(target.Year, target.Month, target.Day, 0, 0, 0, target.Offset);
+        var dayEnd = dayStart.AddHours(23).AddMinutes(59);
+        var startTime = Uri.EscapeDataString(dayStart.ToString("O"));
+        var endTime = Uri.EscapeDataString(dayEnd.ToString("O"));
+
+        var body = await GetDashboardBodyAsync(
+            client,
+            $"/api/admin/analytics/dashboard?rangeType=custom&bucketType=auto&startTime={startTime}&endTime={endTime}&protocolType=OpenAI&modelName=glm-5.1&siteId={AnalyticsWebApplicationFactory.SecondSiteId}");
+
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        root.GetProperty("appliedFilter").GetProperty("bucketType").GetString().Should().Be("hour");
+        root.GetProperty("requestTrend").GetArrayLength().Should().BeGreaterThan(1);
+        root.GetProperty("requestTrend")
+            .EnumerateArray()
+            .Sum(x => x.GetProperty("requestCount").GetInt32())
+            .Should().Be(1);
+        root.GetProperty("tokenTrend")
+            .EnumerateArray()
+            .Sum(x => x.GetProperty("totalTokens").GetInt32())
+            .Should().Be(30);
+        root.GetProperty("durationTrend")
+            .EnumerateArray()
+            .Max(x => x.GetProperty("averageTotalDurationMs").GetDouble())
+            .Should().BeGreaterThan(0);
+    }
+
+    /// <summary>
+    /// 验证图表中站点或模型标签缺失时会统一显示为 -。
+    /// </summary>
+    [Fact]
+    public async Task Get_dashboard_uses_dash_for_missing_site_or_model_labels()
+    {
+        await using var factory = new AnalyticsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.ProxyUsageLogs.Add(new AITool.Domain.Proxy.ProxyUsageLog
+            {
+                RequestId = Guid.Parse("77777777-7777-7777-7777-777777777777"),
+                AccessKeyId = Guid.Parse("88888888-8888-8888-8888-888888888888"),
+                ProtocolType = "OpenAI",
+                RequestModel = "chat-prod",
+                AttemptedModel = "",
+                TargetSiteId = Guid.Parse("99999999-9999-9999-9999-999999999999"),
+                Status = "success",
+                Source = "proxy",
+                RetryCount = 0,
+                AttemptIndex = 1,
+                IsFinalResult = true,
+                InputTokens = 5,
+                OutputTokens = 5,
+                TotalTokens = 10,
+                TotalDurationMs = 120,
+                RequestedAt = DateTimeOffset.UtcNow.AddMinutes(-10)
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var body = await GetDashboardBodyAsync(client, "/api/admin/analytics/dashboard?rangeType=all&bucketType=day");
+
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        root.GetProperty("siteDistribution")
+            .EnumerateArray()
+            .Select(x => x.GetProperty("label").GetString())
+            .Should().Contain("-");
+        root.GetProperty("modelDistribution")
+            .EnumerateArray()
+            .Select(x => x.GetProperty("label").GetString())
+            .Should().Contain("-");
     }
 
     /// <summary>

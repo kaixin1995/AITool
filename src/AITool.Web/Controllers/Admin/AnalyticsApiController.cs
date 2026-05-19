@@ -351,6 +351,18 @@ public sealed class AnalyticsDistributionPointDto
     /// </summary>
     public int TotalTokens { get; set; }
     /// <summary>
+    /// 未命中的输入 Token 总数。
+    /// </summary>
+    public int InputTokens { get; set; }
+    /// <summary>
+    /// 缓存命中的 Token 总数。
+    /// </summary>
+    public int CachedTokens { get; set; }
+    /// <summary>
+    /// 输出 Token 总数。
+    /// </summary>
+    public int OutputTokens { get; set; }
+    /// <summary>
     /// 平均总耗时（毫秒）。
     /// </summary>
     public double AverageTotalDurationMs { get; set; }
@@ -603,7 +615,8 @@ public sealed class AnalyticsApiController : ControllerBase
             FailedRequests = failedRequests,
             SuccessRate = totalRequests == 0 ? 0 : Math.Round(successRequests * 100d / totalRequests, 2),
             FailureRate = totalRequests == 0 ? 0 : Math.Round(failedRequests * 100d / totalRequests, 2),
-            TotalInputTokens = finalLogs.Sum(x => x.InputTokens),
+            // Analytics 页面上的“输入 / 输出 Tokens”需要与“总 Tokens”口径一致，因此输入侧合并缓存命中量。
+            TotalInputTokens = finalLogs.Sum(x => x.InputTokens + x.CachedTokens),
             TotalCachedTokens = finalLogs.Sum(x => x.CachedTokens),
             TotalOutputTokens = finalLogs.Sum(x => x.OutputTokens),
             TotalTokens = finalLogs.Sum(x => x.TotalTokens),
@@ -756,11 +769,14 @@ public sealed class AnalyticsApiController : ControllerBase
             .GroupBy(x => x.TargetSiteId)
             .Select(g => new AnalyticsDistributionPointDto
             {
-                Label = siteNames.TryGetValue(g.Key, out var siteName) ? siteName : g.Key.ToString(),
+                Label = siteNames.TryGetValue(g.Key, out var siteName) ? NormalizeAnalyticsLabel(siteName) : "-",
                 RequestCount = g.Count(),
                 SuccessCount = g.Count(x => IsSuccess(x.Status)),
                 FailedCount = g.Count(x => !IsSuccess(x.Status)),
                 TotalTokens = g.Sum(x => x.TotalTokens),
+                InputTokens = g.Sum(x => x.InputTokens),
+                CachedTokens = g.Sum(x => x.CachedTokens),
+                OutputTokens = g.Sum(x => x.OutputTokens),
                 AverageTotalDurationMs = Math.Round(g.Average(x => x.TotalDurationMs), 2)
             })
             .OrderByDescending(x => x.RequestCount)
@@ -777,11 +793,14 @@ public sealed class AnalyticsApiController : ControllerBase
             .GroupBy(x => x.AttemptedModel)
             .Select(g => new AnalyticsDistributionPointDto
             {
-                Label = g.Key,
+                Label = NormalizeAnalyticsLabel(g.Key),
                 RequestCount = g.Count(),
                 SuccessCount = g.Count(x => IsSuccess(x.Status)),
                 FailedCount = g.Count(x => !IsSuccess(x.Status)),
                 TotalTokens = g.Sum(x => x.TotalTokens),
+                InputTokens = g.Sum(x => x.InputTokens),
+                CachedTokens = g.Sum(x => x.CachedTokens),
+                OutputTokens = g.Sum(x => x.OutputTokens),
                 AverageTotalDurationMs = Math.Round(g.Average(x => x.TotalDurationMs), 2)
             })
             .OrderByDescending(x => x.RequestCount)
@@ -803,15 +822,14 @@ public sealed class AnalyticsApiController : ControllerBase
             {
                 var inputTokens = g.Sum(x => x.InputTokens);
                 var cachedTokens = g.Sum(x => x.CachedTokens);
-                var outputTokens = g.Sum(x => x.OutputTokens);
-                var totalTokens = inputTokens + outputTokens;
+                var totalInputScope = inputTokens + cachedTokens;
                 return new AnalyticsCacheRatioPointDto
                 {
-                    Label = g.Key,
+                    Label = NormalizeAnalyticsLabel(g.Key),
                     InputTokens = inputTokens,
                     CachedTokens = cachedTokens,
-                    TotalInputScope = totalTokens,
-                    CacheHitRate = totalTokens <= 0 ? 0 : Math.Round(cachedTokens * 100d / totalTokens, 2)
+                    TotalInputScope = totalInputScope,
+                    CacheHitRate = totalInputScope <= 0 ? 0 : Math.Round(cachedTokens * 100d / totalInputScope, 2)
                 };
             })
             .OrderByDescending(x => x.CacheHitRate)
@@ -824,6 +842,11 @@ public sealed class AnalyticsApiController : ControllerBase
     /// <summary>
     /// 按分桶类型生成时间区间。
     /// </summary>
+    private static string NormalizeAnalyticsLabel(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? "-" : value.Trim();
+    }
+
     private static List<AnalyticsBucket> BuildBuckets(DateTimeOffset startTime, DateTimeOffset endTime, string bucketType)
     {
         var buckets = new List<AnalyticsBucket>();
@@ -866,12 +889,11 @@ public sealed class AnalyticsApiController : ControllerBase
         if (normalized == "custom")
         {
             var customStart = startTime ?? StartOfDay(now);
-            var customEnd = endTime.HasValue
-                ? StartOfDay(endTime.Value).AddDays(1)
-                : now;
-            if (customEnd < customStart)
+            // 前端 datetime-local 目前按分钟输入，筛选时把结束时间扩到下一分钟，避免右开区间把当前分钟内的数据排除掉。
+            var customEnd = endTime.HasValue ? endTime.Value.AddMinutes(1) : now;
+            if (customEnd <= customStart)
             {
-                customEnd = customStart.AddDays(1);
+                customEnd = customStart.AddMinutes(1);
             }
 
             return (customStart, customEnd);
@@ -912,6 +934,12 @@ public sealed class AnalyticsApiController : ControllerBase
         {
             var totalDays = (endTime - startTime).TotalDays;
             return totalDays > 120 ? "month" : "week";
+        }
+
+        if (range == "custom")
+        {
+            // 指定时间范围覆盖不超过一天时，自动粒度与“按天”保持一致，避免只生成一个按天桶导致折线图几乎不可见。
+            return (endTime - startTime).TotalDays <= 1 ? "hour" : "day";
         }
 
         return "day";

@@ -57,16 +57,24 @@
                     <option value="" selected>全部站点</option>
                 </select>
             </div>
-            <div class="col-xl-2 col-md-4 custom-range-field" style="display:none;">
-                <label class="form-label" for="startTime">开始时间</label>
-                <input id="startTime" type="date" class="form-control" />
-            </div>
-            <div class="col-xl-2 col-md-4 custom-range-field" style="display:none;">
-                <label class="form-label" for="endTime">结束时间</label>
-                <input id="endTime" type="date" class="form-control" />
-            </div>
             <div class="col-xl-2 col-md-4">
                 <div class="analytics-filter-meta" id="filterSummary">正在准备筛选条件</div>
+            </div>
+        </div>
+        <div class="row g-3 align-items-end mt-0 custom-range-row" id="customRangeRow" style="display:none;">
+            <div class="col-xl-3 col-md-6 custom-range-field">
+                <label class="form-label" for="startTime">开始时间</label>
+                <input id="startTime" type="datetime-local" step="60" class="form-control" />
+            </div>
+            <div class="col-xl-3 col-md-6 custom-range-field">
+                <label class="form-label" for="endTime">结束时间</label>
+                <input id="endTime" type="datetime-local" step="60" class="form-control" />
+            </div>
+            <div class="col-xl-2 col-md-4 custom-range-field">
+                <button type="button" class="btn btn-outline-primary w-100" id="applyCustomRangeBtn">应用时间范围</button>
+            </div>
+            <div class="col-xl-4 col-md-8 custom-range-field">
+                <div class="text-muted small">选择开始和结束时间后，点击“应用时间范围”确认生效。</div>
             </div>
         </div>
     </div>
@@ -115,7 +123,7 @@
         <strong class="analytics-kpi-value warning" id="kpiFallbackCount">0</strong>
     </article>
     <article class="analytics-kpi-card">
-        <span class="analytics-kpi-label">输入 / 输出 Tokens</span>
+        <span class="analytics-kpi-label">输入（含缓存） / 输出 Tokens</span>
         <strong class="analytics-kpi-value compact" id="kpiTokenSplit">0 / 0</strong>
     </article>
 </section>
@@ -161,7 +169,7 @@
         <div class="analytics-panel-header">
             <div>
                 <h5 class="analytics-panel-title">缓存命中比例</h5>
-                <div class="analytics-panel-subtitle">按时间桶观察缓存 tokens 占输入 tokens 的比例</div>
+                <div class="analytics-panel-subtitle">公式：缓存命中 Token ÷ 总输入 Token（总输入 = 未命中输入 + 缓存命中）</div>
             </div>
         </div>
         <div class="analytics-chart-body">
@@ -424,8 +432,10 @@
             const siteIdEl = document.getElementById('siteId');
             const startTimeEl = document.getElementById('startTime');
             const endTimeEl = document.getElementById('endTime');
+            const applyCustomRangeBtn = document.getElementById('applyCustomRangeBtn');
             const refreshBtn = document.getElementById('refreshBtn');
             const customRangeFields = Array.from(document.querySelectorAll('.custom-range-field'));
+            const customRangeRowEl = document.getElementById('customRangeRow');
             const emptyStateEl = document.getElementById('analyticsEmptyState');
             const filterSummaryEl = document.getElementById('filterSummary');
             const allRangeNoticeEl = document.getElementById('allRangeNotice');
@@ -461,6 +471,9 @@
 
             function toggleCustomRange() {
                 const visible = rangeTypeEl.value === 'custom';
+                if (customRangeRowEl) {
+                    customRangeRowEl.style.display = visible ? '' : 'none';
+                }
                 customRangeFields.forEach(x => x.style.display = visible ? '' : 'none');
             }
 
@@ -730,13 +743,13 @@
                         labels: modelCacheRatioDistribution.map(x => x.label),
                         datasets: [
                             {
-                                label: '缓存命中率 %',
+                                label: '缓存命中率',
                                 data: modelCacheRatioDistribution.map(x => x.cacheHitRate),
                                 backgroundColor: 'rgba(6,182,212,0.72)',
                                 borderRadius: 8
                             },
                             {
-                                label: '缓存 Tokens',
+                                label: '缓存命中 Token',
                                 data: modelCacheRatioDistribution.map(x => x.cachedTokens),
                                 type: 'line',
                                 borderColor: palette.indigo,
@@ -788,9 +801,9 @@
 
                                         const point = modelCacheRatioDistribution[items[0].dataIndex];
                                         return [
-                                            `实际输入: ${formatTokenValue(point.inputTokens || 0)}`,
-                                            `缓存命中: ${formatTokenValue(point.cachedTokens || 0)}`,
-                                            `总输入口径: ${formatTokenValue(point.totalInputScope || 0)}`
+                                            `总输入 Token: ${formatTokenValue(point.totalInputScope || 0)}`,
+                                            `缓存命中 Token: ${formatTokenValue(point.cachedTokens || 0)}`,
+                                            `未命中输入 Token: ${formatTokenValue(point.inputTokens || 0)}`
                                         ];
                                     }
                                 }
@@ -930,7 +943,10 @@
                                         const point = modelDistribution[index];
                                         return [
                                             `总 Tokens: ${formatTokenValue(point.totalTokens || 0)}`,
-                                            `调用量: ${formatNumber(point.requestCount || 0)}`,
+                                            `缓存命中: ${formatTokenValue(point.cachedTokens || 0)}`,
+                                            `未命中的总输入: ${formatTokenValue(point.inputTokens || 0)}`,
+                                            `总输出 Tokens: ${formatTokenValue(point.outputTokens || 0)}`,
+                                            `调用次数: ${formatNumber(point.requestCount || 0)}`,
                                             `成功: ${formatNumber(point.successCount || 0)}`,
                                             `失败: ${formatNumber(point.failedCount || 0)}`
                                         ];
@@ -1027,6 +1043,15 @@
                 return `时间范围：${rangeText} · 统计粒度：${bucketText}`;
             }
 
+            function formatDateTimeLocalValue(date) {
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const day = String(date.getDate()).padStart(2, '0');
+                const hours = String(date.getHours()).padStart(2, '0');
+                const minutes = String(date.getMinutes()).padStart(2, '0');
+                return `${year}-${month}-${day}T${hours}:${minutes}`;
+            }
+
             // Tokens 统一按数量级自动换单位，避免大数难读。
             function formatTokenValue(value) {
                 const number = Number(value || 0);
@@ -1079,9 +1104,16 @@
             }
 
             function bindEvents() {
-                [rangeTypeEl, bucketTypeEl, protocolTypeEl, siteIdEl].forEach(el => {
+                rangeTypeEl.addEventListener('change', async () => {
+                    toggleCustomRange();
+                    if (rangeTypeEl.value === 'custom') {
+                        filterSummaryEl.textContent = '已切换到指定时间范围，请选择开始和结束时间后点击“应用时间范围”。';
+                        return;
+                    }
+                    await loadDashboard(false);
+                });
+                [bucketTypeEl, protocolTypeEl, siteIdEl].forEach(el => {
                     el.addEventListener('change', async () => {
-                        toggleCustomRange();
                         await loadDashboard(false);
                     });
                 });
@@ -1091,11 +1123,17 @@
                 });
                 modelNameInputEl.addEventListener('blur', syncModelNameValue);
                 [startTimeEl, endTimeEl].forEach(el => {
-                    el.addEventListener('change', async () => {
-                        if (rangeTypeEl.value === 'custom') {
+                    el.addEventListener('keydown', async event => {
+                        if (event.key === 'Enter' && rangeTypeEl.value === 'custom') {
+                            event.preventDefault();
                             await loadDashboard(false);
                         }
                     });
+                });
+                applyCustomRangeBtn?.addEventListener('click', async () => {
+                    if (rangeTypeEl.value === 'custom') {
+                        await loadDashboard(false);
+                    }
                 });
                 refreshBtn.addEventListener('click', () => loadDashboard(true));
                 loadAllBtn.addEventListener('click', () => loadDashboard(true));
@@ -1116,11 +1154,13 @@
             }
 
             async function init() {
-                const today = new Date();
-                const sevenDaysAgo = new Date();
-                sevenDaysAgo.setDate(today.getDate() - 6);
-                startTimeEl.value = sevenDaysAgo.toISOString().slice(0, 10);
-                endTimeEl.value = today.toISOString().slice(0, 10);
+                const end = new Date();
+                const start = new Date(end);
+                start.setDate(end.getDate() - 6);
+                start.setHours(0, 0, 0, 0);
+                end.setHours(23, 59, 0, 0);
+                startTimeEl.value = formatDateTimeLocalValue(start);
+                endTimeEl.value = formatDateTimeLocalValue(end);
                 toggleCustomRange();
                 await loadOptions();
                 bindEvents();
