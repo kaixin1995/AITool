@@ -9,6 +9,40 @@ using AITool.Web.Services;
 namespace AITool.Web.Pages.Admin.Developer.Invocations;
 
 /// <summary>
+/// 当前模型并发检测响应。
+/// </summary>
+public sealed class DeveloperModelConcurrencyResponse
+{
+    /// <summary>
+    /// 最近刷新时间。
+    /// </summary>
+    public DateTimeOffset RefreshedAt { get; set; }
+    /// <summary>
+    /// 当前活跃项。
+    /// </summary>
+    public List<DeveloperModelConcurrencyDto> Items { get; set; } = [];
+}
+
+/// <summary>
+/// 当前模型并发检测项。
+/// </summary>
+public sealed class DeveloperModelConcurrencyDto
+{
+    /// <summary>
+    /// 模型名称。
+    /// </summary>
+    public string ModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
+    public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 当前并发数。
+    /// </summary>
+    public int ActiveCount { get; set; }
+}
+
+/// <summary>
 /// 开发者调用记录页面模型。
 /// </summary>
 public sealed class IndexModel : PageModel
@@ -34,11 +68,16 @@ public sealed class IndexModel : PageModel
     /// <summary>
     /// 开发者调用记录页面模型。
     /// </summary>
-    public IndexModel(ISystemRuntimeSettingsService runtimeSettingsService, DeveloperInvocationTraceStore traceStore, AppDbContext dbContext)
+    public IndexModel(
+        ISystemRuntimeSettingsService runtimeSettingsService,
+        DeveloperInvocationTraceStore traceStore,
+        AppDbContext dbContext,
+        ModelConcurrencyLimiter concurrencyLimiter)
     {
         _runtimeSettingsService = runtimeSettingsService;
         _traceStore = traceStore;
         _dbContext = dbContext;
+        _concurrencyLimiter = concurrencyLimiter;
     }
 
     /// <summary>
@@ -57,6 +96,10 @@ public sealed class IndexModel : PageModel
     /// 当前激活页签。
     /// </summary>
     public string ActiveTab { get; private set; } = "invocations";
+    /// <summary>
+    /// 模型并发限制器，用于读取当前真实活跃并发快照。
+    /// </summary>
+    private readonly ModelConcurrencyLimiter _concurrencyLimiter;
     /// <summary>
     /// 默认请求地址。
     /// </summary>
@@ -152,6 +195,52 @@ public sealed class IndexModel : PageModel
         }
 
         return new JsonResult(ToDetailDto(entry));
+    }
+
+    /// <summary>
+    /// 返回最近 6 小时内出现过的模型并发快照，只读内存中的实时计数，不参与任何限流决策。
+    /// </summary>
+    public async Task<IActionResult> OnGetConcurrencyAsync(CancellationToken cancellationToken = default)
+    {
+        var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
+        if (!settings.DeveloperFeaturesEnabled)
+        {
+            return NotFound();
+        }
+
+        var snapshots = _concurrencyLimiter.ListRecent(ModelConcurrencyLimiter.RecentRetention);
+        if (snapshots.Count == 0)
+        {
+            return new JsonResult(new DeveloperModelConcurrencyResponse
+            {
+                RefreshedAt = DateTimeOffset.Now,
+                Items = []
+            });
+        }
+
+        var siteIds = snapshots.Select(x => x.SiteId).Distinct().ToList();
+        var siteNames = await _dbContext.Sites
+            .AsNoTracking()
+            .Where(x => siteIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+
+        var items = snapshots
+            .Select(x => new DeveloperModelConcurrencyDto
+            {
+                ModelName = x.SiteModelName,
+                SiteName = siteNames.TryGetValue(x.SiteId, out var siteName) ? siteName : "-",
+                ActiveCount = x.ActiveCount
+            })
+            .OrderByDescending(x => x.ActiveCount)
+            .ThenBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return new JsonResult(new DeveloperModelConcurrencyResponse
+        {
+            RefreshedAt = DateTimeOffset.Now,
+            Items = items
+        });
     }
 
     /// <summary>

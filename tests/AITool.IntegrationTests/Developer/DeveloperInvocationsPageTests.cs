@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using AITool.Application.Proxy;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
@@ -67,13 +68,19 @@ public sealed class DeveloperInvocationsPageTests
         html.Should().Contain("自动刷新（5 秒）");
         html.Should().Contain("调用记录按需加载中");
         html.Should().Contain("setTimeout(function () {");
-        html.Should().Contain("refreshTraceList();");
-        payload.Should().Contain("claude-code");
+        html.Should().Contain("refreshTraceList(currentPage)");
         payload.Should().Contain("debug-model");
         payload.Should().Contain("debug-upstream-model");
         payload.Should().Contain("Debug Site");
-        payload.Should().Contain("debug-ok");
-        payload.Should().Contain("hello debug");
+
+        using var listDocument = JsonDocument.Parse(payload);
+        var traceId = listDocument.RootElement.GetProperty("entries")[0].GetProperty("traceId").GetGuid();
+        var detailResponse = await client.GetAsync($"/Admin/Developer/Invocations?handler=Detail&traceId={traceId}");
+        var detailPayload = await detailResponse.Content.ReadAsStringAsync();
+
+        detailResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        detailPayload.Should().Contain("debug-ok");
+        detailPayload.Should().Contain("hello debug");
     }
 
     /// <summary>
@@ -92,8 +99,10 @@ public sealed class DeveloperInvocationsPageTests
         pageResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         html.Should().Contain("refreshTraceList");
         html.Should().Contain("ensureRefreshTimer");
-        html.Should().Contain("renderAttempts(entry, index) || '<div class=\"trace-info-panel\">当前还没有命中任何路由尝试。</div>'");
-        html.Should().Contain("autoRefreshToggle.checked && !hasLoadedListOnce");
+        html.Should().Contain("renderAttempts(entry)");
+        html.Should().Contain("当前还没有命中任何路由尝试");
+        html.Should().Contain("autoRefreshToggle.checked");
+        html.Should().Contain("isInvocationsTabActive()");
         html.Should().Contain("setTimeout(function () {");
         html.Should().NotContain("' + renderAttempts(entry, index) + '");
     }
@@ -142,8 +151,108 @@ public sealed class DeveloperInvocationsPageTests
         payload.Should().Contain("totalCount");
         payload.Should().Contain("failedCount");
         payload.Should().Contain("pendingCount");
-        payload.Should().Contain("hello ajax");
+        payload.Should().Contain("debug-model");
         payload.Should().Contain("debug-upstream-model");
+    }
+
+    /// <summary>
+    /// 验证关闭开发者功能后，并发检测接口也会返回未找到。
+    /// </summary>
+    [Fact]
+    public async Task Get_concurrency_returns_not_found_when_feature_is_disabled()
+    {
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(false, new DeveloperInvocationsFakeProxyForwardService());
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/Developer/Invocations?handler=Concurrency");
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// 验证当前模型并发检测接口会返回真实活跃并发数据。
+    /// </summary>
+    [Fact]
+    public async Task Get_concurrency_returns_live_active_entries_when_feature_is_enabled()
+    {
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, new DeveloperInvocationsFakeProxyForwardService());
+        using var client = factory.CreateClient();
+        var limiter = factory.Services.GetRequiredService<ModelConcurrencyLimiter>();
+        var siteId = Guid.Parse("90909090-9090-9090-9090-909090909090");
+
+        using var handle = await limiter.AcquireAsync(
+            factory.Services,
+            siteId,
+            "debug-site-model",
+            ConcurrencyAcquireMode.SkipOnFull,
+            TimeSpan.FromSeconds(10),
+            CancellationToken.None);
+
+        handle.Acquired.Should().BeTrue();
+
+        var response = await client.GetAsync("/Admin/Developer/Invocations?handler=Concurrency");
+        var payload = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(payload);
+        var items = document.RootElement.GetProperty("items");
+        items.GetArrayLength().Should().Be(1);
+        items[0].GetProperty("modelName").GetString().Should().Be("debug-site-model");
+        items[0].GetProperty("siteName").GetString().Should().Be("Debug Site");
+        items[0].GetProperty("activeCount").GetInt32().Should().Be(1);
+    }
+
+    /// <summary>
+    /// 验证当前模型并发检测接口会保留最近 6 小时内归零的模型，并显示 0 并发。
+    /// </summary>
+    [Fact]
+    public async Task Get_concurrency_keeps_recent_zero_count_entries_when_feature_is_enabled()
+    {
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, new DeveloperInvocationsFakeProxyForwardService());
+        using var client = factory.CreateClient();
+        var limiter = factory.Services.GetRequiredService<ModelConcurrencyLimiter>();
+        var siteId = Guid.Parse("90909090-9090-9090-9090-909090909090");
+
+        using (var handle = await limiter.AcquireAsync(
+            factory.Services,
+            siteId,
+            "debug-site-model",
+            ConcurrencyAcquireMode.SkipOnFull,
+            TimeSpan.FromSeconds(10),
+            CancellationToken.None))
+        {
+            handle.Acquired.Should().BeTrue();
+        }
+
+        var response = await client.GetAsync("/Admin/Developer/Invocations?handler=Concurrency");
+        var payload = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        using var document = JsonDocument.Parse(payload);
+        var items = document.RootElement.GetProperty("items");
+        items.GetArrayLength().Should().Be(1);
+        items[0].GetProperty("modelName").GetString().Should().Be("debug-site-model");
+        items[0].GetProperty("siteName").GetString().Should().Be("Debug Site");
+        items[0].GetProperty("activeCount").GetInt32().Should().Be(0);
+    }
+
+    /// <summary>
+    /// 验证页面已包含当前模型并发检测页签及其自动刷新脚本。
+    /// </summary>
+    [Fact]
+    public async Task Get_invocations_page_contains_concurrency_tab_and_refresh_script_markers()
+    {
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, new DeveloperInvocationsFakeProxyForwardService());
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/Developer/Invocations");
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("当前模型并发数检测");
+        html.Should().Contain("developerConcurrencyPane");
+        html.Should().Contain("refreshConcurrencyTable");
+        html.Should().Contain("?handler=Concurrency");
     }
 
     /// <summary>
@@ -184,12 +293,19 @@ public sealed class DeveloperInvocationsPageTests
         var listResponse = await client.GetAsync("/Admin/Developer/Invocations?handler=List");
         var payload = await listResponse.Content.ReadAsStringAsync();
 
-        payload.Should().Contain("first route failed");
-        payload.Should().Contain("second-ok");
         payload.Should().Contain("failedAttemptCount");
         payload.Should().Contain("successAttemptCount");
         payload.Should().Contain("debug-upstream-model-2");
-        payload.Should().Contain("\"forwardingMode\":\"direct\"");
+
+        using var listDocument = JsonDocument.Parse(payload);
+        var traceId = listDocument.RootElement.GetProperty("entries")[0].GetProperty("traceId").GetGuid();
+        var detailResponse = await client.GetAsync($"/Admin/Developer/Invocations?handler=Detail&traceId={traceId}");
+        var detailPayload = await detailResponse.Content.ReadAsStringAsync();
+
+        detailResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        detailPayload.Should().Contain("first route failed");
+        detailPayload.Should().Contain("second-ok");
+        detailPayload.Should().Contain("\"forwardingMode\":\"direct\"");
     }
 
     /// <summary>
@@ -285,7 +401,13 @@ public sealed class DeveloperInvocationsPageTests
 
         var listResponse = await client.GetAsync("/Admin/Developer/Invocations?handler=List");
         var listPayload = await listResponse.Content.ReadAsStringAsync();
-        listPayload.Should().Contain("\"forwardingMode\":\"bridge\"");
+        using var listDocument = JsonDocument.Parse(listPayload);
+        var traceId = listDocument.RootElement.GetProperty("entries")[0].GetProperty("traceId").GetGuid();
+        var detailResponse = await client.GetAsync($"/Admin/Developer/Invocations?handler=Detail&traceId={traceId}");
+        var detailPayload = await detailResponse.Content.ReadAsStringAsync();
+
+        detailResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        detailPayload.Should().Contain("\"forwardingMode\":\"bridge\"");
     }
 }
 /// <summary>

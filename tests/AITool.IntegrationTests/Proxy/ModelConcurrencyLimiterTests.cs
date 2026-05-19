@@ -293,6 +293,79 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     }
 
     /// <summary>
+    /// 同一站点同一模型的真实活跃并发应聚合计数，并在释放后及时回收。
+    /// </summary>
+    [Fact]
+    public async Task ListActive_aggregates_active_count_and_clears_after_release()
+    {
+        var siteId = Guid.NewGuid();
+
+        using var handleA = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+        using var handleB = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+
+        var snapshots = _limiter.ListActive();
+        snapshots.Should().ContainSingle();
+        snapshots[0].SiteId.Should().Be(siteId);
+        snapshots[0].SiteModelName.Should().Be("model-a");
+        snapshots[0].ActiveCount.Should().Be(2);
+
+        handleB.Dispose();
+        var afterOneReleased = _limiter.ListActive();
+        afterOneReleased.Should().ContainSingle();
+        afterOneReleased[0].ActiveCount.Should().Be(1);
+
+        handleA.Dispose();
+        _limiter.ListActive().Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// 不同站点的同名模型在活跃快照中也应分别展示，不能合并。
+    /// </summary>
+    [Fact]
+    public async Task ListActive_keeps_same_model_name_separate_between_sites()
+    {
+        var siteA = Guid.NewGuid();
+        var siteB = Guid.NewGuid();
+
+        using var handleA = await _limiter.AcquireAsync(
+            _serviceProvider, siteA, "shared-model",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+        using var handleB = await _limiter.AcquireAsync(
+            _serviceProvider, siteB, "shared-model",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+
+        var snapshots = _limiter.ListActive();
+        snapshots.Should().HaveCount(2);
+        snapshots.Should().ContainSingle(x => x.SiteId == siteA && x.SiteModelName == "shared-model" && x.ActiveCount == 1);
+        snapshots.Should().ContainSingle(x => x.SiteId == siteB && x.SiteModelName == "shared-model" && x.ActiveCount == 1);
+    }
+
+    /// <summary>
+    /// 最近快照在并发归零后仍应保留一段时间，并显示为 0。
+    /// </summary>
+    [Fact]
+    public async Task ListRecent_keeps_zero_count_entries_within_retention_window()
+    {
+        var siteId = Guid.NewGuid();
+
+        using (var handle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "recent-model",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None))
+        {
+            handle.Acquired.Should().BeTrue();
+        }
+
+        _limiter.ListActive().Should().BeEmpty();
+
+        var recentSnapshots = _limiter.ListRecent(ModelConcurrencyLimiter.RecentRetention);
+        recentSnapshots.Should().ContainSingle(x => x.SiteId == siteId && x.SiteModelName == "recent-model" && x.ActiveCount == 0);
+    }
+
+    /// <summary>
     /// ConcurrencyAcquireResult.Dispose 无论获取成功或失败都不应抛异常。
     /// </summary>
     [Fact]

@@ -32,30 +32,62 @@ public sealed class ConcurrencyAcquireResult : IDisposable
     public bool Acquired { get; }
 
     private readonly SemaphoreSlim? _semaphore;
+    private readonly Action? _releaseAction;
+    private int _disposed;
 
-    private ConcurrencyAcquireResult(bool acquired, SemaphoreSlim? semaphore)
+    private ConcurrencyAcquireResult(bool acquired, SemaphoreSlim? semaphore, Action? releaseAction)
     {
         Acquired = acquired;
         _semaphore = semaphore;
+        _releaseAction = releaseAction;
     }
 
     /// <summary>
     /// 未获取到许可的实例。
     /// </summary>
-    public static ConcurrencyAcquireResult NotAcquired { get; } = new(false, null);
+    public static ConcurrencyAcquireResult NotAcquired { get; } = new(false, null, null);
 
     /// <summary>
     /// 成功获取许可的实例。
     /// </summary>
-    public static ConcurrencyAcquireResult AcquiredSlot(SemaphoreSlim semaphore) => new(true, semaphore);
+    public static ConcurrencyAcquireResult AcquiredSlot(SemaphoreSlim? semaphore, Action? releaseAction = null) => new(true, semaphore, releaseAction);
 
     /// <summary>
     /// 释放并发许可，无论成功或异常都会正确释放。
     /// </summary>
     public void Dispose()
     {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
         _semaphore?.Release();
+        _releaseAction?.Invoke();
     }
+}
+
+/// <summary>
+/// 模型并发快照，用于调试页面展示最近出现过的站点模型及其实时并发数。
+/// </summary>
+public sealed class ActiveModelConcurrencyEntry
+{
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
+    public Guid SiteId { get; init; }
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
+    public string SiteModelName { get; init; } = string.Empty;
+    /// <summary>
+    /// 当前活跃并发数。
+    /// </summary>
+    public int ActiveCount { get; init; }
+    /// <summary>
+    /// 最近一次进入或离开活跃态的时间。
+    /// </summary>
+    public DateTimeOffset LastSeenAt { get; init; }
 }
 
 /// <summary>
@@ -68,6 +100,16 @@ public sealed class ModelConcurrencyLimiter
     /// 每个 SiteId + RemoteModelName 组合对应的信号量。
     /// </summary>
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _semaphores = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 当前活跃中的真实并发计数，只在成功拿到槽位后递增，请求结束时递减。
+    /// </summary>
+    private readonly ConcurrentDictionary<string, int> _activeCounts = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// 最近出现过的模型并发展示元数据，归零后仍会保留一段时间，避免调试页瞬间清空。
+    /// </summary>
+    private readonly ConcurrentDictionary<string, ActiveModelConcurrencyEntry> _activeEntries = new(StringComparer.Ordinal);
 
     /// <summary>
     /// 缓存每个 SiteId + RemoteModelName 组合的最大并发数。
@@ -83,6 +125,11 @@ public sealed class ModelConcurrencyLimiter
     /// 刷新间隔。
     /// </summary>
     private static readonly TimeSpan RefreshInterval = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// 调试页默认保留最近 6 小时内出现过的模型并发记录。
+    /// </summary>
+    public static readonly TimeSpan RecentRetention = TimeSpan.FromHours(6);
 
     /// <summary>
     /// 按模式获取指定站点模型的并发许可。
@@ -102,7 +149,7 @@ public sealed class ModelConcurrencyLimiter
 
         if (!limits.TryGetValue(key, out var maxConcurrency) || maxConcurrency <= 0)
         {
-            return ConcurrencyAcquireResult.AcquiredSlot(new SemaphoreSlim(1));
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName, null);
         }
 
         var semaphore = _semaphores.GetOrAdd(key, _ => new SemaphoreSlim(maxConcurrency, maxConcurrency));
@@ -112,7 +159,7 @@ public sealed class ModelConcurrencyLimiter
             // 打满则立即跳过，不排队。
             var acquired = await semaphore.WaitAsync(0, cancellationToken);
             return acquired
-                ? ConcurrencyAcquireResult.AcquiredSlot(semaphore)
+                ? CreateTrackedAcquireResult(key, siteId, remoteModelName, semaphore)
                 : ConcurrencyAcquireResult.NotAcquired;
         }
 
@@ -123,13 +170,50 @@ public sealed class ModelConcurrencyLimiter
         try
         {
             await semaphore.WaitAsync(cts.Token);
-            return ConcurrencyAcquireResult.AcquiredSlot(semaphore);
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName, semaphore);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             // 排队超时，但原始请求未被取消。
             return ConcurrencyAcquireResult.NotAcquired;
         }
+    }
+
+    /// <summary>
+    /// 返回当前活跃的真实模型并发快照，只包含并发数大于 0 的项。
+    /// </summary>
+    public IReadOnlyList<ActiveModelConcurrencyEntry> ListActive()
+    {
+        return _activeEntries.Values
+            .Where(x => x.ActiveCount > 0)
+            .OrderByDescending(x => x.ActiveCount)
+            .ThenBy(x => x.SiteModelName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.SiteId)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 返回最近保留窗口内出现过的模型并发快照，归零后的项也会保留显示。
+    /// </summary>
+    public IReadOnlyList<ActiveModelConcurrencyEntry> ListRecent(TimeSpan retention)
+    {
+        var cutoff = DateTimeOffset.UtcNow - retention;
+
+        foreach (var pair in _activeEntries)
+        {
+            if (pair.Value.ActiveCount <= 0 && pair.Value.LastSeenAt < cutoff)
+            {
+                _activeEntries.TryRemove(pair.Key, out _);
+            }
+        }
+
+        return _activeEntries.Values
+            .Where(x => x.ActiveCount > 0 || x.LastSeenAt >= cutoff)
+            .OrderByDescending(x => x.ActiveCount)
+            .ThenByDescending(x => x.LastSeenAt)
+            .ThenBy(x => x.SiteModelName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.SiteId)
+            .ToList();
     }
 
     /// <summary>
@@ -167,6 +251,74 @@ public sealed class ModelConcurrencyLimiter
         }
 
         return _limits;
+    }
+
+    /// <summary>
+    /// 创建带真实活跃计数的并发句柄，只在请求真正开始占用模型时才记数。
+    /// </summary>
+    private ConcurrencyAcquireResult CreateTrackedAcquireResult(string key, Guid siteId, string remoteModelName, SemaphoreSlim? semaphore)
+    {
+        var activeCount = _activeCounts.AddOrUpdate(key, 1, static (_, current) => current + 1);
+        _activeEntries[key] = new ActiveModelConcurrencyEntry
+        {
+            SiteId = siteId,
+            SiteModelName = remoteModelName,
+            ActiveCount = activeCount,
+            LastSeenAt = DateTimeOffset.UtcNow
+        };
+
+        return ConcurrencyAcquireResult.AcquiredSlot(semaphore, () => ReleaseActiveCount(key, siteId, remoteModelName));
+    }
+
+    /// <summary>
+    /// 请求结束后回收当前活跃计数，归零时保留最近记录，便于调试页在 6 小时窗口内显示 0 并发。
+    /// </summary>
+    private void ReleaseActiveCount(string key, Guid siteId, string remoteModelName)
+    {
+        while (true)
+        {
+            if (!_activeCounts.TryGetValue(key, out var current))
+            {
+                _activeEntries[key] = new ActiveModelConcurrencyEntry
+                {
+                    SiteId = siteId,
+                    SiteModelName = remoteModelName,
+                    ActiveCount = 0,
+                    LastSeenAt = DateTimeOffset.UtcNow
+                };
+                return;
+            }
+
+            if (current <= 1)
+            {
+                if (_activeCounts.TryRemove(key, out _))
+                {
+                    _activeEntries[key] = new ActiveModelConcurrencyEntry
+                    {
+                        SiteId = siteId,
+                        SiteModelName = remoteModelName,
+                        ActiveCount = 0,
+                        LastSeenAt = DateTimeOffset.UtcNow
+                    };
+                    return;
+                }
+
+                continue;
+            }
+
+            var next = current - 1;
+            if (_activeCounts.TryUpdate(key, next, current))
+            {
+                _activeEntries[key] = new ActiveModelConcurrencyEntry
+                {
+                    SiteId = siteId,
+                    SiteModelName = remoteModelName,
+                    ActiveCount = next,
+                    LastSeenAt = DateTimeOffset.UtcNow
+                };
+                return;
+            }
+        }
     }
 
     /// <summary>

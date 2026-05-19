@@ -4,7 +4,8 @@
 @{
     ViewData["Title"] = "调试工具";
     var simulatorTabActive = string.Equals(Model.ActiveTab, "simulator", StringComparison.OrdinalIgnoreCase);
-    var invocationsTabActive = !simulatorTabActive;
+    var concurrencyTabActive = string.Equals(Model.ActiveTab, "concurrency", StringComparison.OrdinalIgnoreCase);
+    var invocationsTabActive = !simulatorTabActive && !concurrencyTabActive;
     var defaultModel = !string.IsNullOrWhiteSpace(Model.DefaultOpenAiModel)
         ? Model.DefaultOpenAiModel
         : (Model.Models.FirstOrDefault()?.ModelName ?? string.Empty);
@@ -26,6 +27,9 @@
             </li>
             <li class="nav-item" role="presentation">
                 <button class="nav-link @(simulatorTabActive ? "active" : null)" id="developerSimulatorTab" data-bs-toggle="tab" data-bs-target="#developerSimulatorPane" type="button" role="tab">客户端模拟</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link @(concurrencyTabActive ? "active" : null)" id="developerConcurrencyTab" data-bs-toggle="tab" data-bs-target="#developerConcurrencyPane" type="button" role="tab">当前模型并发数检测</button>
             </li>
         </ul>
     </div>
@@ -192,6 +196,37 @@
                                     </div>
                                 </div>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-pane fade @(concurrencyTabActive ? "show active" : null)" id="developerConcurrencyPane" role="tabpanel">
+                <div class="page-header mb-3">
+                    <div>
+                        <h3 class="page-title h4 mb-1">当前模型并发数检测</h3>
+                        <p class="page-subtitle mb-0">仅展示此时此刻真实占用中的站点模型并发，不读取配置并发值，也不会参与任何限流判断。</p>
+                    </div>
+                    <div class="concurrency-refresh-tip">进入此页后自动刷新</div>
+                </div>
+
+                <div class="card">
+                    <div class="card-body p-0">
+                        <div class="table-responsive">
+                            <table class="table table-hover mb-0 concurrency-table">
+                                <thead>
+                                    <tr>
+                                        <th>模型名</th>
+                                        <th>站点</th>
+                                        <th class="text-end">并发数</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="concurrencyTableBody">
+                                    <tr>
+                                        <td colspan="3" class="text-center text-secondary py-4">加载中...</td>
+                                    </tr>
+                                </tbody>
+                            </table>
                         </div>
                     </div>
                 </div>
@@ -750,6 +785,29 @@
         line-height: 1.6;
     }
 
+    .concurrency-refresh-tip {
+        font-size: 12px;
+        color: var(--text-secondary);
+    }
+
+    .concurrency-table th,
+    .concurrency-table td {
+        vertical-align: middle;
+    }
+
+    .concurrency-count-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 54px;
+        min-height: 30px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-weight: 700;
+    }
+
     @@media (max-width: 991.98px) {
         .simulator-panel-grid {
             grid-template-columns: minmax(0, 1fr);
@@ -1238,8 +1296,11 @@
             var refreshTimerId = null;
             var listEndpoint = '@Url.Page("./Index", "List")';
             var detailEndpoint = '@Url.Page("./Index", "Detail")';
+            var concurrencyEndpoint = '@Url.Page("./Index", "Concurrency")';
             var hasLoadedListOnce = false;
             var isRefreshing = false;
+            var isRefreshingConcurrency = false;
+            var concurrencyRenderSignature = '';
             var currentPage = 1;
             var currentTotalPages = 1;
 
@@ -1332,6 +1393,20 @@
                 var url = new URL(detailEndpoint, window.location.origin);
                 url.searchParams.set('traceId', String(traceId || ''));
                 return url.toString();
+            }
+
+            function buildConcurrencyUrl() {
+                return new URL(concurrencyEndpoint, window.location.origin).toString();
+            }
+
+            function isInvocationsTabActive() {
+                return document.getElementById('developerInvocationsPane')?.classList.contains('show')
+                    && document.getElementById('developerInvocationsPane')?.classList.contains('active');
+            }
+
+            function isConcurrencyTabActive() {
+                return document.getElementById('developerConcurrencyPane')?.classList.contains('show')
+                    && document.getElementById('developerConcurrencyPane')?.classList.contains('active');
             }
 
             function renderRequestHeaders(headers) {
@@ -1506,6 +1581,70 @@
                 return '<div class="card trace-empty-card"><div class="card-body text-secondary">暂无调用记录</div></div>';
             }
 
+            function renderConcurrencyTable(items) {
+                var tableBody = document.getElementById('concurrencyTableBody');
+                if (!tableBody) {
+                    return;
+                }
+
+                if (!Array.isArray(items) || items.length === 0) {
+                    tableBody.innerHTML = '<tr><td colspan="3" class="text-center text-secondary py-4">最近 6 小时内没有并发记录</td></tr>';
+                    return;
+                }
+
+                tableBody.innerHTML = items.map(function (item) {
+                    return '' +
+                        '<tr>' +
+                            '<td>' + escapeHtml(item.modelName || '-') + '</td>' +
+                            '<td>' + escapeHtml(item.siteName || '-') + '</td>' +
+                            '<td class="text-end"><span class="concurrency-count-badge">' + escapeHtml(String(item.activeCount || 0)) + '</span></td>' +
+                        '</tr>';
+                }).join('');
+            }
+
+            // 并发页只在当前页签激活时请求，避免额外刷新干扰正常调试操作。
+            async function refreshConcurrencyTable() {
+                if (isRefreshingConcurrency || !isConcurrencyTabActive()) {
+                    return;
+                }
+
+                var tableBody = document.getElementById('concurrencyTableBody');
+                isRefreshingConcurrency = true;
+
+                try {
+                    var response = await fetch(buildConcurrencyUrl(), {
+                        headers: {
+                            'X-Requested-With': 'XMLHttpRequest'
+                        },
+                        cache: 'no-store'
+                    });
+
+                    if (!response.ok) {
+                        if (tableBody) {
+                            tableBody.innerHTML = '<tr><td colspan="3" class="text-center text-danger py-4">加载失败，请稍后重试</td></tr>';
+                        }
+                        return;
+                    }
+
+                    var payload = await response.json();
+                    var items = Array.isArray(payload.items) ? payload.items : [];
+                    var nextSignature = JSON.stringify(items.map(function (item) {
+                        return [item.siteName || '', item.modelName || '', Number(item.activeCount || 0)];
+                    }));
+
+                    if (nextSignature !== concurrencyRenderSignature) {
+                        renderConcurrencyTable(items);
+                        concurrencyRenderSignature = nextSignature;
+                    }
+                } catch {
+                    if (tableBody) {
+                        tableBody.innerHTML = '<tr><td colspan="3" class="text-center text-danger py-4">加载失败，请稍后重试</td></tr>';
+                    }
+                } finally {
+                    isRefreshingConcurrency = false;
+                }
+            }
+
             // 展开时单独加载明细，避免分页列表和自动刷新反复搬运大字段。
             async function loadTraceDetail(collapseElement) {
                 if (!collapseElement) {
@@ -1644,7 +1783,7 @@
 
             if (autoRefreshToggle) {
                 autoRefreshToggle.addEventListener('change', function () {
-                    if (autoRefreshToggle.checked && !hasLoadedListOnce) {
+                    if (autoRefreshToggle.checked && !hasLoadedListOnce && isInvocationsTabActive()) {
                         refreshTraceList(currentPage);
                     }
                 });
@@ -1652,6 +1791,7 @@
 
             var developerSimulatorTab = document.getElementById('developerSimulatorTab');
             var developerInvocationsTab = document.getElementById('developerInvocationsTab');
+            var developerConcurrencyTab = document.getElementById('developerConcurrencyTab');
 
             function syncDeveloperTabHash(hash) {
                 var url = new URL(window.location.href);
@@ -1667,6 +1807,8 @@
                     targetTab = developerSimulatorTab;
                 } else if (hash === '#developerinvocationspane') {
                     targetTab = developerInvocationsTab;
+                } else if (hash === '#developerconcurrencypane') {
+                    targetTab = developerConcurrencyTab;
                 }
 
                 if (targetTab && window.bootstrap) {
@@ -1682,6 +1824,15 @@
             if (developerInvocationsTab) {
                 developerInvocationsTab.addEventListener('shown.bs.tab', function () {
                     syncDeveloperTabHash('#developerInvocationsPane');
+                    if (!hasLoadedListOnce) {
+                        refreshTraceList(currentPage);
+                    }
+                });
+            }
+            if (developerConcurrencyTab) {
+                developerConcurrencyTab.addEventListener('shown.bs.tab', function () {
+                    syncDeveloperTabHash('#developerConcurrencyPane');
+                    refreshConcurrencyTable();
                 });
             }
 
@@ -1760,15 +1911,26 @@
                 }
 
                 refreshTimerId = window.setInterval(function () {
-                    if (autoRefreshToggle && autoRefreshToggle.checked) {
+                    if (isInvocationsTabActive() && autoRefreshToggle && autoRefreshToggle.checked) {
                         refreshTraceList(currentPage);
+                    }
+
+                    if (isConcurrencyTabActive()) {
+                        refreshConcurrencyTable();
                     }
                 }, refreshIntervalMs);
             }
 
             ensureRefreshTimer();
             window.setTimeout(function () {
-                refreshTraceList(currentPage);
+                if (isConcurrencyTabActive()) {
+                    refreshConcurrencyTable();
+                    return;
+                }
+
+                if (isInvocationsTabActive()) {
+                    refreshTraceList(currentPage);
+                }
             }, 0);
         })();
     </script>

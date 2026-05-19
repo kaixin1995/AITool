@@ -291,6 +291,10 @@ public sealed class ChatApiController : ControllerBase
     /// HttpClient 工厂。
     /// </summary>
     private readonly IHttpClientFactory _httpClientFactory;
+    /// <summary>
+    /// 模型并发限制器。
+    /// </summary>
+    private readonly ModelConcurrencyLimiter _concurrencyLimiter;
 
     /// <summary>
     /// 创建调试对话控制器。
@@ -301,7 +305,8 @@ public sealed class ChatApiController : ControllerBase
         RouteCircuitStateStore circuitStore,
         IUsageLogService usageLogService,
         ProxyRequestMetadataCache metadataCache,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        ModelConcurrencyLimiter concurrencyLimiter)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
@@ -309,6 +314,7 @@ public sealed class ChatApiController : ControllerBase
         _usageLogService = usageLogService;
         _metadataCache = metadataCache;
         _httpClientFactory = httpClientFactory;
+        _concurrencyLimiter = concurrencyLimiter;
     }
 
     /// <summary>
@@ -341,6 +347,8 @@ public sealed class ChatApiController : ControllerBase
 
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
+        var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
+        var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
         if (allRoutes.Count > 0)
         {
@@ -354,6 +362,20 @@ public sealed class ChatApiController : ControllerBase
                     continue;
 
                 attemptIndex++;
+                // 调试对话与代理主链路共用同一套并发占用统计，确保调试页看到的是全局真实占用。
+                using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
+                    HttpContext.RequestServices,
+                    route.SiteId,
+                    route.SiteModelName,
+                    concurrencyMode,
+                    concurrencyQueueTimeout,
+                    cancellationToken);
+
+                if (!concurrencyHandle.Acquired)
+                {
+                    continue;
+                }
+
                 var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
@@ -419,7 +441,7 @@ public sealed class ChatApiController : ControllerBase
             });
         }
 
-        return await SendFallback(request, model, runtimeSettings, cancellationToken);
+        return await SendFallback(request, model, runtimeSettings, concurrencyMode, concurrencyQueueTimeout, cancellationToken);
     }
 
     /// <summary>
@@ -455,9 +477,11 @@ public sealed class ChatApiController : ControllerBase
 
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
+        var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
+        var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
         if (allRoutes.Count == 0)
         {
-            await SendStreamFallbackAsync(request, model, runtimeSettings, cancellationToken);
+            await SendStreamFallbackAsync(request, model, runtimeSettings, concurrencyMode, concurrencyQueueTimeout, cancellationToken);
             return;
         }
 
@@ -471,6 +495,20 @@ public sealed class ChatApiController : ControllerBase
                 continue;
 
             attemptIndex++;
+            // 调试对话与代理主链路共用同一套并发占用统计，确保调试页看到的是全局真实占用。
+            using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
+                HttpContext.RequestServices,
+                route.SiteId,
+                route.SiteModelName,
+                concurrencyMode,
+                concurrencyQueueTimeout,
+                cancellationToken);
+
+            if (!concurrencyHandle.Acquired)
+            {
+                continue;
+            }
+
             var streamResult = await ForwardStreamAsync(
                 route.ProtocolType,
                 route.BaseUrl,
@@ -573,6 +611,8 @@ public sealed class ChatApiController : ControllerBase
         ChatSendRequest request,
         CachedEnabledModel model,
         CachedProxyRuntimeSettings runtimeSettings,
+        ConcurrencyAcquireMode concurrencyMode,
+        TimeSpan concurrencyQueueTimeout,
         CancellationToken cancellationToken)
     {
         var sw = Stopwatch.StartNew();
@@ -582,6 +622,28 @@ public sealed class ChatApiController : ControllerBase
             return Ok(new ChatSendResult { Success = false, Error = "该模型没有可用的站点映射", ReasoningEnabled = request.EnableReasoning });
 
         var requestId = Guid.NewGuid();
+        // 兜底映射也需要纳入统一并发统计，否则调试对话页与代理主链路会出现口径不一致。
+        using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
+            HttpContext.RequestServices,
+            mapping.SiteId,
+            mapping.SiteModelName,
+            concurrencyMode,
+            concurrencyQueueTimeout,
+            cancellationToken);
+
+        if (!concurrencyHandle.Acquired)
+        {
+            return Ok(new ChatSendResult
+            {
+                Success = false,
+                RequestId = requestId,
+                Error = "该模型当前无可用并发槽位",
+                DurationMs = sw.ElapsedMilliseconds,
+                ReasoningEnabled = request.EnableReasoning,
+                IsStreaming = false
+            });
+        }
+
         var requestBody = BuildChatRequestBody(mapping.ProtocolType, mapping.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
@@ -653,6 +715,8 @@ public sealed class ChatApiController : ControllerBase
         ChatSendRequest request,
         CachedEnabledModel model,
         CachedProxyRuntimeSettings runtimeSettings,
+        ConcurrencyAcquireMode concurrencyMode,
+        TimeSpan concurrencyQueueTimeout,
         CancellationToken cancellationToken)
     {
         var mapping = await _metadataCache.GetFallbackTargetAsync(request.ModelId, cancellationToken);
@@ -664,6 +728,21 @@ public sealed class ChatApiController : ControllerBase
         }
 
         var requestId = Guid.NewGuid();
+        // 兜底映射也需要纳入统一并发统计，否则调试对话页与代理主链路会出现口径不一致。
+        using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
+            HttpContext.RequestServices,
+            mapping.SiteId,
+            mapping.SiteModelName,
+            concurrencyMode,
+            concurrencyQueueTimeout,
+            cancellationToken);
+
+        if (!concurrencyHandle.Acquired)
+        {
+            await WriteSseEventAsync("error", new { message = "该模型当前无可用并发槽位" }, cancellationToken);
+            return;
+        }
+
         var streamResult = await ForwardStreamAsync(
             mapping.ProtocolType,
             mapping.BaseUrl,

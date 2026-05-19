@@ -7,6 +7,7 @@ using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -86,6 +87,42 @@ public sealed class ChatApiTests
         body.Should().Contain("\"inputTokens\":4");
         body.Should().Contain("\"outputTokens\":6");
         body.Should().Contain("event: done");
+    }
+
+    /// <summary>
+    /// 验证 Admin/Chat 的非流式请求也会进入统一并发统计，便于调试页看到真实占用。
+    /// </summary>
+    [Fact]
+    public async Task Post_send_is_tracked_by_model_concurrency_limiter()
+    {
+        var fakeForwardService = new ChatFakeProxyForwardService
+        {
+            RequestStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously),
+            ContinueRequest = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously)
+        };
+        await using var factory = new ChatWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+        var limiter = factory.Services.GetRequiredService<ModelConcurrencyLimiter>();
+
+        var sendTask = client.PostAsync(
+            "/api/admin/chat/send",
+            new StringContent(
+                $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"message\":\"hello-concurrency\",\"enableReasoning\":false,\"enableStreaming\":false}}",
+                Encoding.UTF8,
+                "application/json"));
+
+        await fakeForwardService.RequestStarted!.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        var activeSnapshots = limiter.ListRecent(ModelConcurrencyLimiter.RecentRetention);
+        activeSnapshots.Should().ContainSingle(x => x.SiteModelName == "claude-3-7-sonnet" && x.ActiveCount == 1);
+
+        fakeForwardService.ContinueRequest!.SetResult(true);
+        using var response = await sendTask;
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        limiter.ListRecent(ModelConcurrencyLimiter.RecentRetention)
+            .Should().ContainSingle(x => x.SiteModelName == "claude-3-7-sonnet" && x.ActiveCount == 0);
     }
 }
 
@@ -228,11 +265,19 @@ internal sealed class ChatFakeProxyForwardService : IProxyForwardService
     /// 记录测试期间收到的代理转发请求。
     /// </summary>
     public List<ProxyForwardRequest> Requests { get; } = [];
+    /// <summary>
+    /// 可选的开始通知，用于观测请求进入转发阶段后的并发状态。
+    /// </summary>
+    public TaskCompletionSource<bool>? RequestStarted { get; set; }
+    /// <summary>
+    /// 可选的继续开关，用于延迟返回结果，便于断言请求进行中的并发数。
+    /// </summary>
+    public TaskCompletionSource<bool>? ContinueRequest { get; set; }
 
     /// <summary>
     /// 根据请求协议返回对应的兼容响应，验证聊天页非流式调用不会误用 OpenAI 协议。
     /// </summary>
-    public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
+    public async Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         Requests.Add(new ProxyForwardRequest
         {
@@ -247,26 +292,32 @@ internal sealed class ChatFakeProxyForwardService : IProxyForwardService
             RetryCount = request.RetryCount
         });
 
+        RequestStarted?.TrySetResult(true);
+        if (ContinueRequest is not null)
+        {
+            await ContinueRequest.Task.WaitAsync(cancellationToken);
+        }
+
         if (request.ProtocolType == "Anthropic")
         {
-            return Task.FromResult(new ProxyForwardResult
+            return new ProxyForwardResult
             {
                 Success = true,
                 StatusCode = 200,
                 ResponseBody = "{\"content\":[{\"type\":\"text\",\"text\":\"anthropic-ok\"}],\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}",
                 InputTokens = 3,
                 OutputTokens = 5
-            });
+            };
         }
 
-        return Task.FromResult(new ProxyForwardResult
+        return new ProxyForwardResult
         {
             Success = true,
             StatusCode = 200,
             ResponseBody = "{\"choices\":[{\"message\":{\"content\":\"openai-ok\"}}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":4}}",
             InputTokens = 2,
             OutputTokens = 4
-        });
+        };
     }
 
     /// <summary>
