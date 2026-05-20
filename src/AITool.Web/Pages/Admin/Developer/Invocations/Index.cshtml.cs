@@ -64,6 +64,10 @@ public sealed class IndexModel : PageModel
     /// 数据库上下文。
     /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 代理请求元数据缓存。
+    /// </summary>
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
     /// <summary>
     /// 开发者调用记录页面模型。
@@ -72,12 +76,15 @@ public sealed class IndexModel : PageModel
         ISystemRuntimeSettingsService runtimeSettingsService,
         DeveloperInvocationTraceStore traceStore,
         AppDbContext dbContext,
-        ModelConcurrencyLimiter concurrencyLimiter)
+        ModelConcurrencyLimiter concurrencyLimiter,
+        ProxyRequestMetadataCache metadataCache)
     {
         _runtimeSettingsService = runtimeSettingsService;
         _traceStore = traceStore;
         _dbContext = dbContext;
         _concurrencyLimiter = concurrencyLimiter;
+        // 调试页默认参数走内存缓存，避免每次打开都触发独立的数据库查询。
+        _metadataCache = metadataCache;
     }
 
     /// <summary>
@@ -357,35 +364,12 @@ public sealed class IndexModel : PageModel
     {
         DefaultBaseUrl = $"{Request.Scheme}://{Request.Host}";
 
-        DefaultAccessKey = await _dbContext.ProxyAccessKeys
-            .Where(k => k.IsEnabled && !string.IsNullOrWhiteSpace(k.PlainKey))
-            .OrderBy(k => k.KeyName)
-            .Select(k => k.PlainKey)
-            .FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+        // 默认密钥与调试模型清单走元数据缓存，5 秒内重复打开页面只查询一次数据库。
+        DefaultAccessKey = await _metadataCache.GetDeveloperDefaultAccessKeyAsync(cancellationToken);
 
-        var enabledSiteIds = await _dbContext.Sites
-            .Where(s => s.IsEnabled)
-            .Select(s => s.Id)
-            .ToListAsync(cancellationToken);
+        var routeModels = await _metadataCache.GetDeveloperDebugModelsAsync(cancellationToken);
 
-        var routeModels = await (
-                from rule in _dbContext.ProxyRouteRules
-                join site in _dbContext.Sites on rule.SiteId equals site.Id
-                where rule.IsEnabled && site.IsEnabled && enabledSiteIds.Contains(rule.SiteId)
-                group site by rule.ExternalModelName into g
-                select new ClientSimulatorModelItemViewModel
-                {
-                    ModelName = g.Key,
-                    RouteCount = g.Count(),
-                    SupportsOpenAi = g.Any(x => x.SupportsOpenAi),
-                    SupportsAnthropic = g.Any(x => x.SupportsAnthropic),
-                    CanUseOpenAi = g.Any(),
-                    CanUseAnthropic = g.Any()
-                })
-            .OrderBy(m => m.ModelName)
-            .ToListAsync(cancellationToken);
-
-        Models = routeModels;
+        Models = routeModels.ToList();
         DefaultOpenAiModel = routeModels.FirstOrDefault(x => x.CanUseOpenAi)?.ModelName ?? string.Empty;
         DefaultAnthropicModel = routeModels.FirstOrDefault(x => x.CanUseAnthropic)?.ModelName ?? string.Empty;
     }

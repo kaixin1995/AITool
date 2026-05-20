@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Controllers.Admin;
+using AITool.Web.Pages.Admin.ClientSimulator;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -56,6 +57,14 @@ public sealed class ProxyRequestMetadataCache
     /// 路由规则列表缓存键。
     /// </summary>
     private const string RouteRulesByEntryCacheKey = "admin-route-rules-by-entry";
+    /// <summary>
+    /// 开发者调试页默认访问密钥缓存键。
+    /// </summary>
+    private const string DeveloperDefaultAccessKeyCacheKey = "admin-developer-default-access-key";
+    /// <summary>
+    /// 开发者调试页可用模型缓存键。
+    /// </summary>
+    private const string DeveloperDebugModelsCacheKey = "admin-developer-debug-models";
     /// <summary>
     /// 启用模型缓存键。
     /// </summary>
@@ -535,6 +544,62 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 获取调试页默认访问密钥缓存（按 KeyName 字典序选首个启用项）。
+    /// </summary>
+    public async Task<string> GetDeveloperDefaultAccessKeyAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                DeveloperDefaultAccessKeyCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    return await dbContext.ProxyAccessKeys
+                        .AsNoTracking()
+                        .Where(k => k.IsEnabled && !string.IsNullOrWhiteSpace(k.PlainKey))
+                        .OrderBy(k => k.KeyName)
+                        .Select(k => k.PlainKey)
+                        .FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+                })
+            ?? string.Empty;
+    }
+
+    /// <summary>
+    /// 获取调试页可用模型缓存。
+    /// </summary>
+    public async Task<IReadOnlyList<ClientSimulatorModelItemViewModel>> GetDeveloperDebugModelsAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                DeveloperDebugModelsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    return await (
+                            from rule in dbContext.ProxyRouteRules.AsNoTracking()
+                            join site in dbContext.Sites.AsNoTracking() on rule.SiteId equals site.Id
+                            where rule.IsEnabled && site.IsEnabled
+                            group site by rule.ExternalModelName into g
+                            orderby g.Key
+                            select new ClientSimulatorModelItemViewModel
+                            {
+                                ModelName = g.Key,
+                                RouteCount = g.Count(),
+                                SupportsOpenAi = g.Any(x => x.SupportsOpenAi),
+                                SupportsAnthropic = g.Any(x => x.SupportsAnthropic),
+                                CanUseOpenAi = g.Any(),
+                                CanUseAnthropic = g.Any()
+                            })
+                        .ToListAsync(cancellationToken);
+                })
+            ?? [];
+    }
+
+    /// <summary>
     /// 获取已启用模型信息。
     /// </summary>
     public async Task<CachedEnabledModel?> GetEnabledModelAsync(Guid modelId, CancellationToken cancellationToken)
@@ -562,6 +627,7 @@ public sealed class ProxyRequestMetadataCache
     public void InvalidateAccessKeys()
     {
         _memoryCache.Remove(AccessKeyCacheKey);
+        _memoryCache.Remove(DeveloperDefaultAccessKeyCacheKey);
     }
 
     /// <summary>
@@ -587,6 +653,7 @@ public sealed class ProxyRequestMetadataCache
         _memoryCache.Remove(RouteModelsCacheKey);
         _memoryCache.Remove(RouteDiscoveredSitesCacheKey);
         _memoryCache.Remove(RouteRulesByEntryCacheKey);
+        _memoryCache.Remove(DeveloperDebugModelsCacheKey);
         _memoryCache.Remove(FallbackMappingsCacheKey);
         _memoryCache.Remove(EnabledModelsCacheKey);
     }

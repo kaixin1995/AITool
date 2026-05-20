@@ -409,10 +409,68 @@ public sealed class DeveloperInvocationsPageTests
         detailResponse.StatusCode.Should().Be(HttpStatusCode.OK);
         detailPayload.Should().Contain("\"forwardingMode\":\"bridge\"");
     }
+
+    /// <summary>
+    /// 验证调用调试页会从缓存渲染默认密钥和默认调试模型。
+    /// </summary>
+    [Fact]
+    public async Task Get_invocations_page_renders_default_access_key_and_debug_model_from_cache()
+    {
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, new DeveloperInvocationsFakeProxyForwardService());
+        using var client = factory.CreateClient();
+
+        var pageResponse = await client.GetAsync("/Admin/Developer/Invocations");
+        var html = await pageResponse.Content.ReadAsStringAsync();
+
+        pageResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        // 默认密钥应直接来自缓存中的启用项。
+        html.Should().Contain("value=\"debug-key\"");
+        // 调试模型清单应包含已启用路由的对外模型名。
+        html.Should().Contain("debug-model");
+    }
+
+    /// <summary>
+    /// 验证新增/启停访问密钥后，调用调试页能立即拿到新的默认密钥（缓存失效）。
+    /// </summary>
+    [Fact]
+    public async Task Get_invocations_page_refreshes_default_access_key_after_invalidation()
+    {
+        await using var factory = new DeveloperInvocationsWebApplicationFactory(true, new DeveloperInvocationsFakeProxyForwardService());
+        using var client = factory.CreateClient();
+
+        // 先预热缓存。
+        var firstResponse = await client.GetAsync("/Admin/Developer/Invocations");
+        (await firstResponse.Content.ReadAsStringAsync()).Should().Contain("value=\"debug-key\"");
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            // 禁用原密钥并新增一条 KeyName 字典序更靠前的启用密钥。
+            var existing = await db.ProxyAccessKeys.FirstAsync();
+            existing.IsEnabled = false;
+            db.ProxyAccessKeys.Add(new ProxyAccessKey
+            {
+                Id = Guid.NewGuid(),
+                KeyName = "a-new-debug",
+                PlainKey = "new-debug-key",
+                AccessKeyHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("new-debug-key"))),
+                MaskedValue = "sk-***new",
+                IsEnabled = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        // 直接清缓存以模拟 AccessKeysApiController 的失效行为。
+        factory.Services.GetRequiredService<ProxyRequestMetadataCache>().InvalidateAccessKeys();
+
+        var refreshed = await client.GetAsync("/Admin/Developer/Invocations");
+        var html = await refreshed.Content.ReadAsStringAsync();
+
+        refreshed.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("value=\"new-debug-key\"");
+        html.Should().NotContain("value=\"debug-key\"");
+    }
 }
-/// <summary>
-/// 开发者调用追踪页面的集成测试宿主，提供隔离数据库和伪造转发服务。
-/// </summary>
 internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplicationFactory<Program>
 {
     /// <summary>
