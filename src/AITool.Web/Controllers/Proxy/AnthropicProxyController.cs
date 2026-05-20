@@ -487,6 +487,17 @@ public sealed class AnthropicProxyController : ControllerBase
             result.IsStreamInterrupted = true;
         }
 
+        // 流中断但已开始写入时，向客户端补发 Anthropic 终止事件避免挂起
+        if (result.IsStreamInterrupted && startedWriting)
+        {
+            try
+            {
+                await Response.WriteAsync("event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", CancellationToken.None);
+                await Response.Body.FlushAsync(CancellationToken.None);
+            }
+            catch { /* 客户端可能已断开，忽略 */ }
+        }
+
         if (result.Success && startedWriting)
         {
             SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
