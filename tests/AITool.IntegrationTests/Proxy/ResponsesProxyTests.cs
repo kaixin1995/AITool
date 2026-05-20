@@ -226,6 +226,34 @@ public sealed class ResponsesProxyTests
     }
 
     /// <summary>
+    /// Responses 请求中包含 output_config.effort 时应提取并写入日志。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_extracts_output_config_effort_to_usage_log()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"output_config\":{\"effort\":\"high\"}}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].ReasoningEffort.Should().Be("high");
+    }
+
+    /// <summary>
     /// Responses 的 input 为字符串时应正常解析。
     /// </summary>
     [Fact]

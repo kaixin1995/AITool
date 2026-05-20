@@ -1187,6 +1187,13 @@ public sealed class AnthropicProxyController : ControllerBase
             return nestedEffort;
         }
 
+        if (rootElement.TryGetProperty("output_config", out var outputConfigElement) &&
+            outputConfigElement.ValueKind == JsonValueKind.Object &&
+            TryGetNormalizedString(outputConfigElement, "effort", out var outputConfigEffort))
+        {
+            return outputConfigEffort;
+        }
+
         if (rootElement.TryGetProperty("thinking", out var thinkingElement) &&
             thinkingElement.ValueKind == JsonValueKind.Object &&
             thinkingElement.TryGetProperty("budget_tokens", out var budgetTokensElement) &&

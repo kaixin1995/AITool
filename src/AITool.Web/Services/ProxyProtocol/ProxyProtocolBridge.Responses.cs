@@ -792,9 +792,19 @@ public static partial class ProxyProtocolBridge
         {
             using var doc = JsonDocument.Parse(requestBody);
             if (doc.RootElement.TryGetProperty("reasoning", out var reasoning)
-                && reasoning.TryGetProperty("effort", out var effort))
+                && reasoning.ValueKind == JsonValueKind.Object
+                && reasoning.TryGetProperty("effort", out var reasoningEffort)
+                && reasoningEffort.ValueKind == JsonValueKind.String)
             {
-                return effort.GetString() ?? string.Empty;
+                return reasoningEffort.GetString()?.Trim().ToLowerInvariant() ?? string.Empty;
+            }
+
+            if (doc.RootElement.TryGetProperty("output_config", out var outputConfig)
+                && outputConfig.ValueKind == JsonValueKind.Object
+                && outputConfig.TryGetProperty("effort", out var outputConfigEffort)
+                && outputConfigEffort.ValueKind == JsonValueKind.String)
+            {
+                return outputConfigEffort.GetString()?.Trim().ToLowerInvariant() ?? string.Empty;
             }
         }
         catch
