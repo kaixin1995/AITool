@@ -233,26 +233,9 @@ public sealed class IndexModel : PageModel
             });
         }
 
-        var siteIds = snapshots.Select(x => x.SiteId).Distinct().ToList();
-        var modelNames = snapshots.Select(x => x.SiteModelName).Distinct(StringComparer.Ordinal).ToList();
-        var siteNames = await _dbContext.Sites
-            .AsNoTracking()
-            .Where(x => siteIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
-        var mappings = await _dbContext.SiteModelMappings
-            .AsNoTracking()
-            .Where(x => x.IsEnabled && siteIds.Contains(x.SiteId) && modelNames.Contains(x.RemoteModelName))
-            .Select(x => new
-            {
-                x.SiteId,
-                x.RemoteModelName,
-                x.MaxConcurrency
-            })
-            .ToListAsync(cancellationToken);
-        var mappingLimits = mappings.ToDictionary(
-            x => $"{x.SiteId:N}:{x.RemoteModelName}",
-            x => x.MaxConcurrency,
-            StringComparer.Ordinal);
+        // 站点名和最大并发都走元数据缓存，避免并发面板每次刷新都直接查数据库。
+        var siteNames = await _metadataCache.GetEnabledSiteNamesAsync(cancellationToken);
+        var mappingLimits = await _metadataCache.GetModelConcurrencyLimitsAsync(cancellationToken);
 
         var items = snapshots
             .Select(x =>

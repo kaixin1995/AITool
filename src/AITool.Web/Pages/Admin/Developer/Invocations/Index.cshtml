@@ -1461,6 +1461,10 @@
                     && document.getElementById('developerConcurrencyPane')?.classList.contains('active');
             }
 
+            function isPageVisible() {
+                return document.visibilityState === 'visible';
+            }
+
             function renderRequestHeaders(headers) {
                 try {
                     return JSON.stringify(headers || {}, null, 2);
@@ -1660,9 +1664,9 @@
                 }).join('');
             }
 
-            // 并发页只在当前页签激活时请求，避免额外刷新干扰正常调试操作。
+            // 并发页只在页面可见且当前页签激活时请求，避免额外刷新干扰正常调试操作。
             async function refreshConcurrencyTable() {
-                if (isRefreshingConcurrency || !isConcurrencyTabActive()) {
+                if (isRefreshingConcurrency || !isPageVisible() || !isConcurrencyTabActive()) {
                     return;
                 }
 
@@ -1679,7 +1683,7 @@
 
                     if (!response.ok) {
                         if (tableBody) {
-                            tableBody.innerHTML = '<tr><td colspan="3" class="text-center text-danger py-4">加载失败，请稍后重试</td></tr>';
+                            tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-4">加载失败，请稍后重试</td></tr>';
                         }
                         return;
                     }
@@ -1696,7 +1700,7 @@
                     }
                 } catch {
                     if (tableBody) {
-                        tableBody.innerHTML = '<tr><td colspan="3" class="text-center text-danger py-4">加载失败，请稍后重试</td></tr>';
+                        tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-danger py-4">加载失败，请稍后重试</td></tr>';
                     }
                 } finally {
                     isRefreshingConcurrency = false;
@@ -1882,7 +1886,7 @@
             if (developerInvocationsTab) {
                 developerInvocationsTab.addEventListener('shown.bs.tab', function () {
                     syncDeveloperTabHash('#developerInvocationsPane');
-                    if (!hasLoadedListOnce) {
+                    if (isPageVisible() && !hasLoadedListOnce) {
                         refreshTraceList(currentPage);
                     }
                 });
@@ -1890,13 +1894,30 @@
             if (developerConcurrencyTab) {
                 developerConcurrencyTab.addEventListener('shown.bs.tab', function () {
                     syncDeveloperTabHash('#developerConcurrencyPane');
-                    refreshConcurrencyTable();
+                    if (isPageVisible()) {
+                        refreshConcurrencyTable();
+                    }
                 });
             }
 
             document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (element) {
                 if (window.bootstrap && window.bootstrap.Tooltip) {
                     new window.bootstrap.Tooltip(element);
+                }
+            });
+
+            document.addEventListener('visibilitychange', function () {
+                if (!isPageVisible()) {
+                    return;
+                }
+
+                if (isConcurrencyTabActive()) {
+                    refreshConcurrencyTable();
+                    return;
+                }
+
+                if (isInvocationsTabActive() && autoRefreshToggle && autoRefreshToggle.checked) {
+                    refreshTraceList(currentPage);
                 }
             });
 
@@ -1975,6 +1996,10 @@
                 }
 
                 refreshTimerId = window.setInterval(function () {
+                    if (!isPageVisible()) {
+                        return;
+                    }
+
                     if (isInvocationsTabActive() && autoRefreshToggle && autoRefreshToggle.checked) {
                         refreshTraceList(currentPage);
                     }
@@ -1987,6 +2012,10 @@
 
             ensureRefreshTimer();
             window.setTimeout(function () {
+                if (!isPageVisible()) {
+                    return;
+                }
+
                 if (isConcurrencyTabActive()) {
                     refreshConcurrencyTable();
                     return;

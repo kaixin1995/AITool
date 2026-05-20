@@ -38,6 +38,10 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private const string ModelConcurrencyLimitsCacheKey = "model-concurrency-limits";
     /// <summary>
+    /// 启用站点名称缓存键。
+    /// </summary>
+    private const string EnabledSiteNamesCacheKey = "enabled-site-names";
+    /// <summary>
     /// 路由主入口列表缓存键。
     /// </summary>
     private const string RouteEntriesCacheKey = "admin-route-entries";
@@ -273,6 +277,34 @@ public sealed class ProxyRequestMetadataCache
                     return limits;
                 })
             ?? new Dictionary<string, int>(StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// 获取启用站点名称缓存。
+    /// </summary>
+    public async Task<IReadOnlyDictionary<Guid, string>> GetEnabledSiteNamesAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                EnabledSiteNamesCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    var sites = await dbContext.Sites
+                        .AsNoTracking()
+                        .Where(x => x.IsEnabled)
+                        .Select(x => new
+                        {
+                            x.Id,
+                            x.Name
+                        })
+                        .ToListAsync(cancellationToken);
+
+                    return sites.ToDictionary(x => x.Id, x => x.Name);
+                })
+            ?? new Dictionary<Guid, string>();
     }
 
     /// <summary>
@@ -648,6 +680,7 @@ public sealed class ProxyRequestMetadataCache
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "all");
         _memoryCache.Remove(ChatModelsCacheKey);
         _memoryCache.Remove(ModelConcurrencyLimitsCacheKey);
+        _memoryCache.Remove(EnabledSiteNamesCacheKey);
         _memoryCache.Remove(RouteEntriesCacheKey);
         _memoryCache.Remove(RouteSiteInstancesCacheKey);
         _memoryCache.Remove(RouteModelsCacheKey);

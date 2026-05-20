@@ -186,6 +186,46 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
     }
 
     /// <summary>
+    /// 验证路由缓存失效后会刷新启用站点名称。
+    /// </summary>
+    [Fact]
+    public async Task InvalidateRouteTargets_refreshes_enabled_site_names()
+    {
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+
+        await db.Database.EnsureDeletedAsync();
+        await db.Database.EnsureCreatedAsync();
+
+        db.Sites.Add(new Site
+        {
+            Id = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            Name = "Old Site Name",
+            BaseUrl = "https://site-name-cache.example.com",
+            ApiKey = "site-key",
+            ProtocolType = "OpenAI",
+            SupportsOpenAi = true,
+            SupportsAnthropic = false,
+            IsEnabled = true
+        });
+        await db.SaveChangesAsync();
+
+        var before = await cache.GetEnabledSiteNamesAsync(CancellationToken.None);
+        before.Should().ContainKey(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"));
+        before[Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")].Should().Be("Old Site Name");
+
+        var site = await db.Sites.SingleAsync();
+        site.Name = "New Site Name";
+        await db.SaveChangesAsync();
+
+        cache.InvalidateRouteTargets();
+
+        var after = await cache.GetEnabledSiteNamesAsync(CancellationToken.None);
+        after[Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")].Should().Be("New Site Name");
+    }
+
+    /// <summary>
     /// 验证候选路由会保持后台配置顺序，并把协议兼容处理留给控制器。
     /// </summary>
     [Fact]

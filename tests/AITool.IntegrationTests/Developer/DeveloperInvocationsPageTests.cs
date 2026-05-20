@@ -104,6 +104,8 @@ public sealed class DeveloperInvocationsPageTests
         html.Should().Contain("当前还没有命中任何路由尝试");
         html.Should().Contain("autoRefreshToggle.checked");
         html.Should().Contain("isInvocationsTabActive()");
+        html.Should().Contain("document.visibilityState === 'visible'");
+        html.Should().Contain("document.addEventListener('visibilitychange'");
         html.Should().Contain("setTimeout(function () {");
         html.Should().NotContain("' + renderAttempts(entry, index) + '");
     }
