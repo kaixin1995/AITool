@@ -83,7 +83,8 @@ public sealed class ResponsesProxyTests
 
         // 转换后的请求体应包含 messages 和 system
         var prepared = fakeForwardService.Requests[0].PreparedRequestBody;
-        using var preparedDoc = JsonDocument.Parse(prepared);
+        prepared.Should().NotBeNullOrWhiteSpace();
+        using var preparedDoc = JsonDocument.Parse(prepared!);
         preparedDoc.RootElement.GetProperty("messages").GetArrayLength().Should().BeGreaterThan(0);
 
         // 最终响应应该是 Responses 格式
@@ -573,7 +574,8 @@ public sealed class ResponsesProxyTests
         // 验证转发到 Anthropic 的请求体是 Anthropic 原生格式
         fakeForwardService.Requests.Should().ContainSingle();
         var prepared = fakeForwardService.Requests[0].PreparedRequestBody;
-        using var preparedDoc = JsonDocument.Parse(prepared);
+        prepared.Should().NotBeNullOrWhiteSpace();
+        using var preparedDoc = JsonDocument.Parse(prepared!);
 
         // 应包含 messages 数组
         preparedDoc.RootElement.TryGetProperty("messages", out var messages).Should().BeTrue();
@@ -583,6 +585,43 @@ public sealed class ResponsesProxyTests
         var hasAnthropicFields = preparedDoc.RootElement.TryGetProperty("system", out _)
             || preparedDoc.RootElement.TryGetProperty("max_tokens", out _);
         hasAnthropicFields.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 兼容中转时应把 output_config.effort 透传为 Anthropic thinking 配置。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_bridge_maps_output_config_effort_to_anthropic_thinking()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            IsAnthropicOnly = true
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"output_config\":{\"effort\":\"high\"}}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        fakeForwardService.Requests.Should().ContainSingle();
+        var prepared = fakeForwardService.Requests[0].PreparedRequestBody;
+        prepared.Should().NotBeNullOrWhiteSpace();
+        using var preparedDoc = JsonDocument.Parse(prepared!);
+        preparedDoc.RootElement.TryGetProperty("thinking", out var thinking).Should().BeTrue();
+        thinking.TryGetProperty("type", out var thinkingType).Should().BeTrue();
+        thinkingType.GetString().Should().Be("enabled");
+        thinking.TryGetProperty("budget_tokens", out var budgetTokens).Should().BeTrue();
+        budgetTokens.GetInt32().Should().Be(4096);
     }
 
     /// <summary>

@@ -114,13 +114,23 @@ public static partial class ProxyProtocolBridge
             payload["max_tokens"] = maxTokens.DeepClone();
         }
 
-        // reasoning.effort → reasoning_effort
+        // reasoning.effort / output_config.effort → reasoning_effort
         if (root.TryGetPropertyValue("reasoning", out var reasoningNode) && reasoningNode is JsonObject reasoning)
         {
             if (reasoning.TryGetPropertyValue("effort", out var effort) && effort is not null)
             {
                 payload["reasoning_effort"] = effort.DeepClone();
             }
+        }
+
+        // Claude Code 的 Responses 请求可能通过 output_config.effort 传递思考等级。
+        if (payload["reasoning_effort"] is null
+            && root.TryGetPropertyValue("output_config", out var outputConfigNode)
+            && outputConfigNode is JsonObject outputConfig
+            && outputConfig.TryGetPropertyValue("effort", out var outputConfigEffort)
+            && outputConfigEffort is not null)
+        {
+            payload["reasoning_effort"] = outputConfigEffort.DeepClone();
         }
 
         // tools → 转换扁平结构为 Chat Completions 嵌套结构
