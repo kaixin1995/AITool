@@ -55,6 +55,51 @@ public sealed class ChatApiTests
     }
 
     /// <summary>
+    /// 模型下拉的候选站点模型应返回站点名和模型名。
+    /// </summary>
+    [Fact]
+    public async Task Get_model_targets_returns_site_and_model_names()
+    {
+        var fakeForwardService = new ChatFakeProxyForwardService();
+        await using var factory = new ChatWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/api/admin/chat/models/{ChatWebApplicationFactory.ModelId}/targets");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetArrayLength().Should().Be(2);
+        document.RootElement[0].GetProperty("siteName").GetString().Should().Be("Anthropic Site");
+        document.RootElement[0].GetProperty("siteModelName").GetString().Should().Be(ChatWebApplicationFactory.SiteModelName);
+    }
+
+    /// <summary>
+    /// 指定站点模型时应直发到选中的实例，不再走合并路由。
+    /// </summary>
+    [Fact]
+    public async Task Post_send_uses_selected_site_model_target()
+    {
+        var fakeForwardService = new ChatFakeProxyForwardService();
+        await using var factory = new ChatWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/chat/send",
+            new StringContent(
+                $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"mappingId\":\"{ChatWebApplicationFactory.SecondMappingId}\",\"message\":\"hello\",\"enableReasoning\":false,\"enableStreaming\":false}}",
+                Encoding.UTF8,
+                "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().HaveCount(1);
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("OpenAI");
+        fakeForwardService.Requests[0].TargetModelName.Should().Be(ChatWebApplicationFactory.SecondSiteModelName);
+        fakeForwardService.Requests[0].RequestBody.Should().Contain(ChatWebApplicationFactory.SecondSiteModelName);
+    }
+
+    /// <summary>
     /// 验证流式聊天会使用 Anthropic SSE 协议，并返回解析后的事件流。
     /// </summary>
     [Fact]
@@ -191,9 +236,17 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     /// </summary>
     internal static readonly Guid MappingId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     /// <summary>
+    /// 第二个站点模型映射标识。
+    /// </summary>
+    internal static readonly Guid SecondMappingId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
+    /// <summary>
     /// 当前测试使用的站点模型名称。
     /// </summary>
     internal const string SiteModelName = "claude-3-7-sonnet";
+    /// <summary>
+    /// 第二个站点模型名称。
+    /// </summary>
+    internal const string SecondSiteModelName = "gpt-4.1-mini";
     /// <summary>
     /// 保存当前测试使用的临时数据库路径。
     /// </summary>
@@ -264,17 +317,29 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
 
-        db.Sites.Add(new Site
-        {
-            Id = SiteId,
-            Name = "Anthropic Site",
-            BaseUrl = "https://anthropic.example.com",
-            ApiKey = "anthropic-key",
-            ProtocolType = "Anthropic",
-            SupportsOpenAi = false,
-            SupportsAnthropic = true,
-            IsEnabled = true
-        });
+        db.Sites.AddRange(
+            new Site
+            {
+                Id = SiteId,
+                Name = "Anthropic Site",
+                BaseUrl = "https://anthropic.example.com",
+                ApiKey = "anthropic-key",
+                ProtocolType = "Anthropic",
+                SupportsOpenAi = false,
+                SupportsAnthropic = true,
+                IsEnabled = true
+            },
+            new Site
+            {
+                Id = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+                Name = "OpenAI Site",
+                BaseUrl = "https://openai.example.com",
+                ApiKey = "openai-key",
+                ProtocolType = "OpenAI",
+                SupportsOpenAi = true,
+                SupportsAnthropic = false,
+                IsEnabled = true
+            });
 
         db.ModelLibraryItems.Add(new ModelLibraryItem
         {
@@ -296,15 +361,25 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
             IsEnabled = true
         });
 
-        db.SiteModelMappings.Add(new SiteModelMapping
-        {
-            Id = MappingId,
-            SiteId = SiteId,
-            ModelLibraryItemId = ModelId,
-            RemoteModelName = SiteModelName,
-            IsEnabled = true,
-            MaxConcurrency = 1
-        });
+        db.SiteModelMappings.AddRange(
+            new SiteModelMapping
+            {
+                Id = MappingId,
+                SiteId = SiteId,
+                ModelLibraryItemId = ModelId,
+                RemoteModelName = SiteModelName,
+                IsEnabled = true,
+                MaxConcurrency = 1
+            },
+            new SiteModelMapping
+            {
+                Id = SecondMappingId,
+                SiteId = Guid.Parse("22222222-2222-2222-2222-222222222222"),
+                ModelLibraryItemId = ModelId,
+                RemoteModelName = SecondSiteModelName,
+                IsEnabled = true,
+                MaxConcurrency = 2
+            });
 
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {

@@ -34,6 +34,10 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private const string ChatModelsCacheKey = "chat-models";
     /// <summary>
+    /// 聊天模型候选站点缓存键。
+    /// </summary>
+    private const string ChatTargetsCacheKey = "chat-targets";
+    /// <summary>
     /// 模型并发限制缓存键。
     /// </summary>
     private const string ModelConcurrencyLimitsCacheKey = "model-concurrency-limits";
@@ -242,6 +246,52 @@ public sealed class ProxyRequestMetadataCache
                     return models;
                 })
             ?? [];
+    }
+
+    /// <summary>
+    /// 获取聊天页全部站点模型候选。
+    /// </summary>
+    public async Task<IReadOnlyList<CachedChatTarget>> GetChatTargetsAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                ChatTargetsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+                    return await (
+                            from mapping in dbContext.SiteModelMappings.AsNoTracking()
+                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
+                            join model in dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
+                            where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
+                            orderby model.DisplayName, site.Name, mapping.RemoteModelName
+                            select new CachedChatTarget
+                            {
+                                MappingId = mapping.Id,
+                                ModelId = model.Id,
+                                ModelDisplayName = model.DisplayName,
+                                SiteId = site.Id,
+                                SiteName = site.Name,
+                                ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
+                                BaseUrl = site.BaseUrl,
+                                ApiKey = site.ApiKey,
+                                SiteModelName = mapping.RemoteModelName
+                            })
+                        .ToListAsync(cancellationToken);
+                })
+            ?? [];
+    }
+
+    /// <summary>
+    /// 获取聊天页按模型筛选后的站点模型候选。
+    /// </summary>
+    public async Task<IReadOnlyList<CachedChatTarget>> GetChatTargetsAsync(Guid modelId, CancellationToken cancellationToken)
+    {
+        var targets = await GetChatTargetsAsync(cancellationToken);
+        return targets.Where(x => x.ModelId == modelId).ToList();
     }
 
     /// <summary>
@@ -679,6 +729,7 @@ public sealed class ProxyRequestMetadataCache
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "Anthropic");
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "all");
         _memoryCache.Remove(ChatModelsCacheKey);
+        _memoryCache.Remove(ChatTargetsCacheKey);
         _memoryCache.Remove(ModelConcurrencyLimitsCacheKey);
         _memoryCache.Remove(EnabledSiteNamesCacheKey);
         _memoryCache.Remove(RouteEntriesCacheKey);
@@ -697,6 +748,7 @@ public sealed class ProxyRequestMetadataCache
     public void InvalidateModelMetadata()
     {
         _memoryCache.Remove(ChatModelsCacheKey);
+        _memoryCache.Remove(ChatTargetsCacheKey);
         _memoryCache.Remove(FallbackMappingsCacheKey);
         _memoryCache.Remove(EnabledModelsCacheKey);
     }
@@ -1099,6 +1151,49 @@ public sealed class CachedChatModel
     /// 可用站点数量。
     /// </summary>
     public int AvailableSiteCount { get; set; }
+}
+
+/// <summary>
+/// 缓存中的聊天候选站点模型。
+/// </summary>
+public sealed class CachedChatTarget
+{
+    /// <summary>
+    /// 站点模型映射标识。
+    /// </summary>
+    public Guid MappingId { get; set; }
+    /// <summary>
+    /// 模型标识。
+    /// </summary>
+    public Guid ModelId { get; set; }
+    /// <summary>
+    /// 模型显示名称。
+    /// </summary>
+    public string ModelDisplayName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
+    public Guid SiteId { get; set; }
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
+    public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
+    public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 基础地址。
+    /// </summary>
+    public string BaseUrl { get; set; } = string.Empty;
+    /// <summary>
+    /// 接口密钥。
+    /// </summary>
+    public string ApiKey { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
+    public string SiteModelName { get; set; } = string.Empty;
 }
 
 /// <summary>

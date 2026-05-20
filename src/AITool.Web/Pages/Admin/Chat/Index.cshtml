@@ -21,8 +21,14 @@
                             <div class="row g-3 align-items-end">
                                 <div class="col-auto">
                                     <div class="chat-toolbar-field">
-                                        <label class="chat-toolbar-field-label" for="modelSelect">测试模型</label>
-                                        <select id="modelSelect" class="form-select chat-toolbar-field-select">
+                                        <label class="chat-toolbar-field-label" for="modelSearchInput">模型搜索</label>
+                                        <input id="modelSearchInput" type="text" class="form-control chat-toolbar-field-input" placeholder="搜索模型" oninput="renderTargetSelect()" />
+                                    </div>
+                                </div>
+                                <div class="col-auto">
+                                    <div class="chat-toolbar-field">
+                                        <label class="chat-toolbar-field-label" for="targetSelect">站点 / 模型</label>
+                                        <select id="targetSelect" class="form-select chat-toolbar-field-select">
                                             <option value="">-- 加载中... --</option>
                                         </select>
                                     </div>
@@ -52,7 +58,7 @@
                                     </div>
                                 </div>
                                 <div class="col-auto">
-                                    <button type="button" class="btn btn-outline-secondary" onclick="loadModels()">刷新模型</button>
+                                    <button type="button" class="btn btn-outline-secondary" onclick="loadTargets()">刷新候选</button>
                                 </div>
                             </div>
                         </div>
@@ -60,7 +66,7 @@
                         <div id="chatMessages" class="chat-messages">
                             <div class="chat-empty">
                                 <div class="chat-empty-icon">💬</div>
-                                <div>选择模型后输入问题开始对话</div>
+                                <div>选择站点模型后输入问题开始对话</div>
                             </div>
                         </div>
                     </div>
@@ -196,7 +202,8 @@
         color: #0f172a;
     }
 
-    .chat-toolbar-field-select {
+    .chat-toolbar-field-select,
+    .chat-toolbar-field-input {
         min-width: 220px;
     }
 
@@ -623,9 +630,10 @@
 <script>
     let currentStreamState = null;
     let chatAdminResizeRaf = 0;
+    let chatTargets = [];
 
     document.addEventListener('DOMContentLoaded', function() {
-        loadModels();
+        loadTargets();
         applyChatAdminScale();
         window.addEventListener('resize', scheduleChatAdminScale);
         var chatInput = document.getElementById('chatInput');
@@ -671,27 +679,59 @@
         shell.style.minHeight = Math.ceil(page.offsetHeight * scale) + 'px';
     }
 
-    function loadModels() {
-        var select = document.getElementById('modelSelect');
-        select.innerHTML = '<option value="">-- 加载中... --</option>';
+    function loadTargets() {
+        var targetSelect = document.getElementById('targetSelect');
+        targetSelect.innerHTML = '<option value="">-- 加载中... --</option>';
 
-        fetch('/api/admin/chat/models')
+        fetch('/api/admin/chat/targets')
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                select.innerHTML = '<option value="">-- 请选择模型 --</option>';
-                data.forEach(function(m) {
-                    var opt = document.createElement('option');
-                    opt.value = m.modelId;
-                    opt.textContent = m.displayName + ' (' + m.availableSiteCount + ' 个站点)';
-                    select.appendChild(opt);
-                });
-                if (data.length === 0) {
-                    select.innerHTML = '<option value="">-- 暂无可用模型 --</option>';
-                }
+                chatTargets = data || [];
+                renderTargetSelect();
             })
             .catch(function() {
-                select.innerHTML = '<option value="">-- 加载失败 --</option>';
+                chatTargets = [];
+                targetSelect.innerHTML = '<option value="">-- 加载失败 --</option>';
             });
+    }
+
+    function renderTargetSelect() {
+        var targetSelect = document.getElementById('targetSelect');
+        var previousValue = targetSelect.value;
+        var keyword = (document.getElementById('modelSearchInput').value || '').trim().toLowerCase();
+        targetSelect.innerHTML = '<option value="">-- 请选择站点模型 --</option>';
+
+        chatTargets.forEach(function(target) {
+            var modelName = target.modelDisplayName || '';
+            var siteModelName = target.siteModelName || '';
+            if (keyword && modelName.toLowerCase().indexOf(keyword) < 0 && siteModelName.toLowerCase().indexOf(keyword) < 0) {
+                return;
+            }
+
+            var opt = document.createElement('option');
+            opt.value = target.mappingId;
+            opt.textContent = target.siteName + ' / ' + target.siteModelName;
+            opt.dataset.modelId = target.modelId;
+            targetSelect.appendChild(opt);
+        });
+
+        if (targetSelect.options.length === 1) {
+            targetSelect.innerHTML = '<option value="">-- 暂无匹配站点模型 --</option>';
+            if (chatTargets.length === 0) {
+                targetSelect.innerHTML = '<option value="">-- 暂无可用站点模型 --</option>';
+            }
+            return;
+        }
+
+        var hasPrevious = Array.from(targetSelect.options).some(function(option) {
+            return option.value === previousValue;
+        });
+        if (hasPrevious) {
+            targetSelect.value = previousValue;
+            return;
+        }
+
+        targetSelect.selectedIndex = 1;
     }
 
     function handleKeyDown(e) {
@@ -702,14 +742,17 @@
     }
 
     async function sendMessage() {
-        var modelId = document.getElementById('modelSelect').value;
+        var targetSelect = document.getElementById('targetSelect');
+        var mappingId = targetSelect.value;
+        var selectedOption = targetSelect.options[targetSelect.selectedIndex];
+        var modelId = selectedOption && selectedOption.dataset ? selectedOption.dataset.modelId || '' : '';
         var enableReasoning = document.getElementById('reasoningToggle').checked;
         var enableStreaming = document.getElementById('streamingToggle').checked;
         var reasoningEffort = document.getElementById('reasoningEffortSelect').value;
         var input = document.getElementById('chatInput');
         var message = input.value.trim();
 
-        if (!modelId) { alert('请先选择模型'); return; }
+        if (!mappingId || !modelId) { alert('请先选择站点模型'); return; }
         if (!message) return;
 
         var empty = document.querySelector('.chat-empty');
@@ -723,7 +766,7 @@
         setChatStatus(enableStreaming ? '正在建立流式连接...' : '正在发送请求...');
 
         if (enableStreaming) {
-            await sendStreamingMessage(modelId, message, enableReasoning, reasoningEffort);
+            await sendStreamingMessage(modelId, mappingId, message, enableReasoning, reasoningEffort);
             return;
         }
 
@@ -737,7 +780,7 @@
         fetch('/api/admin/chat/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ modelId: modelId, message: message, enableReasoning: enableReasoning, enableStreaming: false, reasoningEffort: reasoningEffort })
+            body: JSON.stringify({ modelId: modelId, mappingId: mappingId, message: message, enableReasoning: enableReasoning, enableStreaming: false, reasoningEffort: reasoningEffort })
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -765,7 +808,7 @@
         });
     }
 
-    async function sendStreamingMessage(modelId, message, enableReasoning, reasoningEffort) {
+    async function sendStreamingMessage(modelId, mappingId, message, enableReasoning, reasoningEffort) {
         var aiBubble = createStreamingMessageBubble(enableReasoning);
         var abortController = new AbortController();
         currentStreamState = {
@@ -782,7 +825,7 @@
             var response = await fetch('/api/admin/chat/send-stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-                body: JSON.stringify({ modelId: modelId, message: message, enableReasoning: enableReasoning, enableStreaming: true, reasoningEffort: reasoningEffort }),
+                body: JSON.stringify({ modelId: modelId, mappingId: mappingId, message: message, enableReasoning: enableReasoning, enableStreaming: true, reasoningEffort: reasoningEffort }),
                 signal: abortController.signal
             });
 
@@ -1139,12 +1182,14 @@
     function setSending(sending) {
         var btn = document.getElementById('btnSend');
         var input = document.getElementById('chatInput');
-        var modelSelect = document.getElementById('modelSelect');
+        var targetSelect = document.getElementById('targetSelect');
+        var modelSearchInput = document.getElementById('modelSearchInput');
         var reasoningToggle = document.getElementById('reasoningToggle');
         var streamingToggle = document.getElementById('streamingToggle');
         btn.disabled = sending;
         input.disabled = sending;
-        modelSelect.disabled = sending;
+        targetSelect.disabled = sending;
+        modelSearchInput.disabled = sending;
         reasoningToggle.disabled = sending;
         streamingToggle.disabled = sending;
         if (sending) {

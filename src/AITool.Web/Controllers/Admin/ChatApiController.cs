@@ -32,6 +32,33 @@ public sealed class ChatModelItem
 }
 
 /// <summary>
+/// 聊天页模型下的候选站点模型项。
+/// </summary>
+public sealed class ChatModelTargetItem
+{
+    /// <summary>
+    /// 站点模型映射标识。
+    /// </summary>
+    public Guid MappingId { get; set; }
+    /// <summary>
+    /// 模型标识。
+    /// </summary>
+    public Guid ModelId { get; set; }
+    /// <summary>
+    /// 模型显示名称。
+    /// </summary>
+    public string ModelDisplayName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
+    public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
+    public string SiteModelName { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// 单次路由尝试的结果，记录该次尝试调用的站点、模型、状态和 Token 用量。
 /// </summary>
 public sealed class ChatAttemptResult
@@ -116,6 +143,10 @@ public sealed class ChatSendRequest
     /// 模型标识。
     /// </summary>
     public Guid ModelId { get; set; }
+    /// <summary>
+    /// 选中的站点模型映射标识。
+    /// </summary>
+    public Guid MappingId { get; set; }
     /// <summary>
     /// 用户消息内容。
     /// </summary>
@@ -328,6 +359,40 @@ public sealed class ChatApiController : ControllerBase
     }
 
     /// <summary>
+    /// 获取聊天页可选的全部站点模型候选。
+    /// </summary>
+    [HttpGet("targets")]
+    public async Task<IActionResult> GetTargets(CancellationToken cancellationToken)
+    {
+        var targets = await _metadataCache.GetChatTargetsAsync(cancellationToken);
+        return Ok(targets.Select(x => new ChatModelTargetItem
+        {
+            MappingId = x.MappingId,
+            ModelId = x.ModelId,
+            ModelDisplayName = x.ModelDisplayName,
+            SiteName = x.SiteName,
+            SiteModelName = x.SiteModelName
+        }));
+    }
+
+    /// <summary>
+    /// 获取指定模型下可选的站点模型候选。
+    /// </summary>
+    [HttpGet("models/{modelId:guid}/targets")]
+    public async Task<IActionResult> GetModelTargets(Guid modelId, CancellationToken cancellationToken)
+    {
+        var targets = await _metadataCache.GetChatTargetsAsync(modelId, cancellationToken);
+        return Ok(targets.Select(x => new ChatModelTargetItem
+        {
+            MappingId = x.MappingId,
+            ModelId = x.ModelId,
+            ModelDisplayName = x.ModelDisplayName,
+            SiteName = x.SiteName,
+            SiteModelName = x.SiteModelName
+        }));
+    }
+
+    /// <summary>
     /// 发送非流式调试请求。
     /// </summary>
     [HttpPost("send")]
@@ -349,6 +414,17 @@ public sealed class ChatApiController : ControllerBase
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
+
+        if (request.MappingId != Guid.Empty)
+        {
+            var selectedTarget = await ResolveSelectedTargetAsync(request.ModelId, request.MappingId, cancellationToken);
+            if (selectedTarget is null)
+            {
+                return Ok(new ChatSendResult { Success = false, Error = "所选站点模型不存在或已禁用", ReasoningEnabled = request.EnableReasoning });
+            }
+
+            return await SendSingleTargetAsync(request, model, runtimeSettings, concurrencyMode, concurrencyQueueTimeout, selectedTarget, cancellationToken);
+        }
 
         if (allRoutes.Count > 0)
         {
@@ -479,6 +555,20 @@ public sealed class ChatApiController : ControllerBase
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
+
+        if (request.MappingId != Guid.Empty)
+        {
+            var selectedTarget = await ResolveSelectedTargetAsync(request.ModelId, request.MappingId, cancellationToken);
+            if (selectedTarget is null)
+            {
+                await WriteSseEventAsync("error", new { message = "所选站点模型不存在或已禁用" }, cancellationToken);
+                return;
+            }
+
+            await SendStreamSingleTargetAsync(request, model, runtimeSettings, concurrencyMode, concurrencyQueueTimeout, selectedTarget, cancellationToken);
+            return;
+        }
+
         if (allRoutes.Count == 0)
         {
             await SendStreamFallbackAsync(request, model, runtimeSettings, concurrencyMode, concurrencyQueueTimeout, cancellationToken);
@@ -615,14 +705,76 @@ public sealed class ChatApiController : ControllerBase
         TimeSpan concurrencyQueueTimeout,
         CancellationToken cancellationToken)
     {
-        var sw = Stopwatch.StartNew();
         var mapping = await _metadataCache.GetFallbackTargetAsync(request.ModelId, cancellationToken);
 
         if (mapping is null)
             return Ok(new ChatSendResult { Success = false, Error = "该模型没有可用的站点映射", ReasoningEnabled = request.EnableReasoning });
 
+        return await SendSingleTargetAsync(request, model, runtimeSettings, concurrencyMode, concurrencyQueueTimeout, mapping, cancellationToken);
+    }
+
+    /// <summary>
+    /// 使用兜底映射发送流式请求。
+    /// </summary>
+    private async Task SendStreamFallbackAsync(
+        ChatSendRequest request,
+        CachedEnabledModel model,
+        CachedProxyRuntimeSettings runtimeSettings,
+        ConcurrencyAcquireMode concurrencyMode,
+        TimeSpan concurrencyQueueTimeout,
+        CancellationToken cancellationToken)
+    {
+        var mapping = await _metadataCache.GetFallbackTargetAsync(request.ModelId, cancellationToken);
+
+        if (mapping is null)
+        {
+            await WriteSseEventAsync("error", new { message = "该模型没有可用的站点映射" }, cancellationToken);
+            return;
+        }
+
+        await SendStreamSingleTargetAsync(request, model, runtimeSettings, concurrencyMode, concurrencyQueueTimeout, mapping, cancellationToken);
+    }
+
+    /// <summary>
+    /// 将前端选中的站点模型解析为可直发目标。
+    /// </summary>
+    private async Task<CachedFallbackTarget?> ResolveSelectedTargetAsync(Guid modelId, Guid mappingId, CancellationToken cancellationToken)
+    {
+        var targets = await _metadataCache.GetChatTargetsAsync(modelId, cancellationToken);
+        var selectedTarget = targets.FirstOrDefault(x => x.MappingId == mappingId);
+        if (selectedTarget is null)
+        {
+            return null;
+        }
+
+        return new CachedFallbackTarget
+        {
+            ModelId = modelId,
+            SiteId = selectedTarget.SiteId,
+            SiteName = selectedTarget.SiteName,
+            ProtocolType = selectedTarget.ProtocolType,
+            BaseUrl = selectedTarget.BaseUrl,
+            ApiKey = selectedTarget.ApiKey,
+            SiteModelName = selectedTarget.SiteModelName
+        };
+    }
+
+    /// <summary>
+    /// 对单个站点模型执行非流式直发，并保留统一并发统计口径。
+    /// </summary>
+    private async Task<IActionResult> SendSingleTargetAsync(
+        ChatSendRequest request,
+        CachedEnabledModel model,
+        CachedProxyRuntimeSettings runtimeSettings,
+        ConcurrencyAcquireMode concurrencyMode,
+        TimeSpan concurrencyQueueTimeout,
+        CachedFallbackTarget mapping,
+        CancellationToken cancellationToken)
+    {
+        var sw = Stopwatch.StartNew();
         var requestId = Guid.NewGuid();
-        // 兜底映射也需要纳入统一并发统计，否则调试对话页与代理主链路会出现口径不一致。
+
+        // 直发到指定站点模型时也要进入统一并发统计，避免聊天页与开发者并发检测口径不一致。
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
             mapping.SiteId,
@@ -709,26 +861,20 @@ public sealed class ChatApiController : ControllerBase
     }
 
     /// <summary>
-    /// 使用兜底映射发送流式请求。
+    /// 对单个站点模型执行流式直发，并保留统一并发统计口径。
     /// </summary>
-    private async Task SendStreamFallbackAsync(
+    private async Task SendStreamSingleTargetAsync(
         ChatSendRequest request,
         CachedEnabledModel model,
         CachedProxyRuntimeSettings runtimeSettings,
         ConcurrencyAcquireMode concurrencyMode,
         TimeSpan concurrencyQueueTimeout,
+        CachedFallbackTarget mapping,
         CancellationToken cancellationToken)
     {
-        var mapping = await _metadataCache.GetFallbackTargetAsync(request.ModelId, cancellationToken);
-
-        if (mapping is null)
-        {
-            await WriteSseEventAsync("error", new { message = "该模型没有可用的站点映射" }, cancellationToken);
-            return;
-        }
-
         var requestId = Guid.NewGuid();
-        // 兜底映射也需要纳入统一并发统计，否则调试对话页与代理主链路会出现口径不一致。
+
+        // 直发到指定站点模型时也要进入统一并发统计，避免聊天页与开发者并发检测口径不一致。
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
             mapping.SiteId,
