@@ -40,6 +40,14 @@ public sealed class DeveloperModelConcurrencyDto
     /// 当前并发数。
     /// </summary>
     public int ActiveCount { get; set; }
+    /// <summary>
+    /// 配置的最大并发数，null 表示未设置限制。
+    /// </summary>
+    public int? MaxConcurrency { get; set; }
+    /// <summary>
+    /// 当前排队等待的请求数。
+    /// </summary>
+    public int QueueCount { get; set; }
 }
 
 /// <summary>
@@ -205,7 +213,7 @@ public sealed class IndexModel : PageModel
     }
 
     /// <summary>
-    /// 返回最近 6 小时内出现过的模型并发快照，只读内存中的实时计数，不参与任何限流决策。
+    /// 返回所有启用的站点模型映射及其实时并发、排队状态。
     /// </summary>
     public async Task<IActionResult> OnGetConcurrencyAsync(CancellationToken cancellationToken = default)
     {
@@ -215,33 +223,45 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
+        // 查询所有启用的站点模型映射，关联站点名
+        var mappings = await (
+            from m in _dbContext.SiteModelMappings.AsNoTracking()
+            where m.IsEnabled
+            join s in _dbContext.Sites.AsNoTracking() on m.SiteId equals s.Id into sites
+            from s in sites.DefaultIfEmpty()
+            select new
+            {
+                m.SiteId,
+                SiteName = s != null ? s.Name : "-",
+                ModelName = m.RemoteModelName,
+                m.MaxConcurrency
+            }
+        ).ToListAsync(cancellationToken);
+
+        // 获取内存中的实时并发快照
         var snapshots = _concurrencyLimiter.ListRecent(ModelConcurrencyLimiter.RecentRetention);
-        if (snapshots.Count == 0)
+        var snapshotMap = snapshots
+            .GroupBy(x => $"{x.SiteId:N}:{x.SiteModelName}", StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
+        var items = mappings.Select(m =>
         {
-            return new JsonResult(new DeveloperModelConcurrencyResponse
+            var key = $"{m.SiteId:N}:{m.ModelName}";
+            var snap = snapshotMap.TryGetValue(key, out var s) ? s : null;
+            return new DeveloperModelConcurrencyDto
             {
-                RefreshedAt = DateTimeOffset.Now,
-                Items = []
-            });
-        }
-
-        var siteIds = snapshots.Select(x => x.SiteId).Distinct().ToList();
-        var siteNames = await _dbContext.Sites
-            .AsNoTracking()
-            .Where(x => siteIds.Contains(x.Id))
-            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
-
-        var items = snapshots
-            .Select(x => new DeveloperModelConcurrencyDto
-            {
-                ModelName = x.SiteModelName,
-                SiteName = siteNames.TryGetValue(x.SiteId, out var siteName) ? siteName : "-",
-                ActiveCount = x.ActiveCount
-            })
-            .OrderByDescending(x => x.ActiveCount)
-            .ThenBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+                ModelName = m.ModelName,
+                SiteName = m.SiteName,
+                ActiveCount = snap?.ActiveCount ?? 0,
+                MaxConcurrency = m.MaxConcurrency > 0 ? m.MaxConcurrency : null,
+                QueueCount = snap?.QueueCount ?? 0
+            };
+        })
+        .OrderByDescending(x => x.QueueCount > 0 ? 1 : 0)
+        .ThenByDescending(x => x.QueueCount)
+        .ThenBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
+        .ThenBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
+        .ToList();
 
         return new JsonResult(new DeveloperModelConcurrencyResponse
         {

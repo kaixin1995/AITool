@@ -446,6 +446,74 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     }
 
     /// <summary>
+    /// ListRecent 应从内部状态中返回最大并发数和排队数。
+    /// </summary>
+    [Fact]
+    public async Task ListRecent_includes_max_concurrency_and_queue_count()
+    {
+        var siteId = Guid.NewGuid();
+        await SeedMappingAsync(siteId, "model-a", maxConcurrency: 1);
+
+        // 占用唯一槽位
+        var blockingHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.WaitForSlot, TimeSpan.FromSeconds(30), CancellationToken.None);
+        blockingHandle.Acquired.Should().BeTrue();
+
+        // 发起一个排队请求
+        var waitingTask = _limiter.AcquireAsync(
+            _serviceProvider, siteId, "model-a",
+            ConcurrencyAcquireMode.WaitForSlot, TimeSpan.FromSeconds(30), CancellationToken.None).AsTask();
+
+        await Task.Delay(200);
+
+        var snapshots = _limiter.ListRecent(ModelConcurrencyLimiter.RecentRetention);
+        snapshots.Should().ContainSingle();
+        snapshots[0].MaxConcurrency.Should().Be(1);
+        snapshots[0].QueueCount.Should().Be(1);
+
+        blockingHandle.Dispose();
+        await waitingTask;
+        (await waitingTask).Dispose();
+    }
+
+    /// <summary>
+    /// ListRecent 中有排队的项应排在无排队的项前面。
+    /// </summary>
+    [Fact]
+    public async Task ListRecent_sorts_queued_entries_before_non_queued()
+    {
+        var siteA = Guid.NewGuid();
+        var siteB = Guid.NewGuid();
+
+        // 模型 A 有排队
+        await SeedMappingAsync(siteA, "model-a", maxConcurrency: 1);
+        var blockingHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteA, "model-a",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+        var waitingTask = _limiter.AcquireAsync(
+            _serviceProvider, siteA, "model-a",
+            ConcurrencyAcquireMode.WaitForSlot, TimeSpan.FromSeconds(30), CancellationToken.None).AsTask();
+
+        // 模型 B 无排队
+        using var handleB = await _limiter.AcquireAsync(
+            _serviceProvider, siteB, "model-b",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+
+        await Task.Delay(200);
+
+        var snapshots = _limiter.ListRecent(ModelConcurrencyLimiter.RecentRetention);
+        snapshots.Count.Should().BeGreaterThan(1);
+        // 有排队的项排在前面
+        snapshots[0].QueueCount.Should().BeGreaterThan(0);
+        snapshots[0].SiteModelName.Should().Be("model-a");
+
+        blockingHandle.Dispose();
+        await waitingTask;
+        (await waitingTask).Dispose();
+    }
+
+    /// <summary>
     /// 并发限制器在数据库查询失败时不应抛异常，应按无限制处理。
     /// </summary>
     [Fact]

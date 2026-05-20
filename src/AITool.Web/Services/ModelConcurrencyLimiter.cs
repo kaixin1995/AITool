@@ -64,7 +64,7 @@ public sealed class ConcurrencyAcquireResult : IDisposable
 /// <summary>
 /// 模型并发快照，用于调试页面展示最近出现过的站点模型及其实时并发数。
 /// </summary>
-public sealed class ActiveModelConcurrencyEntry
+public sealed record ActiveModelConcurrencyEntry
 {
     /// <summary>
     /// 站点标识。
@@ -78,6 +78,14 @@ public sealed class ActiveModelConcurrencyEntry
     /// 当前活跃并发数。
     /// </summary>
     public int ActiveCount { get; init; }
+    /// <summary>
+    /// 配置的最大并发数，0 表示不限制。
+    /// </summary>
+    public int MaxConcurrency { get; init; }
+    /// <summary>
+    /// 当前排队等待的请求数。
+    /// </summary>
+    public int QueueCount { get; init; }
     /// <summary>
     /// 最近一次进入或离开活跃态的时间。
     /// </summary>
@@ -264,8 +272,9 @@ public sealed class ModelConcurrencyLimiter
 
         return _activeEntries.Values
             .Where(x => x.ActiveCount > 0 || x.LastSeenAt >= cutoff)
-            .OrderByDescending(x => x.ActiveCount)
-            .ThenByDescending(x => x.LastSeenAt)
+            .Select(EnrichWithStateInfo)
+            .OrderByDescending(x => x.QueueCount > 0 ? 1 : 0)
+            .ThenByDescending(x => x.QueueCount)
             .ThenBy(x => x.SiteModelName, StringComparer.OrdinalIgnoreCase)
             .ThenBy(x => x.SiteId)
             .ToList();
@@ -277,6 +286,27 @@ public sealed class ModelConcurrencyLimiter
     private ConcurrencyAcquireResult CreateTrackedAcquireResult(string key, Guid siteId, string remoteModelName)
     {
         return ConcurrencyAcquireResult.AcquiredSlot(() => ReleaseActiveCount(key, siteId, remoteModelName));
+    }
+
+    /// <summary>
+    /// 将快照条目补充运行时并发状态中的最大并发数和排队数。
+    /// </summary>
+    private ActiveModelConcurrencyEntry EnrichWithStateInfo(ActiveModelConcurrencyEntry entry)
+    {
+        var key = BuildKey(entry.SiteId, entry.SiteModelName);
+        if (!_states.TryGetValue(key, out var state))
+        {
+            return entry;
+        }
+
+        lock (state.SyncRoot)
+        {
+            return entry with
+            {
+                MaxConcurrency = state.MaxConcurrency,
+                QueueCount = state.Waiters.Count
+            };
+        }
     }
 
     /// <summary>

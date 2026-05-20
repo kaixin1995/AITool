@@ -219,11 +219,13 @@
                                         <th>模型名</th>
                                         <th>站点</th>
                                         <th class="text-end">并发数</th>
+                                        <th class="text-end">最大并发</th>
+                                        <th class="text-end">排队数</th>
                                     </tr>
                                 </thead>
                                 <tbody id="concurrencyTableBody">
                                     <tr>
-                                        <td colspan="3" class="text-center text-secondary py-4">加载中...</td>
+                                        <td colspan="5" class="text-center text-secondary py-4">加载中...</td>
                                     </tr>
                                 </tbody>
                             </table>
@@ -805,6 +807,27 @@
         border-radius: 999px;
         background: #eff6ff;
         color: #1d4ed8;
+        font-weight: 700;
+    }
+
+    .concurrency-queued-row {
+        background-color: #fffbeb !important;
+    }
+
+    .concurrency-queued-row:hover {
+        background-color: #fef3c7 !important;
+    }
+
+    .concurrency-queue-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 54px;
+        min-height: 30px;
+        padding: 6px 12px;
+        border-radius: 999px;
+        background: #fef3c7;
+        color: #b45309;
         font-weight: 700;
     }
 
@@ -1588,16 +1611,22 @@
                 }
 
                 if (!Array.isArray(items) || items.length === 0) {
-                    tableBody.innerHTML = '<tr><td colspan="3" class="text-center text-secondary py-4">最近 6 小时内没有并发记录</td></tr>';
+                    tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-secondary py-4">暂无启用的站点模型映射</td></tr>';
                     return;
                 }
 
                 tableBody.innerHTML = items.map(function (item) {
+                    var maxStr = item.maxConcurrency != null ? String(item.maxConcurrency) : '-';
+                    var queueCount = item.queueCount || 0;
+                    var rowClass = queueCount > 0 ? ' class="concurrency-queued-row"' : '';
+                    var queueStr = queueCount > 0 ? '<span class="concurrency-queue-badge">' + escapeHtml(String(queueCount)) + '</span>' : '0';
                     return '' +
-                        '<tr>' +
+                        '<tr' + rowClass + '>' +
                             '<td>' + escapeHtml(item.modelName || '-') + '</td>' +
                             '<td>' + escapeHtml(item.siteName || '-') + '</td>' +
                             '<td class="text-end"><span class="concurrency-count-badge">' + escapeHtml(String(item.activeCount || 0)) + '</span></td>' +
+                            '<td class="text-end">' + escapeHtml(maxStr) + '</td>' +
+                            '<td class="text-end">' + queueStr + '</td>' +
                         '</tr>';
                 }).join('');
             }
@@ -1629,7 +1658,7 @@
                     var payload = await response.json();
                     var items = Array.isArray(payload.items) ? payload.items : [];
                     var nextSignature = JSON.stringify(items.map(function (item) {
-                        return [item.siteName || '', item.modelName || '', Number(item.activeCount || 0)];
+                        return [item.siteName || '', item.modelName || '', Number(item.activeCount || 0), item.maxConcurrency, Number(item.queueCount || 0)];
                     }));
 
                     if (nextSignature !== concurrencyRenderSignature) {
