@@ -154,10 +154,10 @@ public sealed class UsageLogsApiTests
     }
 
     /// <summary>
-    /// 验证汇总接口会基于最终结果日志统计请求级指标。
+    /// 验证汇总接口会基于日志条数统计成功、失败和 Token 指标。
     /// </summary>
     [Fact]
-    public async Task Get_summary_returns_request_level_metrics_from_final_result_logs()
+    public async Task Get_summary_returns_attempt_level_metrics_from_usage_logs()
     {
         await using var factory = new UsageLogsWebApplicationFactory();
         using var client = factory.CreateClient();
@@ -168,10 +168,10 @@ public sealed class UsageLogsApiTests
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
 
         using var document = JsonDocument.Parse(body);
-        document.RootElement.GetProperty("totalRequests").GetInt32().Should().Be(3);
-        document.RootElement.GetProperty("failedRequests").GetInt32().Should().Be(1);
-        document.RootElement.GetProperty("successRate").GetDouble().Should().BeApproximately(66.67d, 0.01d);
-        document.RootElement.GetProperty("totalTokens").GetInt32().Should().Be(8870);
+        document.RootElement.GetProperty("totalRequests").GetInt32().Should().Be(4);
+        document.RootElement.GetProperty("failedRequests").GetInt32().Should().Be(2);
+        document.RootElement.GetProperty("successRate").GetDouble().Should().Be(50d);
+        document.RootElement.GetProperty("totalTokens").GetInt32().Should().Be(108122);
         document.RootElement.GetProperty("maxDurationMs").GetInt32().Should().Be(8000);
     }
 

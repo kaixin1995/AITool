@@ -494,22 +494,17 @@ public sealed class UsageLogsApiController : ControllerBase
                 .Where(x => IsModelMatched(x, query.ModelKeyword))
                 .ToList();
 
-            // 按 RequestId 分组，每组取最后一条记录作为该请求的最终状态
-            var finalLogs = logs
-                .GroupBy(x => x.RequestId)
-                .Select(g => g.OrderByDescending(x => x.AttemptIndex).First())
-                .ToList();
-
-            var totalRequests = finalLogs.Count;
-            var successRequests = finalLogs.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase));
-            var failedRequests = totalRequests - successRequests;
+            // 汇总卡片按日志条数统计：失败一次就记一条失败，后续成功也继续各记各的。
+            var totalRequests = logs.Count;
+            var successRequests = logs.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase));
+            var failedRequests = logs.Count(x => string.Equals(x.Status, "fail", StringComparison.OrdinalIgnoreCase));
             var successRate = totalRequests == 0
                 ? 0d
                 : Math.Round(successRequests * 100d / totalRequests, 2, MidpointRounding.AwayFromZero);
-            var totalTokens = finalLogs.Sum(x => x.TotalTokens);
-            var maxDurationMs = finalLogs.Count == 0
+            var totalTokens = logs.Sum(x => x.TotalTokens);
+            var maxDurationMs = logs.Count == 0
                 ? 0
-                : finalLogs.Max(x => x.TotalDurationMs);
+                : logs.Max(x => x.TotalDurationMs);
 
             return Ok(new UsageLogSummaryDto
             {
