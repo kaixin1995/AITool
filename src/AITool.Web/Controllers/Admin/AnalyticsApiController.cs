@@ -850,7 +850,9 @@ public sealed class AnalyticsApiController : ControllerBase
     private static List<AnalyticsBucket> BuildBuckets(DateTimeOffset startTime, DateTimeOffset endTime, string bucketType)
     {
         var buckets = new List<AnalyticsBucket>();
-        var cursor = AlignBucketStart(startTime, bucketType);
+        var alignedStart = AlignBucketStart(startTime, bucketType);
+        // 范围筛选以用户选中的起点为准，避免按月视图因为按周分桶回退到上个月。
+        var cursor = alignedStart < startTime ? startTime : alignedStart;
 
         while (cursor < endTime)
         {
@@ -859,7 +861,7 @@ public sealed class AnalyticsApiController : ControllerBase
             {
                 Start = cursor,
                 End = next,
-                Label = FormatBucketLabel(cursor, bucketType)
+                Label = FormatBucketLabel(cursor, next, bucketType)
             });
             cursor = next;
         }
@@ -871,7 +873,7 @@ public sealed class AnalyticsApiController : ControllerBase
             {
                 Start = startTime,
                 End = next,
-                Label = FormatBucketLabel(startTime, bucketType)
+                Label = FormatBucketLabel(startTime, next, bucketType)
             });
         }
 
@@ -899,12 +901,15 @@ public sealed class AnalyticsApiController : ControllerBase
             return (customStart, customEnd);
         }
 
+        var endOfToday = StartOfDay(now).AddDays(1);
+        var startOfWeek = StartOfDay(now).AddDays(-((7 + (int)now.DayOfWeek - (int)DayOfWeek.Monday) % 7));
+
         return normalized switch
         {
-            "day" => (StartOfDay(now), now),
-            "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), now),
+            "day" => (StartOfDay(now), endOfToday),
+            "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), endOfToday),
             "all" => (DateTimeOffset.MinValue, now),
-            _ => (StartOfDay(now).AddDays(-6), now)
+            _ => (startOfWeek, endOfToday)
         };
     }
 
@@ -984,14 +989,15 @@ public sealed class AnalyticsApiController : ControllerBase
     /// <summary>
     /// 生成时间桶标签。
     /// </summary>
-    private static string FormatBucketLabel(DateTimeOffset value, string bucketType)
+    private static string FormatBucketLabel(DateTimeOffset start, DateTimeOffset end, string bucketType)
     {
         return bucketType switch
         {
-            "hour" => $"{value:MM-dd HH}:00",
-            "week" => $"{value:yyyy-MM-dd} 周",
-            "month" => $"{value:yyyy-MM}",
-            _ => $"{value:yyyy-MM-dd}"
+            "hour" => $"{start:MM-dd HH}:00",
+            // 周桶可能来自按月范围内的截断区间，因此展示实际日期范围更直观。
+            "week" => $"{start:MM-dd} ~ {end.AddDays(-1):MM-dd}",
+            "month" => $"{start:yyyy-MM}",
+            _ => $"{start:yyyy-MM-dd}"
         };
     }
 

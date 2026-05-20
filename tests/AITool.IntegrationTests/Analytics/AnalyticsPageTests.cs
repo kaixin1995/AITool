@@ -1,4 +1,5 @@
 using System.Net;
+using System.Reflection;
 using System.Text.Json;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
@@ -39,8 +40,94 @@ public sealed class AnalyticsPageTests
     }
 
     /// <summary>
-    /// 验证统计接口会返回预期的汇总数据和分布结果。
+    /// 验证页面时间范围筛选已移除“全部”入口及相关提示。
     /// </summary>
+    [Fact]
+    public async Task Get_analytics_page_hides_all_range_entry_and_notice()
+    {
+        await using var factory = new AnalyticsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/Analytics");
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("<option value=\"day\">按天</option>");
+        html.Should().Contain("<option value=\"week\" selected>按周</option>");
+        html.Should().Contain("<option value=\"month\">按月</option>");
+        html.Should().Contain("<option value=\"custom\">指定时间范围</option>");
+        html.Should().NotContain("<option value=\"all\">全部</option>");
+        html.Should().NotContain("loadAllBtn");
+        html.Should().NotContain("全部范围");
+    }
+
+    /// <summary>
+    /// 验证按周范围会从本周周一开始，到今天结束后的右开区间边界。
+    /// </summary>
+    [Fact]
+    public void Resolve_time_range_uses_current_week_start_and_end_of_today()
+    {
+        var now = DateTimeOffset.Now;
+        var expectedStart = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset)
+            .AddDays(-((7 + (int)now.DayOfWeek - (int)DayOfWeek.Monday) % 7));
+        var expectedEnd = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset).AddDays(1);
+
+        var (startTime, endTime) = ResolveTimeRangeCore("week");
+
+        startTime.Should().Be(expectedStart);
+        endTime.Should().Be(expectedEnd);
+    }
+
+    /// <summary>
+    /// 验证按月范围会从本月 1 号开始，到今天结束后的右开区间边界。
+    /// </summary>
+    [Fact]
+    public void Resolve_time_range_uses_current_month_start_and_end_of_today()
+    {
+        var now = DateTimeOffset.Now;
+        var expectedStart = new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset);
+        var expectedEnd = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset).AddDays(1);
+
+        var (startTime, endTime) = ResolveTimeRangeCore("month");
+
+        startTime.Should().Be(expectedStart);
+        endTime.Should().Be(expectedEnd);
+    }
+
+    /// <summary>
+    /// 验证按月统计在自动粒度下，首个趋势桶不会回退到上个月。
+    /// </summary>
+    [Fact]
+    public async Task Get_dashboard_month_range_does_not_start_from_previous_month()
+    {
+        await using var factory = new AnalyticsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var body = await GetDashboardBodyAsync(client, "/api/admin/analytics/dashboard?rangeType=month&bucketType=auto");
+
+        using var document = JsonDocument.Parse(body);
+        var firstLabel = document.RootElement.GetProperty("requestTrend")[0].GetProperty("label").GetString();
+
+        firstLabel.Should().StartWith($"{DateTimeOffset.Now:MM}-01");
+    }
+
+    /// <summary>
+    /// 验证按月统计在按周聚合时，会展示实际日期范围而不是生硬的“某日 周”。
+    /// </summary>
+    [Fact]
+    public async Task Get_dashboard_month_range_uses_week_bucket_date_range_labels()
+    {
+        await using var factory = new AnalyticsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var body = await GetDashboardBodyAsync(client, "/api/admin/analytics/dashboard?rangeType=month&bucketType=auto");
+
+        using var document = JsonDocument.Parse(body);
+        var firstLabel = document.RootElement.GetProperty("requestTrend")[0].GetProperty("label").GetString();
+
+        firstLabel.Should().Be($"{DateTimeOffset.Now:MM}-01 ~ {DateTimeOffset.Now:MM}-07");
+    }
+
     [Fact]
     public async Task Get_dashboard_returns_expected_summary_and_distributions()
     {
@@ -300,6 +387,19 @@ public sealed class AnalyticsPageTests
             .EnumerateArray()
             .Select(x => x.GetProperty("label").GetString())
             .Should().Contain("-");
+    }
+
+    /// <summary>
+    /// 通过反射调用私有的时间范围解析逻辑，避免仅为测试扩大生产代码可见性。
+    /// </summary>
+    private static (DateTimeOffset StartTime, DateTimeOffset EndTime) ResolveTimeRangeCore(string rangeType)
+    {
+        var method = typeof(AITool.Web.Controllers.Admin.AnalyticsApiController)
+            .GetMethod("ResolveTimeRange", BindingFlags.NonPublic | BindingFlags.Static);
+
+        method.Should().NotBeNull();
+        return ((DateTimeOffset StartTime, DateTimeOffset EndTime))method!
+            .Invoke(null, new object?[] { rangeType, null, null })!;
     }
 
     /// <summary>

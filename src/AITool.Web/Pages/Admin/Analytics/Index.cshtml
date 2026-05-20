@@ -21,7 +21,6 @@
                     <option value="day">按天</option>
                     <option value="week" selected>按周</option>
                     <option value="month">按月</option>
-                    <option value="all">全部</option>
                     <option value="custom">指定时间范围</option>
                 </select>
             </div>
@@ -76,19 +75,6 @@
             <div class="col-xl-4 col-md-8 custom-range-field">
                 <div class="text-muted small">选择开始和结束时间后，点击“应用时间范围”确认生效。</div>
             </div>
-        </div>
-    </div>
-</section>
-
-<section id="allRangeNotice" class="analytics-wait-card card mb-4" style="display:none;">
-    <div class="card-body d-flex flex-column flex-lg-row align-items-lg-center justify-content-between gap-3">
-        <div>
-            <div class="analytics-wait-title">已切换到“全部”范围</div>
-            <div class="analytics-wait-text">全量统计会扫描更多日志。为了不立刻触发重查询，需要你手动确认是否开始加载。</div>
-        </div>
-        <div class="d-flex gap-2 flex-wrap">
-            <button type="button" class="btn btn-primary" id="loadAllBtn">开始加载全部数据</button>
-            <button type="button" class="btn btn-outline-secondary" id="backToWeekBtn">切回按周</button>
         </div>
     </div>
 </section>
@@ -438,10 +424,7 @@
             const customRangeRowEl = document.getElementById('customRangeRow');
             const emptyStateEl = document.getElementById('analyticsEmptyState');
             const filterSummaryEl = document.getElementById('filterSummary');
-            const allRangeNoticeEl = document.getElementById('allRangeNotice');
             const slowLoadingNoticeEl = document.getElementById('slowLoadingNotice');
-            const loadAllBtn = document.getElementById('loadAllBtn');
-            const backToWeekBtn = document.getElementById('backToWeekBtn');
             const continueWaitBtn = document.getElementById('continueWaitBtn');
             const cancelWaitBtn = document.getElementById('cancelWaitBtn');
             let activeController = null;
@@ -475,14 +458,6 @@
                     customRangeRowEl.style.display = visible ? '' : 'none';
                 }
                 customRangeFields.forEach(x => x.style.display = visible ? '' : 'none');
-            }
-
-            function hideAllRangeNotice() {
-                allRangeNoticeEl.style.display = 'none';
-            }
-
-            function showAllRangeNotice() {
-                allRangeNoticeEl.style.display = '';
             }
 
             function hideSlowLoadingNotice() {
@@ -647,7 +622,7 @@
                                 backgroundColor: 'rgba(239,68,68,0.75)'
                             },
                             {
-                                label: '成功率 %',
+                                label: '成功率',
                                 data: resultTrend.map(x => x.successRate),
                                 type: 'line',
                                 borderColor: palette.indigo,
@@ -666,7 +641,26 @@
                                 beginAtZero: true,
                                 position: 'right',
                                 max: 100,
-                                grid: { drawOnChartArea: false }
+                                grid: { drawOnChartArea: false },
+                                ticks: {
+                                    callback: function(value) {
+                                        return `${Number(value || 0).toFixed(0)}%`;
+                                    }
+                                }
+                            }
+                        },
+                        plugins: {
+                            ...baseChartOptions().plugins,
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        if (context.datasetIndex === 2) {
+                                            return `${context.dataset.label}: ${Number(context.parsed.y || 0).toFixed(2)}%`;
+                                        }
+
+                                        return `${context.dataset.label}: ${formatNumber(context.parsed.y)}`;
+                                    }
+                                }
                             }
                         }
                     }
@@ -872,7 +866,7 @@
                                 backgroundColor: 'rgba(245,158,11,0.75)'
                             },
                             {
-                                label: '回退率 %',
+                                label: '回退率',
                                 data: fallbackTrend.map(x => x.fallbackRate),
                                 type: 'line',
                                 borderColor: palette.red,
@@ -891,7 +885,26 @@
                                 beginAtZero: true,
                                 position: 'right',
                                 max: 100,
-                                grid: { drawOnChartArea: false }
+                                grid: { drawOnChartArea: false },
+                                ticks: {
+                                    callback: function(value) {
+                                        return `${Number(value || 0).toFixed(0)}%`;
+                                    }
+                                }
+                            }
+                        },
+                        plugins: {
+                            ...baseChartOptions().plugins,
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        if (context.datasetIndex === 1) {
+                                            return `${context.dataset.label}: ${Number(context.parsed.y || 0).toFixed(2)}%`;
+                                        }
+
+                                        return `${context.dataset.label}: ${formatNumber(context.parsed.y)}`;
+                                    }
+                                }
                             }
                         }
                     }
@@ -961,13 +974,6 @@
             async function loadDashboard(forceLoadAll) {
                 lastForcedLoad = !!forceLoadAll;
                 clearPendingRetry();
-                if (!forceLoadAll && rangeTypeEl.value === 'all') {
-                    showAllRangeNotice();
-                    filterSummaryEl.textContent = '全部范围已就绪，点击“开始加载全部数据”后再执行全量统计';
-                    return;
-                }
-
-                hideAllRangeNotice();
                 hideSlowLoadingNotice();
                 if (activeController) {
                     activeController.abort();
@@ -1029,7 +1035,6 @@
                     day: '按天',
                     week: '按周',
                     month: '按月',
-                    all: '全部',
                     custom: '指定范围'
                 };
                 const bucketMap = {
@@ -1136,13 +1141,6 @@
                     }
                 });
                 refreshBtn.addEventListener('click', () => loadDashboard(true));
-                loadAllBtn.addEventListener('click', () => loadDashboard(true));
-                backToWeekBtn.addEventListener('click', async () => {
-                    rangeTypeEl.value = 'week';
-                    toggleCustomRange();
-                    hideAllRangeNotice();
-                    await loadDashboard(false);
-                });
                 continueWaitBtn.addEventListener('click', hideSlowLoadingNotice);
                 cancelWaitBtn.addEventListener('click', () => {
                     if (activeController) {
@@ -1155,10 +1153,10 @@
 
             async function init() {
                 const end = new Date();
-                const start = new Date(end);
-                start.setDate(end.getDate() - 6);
-                start.setHours(0, 0, 0, 0);
                 end.setHours(23, 59, 0, 0);
+                const start = new Date(end);
+                start.setDate(end.getDate() - ((7 + end.getDay() - 1) % 7));
+                start.setHours(0, 0, 0, 0);
                 startTimeEl.value = formatDateTimeLocalValue(start);
                 endTimeEl.value = formatDateTimeLocalValue(end);
                 toggleCustomRange();
