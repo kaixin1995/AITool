@@ -1,3 +1,4 @@
+using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
@@ -11,7 +12,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 namespace AITool.IntegrationTests.ClientSimulator;
 
 /// <summary>
-/// 客户端模拟页测试，验证页面会区分 OpenAI 与 Anthropic 的可用模型能力。
+/// 客户端模拟页测试，验证旧入口会重定向到开发者调用页面，且目标页会区分 OpenAI 与 Anthropic 的可用模型能力。
 /// </summary>
 public sealed class ClientSimulatorPageTests
 {
@@ -24,6 +25,7 @@ public sealed class ClientSimulatorPageTests
         await using var factory = new ClientSimulatorWebApplicationFactory();
         using var client = factory.CreateClient();
 
+        // 旧入口重定向后应成功渲染开发者调用页面中的模拟器区域
         var response = await client.GetAsync("/Admin/ClientSimulator");
         var html = await response.Content.ReadAsStringAsync();
 
@@ -165,6 +167,21 @@ internal sealed class ClientSimulatorWebApplicationFactory : WebApplicationFacto
                 IsEnabled = true
             });
         }
+
+        db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
+        {
+            Id = 1,
+            ProxyRequestTimeoutSeconds = 30,
+            ProxyRetryCount = 1,
+            DetectionRequestTimeoutSeconds = 60,
+            DetectionRetryCount = 0,
+            DetectionConcurrency = 1,
+            CircuitBreakerFailureThreshold = 5,
+            CircuitBreakerRecoveryMinutes = 2,
+            UsageLogRetentionDays = 7,
+            UsageLogAutoCleanupEnabled = true,
+            DeveloperFeaturesEnabled = true
+        });
 
         await db.SaveChangesAsync();
     }
