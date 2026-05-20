@@ -171,7 +171,7 @@ public sealed class DeveloperInvocationsPageTests
     }
 
     /// <summary>
-    /// 验证当前模型并发检测接口会返回真实活跃并发数据，包含最大并发和排队数。
+    /// 验证当前模型并发检测接口只返回最近 6 小时内出现过的模型，并包含最大并发和排队数。
     /// </summary>
     [Fact]
     public async Task Get_concurrency_returns_live_active_entries_when_feature_is_enabled()
@@ -197,27 +197,18 @@ public sealed class DeveloperInvocationsPageTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         using var document = JsonDocument.Parse(payload);
         var items = document.RootElement.GetProperty("items");
-        // 启用的映射有两个：debug-site-model（有并发限制）和 debug-site-model-2（无限制）
-        items.GetArrayLength().Should().Be(2);
+        items.GetArrayLength().Should().Be(1);
 
-        // 有活跃并发的排在前面
         var first = items[0];
         first.GetProperty("modelName").GetString().Should().Be("debug-site-model");
         first.GetProperty("siteName").GetString().Should().Be("Debug Site");
         first.GetProperty("activeCount").GetInt32().Should().Be(1);
         first.GetProperty("maxConcurrency").GetInt32().Should().Be(5);
         first.GetProperty("queueCount").GetInt32().Should().Be(0);
-
-        // 无并发的映射应包含 maxConcurrency 为 null（未设置限制）
-        var second = items[1];
-        second.GetProperty("modelName").GetString().Should().Be("debug-site-model-2");
-        second.GetProperty("activeCount").GetInt32().Should().Be(0);
-        second.GetProperty("maxConcurrency").ValueKind.Should().Be(JsonValueKind.Null);
-        second.GetProperty("queueCount").GetInt32().Should().Be(0);
     }
 
     /// <summary>
-    /// 验证当前模型并发检测接口在并发归零后仍展示所有启用的映射。
+    /// 验证当前模型并发检测接口会保留最近 6 小时内归零的模型，并显示 0 并发。
     /// </summary>
     [Fact]
     public async Task Get_concurrency_keeps_recent_zero_count_entries_when_feature_is_enabled()
@@ -244,9 +235,9 @@ public sealed class DeveloperInvocationsPageTests
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         using var document = JsonDocument.Parse(payload);
         var items = document.RootElement.GetProperty("items");
-        // 两个启用的映射都会返回
-        items.GetArrayLength().Should().Be(2);
-        var debugModel = items.EnumerateArray().First(x => x.GetProperty("modelName").GetString() == "debug-site-model");
+        items.GetArrayLength().Should().Be(1);
+        var debugModel = items[0];
+        debugModel.GetProperty("modelName").GetString().Should().Be("debug-site-model");
         debugModel.GetProperty("siteName").GetString().Should().Be("Debug Site");
         debugModel.GetProperty("activeCount").GetInt32().Should().Be(0);
     }
@@ -271,7 +262,7 @@ public sealed class DeveloperInvocationsPageTests
     }
 
     /// <summary>
-    /// 验证并发接口在请求排队时返回 queueCount 大于 0，且排在最前面。
+    /// 验证并发接口仅在最近 6 小时内出现过多个模型时，对排队项优先排序。
     /// </summary>
     [Fact]
     public async Task Get_concurrency_returns_queue_count_and_sorts_queued_first()
@@ -281,7 +272,17 @@ public sealed class DeveloperInvocationsPageTests
         var limiter = factory.Services.GetRequiredService<ModelConcurrencyLimiter>();
         var siteId = Guid.Parse("90909090-9090-9090-9090-909090909090");
 
-        // debug-site-model 配置了 MaxConcurrency=5，需占满全部槽位后才能触发排队
+        // 先让无限制模型进入最近记录，便于验证排序。
+        using var otherHandle = await limiter.AcquireAsync(
+            factory.Services,
+            siteId,
+            "debug-site-model-2",
+            ConcurrencyAcquireMode.SkipOnFull,
+            TimeSpan.FromSeconds(10),
+            CancellationToken.None);
+        otherHandle.Acquired.Should().BeTrue();
+
+        // debug-site-model 配置了 MaxConcurrency=5，需占满全部槽位后才能触发排队。
         var handles = new List<ConcurrencyAcquireResult>();
         for (var i = 0; i < 5; i++)
         {
@@ -296,7 +297,6 @@ public sealed class DeveloperInvocationsPageTests
             handles.Add(h);
         }
 
-        // 发起一个排队请求
         var waitingTask = limiter.AcquireAsync(
             factory.Services,
             siteId,
@@ -316,13 +316,11 @@ public sealed class DeveloperInvocationsPageTests
 
         items.GetArrayLength().Should().Be(2);
 
-        // 有排队的项排在第一位
         var first = items[0];
         first.GetProperty("modelName").GetString().Should().Be("debug-site-model");
         first.GetProperty("queueCount").GetInt32().Should().BeGreaterThan(0);
         first.GetProperty("activeCount").GetInt32().Should().Be(5);
 
-        // 无排队的项排在后面
         var second = items[1];
         second.GetProperty("modelName").GetString().Should().Be("debug-site-model-2");
         second.GetProperty("queueCount").GetInt32().Should().Be(0);
@@ -333,13 +331,24 @@ public sealed class DeveloperInvocationsPageTests
     }
 
     /// <summary>
-    /// 验证并发接口返回所有启用的站点模型映射，未设置并发的显示 null。
+    /// 验证并发接口对最近 6 小时内出现过的无限制模型返回 null 最大并发。
     /// </summary>
     [Fact]
-    public async Task Get_concurrency_returns_all_enabled_mappings_with_null_for_unlimited()
+    public async Task Get_concurrency_returns_null_for_unlimited_recent_model()
     {
         await using var factory = new DeveloperInvocationsWebApplicationFactory(true, new DeveloperInvocationsFakeProxyForwardService());
         using var client = factory.CreateClient();
+        var limiter = factory.Services.GetRequiredService<ModelConcurrencyLimiter>();
+        var siteId = Guid.Parse("90909090-9090-9090-9090-909090909090");
+
+        using var handle = await limiter.AcquireAsync(
+            factory.Services,
+            siteId,
+            "debug-site-model-2",
+            ConcurrencyAcquireMode.SkipOnFull,
+            TimeSpan.FromSeconds(10),
+            CancellationToken.None);
+        handle.Acquired.Should().BeTrue();
 
         var response = await client.GetAsync("/Admin/Developer/Invocations?handler=Concurrency");
         var payload = await response.Content.ReadAsStringAsync();
@@ -348,15 +357,9 @@ public sealed class DeveloperInvocationsPageTests
         using var document = JsonDocument.Parse(payload);
         var items = document.RootElement.GetProperty("items");
 
-        items.GetArrayLength().Should().Be(2);
-
-        // debug-site-model 设置了 MaxConcurrency=5
-        var withLimit = items.EnumerateArray().First(x => x.GetProperty("modelName").GetString() == "debug-site-model");
-        withLimit.GetProperty("maxConcurrency").GetInt32().Should().Be(5);
-
-        // debug-site-model-2 的 MaxConcurrency=0，应返回 null
-        var withoutLimit = items.EnumerateArray().First(x => x.GetProperty("modelName").GetString() == "debug-site-model-2");
-        withoutLimit.GetProperty("maxConcurrency").ValueKind.Should().Be(JsonValueKind.Null);
+        items.GetArrayLength().Should().Be(1);
+        items[0].GetProperty("modelName").GetString().Should().Be("debug-site-model-2");
+        items[0].GetProperty("maxConcurrency").ValueKind.Should().Be(JsonValueKind.Null);
     }
 
     /// <summary>

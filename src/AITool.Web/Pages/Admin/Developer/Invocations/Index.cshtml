@@ -204,8 +204,15 @@
             <div class="tab-pane fade @(concurrencyTabActive ? "show active" : null)" id="developerConcurrencyPane" role="tabpanel">
                 <div class="page-header mb-3">
                     <div>
-                        <h3 class="page-title h4 mb-1">当前模型并发数检测</h3>
-                        <p class="page-subtitle mb-0">仅展示此时此刻真实占用中的站点模型并发，不读取配置并发值，也不会参与任何限流判断。</p>
+                        <h3 class="page-title h4 mb-1 d-flex align-items-center gap-2">
+                            <span>当前模型并发数检测</span>
+                            <button type="button"
+                                    class="concurrency-help-trigger"
+                                    data-bs-toggle="tooltip"
+                                    data-bs-placement="top"
+                                    title="仅展示最近 6 小时内出现过的站点模型，并同步显示当前并发数、最大并发和排队数。"
+                                    aria-label="并发说明">?</button>
+                        </h3>
                     </div>
                     <div class="concurrency-refresh-tip">进入此页后自动刷新</div>
                 </div>
@@ -808,6 +815,28 @@
         background: #eff6ff;
         color: #1d4ed8;
         font-weight: 700;
+    }
+
+    .concurrency-help-trigger {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 20px;
+        height: 20px;
+        padding: 0;
+        border: 0;
+        border-radius: 999px;
+        background: #e5e7eb;
+        color: #4b5563;
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1;
+        cursor: pointer;
+    }
+
+    .concurrency-help-trigger:hover {
+        background: #d1d5db;
+        color: #111827;
     }
 
     .concurrency-queued-row {
@@ -1611,7 +1640,7 @@
                 }
 
                 if (!Array.isArray(items) || items.length === 0) {
-                    tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-secondary py-4">暂无启用的站点模型映射</td></tr>';
+                    tableBody.innerHTML = '<tr><td colspan="5" class="text-center text-secondary py-4">最近 6 小时内没有模型并发记录</td></tr>';
                     return;
                 }
 
@@ -1864,6 +1893,12 @@
                     refreshConcurrencyTable();
                 });
             }
+
+            document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (element) {
+                if (window.bootstrap && window.bootstrap.Tooltip) {
+                    new window.bootstrap.Tooltip(element);
+                }
+            });
 
             activateDeveloperTabFromLocation();
 

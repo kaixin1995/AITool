@@ -213,7 +213,7 @@ public sealed class IndexModel : PageModel
     }
 
     /// <summary>
-    /// 返回所有启用的站点模型映射及其实时并发、排队状态。
+    /// 返回最近 6 小时内出现过的站点模型及其实时并发、排队状态。
     /// </summary>
     public async Task<IActionResult> OnGetConcurrencyAsync(CancellationToken cancellationToken = default)
     {
@@ -223,45 +223,55 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        // 查询所有启用的站点模型映射，关联站点名
-        var mappings = await (
-            from m in _dbContext.SiteModelMappings.AsNoTracking()
-            where m.IsEnabled
-            join s in _dbContext.Sites.AsNoTracking() on m.SiteId equals s.Id into sites
-            from s in sites.DefaultIfEmpty()
-            select new
-            {
-                m.SiteId,
-                SiteName = s != null ? s.Name : "-",
-                ModelName = m.RemoteModelName,
-                m.MaxConcurrency
-            }
-        ).ToListAsync(cancellationToken);
-
-        // 获取内存中的实时并发快照
         var snapshots = _concurrencyLimiter.ListRecent(ModelConcurrencyLimiter.RecentRetention);
-        var snapshotMap = snapshots
-            .GroupBy(x => $"{x.SiteId:N}:{x.SiteModelName}", StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
-
-        var items = mappings.Select(m =>
+        if (snapshots.Count == 0)
         {
-            var key = $"{m.SiteId:N}:{m.ModelName}";
-            var snap = snapshotMap.TryGetValue(key, out var s) ? s : null;
-            return new DeveloperModelConcurrencyDto
+            return new JsonResult(new DeveloperModelConcurrencyResponse
             {
-                ModelName = m.ModelName,
-                SiteName = m.SiteName,
-                ActiveCount = snap?.ActiveCount ?? 0,
-                MaxConcurrency = m.MaxConcurrency > 0 ? m.MaxConcurrency : null,
-                QueueCount = snap?.QueueCount ?? 0
-            };
-        })
-        .OrderByDescending(x => x.QueueCount > 0 ? 1 : 0)
-        .ThenByDescending(x => x.QueueCount)
-        .ThenBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
-        .ThenBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
-        .ToList();
+                RefreshedAt = DateTimeOffset.Now,
+                Items = []
+            });
+        }
+
+        var siteIds = snapshots.Select(x => x.SiteId).Distinct().ToList();
+        var modelNames = snapshots.Select(x => x.SiteModelName).Distinct(StringComparer.Ordinal).ToList();
+        var siteNames = await _dbContext.Sites
+            .AsNoTracking()
+            .Where(x => siteIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+        var mappings = await _dbContext.SiteModelMappings
+            .AsNoTracking()
+            .Where(x => x.IsEnabled && siteIds.Contains(x.SiteId) && modelNames.Contains(x.RemoteModelName))
+            .Select(x => new
+            {
+                x.SiteId,
+                x.RemoteModelName,
+                x.MaxConcurrency
+            })
+            .ToListAsync(cancellationToken);
+        var mappingLimits = mappings.ToDictionary(
+            x => $"{x.SiteId:N}:{x.RemoteModelName}",
+            x => x.MaxConcurrency,
+            StringComparer.Ordinal);
+
+        var items = snapshots
+            .Select(x =>
+            {
+                var key = $"{x.SiteId:N}:{x.SiteModelName}";
+                return new DeveloperModelConcurrencyDto
+                {
+                    ModelName = x.SiteModelName,
+                    SiteName = siteNames.TryGetValue(x.SiteId, out var siteName) ? siteName : "-",
+                    ActiveCount = x.ActiveCount,
+                    MaxConcurrency = mappingLimits.TryGetValue(key, out var maxConcurrency) && maxConcurrency > 0 ? maxConcurrency : null,
+                    QueueCount = x.QueueCount
+                };
+            })
+            .OrderByDescending(x => x.QueueCount > 0 ? 1 : 0)
+            .ThenByDescending(x => x.QueueCount)
+            .ThenBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         return new JsonResult(new DeveloperModelConcurrencyResponse
         {
