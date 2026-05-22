@@ -67,13 +67,13 @@
     .health-status-bars {
         display: flex;
         align-items: stretch;
-        gap: 3px;
-        width: 216px;
-        min-width: 216px;
+        gap: 2px;
+        width: 118px;
+        min-width: 118px;
     }
 
     .health-status-bar-item {
-        width: 10px;
+        width: 8px;
         height: 36px;
         border-radius: 3px;
         background: var(--success);
@@ -360,7 +360,7 @@
                 {
                     var healths = Model.HealthData.GetValueOrDefault(monitored.ModelLibraryItemId) ?? [];
                     var detailId = $"health-detail-{monitored.ModelLibraryItemId:N}";
-                    var overviewStatusSlots = BuildOverviewStatusSlots(monitored.TimelineSegments);
+                    var overviewStatusSlots = BuildOverviewRateSlots(monitored.SuccessCount, monitored.FailureCount);
 
                     <tr class="health-model-group" data-display-name="@monitored.DisplayName" data-detail-id="@detailId">
                         <td class="health-model-cell">
@@ -368,24 +368,17 @@
                             <div class="health-model-meta">@monitored.SiteCount 个关联站点</div>
                         </td>
                         <td>
-                            @if (overviewStatusSlots.Any())
-                            {
-                                <div class="health-status-bars">
-                                    @foreach (var slot in overviewStatusSlots)
-                                    {
-                                        var barClass = slot.Status == "fail"
-                                            ? "fail"
-                                            : slot.Status == "empty"
-                                                ? "empty"
-                                                : string.Empty;
-                                        <div class="health-status-bar-item @barClass" title="@slot.Title"></div>
-                                    }
-                                </div>
-                            }
-                            else
-                            {
-                                <span class="text-secondary">-</span>
-                            }
+                            <div class="health-status-bars">
+                                @foreach (var slot in overviewStatusSlots)
+                                {
+                                    var barClass = slot.Status == "fail"
+                                        ? "fail"
+                                        : slot.Status == "empty"
+                                            ? "empty"
+                                            : string.Empty;
+                                    <div class="health-status-bar-item @barClass" title="@slot.Title"></div>
+                                }
+                            </div>
                         </td>
                         <td>
                             <span class="health-kpi-value success-rate">@((monitored.AverageSuccessRate * 100).ToString("F1"))%</span>
@@ -577,6 +570,62 @@
     private static string ResolveOverviewSlotStatus(int failureCount, int totalCount)
     {
         return totalCount > 0 && failureCount > 0 ? "fail" : "success";
+    }
+
+    /// <summary>
+    /// 按模型整体成功率生成固定 12 条的概览竖条，避免失败分散时被放大成整排红条。
+    /// </summary>
+    private static List<OverviewStatusSlot> BuildOverviewRateSlots(int successCount, int failureCount)
+    {
+        const int slotCount = 12;
+        var totalCount = successCount + failureCount;
+        if (totalCount <= 0)
+        {
+            return Enumerable.Range(0, slotCount)
+                .Select(_ => new OverviewStatusSlot
+                {
+                    Status = "empty",
+                    Title = "暂无请求记录"
+                })
+                .ToList();
+        }
+
+        var successSlotCount = (int)Math.Floor(successCount * slotCount / (double)totalCount);
+        if (successCount > 0)
+        {
+            successSlotCount = Math.Max(successSlotCount, 1);
+        }
+
+        if (failureCount > 0)
+        {
+            successSlotCount = Math.Min(successSlotCount, slotCount - 1);
+        }
+
+        successSlotCount = Math.Clamp(successSlotCount, 0, slotCount);
+        var failureSlotCount = slotCount - successSlotCount;
+        var successRateText = (successCount * 100d / totalCount).ToString("F1");
+        var failureRateText = (failureCount * 100d / totalCount).ToString("F1");
+        var slots = new List<OverviewStatusSlot>(slotCount);
+
+        for (var i = 0; i < successSlotCount; i++)
+        {
+            slots.Add(new OverviewStatusSlot
+            {
+                Status = "success",
+                Title = $"成功率 {successRateText}% | 成功 {successCount} 次 | 失败 {failureCount} 次"
+            });
+        }
+
+        for (var i = 0; i < failureSlotCount; i++)
+        {
+            slots.Add(new OverviewStatusSlot
+            {
+                Status = "fail",
+                Title = $"失败率 {failureRateText}% | 成功 {successCount} 次 | 失败 {failureCount} 次"
+            });
+        }
+
+        return slots;
     }
 
     private static string GetTimelineTitle(string range, int totalCount, int successCount, int failureCount)

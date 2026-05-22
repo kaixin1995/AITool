@@ -284,6 +284,50 @@ public sealed class UsageLogsApiTests
         html.Should().Contain("· 成功 1 次");
         html.Should().Contain("health-status-bar-item fail");
     }
+
+    /// <summary>
+    /// 验证模型健康概览会固定渲染 12 条，并按成功率比例分配成功/失败颜色。
+    /// </summary>
+    [Fact]
+    public async Task Get_model_health_page_renders_fixed_overview_bars_by_success_ratio()
+    {
+        await using var factory = new UsageLogsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var html = await client.GetStringAsync("/Admin/ModelHealth?range=30d");
+
+        var totalBarCount = CountOccurrences(html, "class=\"health-status-bar-item");
+        var failBarCount = CountOccurrences(html, "class=\"health-status-bar-item fail");
+
+        totalBarCount.Should().Be(12);
+        failBarCount.Should().Be(6);
+        (totalBarCount - failBarCount).Should().Be(6);
+    }
+
+    /// <summary>
+    /// 统计文本出现次数，便于校验页面渲染出的条目数量。
+    /// </summary>
+    private static int CountOccurrences(string text, string value)
+    {
+        if (string.IsNullOrEmpty(text) || string.IsNullOrEmpty(value))
+        {
+            return 0;
+        }
+
+        var count = 0;
+        var startIndex = 0;
+        while (true)
+        {
+            var index = text.IndexOf(value, startIndex, StringComparison.Ordinal);
+            if (index < 0)
+            {
+                return count;
+            }
+
+            count++;
+            startIndex = index + value.Length;
+        }
+    }
 }
 
 /// <summary>
