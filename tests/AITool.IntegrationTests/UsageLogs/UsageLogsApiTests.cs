@@ -300,8 +300,9 @@ public sealed class UsageLogsApiTests
         var failBarCount = CountOccurrences(html, "class=\"health-status-bar-item fail");
 
         totalBarCount.Should().Be(12);
-        failBarCount.Should().Be(6);
-        (totalBarCount - failBarCount).Should().Be(6);
+        failBarCount.Should().Be(4);
+        (totalBarCount - failBarCount).Should().Be(8);
+        html.Should().Contain("linear-gradient(to right, var(--success) 0 50%, var(--danger) 50% 100%)");
     }
 
     /// <summary>
@@ -499,6 +500,32 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 FirstTokenLatencyMs = 5400,
                 StreamDurationMs = 2600,
                 TotalDurationMs = 8000,
+                RequestedAt = new DateTimeOffset(2026, 4, 28, 10, 0, 0, TimeSpan.Zero)
+            },
+            new ProxyUsageLog
+            {
+                RequestId = Guid.Parse("b1b1b1b1-b1b1-b1b1-b1b1-b1b1b1b1b1b1"),
+                AccessKeyId = Guid.NewGuid(),
+                ProtocolType = "OpenAI",
+                ForwardingMode = "direct",
+                RequestModel = "chat-prod",
+                AttemptedModel = "gpt-5.5",
+                TargetSiteId = FirstSiteId,
+                Status = "success",
+                Source = "proxy",
+                RetryCount = 1,
+                AttemptIndex = 1,
+                IsFinalResult = true,
+                FallbackTriggered = false,
+                ErrorMessage = string.Empty,
+                InputTokens = 12,
+                CachedTokens = 0,
+                OutputTokens = 30,
+                TotalTokens = 42,
+                IsStreaming = true,
+                FirstTokenLatencyMs = 800,
+                StreamDurationMs = 400,
+                TotalDurationMs = 1200,
                 RequestedAt = new DateTimeOffset(2026, 4, 28, 10, 0, 0, TimeSpan.Zero)
             },
             new ProxyUsageLog

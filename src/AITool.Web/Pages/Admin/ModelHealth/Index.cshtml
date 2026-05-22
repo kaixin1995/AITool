@@ -454,8 +454,7 @@
                                                     <div class="health-timeline-line">
                                                         @foreach (var segment in site.TimelineSegments)
                                                         {
-                                                            var segmentClass = segment.Status == "success" ? string.Empty : "fail";
-                                                            <div class="health-timeline-segment @segmentClass" title="@GetTimelineSegmentTitle(segment)"></div>
+                                                            <div class="health-timeline-segment" style="@BuildTimelineSegmentStyle(segment)" title="@GetTimelineSegmentTitle(segment)"></div>
                                                         }
                                                     </div>
                                                     <div class="health-timeline-range">
@@ -626,6 +625,31 @@
         }
 
         return slots;
+    }
+
+    /// <summary>
+    /// 按单个时间块内的成功/失败占比渲染颜色，避免少量失败把整块放大成全红。
+    /// </summary>
+    private static string BuildTimelineSegmentStyle(ModelHealthTimelineSegment segment)
+    {
+        if (segment.Count <= 0)
+        {
+            return "background: #e2e8f0;";
+        }
+
+        var successRate = Math.Clamp(segment.SuccessCount * 100d / segment.Count, 0d, 100d);
+        if (successRate <= 0)
+        {
+            return "background: var(--danger);";
+        }
+
+        if (successRate >= 100)
+        {
+            return "background: var(--success);";
+        }
+
+        var successRateText = successRate.ToString("0.##", global::System.Globalization.CultureInfo.InvariantCulture);
+        return $"background: linear-gradient(to right, var(--success) 0 {successRateText}%, var(--danger) {successRateText}% 100%);";
     }
 
     private static string GetTimelineTitle(string range, int totalCount, int successCount, int failureCount)
