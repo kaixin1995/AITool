@@ -269,6 +269,9 @@
     var _currentEntryName = '';
     var _currentItems = [];
     var _siteInstances = [];
+    var _routeEditorLoadToken = 0;
+    var _pendingRouteSave = null;
+    var _routeSaveInFlight = false;
 
     function loadEntries(preferredEntryName) {
         fetch('/api/admin/route-rules/entries')
@@ -417,9 +420,14 @@
     }
 
     function loadRouteEditor(entryName) {
+        var loadToken = ++_routeEditorLoadToken;
         fetch('/api/admin/route-rules/list?modelName=' + encodeURIComponent(entryName))
             .then(function(r) { return r.json(); })
             .then(function(existingRules) {
+                if (loadToken !== _routeEditorLoadToken || entryName !== _currentEntryName) {
+                    return;
+                }
+
                 _currentItems = (existingRules || []).map(function(r) {
                     return {
                         siteId: r.siteId,
@@ -431,6 +439,10 @@
                 renderRouteList();
             })
             .catch(function(err) {
+                if (loadToken !== _routeEditorLoadToken || entryName !== _currentEntryName) {
+                    return;
+                }
+
                 showMsg('加载候选队列失败：' + err.message, false);
             });
     }
@@ -501,6 +513,7 @@
             siteModelName: selectedItem.siteModelName
         });
 
+        renderRouteList();
         persistCurrentQueue('已追加候选实例');
     }
 
@@ -602,32 +615,63 @@
             return;
         }
 
-        var rules = _currentItems.map(function(item) {
-            return {
-                upstreamModelName: item.upstreamModelName,
-                siteId: item.siteId,
-                siteModelName: item.siteModelName
-            };
-        });
+        _pendingRouteSave = {
+            entryName: _currentEntryName,
+            successMessage: successMessage,
+            rules: _currentItems.map(function(item) {
+                return {
+                    upstreamModelName: item.upstreamModelName,
+                    siteId: item.siteId,
+                    siteModelName: item.siteModelName
+                };
+            })
+        };
+
+        flushRouteSaveQueue();
+    }
+
+    function flushRouteSaveQueue() {
+        if (_routeSaveInFlight || !_pendingRouteSave) {
+            return;
+        }
+
+        var saveRequest = _pendingRouteSave;
+        _pendingRouteSave = null;
+        _routeSaveInFlight = true;
 
         fetch('/api/admin/route-rules/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ externalModelName: _currentEntryName, rules: rules })
+            body: JSON.stringify({ externalModelName: saveRequest.entryName, rules: saveRequest.rules })
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (data.message === '保存成功') {
-                showMsg(successMessage, true);
-                loadEntries(_currentEntryName);
-                loadRouteEditor(_currentEntryName);
+                syncEntryCandidateCount(saveRequest.entryName, saveRequest.rules.length);
+                if (!_pendingRouteSave) {
+                    showMsg(saveRequest.successMessage, true);
+                }
             } else {
                 showMsg(data.message || '保存失败', false);
             }
         })
         .catch(function(err) {
             showMsg('保存失败：' + err.message, false);
+        })
+        .finally(function() {
+            _routeSaveInFlight = false;
+            flushRouteSaveQueue();
         });
+    }
+
+    function syncEntryCandidateCount(entryName, candidateCount) {
+        var entry = _entries.find(function(item) { return item.entryName === entryName; });
+        if (!entry) {
+            return;
+        }
+
+        entry.candidateCount = candidateCount;
+        renderEntryList();
     }
 
     function showMsg(msg, success) {

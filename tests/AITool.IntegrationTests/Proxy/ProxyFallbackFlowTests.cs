@@ -163,6 +163,27 @@ public sealed class ProxyFallbackFlowTests
     }
 
     /// <summary>
+    /// 验证路由规则页面会串行保存拖拽结果，避免快速拖动时旧顺序覆盖新顺序。
+    /// </summary>
+    [Fact]
+    public async Task Get_routes_page_serializes_queue_save_requests()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/Routes");
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        html.Should().Contain("var _pendingRouteSave = null;");
+        html.Should().Contain("var _routeSaveInFlight = false;");
+        html.Should().Contain("function flushRouteSaveQueue()");
+        html.Should().Contain("if (_routeSaveInFlight || !_pendingRouteSave)");
+        html.Should().Contain("var saveRequest = _pendingRouteSave;");
+        html.Should().Contain("function syncEntryCandidateCount(entryName, candidateCount)");
+    }
+
+    /// <summary>
     /// 验证首条路由失败后会回退到下一条路由，并完整记录每次尝试日志。
     /// </summary>
     [Fact]
