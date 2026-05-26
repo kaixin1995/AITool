@@ -1,5 +1,6 @@
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AITool.ApplicationTests.Proxy;
 
@@ -8,6 +9,19 @@ namespace AITool.ApplicationTests.Proxy;
 /// </summary>
 public sealed class ProxyForwardServiceResponseTests
 {
+    [Fact]
+    public void Constructor_Disables_Default_HttpClient_Timeout()
+    {
+        var httpClient = new HttpClient
+        {
+            Timeout = TimeSpan.FromSeconds(100)
+        };
+
+        _ = new ProxyForwardService(httpClient, NullLogger<ProxyForwardService>.Instance);
+
+        httpClient.Timeout.Should().Be(global::System.Threading.Timeout.InfiniteTimeSpan);
+    }
+
     // ========== HasUsableResponse ==========
 
     [Fact]

@@ -27,6 +27,8 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// </summary>
     public ProxyForwardService(HttpClient httpClient, ILogger<ProxyForwardService> logger)
     {
+        // 真实超时统一交给每次请求的 CancellationToken 控制，避免 HttpClient 默认 100 秒提前截断。
+        httpClient.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
         _httpClient = httpClient;
         _logger = logger;
     }

@@ -997,6 +997,8 @@ public sealed class ChatApiController : ControllerBase
         var requestBody = BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort);
 
         var client = _httpClientFactory.CreateClient();
+        // 这里同样交给运行时设置控制超时，避免落回 HttpClient 默认 100 秒。
+        client.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, requestTimeoutSeconds)));
         var stopwatch = Stopwatch.StartNew();
