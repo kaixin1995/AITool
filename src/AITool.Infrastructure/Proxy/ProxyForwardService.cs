@@ -629,12 +629,28 @@ public sealed class ProxyForwardService : IProxyForwardService
             return (input, cached, output);
         }
 
-        var prompt = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
-        var promptDetails = usage.TryGetProperty("prompt_tokens_details", out var ptd) ? ptd : default;
-        var cachedTokens = promptDetails.ValueKind == JsonValueKind.Object && promptDetails.TryGetProperty("cached_tokens", out var ct)
+        var openAiInputTokens = usage.TryGetProperty("input_tokens", out var inputTokens)
+            ? inputTokens.GetInt32()
+            : usage.TryGetProperty("prompt_tokens", out var promptTokens)
+                ? promptTokens.GetInt32()
+                : 0;
+
+        // OpenAI Chat Completions 与 Responses 的缓存字段结构不同，这里统一兼容两种格式。
+        var inputDetails = usage.TryGetProperty("input_tokens_details", out var itd)
+            ? itd
+            : usage.TryGetProperty("prompt_tokens_details", out var ptd)
+                ? ptd
+                : default;
+        var cachedTokens = inputDetails.ValueKind == JsonValueKind.Object && inputDetails.TryGetProperty("cached_tokens", out var ct)
             ? ct.GetInt32()
             : 0;
-        var completion = usage.TryGetProperty("completion_tokens", out var completionTokens) ? completionTokens.GetInt32() : 0;
-        return (prompt, cachedTokens, completion);
+
+        var openAiOutputTokens = usage.TryGetProperty("output_tokens", out var outputTokens)
+            ? outputTokens.GetInt32()
+            : usage.TryGetProperty("completion_tokens", out var completionTokens)
+                ? completionTokens.GetInt32()
+                : 0;
+
+        return (openAiInputTokens, cachedTokens, openAiOutputTokens);
     }
 }

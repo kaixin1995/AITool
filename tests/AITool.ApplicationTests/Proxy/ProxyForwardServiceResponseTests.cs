@@ -1,3 +1,4 @@
+using System.Reflection;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -20,6 +21,32 @@ public sealed class ProxyForwardServiceResponseTests
         _ = new ProxyForwardService(httpClient, NullLogger<ProxyForwardService>.Instance);
 
         httpClient.Timeout.Should().Be(global::System.Threading.Timeout.InfiniteTimeSpan);
+    }
+
+    // ========== Usage ==========
+
+    [Fact]
+    public void ExtractUsageMetrics_OpenAiChatCompletions_ReturnsPromptCachedAndCompletionTokens()
+    {
+        var body = """{"usage":{"prompt_tokens":120,"prompt_tokens_details":{"cached_tokens":45},"completion_tokens":30}}""";
+
+        var usage = ExtractUsageMetricsCore(body, "OpenAI");
+
+        usage.InputTokens.Should().Be(120);
+        usage.CachedTokens.Should().Be(45);
+        usage.OutputTokens.Should().Be(30);
+    }
+
+    [Fact]
+    public void ExtractUsageMetrics_OpenAiResponses_ReturnsInputCachedAndOutputTokens()
+    {
+        var body = """{"id":"resp_1","object":"response","usage":{"input_tokens":240,"input_tokens_details":{"cached_tokens":80},"output_tokens":60}}""";
+
+        var usage = ExtractUsageMetricsCore(body, "OpenAI");
+
+        usage.InputTokens.Should().Be(240);
+        usage.CachedTokens.Should().Be(80);
+        usage.OutputTokens.Should().Be(60);
     }
 
     // ========== HasUsableResponse ==========
@@ -156,5 +183,14 @@ public sealed class ProxyForwardServiceResponseTests
     {
         var msg = ProxyForwardService.BuildFailureMessage("not json", "OpenAI");
         msg.Should().Contain("unreadable");
+    }
+
+    private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageMetricsCore(string responseBody, string protocolType)
+    {
+        var method = typeof(ProxyForwardService).GetMethod("ExtractUsageMetrics", BindingFlags.NonPublic | BindingFlags.Static);
+
+        method.Should().NotBeNull();
+        return ((int InputTokens, int CachedTokens, int OutputTokens))method!
+            .Invoke(null, new object?[] { responseBody, protocolType })!;
     }
 }
