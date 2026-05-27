@@ -387,7 +387,7 @@ public sealed class ResponsesProxyTests
                 string.Empty,
                 "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\",\"output_index\":0,\"content_index\":0}",
                 string.Empty,
-                "data: {\"type\":\"response.completed\",\"id\":\"resp_test\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":2,\"total_tokens\":7}}",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\"}]}],\"usage\":{\"input_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens\":2,\"total_tokens\":7}}}",
                 string.Empty,
                 "data: [DONE]",
                 string.Empty
@@ -417,6 +417,9 @@ public sealed class ResponsesProxyTests
         logs[0].IsStreaming.Should().BeTrue();
         logs[0].Status.Should().Be("success");
         logs[0].IsFinalResult.Should().BeTrue();
+        logs[0].InputTokens.Should().Be(5);
+        logs[0].CachedTokens.Should().Be(1);
+        logs[0].OutputTokens.Should().Be(2);
     }
 
     /// <summary>

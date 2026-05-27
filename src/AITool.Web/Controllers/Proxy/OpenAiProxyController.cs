@@ -1488,24 +1488,44 @@ public sealed class OpenAiProxyController : ControllerBase
         {
             using var document = JsonDocument.Parse(jsonText);
             var root = document.RootElement;
-            if (!root.TryGetProperty("usage", out var usage))
+            var usage = root.TryGetProperty("usage", out var topLevelUsage)
+                ? topLevelUsage
+                : root.TryGetProperty("response", out var responseElement) && responseElement.TryGetProperty("usage", out var nestedUsage)
+                    ? nestedUsage
+                    : default;
+            if (usage.ValueKind != JsonValueKind.Object)
             {
                 return;
             }
 
-            if (usage.TryGetProperty("prompt_tokens", out var promptTokens) && promptTokens.ValueKind == JsonValueKind.Number)
+            if (usage.TryGetProperty("input_tokens", out var inputTokenElement) && inputTokenElement.ValueKind == JsonValueKind.Number)
+            {
+                inputTokens = inputTokenElement.GetInt32();
+            }
+            else if (usage.TryGetProperty("prompt_tokens", out var promptTokens) && promptTokens.ValueKind == JsonValueKind.Number)
             {
                 inputTokens = promptTokens.GetInt32();
             }
 
-            if (usage.TryGetProperty("completion_tokens", out var completionTokens) && completionTokens.ValueKind == JsonValueKind.Number)
+            if (usage.TryGetProperty("output_tokens", out var outputTokenElement) && outputTokenElement.ValueKind == JsonValueKind.Number)
+            {
+                outputTokens = outputTokenElement.GetInt32();
+            }
+            else if (usage.TryGetProperty("completion_tokens", out var completionTokens) && completionTokens.ValueKind == JsonValueKind.Number)
             {
                 outputTokens = completionTokens.GetInt32();
             }
 
-            if (usage.TryGetProperty("prompt_tokens_details", out var promptTokenDetails) &&
-                promptTokenDetails.TryGetProperty("cached_tokens", out var cachedTokenElement) &&
-                cachedTokenElement.ValueKind == JsonValueKind.Number)
+            // OpenAI Chat Completions 与 Responses 的缓存字段名称不同，流式统计同时兼容两种格式。
+            if (usage.TryGetProperty("input_tokens_details", out var inputTokenDetails) &&
+                inputTokenDetails.TryGetProperty("cached_tokens", out var inputCachedTokenElement) &&
+                inputCachedTokenElement.ValueKind == JsonValueKind.Number)
+            {
+                cachedTokens = inputCachedTokenElement.GetInt32();
+            }
+            else if (usage.TryGetProperty("prompt_tokens_details", out var promptTokenDetails) &&
+                     promptTokenDetails.TryGetProperty("cached_tokens", out var cachedTokenElement) &&
+                     cachedTokenElement.ValueKind == JsonValueKind.Number)
             {
                 cachedTokens = cachedTokenElement.GetInt32();
             }
