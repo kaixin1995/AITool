@@ -84,6 +84,7 @@ public sealed class AppDbContext : DbContext
             entity.HasKey(e => e.Id);
             entity.Property(e => e.Name).IsRequired().HasMaxLength(200);
             entity.Property(e => e.BaseUrl).IsRequired().HasMaxLength(500);
+            entity.Property(e => e.EndpointPathMode).IsRequired().HasMaxLength(50).HasDefaultValue("standard-root");
             entity.Property(e => e.ApiKey).IsRequired().HasMaxLength(500);
             entity.Property(e => e.ProtocolType).IsRequired().HasMaxLength(50);
             entity.Property(e => e.SupportsOpenAi).IsRequired();

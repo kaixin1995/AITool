@@ -277,6 +277,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteName = site.Name,
                                 ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
                                 BaseUrl = site.BaseUrl,
+                                EndpointPathMode = site.EndpointPathMode,
                                 ApiKey = site.ApiKey,
                                 SiteModelName = mapping.RemoteModelName
                             })
@@ -805,6 +806,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteId = site.Id,
                                 SiteName = site.Name,
                                 ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
+                                EndpointPathMode = site.EndpointPathMode,
                                 SupportsOpenAi = site.SupportsOpenAi,
                                 SupportsAnthropic = site.SupportsAnthropic,
                                 ExternalModelName = route.ExternalModelName,
@@ -879,6 +881,7 @@ public sealed class ProxyRequestMetadataCache
                                 site.SupportsOpenAi,
                                 site.SupportsAnthropic,
                                 site.BaseUrl,
+                                site.EndpointPathMode,
                                 site.ApiKey,
                                 SiteModelName = mapping.RemoteModelName
                             })
@@ -900,6 +903,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteName = first.SiteName,
                                 ProtocolType = ResolveSiteProtocolType(first.SupportsOpenAi, first.SupportsAnthropic),
                                 BaseUrl = first.BaseUrl,
+                                EndpointPathMode = first.EndpointPathMode,
                                 ApiKey = first.ApiKey,
                                 SiteModelName = first.SiteModelName
                             };
@@ -1081,6 +1085,10 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public string BaseUrl { get; set; } = string.Empty;
     /// <summary>
+    /// 接口路径模式。
+    /// </summary>
+    public string EndpointPathMode { get; set; } = AITool.Application.Sites.SiteEndpointPathResolver.StandardRoot;
+    /// <summary>
     /// 接口密钥。
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;
@@ -1187,6 +1195,10 @@ public sealed class CachedChatTarget
     /// </summary>
     public string BaseUrl { get; set; } = string.Empty;
     /// <summary>
+    /// 接口路径模式。
+    /// </summary>
+    public string EndpointPathMode { get; set; } = AITool.Application.Sites.SiteEndpointPathResolver.StandardRoot;
+    /// <summary>
     /// 接口密钥。
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;
@@ -1244,6 +1256,10 @@ public sealed class CachedFallbackTarget
     /// 基础地址。
     /// </summary>
     public string BaseUrl { get; set; } = string.Empty;
+    /// <summary>
+    /// 接口路径模式。
+    /// </summary>
+    public string EndpointPathMode { get; set; } = AITool.Application.Sites.SiteEndpointPathResolver.StandardRoot;
     /// <summary>
     /// 接口密钥。
     /// </summary>

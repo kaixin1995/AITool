@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
+using AITool.Application.Sites;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.Logging;
 
@@ -414,8 +415,8 @@ public sealed class ProxyForwardService : IProxyForwardService
     {
         var targetPath = string.IsNullOrWhiteSpace(request.TargetPath)
             ? request.ProtocolType == "Anthropic"
-                ? "/v1/messages"
-                : "/v1/chat/completions"
+                ? SiteEndpointPathResolver.ResolvePath(request.TargetEndpointPathMode, "messages")
+                : SiteEndpointPathResolver.ResolvePath(request.TargetEndpointPathMode, "chat/completions")
             : request.TargetPath!;
         var targetUrl = $"{request.TargetBaseUrl.TrimEnd('/')}/{targetPath.TrimStart('/')}";
 

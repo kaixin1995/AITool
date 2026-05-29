@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using AITool.Application.SiteCatalog;
+using AITool.Application.Sites;
 using AITool.Domain.Sites;
 
 namespace AITool.Infrastructure.OpenAI;
@@ -27,7 +28,7 @@ public sealed class OpenAiSiteCatalogClient : ISiteCatalogClient
     /// </summary>
     public async Task<IReadOnlyList<string>> GetModelsAsync(Site site, CancellationToken cancellationToken)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, $"{site.BaseUrl.TrimEnd('/')}/v1/models");
+        var request = new HttpRequestMessage(HttpMethod.Get, SiteEndpointPathResolver.BuildUrl(site.BaseUrl, site.EndpointPathMode, "models"));
         request.Headers.Add("Authorization", $"Bearer {site.ApiKey}");
 
         using var response = await _httpClient.SendAsync(request, cancellationToken);

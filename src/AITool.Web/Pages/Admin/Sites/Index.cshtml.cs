@@ -300,6 +300,7 @@ public class CreateModel : PageModel
         {
             Name = Command.Name,
             BaseUrl = Command.BaseUrl,
+            EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(Command.EndpointPathMode),
             ApiKey = Command.ApiKey,
             ProtocolType = ResolveSiteProtocolType(Command.SupportsOpenAi, Command.SupportsAnthropic),
             SupportsOpenAi = Command.SupportsOpenAi,

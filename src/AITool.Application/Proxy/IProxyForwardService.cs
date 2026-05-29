@@ -1,6 +1,7 @@
 namespace AITool.Application.Proxy;
 
 using System.Diagnostics.CodeAnalysis;
+using Sites;
 
 /// <summary>
 /// 代理转发请求参数，用于描述一次上游调用所需的完整上下文。
@@ -11,6 +12,11 @@ public sealed class ProxyForwardRequest
     /// 目标站点根地址，转发层会基于该地址拼接具体接口路径。
     /// </summary>
     public string TargetBaseUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 目标站点接口路径模式，决定默认接口是否需要补 /v1 前缀。
+    /// </summary>
+    public string TargetEndpointPathMode { get; set; } = SiteEndpointPathResolver.StandardRoot;
 
     /// <summary>
     /// 目标站点 API 密钥，用于上游鉴权。

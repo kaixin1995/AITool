@@ -16,6 +16,11 @@ public sealed class CreateSiteCommand
     public string BaseUrl { get; set; } = string.Empty;
 
     /// <summary>
+    /// 接口路径模式，用于区分根地址是否已经包含接口版本路径。
+    /// </summary>
+    public string EndpointPathMode { get; set; } = SiteEndpointPathResolver.StandardRoot;
+
+    /// <summary>
     /// 站点访问密钥，用于调用上游站点接口。
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;

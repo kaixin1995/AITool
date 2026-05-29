@@ -26,7 +26,7 @@
     <div class="form-section-title">粘贴数据</div>
     <p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">
         从 Excel / Google Sheets / 表格中复制数据后直接粘贴到下方文本框。<br>
-        格式：<code>站点名称[TAB]站点地址[TAB]密钥</code>，每行一条，首行为表头会自动跳过。<br>
+        格式：<code>站点名称[TAB]站点地址[TAB]密钥</code>，每行一条，首行为表头会自动跳过，TSV 默认使用“自动补 /v1”。<br>
         也支持直接粘贴 JSON 数组格式。
     </p>
     <textarea id="rawInput" class="form-control" rows="8" placeholder="site_name&#9;site_url&#9;Key&#10;示例站点&#9;https://api.example.com&#9;sk-xxxx"
@@ -57,6 +57,7 @@
                         <th style="width:40px;"><input type="checkbox" id="checkAll" checked onchange="toggleAll(this)"></th>
                         <th>站点名称</th>
                         <th>站点地址</th>
+                        <th>接口路径</th>
                         <th>访问密钥</th>
                         <th>协议类型</th>
                     </tr>
@@ -120,6 +121,7 @@
             parsedSites.push({
                 name: name,
                 baseUrl: url,
+                endpointPathMode: 'standard-root',
                 apiKey: key,
                 protocolType: protocol,
                 selected: true
@@ -150,6 +152,7 @@
                 '<td><input type="checkbox" class="site-check" data-index="' + i + '" ' + (s.selected ? 'checked' : '') + '></td>' +
                 '<td><strong>' + escapeHtml(s.name) + '</strong></td>' +
                 '<td><code>' + escapeHtml(s.baseUrl) + '</code></td>' +
+                '<td>' + (s.endpointPathMode === 'versioned-base' ? '不补 /v1' : '自动补 /v1') + '</td>' +
                 '<td><code>' + escapeHtml(s.apiKey.substring(0, 8)) + '****</code></td>' +
                 '<td><span class="badge bg-info">' + s.protocolType + '</span></td>' +
                 '</tr>';
@@ -206,6 +209,7 @@
                 parsedSites.push({
                     name: item.name,
                     baseUrl: item.baseUrl,
+                    endpointPathMode: item.endpointPathMode || 'standard-root',
                     apiKey: item.apiKey,
                     protocolType: item.protocolType || 'OpenAI',
                     selected: true

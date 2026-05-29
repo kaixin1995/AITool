@@ -1,3 +1,4 @@
+using AITool.Application.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -52,6 +53,12 @@ public class EditModel : PageModel
     public string BaseUrl { get; set; } = string.Empty;
 
     /// <summary>
+    /// 接口路径模式。
+    /// </summary>
+    [BindProperty]
+    public string EndpointPathMode { get; set; } = SiteEndpointPathResolver.StandardRoot;
+
+    /// <summary>
     /// 接口密钥。
     /// </summary>
     [BindProperty]
@@ -94,6 +101,7 @@ public class EditModel : PageModel
 
         Name = site.Name;
         BaseUrl = site.BaseUrl;
+        EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(site.EndpointPathMode);
         ApiKey = null;
         SupportsOpenAi = site.SupportsOpenAi;
         SupportsAnthropic = site.SupportsAnthropic;
@@ -121,6 +129,7 @@ public class EditModel : PageModel
 
             site.Name = Name;
             site.BaseUrl = BaseUrl;
+            site.EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(EndpointPathMode);
             // 编辑时留空表示继续使用原有密钥。
             if (!string.IsNullOrWhiteSpace(ApiKey))
             {

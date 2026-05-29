@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Application.Sites;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -45,6 +46,7 @@ public class ExportModel : PageModel
             Id = s.Id,
             Name = s.Name,
             BaseUrl = s.BaseUrl,
+            EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(s.EndpointPathMode),
             ApiKey = s.ApiKey,
             SupportsOpenAi = s.SupportsOpenAi,
             SupportsAnthropic = s.SupportsAnthropic
@@ -56,6 +58,7 @@ public class ExportModel : PageModel
             id = s.Id,
             name = s.Name,
             baseUrl = s.BaseUrl,
+            endpointPathMode = SiteEndpointPathResolver.NormalizeMode(s.EndpointPathMode),
             apiKey = s.ApiKey,
             supportsOpenAi = s.SupportsOpenAi,
             supportsAnthropic = s.SupportsAnthropic
@@ -87,6 +90,11 @@ public class SiteExportItem
     /// 站点基础地址。
     /// </summary>
     public string BaseUrl { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 接口路径模式。
+    /// </summary>
+    public string EndpointPathMode { get; set; } = SiteEndpointPathResolver.StandardRoot;
 
     /// <summary>
     /// 站点 API Key。

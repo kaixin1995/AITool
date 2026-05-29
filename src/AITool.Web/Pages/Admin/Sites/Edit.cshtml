@@ -38,6 +38,14 @@
         </div>
 
         <div class="mb-3">
+            <label asp-for="EndpointPathMode" class="form-label form-label-tip">站点类型<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="原生：请求地址会自动补 /v1，例如 /v1/chat/completions、/v1/messages。非原生：适用于地址本身已包含接口前缀的站点，例如 https://api.z.ai/api/coding/paas/v4，最终会直接拼接 /chat/completions、/messages。">?</span></label>
+            <select asp-for="EndpointPathMode" class="form-select">
+                <option value="standard-root">原生</option>
+                <option value="versioned-base">非原生</option>
+            </select>
+        </div>
+
+        <div class="mb-3">
             <label asp-for="ApiKey" class="form-label">访问密钥</label>
             <input asp-for="ApiKey" class="form-control" type="password" placeholder="留空则保持原有密钥" />
             <span asp-validation-for="ApiKey" class="text-danger"></span>
@@ -70,3 +78,9 @@
         </div>
     </form>
 </div>
+
+<script>
+    document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (element) {
+        new bootstrap.Tooltip(element);
+    });
+</script>

@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
+using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
@@ -456,6 +457,7 @@ public sealed class ChatApiController : ControllerBase
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = route.BaseUrl,
+                    TargetEndpointPathMode = route.EndpointPathMode,
                     TargetApiKey = route.ApiKey,
                     ProtocolType = route.ProtocolType,
                     TargetModelName = route.SiteModelName,
@@ -602,6 +604,7 @@ public sealed class ChatApiController : ControllerBase
             var streamResult = await ForwardStreamAsync(
                 route.ProtocolType,
                 route.BaseUrl,
+                route.EndpointPathMode,
                 route.ApiKey,
                 route.SiteModelName,
                 request.Message,
@@ -800,6 +803,7 @@ public sealed class ChatApiController : ControllerBase
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = mapping.BaseUrl,
+            TargetEndpointPathMode = mapping.EndpointPathMode,
             TargetApiKey = mapping.ApiKey,
             ProtocolType = mapping.ProtocolType,
             TargetModelName = mapping.SiteModelName,
@@ -892,6 +896,7 @@ public sealed class ChatApiController : ControllerBase
         var streamResult = await ForwardStreamAsync(
             mapping.ProtocolType,
             mapping.BaseUrl,
+            mapping.EndpointPathMode,
             mapping.ApiKey,
             mapping.SiteModelName,
             request.Message,
@@ -983,6 +988,7 @@ public sealed class ChatApiController : ControllerBase
     private async Task<ChatStreamForwardResult> ForwardStreamAsync(
         string protocolType,
         string baseUrl,
+        string endpointPathMode,
         string apiKey,
         string targetModelName,
         string message,
@@ -1006,8 +1012,8 @@ public sealed class ChatApiController : ControllerBase
         try
         {
             var targetUrl = protocolType == "Anthropic"
-                ? $"{baseUrl.TrimEnd('/')}/v1/messages"
-                : $"{baseUrl.TrimEnd('/')}/v1/chat/completions";
+                ? SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "messages")
+                : SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "chat/completions");
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
             {
                 Content = new StringContent(requestBody, Encoding.UTF8, "application/json")

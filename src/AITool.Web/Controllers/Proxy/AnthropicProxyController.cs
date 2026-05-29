@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
+using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
@@ -198,6 +199,7 @@ public sealed class AnthropicProxyController : ControllerBase
             var forwardRequest = new ProxyForwardRequest
             {
                 TargetBaseUrl = route.BaseUrl,
+                TargetEndpointPathMode = route.EndpointPathMode,
                 TargetApiKey = route.ApiKey,
                 ProtocolType = actualProtocolType,
                 TargetModelName = route.SiteModelName,

@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AITool.Application.Proxy;
+using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
@@ -301,6 +302,7 @@ public sealed class OpenAiProxyController : ControllerBase
             var forwardRequest = new ProxyForwardRequest
             {
                 TargetBaseUrl = route.BaseUrl,
+                TargetEndpointPathMode = route.EndpointPathMode,
                 TargetApiKey = route.ApiKey,
                 ProtocolType = actualProtocolType,
                 TargetModelName = route.SiteModelName,
@@ -559,6 +561,7 @@ public sealed class OpenAiProxyController : ControllerBase
             var forwardRequest = new ProxyForwardRequest
             {
                 TargetBaseUrl = route.BaseUrl,
+                TargetEndpointPathMode = route.EndpointPathMode,
                 TargetApiKey = route.ApiKey,
                 ProtocolType = actualProtocolType,
                 TargetModelName = route.SiteModelName,
@@ -567,7 +570,7 @@ public sealed class OpenAiProxyController : ControllerBase
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                TargetPath = isPassthrough ? "/v1/responses" : null
+                TargetPath = isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
             };
 
             if (enableStreaming)

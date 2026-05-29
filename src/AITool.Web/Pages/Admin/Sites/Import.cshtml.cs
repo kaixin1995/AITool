@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Application.Sites;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
@@ -21,6 +22,11 @@ public class ImportSiteItem
     /// 基础地址。
     /// </summary>
     public string BaseUrl { get; set; } = string.Empty;
+    /// <summary>
+    /// 接口路径模式。
+    /// </summary>
+    public string EndpointPathMode { get; set; } = SiteEndpointPathResolver.StandardRoot;
+
     /// <summary>
     /// 接口密钥。
     /// </summary>
@@ -117,6 +123,7 @@ public class ImportModel : PageModel
                 {
                     Name = item.Name,
                     BaseUrl = item.BaseUrl,
+                    EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(item.EndpointPathMode),
                     ApiKey = item.ApiKey,
                     ProtocolType = ResolveSiteProtocolType(item.SupportsOpenAi, item.SupportsAnthropic),
                     SupportsOpenAi = item.SupportsOpenAi,

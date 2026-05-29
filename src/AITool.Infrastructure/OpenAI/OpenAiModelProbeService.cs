@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Net.Http.Json;
 using System.Text.Json;
 using AITool.Application.Detection;
+using AITool.Application.Sites;
 using AITool.Domain.Models;
 using AITool.Domain.Sites;
 
@@ -30,7 +31,7 @@ public sealed class OpenAiModelProbeService : IModelProbeService
     /// </summary>
     public async Task<ModelProbeResult> ProbeAsync(Site site, ModelLibraryItem model, CancellationToken cancellationToken)
     {
-        var url = $"{site.BaseUrl.TrimEnd('/')}/v1/chat/completions";
+        var url = SiteEndpointPathResolver.BuildUrl(site.BaseUrl, site.EndpointPathMode, "chat/completions");
 
         var requestBody = new
         {

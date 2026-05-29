@@ -21,6 +21,11 @@ public sealed class Site
     public string BaseUrl { get; set; } = string.Empty;
 
     /// <summary>
+    /// 接口路径模式，用于区分根地址是否已经包含接口版本路径。
+    /// </summary>
+    public string EndpointPathMode { get; set; } = "standard-root";
+
+    /// <summary>
     /// 站点访问密钥，用于调用该外部服务时进行身份认证。
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;

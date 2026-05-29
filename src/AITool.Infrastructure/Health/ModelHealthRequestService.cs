@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AITool.Application.Proxy;
+using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -77,6 +78,7 @@ public sealed class ModelHealthRequestService
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = site.BaseUrl,
+            TargetEndpointPathMode = site.EndpointPathMode,
             TargetApiKey = site.ApiKey,
             ProtocolType = protocolType,
             TargetModelName = mapping.RemoteModelName,

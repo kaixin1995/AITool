@@ -17,7 +17,7 @@
 <div class="form-card">
     <div class="form-section-title">导出内容</div>
     <p style="font-size:13px; color:var(--text-secondary); margin-bottom:16px;">
-        共 <strong>@Model.Sites.Count</strong> 个站点，导出包含站点名称、地址、密钥、支持协议。
+        共 <strong>@Model.Sites.Count</strong> 个站点，导出包含站点名称、地址、接口路径模式、密钥、支持协议。
     </p>
 
     <!-- 站点预览 -->
@@ -30,6 +30,7 @@
                         <th style="width:40px;"><input type="checkbox" id="checkAll" checked onchange="toggleAll(this)"></th>
                         <th>站点名称</th>
                         <th>站点地址</th>
+                        <th>接口路径</th>
                         <th>密钥</th>
                         <th>支持协议</th>
                     </tr>
@@ -41,6 +42,7 @@
                             <td><input type="checkbox" class="site-check" value="@site.Id" checked></td>
                             <td><strong>@site.Name</strong></td>
                             <td><code>@site.BaseUrl</code></td>
+                            <td>@(site.EndpointPathMode == "versioned-base" ? "不补 /v1" : "自动补 /v1")</td>
                             <td><code>@(site.ApiKey.Length > 8 ? site.ApiKey.Substring(0, 8) + "****" : "****")</code></td>
                             <td>
                                 @if (site.SupportsOpenAi)

@@ -378,6 +378,13 @@ static async Task EnsureProxyUsageLogSchemaAsync(AppDbContext dbContext)
             await command.ExecuteNonQueryAsync();
         }
 
+        if (!await ColumnExistsAsync(connection, "Sites", "EndpointPathMode"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE Sites ADD COLUMN EndpointPathMode TEXT NOT NULL DEFAULT 'standard-root'";
+            await command.ExecuteNonQueryAsync();
+        }
+
         if (!await ColumnExistsAsync(connection, "SystemRuntimeSettings", "ConcurrencyMode"))
         {
             await using var command = connection.CreateCommand();

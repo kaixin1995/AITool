@@ -35,6 +35,9 @@ public sealed class SitePagesTests
         html.Should().Contain("/api/admin/site-catalog/fetch-models/");
         html.Should().Contain("/api/admin/site-catalog/fetch-all-models");
         html.Should().Contain("/api/admin/site-catalog/import-selected");
+        html.Should().NotContain("接口路径");
+        html.Should().NotContain("自动补 /v1");
+        html.Should().NotContain("不补 /v1");
         html.Should().NotContain("<form method=\"post\" asp-page-handler=\"Toggle\"");
         html.Should().NotContain("<form method=\"post\" asp-page-handler=\"Delete\"");
     }
@@ -110,7 +113,8 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Pro
             {
                 Id = SecondSiteId,
                 Name = "Site B",
-                BaseUrl = "https://b.example.com",
+                BaseUrl = "https://b.example.com/api/coding/paas/v4",
+                EndpointPathMode = AITool.Application.Sites.SiteEndpointPathResolver.VersionedBase,
                 ApiKey = "key-b",
                 ProtocolType = "OpenAI",
                 IsEnabled = true
