@@ -1,4 +1,5 @@
 using System.Net;
+using AITool.Application.SiteCatalog;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -35,11 +36,28 @@ public sealed class SitePagesTests
         html.Should().Contain("/api/admin/site-catalog/fetch-models/");
         html.Should().Contain("/api/admin/site-catalog/fetch-all-models");
         html.Should().Contain("/api/admin/site-catalog/import-selected");
+        html.Should().Contain("modalErrorBox");
+        html.Should().Contain("modalErrorText");
+        html.Should().Contain("btnCopyModalError");
         html.Should().NotContain("接口路径");
         html.Should().NotContain("自动补 /v1");
         html.Should().NotContain("不补 /v1");
         html.Should().NotContain("<form method=\"post\" asp-page-handler=\"Toggle\"");
         html.Should().NotContain("<form method=\"post\" asp-page-handler=\"Delete\"");
+    }
+
+    [Fact]
+    public async Task Get_fetch_models_returns_error_message_when_catalog_client_throws()
+    {
+        await using var factory = new SitePagesWebApplicationFactory(shouldThrowOnFetchModels: true);
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/api/admin/site-catalog/fetch-models/{SitePagesWebApplicationFactory.FirstSiteId}");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("\"success\":false");
+        body.Should().Contain("模拟拉取异常");
     }
 
 }
@@ -49,6 +67,13 @@ public sealed class SitePagesTests
 /// </summary>
 internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Program>
 {
+    private readonly bool _shouldThrowOnFetchModels;
+
+    public SitePagesWebApplicationFactory(bool shouldThrowOnFetchModels = false)
+    {
+        _shouldThrowOnFetchModels = shouldThrowOnFetchModels;
+    }
+
     /// <summary>
     /// 第一个测试站点的固定标识。
     /// </summary>
@@ -77,6 +102,12 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Pro
             services.RemoveAll<DbContextOptions<AppDbContext>>();
             services.RemoveAll<AppDbContext>();
             services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+
+            if (_shouldThrowOnFetchModels)
+            {
+                services.RemoveAll<ISiteCatalogClient>();
+                services.AddScoped<ISiteCatalogClient, ThrowingSiteCatalogClient>();
+            }
         });
     }
 
@@ -175,5 +206,13 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Pro
             });
 
         await db.SaveChangesAsync();
+    }
+}
+
+internal sealed class ThrowingSiteCatalogClient : ISiteCatalogClient
+{
+    public Task<IReadOnlyList<string>> GetModelsAsync(AITool.Domain.Sites.Site site, CancellationToken cancellationToken)
+    {
+        throw new InvalidOperationException("模拟拉取异常");
     }
 }

@@ -176,9 +176,13 @@ public sealed class SiteCatalogApiController : ControllerBase
         {
             remoteModels = await catalogClient.GetModelsAsync(site, cancellationToken);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            return Ok(new List<RemoteModelInfo>());
+            return Ok(new
+            {
+                success = false,
+                message = ex.Message
+            });
         }
 
         var existingMappings = await _dbContext.SiteModelMappings

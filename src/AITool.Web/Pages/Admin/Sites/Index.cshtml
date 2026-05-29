@@ -123,6 +123,15 @@
                     <p class="mt-2 text-secondary" id="loadingText">正在拉取模型列表...</p>
                 </div>
                 <div id="modalToolbar" style="display:none;">
+                    <div id="modalErrorBox" class="alert alert-danger" style="display:none;">
+                        <div class="d-flex justify-content-between align-items-start gap-2">
+                            <div style="min-width:0;flex:1;">
+                                <div style="font-weight:600;">拉取失败</div>
+                                <pre id="modalErrorText" style="margin:8px 0 0;white-space:pre-wrap;word-break:break-word;font-size:12px;background:transparent;border:0;padding:0;"></pre>
+                            </div>
+                            <button type="button" id="btnCopyModalError" class="btn btn-sm btn-outline-danger">复制</button>
+                        </div>
+                    </div>
                     <div class="d-flex gap-2 align-items-center mb-3">
                         <input type="text" id="modalSearch" class="form-control form-control-sm" placeholder="搜索模型名称..." style="max-width:300px;" />
                         <span id="modalSelectedCount" class="text-secondary" style="font-size:13px;white-space:nowrap;">已选 0 个</span>
@@ -209,6 +218,17 @@
         document.getElementById('btnImportSelected').addEventListener('click', function () {
             submitImport();
         });
+
+        document.getElementById('btnCopyModalError').addEventListener('click', function () {
+            var text = document.getElementById('modalErrorText').textContent || '';
+            navigator.clipboard.writeText(text)
+                .then(function () {
+                    alert('错误信息已复制');
+                })
+                .catch(function () {
+                    alert('复制失败，请手动选择内容复制');
+                });
+        });
     });
 
     function openModalForSingleSite(siteId, siteName) {
@@ -219,9 +239,16 @@
 
         fetch('/api/admin/site-catalog/fetch-models/' + siteId)
             .then(function (r) { return r.json(); })
-            .then(function (models) {
+            .then(function (data) {
+                if (data && data.success === false) {
+                    showModalError(data.message || '拉取失败');
+                    currentModels = [];
+                    renderModelList(false);
+                    return;
+                }
+
                 currentModels = [];
-                models.forEach(function (m) {
+                data.forEach(function (m) {
                     currentModels.push({
                         siteId: siteId,
                         siteName: siteName,
@@ -231,11 +258,13 @@
                         existingDisplayName: m.existingDisplayName
                     });
                 });
+                hideModalError();
                 renderModelList(false);
             })
             .catch(function (err) {
-                alert('拉取失败：' + err.message);
-                bsModal.hide();
+                showModalError(err.message || '拉取失败');
+                currentModels = [];
+                renderModelList(false);
             });
     }
 
@@ -270,6 +299,7 @@
 
                 if (data.isCompleted) {
                     currentModels = [];
+                    var failedSites = [];
                     data.sites.forEach(function (site) {
                         if (site.status === 'success' && site.models) {
                             site.models.forEach(function (m) {
@@ -282,8 +312,17 @@
                                     existingDisplayName: m.existingDisplayName
                                 });
                             });
+                        } else if (site.status === 'fail') {
+                            failedSites.push(site.siteName + '：' + (site.error || '未知错误'));
                         }
                     });
+
+                    if (failedSites.length > 0) {
+                        showModalError(failedSites.join('\n\n'));
+                    } else {
+                        hideModalError();
+                    }
+
                     renderModelList(true);
                 } else {
                     setTimeout(function () { pollFetchProgress(taskId); }, 1000);
@@ -299,6 +338,17 @@
         document.getElementById('loadingText').textContent = text;
         document.getElementById('modalToolbar').style.display = 'none';
         document.getElementById('modelListContainer').innerHTML = '';
+        hideModalError();
+    }
+
+    function showModalError(message) {
+        document.getElementById('modalErrorText').textContent = message || '未知错误';
+        document.getElementById('modalErrorBox').style.display = '';
+    }
+
+    function hideModalError() {
+        document.getElementById('modalErrorText').textContent = '';
+        document.getElementById('modalErrorBox').style.display = 'none';
     }
 
     function renderModelList(showSiteName) {
