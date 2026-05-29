@@ -59,6 +59,30 @@
         <span class="badge bg-info">@Model.SiteMappings.Count</span>
     </div>
 
+    <form method="post" asp-page-handler="AddMapping" asp-route-id="@Model.CurrentModelId" class="border rounded p-3 mb-3">
+        <div class="row g-3 align-items-end">
+            <div class="col-md-4">
+                <label asp-for="NewMapping.SiteId" class="form-label">站点</label>
+                <select asp-for="NewMapping.SiteId" asp-items="Model.AvailableSites" class="form-select">
+                    <option value="">请选择站点</option>
+                </select>
+            </div>
+            <div class="col-md-5">
+                <label asp-for="NewMapping.RemoteModelName" class="form-label">站点模型名</label>
+                <input asp-for="NewMapping.RemoteModelName" class="form-control" placeholder="默认使用当前模型名，也可手动调整" />
+            </div>
+            <div class="col-md-2">
+                <div class="form-check" style="padding-top:32px;">
+                    <input asp-for="NewMapping.IsEnabled" class="form-check-input" type="checkbox" />
+                    <label asp-for="NewMapping.IsEnabled" class="form-check-label">启用</label>
+                </div>
+            </div>
+            <div class="col-md-1 d-grid">
+                <button type="submit" class="btn btn-outline-primary">新增</button>
+            </div>
+        </div>
+    </form>
+
     @if (!Model.SiteMappings.Any())
     {
         <div class="text-muted">当前模型还没有关联任何站点。</div>

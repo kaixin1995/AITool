@@ -2,6 +2,7 @@ using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -41,6 +42,24 @@ public class ModelSiteMappingViewModel
 /// <summary>
 /// 模型编辑页面模型。
 /// </summary>
+public sealed class ManualSiteMappingInput
+{
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
+    public Guid SiteId { get; set; }
+
+    /// <summary>
+    /// 站点模型名。
+    /// </summary>
+    public string RemoteModelName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
+}
+
 public class EditModel : PageModel
 {
     /// <summary>
@@ -108,6 +127,17 @@ public class EditModel : PageModel
     public List<ModelSiteMappingViewModel> SiteMappings { get; set; } = [];
 
     /// <summary>
+    /// 手动新增关联站点表单。
+    /// </summary>
+    [BindProperty]
+    public ManualSiteMappingInput NewMapping { get; set; } = new();
+
+    /// <summary>
+    /// 可选站点列表。
+    /// </summary>
+    public List<SelectListItem> AvailableSites { get; set; } = [];
+
+    /// <summary>
     /// 处理页面加载请求。
     /// </summary>
     public async Task<IActionResult> OnGetAsync(Guid id, CancellationToken cancellationToken)
@@ -154,6 +184,87 @@ public class EditModel : PageModel
         }
 
         await LoadSiteMappingsAsync(id, cancellationToken);
+        return Page();
+    }
+
+    /// <summary>
+    /// 手动新增模型与站点的关联。
+    /// </summary>
+    public async Task<IActionResult> OnPostAddMappingAsync(Guid id, CancellationToken cancellationToken)
+    {
+        ModelState.Remove(nameof(ModelName));
+        ModelState.Remove(nameof(DisplayName));
+        ModelState.Remove(nameof(IsEnabled));
+
+        if (NewMapping.SiteId == Guid.Empty)
+        {
+            StatusMessage = "请选择站点";
+            StatusSuccess = false;
+            await LoadPageDataAsync(id, cancellationToken);
+            return Page();
+        }
+
+        if (string.IsNullOrWhiteSpace(NewMapping.RemoteModelName))
+        {
+            StatusMessage = "请填写站点模型名";
+            StatusSuccess = false;
+            await LoadPageDataAsync(id, cancellationToken);
+            return Page();
+        }
+
+        try
+        {
+            var model = await _dbContext.ModelLibraryItems.FindAsync([id], cancellationToken);
+            if (model is null)
+            {
+                return RedirectToPage("./Index");
+            }
+
+            var site = await _dbContext.Sites
+                .FirstOrDefaultAsync(x => x.Id == NewMapping.SiteId && x.IsEnabled, cancellationToken);
+            if (site is null)
+            {
+                StatusMessage = "所选站点不存在或已禁用";
+                StatusSuccess = false;
+                await LoadPageDataAsync(id, cancellationToken);
+                return Page();
+            }
+
+            var remoteModelName = NewMapping.RemoteModelName.Trim();
+            var existingMapping = await _dbContext.SiteModelMappings
+                .FirstOrDefaultAsync(x => x.SiteId == NewMapping.SiteId && x.RemoteModelName == remoteModelName, cancellationToken);
+            if (existingMapping is not null)
+            {
+                existingMapping.ModelLibraryItemId = id;
+                existingMapping.IsEnabled = NewMapping.IsEnabled;
+                existingMapping.LastStatus = "manual";
+            }
+            else
+            {
+                _dbContext.SiteModelMappings.Add(new AITool.Domain.SiteCatalog.SiteModelMapping
+                {
+                    SiteId = NewMapping.SiteId,
+                    ModelLibraryItemId = id,
+                    RemoteModelName = remoteModelName,
+                    LastStatus = "manual",
+                    IsEnabled = NewMapping.IsEnabled
+                });
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            _metadataCache?.InvalidateModelMetadata();
+            _metadataCache?.InvalidateRouteTargets();
+            StatusMessage = "关联站点已添加";
+            StatusSuccess = true;
+            NewMapping = new ManualSiteMappingInput();
+        }
+        catch (Exception ex)
+        {
+            StatusMessage = $"操作失败：{ex.Message}";
+            StatusSuccess = false;
+        }
+
+        await LoadPageDataAsync(id, cancellationToken);
         return Page();
     }
 
@@ -228,8 +339,14 @@ public class EditModel : PageModel
 
         CurrentModelId = id;
         ModelName = model.ModelName;
-        DisplayName = model.DisplayName;        IsEnabled = model.IsEnabled;
+        DisplayName = model.DisplayName;
+        IsEnabled = model.IsEnabled;
         await LoadSiteMappingsAsync(id, cancellationToken);
+        await LoadAvailableSitesAsync(id, cancellationToken);
+        if (string.IsNullOrWhiteSpace(NewMapping.RemoteModelName))
+        {
+            NewMapping.RemoteModelName = model.ModelName;
+        }
         return true;
     }
 
@@ -252,6 +369,28 @@ public class EditModel : PageModel
                     IsEnabled = mapping.IsEnabled,
                     MaxConcurrency = mapping.MaxConcurrency
                 })
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 加载可选站点列表。
+    /// </summary>
+    private async Task LoadAvailableSitesAsync(Guid modelId, CancellationToken cancellationToken)
+    {
+        var mappedSiteIds = await _dbContext.SiteModelMappings
+            .Where(x => x.ModelLibraryItemId == modelId)
+            .Select(x => x.SiteId)
+            .Distinct()
+            .ToListAsync(cancellationToken);
+
+        AvailableSites = await _dbContext.Sites
+            .Where(x => x.IsEnabled && !mappedSiteIds.Contains(x.Id))
+            .OrderBy(x => x.Name)
+            .Select(x => new SelectListItem
+            {
+                Value = x.Id.ToString(),
+                Text = x.Name
+            })
             .ToListAsync(cancellationToken);
     }
 
