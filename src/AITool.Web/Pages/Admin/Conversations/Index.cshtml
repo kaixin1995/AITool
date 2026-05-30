@@ -56,6 +56,27 @@
     </section>
 </div>
 
+<!-- 删除会话确认弹窗，避免使用浏览器原生确认框 -->
+<div class="conversation-delete-modal" id="conversationDeleteModal" aria-hidden="true">
+    <div class="conversation-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="conversationDeleteModalTitle">
+        <div class="conversation-delete-header">
+            <div>
+                <div class="conversation-delete-title" id="conversationDeleteModalTitle">确认删除会话</div>
+                <div class="conversation-delete-subtitle">删除后无法在对话记录中恢复。</div>
+            </div>
+            <button type="button" class="conversation-delete-close" id="cancelDeleteSessionIconButton" aria-label="关闭">×</button>
+        </div>
+        <div class="conversation-delete-body">
+            确认删除会话“<span id="deleteSessionName">当前会话</span>”的全部记录吗？
+            <div class="conversation-delete-error" id="conversationDeleteError"></div>
+        </div>
+        <div class="conversation-delete-footer">
+            <button type="button" class="btn btn-secondary btn-sm" id="cancelDeleteSessionButton">取消</button>
+            <button type="button" class="btn btn-danger btn-sm" id="confirmDeleteSessionButton">确认删除</button>
+        </div>
+    </div>
+</div>
+
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css" />
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
@@ -171,6 +192,91 @@
 
     .conversation-session-meta {
         white-space: nowrap;
+        line-height: 1.45;
+    }
+
+    .conversation-session-tokens {
+        margin-top: 2px;
+    }
+
+    .conversation-delete-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 3000;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+        background: rgba(15, 23, 42, 0.45);
+    }
+
+    .conversation-delete-modal.show {
+        display: flex;
+    }
+
+    .conversation-delete-dialog {
+        width: min(420px, 100%);
+        border-radius: 18px;
+        background: #fff;
+        box-shadow: 0 24px 60px rgba(15, 23, 42, 0.24);
+        overflow: hidden;
+    }
+
+    .conversation-delete-header {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 20px 22px 14px;
+        border-bottom: 1px solid #f1f5f9;
+    }
+
+    .conversation-delete-title {
+        font-size: 18px;
+        font-weight: 700;
+        color: #111827;
+    }
+
+    .conversation-delete-subtitle {
+        margin-top: 4px;
+        font-size: 13px;
+        color: #6b7280;
+    }
+
+    .conversation-delete-close {
+        width: 28px;
+        height: 28px;
+        border: 0;
+        border-radius: 999px;
+        background: transparent;
+        color: #94a3b8;
+        font-size: 22px;
+        line-height: 1;
+    }
+
+    .conversation-delete-close:hover {
+        background: #f3f4f6;
+        color: #374151;
+    }
+
+    .conversation-delete-body {
+        padding: 18px 22px;
+        color: #374151;
+        line-height: 1.6;
+    }
+
+    .conversation-delete-error {
+        display: none;
+        margin-top: 12px;
+        color: #dc2626;
+        font-size: 13px;
+    }
+
+    .conversation-delete-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        padding: 14px 22px 20px;
     }
 
     .conversation-log-main {
@@ -468,6 +574,7 @@
 <script>
     var currentSessionGroupKey = '';
     var currentSessionTitle = '';
+    var pendingDeleteSession = null;
 
     /* 配置 marked 使用 highlight.js 做代码高亮 */
     marked.setOptions({
@@ -582,7 +689,8 @@
             button.className = 'conversation-session-item';
             button.innerHTML = '<div class="fw-semibold text-truncate">' + escapeHtml(item.preview || '未命名会话') + '</div>'
                 + '<div class="small text-muted mt-1 text-truncate">' + escapeHtml(item.sourceTool) + ' · ' + escapeHtml(item.sessionIdShort) + '</div>'
-                + '<div class="small text-muted mt-1 conversation-session-meta">' + escapeHtml(item.lastActivityAtText) + ' · ' + item.turnCount + ' 条 · ' + escapeHtml(item.totalTokensText || String(item.totalTokens || 0)) + ' tokens</div>';
+                + '<div class="small text-muted mt-1 conversation-session-meta">' + escapeHtml(item.lastActivityAtText) + ' · ' + item.turnCount + ' 条</div>'
+                + '<div class="small text-muted conversation-session-meta conversation-session-tokens">' + escapeHtml(item.totalTokensText || String(item.totalTokens || 0)) + ' tokens</div>';
             button.addEventListener('click', function() {
                 document.querySelectorAll('.conversation-session-card').forEach(function(el) { el.classList.remove('active'); });
                 document.querySelectorAll('.conversation-session-item').forEach(function(el) { el.classList.remove('active'); });
@@ -598,7 +706,7 @@
             actions.innerHTML = '<button type="button" class="conversation-session-delete">删除</button>';
             actions.querySelector('button').addEventListener('click', function(event) {
                 event.stopPropagation();
-                deleteSession(item.groupKey, item.preview || item.sessionIdShort);
+                showDeleteSessionModal(item.groupKey, item.preview || item.sessionIdShort);
             });
 
             card.appendChild(button);
@@ -891,32 +999,63 @@
         return converted.join('\n').trim();
     }
 
-    async function deleteCurrentSession() {
+    function deleteCurrentSession() {
         if (!currentSessionGroupKey) {
             return;
         }
 
-        await deleteSession(currentSessionGroupKey, currentSessionTitle);
+        showDeleteSessionModal(currentSessionGroupKey, currentSessionTitle);
     }
 
-    async function deleteSession(groupKey, sessionTitle) {
+    function showDeleteSessionModal(groupKey, sessionTitle) {
         if (!groupKey) {
             return;
         }
 
-        if (!window.confirm('确认删除会话“' + (sessionTitle || '当前会话') + '”的全部记录吗？')) {
+        pendingDeleteSession = {
+            groupKey: groupKey,
+            title: sessionTitle || '当前会话'
+        };
+        document.getElementById('deleteSessionName').textContent = pendingDeleteSession.title;
+        document.getElementById('conversationDeleteError').style.display = 'none';
+        document.getElementById('conversationDeleteError').textContent = '';
+        document.getElementById('conversationDeleteModal').classList.add('show');
+        document.getElementById('conversationDeleteModal').setAttribute('aria-hidden', 'false');
+    }
+
+    function hideDeleteSessionModal() {
+        document.getElementById('conversationDeleteModal').classList.remove('show');
+        document.getElementById('conversationDeleteModal').setAttribute('aria-hidden', 'true');
+        pendingDeleteSession = null;
+    }
+
+    async function confirmDeleteSession() {
+        if (!pendingDeleteSession || !pendingDeleteSession.groupKey) {
             return;
         }
 
+        var confirmButton = document.getElementById('confirmDeleteSessionButton');
+        var error = document.getElementById('conversationDeleteError');
+        confirmButton.disabled = true;
+        confirmButton.textContent = '删除中...';
+        error.style.display = 'none';
+        error.textContent = '';
+
+        var groupKey = pendingDeleteSession.groupKey;
         var res = await fetch('/api/admin/conversations/sessions?groupKey=' + encodeURIComponent(groupKey), {
             method: 'DELETE'
         });
 
+        confirmButton.disabled = false;
+        confirmButton.textContent = '确认删除';
+
         if (!res.ok) {
-            alert('删除失败，请稍后重试');
+            error.textContent = '删除失败，请稍后重试。';
+            error.style.display = 'block';
             return;
         }
 
+        hideDeleteSessionModal();
         if (currentSessionGroupKey === groupKey) {
             currentSessionGroupKey = '';
             currentSessionTitle = '';
@@ -958,6 +1097,20 @@
         var text = (value || '').trim();
         return /^https?:\/\//i.test(text);
     }
+
+    document.getElementById('cancelDeleteSessionButton').addEventListener('click', hideDeleteSessionModal);
+    document.getElementById('cancelDeleteSessionIconButton').addEventListener('click', hideDeleteSessionModal);
+    document.getElementById('confirmDeleteSessionButton').addEventListener('click', confirmDeleteSession);
+    document.getElementById('conversationDeleteModal').addEventListener('click', function(event) {
+        if (event.target === this) {
+            hideDeleteSessionModal();
+        }
+    });
+    document.addEventListener('keydown', function(event) {
+        if (event.key === 'Escape' && document.getElementById('conversationDeleteModal').classList.contains('show')) {
+            hideDeleteSessionModal();
+        }
+    });
 
     /* 初始化自定义日期输入的默认值 */
     (function() {

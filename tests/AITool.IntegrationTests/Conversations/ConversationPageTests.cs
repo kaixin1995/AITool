@@ -28,6 +28,11 @@ public sealed class ConversationPageTests
         pageHtml.Should().Contain("对话记录");
         pageHtml.Should().Contain("conversationLogIframe");
         pageHtml.Should().Contain("/Admin/Conversations?layout=minimal");
+        pageHtml.Should().Contain("appWrapper");
+        pageHtml.Should().Contain("sidebarCollapseToggle");
+        pageHtml.Should().Contain("sidebar-collapsed");
+        pageHtml.Should().Contain("sidebar-brand-main");
+        pageHtml.Should().Contain("aitool.sidebarCollapsed");
 
         var minimalPageResponse = await client.GetAsync("/Admin/Conversations?layout=minimal");
         var minimalPageHtml = await minimalPageResponse.Content.ReadAsStringAsync();
@@ -42,6 +47,9 @@ public sealed class ConversationPageTests
         minimalPageHtml.Should().Contain("normalizeMarkdownFenceBreaks");
         minimalPageHtml.Should().Contain("code.text");
         minimalPageHtml.Should().Contain("shouldShowToolArguments");
+        minimalPageHtml.Should().Contain("conversationDeleteModal");
+        minimalPageHtml.Should().Contain("showDeleteSessionModal");
+        minimalPageHtml.Should().NotContain("window.confirm");
 
         var sessionsResponse = await client.GetAsync("/api/admin/conversations/sessions?rangeType=all&sourceTool=claude-code");
         var sessionsBody = await sessionsResponse.Content.ReadAsStringAsync();

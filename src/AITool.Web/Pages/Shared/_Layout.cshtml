@@ -15,15 +15,18 @@
     @{
         var runtimeSettings = await RuntimeSettingsService.GetOrCreateAsync();
     }
-    <div class="app-wrapper">
+    <div class="app-wrapper" id="appWrapper">
         <!-- 侧边栏 -->
         <aside class="app-sidebar">
             <div class="sidebar-brand">
-                <div class="sidebar-brand-icon">AI</div>
-                <div>
-                    <div class="sidebar-brand-text">AI Tool</div>
-                    <div class="sidebar-brand-sub">管理后台</div>
+                <div class="sidebar-brand-main">
+                    <div class="sidebar-brand-icon">AI</div>
+                    <div class="sidebar-brand-content">
+                        <div class="sidebar-brand-text">AI Tool</div>
+                        <div class="sidebar-brand-sub">管理后台</div>
+                    </div>
                 </div>
+                <button class="sidebar-collapse-toggle" id="sidebarCollapseToggle" type="button" title="折叠侧边栏">‹</button>
             </div>
             <nav class="sidebar-nav">
                 <!-- 概览 -->
@@ -116,6 +119,8 @@
     <script>
         (function() {
             var toggle = document.getElementById('sidebarToggle');
+            var collapseToggle = document.getElementById('sidebarCollapseToggle');
+            var wrapper = document.getElementById('appWrapper');
             var sidebar = document.querySelector('.app-sidebar');
             var overlay = document.getElementById('sidebarOverlay');
             if (toggle && sidebar && overlay) {
@@ -126,6 +131,22 @@
                 overlay.addEventListener('click', function() {
                     sidebar.classList.remove('show');
                     overlay.classList.remove('show');
+                });
+            }
+            function applySidebarCollapsed(collapsed) {
+                if (!wrapper || !collapseToggle) {
+                    return;
+                }
+                wrapper.classList.toggle('sidebar-collapsed', collapsed);
+                collapseToggle.textContent = collapsed ? '›' : '‹';
+                collapseToggle.title = collapsed ? '展开侧边栏' : '折叠侧边栏';
+            }
+            if (collapseToggle && wrapper) {
+                applySidebarCollapsed(localStorage.getItem('aitool.sidebarCollapsed') === 'true');
+                collapseToggle.addEventListener('click', function() {
+                    var collapsed = !wrapper.classList.contains('sidebar-collapsed');
+                    localStorage.setItem('aitool.sidebarCollapsed', collapsed ? 'true' : 'false');
+                    applySidebarCollapsed(collapsed);
                 });
             }
             /* 高亮当前页面的侧边栏链接 */
