@@ -35,6 +35,62 @@ public sealed class ModelEditPageTests
     }
 
     [Fact]
+    public async Task Get_models_page_contains_inline_delete_behavior()
+    {
+        await using var factory = new ModelEditPageWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/Models");
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, html);
+        html.Should().Contain("model-delete-form");
+        html.Should().Contain("deleteModelInline");
+        html.Should().Contain("X-Requested-With");
+        html.Should().Contain("data-model-id");
+        html.Should().NotContain("onclick=\"return confirm('确认删除该模型？')\"");
+    }
+
+    [Fact]
+    public async Task Post_delete_model_ajax_returns_json_without_redirecting_page()
+    {
+        await using var factory = new ModelEditPageWebApplicationFactory();
+        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            AllowAutoRedirect = false
+        });
+
+        var getResponse = await client.GetAsync("/Admin/Models");
+        var html = await getResponse.Content.ReadAsStringAsync();
+        var token = ExtractAntiForgeryToken(html);
+
+        var form = new FormUrlEncodedContent(
+        [
+            new KeyValuePair<string, string>("__RequestVerificationToken", token)
+        ]);
+
+        var request = new HttpRequestMessage(HttpMethod.Post, $"/Admin/Models?handler=Delete&modelId={ModelEditPageWebApplicationFactory.ModelId}")
+        {
+            Content = form
+        };
+        request.Headers.Add("X-Requested-With", "XMLHttpRequest");
+        request.Headers.Referrer = new Uri("http://localhost/Admin/Models");
+
+        var postResponse = await client.SendAsync(request);
+        var body = await postResponse.Content.ReadAsStringAsync();
+
+        postResponse.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        postResponse.Content.Headers.ContentType?.MediaType.Should().Be("application/json");
+        body.Should().Contain("success");
+        body.Should().Contain("message");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var modelExists = await db.ModelLibraryItems.AnyAsync(x => x.Id == ModelEditPageWebApplicationFactory.ModelId);
+        modelExists.Should().BeFalse();
+    }
+
+    [Fact]
     public async Task Post_add_mapping_creates_manual_site_mapping()
     {
         await using var factory = new ModelEditPageWebApplicationFactory();

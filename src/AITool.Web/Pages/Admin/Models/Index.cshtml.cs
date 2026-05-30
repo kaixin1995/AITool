@@ -226,10 +226,19 @@ public class IndexModel : PageModel
     /// </summary>
     public async Task<IActionResult> OnPostDeleteAsync(Guid modelId, CancellationToken cancellationToken)
     {
+        var isAjaxRequest = IsAjaxRequest();
         try
         {
             var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
-            if (model is null) return RedirectToPage();
+            if (model is null)
+            {
+                if (isAjaxRequest)
+                {
+                    return new JsonResult(new { success = false, message = "模型不存在或已被删除" }) { StatusCode = 404 };
+                }
+
+                return RedirectToPage();
+            }
 
             var mappings = await _dbContext.SiteModelMappings
                 .Where(x => x.ModelLibraryItemId == modelId)
@@ -286,11 +295,20 @@ public class IndexModel : PageModel
             _metadataCache?.InvalidateRouteTargets();
             StatusMessage = $"模型已删除，并清理了 {mappings.Count} 条站点关联、{affectedRules.Count} 条相关路由规则、{affectedMonitors.Count} 条健康监控，并解绑了 {affectedDetectionTasks.Count} 个检测任务";
             StatusSuccess = true;
+
+            if (isAjaxRequest)
+            {
+                return new JsonResult(new { success = true, message = StatusMessage });
+            }
         }
         catch (Exception ex)
         {
             StatusMessage = $"操作失败：{ex.Message}";
             StatusSuccess = false;
+            if (isAjaxRequest)
+            {
+                return new JsonResult(new { success = false, message = StatusMessage }) { StatusCode = 400 };
+            }
         }
 
         ActiveTab = "models";
@@ -372,6 +390,14 @@ public class IndexModel : PageModel
                 Models = g.OrderBy(x => x.ModelName, StringComparer.OrdinalIgnoreCase).ToList()
             })
             .ToList();
+    }
+
+    /// <summary>
+    /// 判断当前请求是否来自页面内的异步操作。
+    /// </summary>
+    private bool IsAjaxRequest()
+    {
+        return string.Equals(Request.Headers["X-Requested-With"].ToString(), "XMLHttpRequest", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

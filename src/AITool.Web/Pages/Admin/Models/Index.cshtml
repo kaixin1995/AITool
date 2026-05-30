@@ -92,7 +92,7 @@
                         <input id="modelSearchInput" type="text" class="form-control" placeholder="搜索模型名称或显示名" oninput="filterModels()" />
                     </div>
                     <div class="model-toolbar-summary">
-                        共 <strong id="visibleModelCount">@totalModelCount</strong> / @totalModelCount 个模型
+                        共 <strong id="visibleModelCount">@totalModelCount</strong> / <span id="totalModelCount">@totalModelCount</span> 个模型
                     </div>
                 </div>
 
@@ -123,7 +123,7 @@
                                         </div>
                                         <div>
                                             <h3 class="vendor-group-title">@group.VendorName</h3>
-                                            <div class="vendor-group-subtitle">当前分组下共 @group.Models.Count 个模型</div>
+                                            <div class="vendor-group-subtitle" data-group-subtitle>当前分组下共 @group.Models.Count 个模型</div>
                                         </div>
                                     </div>
                                     <span class="badge bg-white text-dark vendor-group-count" data-group-count>@group.Models.Count</span>
@@ -133,7 +133,7 @@
                                     @foreach (var item in group.Models)
                                     {
                                         var searchText = $"{item.ModelName} {item.DisplayName} {group.VendorName}".ToLowerInvariant();
-                                        <article class="model-card" data-model-search="@searchText">
+                                        <article class="model-card" data-model-id="@item.Id" data-model-search="@searchText">
                                             <div class="model-card-top">
                                                 <div>
                                                     <div class="model-card-name">@item.ModelName</div>
@@ -156,8 +156,8 @@
                                                     </button>
                                                 </form>
                                                 <a asp-page="./Edit" asp-route-id="@item.Id" class="btn btn-sm btn-outline-primary">编辑</a>
-                                                <form method="post" asp-page-handler="Delete" asp-route-modelId="@item.Id" class="d-inline">
-                                                    <button type="submit" class="btn btn-sm btn-outline-danger" onclick="return confirm('确认删除该模型？')">删除</button>
+                                                <form method="post" asp-page-handler="Delete" asp-route-modelId="@item.Id" class="d-inline model-delete-form">
+                                                    <button type="submit" class="btn btn-sm btn-outline-danger">删除</button>
                                                 </form>
                                             </div>
                                         </article>
@@ -324,6 +324,11 @@
         flex-direction: column;
         gap: 14px;
         min-height: 176px;
+    }
+
+    .model-card.model-card-deleting {
+        opacity: 0.6;
+        pointer-events: none;
     }
 
     .model-card-top {
@@ -587,6 +592,10 @@
             });
         }
 
+        document.querySelectorAll('.model-delete-form').forEach(function (form) {
+            form.addEventListener('submit', deleteModelInline);
+        });
+
         syncVendorCatalogJson();
         renderVendorEditor();
     });
@@ -597,6 +606,68 @@
         alert.style.display = '';
         alert.className = 'alert ' + (success ? 'alert-success' : 'alert-danger');
         text.textContent = msg;
+    }
+
+    async function deleteModelInline(event) {
+        event.preventDefault();
+        if (!confirm('确认删除该模型？')) {
+            return;
+        }
+
+        var form = event.currentTarget;
+        var card = form.closest('.model-card');
+        var button = form.querySelector('button[type="submit"]');
+        if (!card || !button) {
+            form.submit();
+            return;
+        }
+
+        card.classList.add('model-card-deleting');
+        button.disabled = true;
+        button.textContent = '删除中...';
+
+        try {
+            var response = await fetch(form.action, {
+                method: 'POST',
+                body: new FormData(form),
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            });
+            var data = await response.json();
+            if (!response.ok || data.success === false) {
+                throw new Error(data.message || '删除失败，请稍后重试');
+            }
+
+            removeModelCard(card);
+            showMsg(data.message || '模型已删除', true);
+        } catch (err) {
+            card.classList.remove('model-card-deleting');
+            button.disabled = false;
+            button.textContent = '删除';
+            showMsg('删除失败：' + err.message, false);
+        }
+    }
+
+    function removeModelCard(card) {
+        var group = card.closest('.vendor-group');
+        card.remove();
+        if (group && group.querySelectorAll('.model-card').length === 0) {
+            group.remove();
+        }
+
+        decrementTotalModelCount();
+        filterModels();
+    }
+
+    function decrementTotalModelCount() {
+        var totalModelCountElement = document.getElementById('totalModelCount');
+        if (!totalModelCountElement) {
+            return;
+        }
+
+        var total = Math.max((parseInt(totalModelCountElement.textContent, 10) || 0) - 1, 0);
+        totalModelCountElement.textContent = total;
     }
 
     function clearAllModels() {
@@ -642,6 +713,10 @@
             var countBadge = group.querySelector('[data-group-count]');
             if (countBadge) {
                 countBadge.textContent = groupVisibleCount;
+            }
+            var subtitle = group.querySelector('[data-group-subtitle]');
+            if (subtitle) {
+                subtitle.textContent = '当前分组下共 ' + group.querySelectorAll('.model-card').length + ' 个模型';
             }
         });
 
