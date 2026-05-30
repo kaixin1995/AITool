@@ -361,6 +361,47 @@ data: {"type":"message_stop"}
         result.Should().Contain("文件: Index.cshtml");
         result.Should().Contain("-old");
         result.Should().Contain("+new");
+        result.Should().NotContain("{}", because: "content_block_start 中的空 input 不是最终工具参数");
+    }
+
+    [Fact]
+    public void ExtractAssistantOutput_for_anthropic_sse_skips_read_only_empty_tool_arguments()
+    {
+        var responseBody = """
+event: content_block_start
+data: {"type":"content_block_start","content_block":{"type":"tool_use","name":"Read","input":{}}}
+
+event: content_block_stop
+data: {"type":"content_block_stop"}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+""";
+
+        _service.ExtractAssistantOutput(responseBody, "Anthropic", "/v1/messages")
+            .Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ExtractAssistantOutput_for_anthropic_json_skips_read_only_tool_call()
+    {
+        var responseBody = """
+{
+  "content": [
+    {
+      "type": "tool_use",
+      "name": "Read",
+      "input": {
+        "file_path": "Index.cshtml"
+      }
+    }
+  ]
+}
+""";
+
+        _service.ExtractAssistantOutput(responseBody, "Anthropic", "/v1/messages")
+            .Should().BeEmpty();
     }
 
     [Fact]

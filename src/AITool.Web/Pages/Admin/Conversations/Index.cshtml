@@ -290,6 +290,11 @@
         margin-top: 20px;
         margin-bottom: 10px;
         font-weight: 700;
+        line-height: 1.35;
+    }
+
+    .conversation-markdown h3 {
+        font-size: 16px;
     }
 
     .conversation-markdown p {
@@ -400,11 +405,21 @@
         color: #334155;
     }
 
+    .conversation-tool-file {
+        margin: 4px 0 8px;
+        color: #475569;
+        font-size: 13px;
+        line-height: 1.5;
+        word-break: break-all;
+    }
+
     .conversation-code-block pre {
         margin: 0;
         padding: 14px 16px;
         overflow-x: auto;
         background: #fff;
+        white-space: pre;
+        max-height: 520px;
     }
 
     .conversation-code-block pre code {
@@ -412,6 +427,8 @@
         padding: 0;
         font-size: 13px;
         line-height: 1.6;
+        word-break: normal;
+        overflow-wrap: normal;
     }
 
     /* 用户气泡里的行内 code 用浅色底 */
@@ -644,15 +661,7 @@
             return '';
         }
 
-        if (text.indexOf('```') >= 0) {
-            return text;
-        }
-
         text = normalizeToolCallMarkdown(text);
-        if (text.indexOf('```') >= 0) {
-            return text;
-        }
-
         text = normalizeToolResultMarkdown(text);
         if (text.indexOf('```') >= 0) {
             return text;
@@ -815,16 +824,11 @@
             }
 
             if (line.startsWith('文件:')) {
-                converted.push('**' + line + '**');
+                converted.push('<div class="conversation-tool-file">' + escapeHtml(line) + '</div>');
                 return;
             }
 
             if (line.startsWith('```')) {
-                if (inTextBlock) {
-                    converted.push('```');
-                    inTextBlock = false;
-                    return;
-                }
                 converted.push(line);
                 return;
             }

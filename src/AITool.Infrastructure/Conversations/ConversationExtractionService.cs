@@ -419,7 +419,7 @@ public sealed class ConversationExtractionService
                     {
                         anthropicToolName = ExtractAnthropicToolName(contentBlock);
                         anthropicToolInputBuilder.Clear();
-                        AppendToolUseSummaryIfPresent(contentBuilder, contentBlock);
+                        AppendAnthropicToolUseWithInlineInputIfPresent(contentBuilder, contentBlock);
                     }
 
                     if (root.TryGetProperty("delta", out var delta))
@@ -437,7 +437,7 @@ public sealed class ConversationExtractionService
 
                     if (string.Equals(eventType, "content_block_stop", StringComparison.OrdinalIgnoreCase))
                     {
-                        AppendToolInputChangeSummaryIfPresent(contentBuilder, anthropicToolName, anthropicToolInputBuilder.ToString());
+                        AppendAnthropicToolUseFromDeltaIfPresent(contentBuilder, anthropicToolName, anthropicToolInputBuilder.ToString());
                         anthropicToolName = string.Empty;
                         anthropicToolInputBuilder.Clear();
                     }
@@ -807,6 +807,24 @@ public sealed class ConversationExtractionService
             || string.Equals(toolName, "NotebookEdit", StringComparison.OrdinalIgnoreCase);
     }
 
+    private static bool ShouldShowToolCallArguments(string? toolName)
+    {
+        if (string.IsNullOrWhiteSpace(toolName))
+        {
+            return false;
+        }
+
+        return !string.Equals(toolName, "Read", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(toolName, "Grep", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(toolName, "Glob", StringComparison.OrdinalIgnoreCase)
+            && !string.Equals(toolName, "TodoWrite", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsEmptyObject(JsonElement element)
+    {
+        return element.ValueKind == JsonValueKind.Object && !element.EnumerateObject().Any();
+    }
+
     private static bool LooksLikeUsefulToolResult(string text)
     {
         var normalized = text.Trim();
@@ -888,19 +906,34 @@ public sealed class ConversationExtractionService
     private static string BuildAnthropicToolUseSummary(JsonElement item)
     {
         var name = item.TryGetProperty("name", out var nameValue) ? nameValue.GetString() : string.Empty;
+        if (!item.TryGetProperty("input", out var input) || input.ValueKind != JsonValueKind.Object || IsEmptyObject(input))
+        {
+            return string.Empty;
+        }
+
+        return BuildToolUseSummaryFromInput(name, input);
+    }
+
+    private static string BuildToolUseSummaryFromInput(string? name, JsonElement input)
+    {
+        var changeSummary = BuildToolInputChangeSummary(name, input);
+        if (string.IsNullOrWhiteSpace(changeSummary) && !ShouldShowToolCallArguments(name))
+        {
+            return string.Empty;
+        }
+
         var lines = new List<string>();
         if (!string.IsNullOrWhiteSpace(name))
         {
             lines.Add($"工具调用: {name}");
         }
 
-        if (item.TryGetProperty("input", out var input) && input.ValueKind == JsonValueKind.Object)
+        if (ShouldShowToolCallArguments(name))
         {
-            var arguments = input.GetRawText();
-            lines.Add(arguments);
-            AppendIfNotEmpty(lines, BuildToolInputChangeSummary(name, input));
+            lines.Add(input.GetRawText());
         }
 
+        AppendIfNotEmpty(lines, changeSummary);
         return string.Join("\n", lines).Trim();
     }
 
@@ -917,7 +950,7 @@ public sealed class ConversationExtractionService
         return true;
     }
 
-    private static bool AppendToolUseSummaryIfPresent(System.Text.StringBuilder builder, JsonElement item)
+    private static bool AppendAnthropicToolUseWithInlineInputIfPresent(System.Text.StringBuilder builder, JsonElement item)
     {
         var summary = BuildAnthropicToolUseSummary(item);
         if (string.IsNullOrWhiteSpace(summary))
@@ -928,6 +961,32 @@ public sealed class ConversationExtractionService
         AppendSeparator(builder);
         builder.Append(summary);
         return true;
+    }
+
+    private static bool AppendAnthropicToolUseFromDeltaIfPresent(System.Text.StringBuilder builder, string? toolName, string arguments)
+    {
+        if (string.IsNullOrWhiteSpace(arguments))
+        {
+            return false;
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(arguments);
+            var summary = BuildToolUseSummaryFromInput(toolName, doc.RootElement);
+            if (string.IsNullOrWhiteSpace(summary))
+            {
+                return false;
+            }
+
+            AppendSeparator(builder);
+            builder.Append(summary);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static bool AppendToolInputChangeSummaryIfPresent(System.Text.StringBuilder builder, string? toolName, string arguments)
