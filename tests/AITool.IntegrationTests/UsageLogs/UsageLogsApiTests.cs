@@ -40,7 +40,7 @@ public sealed class UsageLogsApiTests
             x.GetProperty("requestId").GetGuid() == UsageLogsWebApplicationFactory.RequestChainId &&
             x.GetProperty("attemptIndex").GetInt32() == 1);
 
-        items.Should().HaveCount(4);
+        items.Should().HaveCount(5);
         latestItem.GetProperty("requestModel").GetString().Should().Be("summary-model");
         latestItem.GetProperty("cachedTokens").GetInt32().Should().Be(8704);
         latestItem.GetProperty("isStreaming").GetBoolean().Should().BeTrue();
@@ -69,7 +69,7 @@ public sealed class UsageLogsApiTests
         using var document = JsonDocument.Parse(body);
         var items = document.RootElement.GetProperty("items").EnumerateArray().ToList();
 
-        items.Should().HaveCount(2);
+        items.Should().HaveCount(3);
         items.Should().OnlyContain(x => x.GetProperty("siteName").GetString() == "Primary OpenAI");
     }
 
@@ -168,10 +168,10 @@ public sealed class UsageLogsApiTests
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
 
         using var document = JsonDocument.Parse(body);
-        document.RootElement.GetProperty("totalRequests").GetInt32().Should().Be(4);
+        document.RootElement.GetProperty("totalRequests").GetInt32().Should().Be(5);
         document.RootElement.GetProperty("failedRequests").GetInt32().Should().Be(2);
-        document.RootElement.GetProperty("successRate").GetDouble().Should().Be(50d);
-        document.RootElement.GetProperty("totalTokens").GetInt32().Should().Be(108122);
+        document.RootElement.GetProperty("successRate").GetDouble().Should().Be(60d);
+        document.RootElement.GetProperty("totalTokens").GetInt32().Should().Be(108164);
         document.RootElement.GetProperty("maxDurationMs").GetInt32().Should().Be(8000);
     }
 
@@ -398,6 +398,8 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
 
+        var logBaseTime = DateTimeOffset.UtcNow.AddDays(-1);
+
         db.Sites.AddRange(
             new Site
             {
@@ -500,7 +502,7 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 FirstTokenLatencyMs = 5400,
                 StreamDurationMs = 2600,
                 TotalDurationMs = 8000,
-                RequestedAt = new DateTimeOffset(2026, 4, 28, 10, 0, 0, TimeSpan.Zero)
+                RequestedAt = logBaseTime.AddMinutes(0)
             },
             new ProxyUsageLog
             {
@@ -526,7 +528,7 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 FirstTokenLatencyMs = 800,
                 StreamDurationMs = 400,
                 TotalDurationMs = 1200,
-                RequestedAt = new DateTimeOffset(2026, 4, 28, 10, 0, 0, TimeSpan.Zero)
+                RequestedAt = logBaseTime.AddMinutes(0)
             },
             new ProxyUsageLog
             {
@@ -552,7 +554,7 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 FirstTokenLatencyMs = 1200,
                 StreamDurationMs = 600,
                 TotalDurationMs = 1800,
-                RequestedAt = new DateTimeOffset(2026, 4, 28, 10, 0, 3, 200, TimeSpan.Zero)
+                RequestedAt = logBaseTime.AddMinutes(0).AddSeconds(3).AddMilliseconds(200)
             },
             new ProxyUsageLog
             {
@@ -577,7 +579,7 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 FirstTokenLatencyMs = 5400,
                 StreamDurationMs = 2600,
                 TotalDurationMs = 8000,
-                RequestedAt = new DateTimeOffset(2026, 4, 28, 10, 1, 0, TimeSpan.Zero)
+                RequestedAt = logBaseTime.AddMinutes(1)
             },
             new ProxyUsageLog
             {
@@ -602,7 +604,7 @@ internal sealed class UsageLogsWebApplicationFactory : WebApplicationFactory<Pro
                 FirstTokenLatencyMs = 0,
                 StreamDurationMs = 0,
                 TotalDurationMs = 3200,
-                RequestedAt = new DateTimeOffset(2026, 4, 28, 9, 59, 0, TimeSpan.Zero)
+                RequestedAt = logBaseTime.AddMinutes(-1)
             });
 
         await db.SaveChangesAsync();
@@ -717,14 +719,15 @@ internal sealed class ModelHealthRegressionWebApplicationFactory : WebApplicatio
         var siteAId = Guid.Parse("10101010-1010-1010-1010-101010101010");
         var siteBId = Guid.Parse("20202020-2020-2020-2020-202020202020");
         var siteCId = Guid.Parse("30303030-3030-3030-3030-303030303030");
+        var logBaseTime = DateTimeOffset.UtcNow.AddDays(-1);
         var timestamps = new[]
         {
-            new DateTimeOffset(2026, 5, 17, 1, 0, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 5, 17, 2, 0, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 5, 17, 3, 0, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 5, 17, 4, 0, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 5, 17, 5, 0, 0, TimeSpan.Zero),
-            new DateTimeOffset(2026, 5, 17, 6, 0, 0, TimeSpan.Zero)
+            logBaseTime.AddHours(1),
+            logBaseTime.AddHours(2),
+            logBaseTime.AddHours(3),
+            logBaseTime.AddHours(4),
+            logBaseTime.AddHours(5),
+            logBaseTime.AddHours(6)
         };
 
         db.ModelLibraryItems.Add(new ModelLibraryItem
