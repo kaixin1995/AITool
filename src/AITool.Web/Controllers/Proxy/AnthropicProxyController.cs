@@ -1,8 +1,10 @@
 using System.Text;
 using System.Text.Json;
+using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
+using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -56,6 +58,14 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
     /// <summary>
+    /// 负责提取结构化对话内容并识别会话。
+    /// </summary>
+    private readonly ConversationExtractionService _conversationExtractionService;
+    /// <summary>
+    /// 负责异步写入结构化对话记录。
+    /// </summary>
+    private readonly IConversationLogService _conversationLogService;
+    /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
     private readonly ILogger<AnthropicProxyController> _logger;
@@ -69,6 +79,8 @@ public sealed class AnthropicProxyController : ControllerBase
         RouteCircuitStateStore circuitStore,
         ProxyRequestMetadataCache metadataCache,
         DeveloperInvocationTraceStore traceStore,
+        ConversationExtractionService conversationExtractionService,
+        IConversationLogService conversationLogService,
         ModelConcurrencyLimiter concurrencyLimiter,
         ILogger<AnthropicProxyController> logger)
     {
@@ -77,6 +89,8 @@ public sealed class AnthropicProxyController : ControllerBase
         _circuitStore = circuitStore;
         _metadataCache = metadataCache;
         _traceStore = traceStore;
+        _conversationExtractionService = conversationExtractionService;
+        _conversationLogService = conversationLogService;
         _concurrencyLimiter = concurrencyLimiter;
         _logger = logger;
     }
@@ -257,6 +271,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 if (streamResult.Success)
                 {
+                    await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, CancellationToken.None);
                     SafeSucceedRoute(route.RouteId);
                     return new EmptyResult();
                 }
@@ -321,6 +336,7 @@ public sealed class AnthropicProxyController : ControllerBase
             {
                 // 成功时清除该路由的连续失败计数
                 SafeSucceedRoute(route.RouteId);
+                await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, result.ResponseBody, modelName, false, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, cancellationToken);
                 if (result.IsStreaming &&
                     string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
                     HttpContext.Response.HasStarted)
@@ -1332,5 +1348,81 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         return string.Join(" ", element.EnumerateObject().Select(x => FlattenText(x.Value)).Where(x => !string.IsNullOrWhiteSpace(x)));
+    }
+
+    /// <summary>
+    /// 安全地写入结构化对话记录，失败时不影响主链路。
+    /// 有会话标识的工具（claude-code / codex / open-code）按会话分组，
+    /// 无会话标识的普通代理请求合并到同一个分组。
+    /// </summary>
+    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var headers = CaptureRequestHeaders();
+            var sourceTool = _conversationExtractionService.ResolveSourceTool(
+                headers.TryGetValue("X-AITool-Source", out var explicitSource) ? explicitSource : string.Empty,
+                Request.Headers.UserAgent.ToString());
+
+            var sessionId = _conversationExtractionService.ExtractSessionId(headers);
+
+            var userInput = _conversationExtractionService.ExtractUserInputText(requestBody, protocolType, Request.Path);
+            var assistantOutputMarkdown = _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path);
+            if (string.IsNullOrWhiteSpace(userInput) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
+            {
+                return;
+            }
+
+            // 有 sessionId 的按 sourceTool:sessionId 分组，无 sessionId 的合并到 sourceTool 这一组。
+            var groupKey = !string.IsNullOrWhiteSpace(sessionId)
+                ? $"{sourceTool}:{sessionId}"
+                : sourceTool;
+
+            await _conversationLogService.LogAsync(new ConversationTurnEntry
+            {
+                RequestId = requestId,
+                SourceTool = sourceTool,
+                SessionId = sessionId,
+                ConversationGroupKey = groupKey,
+                AccessKeyId = accessKeyId,
+                RequestModel = requestModel,
+                ProtocolType = protocolType,
+                RequestPath = Request.Path,
+                Source = requestSource,
+                UserInputText = userInput,
+                AssistantOutputMarkdown = assistantOutputMarkdown,
+                AssistantOutputPlainText = _conversationExtractionService.ToPlainText(assistantOutputMarkdown),
+                InputTokens = inputTokens,
+                CachedTokens = cachedTokens,
+                OutputTokens = outputTokens,
+                IsStreaming = isStreaming,
+                Status = status,
+                MetadataJson = _conversationExtractionService.BuildMetadataJson(
+                    Request.Headers.UserAgent.ToString(),
+                    headers.TryGetValue("x-app", out var xApp) ? xApp : string.Empty,
+                    sessionId)
+            }, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "记录结构化对话失败，但请求继续返回。Protocol={Protocol}, RequestModel={RequestModel}",
+                protocolType,
+                requestModel);
+        }
+    }
+
+    /// <summary>
+    /// 复制当前请求头为普通字典，避免跨层依赖 ASP.NET Core 类型。
+    /// </summary>
+    private Dictionary<string, string> CaptureRequestHeaders()
+    {
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var header in Request.Headers)
+        {
+            headers[header.Key] = header.Value.ToString();
+        }
+
+        return headers;
     }
 }

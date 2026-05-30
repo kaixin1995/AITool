@@ -105,9 +105,13 @@ builder.Services.AddScoped<ModelHealthRequestService>();
 // 注册使用日志服务，记录每次代理调用的 Token 用量。
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
+builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>());
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
 builder.Services.AddSingleton<ModelConcurrencyLimiter>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
+builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogService, AITool.Infrastructure.Conversations.ConversationLogService>();
+builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationExtractionService>();
 
 // 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点。
 builder.Services.AddSingleton<RouteCircuitStateStore>();
@@ -139,6 +143,7 @@ using (var scope = app.Services.CreateScope())
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
     await EnsureProxyUsageLogSchemaAsync(db);
+    await EnsureConversationLogSchemaAsync(db);
 
     var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
     try
@@ -425,6 +430,60 @@ static async Task<bool> ColumnExistsAsync(DbConnection connection, string tableN
     }
 
     return false;
+}
+
+/// <summary>
+/// 为历史数据库补齐结构化对话记录表，避免旧库缺少新功能所需表结构。
+/// </summary>
+static async Task EnsureConversationLogSchemaAsync(AppDbContext dbContext)
+{
+    var connection = dbContext.Database.GetDbConnection();
+    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
+    if (shouldCloseConnection)
+    {
+        await connection.OpenAsync();
+    }
+
+    try
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = @"
+CREATE TABLE IF NOT EXISTS ConversationTurnLogs (
+    Id TEXT NOT NULL PRIMARY KEY,
+    RequestId TEXT NOT NULL,
+    CreatedAt TEXT NOT NULL,
+    SourceTool TEXT NOT NULL,
+    SessionId TEXT NOT NULL,
+    ConversationGroupKey TEXT NOT NULL,
+    AccessKeyId TEXT NOT NULL,
+    RequestModel TEXT NOT NULL,
+    ProtocolType TEXT NOT NULL,
+    RequestPath TEXT NOT NULL,
+    Source TEXT NOT NULL,
+    UserInputText TEXT NOT NULL,
+    AssistantOutputMarkdown TEXT NOT NULL,
+    AssistantOutputPlainText TEXT NOT NULL,
+    InputTokens INTEGER NOT NULL,
+    CachedTokens INTEGER NOT NULL,
+    OutputTokens INTEGER NOT NULL,
+    IsStreaming INTEGER NOT NULL,
+    Status TEXT NOT NULL,
+    MetadataJson TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_CreatedAt ON ConversationTurnLogs (CreatedAt);
+CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_RequestId ON ConversationTurnLogs (RequestId);
+CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_ConversationGroupKey ON ConversationTurnLogs (ConversationGroupKey);
+CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_SourceTool_SessionId_CreatedAt ON ConversationTurnLogs (SourceTool, SessionId, CreatedAt);
+";
+        await command.ExecuteNonQueryAsync();
+    }
+    finally
+    {
+        if (shouldCloseConnection)
+        {
+            await connection.CloseAsync();
+        }
+    }
 }
 
 /// <summary>

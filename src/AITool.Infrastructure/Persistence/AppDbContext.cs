@@ -64,6 +64,11 @@ public sealed class AppDbContext : DbContext
     public DbSet<ProxyUsageLog> ProxyUsageLogs => Set<ProxyUsageLog>();
 
     /// <summary>
+    /// 结构化对话记录数据集
+    /// </summary>
+    public DbSet<ConversationTurnLog> ConversationTurnLogs => Set<ConversationTurnLog>();
+
+    /// <summary>
     /// 模型健康监控配置数据集
     /// </summary>
     public DbSet<ModelHealthMonitor> ModelHealthMonitors => Set<ModelHealthMonitor>();
@@ -176,6 +181,28 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.IsStreamInterrupted).IsRequired();
             entity.HasIndex(e => e.RequestedAt);
             entity.HasIndex(e => e.RequestId);
+        });
+
+        // 结构化对话记录实体配置
+        modelBuilder.Entity<ConversationTurnLog>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.SourceTool).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.SessionId).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.ConversationGroupKey).IsRequired().HasMaxLength(260);
+            entity.Property(e => e.RequestModel).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.ProtocolType).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.RequestPath).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.Source).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.UserInputText).IsRequired().HasMaxLength(20000);
+            entity.Property(e => e.AssistantOutputMarkdown).IsRequired().HasMaxLength(50000);
+            entity.Property(e => e.AssistantOutputPlainText).IsRequired().HasMaxLength(50000);
+            entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
+            entity.Property(e => e.MetadataJson).IsRequired().HasMaxLength(20000);
+            entity.HasIndex(e => e.CreatedAt);
+            entity.HasIndex(e => e.RequestId);
+            entity.HasIndex(e => e.ConversationGroupKey);
+            entity.HasIndex(e => new { e.SourceTool, e.SessionId, e.CreatedAt });
         });
 
         // 模型健康监控配置实体配置

@@ -73,6 +73,12 @@ public sealed class LogRetentionService : ILogRetentionService
             .ToList();
         _dbContext.ProxyUsageLogs.RemoveRange(oldUsageLogs);
 
+        var allConversationLogs = await _dbContext.ConversationTurnLogs.ToListAsync(cancellationToken);
+        var oldConversationLogs = allConversationLogs
+            .Where(l => l.CreatedAt < usageCutoff)
+            .ToList();
+        _dbContext.ConversationTurnLogs.RemoveRange(oldConversationLogs);
+
         var prunedAt = now;
         settings.LastUsageLogPrunedAt = prunedAt;
         settings.LastUsageLogPrunedCount = oldUsageLogs.Count;

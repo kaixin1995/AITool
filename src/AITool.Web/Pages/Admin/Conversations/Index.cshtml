@@ -1,0 +1,564 @@
+@page
+@model AITool.Web.Pages.Admin.Conversations.IndexModel
+@{
+    ViewData["Title"] = "对话记录";
+    var isMinimal = string.Equals(Request.Query["layout"], "minimal", StringComparison.OrdinalIgnoreCase);
+    if (isMinimal)
+    {
+        Layout = "_LayoutMinimal";
+    }
+}
+
+@if (!isMinimal)
+{
+    <div class="page-header mb-3">
+        <div>
+            <h2 class="page-title">对话记录</h2>
+            <p class="page-subtitle">按会话查看用户输入与 AI 回复</p>
+        </div>
+    </div>
+}
+
+<!-- 第一行：来源 + 关键词 + 查询按钮 -->
+<div class="conversation-log-filter-bar @(isMinimal ? "conversation-filter-minimal" : "")">
+    <select id="rangeTypeSelect" class="form-select form-select-sm" style="width:130px">
+        <option value="day" selected>按天</option>
+        <option value="week">按周</option>
+        <option value="month">按月</option>
+        <option value="custom">指定范围</option>
+    </select>
+    <input id="startTimeInput" type="datetime-local" step="60" class="form-control form-control-sm conversation-custom-range" style="width:190px;display:none" />
+    <input id="endTimeInput" type="datetime-local" step="60" class="form-control form-control-sm conversation-custom-range" style="width:190px;display:none" />
+    <select id="sourceToolSelect" class="form-select form-select-sm" style="width:140px">
+        <option value="">全部来源</option>
+        <option value="proxy">代理</option>
+        <option value="chat">对话测试</option>
+        <option value="claude-code">Claude Code</option>
+        <option value="codex">Codex</option>
+        <option value="open-code">Open Code</option>
+    </select>
+    <input id="contentKeywordInput" type="text" class="form-control form-control-sm" style="max-width:320px" placeholder="搜索对话内容" />
+    <button type="button" class="btn btn-primary btn-sm" onclick="handleQuery()">查询</button>
+</div>
+
+<div class="conversation-log-shell @(isMinimal ? "conversation-shell-minimal" : "")">
+    <aside class="conversation-log-sidebar">
+        <div class="conversation-log-brand">会话列表</div>
+        <div id="conversationSessions" class="conversation-log-session-list"></div>
+    </aside>
+
+    <section class="conversation-log-main">
+        <div class="conversation-log-title" id="conversationDetailTitle">对话详情</div>
+        <div id="conversationTurns" class="conversation-log-content-empty text-muted">请选择左侧会话查看内容。</div>
+    </section>
+</div>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css" />
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+
+<style>
+    /* 顶部筛选栏 */
+    .conversation-log-filter-bar {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 18px;
+        padding: 14px 20px;
+        margin-bottom: 16px;
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+
+    /* 左右分栏主体，固定高度 = 视口高度 - 顶部栏 - 筛选栏 - 间距 */
+    .conversation-log-shell {
+        display: grid;
+        grid-template-columns: 280px minmax(0, 1fr);
+        gap: 20px;
+        height: calc(100vh - 230px);
+    }
+
+    /* minimal 布局下内容撑满视口 */
+    .conversation-log-shell.conversation-shell-minimal {
+        height: calc(100vh - 80px);
+    }
+
+    .conversation-filter-minimal {
+        margin-bottom: 10px;
+    }
+
+    .conversation-log-sidebar {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 18px;
+        display: flex;
+        flex-direction: column;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .conversation-log-brand {
+        padding: 18px 20px 12px;
+        font-size: 22px;
+        font-weight: 700;
+        color: #2563eb;
+    }
+
+    /* 会话列表内部滚动 */
+    .conversation-log-session-list {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 0 10px 12px;
+    }
+
+    .conversation-session-item {
+        width: 100%;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        border-radius: 14px;
+        padding: 12px 12px;
+        margin-bottom: 6px;
+    }
+
+    .conversation-session-item:hover {
+        background: #f3f4f6;
+    }
+
+    .conversation-session-item.active {
+        background: #dbeafe;
+        color: #1d4ed8;
+    }
+
+    .conversation-log-main {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 18px;
+        min-height: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+    }
+
+    .conversation-log-title {
+        padding: 18px 24px;
+        border-bottom: 1px solid #e5e7eb;
+        font-size: 26px;
+        font-weight: 700;
+    }
+
+    #conversationTurns {
+        flex: 1;
+        min-height: 0;
+        overflow: auto;
+        padding: 24px;
+    }
+
+    .conversation-log-content-empty {
+        padding: 24px;
+    }
+
+    /* 单轮对话容器 */
+    .conversation-turn {
+        margin-bottom: 32px;
+    }
+
+    .conversation-turn-meta {
+        font-size: 12px;
+        color: #9ca3af;
+        text-align: center;
+        margin-bottom: 16px;
+    }
+
+    /* 消息行：头像 + 气泡 左右布局 */
+    .conversation-msg {
+        display: flex;
+        gap: 12px;
+        margin-bottom: 14px;
+        align-items: flex-start;
+    }
+
+    /* 用户消息靠右 */
+    .conversation-msg-user {
+        flex-direction: row-reverse;
+    }
+
+    /* 圆形头像 */
+    .conversation-avatar {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        flex-shrink: 0;
+        line-height: 1;
+    }
+
+    .conversation-avatar-user {
+        background: #dbeafe;
+    }
+
+    .conversation-avatar-assistant {
+        background: #f0fdf4;
+    }
+
+    /* 气泡 */
+    .conversation-bubble {
+        max-width: 80%;
+        border-radius: 16px;
+        padding: 12px 16px;
+        word-break: break-word;
+        line-height: 1.7;
+        font-size: 15px;
+    }
+
+    .conversation-bubble-user {
+        background: #2563eb;
+        color: #fff;
+        border-bottom-right-radius: 4px;
+        white-space: pre-wrap;
+    }
+
+    .conversation-bubble-assistant {
+        background: #f8fafc;
+        border: 1px solid #e5e7eb;
+        border-bottom-left-radius: 4px;
+    }
+
+    /* Markdown 渲染后的内容样式 */
+    .conversation-markdown h1,
+    .conversation-markdown h2,
+    .conversation-markdown h3,
+    .conversation-markdown h4 {
+        margin-top: 20px;
+        margin-bottom: 10px;
+        font-weight: 700;
+    }
+
+    .conversation-markdown p {
+        margin: 0 0 10px;
+    }
+
+    .conversation-markdown p:last-child {
+        margin-bottom: 0;
+    }
+
+    .conversation-markdown ul,
+    .conversation-markdown ol {
+        padding-left: 22px;
+        margin: 8px 0;
+    }
+
+    .conversation-markdown blockquote {
+        margin: 12px 0;
+        padding: 8px 16px;
+        border-left: 4px solid #93c5fd;
+        background: #eff6ff;
+        color: #334155;
+        border-radius: 0 8px 8px 0;
+    }
+
+    .conversation-markdown table {
+        border-collapse: collapse;
+        margin: 12px 0;
+        width: 100%;
+    }
+
+    .conversation-markdown th,
+    .conversation-markdown td {
+        border: 1px solid #e5e7eb;
+        padding: 8px 12px;
+        text-align: left;
+    }
+
+    .conversation-markdown th {
+        background: #f8fafc;
+        font-weight: 600;
+    }
+
+    .conversation-markdown a {
+        color: #2563eb;
+        text-decoration: underline;
+    }
+
+    .conversation-markdown hr {
+        border: 0;
+        border-top: 1px solid #e5e7eb;
+        margin: 16px 0;
+    }
+
+    /* 行内 code */
+    .conversation-markdown code {
+        background: rgba(15, 23, 42, 0.06);
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 14px;
+    }
+
+    /* 代码块容器：带复制按钮 */
+    .conversation-code-block {
+        position: relative;
+        margin: 12px 0;
+        border-radius: 10px;
+        overflow: hidden;
+        border: 1px solid #e5e7eb;
+    }
+
+    .conversation-code-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 6px 12px;
+        background: #f1f5f9;
+        font-size: 12px;
+        color: #64748b;
+    }
+
+    .conversation-code-copy {
+        background: none;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        padding: 2px 10px;
+        font-size: 12px;
+        color: #64748b;
+        cursor: pointer;
+        transition: all .15s;
+    }
+
+    .conversation-code-copy:hover {
+        background: #e2e8f0;
+        color: #334155;
+    }
+
+    .conversation-code-block pre {
+        margin: 0;
+        padding: 14px 16px;
+        overflow-x: auto;
+        background: #fff;
+    }
+
+    .conversation-code-block pre code {
+        background: transparent;
+        padding: 0;
+        font-size: 13px;
+        line-height: 1.6;
+    }
+
+    /* 用户气泡里的行内 code 用浅色底 */
+    .conversation-bubble-user code {
+        background: rgba(255, 255, 255, 0.2);
+    }
+
+    /* 移动端：左右布局改为上下布局，各自独立滚动 */
+    @@media (max-width: 768px) {
+        .conversation-log-shell {
+            grid-template-columns: 1fr;
+            height: auto;
+        }
+
+        .conversation-log-sidebar {
+            max-height: 260px;
+        }
+
+        .conversation-log-main {
+            height: calc(100vh - 300px);
+        }
+    }
+</style>
+
+<script>
+    /* 配置 marked 使用 highlight.js 做代码高亮 */
+    marked.setOptions({
+        highlight: function(code, lang) {
+            if (lang && hljs.getLanguage(lang)) {
+                try { return hljs.highlight(code, { language: lang }).value; } catch (e) {}
+            }
+            try { return hljs.highlightAuto(code).value; } catch (e) {}
+            return code;
+        },
+        breaks: true,
+        gfm: true
+    });
+
+    /* 自定义 renderer，让代码块带语言标签和复制按钮 */
+    var conversationRenderer = new marked.Renderer();
+    conversationRenderer.code = function(code, language) {
+        var lang = (language || 'text').toLowerCase();
+        var highlighted;
+        try {
+            highlighted = lang && hljs.getLanguage(lang)
+                ? hljs.highlight(code, { language: lang }).value
+                : hljs.highlightAuto(code).value;
+        } catch (e) {
+            highlighted = escapeHtml(code);
+        }
+        return '<div class="conversation-code-block">'
+            + '<div class="conversation-code-header">'
+            + '<span>' + escapeHtml(lang) + '</span>'
+            + '<button class="conversation-code-copy" onclick="copyCodeBlock(this)">复制</button>'
+            + '</div>'
+            + '<pre><code class="hljs language-' + escapeHtml(lang) + '">' + highlighted + '</code></pre>'
+            + '</div>';
+    };
+
+    /* 时间范围切换：显示/隐藏自定义日期输入 */
+    document.getElementById('rangeTypeSelect').addEventListener('change', function() {
+        var isCustom = this.value === 'custom';
+        document.querySelectorAll('.conversation-custom-range').forEach(function(el) {
+            el.style.display = isCustom ? '' : 'none';
+        });
+        if (!isCustom) {
+            loadSessions();
+        }
+    });
+
+    /* 查询按钮：自定义模式下校验后查询，其他模式直接查询 */
+    function handleQuery() {
+        loadSessions();
+    }
+
+    /* 构造时间范围查询参数 */
+    function buildTimeParams() {
+        var params = new URLSearchParams();
+        var rangeType = document.getElementById('rangeTypeSelect').value;
+        params.set('rangeType', rangeType);
+        if (rangeType === 'custom') {
+            var start = document.getElementById('startTimeInput').value;
+            var end = document.getElementById('endTimeInput').value;
+            if (start) params.set('startTime', start);
+            if (end) params.set('endTime', end);
+        }
+        return params;
+    }
+
+    /* 查询会话列表 */
+    async function loadSessions() {
+        var sourceTool = document.getElementById('sourceToolSelect').value || '';
+        var contentKeyword = document.getElementById('contentKeywordInput').value || '';
+        var timeParams = buildTimeParams();
+        var url = '/api/admin/conversations/sessions?sourceTool=' + encodeURIComponent(sourceTool)
+            + '&contentKeyword=' + encodeURIComponent(contentKeyword)
+            + '&' + timeParams.toString();
+
+        var res = await fetch(url);
+        var data = await res.json();
+        var container = document.getElementById('conversationSessions');
+        container.innerHTML = '';
+
+        if (!data.items || data.items.length === 0) {
+            container.innerHTML = '<div class="p-3 text-muted">暂无匹配会话。</div>';
+            document.getElementById('conversationTurns').innerHTML = '<div class="conversation-turns-empty text-muted">请选择左侧会话查看内容。</div>';
+            return;
+        }
+
+        data.items.forEach(function(item, index) {
+            var button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'conversation-session-item';
+            button.innerHTML = '<div class="fw-semibold">' + escapeHtml(item.preview || '未命名会话') + '</div>'
+                + '<div class="small text-muted mt-1">' + escapeHtml(item.sourceTool) + ' · ' + escapeHtml(item.sessionIdShort) + '</div>'
+                + '<div class="small text-muted mt-1">' + escapeHtml(item.lastActivityAtText) + ' · ' + item.turnCount + ' 条 · ' + (item.totalTokens || 0) + ' tokens</div>';
+            button.addEventListener('click', function() {
+                document.querySelectorAll('.conversation-session-item').forEach(function(el) { el.classList.remove('active'); });
+                button.classList.add('active');
+                loadTurns(item.groupKey, item.preview || item.sessionIdShort);
+            });
+            container.appendChild(button);
+
+            if (index === 0) {
+                button.click();
+            }
+        });
+    }
+
+    /* 查询某个会话的对话内容并渲染为聊天气泡 */
+    async function loadTurns(groupKey, sessionTitle) {
+        document.getElementById('conversationDetailTitle').textContent = sessionTitle || '对话详情';
+        var res = await fetch('/api/admin/conversations/turns?groupKey=' + encodeURIComponent(groupKey));
+        var data = await res.json();
+        var container = document.getElementById('conversationTurns');
+        container.innerHTML = '';
+
+        if (!data.items || data.items.length === 0) {
+            container.innerHTML = '<div class="conversation-turns-empty text-muted">当前会话没有可展示的消息。</div>';
+            return;
+        }
+
+        data.items.forEach(function(item) {
+            var turn = document.createElement('div');
+            turn.className = 'conversation-turn';
+
+            /* 时间与模型信息，居中显示 */
+            var meta = document.createElement('div');
+            meta.className = 'conversation-turn-meta';
+            meta.textContent = (item.createdAtText || '') + '  ·  ' + (item.requestModel || '') + '  ·  输入 ' + item.inputTokens + ' / 输出 ' + item.outputTokens;
+            turn.appendChild(meta);
+
+            /* 用户消息：头像在右，气泡蓝色 */
+            if (item.userInputText) {
+                var userRow = document.createElement('div');
+                userRow.className = 'conversation-msg conversation-msg-user';
+                userRow.innerHTML = '<div class="conversation-avatar conversation-avatar-user">👤</div>'
+                    + '<div class="conversation-bubble conversation-bubble-user">' + escapeHtml(item.userInputText) + '</div>';
+                turn.appendChild(userRow);
+            }
+
+            /* AI 回复：头像在左，气泡白底，Markdown 渲染 */
+            if (item.assistantOutputMarkdown) {
+                var aiRow = document.createElement('div');
+                aiRow.className = 'conversation-msg';
+                aiRow.innerHTML = '<div class="conversation-avatar conversation-avatar-assistant">🤖</div>'
+                    + '<div class="conversation-bubble conversation-bubble-assistant conversation-markdown">' + renderAssistantContent(item.assistantOutputMarkdown) + '</div>';
+                turn.appendChild(aiRow);
+            }
+
+            container.appendChild(turn);
+        });
+    }
+
+    /* 用 marked 渲染 AI 回复的 Markdown 内容 */
+    function renderAssistantContent(markdown) {
+        try {
+            return marked.parse(markdown || '', { renderer: conversationRenderer });
+        } catch (e) {
+            return escapeHtml(markdown || '');
+        }
+    }
+
+    /* 复制代码块内容到剪贴板 */
+    function copyCodeBlock(btn) {
+        var codeEl = btn.closest('.conversation-code-block').querySelector('code');
+        if (!codeEl) return;
+        navigator.clipboard.writeText(codeEl.textContent).then(function() {
+            btn.textContent = '已复制';
+            setTimeout(function() { btn.textContent = '复制'; }, 1500);
+        });
+    }
+
+    function escapeHtml(text) {
+        var element = document.createElement('div');
+        element.textContent = text || '';
+        return element.innerHTML;
+    }
+
+    /* 初始化自定义日期输入的默认值 */
+    (function() {
+        var end = new Date();
+        end.setHours(23, 59, 0, 0);
+        var start = new Date();
+        start.setHours(0, 0, 0, 0);
+        var toLocal = function(d) {
+            var pad = function(n) { return n < 10 ? '0' + n : n; };
+            return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+                + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+        };
+        document.getElementById('startTimeInput').value = toLocal(start);
+        document.getElementById('endTimeInput').value = toLocal(end);
+    })();
+
+    loadSessions();
+</script>
