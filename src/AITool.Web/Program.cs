@@ -32,7 +32,7 @@ builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
 
-var applicationVersion = "1.0.1.1";
+var applicationVersion = "1.0.1.2";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 
 var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
@@ -462,7 +462,6 @@ CREATE TABLE IF NOT EXISTS ConversationTurnLogs (
     Source TEXT NOT NULL,
     UserInputText TEXT NOT NULL,
     AssistantOutputMarkdown TEXT NOT NULL,
-    AssistantOutputPlainText TEXT NOT NULL,
     InputTokens INTEGER NOT NULL,
     CachedTokens INTEGER NOT NULL,
     OutputTokens INTEGER NOT NULL,
@@ -476,6 +475,13 @@ CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_ConversationGroupKey ON Conve
 CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_SourceTool_SessionId_CreatedAt ON ConversationTurnLogs (SourceTool, SessionId, CreatedAt);
 ";
         await command.ExecuteNonQueryAsync();
+
+        // 旧表可能包含已废弃的 AssistantOutputPlainText 列，需要移除。
+        if (await ColumnExistsAsync(connection, "ConversationTurnLogs", "AssistantOutputPlainText"))
+        {
+            command.CommandText = "ALTER TABLE ConversationTurnLogs DROP COLUMN AssistantOutputPlainText;";
+            await command.ExecuteNonQueryAsync();
+        }
     }
     finally
     {

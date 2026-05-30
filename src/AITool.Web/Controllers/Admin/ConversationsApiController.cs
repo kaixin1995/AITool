@@ -26,8 +26,8 @@ public sealed class ConversationsApiController : ControllerBase
     [HttpGet("sessions")]
     public async Task<IActionResult> GetSessions(
         [FromQuery] string? sourceTool,
+        [FromQuery] string? requestModel,
         [FromQuery] string? sessionKeyword,
-        [FromQuery] string? contentKeyword,
         [FromQuery] string? rangeType,
         [FromQuery] DateTimeOffset? startTime,
         [FromQuery] DateTimeOffset? endTime,
@@ -42,26 +42,19 @@ public sealed class ConversationsApiController : ControllerBase
             query = query.Where(x => x.SourceTool == sourceTool);
         }
 
+        if (!string.IsNullOrWhiteSpace(requestModel))
+        {
+            query = query.Where(x => x.RequestModel == requestModel);
+        }
+
         if (!string.IsNullOrWhiteSpace(sessionKeyword))
         {
             query = query.Where(x => x.SessionId.Contains(sessionKeyword));
         }
 
-        // 内容关键字搜索不在数据库层做，因为 UserInputText 是压缩存储的，SQLite 无法直接匹配。
-        // 拉到内存后统一解压再过滤。
-
         // SQLite 对 DateTimeOffset 的 Where 比较无法翻译为 SQL，先拉到内存再过滤时间范围。
         var items = await query.ToListAsync(cancellationToken);
         items = items.Where(x => x.CreatedAt >= rangeStart && x.CreatedAt < rangeEnd).ToList();
-
-        // 内容搜索在内存中做，因为 UserInputText 可能是压缩存储的。
-        if (!string.IsNullOrWhiteSpace(contentKeyword))
-        {
-            items = items.Where(x =>
-                GzipTextCompression.Decompress(x.UserInputText).Contains(contentKeyword, StringComparison.OrdinalIgnoreCase)
-                || x.AssistantOutputPlainText.Contains(contentKeyword, StringComparison.OrdinalIgnoreCase))
-                .ToList();
-        }
 
         var sessions = items
             .GroupBy(x => x.ConversationGroupKey)

@@ -84,7 +84,6 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
             Source = "claude-code",
             UserInputText = "请帮我分析这个报错",
             AssistantOutputMarkdown = "```csharp\nConsole.WriteLine(\"hello\");\n```",
-            AssistantOutputPlainText = "Console.WriteLine hello",
             InputTokens = 10,
             CachedTokens = 0,
             OutputTokens = 20,

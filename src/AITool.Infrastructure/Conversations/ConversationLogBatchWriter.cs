@@ -120,7 +120,6 @@ public sealed class ConversationLogBatchWriter : BackgroundService
             Source = entry.Source,
             UserInputText = GzipTextCompression.Compress(entry.UserInputText),
             AssistantOutputMarkdown = GzipTextCompression.Compress(entry.AssistantOutputMarkdown),
-            AssistantOutputPlainText = entry.AssistantOutputPlainText,
             InputTokens = entry.InputTokens,
             CachedTokens = entry.CachedTokens,
             OutputTokens = entry.OutputTokens,

@@ -196,7 +196,6 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.Source).IsRequired().HasMaxLength(50);
             entity.Property(e => e.UserInputText).IsRequired().HasMaxLength(20000);
             entity.Property(e => e.AssistantOutputMarkdown).IsRequired().HasMaxLength(50000);
-            entity.Property(e => e.AssistantOutputPlainText).IsRequired().HasMaxLength(50000);
             entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
             entity.Property(e => e.MetadataJson).IsRequired().HasMaxLength(20000);
             entity.HasIndex(e => e.CreatedAt);

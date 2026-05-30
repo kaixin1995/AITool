@@ -72,11 +72,6 @@ public sealed class ConversationTurnEntry
     public string AssistantOutputMarkdown { get; set; } = string.Empty;
 
     /// <summary>
-    /// AI 输出纯文本。
-    /// </summary>
-    public string AssistantOutputPlainText { get; set; } = string.Empty;
-
-    /// <summary>
     /// 输入 Token 数。
     /// </summary>
     public int InputTokens { get; set; }

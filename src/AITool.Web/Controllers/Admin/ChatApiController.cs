@@ -1703,7 +1703,6 @@ public sealed class ChatApiController : ControllerBase
                 Source = "chat",
                 UserInputText = userInputText,
                 AssistantOutputMarkdown = assistantOutputMarkdown,
-                AssistantOutputPlainText = _conversationExtractionService.ToPlainText(assistantOutputMarkdown),
                 InputTokens = inputTokens,
                 CachedTokens = cachedTokens,
                 OutputTokens = outputTokens,

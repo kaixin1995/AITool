@@ -37,7 +37,9 @@
         <option value="codex">Codex</option>
         <option value="open-code">Open Code</option>
     </select>
-    <input id="contentKeywordInput" type="text" class="form-control form-control-sm" style="max-width:320px" placeholder="搜索对话内容" />
+    <select id="requestModelSelect" class="form-select form-select-sm" style="width:160px">
+        <option value="">全部路由入口</option>
+    </select>
     <button type="button" class="btn btn-primary btn-sm" onclick="handleQuery()">查询</button>
 </div>
 
@@ -438,10 +440,10 @@
     /* 查询会话列表 */
     async function loadSessions() {
         var sourceTool = document.getElementById('sourceToolSelect').value || '';
-        var contentKeyword = document.getElementById('contentKeywordInput').value || '';
+        var requestModel = document.getElementById('requestModelSelect').value || '';
         var timeParams = buildTimeParams();
         var url = '/api/admin/conversations/sessions?sourceTool=' + encodeURIComponent(sourceTool)
-            + '&contentKeyword=' + encodeURIComponent(contentKeyword)
+            + '&requestModel=' + encodeURIComponent(requestModel)
             + '&' + timeParams.toString();
 
         var res = await fetch(url);
@@ -560,5 +562,26 @@
         document.getElementById('endTimeInput').value = toLocal(end);
     })();
 
+    /* 加载路由入口列表填充下拉框 */
+    async function loadRouteEntries() {
+        try {
+            var res = await fetch('/api/admin/route-rules/entries');
+            var entries = await res.json();
+            var select = document.getElementById('requestModelSelect');
+            var currentValue = select.value;
+            select.innerHTML = '<option value="">全部路由入口</option>';
+            if (entries && entries.length > 0) {
+                entries.forEach(function(entry) {
+                    var opt = document.createElement('option');
+                    opt.value = entry.entryName;
+                    opt.textContent = entry.entryName;
+                    select.appendChild(opt);
+                });
+            }
+            if (currentValue) select.value = currentValue;
+        } catch (e) {}
+    }
+
+    loadRouteEntries();
     loadSessions();
 </script>

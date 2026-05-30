@@ -1391,7 +1391,6 @@ public sealed class AnthropicProxyController : ControllerBase
                 Source = requestSource,
                 UserInputText = userInput,
                 AssistantOutputMarkdown = assistantOutputMarkdown,
-                AssistantOutputPlainText = _conversationExtractionService.ToPlainText(assistantOutputMarkdown),
                 InputTokens = inputTokens,
                 CachedTokens = cachedTokens,
                 OutputTokens = outputTokens,
