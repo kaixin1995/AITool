@@ -405,6 +405,18 @@
         color: #334155;
     }
 
+    .conversation-tool-title {
+        margin: 14px 0 8px;
+        color: #475569;
+        font-size: 22px;
+        line-height: 1.35;
+        font-weight: 700;
+    }
+
+    .conversation-tool-title:first-child {
+        margin-top: 0;
+    }
+
     .conversation-tool-file {
         margin: 4px 0 8px;
         color: #475569;
@@ -473,14 +485,16 @@
     /* 自定义 renderer，让代码块带语言标签和复制按钮 */
     var conversationRenderer = new marked.Renderer();
     conversationRenderer.code = function(code, language) {
-        var lang = (language || 'text').toLowerCase();
+        var codeText = typeof code === 'object' && code !== null ? (code.text || '') : (code || '');
+        var rawLanguage = typeof code === 'object' && code !== null ? (code.lang || '') : (language || '');
+        var lang = (rawLanguage || 'text').toLowerCase();
         var highlighted;
         try {
             highlighted = lang && hljs.getLanguage(lang)
-                ? hljs.highlight(code, { language: lang }).value
-                : hljs.highlightAuto(code).value;
+                ? hljs.highlight(codeText, { language: lang }).value
+                : hljs.highlightAuto(codeText).value;
         } catch (e) {
-            highlighted = escapeHtml(code);
+            highlighted = escapeHtml(codeText);
         }
         return '<div class="conversation-code-block">'
             + '<div class="conversation-code-header">'
@@ -656,7 +670,7 @@
     }
 
     function normalizeAssistantMarkdown(markdown) {
-        var text = (markdown || '').replace(/\r\n/g, '\n');
+        var text = normalizeMarkdownFenceBreaks((markdown || '').replace(/\r\n/g, '\n'));
         if (!text.trim()) {
             return '';
         }
@@ -703,6 +717,14 @@
         return text;
     }
 
+    function normalizeMarkdownFenceBreaks(text) {
+        return (text || '')
+            .replace(/```([A-Za-z0-9_+-]+)(?=[{\[])/g, '```$1\n')
+            .replace(/```([A-Za-z0-9_+-]+)(?=\s*\")/g, '```$1\n')
+            .replace(/```([A-Za-z0-9_+-]+)(?=\s*[A-Za-z_][A-Za-z0-9_]*\s*[:=])/g, '```$1\n')
+            .replace(/`([A-Za-z0-9_+-]+)`(?=[A-Za-z_$][A-Za-z0-9_$.\[\]]*`)/g, '`$1`\n');
+    }
+
     function looksLikePlainOutput(text) {
         var normalized = (text || '').trim();
         if (!normalized) {
@@ -741,7 +763,7 @@
 
     function normalizeToolCallMarkdown(text) {
         var normalized = (text || '').trim();
-        if (!normalized || normalized.indexOf('工具调用: ') < 0) {
+        if (!normalized || normalized.indexOf('工具调用:') < 0) {
             return text;
         }
 
@@ -750,13 +772,13 @@
         var i = 0;
         while (i < lines.length) {
             var line = lines[i].trimEnd();
-            if (!line.startsWith('工具调用: ')) {
+            if (!isToolCallLine(line)) {
                 converted.push(lines[i]);
                 i++;
                 continue;
             }
 
-            converted.push('### ' + line);
+            converted.push('<div class="conversation-tool-title">' + escapeHtml(line.trim()) + '</div>');
             var argumentLines = [];
             i++;
             while (i < lines.length) {
@@ -771,7 +793,7 @@
                     continue;
                 }
 
-                if (trimmed.startsWith('工具调用: ')) {
+                if (isToolCallLine(trimmed)) {
                     break;
                 }
 
@@ -784,7 +806,7 @@
                 break;
             }
 
-            if (argumentLines.length > 0) {
+            if (argumentLines.length > 0 && shouldShowToolArguments(line, argumentLines)) {
                 converted.push('```json');
                 converted.push(argumentLines.join('\n'));
                 converted.push('```');
@@ -798,10 +820,23 @@
         return converted.join('\n').trim();
     }
 
+    function isToolCallLine(text) {
+        return /^\s*工具调用:\s*\S+/.test(text || '');
+    }
+
     function looksLikeJsonLine(text) {
         return /^[\[{]/.test(text)
             || /^[\]}],?$/.test(text)
             || /^"[^"\\]+"\s*:/.test(text);
+    }
+
+    function shouldShowToolArguments(toolLine, argumentLines) {
+        if (/工具调用:\s*(Edit|Write|MultiEdit|NotebookEdit)\b/i.test(toolLine)) {
+            return false;
+        }
+
+        var joined = argumentLines.join('\n');
+        return !/("old_string"|"new_string"|"oldString"|"newString")\s*:/.test(joined);
     }
 
     function normalizeToolResultMarkdown(text) {
@@ -819,7 +854,7 @@
                     converted.push('```');
                     inTextBlock = false;
                 }
-                converted.push('### ' + line);
+                converted.push('<div class="conversation-tool-title">' + escapeHtml(line.trim()) + '</div>');
                 return;
             }
 

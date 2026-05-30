@@ -896,8 +896,15 @@ public sealed class ConversationExtractionService
 
         if (!string.IsNullOrWhiteSpace(arguments))
         {
-            lines.Add(arguments.Trim());
-            AppendIfNotEmpty(lines, BuildToolInputChangeSummary(name, arguments));
+            var changeSummary = BuildToolInputChangeSummary(name, arguments);
+            if (!string.IsNullOrWhiteSpace(changeSummary))
+            {
+                lines.Add(changeSummary);
+            }
+            else if (ShouldShowToolCallArguments(name))
+            {
+                lines.Add(arguments.Trim());
+            }
         }
 
         return string.Join("\n", lines).Trim();
@@ -928,12 +935,14 @@ public sealed class ConversationExtractionService
             lines.Add($"工具调用: {name}");
         }
 
-        if (ShouldShowToolCallArguments(name))
+        if (!string.IsNullOrWhiteSpace(changeSummary))
+        {
+            lines.Add(changeSummary);
+        }
+        else if (ShouldShowToolCallArguments(name))
         {
             lines.Add(input.GetRawText());
         }
-
-        AppendIfNotEmpty(lines, changeSummary);
         return string.Join("\n", lines).Trim();
     }
 
@@ -1128,7 +1137,7 @@ public sealed class ConversationExtractionService
     /// </summary>
     private static void AppendRawIfNotEmpty(System.Text.StringBuilder builder, string? value)
     {
-        if (!string.IsNullOrWhiteSpace(value))
+        if (!string.IsNullOrEmpty(value))
         {
             builder.Append(value);
         }

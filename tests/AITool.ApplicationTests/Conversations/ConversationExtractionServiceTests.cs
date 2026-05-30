@@ -334,6 +334,8 @@ data: [DONE]
         result.Should().Contain("文件: Index.cshtml");
         result.Should().Contain("-    .conversation-log-main {");
         result.Should().Contain("+    .conversation-session-meta {");
+        result.Should().NotContain("old_string");
+        result.Should().NotContain("new_string");
     }
 
     [Fact]
@@ -361,6 +363,8 @@ data: {"type":"message_stop"}
         result.Should().Contain("文件: Index.cshtml");
         result.Should().Contain("-old");
         result.Should().Contain("+new");
+        result.Should().NotContain("old_string");
+        result.Should().NotContain("new_string");
         result.Should().NotContain("{}", because: "content_block_start 中的空 input 不是最终工具参数");
     }
 

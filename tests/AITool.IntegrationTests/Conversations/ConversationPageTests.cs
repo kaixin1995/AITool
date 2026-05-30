@@ -36,8 +36,12 @@ public sealed class ConversationPageTests
         minimalPageHtml.Should().Contain("isConversationHttpUrl");
         minimalPageHtml.Should().Contain("conversation-msg-meta");
         minimalPageHtml.Should().Contain("formatTokenCount");
+        minimalPageHtml.Should().Contain("conversation-tool-title");
         minimalPageHtml.Should().Contain("conversation-tool-file");
         minimalPageHtml.Should().Contain("max-height: 520px");
+        minimalPageHtml.Should().Contain("normalizeMarkdownFenceBreaks");
+        minimalPageHtml.Should().Contain("code.text");
+        minimalPageHtml.Should().Contain("shouldShowToolArguments");
 
         var sessionsResponse = await client.GetAsync("/api/admin/conversations/sessions?rangeType=all&sourceTool=claude-code");
         var sessionsBody = await sessionsResponse.Content.ReadAsStringAsync();
