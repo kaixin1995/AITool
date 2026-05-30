@@ -35,6 +35,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         services.AddMemoryCache();
         services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
         services.AddSingleton<ProxyRequestMetadataCache>();
+        services.AddSingleton<ModelConcurrencyLimiter>();
         _serviceProvider = services.BuildServiceProvider();
     }
 
@@ -223,6 +224,111 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
 
         var after = await cache.GetEnabledSiteNamesAsync(CancellationToken.None);
         after[Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")].Should().Be("New Site Name");
+    }
+
+    /// <summary>
+    /// 验证活跃调用结束前继续使用旧路由顺序，释放后再读取新顺序。
+    /// </summary>
+    [Fact]
+    public async Task DeferRuntimeRouteTargetsRefresh_keeps_previous_order_until_active_slot_released()
+    {
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        var limiter = scope.ServiceProvider.GetRequiredService<ModelConcurrencyLimiter>();
+
+        await db.Database.EnsureDeletedAsync();
+        await db.Database.EnsureCreatedAsync();
+
+        var firstSiteId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
+        var secondSiteId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
+        db.Sites.AddRange(
+            new Site
+            {
+                Id = firstSiteId,
+                Name = "First Site",
+                BaseUrl = "https://first.example.com",
+                ApiKey = "first-key",
+                ProtocolType = "OpenAI",
+                SupportsOpenAi = true,
+                SupportsAnthropic = false,
+                IsEnabled = true
+            },
+            new Site
+            {
+                Id = secondSiteId,
+                Name = "Second Site",
+                BaseUrl = "https://second.example.com",
+                ApiKey = "second-key",
+                ProtocolType = "OpenAI",
+                SupportsOpenAi = true,
+                SupportsAnthropic = false,
+                IsEnabled = true
+            });
+        db.ProxyRouteRules.AddRange(
+            new ProxyRouteRule
+            {
+                Id = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+                ExternalModelName = "deferred-route-model",
+                UpstreamModelName = "first-upstream",
+                SiteId = firstSiteId,
+                SiteModelName = "first-model",
+                Priority = 0,
+                ModelPriority = 0,
+                InstancePriority = 0,
+                IsEnabled = true
+            },
+            new ProxyRouteRule
+            {
+                Id = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+                ExternalModelName = "deferred-route-model",
+                UpstreamModelName = "second-upstream",
+                SiteId = secondSiteId,
+                SiteModelName = "second-model",
+                Priority = 1,
+                ModelPriority = 1,
+                InstancePriority = 0,
+                IsEnabled = true
+            });
+        await db.SaveChangesAsync();
+
+        var before = await cache.GetRouteTargetsForModelAsync("OpenAI", "deferred-route-model", CancellationToken.None);
+        before.Select(x => x.SiteModelName).Should().Equal("first-model", "second-model");
+
+        using var activeHandle = await limiter.AcquireAsync(
+            _serviceProvider,
+            firstSiteId,
+            "first-model",
+            ConcurrencyAcquireMode.WaitForSlot,
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+        activeHandle.Acquired.Should().BeTrue();
+
+        var activeSnapshot = new[]
+        {
+            new ActiveRouteTargetSnapshot(
+                new RouteTargetIdentity(firstSiteId, "first-model"),
+                limiter.ListActiveSlotIds(firstSiteId, "first-model"))
+        };
+        var previousRoutes = before.ToList();
+
+        var firstRule = await db.ProxyRouteRules.SingleAsync(x => x.SiteModelName == "first-model");
+        var secondRule = await db.ProxyRouteRules.SingleAsync(x => x.SiteModelName == "second-model");
+        firstRule.Priority = 1;
+        firstRule.ModelPriority = 1;
+        secondRule.Priority = 0;
+        secondRule.ModelPriority = 0;
+        await db.SaveChangesAsync();
+
+        cache.DeferRuntimeRouteTargetsRefresh("deferred-route-model", activeSnapshot, previousRoutes);
+
+        var duringActive = await cache.GetRouteTargetsForModelAsync("OpenAI", "deferred-route-model", CancellationToken.None);
+        duringActive.Select(x => x.SiteModelName).Should().Equal("first-model", "second-model");
+
+        activeHandle.Dispose();
+
+        var afterRelease = await cache.GetRouteTargetsForModelAsync("OpenAI", "deferred-route-model", CancellationToken.None);
+        afterRelease.Select(x => x.SiteModelName).Should().Equal("second-model", "first-model");
     }
 
     /// <summary>

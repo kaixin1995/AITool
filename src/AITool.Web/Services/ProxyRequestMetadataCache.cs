@@ -89,7 +89,14 @@ public sealed class ProxyRequestMetadataCache
     /// 服务作用域工厂。
     /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
-
+    /// <summary>
+    /// 正在等待活跃调用结束的路由快照，确保调用中的模型不会被新顺序影响。
+    /// </summary>
+    private readonly Dictionary<string, DeferredRouteTargetsRefresh> _deferredRouteTargetsByModel = new(StringComparer.Ordinal);
+    /// <summary>
+    /// 延迟路由快照状态锁。
+    /// </summary>
+    private readonly object _deferredRouteTargetsLock = new();
     /// <summary>
     /// 初始化代理请求元数据缓存。
     /// </summary>
@@ -188,14 +195,8 @@ public sealed class ProxyRequestMetadataCache
         string externalModelName,
         CancellationToken cancellationToken)
     {
-        var routes = await GetRouteTargetsAsync(cancellationToken);
-        return routes
-            .Where(x => string.Equals(x.ExternalModelName, externalModelName, StringComparison.Ordinal))
-            // 路由优先级应始终以后台配置顺序为准；协议不匹配时走兼容转发，而不是提前跳过前面的候选站点。
-            .OrderBy(x => x.ModelPriority)
-            .ThenBy(x => x.InstancePriority)
-            .ThenBy(x => x.Priority)
-            .ToList();
+        var routes = await GetEffectiveRouteTargetsAsync(externalModelName, cancellationToken);
+        return SortRouteTargets(routes).ToList();
     }
 
     /// <summary>
@@ -205,13 +206,8 @@ public sealed class ProxyRequestMetadataCache
         string externalModelName,
         CancellationToken cancellationToken)
     {
-        var routes = await GetRouteTargetsAsync(cancellationToken);
-        return routes
-            .Where(x => string.Equals(x.ExternalModelName, externalModelName, StringComparison.Ordinal))
-            .OrderBy(x => x.ModelPriority)
-            .ThenBy(x => x.InstancePriority)
-            .ThenBy(x => x.Priority)
-            .ToList();
+        var routes = await GetEffectiveRouteTargetsAsync(externalModelName, cancellationToken);
+        return SortRouteTargets(routes).ToList();
     }
 
     /// <summary>
@@ -726,6 +722,15 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateRouteTargets()
     {
+        InvalidateRuntimeRouteTargets();
+        InvalidateAdminRouteMetadata();
+    }
+
+    /// <summary>
+    /// 清除运行时代理使用的路由目标缓存。
+    /// </summary>
+    public void InvalidateRuntimeRouteTargets()
+    {
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "OpenAI");
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "Anthropic");
         _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "all");
@@ -733,14 +738,184 @@ public sealed class ProxyRequestMetadataCache
         _memoryCache.Remove(ChatTargetsCacheKey);
         _memoryCache.Remove(ModelConcurrencyLimitsCacheKey);
         _memoryCache.Remove(EnabledSiteNamesCacheKey);
+        _memoryCache.Remove(DeveloperDebugModelsCacheKey);
+        _memoryCache.Remove(FallbackMappingsCacheKey);
+        _memoryCache.Remove(EnabledModelsCacheKey);
+    }
+
+    /// <summary>
+    /// 清除后台路由配置页使用的管理缓存。
+    /// </summary>
+    public void InvalidateAdminRouteMetadata()
+    {
         _memoryCache.Remove(RouteEntriesCacheKey);
         _memoryCache.Remove(RouteSiteInstancesCacheKey);
         _memoryCache.Remove(RouteModelsCacheKey);
         _memoryCache.Remove(RouteDiscoveredSitesCacheKey);
         _memoryCache.Remove(RouteRulesByEntryCacheKey);
-        _memoryCache.Remove(DeveloperDebugModelsCacheKey);
-        _memoryCache.Remove(FallbackMappingsCacheKey);
-        _memoryCache.Remove(EnabledModelsCacheKey);
+    }
+
+    /// <summary>
+    /// 在指定模型仍有活跃调用时保留旧路由快照，等调用结束后再让新顺序进入运行时。
+    /// </summary>
+    public void DeferRuntimeRouteTargetsRefresh(
+        string externalModelName,
+        IReadOnlyCollection<ActiveRouteTargetSnapshot> activeRouteTargets,
+        IReadOnlyList<CachedProxyRouteTarget> previousRoutes)
+    {
+        var normalizedModelName = (externalModelName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedModelName) || activeRouteTargets.Count == 0)
+        {
+            InvalidateRuntimeRouteTargets();
+            return;
+        }
+
+        var pendingSlots = BuildPendingActiveSlots(activeRouteTargets);
+        if (pendingSlots.Count == 0)
+        {
+            InvalidateRuntimeRouteTargets();
+            return;
+        }
+
+        lock (_deferredRouteTargetsLock)
+        {
+            if (_deferredRouteTargetsByModel.TryGetValue(normalizedModelName, out var existingRefresh))
+            {
+                foreach (var pendingSlot in pendingSlots)
+                {
+                    if (!existingRefresh.PendingActiveSlots.TryGetValue(pendingSlot.Key, out var existingSlots))
+                    {
+                        existingRefresh.PendingActiveSlots[pendingSlot.Key] = pendingSlot.Value;
+                        continue;
+                    }
+
+                    foreach (var slotId in pendingSlot.Value)
+                    {
+                        existingSlots.Add(slotId);
+                    }
+                }
+            }
+            else
+            {
+                _deferredRouteTargetsByModel[normalizedModelName] = new DeferredRouteTargetsRefresh
+                {
+                    PendingActiveSlots = pendingSlots,
+                    PreviousRoutes = previousRoutes.ToList()
+                };
+            }
+        }
+
+        InvalidateRuntimeRouteTargets();
+    }
+
+    /// <summary>
+    /// 活跃调用结束时释放对应的路由快照，全部结束后刷新运行时路由缓存。
+    /// </summary>
+    public void CompleteDeferredRuntimeRouteTarget(Guid siteId, string siteModelName, long activeSlotId)
+    {
+        if (string.IsNullOrWhiteSpace(siteModelName))
+        {
+            return;
+        }
+
+        var completedTarget = new RouteTargetIdentity(siteId, siteModelName);
+        var shouldInvalidateRuntimeRoutes = false;
+        lock (_deferredRouteTargetsLock)
+        {
+            foreach (var item in _deferredRouteTargetsByModel.ToList())
+            {
+                if (!item.Value.PendingActiveSlots.TryGetValue(completedTarget, out var pendingSlots) || !pendingSlots.Remove(activeSlotId))
+                {
+                    continue;
+                }
+
+                if (pendingSlots.Count == 0)
+                {
+                    item.Value.PendingActiveSlots.Remove(completedTarget);
+                }
+
+                if (item.Value.PendingActiveSlots.Count == 0)
+                {
+                    _deferredRouteTargetsByModel.Remove(item.Key);
+                    shouldInvalidateRuntimeRoutes = true;
+                }
+            }
+        }
+
+        if (shouldInvalidateRuntimeRoutes)
+        {
+            InvalidateRuntimeRouteTargets();
+        }
+    }
+
+    /// <summary>
+    /// 将活跃调用快照转换成需要等待释放的槽位集合。
+    /// </summary>
+    private static Dictionary<RouteTargetIdentity, HashSet<long>> BuildPendingActiveSlots(IReadOnlyCollection<ActiveRouteTargetSnapshot> activeRouteTargets)
+    {
+        var pendingSlots = new Dictionary<RouteTargetIdentity, HashSet<long>>(RouteTargetIdentityComparer.Instance);
+        foreach (var activeRouteTarget in activeRouteTargets)
+        {
+            if (activeRouteTarget.ActiveSlotIds.Count == 0)
+            {
+                continue;
+            }
+
+            pendingSlots[activeRouteTarget.RouteTarget] = activeRouteTarget.ActiveSlotIds.ToHashSet();
+        }
+
+        return pendingSlots;
+    }
+
+    /// <summary>
+    /// 获取指定模型当前对运行时可见的路由快照。
+    /// </summary>
+    private async Task<IReadOnlyList<CachedProxyRouteTarget>> GetEffectiveRouteTargetsAsync(string externalModelName, CancellationToken cancellationToken)
+    {
+        var normalizedModelName = (externalModelName ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedModelName))
+        {
+            return [];
+        }
+
+        if (TryGetDeferredRouteTargets(normalizedModelName, out var deferredRoutes))
+        {
+            return deferredRoutes;
+        }
+
+        var routes = await GetRouteTargetsAsync(cancellationToken);
+        return routes
+            .Where(x => string.Equals(x.ExternalModelName, normalizedModelName, StringComparison.Ordinal))
+            .ToList();
+    }
+
+    /// <summary>
+    /// 尝试读取仍在保护期内的旧路由快照。
+    /// </summary>
+    private bool TryGetDeferredRouteTargets(string externalModelName, out IReadOnlyList<CachedProxyRouteTarget> routes)
+    {
+        lock (_deferredRouteTargetsLock)
+        {
+            if (_deferredRouteTargetsByModel.TryGetValue(externalModelName, out var deferredRefresh))
+            {
+                routes = deferredRefresh.PreviousRoutes.ToList();
+                return true;
+            }
+        }
+
+        routes = [];
+        return false;
+    }
+
+    /// <summary>
+    /// 按后台配置顺序排序路由候选，协议不匹配时由控制器负责兼容转发。
+    /// </summary>
+    private static IOrderedEnumerable<CachedProxyRouteTarget> SortRouteTargets(IEnumerable<CachedProxyRouteTarget> routes)
+    {
+        return routes
+            .OrderBy(x => x.ModelPriority)
+            .ThenBy(x => x.InstancePriority)
+            .ThenBy(x => x.Priority);
     }
 
     /// <summary>
@@ -971,6 +1146,58 @@ internal sealed class CachedSiteSnapshot
     /// 站点名称。
     /// </summary>
     public string Name { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 延迟刷新路由目标时保留的旧快照。
+/// </summary>
+internal sealed class DeferredRouteTargetsRefresh
+{
+    /// <summary>
+    /// 需要等待结束的调用槽位集合。
+    /// </summary>
+    public Dictionary<RouteTargetIdentity, HashSet<long>> PendingActiveSlots { get; init; } = new(RouteTargetIdentityComparer.Instance);
+    /// <summary>
+    /// 保存排序变更前的运行时路由列表。
+    /// </summary>
+    public IReadOnlyList<CachedProxyRouteTarget> PreviousRoutes { get; init; } = [];
+}
+
+/// <summary>
+/// 路由保存瞬间正在执行的站点模型快照。
+/// </summary>
+public readonly record struct ActiveRouteTargetSnapshot(RouteTargetIdentity RouteTarget, IReadOnlyList<long> ActiveSlotIds);
+
+/// <summary>
+/// 用于匹配运行时活跃调用的站点模型标识。
+/// </summary>
+public readonly record struct RouteTargetIdentity(Guid SiteId, string SiteModelName);
+
+/// <summary>
+/// 站点模型标识比较器，模型名保持大小写敏感以匹配站点映射唯一键。
+/// </summary>
+internal sealed class RouteTargetIdentityComparer : IEqualityComparer<RouteTargetIdentity>
+{
+    /// <summary>
+    /// 单例实例。
+    /// </summary>
+    public static RouteTargetIdentityComparer Instance { get; } = new();
+
+    /// <summary>
+    /// 比较两个站点模型标识是否相同。
+    /// </summary>
+    public bool Equals(RouteTargetIdentity x, RouteTargetIdentity y)
+    {
+        return x.SiteId == y.SiteId && string.Equals(x.SiteModelName, y.SiteModelName, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 计算站点模型标识的哈希值。
+    /// </summary>
+    public int GetHashCode(RouteTargetIdentity obj)
+    {
+        return HashCode.Combine(obj.SiteId, StringComparer.Ordinal.GetHashCode(obj.SiteModelName ?? string.Empty));
+    }
 }
 
 /// <summary>

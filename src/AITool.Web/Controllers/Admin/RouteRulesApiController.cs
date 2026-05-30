@@ -204,14 +204,22 @@ public sealed class RouteRulesApiController : ControllerBase
     /// 代理元数据缓存。
     /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
+    /// <summary>
+    /// 模型并发限制器，用于判断路由保存时是否存在正在调用的模型实例。
+    /// </summary>
+    private readonly ModelConcurrencyLimiter _concurrencyLimiter;
 
     /// <summary>
     /// 创建路由规则控制器。
     /// </summary>
-    public RouteRulesApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public RouteRulesApiController(
+        AppDbContext dbContext,
+        ProxyRequestMetadataCache metadataCache,
+        ModelConcurrencyLimiter concurrencyLimiter)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
+        _concurrencyLimiter = concurrencyLimiter;
     }
 
     /// <summary>
@@ -360,6 +368,7 @@ public sealed class RouteRulesApiController : ControllerBase
         var existingRules = await _dbContext.ProxyRouteRules
             .Where(r => r.ExternalModelName == entryName)
             .ToListAsync(cancellationToken);
+        var previousRouteTargets = await LoadPreviousRouteTargetsAsync(existingRules, cancellationToken);
         _dbContext.ProxyRouteRules.RemoveRange(existingRules);
 
         // 按列表顺序创建新规则，Priority = 全局顺序，ModelPriority/InstancePriority = 分组顺序
@@ -401,10 +410,86 @@ public sealed class RouteRulesApiController : ControllerBase
             });
         }
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateRouteTargets();
+        var affectedRouteTargets = BuildAffectedRouteTargets(existingRules, request.Rules);
 
-        return Ok(new { message = "保存成功" });
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        _metadataCache.InvalidateAdminRouteMetadata();
+        var routeRefreshDeferred = _concurrencyLimiter.TryDeferRuntimeRouteTargetsRefresh(entryName, affectedRouteTargets, previousRouteTargets);
+        if (!routeRefreshDeferred)
+        {
+            _metadataCache.InvalidateRuntimeRouteTargets();
+        }
+
+        return Ok(new { message = routeRefreshDeferred ? "保存成功，调用中的模型会在当前请求结束后生效" : "保存成功" });
+    }
+
+    /// <summary>
+    /// 将旧规则转换成运行时路由快照，活跃调用期间继续沿用该快照。
+    /// </summary>
+    private async Task<IReadOnlyList<CachedProxyRouteTarget>> LoadPreviousRouteTargetsAsync(
+        IReadOnlyCollection<ProxyRouteRule> existingRules,
+        CancellationToken cancellationToken)
+    {
+        if (existingRules.Count == 0)
+        {
+            return [];
+        }
+
+        var siteIds = existingRules.Select(x => x.SiteId).Distinct().ToList();
+        var sites = await _dbContext.Sites
+            .AsNoTracking()
+            .Where(x => siteIds.Contains(x.Id) && x.IsEnabled)
+            .ToDictionaryAsync(x => x.Id, x => x, cancellationToken);
+
+        return existingRules
+            .Where(x => x.IsEnabled && sites.ContainsKey(x.SiteId))
+            .Select(x =>
+            {
+                var site = sites[x.SiteId];
+                return new CachedProxyRouteTarget
+                {
+                    RouteId = x.Id,
+                    SiteId = site.Id,
+                    SiteName = site.Name,
+                    ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
+                    EndpointPathMode = site.EndpointPathMode,
+                    SupportsOpenAi = site.SupportsOpenAi,
+                    SupportsAnthropic = site.SupportsAnthropic,
+                    ExternalModelName = x.ExternalModelName,
+                    UpstreamModelName = x.UpstreamModelName,
+                    SiteModelName = x.SiteModelName,
+                    BaseUrl = site.BaseUrl,
+                    ApiKey = site.ApiKey,
+                    ModelPriority = x.ModelPriority,
+                    InstancePriority = x.InstancePriority,
+                    Priority = x.Priority
+                };
+            })
+            .OrderBy(x => x.ModelPriority)
+            .ThenBy(x => x.InstancePriority)
+            .ThenBy(x => x.Priority)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 根据站点能力推导协议类型。
+    /// </summary>
+    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
+    {
+        return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
+    }
+
+    /// <summary>
+    /// 收集当前保存影响到的站点模型，命中活跃调用时运行时路由顺序需要延迟刷新。
+    /// </summary>
+    private static IReadOnlyCollection<RouteTargetIdentity> BuildAffectedRouteTargets(
+        IReadOnlyCollection<ProxyRouteRule> existingRules,
+        IReadOnlyCollection<SaveRouteRuleEntry> newRules)
+    {
+        return existingRules
+            .Select(x => new RouteTargetIdentity(x.SiteId, x.SiteModelName))
+            .Concat(newRules.Select(x => new RouteTargetIdentity(x.SiteId, x.SiteModelName)))
+            .ToHashSet(RouteTargetIdentityComparer.Instance);
     }
 
     /// <summary>

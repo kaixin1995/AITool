@@ -151,6 +151,7 @@ public sealed class ModelConcurrencyLimiter
         QueuedAcquireWaiter? waiter = null;
         var acquired = false;
         var activeCount = 0;
+        var activeSlotId = 0L;
 
         lock (state.SyncRoot)
         {
@@ -160,6 +161,7 @@ public sealed class ModelConcurrencyLimiter
             if (CanAcquireImmediatelyLocked(state))
             {
                 state.ActiveCount++;
+                activeSlotId = TrackActiveSlotLocked(state);
                 activeCount = state.ActiveCount;
                 acquired = true;
             }
@@ -175,7 +177,7 @@ public sealed class ModelConcurrencyLimiter
         if (acquired)
         {
             UpdateActiveEntry(key, siteId, remoteModelName, activeCount);
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName);
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName, activeSlotId);
         }
 
         if (mode == ConcurrencyAcquireMode.SkipOnFull)
@@ -191,7 +193,7 @@ public sealed class ModelConcurrencyLimiter
         if (completedTask == waiter.Completion.Task)
         {
             UpdateActiveEntry(key, siteId, remoteModelName, GetActiveCount(state));
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName);
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId);
         }
 
         var grantedDuringCancellation = false;
@@ -211,7 +213,7 @@ public sealed class ModelConcurrencyLimiter
         {
             await waiter.Completion.Task;
             UpdateActiveEntry(key, siteId, remoteModelName, GetActiveCount(state));
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName);
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId);
         }
 
         if (cancellationToken.IsCancellationRequested)
@@ -283,9 +285,9 @@ public sealed class ModelConcurrencyLimiter
     /// <summary>
     /// 创建带真实活跃计数的并发句柄，只在请求真正开始占用模型时才记数。
     /// </summary>
-    private ConcurrencyAcquireResult CreateTrackedAcquireResult(string key, Guid siteId, string remoteModelName)
+    private ConcurrencyAcquireResult CreateTrackedAcquireResult(string key, Guid siteId, string remoteModelName, long activeSlotId)
     {
-        return ConcurrencyAcquireResult.AcquiredSlot(() => ReleaseActiveCount(key, siteId, remoteModelName));
+        return ConcurrencyAcquireResult.AcquiredSlot(() => ReleaseActiveCount(key, siteId, remoteModelName, activeSlotId));
     }
 
     /// <summary>
@@ -318,6 +320,7 @@ public sealed class ModelConcurrencyLimiter
         while (CanAcquireImmediatelyLocked(state) && TryDequeueNextWaiterLocked(state, out var waiter))
         {
             state.ActiveCount++;
+            waiter.ActiveSlotId = TrackActiveSlotLocked(state);
             waiter.Granted = true;
             promoted ??= [];
             promoted.Add(waiter);
@@ -351,21 +354,28 @@ public sealed class ModelConcurrencyLimiter
     /// <summary>
     /// 请求结束后回收当前活跃计数，归零时保留最近记录，便于调试页在 6 小时窗口内显示 0 并发。
     /// </summary>
-    private void ReleaseActiveCount(string key, Guid siteId, string remoteModelName)
+    private void ReleaseActiveCount(string key, Guid siteId, string remoteModelName, long activeSlotId)
     {
         var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
         List<QueuedAcquireWaiter>? promotedWaiters;
         int activeCount;
+        bool releasedTrackedSlot;
 
         lock (state.SyncRoot)
         {
-            if (state.ActiveCount > 0)
+            releasedTrackedSlot = state.ActiveSlotIds.Remove(activeSlotId);
+            if (releasedTrackedSlot && state.ActiveCount > 0)
             {
                 state.ActiveCount--;
             }
 
             promotedWaiters = PromoteQueuedWaitersLocked(state);
             activeCount = state.ActiveCount;
+        }
+
+        if (releasedTrackedSlot)
+        {
+            _metadataCache.CompleteDeferredRuntimeRouteTarget(siteId, remoteModelName, activeSlotId);
         }
 
         if (promotedWaiters.Count > 0)
@@ -389,6 +399,89 @@ public sealed class ModelConcurrencyLimiter
             ActiveCount = activeCount,
             LastSeenAt = DateTimeOffset.UtcNow
         };
+    }
+
+    /// <summary>
+    /// 如果受影响的模型正在调用中，则在同一把锁内捕获槽位并登记延迟刷新，避免请求刚结束时丢失通知。
+    /// </summary>
+    public bool TryDeferRuntimeRouteTargetsRefresh(
+        string externalModelName,
+        IReadOnlyCollection<RouteTargetIdentity> affectedRouteTargets,
+        IReadOnlyList<CachedProxyRouteTarget> previousRoutes)
+    {
+        var stateEntries = new List<(string Key, RouteTargetIdentity RouteTarget, ModelConcurrencyState State)>();
+        foreach (var routeTarget in affectedRouteTargets)
+        {
+            var key = BuildKey(routeTarget.SiteId, routeTarget.SiteModelName);
+            if (_states.TryGetValue(key, out var state))
+            {
+                stateEntries.Add((key, routeTarget, state));
+            }
+        }
+
+        if (stateEntries.Count == 0)
+        {
+            return false;
+        }
+
+        stateEntries = stateEntries
+            .OrderBy(x => x.Key, StringComparer.Ordinal)
+            .ToList();
+        var lockedStates = new List<ModelConcurrencyState>(stateEntries.Count);
+        try
+        {
+            foreach (var stateEntry in stateEntries)
+            {
+                Monitor.Enter(stateEntry.State.SyncRoot);
+                lockedStates.Add(stateEntry.State);
+            }
+
+            var activeSnapshots = stateEntries
+                .Where(x => x.State.ActiveSlotIds.Count > 0)
+                .Select(x => new ActiveRouteTargetSnapshot(x.RouteTarget, x.State.ActiveSlotIds.ToList()))
+                .ToList();
+            if (activeSnapshots.Count == 0)
+            {
+                return false;
+            }
+
+            _metadataCache.DeferRuntimeRouteTargetsRefresh(externalModelName, activeSnapshots, previousRoutes);
+            return true;
+        }
+        finally
+        {
+            for (var i = lockedStates.Count - 1; i >= 0; i--)
+            {
+                Monitor.Exit(lockedStates[i].SyncRoot);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 返回指定站点模型当前正在执行的调用槽位。
+    /// </summary>
+    public IReadOnlyList<long> ListActiveSlotIds(Guid siteId, string remoteModelName)
+    {
+        var key = BuildKey(siteId, remoteModelName);
+        if (!_states.TryGetValue(key, out var state))
+        {
+            return [];
+        }
+
+        lock (state.SyncRoot)
+        {
+            return state.ActiveSlotIds.ToList();
+        }
+    }
+
+    /// <summary>
+    /// 为一次真实调用分配槽位编号，便于只等待保存前已经开始的请求。
+    /// </summary>
+    private static long TrackActiveSlotLocked(ModelConcurrencyState state)
+    {
+        var slotId = ++state.NextActiveSlotId;
+        state.ActiveSlotIds.Add(slotId);
+        return slotId;
     }
 
     /// <summary>
@@ -452,6 +545,14 @@ public sealed class ModelConcurrencyLimiter
         /// </summary>
         public int ActiveCount { get; set; }
         /// <summary>
+        /// 下一次真实调用的槽位编号。
+        /// </summary>
+        public long NextActiveSlotId { get; set; }
+        /// <summary>
+        /// 当前仍在执行的调用槽位编号。
+        /// </summary>
+        public HashSet<long> ActiveSlotIds { get; } = [];
+        /// <summary>
         /// 当前生效的最大并发数，0 表示不限制。
         /// </summary>
         public int MaxConcurrency { get; set; }
@@ -474,5 +575,9 @@ public sealed class ModelConcurrencyLimiter
         /// 是否已经为该请求预留并发槽位。
         /// </summary>
         public bool Granted { get; set; }
+        /// <summary>
+        /// 请求被放行时分配到的活跃槽位编号。
+        /// </summary>
+        public long ActiveSlotId { get; set; }
     }
 }
