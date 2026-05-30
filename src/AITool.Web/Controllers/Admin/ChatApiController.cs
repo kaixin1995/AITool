@@ -506,7 +506,8 @@ public sealed class ChatApiController : ControllerBase
                     FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
                     StreamDurationMs = forwardResult.StreamDurationMs,
                     TotalDurationMs = forwardResult.TotalDurationMs,
-                    ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty
+                    ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+                    RequestedAt = DateTimeOffset.UtcNow
                 }, cancellationToken);
 
                 if (forwardResult.Success)
@@ -514,7 +515,7 @@ public sealed class ChatApiController : ControllerBase
                     sw.Stop();
                     _circuitStore.Succeed(route.RouteId);
                     var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, route.ProtocolType);
-                    await SafeLogChatConversationAsync(requestId, model.ModelName, route.ProtocolType, request.Message, payload.Content, forwardResult.InputTokens, forwardResult.CachedTokens, forwardResult.OutputTokens, false, cancellationToken);
+                    await SafeLogChatConversationAsync(requestId, model.ModelName, route.ProtocolType, request.Message, payload.Content, forwardResult.InputTokens, forwardResult.CachedTokens, forwardResult.OutputTokens, false, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, forwardResult.TotalDurationMs)), cancellationToken);
                     return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
                 }
 
@@ -673,7 +674,8 @@ public sealed class ChatApiController : ControllerBase
                 FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
                 StreamDurationMs = 0,
                 TotalDurationMs = streamResult.TotalDurationMs,
-                ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty
+                ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+                RequestedAt = DateTimeOffset.UtcNow
             }, cancellationToken);
 
             if (streamResult.Success)
@@ -695,7 +697,7 @@ public sealed class ChatApiController : ControllerBase
                     TotalDurationMs = streamResult.TotalDurationMs,
                     Attempts = attempts
                 };
-                await SafeLogChatConversationAsync(requestId, model.ModelName, route.ProtocolType, request.Message, streamResult.Content, streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, true, cancellationToken);
+                await SafeLogChatConversationAsync(requestId, model.ModelName, route.ProtocolType, request.Message, streamResult.Content, streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, true, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), cancellationToken);
                 await WriteSseEventAsync("meta", finalResult, cancellationToken);
                 await WriteSseEventAsync("done", new { requestId }, cancellationToken);
                 _circuitStore.Succeed(route.RouteId);
@@ -854,7 +856,8 @@ public sealed class ChatApiController : ControllerBase
             FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
             StreamDurationMs = forwardResult.StreamDurationMs,
             TotalDurationMs = forwardResult.TotalDurationMs,
-            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty
+            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+            RequestedAt = DateTimeOffset.UtcNow
         }, cancellationToken);
 
         var attempts = new List<ChatAttemptResult>
@@ -877,7 +880,7 @@ public sealed class ChatApiController : ControllerBase
         }
 
         var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, mapping.ProtocolType);
-        await SafeLogChatConversationAsync(requestId, model.ModelName, mapping.ProtocolType, request.Message, payload.Content, forwardResult.InputTokens, forwardResult.CachedTokens, forwardResult.OutputTokens, false, cancellationToken);
+        await SafeLogChatConversationAsync(requestId, model.ModelName, mapping.ProtocolType, request.Message, payload.Content, forwardResult.InputTokens, forwardResult.CachedTokens, forwardResult.OutputTokens, false, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, forwardResult.TotalDurationMs)), cancellationToken);
         return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
     }
 
@@ -968,7 +971,8 @@ public sealed class ChatApiController : ControllerBase
             FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
             StreamDurationMs = 0,
             TotalDurationMs = streamResult.TotalDurationMs,
-            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty
+            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+            RequestedAt = DateTimeOffset.UtcNow
         }, cancellationToken);
 
         if (!streamResult.Success)
@@ -977,7 +981,7 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        await SafeLogChatConversationAsync(requestId, model.ModelName, mapping.ProtocolType, request.Message, streamResult.Content, streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, true, cancellationToken);
+        await SafeLogChatConversationAsync(requestId, model.ModelName, mapping.ProtocolType, request.Message, streamResult.Content, streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, true, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), cancellationToken);
 
         var finalResult = new ChatSendResult
         {
@@ -1680,7 +1684,7 @@ public sealed class ChatApiController : ControllerBase
     /// 对话测试没有会话概念，所有记录归入同一个分组，便于在对话记录页面集中查看。
     /// 写入失败时静默吞掉异常，不阻断对话测试的正常返回。
     /// </summary>
-    private async Task SafeLogChatConversationAsync(Guid requestId, string requestModel, string protocolType, string userInputText, string assistantOutputMarkdown, int inputTokens, int cachedTokens, int outputTokens, bool isStreaming, CancellationToken cancellationToken)
+    private async Task SafeLogChatConversationAsync(Guid requestId, string requestModel, string protocolType, string userInputText, string assistantOutputMarkdown, int inputTokens, int cachedTokens, int outputTokens, bool isStreaming, DateTimeOffset requestedAt, CancellationToken cancellationToken)
     {
         try
         {
@@ -1693,6 +1697,8 @@ public sealed class ChatApiController : ControllerBase
             await _conversationLogService.LogAsync(new ConversationTurnEntry
             {
                 RequestId = requestId,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UserCreatedAt = requestedAt,
                 SourceTool = "chat",
                 SessionId = string.Empty,
                 ConversationGroupKey = "chat",

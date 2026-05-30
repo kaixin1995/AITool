@@ -22,6 +22,16 @@ public sealed class ConversationTurnEntry
     public Guid RequestId { get; set; }
 
     /// <summary>
+    /// 当前这轮对话完成写入时的时间，默认作为助手侧时间使用。
+    /// </summary>
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 用户发起当前这轮请求的时间。
+    /// </summary>
+    public DateTimeOffset? UserCreatedAt { get; set; }
+
+    /// <summary>
     /// 工具来源。
     /// </summary>
     public string SourceTool { get; set; } = string.Empty;

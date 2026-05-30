@@ -452,6 +452,7 @@ CREATE TABLE IF NOT EXISTS ConversationTurnLogs (
     Id TEXT NOT NULL PRIMARY KEY,
     RequestId TEXT NOT NULL,
     CreatedAt TEXT NOT NULL,
+    UserCreatedAt TEXT NULL,
     SourceTool TEXT NOT NULL,
     SessionId TEXT NOT NULL,
     ConversationGroupKey TEXT NOT NULL,
@@ -480,6 +481,12 @@ CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_SourceTool_SessionId_CreatedA
         if (await ColumnExistsAsync(connection, "ConversationTurnLogs", "AssistantOutputPlainText"))
         {
             command.CommandText = "ALTER TABLE ConversationTurnLogs DROP COLUMN AssistantOutputPlainText;";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "UserCreatedAt"))
+        {
+            command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN UserCreatedAt TEXT NULL;";
             await command.ExecuteNonQueryAsync();
         }
     }

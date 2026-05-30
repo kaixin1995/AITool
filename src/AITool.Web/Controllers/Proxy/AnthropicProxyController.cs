@@ -266,12 +266,13 @@ public sealed class AnthropicProxyController : ControllerBase
                     FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
                     StreamDurationMs = streamResult.StreamDurationMs,
                     TotalDurationMs = streamResult.TotalDurationMs,
-                    ReasoningEffort = reasoningEffort
+                    ReasoningEffort = reasoningEffort,
+                    RequestedAt = DateTimeOffset.UtcNow
                 }, CancellationToken.None);
 
                 if (streamResult.Success)
                 {
-                    await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, CancellationToken.None);
+                    await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None);
                     SafeSucceedRoute(route.RouteId);
                     return new EmptyResult();
                 }
@@ -336,7 +337,7 @@ public sealed class AnthropicProxyController : ControllerBase
             {
                 // 成功时清除该路由的连续失败计数
                 SafeSucceedRoute(route.RouteId);
-                await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, result.ResponseBody, modelName, false, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, cancellationToken);
+                await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, result.ResponseBody, modelName, false, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, result.TotalDurationMs)), cancellationToken);
                 if (result.IsStreaming &&
                     string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
                     HttpContext.Response.HasStarted)
@@ -1355,7 +1356,7 @@ public sealed class AnthropicProxyController : ControllerBase
     /// 有会话标识的工具（claude-code / codex / open-code）按会话分组，
     /// 无会话标识的普通代理请求合并到同一个分组。
     /// </summary>
-    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, CancellationToken cancellationToken)
+    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, DateTimeOffset requestedAt, CancellationToken cancellationToken)
     {
         try
         {
@@ -1367,7 +1368,8 @@ public sealed class AnthropicProxyController : ControllerBase
             var sessionId = _conversationExtractionService.ExtractSessionId(headers);
 
             var userInput = _conversationExtractionService.ExtractUserInputText(requestBody, protocolType, Request.Path);
-            var assistantOutputMarkdown = _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path);
+            var toolResultOutput = _conversationExtractionService.ExtractToolResultOutput(requestBody, protocolType, Request.Path);
+            var assistantOutputMarkdown = JoinConversationMarkdown(toolResultOutput, _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path));
             if (string.IsNullOrWhiteSpace(userInput) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
             {
                 return;
@@ -1381,6 +1383,8 @@ public sealed class AnthropicProxyController : ControllerBase
             await _conversationLogService.LogAsync(new ConversationTurnEntry
             {
                 RequestId = requestId,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UserCreatedAt = requestedAt,
                 SourceTool = sourceTool,
                 SessionId = sessionId,
                 ConversationGroupKey = groupKey,
@@ -1409,6 +1413,14 @@ public sealed class AnthropicProxyController : ControllerBase
                 protocolType,
                 requestModel);
         }
+    }
+
+    /// <summary>
+    /// 合并工具结果和模型回复，避免展示时内容粘连。
+    /// </summary>
+    private static string JoinConversationMarkdown(params string[] values)
+    {
+        return string.Join("\n\n", values.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()));
     }
 
     /// <summary>

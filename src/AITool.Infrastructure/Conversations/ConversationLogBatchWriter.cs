@@ -110,6 +110,8 @@ public sealed class ConversationLogBatchWriter : BackgroundService
         var logs = batch.Select(entry => new ConversationTurnLog
         {
             RequestId = entry.RequestId,
+            CreatedAt = entry.CreatedAt,
+            UserCreatedAt = entry.UserCreatedAt,
             SourceTool = entry.SourceTool,
             SessionId = entry.SessionId,
             ConversationGroupKey = entry.ConversationGroupKey,

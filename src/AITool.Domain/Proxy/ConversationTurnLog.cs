@@ -21,6 +21,11 @@ public sealed class ConversationTurnLog
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 
     /// <summary>
+    /// 用户发起当前这轮请求的时间。
+    /// </summary>
+    public DateTimeOffset? UserCreatedAt { get; set; }
+
+    /// <summary>
     /// 工具来源，例如 claude-code。
     /// </summary>
     public string SourceTool { get; set; } = string.Empty;

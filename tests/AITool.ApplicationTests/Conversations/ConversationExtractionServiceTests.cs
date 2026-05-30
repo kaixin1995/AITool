@@ -115,4 +115,302 @@ public sealed class ConversationExtractionServiceTests
         var codexKey = _service.BuildConversationGroupKey("codex", sessionId, Guid.NewGuid());
         claudeKey.Should().NotBe(codexKey);
     }
+
+    [Fact]
+    public void NormalizeConversationText_removes_system_reminder_and_keeps_real_user_prompt()
+    {
+        var text = """
+<system-reminder>
+Note: c:\\Users\\kaikai.hao\\Desktop\\AI-Tool\\src\\AITool.Web\\Program.cs was modified
+</system-reminder>
+
+查看当前未提交的代码，看完后，我再告诉你，我要干什么。
+""";
+
+        _service.NormalizeConversationText(text).Should().Be("查看当前未提交的代码，看完后，我再告诉你，我要干什么。");
+    }
+
+    [Fact]
+    public void ExtractUserInputText_for_responses_only_keeps_last_user_message()
+    {
+        var requestBody = """
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "input_text", "text": "第一轮提问" }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "output_text", "text": "第一轮回答" }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        { "type": "input_text", "text": "第二轮提问" }
+      ]
+    }
+  ]
+}
+""";
+
+        _service.ExtractUserInputText(requestBody, "OpenAI", "/v1/responses")
+            .Should().Be("第二轮提问");
+    }
+
+    [Fact]
+    public void ExtractUserInputText_for_responses_ignores_tool_result_wrapped_as_user()
+    {
+        var requestBody = """
+{
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "input_text", "text": "帮我修一下这个报错" }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "output_text", "text": "我先看一下" }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        { "type": "tool_result", "tool_use_id": "call_123", "content": "Read tool finished" }
+      ]
+    }
+  ]
+}
+""";
+
+        _service.ExtractUserInputText(requestBody, "OpenAI", "/v1/responses")
+            .Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ExtractAssistantOutput_reads_responses_sse_output_text_delta()
+    {
+        var responseBody = """
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"hello"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":" world"}
+
+data: [DONE]
+
+""";
+
+        _service.ExtractAssistantOutput(responseBody, "OpenAI", "/v1/responses")
+            .Should().Be("hello world");
+    }
+
+    [Fact]
+    public void ExtractAssistantOutput_reads_chat_completions_sse_delta_content()
+    {
+        var responseBody = """
+data: {"choices":[{"delta":{"role":"assistant","content":"hello"}}]}
+
+data: {"choices":[{"delta":{"content":" world"}}]}
+
+data: [DONE]
+
+""";
+
+        _service.ExtractAssistantOutput(responseBody, "OpenAI", "/v1/chat/completions")
+            .Should().Be("hello world");
+    }
+
+    [Fact]
+    public void ExtractAssistantOutput_for_responses_json_keeps_function_call_details()
+    {
+        var responseBody = """
+{
+  "output": [
+    {
+      "type": "message",
+      "content": [
+        { "type": "output_text", "text": "我开始处理了" }
+      ]
+    },
+    {
+      "type": "function_call",
+      "name": "Edit",
+      "arguments": "{\"file\":\"Foo.cs\",\"action\":\"update\"}"
+    }
+  ]
+}
+""";
+
+        _service.ExtractAssistantOutput(responseBody, "OpenAI", "/v1/responses")
+            .Should().Be("我开始处理了\n工具调用: Edit\n{\"file\":\"Foo.cs\",\"action\":\"update\"}");
+    }
+
+    [Fact]
+    public void ExtractAssistantOutput_for_responses_sse_keeps_function_call_details()
+    {
+        var responseBody = """
+event: response.output_item.added
+data: {"type":"response.output_item.added","item":{"type":"function_call","name":"Edit","arguments":"","call_id":"call_1"}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"call_1","delta":"{\"file\":\"Foo.cs\"}"}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"修改完成"}
+
+data: [DONE]
+
+""";
+
+        _service.ExtractAssistantOutput(responseBody, "OpenAI", "/v1/responses")
+            .Should().Be("工具调用: Edit\n{\"file\":\"Foo.cs\"}\n\n修改完成");
+    }
+
+    [Fact]
+    public void ExtractToolResultOutput_keeps_structured_patch_details()
+    {
+        var requestBody = """
+{
+  "input": [
+    {
+      "type": "function_call_output",
+      "output": "updated",
+      "toolUseResult": {
+        "filePath": "Foo.cs",
+        "structuredPatch": [
+          {
+            "lines": [
+              " public class Foo",
+              "+    public string Name { get; set; }",
+              "-    public int Old { get; set; }"
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
+""";
+
+        var result = _service.ExtractToolResultOutput(requestBody, "OpenAI", "/v1/responses");
+
+        result.Should().Contain("工具结果: 代码改动");
+        result.Should().Contain("文件: Foo.cs");
+        result.Should().Contain("+    public string Name { get; set; }");
+        result.Should().Contain("-    public int Old { get; set; }");
+    }
+
+    [Fact]
+    public void ExtractAssistantOutput_for_anthropic_json_keeps_edit_change_details()
+    {
+        var responseBody = """
+{
+  "content": [
+    {
+      "type": "tool_use",
+      "name": "Edit",
+      "input": {
+        "file_path": "Index.cshtml",
+        "old_string": "    .conversation-log-main {",
+        "new_string": "    .conversation-session-meta {\n        white-space: nowrap;\n    }\n\n    .conversation-log-main {"
+      }
+    }
+  ]
+}
+""";
+
+        var result = _service.ExtractAssistantOutput(responseBody, "Anthropic", "/v1/messages");
+
+        result.Should().Contain("工具调用: Edit");
+        result.Should().Contain("工具结果: 代码改动");
+        result.Should().Contain("文件: Index.cshtml");
+        result.Should().Contain("-    .conversation-log-main {");
+        result.Should().Contain("+    .conversation-session-meta {");
+    }
+
+    [Fact]
+    public void ExtractAssistantOutput_for_anthropic_sse_keeps_input_json_delta_change_details()
+    {
+        var responseBody = """
+event: content_block_start
+data: {"type":"content_block_start","content_block":{"type":"tool_use","name":"Edit","input":{}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"file_path\":\"Index.cshtml\",\"old_string\":\"old\",\"new_string\":\"new\"}"}}
+
+event: content_block_stop
+data: {"type":"content_block_stop"}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+""";
+
+        var result = _service.ExtractAssistantOutput(responseBody, "Anthropic", "/v1/messages");
+
+        result.Should().Contain("工具调用: Edit");
+        result.Should().Contain("工具结果: 代码改动");
+        result.Should().Contain("文件: Index.cshtml");
+        result.Should().Contain("-old");
+        result.Should().Contain("+new");
+    }
+
+    [Fact]
+    public void ExtractUserInputText_for_anthropic_ignores_tool_result_wrapped_as_user()
+    {
+        var requestBody = """
+{
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "请继续处理这个问题" }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "tool_use", "id": "tool_1", "name": "Read", "input": {} }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        { "type": "tool_result", "tool_use_id": "tool_1", "content": "file content" }
+      ]
+    }
+  ]
+}
+""";
+
+        _service.ExtractUserInputText(requestBody, "Anthropic", "/v1/messages")
+            .Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ExtractAssistantOutput_reads_anthropic_sse_text_delta()
+    {
+        var responseBody = """
+event: content_block_delta
+data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"hello"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","delta":{"type":"text_delta","text":" world"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+""";
+
+        _service.ExtractAssistantOutput(responseBody, "Anthropic", "/v1/messages")
+            .Should().Be("hello world");
+    }
 }

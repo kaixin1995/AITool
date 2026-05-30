@@ -331,9 +331,11 @@ public static partial class ProxyProtocolBridge
             if (!state.ResponseStarted)
             {
                 state.ResponseStarted = true;
-                state.ResponseId = root.TryGetProperty("id", out var idEl)
-                    ? (idEl.GetString()?.StartsWith("resp_") == true ? idEl.GetString() : $"resp_{idEl.GetString()}")
-                    : $"resp_{Guid.NewGuid():N}";
+                // 上游流式首帧可能没有可用 id，这里统一补成可落库的 responseId。
+                var rawResponseId = root.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+                state.ResponseId = string.IsNullOrWhiteSpace(rawResponseId)
+                    ? $"resp_{Guid.NewGuid():N}"
+                    : (rawResponseId.StartsWith("resp_") ? rawResponseId : $"resp_{rawResponseId}");
                 state.Model = root.TryGetProperty("model", out var modelEl) ? modelEl.GetString() ?? "" : "";
                 state.CreatedAt = root.TryGetProperty("created", out var createdEl) ? createdEl.GetInt64() : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 

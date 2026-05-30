@@ -130,4 +130,9 @@ public sealed class UsageLogEntry
     /// 记录请求使用的思考强度配置，便于后续做成本与效果分析。
     /// </summary>
     public string ReasoningEffort { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 记录该条使用日志对应的请求开始时间。
+    /// </summary>
+    public DateTimeOffset RequestedAt { get; set; } = DateTimeOffset.UtcNow;
 }

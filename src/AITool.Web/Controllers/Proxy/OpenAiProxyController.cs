@@ -364,7 +364,7 @@ public sealed class OpenAiProxyController : ControllerBase
 
                 if (streamResult.Success)
                 {
-                    await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, CancellationToken.None);
+                    await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None);
                     SafeSucceedRoute(route.RouteId);
                     SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                     {
@@ -449,7 +449,7 @@ public sealed class OpenAiProxyController : ControllerBase
                     result.InputTokens,
                     result.CachedTokens,
                     result.OutputTokens);
-                await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, responseBody, modelName, result.IsStreaming, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, cancellationToken);
+                await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, responseBody, modelName, result.IsStreaming, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, result.TotalDurationMs)), cancellationToken);
                 SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                 {
                     Status = "success",
@@ -635,7 +635,7 @@ public sealed class OpenAiProxyController : ControllerBase
 
                 if (streamResult.Success)
                 {
-                    await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, CancellationToken.None);
+                    await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None);
                     SafeSucceedRoute(route.RouteId);
                     SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                     {
@@ -715,7 +715,7 @@ public sealed class OpenAiProxyController : ControllerBase
                 if (isPassthrough)
                 {
                     // OpenAI 上游直接透传
-                    await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, result.ResponseBody, modelName, result.IsStreaming, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, cancellationToken);
+                    await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, result.ResponseBody, modelName, result.IsStreaming, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, result.TotalDurationMs)), cancellationToken);
                     SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                     {
                         Status = "success",
@@ -737,7 +737,7 @@ public sealed class OpenAiProxyController : ControllerBase
                     result.IsStreaming, modelName,
                     result.InputTokens, result.CachedTokens, result.OutputTokens);
                 var responsesBody = ProxyProtocolBridge.ConvertChatResponseToResponses(chatResponseBody);
-                await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, responsesBody, modelName, false, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, cancellationToken);
+                await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, responsesBody, modelName, false, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, result.TotalDurationMs)), cancellationToken);
                 SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                 {
                     Status = "success",
@@ -1857,7 +1857,7 @@ public sealed class OpenAiProxyController : ControllerBase
     /// 有会话标识的工具（claude-code / codex / open-code）按会话分组，
     /// 无会话标识的普通代理请求合并到同一个分组。
     /// </summary>
-    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, CancellationToken cancellationToken)
+    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, DateTimeOffset requestedAt, CancellationToken cancellationToken)
     {
         try
         {
@@ -1869,7 +1869,8 @@ public sealed class OpenAiProxyController : ControllerBase
             var sessionId = _conversationExtractionService.ExtractSessionId(headers);
 
             var userInput = _conversationExtractionService.ExtractUserInputText(requestBody, protocolType, Request.Path);
-            var assistantOutputMarkdown = _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path);
+            var toolResultOutput = _conversationExtractionService.ExtractToolResultOutput(requestBody, protocolType, Request.Path);
+            var assistantOutputMarkdown = JoinConversationMarkdown(toolResultOutput, _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path));
             if (string.IsNullOrWhiteSpace(userInput) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
             {
                 return;
@@ -1883,6 +1884,8 @@ public sealed class OpenAiProxyController : ControllerBase
             await _conversationLogService.LogAsync(new ConversationTurnEntry
             {
                 RequestId = requestId,
+                CreatedAt = DateTimeOffset.UtcNow,
+                UserCreatedAt = requestedAt,
                 SourceTool = sourceTool,
                 SessionId = sessionId,
                 ConversationGroupKey = groupKey,
@@ -1911,6 +1914,14 @@ public sealed class OpenAiProxyController : ControllerBase
                 protocolType,
                 requestModel);
         }
+    }
+
+    /// <summary>
+    /// 合并工具结果和模型回复，避免展示时内容粘连。
+    /// </summary>
+    private static string JoinConversationMarkdown(params string[] values)
+    {
+        return string.Join("\n\n", values.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()));
     }
 
     /// <summary>

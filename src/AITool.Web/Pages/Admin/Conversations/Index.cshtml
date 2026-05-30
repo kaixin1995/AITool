@@ -41,6 +41,7 @@
         <option value="">全部路由入口</option>
     </select>
     <button type="button" class="btn btn-primary btn-sm" onclick="handleQuery()">查询</button>
+    <button type="button" class="btn btn-outline-secondary btn-sm" onclick="refreshCurrentSession()">刷新</button>
 </div>
 
 <div class="conversation-log-shell @(isMinimal ? "conversation-shell-minimal" : "")">
@@ -123,15 +124,53 @@
         border-radius: 14px;
         padding: 12px 12px;
         margin-bottom: 6px;
+        overflow: hidden;
     }
 
-    .conversation-session-item:hover {
+    .conversation-session-card {
+        border-radius: 14px;
+        margin-bottom: 6px;
+        overflow: hidden;
+    }
+
+    .conversation-session-card:hover {
         background: #f3f4f6;
     }
 
-    .conversation-session-item.active {
+    .conversation-session-card.active {
         background: #dbeafe;
+    }
+
+    .conversation-session-item:hover {
+        background: transparent;
+    }
+
+    .conversation-session-item.active {
+        background: transparent;
         color: #1d4ed8;
+    }
+
+    .conversation-session-actions {
+        display: flex;
+        justify-content: flex-end;
+        padding: 0 12px 10px;
+    }
+
+    .conversation-session-delete {
+        border: 0;
+        background: transparent;
+        color: #dc2626;
+        font-size: 12px;
+        padding: 2px 6px;
+        border-radius: 6px;
+    }
+
+    .conversation-session-delete:hover {
+        background: rgba(220, 38, 38, 0.08);
+    }
+
+    .conversation-session-meta {
+        white-space: nowrap;
     }
 
     .conversation-log-main {
@@ -167,14 +206,6 @@
         margin-bottom: 32px;
     }
 
-    .conversation-turn-meta {
-        font-size: 12px;
-        color: #9ca3af;
-        text-align: center;
-        margin-bottom: 16px;
-    }
-
-    /* 消息行：头像 + 气泡 左右布局 */
     .conversation-msg {
         display: flex;
         gap: 12px;
@@ -208,14 +239,34 @@
         background: #f0fdf4;
     }
 
+    .conversation-msg-body {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        min-width: 0;
+        max-width: min(80%, 1100px);
+    }
+
+    .conversation-msg-user .conversation-msg-body {
+        align-items: flex-end;
+    }
+
+    .conversation-msg-meta {
+        font-size: 12px;
+        color: #9ca3af;
+        line-height: 1.5;
+    }
+
     /* 气泡 */
     .conversation-bubble {
-        max-width: 80%;
+        max-width: 100%;
         border-radius: 16px;
         padding: 12px 16px;
         word-break: break-word;
+        overflow-wrap: anywhere;
         line-height: 1.7;
         font-size: 15px;
+        min-width: 0;
     }
 
     .conversation-bubble-user {
@@ -246,6 +297,19 @@
     }
 
     .conversation-markdown p:last-child {
+        margin-bottom: 0;
+    }
+
+    .conversation-markdown pre {
+        margin: 12px 0;
+        white-space: pre-wrap;
+    }
+
+    .conversation-markdown > *:first-child {
+        margin-top: 0;
+    }
+
+    .conversation-markdown > *:last-child {
         margin-bottom: 0;
     }
 
@@ -373,6 +437,9 @@
 </style>
 
 <script>
+    var currentSessionGroupKey = '';
+    var currentSessionTitle = '';
+
     /* 配置 marked 使用 highlight.js 做代码高亮 */
     marked.setOptions({
         highlight: function(code, lang) {
@@ -406,6 +473,15 @@
             + '<pre><code class="hljs language-' + escapeHtml(lang) + '">' + highlighted + '</code></pre>'
             + '</div>';
     };
+    conversationRenderer.link = function(href, title, text) {
+        var label = text || escapeHtml(href || '');
+        if (!isConversationHttpUrl(href)) {
+            return label;
+        }
+
+        var titleAttr = title ? ' title="' + escapeHtml(title) + '"' : '';
+        return '<a href="' + escapeHtml(href) + '" target="_blank" rel="noopener noreferrer"' + titleAttr + '>' + label + '</a>';
+    };
 
     /* 时间范围切换：显示/隐藏自定义日期输入 */
     document.getElementById('rangeTypeSelect').addEventListener('change', function() {
@@ -420,6 +496,15 @@
 
     /* 查询按钮：自定义模式下校验后查询，其他模式直接查询 */
     function handleQuery() {
+        loadSessions();
+    }
+
+    function refreshCurrentSession() {
+        if (currentSessionGroupKey) {
+            loadTurns(currentSessionGroupKey, currentSessionTitle, true);
+            return;
+        }
+
         loadSessions();
     }
 
@@ -458,18 +543,36 @@
         }
 
         data.items.forEach(function(item, index) {
+            var card = document.createElement('div');
+            card.className = 'conversation-session-card';
+
             var button = document.createElement('button');
             button.type = 'button';
             button.className = 'conversation-session-item';
-            button.innerHTML = '<div class="fw-semibold">' + escapeHtml(item.preview || '未命名会话') + '</div>'
-                + '<div class="small text-muted mt-1">' + escapeHtml(item.sourceTool) + ' · ' + escapeHtml(item.sessionIdShort) + '</div>'
-                + '<div class="small text-muted mt-1">' + escapeHtml(item.lastActivityAtText) + ' · ' + item.turnCount + ' 条 · ' + (item.totalTokens || 0) + ' tokens</div>';
+            button.innerHTML = '<div class="fw-semibold text-truncate">' + escapeHtml(item.preview || '未命名会话') + '</div>'
+                + '<div class="small text-muted mt-1 text-truncate">' + escapeHtml(item.sourceTool) + ' · ' + escapeHtml(item.sessionIdShort) + '</div>'
+                + '<div class="small text-muted mt-1 conversation-session-meta">' + escapeHtml(item.lastActivityAtText) + ' · ' + item.turnCount + ' 条 · ' + escapeHtml(item.totalTokensText || String(item.totalTokens || 0)) + ' tokens</div>';
             button.addEventListener('click', function() {
+                document.querySelectorAll('.conversation-session-card').forEach(function(el) { el.classList.remove('active'); });
                 document.querySelectorAll('.conversation-session-item').forEach(function(el) { el.classList.remove('active'); });
+                card.classList.add('active');
                 button.classList.add('active');
-                loadTurns(item.groupKey, item.preview || item.sessionIdShort);
+                currentSessionGroupKey = item.groupKey;
+                currentSessionTitle = item.preview || item.sessionIdShort;
+                loadTurns(item.groupKey, currentSessionTitle);
             });
-            container.appendChild(button);
+
+            var actions = document.createElement('div');
+            actions.className = 'conversation-session-actions';
+            actions.innerHTML = '<button type="button" class="conversation-session-delete">删除</button>';
+            actions.querySelector('button').addEventListener('click', function(event) {
+                event.stopPropagation();
+                deleteSession(item.groupKey, item.preview || item.sessionIdShort);
+            });
+
+            card.appendChild(button);
+            card.appendChild(actions);
+            container.appendChild(card);
 
             if (index === 0) {
                 button.click();
@@ -478,8 +581,10 @@
     }
 
     /* 查询某个会话的对话内容并渲染为聊天气泡 */
-    async function loadTurns(groupKey, sessionTitle) {
-        document.getElementById('conversationDetailTitle').textContent = sessionTitle || '对话详情';
+    async function loadTurns(groupKey, sessionTitle, scrollToBottom) {
+        currentSessionGroupKey = groupKey || '';
+        currentSessionTitle = sessionTitle || '对话详情';
+        document.getElementById('conversationDetailTitle').textContent = currentSessionTitle;
         var res = await fetch('/api/admin/conversations/turns?groupKey=' + encodeURIComponent(groupKey));
         var data = await res.json();
         var container = document.getElementById('conversationTurns');
@@ -494,41 +599,304 @@
             var turn = document.createElement('div');
             turn.className = 'conversation-turn';
 
-            /* 时间与模型信息，居中显示 */
-            var meta = document.createElement('div');
-            meta.className = 'conversation-turn-meta';
-            meta.textContent = (item.createdAtText || '') + '  ·  ' + (item.requestModel || '') + '  ·  输入 ' + item.inputTokens + ' / 输出 ' + item.outputTokens;
-            turn.appendChild(meta);
-
-            /* 用户消息：头像在右，气泡蓝色 */
             if (item.userInputText) {
                 var userRow = document.createElement('div');
                 userRow.className = 'conversation-msg conversation-msg-user';
                 userRow.innerHTML = '<div class="conversation-avatar conversation-avatar-user">👤</div>'
-                    + '<div class="conversation-bubble conversation-bubble-user">' + escapeHtml(item.userInputText) + '</div>';
+                    + '<div class="conversation-msg-body">'
+                    + '<div class="conversation-msg-meta">' + escapeHtml(item.userCreatedAtText || item.createdAtText || '') + ' · 输入 ' + formatSideTokens(item.inputTokens, item.cachedTokens) + '</div>'
+                    + '<div class="conversation-bubble conversation-bubble-user">' + escapeHtml(item.userInputText) + '</div>'
+                    + '</div>';
                 turn.appendChild(userRow);
             }
 
-            /* AI 回复：头像在左，气泡白底，Markdown 渲染 */
             if (item.assistantOutputMarkdown) {
                 var aiRow = document.createElement('div');
                 aiRow.className = 'conversation-msg';
                 aiRow.innerHTML = '<div class="conversation-avatar conversation-avatar-assistant">🤖</div>'
-                    + '<div class="conversation-bubble conversation-bubble-assistant conversation-markdown">' + renderAssistantContent(item.assistantOutputMarkdown) + '</div>';
+                    + '<div class="conversation-msg-body">'
+                    + '<div class="conversation-msg-meta">' + escapeHtml(item.createdAtText || '') + ' · ' + escapeHtml(item.requestModel || '') + ' · 输出 ' + formatTokenCount(item.outputTokens || 0) + '</div>'
+                    + '<div class="conversation-bubble conversation-bubble-assistant conversation-markdown">' + renderAssistantContent(item.assistantOutputMarkdown) + '</div>'
+                    + '</div>';
                 turn.appendChild(aiRow);
             }
 
             container.appendChild(turn);
         });
+
+        if (scrollToBottom) {
+            scrollConversationToBottom();
+        }
     }
 
     /* 用 marked 渲染 AI 回复的 Markdown 内容 */
     function renderAssistantContent(markdown) {
         try {
-            return marked.parse(markdown || '', { renderer: conversationRenderer });
+            return marked.parse(normalizeAssistantMarkdown(markdown || ''), { renderer: conversationRenderer });
         } catch (e) {
-            return escapeHtml(markdown || '');
+            return '<pre class="mb-0"><code>' + escapeHtml(markdown || '') + '</code></pre>';
         }
+    }
+
+    function normalizeAssistantMarkdown(markdown) {
+        var text = (markdown || '').replace(/\r\n/g, '\n');
+        if (!text.trim()) {
+            return '';
+        }
+
+        if (text.indexOf('```') >= 0) {
+            return text;
+        }
+
+        text = normalizeToolCallMarkdown(text);
+        if (text.indexOf('```') >= 0) {
+            return text;
+        }
+
+        text = normalizeToolResultMarkdown(text);
+        if (text.indexOf('```') >= 0) {
+            return text;
+        }
+
+        var lines = text.split('\n');
+        var hasIndentedBlock = lines.some(function(line) {
+            return /^\s{4,}\S/.test(line) || /^\t+\S/.test(line);
+        });
+
+        if (hasIndentedBlock) {
+            var converted = [];
+            var inCode = false;
+            lines.forEach(function(line) {
+                if (/^\s{4,}\S/.test(line) || /^\t+\S/.test(line)) {
+                    if (!inCode) {
+                        converted.push('```text');
+                        inCode = true;
+                    }
+                    converted.push(line.replace(/^\s{4}/, '').replace(/^\t/, ''));
+                } else {
+                    if (inCode) {
+                        converted.push('```');
+                        inCode = false;
+                    }
+                    converted.push(line);
+                }
+            });
+            if (inCode) {
+                converted.push('```');
+            }
+            return converted.join('\n');
+        }
+
+        if (looksLikePlainOutput(text)) {
+            return '```text\n' + text.trim() + '\n```';
+        }
+
+        return text;
+    }
+
+    function looksLikePlainOutput(text) {
+        var normalized = (text || '').trim();
+        if (!normalized) {
+            return false;
+        }
+
+        if (normalized.indexOf('\n') < 0) {
+            return false;
+        }
+
+        return /(^|\n)(PS [^\n]+>|\$ |>|Traceback|Exception|at\s+[^\n]+|using\s+[A-Za-z0-9_.]+;|public\s+|private\s+|SELECT\s+|INSERT\s+|UPDATE\s+|DELETE\s+)/i.test(normalized);
+    }
+
+    function formatSideTokens(inputTokens, cachedTokens) {
+        var input = formatTokenCount(inputTokens || 0);
+        var cached = cachedTokens > 0 ? '，缓存 ' + formatTokenCount(cachedTokens) : '';
+        return input + cached;
+    }
+
+    function formatTokenCount(value) {
+        var tokenValue = Number(value || 0);
+        if (tokenValue >= 1000000000) {
+            return (tokenValue / 1000000000).toFixed(tokenValue >= 10000000000 ? 0 : 1).replace(/\.0$/, '') + 'G';
+        }
+
+        if (tokenValue >= 1000000) {
+            return (tokenValue / 1000000).toFixed(tokenValue >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M';
+        }
+
+        if (tokenValue >= 1000) {
+            return (tokenValue / 1000).toFixed(tokenValue >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'K';
+        }
+
+        return String(tokenValue);
+    }
+
+    function normalizeToolCallMarkdown(text) {
+        var normalized = (text || '').trim();
+        if (!normalized || normalized.indexOf('工具调用: ') < 0) {
+            return text;
+        }
+
+        var lines = normalized.split('\n');
+        var converted = [];
+        var i = 0;
+        while (i < lines.length) {
+            var line = lines[i].trimEnd();
+            if (!line.startsWith('工具调用: ')) {
+                converted.push(lines[i]);
+                i++;
+                continue;
+            }
+
+            converted.push('### ' + line);
+            var argumentLines = [];
+            i++;
+            while (i < lines.length) {
+                var nextLine = lines[i];
+                var trimmed = nextLine.trim();
+                if (!trimmed) {
+                    if (argumentLines.length > 0) {
+                        break;
+                    }
+
+                    i++;
+                    continue;
+                }
+
+                if (trimmed.startsWith('工具调用: ')) {
+                    break;
+                }
+
+                if (looksLikeJsonLine(trimmed)) {
+                    argumentLines.push(nextLine);
+                    i++;
+                    continue;
+                }
+
+                break;
+            }
+
+            if (argumentLines.length > 0) {
+                converted.push('```json');
+                converted.push(argumentLines.join('\n'));
+                converted.push('```');
+            }
+
+            if (i < lines.length && lines[i].trim() && !lines[i].trim().startsWith('工具调用: ')) {
+                converted.push('');
+            }
+        }
+
+        return converted.join('\n').trim();
+    }
+
+    function looksLikeJsonLine(text) {
+        return /^[\[{]/.test(text)
+            || /^[\]}],?$/.test(text)
+            || /^"[^"\\]+"\s*:/.test(text);
+    }
+
+    function normalizeToolResultMarkdown(text) {
+        var normalized = (text || '').trim();
+        if (!normalized || normalized.indexOf('工具结果:') < 0) {
+            return text;
+        }
+
+        var lines = normalized.split('\n');
+        var converted = [];
+        var inTextBlock = false;
+        lines.forEach(function(line) {
+            if (line.startsWith('工具结果:')) {
+                if (inTextBlock) {
+                    converted.push('```');
+                    inTextBlock = false;
+                }
+                converted.push('### ' + line);
+                return;
+            }
+
+            if (line.startsWith('文件:')) {
+                converted.push('**' + line + '**');
+                return;
+            }
+
+            if (line.startsWith('```')) {
+                if (inTextBlock) {
+                    converted.push('```');
+                    inTextBlock = false;
+                    return;
+                }
+                converted.push(line);
+                return;
+            }
+
+            if (/^[+-]/.test(line)) {
+                if (!inTextBlock) {
+                    converted.push('```diff');
+                    inTextBlock = true;
+                }
+                converted.push(line);
+                return;
+            }
+
+            if (inTextBlock) {
+                converted.push('```');
+                inTextBlock = false;
+            }
+            converted.push(line);
+        });
+
+        if (inTextBlock) {
+            converted.push('```');
+        }
+
+        return converted.join('\n').trim();
+    }
+
+    async function deleteCurrentSession() {
+        if (!currentSessionGroupKey) {
+            return;
+        }
+
+        await deleteSession(currentSessionGroupKey, currentSessionTitle);
+    }
+
+    async function deleteSession(groupKey, sessionTitle) {
+        if (!groupKey) {
+            return;
+        }
+
+        if (!window.confirm('确认删除会话“' + (sessionTitle || '当前会话') + '”的全部记录吗？')) {
+            return;
+        }
+
+        var res = await fetch('/api/admin/conversations/sessions?groupKey=' + encodeURIComponent(groupKey), {
+            method: 'DELETE'
+        });
+
+        if (!res.ok) {
+            alert('删除失败，请稍后重试');
+            return;
+        }
+
+        if (currentSessionGroupKey === groupKey) {
+            currentSessionGroupKey = '';
+            currentSessionTitle = '';
+            document.getElementById('conversationDetailTitle').textContent = '对话详情';
+            document.getElementById('conversationTurns').innerHTML = '<div class="conversation-turns-empty text-muted">请选择左侧会话查看内容。</div>';
+        }
+
+        loadSessions();
+    }
+
+    function scrollConversationToBottom() {
+        var container = document.getElementById('conversationTurns');
+        if (!container) {
+            return;
+        }
+
+        requestAnimationFrame(function() {
+            container.scrollTop = container.scrollHeight;
+        });
     }
 
     /* 复制代码块内容到剪贴板 */
@@ -545,6 +913,11 @@
         var element = document.createElement('div');
         element.textContent = text || '';
         return element.innerHTML;
+    }
+
+    function isConversationHttpUrl(value) {
+        var text = (value || '').trim();
+        return /^https?:\/\//i.test(text);
     }
 
     /* 初始化自定义日期输入的默认值 */

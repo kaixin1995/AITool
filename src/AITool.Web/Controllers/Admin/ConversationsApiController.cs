@@ -13,10 +13,12 @@ namespace AITool.Web.Controllers.Admin;
 public sealed class ConversationsApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
+    private readonly ConversationExtractionService _conversationExtractionService;
 
-    public ConversationsApiController(AppDbContext dbContext)
+    public ConversationsApiController(AppDbContext dbContext, ConversationExtractionService conversationExtractionService)
     {
         _dbContext = dbContext;
+        _conversationExtractionService = conversationExtractionService;
     }
 
     /// <summary>
@@ -61,7 +63,9 @@ public sealed class ConversationsApiController : ControllerBase
             .Select(group =>
             {
                 var latest = group.OrderByDescending(x => x.CreatedAt).First();
-                var preview = group.Select(x => GzipTextCompression.Decompress(x.UserInputText)).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
+                var preview = group
+                    .Select(x => _conversationExtractionService.NormalizeConversationText(GzipTextCompression.Decompress(x.UserInputText)))
+                    .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
                 var totalTokens = group.Sum(x => x.InputTokens + x.CachedTokens + x.OutputTokens);
                 return new
                 {
@@ -72,6 +76,7 @@ public sealed class ConversationsApiController : ControllerBase
                     LastActivityAtText = latest.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
                     TurnCount = group.Count(),
                     TotalTokens = totalTokens,
+                    TotalTokensText = FormatTokenCount(totalTokens),
                     Preview = preview.Length > 60 ? preview[..60] : preview
                 };
             })
@@ -79,6 +84,31 @@ public sealed class ConversationsApiController : ControllerBase
             .ToList();
 
         return Ok(new { items = sessions });
+    }
+
+    /// <summary>
+    /// 删除某个会话下的全部对话记录。
+    /// </summary>
+    [HttpDelete("sessions")]
+    public async Task<IActionResult> DeleteSession([FromQuery] string groupKey, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(groupKey))
+        {
+            return BadRequest(new { message = "groupKey 不能为空" });
+        }
+
+        var logs = await _dbContext.ConversationTurnLogs
+            .Where(x => x.ConversationGroupKey == groupKey)
+            .ToListAsync(cancellationToken);
+
+        if (logs.Count == 0)
+        {
+            return NotFound(new { message = "会话不存在或已删除" });
+        }
+
+        _dbContext.ConversationTurnLogs.RemoveRange(logs);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return Ok(new { deletedCount = logs.Count });
     }
 
     /// <summary>
@@ -103,9 +133,11 @@ public sealed class ConversationsApiController : ControllerBase
             {
                 x.Id,
                 x.CreatedAt,
+                x.UserCreatedAt,
                 CreatedAtText = x.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+                UserCreatedAtText = (x.UserCreatedAt ?? x.CreatedAt).ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
                 x.RequestModel,
-                UserInputText = GzipTextCompression.Decompress(x.UserInputText),
+                UserInputText = _conversationExtractionService.NormalizeConversationText(GzipTextCompression.Decompress(x.UserInputText)),
                 AssistantOutputMarkdown = GzipTextCompression.Decompress(x.AssistantOutputMarkdown),
                 x.InputTokens,
                 x.CachedTokens,
@@ -154,5 +186,28 @@ public sealed class ConversationsApiController : ControllerBase
     private static DateTimeOffset StartOfDay(DateTimeOffset value)
     {
         return new DateTimeOffset(value.Year, value.Month, value.Day, 0, 0, 0, value.Offset);
+    }
+
+    /// <summary>
+    /// 将大 token 数量格式化成更紧凑的缩写文本。
+    /// </summary>
+    private static string FormatTokenCount(int value)
+    {
+        if (value >= 1_000_000_000)
+        {
+            return $"{value / 1_000_000_000d:0.#}G";
+        }
+
+        if (value >= 1_000_000)
+        {
+            return $"{value / 1_000_000d:0.#}M";
+        }
+
+        if (value >= 1_000)
+        {
+            return $"{value / 1_000d:0.#}K";
+        }
+
+        return value.ToString();
     }
 }

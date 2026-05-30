@@ -29,17 +29,34 @@ public sealed class ConversationPageTests
         pageHtml.Should().Contain("conversationLogIframe");
         pageHtml.Should().Contain("/Admin/Conversations?layout=minimal");
 
+        var minimalPageResponse = await client.GetAsync("/Admin/Conversations?layout=minimal");
+        var minimalPageHtml = await minimalPageResponse.Content.ReadAsStringAsync();
+        minimalPageResponse.StatusCode.Should().Be(HttpStatusCode.OK, minimalPageHtml);
+        minimalPageHtml.Should().Contain("conversationRenderer.link = function");
+        minimalPageHtml.Should().Contain("isConversationHttpUrl");
+        minimalPageHtml.Should().Contain("conversation-msg-meta");
+        minimalPageHtml.Should().Contain("formatTokenCount");
+
         var sessionsResponse = await client.GetAsync("/api/admin/conversations/sessions?rangeType=all&sourceTool=claude-code");
         var sessionsBody = await sessionsResponse.Content.ReadAsStringAsync();
         sessionsResponse.StatusCode.Should().Be(HttpStatusCode.OK, sessionsBody);
         sessionsBody.Should().Contain("claude-code");
         sessionsBody.Should().Contain("4a101580");
+        sessionsBody.Should().Contain("totalTokensText");
 
         var turnsResponse = await client.GetAsync("/api/admin/conversations/turns?groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
         var turnsBody = await turnsResponse.Content.ReadAsStringAsync();
         turnsResponse.StatusCode.Should().Be(HttpStatusCode.OK, turnsBody);
         turnsBody.Should().Contain("请帮我分析这个报错");
+        turnsBody.Should().Contain("userCreatedAtText");
+        turnsBody.Should().Contain("工具调用: Edit");
+        turnsBody.Should().Contain("\\\"action\\\":\\\"update\\\"");
         turnsBody.Should().Contain("```csharp");
+
+        var deleteResponse = await client.DeleteAsync("/api/admin/conversations/sessions?groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
+        var deleteBody = await deleteResponse.Content.ReadAsStringAsync();
+        deleteResponse.StatusCode.Should().Be(HttpStatusCode.OK, deleteBody);
+        deleteBody.Should().Contain("deletedCount");
     }
 }
 
@@ -82,8 +99,8 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
             ProtocolType = "OpenAI",
             RequestPath = "/v1/messages",
             Source = "claude-code",
-            UserInputText = "请帮我分析这个报错",
-            AssistantOutputMarkdown = "```csharp\nConsole.WriteLine(\"hello\");\n```",
+            UserInputText = "<system-reminder>\nNote: c:\\Users\\kaikai.hao\\Desktop\\AI-Tool\\src\\AITool.Web\\Program.cs was modified\n</system-reminder>\n\n请帮我分析这个报错",
+            AssistantOutputMarkdown = "工具调用: Edit\n{\"file\":\"Foo.cs\",\"action\":\"update\"}\n\n```csharp\nConsole.WriteLine(\"hello\");\n```",
             InputTokens = 10,
             CachedTokens = 0,
             OutputTokens = 20,
