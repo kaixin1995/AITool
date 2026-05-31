@@ -113,6 +113,55 @@ public sealed class OpenAiCrossProtocolProxyTests
         body.Should().Contain("\"completion_tokens\":8");
         body.Should().Contain("data: [DONE]");
     }
+
+    /// <summary>
+    /// 验证 legacy Completions 流式接口返回 text_completion SSE，而不是 chat.completion.chunk。
+    /// </summary>
+    [Fact]
+    public async Task Post_completions_stream_bridges_anthropic_events_to_legacy_sse_chunks()
+    {
+        var fakeForwardService = new OpenAiCrossProtocolFakeProxyForwardService
+        {
+            AnthropicStreamingLines =
+            [
+                "event: message_start",
+                "data: {\"message\":{\"usage\":{\"input_tokens\":7,\"cache_read_input_tokens\":1,\"output_tokens\":0}}}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"delta\":{\"type\":\"text_delta\",\"text\":\"legacy-stream\"}}",
+                string.Empty,
+                "event: message_delta",
+                "data: {\"usage\":{\"output_tokens\":8},\"delta\":{\"stop_reason\":\"end_turn\"}}",
+                string.Empty,
+                "event: message_stop",
+                "data: {\"type\":\"message_stop\"}",
+                string.Empty
+            ]
+        };
+        await using var factory = new OpenAiCrossProtocolWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/completions")
+        {
+            Content = new StringContent("{\"model\":\"auto\",\"stream\":true,\"prompt\":\"hello\"}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "openai-cross-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        response.Content.Headers.ContentType?.MediaType.Should().Be("text/event-stream");
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Anthropic");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"messages\"");
+        body.Should().Contain("\"object\":\"text_completion\"");
+        body.Should().Contain("\"text\":\"legacy-stream\"");
+        body.Should().Contain("\"finish_reason\":\"stop\"");
+        body.Should().Contain("\"prompt_tokens\":8");
+        body.Should().Contain("data: [DONE]");
+        body.Should().NotContain("chat.completion.chunk");
+    }
 }
 
 /// <summary>

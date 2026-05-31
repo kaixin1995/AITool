@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Linq;
 
 namespace AITool.Web.Services;
 
@@ -9,6 +10,296 @@ namespace AITool.Web.Services;
 /// </summary>
 public static partial class ProxyProtocolBridge
 {
+    /// <summary>
+    /// 将 OpenAI legacy Completions 请求转换为 Chat Completions 请求。
+    /// </summary>
+    /// <param name="requestBody">客户端提交的 legacy Completions JSON 请求体。</param>
+    /// <returns>返回可复用 Chat Completions 代理链路的 JSON 请求体。</returns>
+    public static string ConvertCompletionsRequestToChat(string requestBody)
+    {
+        try
+        {
+            var rootNode = JsonNode.Parse(requestBody) as JsonObject;
+            if (rootNode is null)
+            {
+                return requestBody;
+            }
+
+            var payload = new JsonObject();
+            foreach (var property in rootNode)
+            {
+                // legacy Completions 的部分字段无法直接映射到 Chat Completions，需要在转换时跳过。
+                if (string.Equals(property.Key, "prompt", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(property.Key, "suffix", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(property.Key, "best_of", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(property.Key, "echo", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                payload[property.Key] = property.Value?.DeepClone();
+            }
+
+            // prompt 是 legacy Completions 的核心输入，这里统一转成一条 user 消息。
+            var promptText = rootNode["prompt"] switch
+            {
+                JsonValue value when value.TryGetValue<string>(out var singlePrompt) => singlePrompt,
+                JsonArray array => string.Join("\n", array.Select(x => x?.GetValue<string>() ?? string.Empty).Where(x => !string.IsNullOrWhiteSpace(x))),
+                _ => string.Empty
+            };
+
+            payload["messages"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["role"] = "user",
+                    ["content"] = string.IsNullOrWhiteSpace(promptText) ? "..." : promptText
+                }
+            };
+
+            return payload.ToJsonString();
+        }
+        catch
+        {
+            return requestBody;
+        }
+    }
+
+    /// <summary>
+    /// 将 Chat Completions 响应转换为 OpenAI legacy Completions 响应。
+    /// </summary>
+    /// <param name="chatResponseBody">Chat Completions 或桥接后等价格式的 JSON 响应体。</param>
+    /// <returns>返回 legacy Completions 的 text_completion JSON 响应体。</returns>
+    public static string ConvertChatResponseToCompletions(string chatResponseBody)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(chatResponseBody);
+            var root = doc.RootElement;
+
+            var id = root.TryGetProperty("id", out var idEl) ? idEl.GetString() : null;
+            var created = root.TryGetProperty("created", out var createdEl) && createdEl.ValueKind == JsonValueKind.Number
+                ? createdEl.GetInt64()
+                : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var model = root.TryGetProperty("model", out var modelEl) ? modelEl.GetString() : null;
+            var usageNode = root.TryGetProperty("usage", out var usageEl)
+                ? JsonNode.Parse(usageEl.GetRawText())
+                : null;
+
+            var choices = new JsonArray();
+            if (root.TryGetProperty("choices", out var choicesEl) && choicesEl.ValueKind == JsonValueKind.Array)
+            {
+                // legacy Completions 使用 choices[].text，需要从 Chat message 或 delta 中提取纯文本。
+                var index = 0;
+                foreach (var choice in choicesEl.EnumerateArray())
+                {
+                    var finishReason = choice.TryGetProperty("finish_reason", out var finishEl) && finishEl.ValueKind == JsonValueKind.String
+                        ? finishEl.GetString()
+                        : null;
+                    var text = string.Empty;
+
+                    if (choice.TryGetProperty("message", out var messageEl) && messageEl.ValueKind == JsonValueKind.Object)
+                    {
+                        text = ExtractContentFromMessage(messageEl);
+                    }
+                    else if (choice.TryGetProperty("delta", out var deltaEl) && deltaEl.ValueKind == JsonValueKind.Object)
+                    {
+                        if (deltaEl.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.String)
+                        {
+                            text = contentEl.GetString() ?? string.Empty;
+                        }
+                    }
+
+                    choices.Add(new JsonObject
+                    {
+                        ["text"] = text,
+                        ["index"] = index++,
+                        ["logprobs"] = null,
+                        ["finish_reason"] = finishReason is null ? null : JsonValue.Create(finishReason)
+                    });
+                }
+            }
+
+            return new JsonObject
+            {
+                ["id"] = id ?? $"cmpl-{Guid.NewGuid():N}",
+                ["object"] = "text_completion",
+                ["created"] = created,
+                ["model"] = model ?? string.Empty,
+                ["choices"] = choices,
+                ["usage"] = usageNode
+            }.ToJsonString();
+        }
+        catch
+        {
+            return chatResponseBody;
+        }
+    }
+
+    /// <summary>
+    /// 将 Chat Completions SSE 数据块转换为 OpenAI legacy Completions SSE 数据块。
+    /// </summary>
+    /// <param name="sseText">一个或多个 Chat Completions SSE 数据块文本。</param>
+    /// <returns>返回 legacy Completions 兼容的 SSE 数据块文本。</returns>
+    public static string ConvertChatCompletionSseToCompletionsSse(string sseText)
+    {
+        if (string.IsNullOrWhiteSpace(sseText))
+        {
+            return sseText;
+        }
+
+        // 先统一换行符，避免 Windows 和 Unix SSE 换行差异影响事件块切分。
+        var normalized = sseText.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var blocks = normalized.Split("\n\n", StringSplitOptions.None);
+        var builder = new StringBuilder();
+
+        foreach (var block in blocks)
+        {
+            if (string.IsNullOrWhiteSpace(block))
+            {
+                continue;
+            }
+
+            var convertedBlock = ConvertChatCompletionSseBlockToCompletions(block);
+            if (!string.IsNullOrWhiteSpace(convertedBlock))
+            {
+                builder.Append(convertedBlock).Append("\n\n");
+            }
+        }
+
+        return builder.Length == 0 ? sseText : builder.ToString();
+    }
+
+    /// <summary>
+    /// 将单个 Chat Completions 流式 JSON 分片转换为 legacy Completions JSON 分片。
+    /// </summary>
+    /// <param name="chatChunkJson">单个 Chat Completions 流式 data 行中的 JSON 负载。</param>
+    /// <returns>返回单个 legacy Completions 流式 JSON 负载。</returns>
+    public static string ConvertChatStreamChunkToCompletions(string chatChunkJson)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(chatChunkJson);
+            var root = doc.RootElement;
+            var id = root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                ? NormalizeLegacyCompletionId(idEl.GetString())
+                : $"cmpl-{Guid.NewGuid():N}";
+            var created = root.TryGetProperty("created", out var createdEl) && createdEl.ValueKind == JsonValueKind.Number
+                ? createdEl.GetInt64()
+                : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            var model = root.TryGetProperty("model", out var modelEl) && modelEl.ValueKind == JsonValueKind.String
+                ? modelEl.GetString() ?? string.Empty
+                : string.Empty;
+            var choices = new JsonArray();
+
+            if (root.TryGetProperty("choices", out var choicesEl) && choicesEl.ValueKind == JsonValueKind.Array)
+            {
+                // 流式分片没有 message 时优先读 delta.content，保持 legacy 的 choices[].text 语义。
+                var fallbackIndex = 0;
+                foreach (var choice in choicesEl.EnumerateArray())
+                {
+                    var index = choice.TryGetProperty("index", out var indexEl) && indexEl.ValueKind == JsonValueKind.Number
+                        ? indexEl.GetInt32()
+                        : fallbackIndex;
+                    fallbackIndex++;
+                    var finishReason = choice.TryGetProperty("finish_reason", out var finishEl) && finishEl.ValueKind == JsonValueKind.String
+                        ? finishEl.GetString()
+                        : null;
+                    var text = string.Empty;
+                    if (choice.TryGetProperty("delta", out var deltaEl) && deltaEl.ValueKind == JsonValueKind.Object)
+                    {
+                        text = ExtractDeltaContent(deltaEl) ?? string.Empty;
+                    }
+                    else if (choice.TryGetProperty("message", out var messageEl) && messageEl.ValueKind == JsonValueKind.Object)
+                    {
+                        text = ExtractContentFromMessage(messageEl);
+                    }
+
+                    choices.Add(new JsonObject
+                    {
+                        ["text"] = text,
+                        ["index"] = index,
+                        ["logprobs"] = null,
+                        ["finish_reason"] = finishReason is null ? null : JsonValue.Create(finishReason)
+                    });
+                }
+            }
+
+            var result = new JsonObject
+            {
+                ["id"] = id,
+                ["object"] = "text_completion",
+                ["created"] = created,
+                ["model"] = model,
+                ["choices"] = choices
+            };
+
+            // 使用量字段本身兼容 legacy Completions，存在时直接保留。
+            if (root.TryGetProperty("usage", out var usageEl))
+            {
+                result["usage"] = JsonNode.Parse(usageEl.GetRawText());
+            }
+
+            return result.ToJsonString();
+        }
+        catch
+        {
+            return chatChunkJson;
+        }
+    }
+
+    /// <summary>
+    /// 将单个 SSE 块中的 Chat Completions data 行转换为 legacy Completions data 行。
+    /// </summary>
+    /// <param name="block">单个 SSE 块文本，可能包含 event、id 或 data 行。</param>
+    /// <returns>返回转换后的单个 SSE 块文本。</returns>
+    private static string ConvertChatCompletionSseBlockToCompletions(string block)
+    {
+        var builder = new StringBuilder();
+        var lines = block.Split('\n', StringSplitOptions.None);
+        foreach (var rawLine in lines)
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                builder.Append(line).Append('\n');
+                continue;
+            }
+
+            var payload = line["data:".Length..].TrimStart();
+            // [DONE] 是 SSE 结束标记，不是 JSON 分片，必须原样保留。
+            if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+            {
+                builder.Append("data: [DONE]\n");
+                continue;
+            }
+
+            builder.Append("data: ")
+                .Append(ConvertChatStreamChunkToCompletions(payload))
+                .Append('\n');
+        }
+
+        return builder.ToString().TrimEnd('\n');
+    }
+
+    /// <summary>
+    /// 将 Chat Completions id 归一为 legacy Completions 常见的 cmpl 前缀。
+    /// </summary>
+    /// <param name="id">上游返回的 Chat Completions 响应标识。</param>
+    /// <returns>返回 legacy Completions 兼容的响应标识。</returns>
+    private static string NormalizeLegacyCompletionId(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return $"cmpl-{Guid.NewGuid():N}";
+        }
+
+        // OpenAI legacy Completions 通常使用 cmpl 前缀，转换后更接近旧客户端预期。
+        return id.StartsWith("chatcmpl-", StringComparison.OrdinalIgnoreCase)
+            ? string.Concat("cmpl-", id.AsSpan("chatcmpl-".Length))
+            : id;
+    }
+
     /// <summary>
     /// 将 OpenAI 普通响应转换为 Anthropic 消息格式。
     /// </summary>

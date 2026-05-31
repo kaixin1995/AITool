@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Headers;
+using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -525,6 +526,117 @@ public sealed class ResponsesProxyTests
     }
 
     /// <summary>
+    /// WebSocket 请求应复用 Responses 流式透传链路，并把 SSE 数据转为 JSON 消息。
+    /// </summary>
+    [Fact]
+    public async Task Get_responses_websocket_passthrough_openai_streaming()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            StreamingLines =
+            [
+                "data: {\"id\":\"resp_ws\",\"object\":\"response\",\"created\":1,\"model\":\"auto\",\"status\":\"in_progress\",\"output\":[],\"type\":\"response.created\"}",
+                string.Empty,
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ws-hi\",\"output_index\":0,\"content_index\":0}",
+                string.Empty,
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"msg_ws\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"ws-hi\"}]}],\"usage\":{\"input_tokens\":6,\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens\":3,\"total_tokens\":9}}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        _ = factory.CreateClient();
+
+        var webSocketClient = factory.Server.CreateWebSocketClient();
+        webSocketClient.ConfigureRequest = request =>
+        {
+            request.Headers["Authorization"] = "Bearer responses-test-key";
+        };
+
+        using var webSocket = await webSocketClient.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+        await SendWebSocketTextAsync(webSocket, "{\"type\":\"response.create\",\"model\":\"auto\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}]}");
+
+        var messages = await ReceiveWebSocketMessagesUntilAsync(webSocket, "response.completed");
+        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "test complete", CancellationToken.None);
+
+        messages.Should().Contain(message => message.Contains("response.created", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("response.output_text.delta", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("ws-hi", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("response.completed", StringComparison.Ordinal));
+
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses");
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("OpenAI");
+        fakeForwardService.Requests[0].EnableStreaming.Should().BeTrue();
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].IsStreaming.Should().BeTrue();
+        logs[0].Status.Should().Be("success");
+        logs[0].InputTokens.Should().Be(6);
+        logs[0].CachedTokens.Should().Be(1);
+        logs[0].OutputTokens.Should().Be(3);
+    }
+
+    /// <summary>
+    /// WebSocket append 请求应合并上一轮请求和 response.completed 输出后再转发。
+    /// </summary>
+    [Fact]
+    public async Task Get_responses_websocket_append_merges_previous_context()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            StreamingLinesByCall =
+            [
+                [
+                    "data: {\"id\":\"resp_ws_1\",\"object\":\"response\",\"created\":1,\"model\":\"auto\",\"status\":\"in_progress\",\"output\":[],\"type\":\"response.created\"}",
+                    string.Empty,
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_1\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"assistant-1\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"first answer\"}]}]}}",
+                    string.Empty,
+                    "data: [DONE]",
+                    string.Empty
+                ],
+                [
+                    "data: {\"id\":\"resp_ws_2\",\"object\":\"response\",\"created\":2,\"model\":\"auto\",\"status\":\"in_progress\",\"output\":[],\"type\":\"response.created\"}",
+                    string.Empty,
+                    "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ws_2\",\"object\":\"response\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"id\":\"assistant-2\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"second answer\"}]}]}}",
+                    string.Empty,
+                    "data: [DONE]",
+                    string.Empty
+                ]
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        _ = factory.CreateClient();
+
+        var webSocketClient = factory.Server.CreateWebSocketClient();
+        webSocketClient.ConfigureRequest = request =>
+        {
+            request.Headers["Authorization"] = "Bearer responses-test-key";
+        };
+
+        using var webSocket = await webSocketClient.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+        await SendWebSocketTextAsync(webSocket, "{\"type\":\"response.create\",\"model\":\"auto\",\"input\":[{\"type\":\"message\",\"id\":\"user-1\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"first question\"}]}]}");
+        _ = await ReceiveWebSocketMessagesUntilAsync(webSocket, "resp_ws_1");
+
+        await SendWebSocketTextAsync(webSocket, "{\"type\":\"response.append\",\"input\":[{\"type\":\"message\",\"id\":\"user-2\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"second question\"}]}]}");
+        _ = await ReceiveWebSocketMessagesUntilAsync(webSocket, "resp_ws_2");
+        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "test complete", CancellationToken.None);
+
+        fakeForwardService.Requests.Should().HaveCount(2);
+        var secondRequestBody = fakeForwardService.Requests[1].PreparedRequestBody;
+        secondRequestBody.Should().NotBeNullOrWhiteSpace();
+        using var secondRequestDoc = JsonDocument.Parse(secondRequestBody!);
+        var input = secondRequestDoc.RootElement.GetProperty("input");
+        input.EnumerateArray().Should().Contain(item => item.GetProperty("id").GetString() == "user-1");
+        input.EnumerateArray().Should().Contain(item => item.GetProperty("id").GetString() == "assistant-1");
+        input.EnumerateArray().Should().Contain(item => item.GetProperty("id").GetString() == "user-2");
+    }
+
+    /// <summary>
     /// 缺少 model 字段应返回 400。
     /// </summary>
     [Fact]
@@ -689,6 +801,44 @@ public sealed class ResponsesProxyTests
         usage.TryGetProperty("prompt_tokens", out _).Should().BeTrue();
         usage.TryGetProperty("completion_tokens", out _).Should().BeTrue();
     }
+
+    private static async Task SendWebSocketTextAsync(WebSocket webSocket, string payload)
+    {
+        var bytes = Encoding.UTF8.GetBytes(payload);
+        await webSocket.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+    }
+
+    private static async Task<List<string>> ReceiveWebSocketMessagesUntilAsync(WebSocket webSocket, string expectedFragment)
+    {
+        var messages = new List<string>();
+        var buffer = new byte[16 * 1024];
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        while (!timeout.IsCancellationRequested)
+        {
+            var builder = new StringBuilder();
+            WebSocketReceiveResult result;
+            do
+            {
+                result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), timeout.Token);
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    return messages;
+                }
+
+                builder.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+            } while (!result.EndOfMessage);
+
+            var message = builder.ToString();
+            messages.Add(message);
+            if (message.Contains(expectedFragment, StringComparison.Ordinal))
+            {
+                return messages;
+            }
+        }
+
+        return messages;
+    }
 }
 
 /// <summary>
@@ -823,6 +973,7 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
 {
     public List<ProxyForwardRequest> Requests { get; } = [];
     public List<string>? StreamingLines { get; set; }
+    public List<List<string>>? StreamingLinesByCall { get; set; }
     public bool IsAnthropicOnly { get; set; }
 
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
@@ -859,13 +1010,16 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
     {
         Requests.Add(CloneRequest(request));
 
-        var lines = StreamingLines ??
-        [
-            "data: {\"id\":\"resp_default\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"default-stream\"}}]}",
-            string.Empty,
-            "data: [DONE]",
-            string.Empty
-        ];
+        var callIndex = Requests.Count - 1;
+        var lines = StreamingLinesByCall is not null && callIndex >= 0 && callIndex < StreamingLinesByCall.Count
+            ? StreamingLinesByCall[callIndex]
+            : StreamingLines ??
+            [
+                "data: {\"id\":\"resp_default\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"default-stream\"}}]}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ];
 
         foreach (var line in lines)
         {

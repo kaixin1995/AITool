@@ -210,6 +210,7 @@ if (!app.Environment.IsEnvironment("Testing"))
 }
 
 app.UseStaticFiles();
+app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();
 app.Use(async (context, next) =>
