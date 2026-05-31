@@ -724,7 +724,8 @@
         currentSessionGroupKey = groupKey || '';
         currentSessionTitle = sessionTitle || '对话详情';
         document.getElementById('conversationDetailTitle').textContent = currentSessionTitle;
-        var res = await fetch('/api/admin/conversations/turns?groupKey=' + encodeURIComponent(groupKey));
+        var timeParams = buildTimeParams();
+        var res = await fetch('/api/admin/conversations/turns?groupKey=' + encodeURIComponent(groupKey) + '&' + timeParams.toString());
         var data = await res.json();
         var container = document.getElementById('conversationTurns');
         container.innerHTML = '';
@@ -828,8 +829,11 @@
     function normalizeMarkdownFenceBreaks(text) {
         return (text || '')
             .replace(/```([A-Za-z0-9_+-]+)(?=[{\[])/g, '```$1\n')
+            .replace(/```([A-Za-z0-9_+-]+)\s+(?=[{\[])/g, '```$1\n')
             .replace(/```([A-Za-z0-9_+-]+)(?=\s*\")/g, '```$1\n')
             .replace(/```([A-Za-z0-9_+-]+)(?=\s*[A-Za-z_][A-Za-z0-9_]*\s*[:=])/g, '```$1\n')
+            .replace(/```(diff|text|json)(?=\s+[+-])/gi, '```$1\n')
+            .replace(/([^\n])```(?=\s*$)/gm, '$1\n```')
             .replace(/`([A-Za-z0-9_+-]+)`(?=[A-Za-z_$][A-Za-z0-9_$.\[\]]*`)/g, '`$1`\n');
     }
 
@@ -887,6 +891,7 @@
             }
 
             converted.push('<div class="conversation-tool-title">' + escapeHtml(line.trim()) + '</div>');
+            converted.push('');
             var argumentLines = [];
             i++;
             while (i < lines.length) {
@@ -956,6 +961,7 @@
         var lines = normalized.split('\n');
         var converted = [];
         var inTextBlock = false;
+        var inExistingFence = false;
         lines.forEach(function(line) {
             if (line.startsWith('工具结果:')) {
                 if (inTextBlock) {
@@ -963,20 +969,27 @@
                     inTextBlock = false;
                 }
                 converted.push('<div class="conversation-tool-title">' + escapeHtml(line.trim()) + '</div>');
+                converted.push('');
                 return;
             }
 
             if (line.startsWith('文件:')) {
                 converted.push('<div class="conversation-tool-file">' + escapeHtml(line) + '</div>');
+                converted.push('');
                 return;
             }
 
             if (line.startsWith('```')) {
+                if (inTextBlock) {
+                    converted.push('```');
+                    inTextBlock = false;
+                }
                 converted.push(line);
+                inExistingFence = !inExistingFence;
                 return;
             }
 
-            if (/^[+-]/.test(line)) {
+            if (!inExistingFence && /^[+-](?!\s)/.test(line)) {
                 if (!inTextBlock) {
                     converted.push('```diff');
                     inTextBlock = true;

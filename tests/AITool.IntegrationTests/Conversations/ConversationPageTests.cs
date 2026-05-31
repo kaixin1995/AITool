@@ -45,6 +45,7 @@ public sealed class ConversationPageTests
         minimalPageHtml.Should().Contain("conversation-tool-file");
         minimalPageHtml.Should().Contain("max-height: 520px");
         minimalPageHtml.Should().Contain("normalizeMarkdownFenceBreaks");
+        minimalPageHtml.Should().Contain("([^\\n])```");
         minimalPageHtml.Should().Contain("code.text");
         minimalPageHtml.Should().Contain("shouldShowToolArguments");
         minimalPageHtml.Should().Contain("conversationDeleteModal");
@@ -62,10 +63,16 @@ public sealed class ConversationPageTests
         var turnsBody = await turnsResponse.Content.ReadAsStringAsync();
         turnsResponse.StatusCode.Should().Be(HttpStatusCode.OK, turnsBody);
         turnsBody.Should().Contain("请帮我分析这个报错");
+        turnsBody.Should().NotContain("昨天的历史消息");
         turnsBody.Should().Contain("userCreatedAtText");
         turnsBody.Should().Contain("工具调用: Edit");
         turnsBody.Should().Contain("\\\"action\\\":\\\"update\\\"");
         turnsBody.Should().Contain("```csharp");
+
+        var allTurnsResponse = await client.GetAsync("/api/admin/conversations/turns?rangeType=all&groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
+        var allTurnsBody = await allTurnsResponse.Content.ReadAsStringAsync();
+        allTurnsResponse.StatusCode.Should().Be(HttpStatusCode.OK, allTurnsBody);
+        allTurnsBody.Should().Contain("昨天的历史消息");
 
         var deleteResponse = await client.DeleteAsync("/api/admin/conversations/sessions?groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
         var deleteBody = await deleteResponse.Content.ReadAsStringAsync();
@@ -102,26 +109,54 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
 
-        db.ConversationTurnLogs.Add(new ConversationTurnLog
-        {
-            RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-            SourceTool = "claude-code",
-            SessionId = "4a101580-d563-4945-aca8-76347b001a20",
-            ConversationGroupKey = "claude-code:4a101580-d563-4945-aca8-76347b001a20",
-            AccessKeyId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-            RequestModel = "claude-sonnet-4-6",
-            ProtocolType = "OpenAI",
-            RequestPath = "/v1/messages",
-            Source = "claude-code",
-            UserInputText = "<system-reminder>\nNote: c:\\Users\\kaikai.hao\\Desktop\\AI-Tool\\src\\AITool.Web\\Program.cs was modified\n</system-reminder>\n\n请帮我分析这个报错",
-            AssistantOutputMarkdown = "工具调用: Edit\n{\"file\":\"Foo.cs\",\"action\":\"update\"}\n\n```csharp\nConsole.WriteLine(\"hello\");\n```",
-            InputTokens = 10,
-            CachedTokens = 0,
-            OutputTokens = 20,
-            IsStreaming = false,
-            Status = "success",
-            MetadataJson = "{}"
-        });
+        var today = DateTimeOffset.Now;
+        var yesterday = today.AddDays(-1);
+
+        db.ConversationTurnLogs.AddRange(
+            new ConversationTurnLog
+            {
+                RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                CreatedAt = today,
+                UserCreatedAt = today,
+                SourceTool = "claude-code",
+                SessionId = "4a101580-d563-4945-aca8-76347b001a20",
+                ConversationGroupKey = "claude-code:4a101580-d563-4945-aca8-76347b001a20",
+                AccessKeyId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                RequestModel = "claude-sonnet-4-6",
+                ProtocolType = "OpenAI",
+                RequestPath = "/v1/messages",
+                Source = "claude-code",
+                UserInputText = "<system-reminder>\nNote: c:\\Users\\kaikai.hao\\Desktop\\AI-Tool\\src\\AITool.Web\\Program.cs was modified\n</system-reminder>\n\n请帮我分析这个报错",
+                AssistantOutputMarkdown = "工具调用: Edit\n{\"file\":\"Foo.cs\",\"action\":\"update\"}\n\n```csharp\nConsole.WriteLine(\"hello\");\n```",
+                InputTokens = 10,
+                CachedTokens = 0,
+                OutputTokens = 20,
+                IsStreaming = false,
+                Status = "success",
+                MetadataJson = "{}"
+            },
+            new ConversationTurnLog
+            {
+                RequestId = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+                CreatedAt = yesterday,
+                UserCreatedAt = yesterday,
+                SourceTool = "claude-code",
+                SessionId = "4a101580-d563-4945-aca8-76347b001a20",
+                ConversationGroupKey = "claude-code:4a101580-d563-4945-aca8-76347b001a20",
+                AccessKeyId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                RequestModel = "claude-sonnet-4-6",
+                ProtocolType = "OpenAI",
+                RequestPath = "/v1/messages",
+                Source = "claude-code",
+                UserInputText = "昨天的历史消息",
+                AssistantOutputMarkdown = "昨天的历史回复",
+                InputTokens = 3,
+                CachedTokens = 0,
+                OutputTokens = 4,
+                IsStreaming = false,
+                Status = "success",
+                MetadataJson = "{}"
+            });
 
         await db.SaveChangesAsync();
     }

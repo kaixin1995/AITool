@@ -115,17 +115,27 @@ public sealed class ConversationsApiController : ControllerBase
     /// 查询某个会话下的对话记录。
     /// </summary>
     [HttpGet("turns")]
-    public async Task<IActionResult> GetTurns([FromQuery] string groupKey, CancellationToken cancellationToken)
+    public async Task<IActionResult> GetTurns(
+        [FromQuery] string groupKey,
+        [FromQuery] string? rangeType,
+        [FromQuery] DateTimeOffset? startTime,
+        [FromQuery] DateTimeOffset? endTime,
+        CancellationToken cancellationToken)
     {
         if (string.IsNullOrWhiteSpace(groupKey))
         {
             return BadRequest(new { message = "groupKey 不能为空" });
         }
 
+        var (rangeStart, rangeEnd) = ResolveTimeRange(rangeType, startTime, endTime);
         var logs = await _dbContext.ConversationTurnLogs
             .AsNoTracking()
             .Where(x => x.ConversationGroupKey == groupKey)
             .ToListAsync(cancellationToken);
+
+        logs = logs
+            .Where(x => x.CreatedAt >= rangeStart && x.CreatedAt < rangeEnd)
+            .ToList();
 
         var items = logs
             .OrderBy(x => x.CreatedAt)
