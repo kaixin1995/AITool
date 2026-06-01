@@ -46,15 +46,15 @@
             <h5 class="card-title">检测设置</h5>
             <div class="row g-3 mt-1">
                 <div class="col-md-4">
-                    <label asp-for="Input.DetectionRequestTimeoutSeconds" class="form-label">检测超时时间（秒）</label>
+                    <label asp-for="Input.DetectionRequestTimeoutSeconds" class="form-label form-label-tip">检测超时时间（秒）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="单次检测请求在上游站点等待响应的最长时间。它会影响每个映射探测何时被判定为超时，也会影响整批检测任务的完成速度。数值过小可能把响应偏慢的站点误判为失败，数值过大则会让异常站点占用更久的检测资源。">?</span></label>
                     <input asp-for="Input.DetectionRequestTimeoutSeconds" class="form-control" type="number" min="1" />
                 </div>
                 <div class="col-md-4">
-                    <label asp-for="Input.DetectionRetryCount" class="form-label">检测重试次数</label>
+                    <label asp-for="Input.DetectionRetryCount" class="form-label form-label-tip">检测重试次数<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="单个检测映射在判定失败后会重新尝试的次数。它会影响检测结果的稳定性和最终成功率，也会影响整轮检测的总耗时。值越大，越容易排除偶发网络抖动；但同时也会增加上游请求次数和检测完成时间。">?</span></label>
                     <input asp-for="Input.DetectionRetryCount" class="form-control" type="number" min="0" />
                 </div>
                 <div class="col-md-4">
-                    <label asp-for="Input.DetectionConcurrency" class="form-label">检测并发数</label>
+                    <label asp-for="Input.DetectionConcurrency" class="form-label form-label-tip">检测并发数<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="同一时刻可以并行执行的检测数量。它会直接影响检测任务的吞吐速度，也会影响对上游站点和数据库的压力。值越大，整轮检测越快完成；值越小，单次占用更保守，但总耗时会更长。">?</span></label>
                     <input asp-for="Input.DetectionConcurrency" class="form-control" type="number" min="1" />
                 </div>
             </div>
@@ -66,32 +66,32 @@
             <h5 class="card-title">代理设置</h5>
             <div class="row g-3 mt-1">
                 <div class="col-md-3">
-                    <label asp-for="Input.ProxyRequestTimeoutSeconds" class="form-label">代理超时时间（秒）</label>
+                    <label asp-for="Input.ProxyRequestTimeoutSeconds" class="form-label form-label-tip">代理超时时间（秒）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="单次代理转发请求等待上游响应的最长时间。它会影响外部客户端在发起请求后愿意等待多久，也会影响最终是否被判定为超时失败。值过小容易让慢响应被截断，值过大则会拉长失败请求的等待时间。">?</span></label>
                     <input asp-for="Input.ProxyRequestTimeoutSeconds" class="form-control" type="number" min="1" />
                 </div>
                 <div class="col-md-3">
-                    <label asp-for="Input.ProxyRetryCount" class="form-label">代理重试次数</label>
+                    <label asp-for="Input.ProxyRetryCount" class="form-label form-label-tip">代理重试次数<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="代理请求在当前路由失败后允许重新尝试的次数。它会影响故障转移的深度和最终请求成功率，也会影响一次外部调用的总耗时。值越大，越有机会在临时故障时自动切到其他路由，但请求链路也会更长。">?</span></label>
                     <input asp-for="Input.ProxyRetryCount" class="form-control" type="number" min="0" />
                 </div>
                 <div class="col-md-3">
-                    <label asp-for="Input.CircuitBreakerFailureThreshold" class="form-label">熔断失败阈值</label>
+                    <label asp-for="Input.CircuitBreakerFailureThreshold" class="form-label form-label-tip">熔断失败阈值<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="同一路由连续失败多少次后进入熔断。它会影响某个站点被临时屏蔽的触发速度，数值越小越敏感，越容易快速绕开故障站点；数值越大则越保守，更不容易误伤短暂波动的站点。">?</span></label>
                     <input asp-for="Input.CircuitBreakerFailureThreshold" class="form-control" type="number" min="1" />
                 </div>
                 <div class="col-md-3">
-                    <label asp-for="Input.CircuitBreakerRecoveryMinutes" class="form-label">熔断恢复时间（分钟）</label>
+                    <label asp-for="Input.CircuitBreakerRecoveryMinutes" class="form-label form-label-tip">熔断恢复时间（分钟）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="路由进入熔断后，等待多久才允许再次尝试恢复。它会影响被屏蔽站点的恢复速度，以及系统多久后会重新把该路由纳入可选列表。时间越短，恢复越快；时间越长，站点被屏蔽的持续时间越久。">?</span></label>
                     <input asp-for="Input.CircuitBreakerRecoveryMinutes" class="form-control" type="number" min="1" />
                 </div>
             </div>
             <div class="row g-3 mt-1">
                 <div class="col-md-4">
-                    <label asp-for="Input.ConcurrencyMode" class="form-label">并发打满策略</label>
+                    <label asp-for="Input.ConcurrencyMode" class="form-label form-label-tip">并发打满策略<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="当某个站点+模型的并发已经满了时，系统应该如何处理后续请求。选择“跳过”会直接尝试下一顺位路由，适合更重视响应速度的场景；选择“排队等待”会先等待并发槽位释放，适合更重视命中当前站点的场景。">?</span></label>
                     <select asp-for="Input.ConcurrencyMode" class="form-select">
                         <option value="0">跳过 → 尝试下一顺位模型</option>
                         <option value="1">排队等待 → 直到释放或超时</option>
                     </select>
                 </div>
                 <div class="col-md-4">
-                    <label asp-for="Input.ConcurrencyQueueTimeoutSeconds" class="form-label form-label-tip">排队等待超时（秒）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="仅在「排队等待」模式下生效。当模型的并发数打满时，后续请求会排队等待释放；等待超过该时间后自动顺延到下一顺位模型，如果没有下一顺位则返回失败。排队等待期间不占用代理超时时间。">?</span></label>
+                    <label asp-for="Input.ConcurrencyQueueTimeoutSeconds" class="form-label form-label-tip">排队等待超时（秒）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="仅在“排队等待”模式下生效。它决定请求最多愿意等待多久来获取并发槽位。超过这个时间后，系统会放弃当前路由并顺延到下一顺位模型；如果没有可用的下一顺位，则返回失败。这个等待时间不会占用代理请求的总体超时。">?</span></label>
                     <input asp-for="Input.ConcurrencyQueueTimeoutSeconds" class="form-control" type="number" min="1" />
                 </div>
             </div>
@@ -124,10 +124,11 @@
             <h5 class="card-title">开发者功能</h5>
             <div class="form-check form-switch mt-1">
                 <input asp-for="Input.DeveloperFeaturesEnabled" class="form-check-input" type="checkbox" />
-                <label asp-for="Input.DeveloperFeaturesEnabled" class="form-check-label form-label-tip">启用开发者功能<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="开启后才会显示调试工具入口，其中包含调用调试与客户端模拟，并记录最近 100 条内存中的调用信息。">?</span></label>
+                <label asp-for="Input.DeveloperFeaturesEnabled" class="form-check-label form-label-tip">启用开发者功能<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="开启后才会显示调试工具入口，包括调用调试、客户端模拟和开发者追踪页面。它也会让系统开始保留最近 100 条内存中的调用轨迹，方便排查代理请求、路由选择和协议转换过程。">?</span></label>
             </div>
         </div>
     </div>
+
 
     <div>
         <button type="submit" class="btn btn-primary">保存设置</button>
