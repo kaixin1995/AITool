@@ -278,6 +278,42 @@ public sealed class ProxyFallbackFlowTests
     }
 
     /// <summary>
+    /// 验证客户端主动取消时，不会继续回退到后续候选模型。
+    /// </summary>
+    [Fact]
+    public async Task Post_chat_completions_does_not_fallback_when_request_is_canceled()
+    {
+        var fakeForwardService = new FakeProxyForwardService
+        {
+            ForwardResultFactory = _ => new ProxyForwardResult
+            {
+                Success = false,
+                IsCanceled = true,
+                ErrorMessage = "A task was canceled."
+            }
+        };
+        await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"chat-prod\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+
+        var response = await client.SendAsync(request);
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].TargetModelName.Should().Be("gpt-5.5-a");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().BeEmpty();
+    }
+
+    /// <summary>
     /// 验证候选规则命中不可用时间段时，代理会直接跳过并请求下一顺位。
     /// </summary>
     [Fact]

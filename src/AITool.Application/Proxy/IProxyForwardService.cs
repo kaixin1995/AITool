@@ -120,6 +120,11 @@ public sealed class ProxyForwardResult
     public bool IsStreamInterrupted { get; set; }
 
     /// <summary>
+    /// 标记本次调用是否因客户端主动取消而结束；取消不应触发后续路由回退。
+    /// </summary>
+    public bool IsCanceled { get; set; }
+
+    /// <summary>
     /// 记录从发起请求到收到首个输出片段的耗时，单位为毫秒。
     /// </summary>
     public int FirstTokenLatencyMs { get; set; }

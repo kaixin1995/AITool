@@ -35,7 +35,8 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 将请求转发到目标站点并解析响应中的 Token 用量
+    /// 将请求转发到目标站点并解析响应中的 Token 用量。
+    /// 上游异常仍可按单路由重试；若调用方的取消令牌已触发，则直接结束，不再继续重试。
     /// </summary>
     public async Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
@@ -119,6 +120,19 @@ public sealed class ProxyForwardService : IProxyForwardService
                         ErrorMessage = BuildFailureMessage(responseBody, request.ProtocolType)
                     };
                 }
+            }
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                // 客户端已经主动取消当前请求，此时继续内部重试或让上层回退后续路由都没有意义。
+                stopwatch.Stop();
+                return new ProxyForwardResult
+                {
+                    Success = false,
+                    TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                    IsStreaming = isStreaming,
+                    IsCanceled = true,
+                    ErrorMessage = ex.Message
+                };
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
@@ -214,6 +228,19 @@ public sealed class ProxyForwardService : IProxyForwardService
                 }
 
                 return await ProcessStreamingResponseAsync(response, stopwatch, request, true, onSseDataAsync, cancellationToken);
+            }
+            catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+            {
+                // 客户端已经主动取消当前请求，此时继续内部重试或让上层回退后续路由都没有意义。
+                stopwatch.Stop();
+                return new ProxyForwardResult
+                {
+                    Success = false,
+                    TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                    IsStreaming = true,
+                    IsCanceled = true,
+                    ErrorMessage = ex.Message
+                };
             }
             catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
             {
@@ -356,6 +383,28 @@ public sealed class ProxyForwardService : IProxyForwardService
                     // 非 JSON 的 data 行忽略
                 }
             }
+        }
+        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+        {
+            stopwatch.Stop();
+            totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+            return new ProxyForwardResult
+            {
+                Success = false,
+                StatusCode = (int)response.StatusCode,
+                ResponseBody = sb.ToString(),
+                InputTokens = inputTokens,
+                CachedTokens = cachedTokens,
+                OutputTokens = outputTokens,
+                IsStreaming = isStreaming,
+                HasStartedStreaming = hasFirstContent,
+                IsStreamInterrupted = hasFirstContent,
+                IsCanceled = true,
+                FirstTokenLatencyMs = firstTokenLatencyMs,
+                StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
+                TotalDurationMs = totalDurationMs,
+                ErrorMessage = ex.Message
+            };
         }
         catch (Exception ex) when (hasFirstContent)
         {

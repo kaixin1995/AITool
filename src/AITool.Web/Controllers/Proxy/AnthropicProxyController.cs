@@ -240,6 +240,11 @@ public sealed class AnthropicProxyController : ControllerBase
                         traceAttemptId,
                         cancellationToken);
                 var streamResult = streamOutcome.Result;
+                if (streamResult.IsCanceled)
+                {
+                    return new EmptyResult();
+                }
+
                 SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
 
                 await SafeLogUsageAsync(new UsageLogEntry
@@ -302,8 +307,13 @@ public sealed class AnthropicProxyController : ControllerBase
                 continue;
             }
 
-            // 每条路由使用独立超时令牌，不受客户端断连影响，保证后续路由仍能独立尝试。
-            var result = await _forwardService.ForwardAsync(forwardRequest, CancellationToken.None);
+            // 上游请求仍使用独立超时控制；但若客户端已经主动取消，则立即结束，不再继续回退后续候选。
+            var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+            if (result.IsCanceled)
+            {
+                return new EmptyResult();
+            }
+
             SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
 
             await SafeLogUsageAsync(new UsageLogEntry

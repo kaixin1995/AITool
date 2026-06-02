@@ -581,8 +581,13 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     return BadRequest(new { error = new { message = "Streaming is not supported for this endpoint" } });
                 }
 
-                var streamOutcome = await streamingBridgeFactory(this, forwardRequest, modelName, CancellationToken.None);
+                var streamOutcome = await streamingBridgeFactory(this, forwardRequest, modelName, cancellationToken);
                 var streamResult = streamOutcome.Result;
+                if (streamResult.IsCanceled)
+                {
+                    return new EmptyResult();
+                }
+
                 SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
 
                 await SafeLogUsageAsync(new UsageLogEntry
@@ -655,7 +660,13 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 continue;
             }
 
-            var result = await _forwardService.ForwardAsync(forwardRequest, CancellationToken.None);
+            // 上游请求仍按单路由超时控制；但若客户端主动取消，则直接结束，不再继续回退后续候选。
+            var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+            if (result.IsCanceled)
+            {
+                return new EmptyResult();
+            }
+
             SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
 
             await SafeLogUsageAsync(new UsageLogEntry

@@ -190,15 +190,20 @@ public sealed partial class OpenAiProxyController
                 if (isPassthrough)
                 {
                     // OpenAI 上游直接透传
-                    streamOutcome = await ForwardOpenAiStreamPassthroughAsync(forwardRequest, CancellationToken.None);
+                    streamOutcome = await ForwardOpenAiStreamPassthroughAsync(forwardRequest, cancellationToken);
                 }
                 else
                 {
                     // Anthropic 上游：流式 Anthropic → Responses
-                    streamOutcome = await ForwardAnthropicStreamAsResponsesAsync(forwardRequest, modelName, CancellationToken.None);
+                    streamOutcome = await ForwardAnthropicStreamAsResponsesAsync(forwardRequest, modelName, cancellationToken);
                 }
 
                 var streamResult = streamOutcome.Result;
+                if (streamResult.IsCanceled)
+                {
+                    return new EmptyResult();
+                }
+
                 SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
 
                 await SafeLogUsageAsync(new UsageLogEntry
@@ -271,8 +276,13 @@ public sealed partial class OpenAiProxyController
                 continue;
             }
 
-            // 非流式
-            var result = await _forwardService.ForwardAsync(forwardRequest, CancellationToken.None);
+            // 非流式：仍按单路由超时控制；但若客户端主动取消，则直接结束，不再继续回退后续候选。
+            var result = await _forwardService.ForwardAsync(forwardRequest, cancellationToken);
+            if (result.IsCanceled)
+            {
+                return new EmptyResult();
+            }
+
             SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
 
             await SafeLogUsageAsync(new UsageLogEntry

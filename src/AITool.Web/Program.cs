@@ -30,7 +30,7 @@ builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
 
-var applicationVersion = "1.0.1.3";
+var applicationVersion = "1.0.1.4";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 
 var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
