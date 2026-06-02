@@ -404,6 +404,20 @@ static async Task EnsureProxyUsageLogSchemaAsync(AppDbContext dbContext)
             command.CommandText = "ALTER TABLE SystemRuntimeSettings ADD COLUMN ConcurrencyQueueTimeoutSeconds INTEGER NOT NULL DEFAULT 120";
             await command.ExecuteNonQueryAsync();
         }
+
+        if (!await ColumnExistsAsync(connection, "ProxyRouteRules", "AvailabilityMode"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE ProxyRouteRules ADD COLUMN AvailabilityMode TEXT NOT NULL DEFAULT 'AllDay'";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        if (!await ColumnExistsAsync(connection, "ProxyRouteRules", "TimeRangesJson"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE ProxyRouteRules ADD COLUMN TimeRangesJson TEXT NOT NULL DEFAULT ''";
+            await command.ExecuteNonQueryAsync();
+        }
     }
     finally
     {

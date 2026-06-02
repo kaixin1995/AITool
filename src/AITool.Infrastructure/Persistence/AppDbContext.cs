@@ -152,6 +152,8 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.ExternalModelName).IsRequired().HasMaxLength(200);
             entity.Property(e => e.UpstreamModelName).IsRequired().HasMaxLength(200);
             entity.Property(e => e.SiteModelName).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.AvailabilityMode).IsRequired().HasMaxLength(50).HasDefaultValue("AllDay");
+            entity.Property(e => e.TimeRangesJson).IsRequired().HasMaxLength(2000).HasDefaultValue(string.Empty);
             entity.HasIndex(e => new { e.ExternalModelName, e.Priority });
             entity.HasIndex(e => new { e.ExternalModelName, e.IsEnabled, e.ModelPriority, e.InstancePriority, e.Priority });
         });

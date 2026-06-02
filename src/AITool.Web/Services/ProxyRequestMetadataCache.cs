@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Controllers.Admin;
 using AITool.Web.Pages.Admin.ClientSimulator;
@@ -196,7 +197,9 @@ public sealed class ProxyRequestMetadataCache
         CancellationToken cancellationToken)
     {
         var routes = await GetEffectiveRouteTargetsAsync(externalModelName, cancellationToken);
-        return SortRouteTargets(routes).ToList();
+        return SortRouteTargets(routes)
+            .Where(x => x.IsAvailableAt(TimeOnly.FromDateTime(DateTime.Now)))
+            .ToList();
     }
 
     /// <summary>
@@ -207,7 +210,9 @@ public sealed class ProxyRequestMetadataCache
         CancellationToken cancellationToken)
     {
         var routes = await GetEffectiveRouteTargetsAsync(externalModelName, cancellationToken);
-        return SortRouteTargets(routes).ToList();
+        return SortRouteTargets(routes)
+            .Where(x => x.IsAvailableAt(TimeOnly.FromDateTime(DateTime.Now)))
+            .ToList();
     }
 
     /// <summary>
@@ -593,7 +598,9 @@ public sealed class ProxyRequestMetadataCache
                             r.Priority,
                             r.ModelPriority,
                             r.InstancePriority,
-                            r.IsEnabled
+                            r.IsEnabled,
+                            r.AvailabilityMode,
+                            r.TimeRangesJson
                         })
                         .ToListAsync(cancellationToken);
 
@@ -611,7 +618,9 @@ public sealed class ProxyRequestMetadataCache
                                 Priority = r.Priority,
                                 ModelPriority = r.ModelPriority,
                                 InstancePriority = r.InstancePriority,
-                                IsEnabled = r.IsEnabled
+                                IsEnabled = r.IsEnabled,
+                                AvailabilityMode = NormalizeAvailabilityMode(r.AvailabilityMode),
+                                TimeRangesJson = NormalizeTimeRangesJson(r.AvailabilityMode, r.TimeRangesJson)
                             }).ToList(),
                             StringComparer.Ordinal);
                 })
@@ -991,7 +1000,9 @@ public sealed class ProxyRequestMetadataCache
                                 ApiKey = site.ApiKey,
                                 ModelPriority = route.ModelPriority,
                                 InstancePriority = route.InstancePriority,
-                                Priority = route.Priority
+                                Priority = route.Priority,
+                                AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
+                                TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
                             })
                         .ToListAsync(cancellationToken);
                 })
@@ -1131,6 +1142,51 @@ public sealed class ProxyRequestMetadataCache
     {
         return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
     }
+
+    /// <summary>
+    /// 规范化时间可用性模式，旧值和异常值统一按全天可用处理。
+    /// </summary>
+    internal static string NormalizeAvailabilityMode(string? mode)
+    {
+        return string.Equals(mode, "AvailableOnly", StringComparison.Ordinal)
+            ? "AvailableOnly"
+            : string.Equals(mode, "Unavailable", StringComparison.Ordinal)
+                ? "Unavailable"
+                : "AllDay";
+    }
+
+    /// <summary>
+    /// 规范化每日时间范围 JSON，无有效范围时返回空字符串以表示全天可用。
+    /// </summary>
+    internal static string NormalizeTimeRangesJson(string? mode, string? timeRangesJson)
+    {
+        if (NormalizeAvailabilityMode(mode) == "AllDay" || string.IsNullOrWhiteSpace(timeRangesJson))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var ranges = JsonSerializer.Deserialize<List<CachedRouteTimeRange>>(timeRangesJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+            ranges = ranges
+                .Where(x => IsValidTimeText(x.Start) && IsValidTimeText(x.End))
+                .Select(x => new CachedRouteTimeRange { Start = x.Start.Trim(), End = x.End.Trim() })
+                .ToList();
+            return ranges.Count == 0 ? string.Empty : JsonSerializer.Serialize(ranges, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+        }
+        catch (JsonException)
+        {
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// 校验 HH:mm 时间文本。
+    /// </summary>
+    private static bool IsValidTimeText(string? value)
+    {
+        return TimeOnly.TryParseExact(value, "HH:mm", out _);
+    }
 }
 
 /// <summary>
@@ -1267,6 +1323,21 @@ public sealed class CachedProxyRuntimeSettings
 }
 
 /// <summary>
+/// 缓存中的每日时间范围。
+/// </summary>
+internal sealed class CachedRouteTimeRange
+{
+    /// <summary>
+    /// 开始时间，格式为 HH:mm。
+    /// </summary>
+    public string Start { get; set; } = string.Empty;
+    /// <summary>
+    /// 结束时间，格式为 HH:mm。
+    /// </summary>
+    public string End { get; set; } = string.Empty;
+}
+
+/// <summary>
 /// 缓存中的代理路由目标。
 /// </summary>
 public sealed class CachedProxyRouteTarget
@@ -1331,6 +1402,41 @@ public sealed class CachedProxyRouteTarget
     /// 优先级。
     /// </summary>
     public int Priority { get; set; }
+    /// <summary>
+    /// 时间可用性模式，空值兼容为全天可用。
+    /// </summary>
+    public string AvailabilityMode { get; set; } = "AllDay";
+    /// <summary>
+    /// 每日时间范围 JSON，空值表示全天可用。
+    /// </summary>
+    public string TimeRangesJson { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 判断当前路由在指定本地时间是否可用。
+    /// </summary>
+    public bool IsAvailableAt(TimeOnly currentTime)
+    {
+        var mode = ProxyRequestMetadataCache.NormalizeAvailabilityMode(AvailabilityMode);
+        var timeRangesJson = ProxyRequestMetadataCache.NormalizeTimeRangesJson(mode, TimeRangesJson);
+        if (mode == "AllDay" || string.IsNullOrWhiteSpace(timeRangesJson))
+        {
+            return true;
+        }
+
+        var ranges = JsonSerializer.Deserialize<List<CachedRouteTimeRange>>(timeRangesJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+        var matched = ranges.Any(x => IsTimeInRange(currentTime, TimeOnly.ParseExact(x.Start, "HH:mm"), TimeOnly.ParseExact(x.End, "HH:mm")));
+        return mode == "AvailableOnly" ? matched : !matched;
+    }
+
+    /// <summary>
+    /// 判断当前时间是否命中范围，支持 23:00~02:00 这类跨天配置。
+    /// </summary>
+    private static bool IsTimeInRange(TimeOnly currentTime, TimeOnly startTime, TimeOnly endTime)
+    {
+        return startTime <= endTime
+            ? currentTime >= startTime && currentTime <= endTime
+            : currentTime >= startTime || currentTime <= endTime;
+    }
 
     /// <summary>
     /// 判断是否支持指定协议。

@@ -49,4 +49,14 @@ public sealed class ProxyRouteRule
     /// 标记该路由规则是否启用，禁用后不应参与请求匹配和转发。
     /// </summary>
     public bool IsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 时间可用性模式，空值或 AllDay 均表示全天可用。
+    /// </summary>
+    public string AvailabilityMode { get; set; } = "AllDay";
+
+    /// <summary>
+    /// 保存每日时间范围 JSON；为空时按全天可用兼容旧规则。
+    /// </summary>
+    public string TimeRangesJson { get; set; } = string.Empty;
 }

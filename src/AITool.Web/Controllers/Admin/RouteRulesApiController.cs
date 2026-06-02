@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
@@ -153,6 +154,14 @@ public sealed class RouteRuleListItem
     /// 是否启用。
     /// </summary>
     public bool IsEnabled { get; set; }
+    /// <summary>
+    /// 时间可用性模式，旧规则为空时按全天可用处理。
+    /// </summary>
+    public string AvailabilityMode { get; set; } = "AllDay";
+    /// <summary>
+    /// 每日时间范围 JSON，空值表示不限制。
+    /// </summary>
+    public string TimeRangesJson { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -187,6 +196,29 @@ public sealed class SaveRouteRuleEntry
     /// 站点模型名称。
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 时间可用性模式，未传时默认全天可用。
+    /// </summary>
+    public string AvailabilityMode { get; set; } = "AllDay";
+    /// <summary>
+    /// 每日时间范围 JSON，未传或无效时默认不限制。
+    /// </summary>
+    public string TimeRangesJson { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 每日时间范围配置项。
+/// </summary>
+public sealed class RouteTimeRange
+{
+    /// <summary>
+    /// 开始时间，格式为 HH:mm。
+    /// </summary>
+    public string Start { get; set; } = string.Empty;
+    /// <summary>
+    /// 结束时间，格式为 HH:mm。
+    /// </summary>
+    public string End { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -397,6 +429,7 @@ public sealed class RouteRulesApiController : ControllerBase
                 upstreamOrder.Add(normalizedUpstreamModelName);
             }
 
+            var availability = NormalizeAvailability(entry.AvailabilityMode, entry.TimeRangesJson);
             _dbContext.ProxyRouteRules.Add(new ProxyRouteRule
             {
                 ExternalModelName = entryName,
@@ -406,7 +439,9 @@ public sealed class RouteRulesApiController : ControllerBase
                 Priority = i,
                 ModelPriority = modelPriority,
                 InstancePriority = sameModelEarlierCount,
-                IsEnabled = true
+                IsEnabled = true,
+                AvailabilityMode = availability.Mode,
+                TimeRangesJson = availability.TimeRangesJson
             });
         }
 
@@ -462,7 +497,9 @@ public sealed class RouteRulesApiController : ControllerBase
                     ApiKey = site.ApiKey,
                     ModelPriority = x.ModelPriority,
                     InstancePriority = x.InstancePriority,
-                    Priority = x.Priority
+                    Priority = x.Priority,
+                    AvailabilityMode = x.AvailabilityMode,
+                    TimeRangesJson = x.TimeRangesJson
                 };
             })
             .OrderBy(x => x.ModelPriority)
@@ -477,6 +514,46 @@ public sealed class RouteRulesApiController : ControllerBase
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
         return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
+    }
+
+    /// <summary>
+    /// 规范化时间可用性配置，空配置和无效配置都回落为全天可用以兼容旧规则。
+    /// </summary>
+    private static (string Mode, string TimeRangesJson) NormalizeAvailability(string? mode, string? timeRangesJson)
+    {
+        var normalizedMode = string.Equals(mode, "AvailableOnly", StringComparison.Ordinal)
+            ? "AvailableOnly"
+            : string.Equals(mode, "Unavailable", StringComparison.Ordinal)
+                ? "Unavailable"
+                : "AllDay";
+        if (normalizedMode == "AllDay" || string.IsNullOrWhiteSpace(timeRangesJson))
+        {
+            return ("AllDay", string.Empty);
+        }
+
+        try
+        {
+            var ranges = JsonSerializer.Deserialize<List<RouteTimeRange>>(timeRangesJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+            ranges = ranges
+                .Where(x => IsValidTimeText(x.Start) && IsValidTimeText(x.End))
+                .Select(x => new RouteTimeRange { Start = x.Start.Trim(), End = x.End.Trim() })
+                .ToList();
+            return ranges.Count == 0
+                ? ("AllDay", string.Empty)
+                : (normalizedMode, JsonSerializer.Serialize(ranges, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+        }
+        catch (JsonException)
+        {
+            return ("AllDay", string.Empty);
+        }
+    }
+
+    /// <summary>
+    /// 校验 HH:mm 时间文本，避免无效配置影响运行时选路。
+    /// </summary>
+    private static bool IsValidTimeText(string? value)
+    {
+        return TimeOnly.TryParseExact(value, "HH:mm", out _);
     }
 
     /// <summary>

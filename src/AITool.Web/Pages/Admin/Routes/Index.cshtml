@@ -196,10 +196,11 @@
     }
 
     .route-item {
-        display: flex;
+        display: grid;
+        grid-template-columns: auto auto minmax(0, 1fr) auto auto;
         align-items: center;
         gap: 12px;
-        padding: 12px 16px;
+        padding: 14px 16px;
         border-bottom: 1px solid var(--border-color, #e9ecef);
         cursor: grab;
         user-select: none;
@@ -237,8 +238,14 @@
     }
 
     .site-info {
-        flex: 1;
         min-width: 0;
+    }
+
+    .site-name-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
     }
 
     .site-name {
@@ -246,15 +253,116 @@
         font-size: 14px;
     }
 
+    .route-badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 22px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        border: 1px solid #dbeafe;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-size: 12px;
+        line-height: 1.2;
+        white-space: nowrap;
+    }
+
+    .route-badge-muted {
+        border-color: var(--border-color, #e9ecef);
+        background: #f8f9fa;
+        color: var(--text-secondary, #6c757d);
+    }
+
+    .route-badge-warning {
+        border-color: #fed7aa;
+        background: #fff7ed;
+        color: #c2410c;
+    }
+
     .remote-name {
         font-size: 12px;
         color: var(--text-secondary, #888);
-        margin-top: 2px;
+        margin-top: 4px;
+    }
+
+    .route-actions {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+        flex-shrink: 0;
+    }
+
+    .availability-trigger {
+        min-width: 96px;
+        white-space: nowrap;
+    }
+
+    .availability-popover {
+        grid-column: 3 / -1;
+        display: none;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 12px;
+        border: 1px solid #dbeafe;
+        border-radius: 8px;
+        background: #f8fbff;
+        cursor: default;
+    }
+
+    .availability-popover.open {
+        display: flex;
+    }
+
+    .availability-popover .form-select {
+        width: 160px;
+    }
+
+    .availability-popover .form-control {
+        width: 116px;
+    }
+
+    .time-range-fields {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .time-range-fields.is-hidden {
+        display: none;
+    }
+
+    .availability-hint {
+        color: var(--text-secondary, #6c757d);
+        font-size: 12px;
+        margin-left: auto;
+        white-space: nowrap;
     }
 
     @@media (max-width: 991px) {
         .route-layout {
             grid-template-columns: 1fr;
+        }
+    }
+
+    @@media (max-width: 767px) {
+        .route-item {
+            grid-template-columns: auto auto minmax(0, 1fr);
+        }
+
+        .route-actions {
+            grid-column: 3;
+            justify-content: flex-start;
+        }
+
+        .availability-popover {
+            grid-column: 1 / -1;
+            flex-wrap: wrap;
+        }
+
+        .availability-hint {
+            width: 100%;
+            margin-left: 0;
         }
     }
 </style>
@@ -429,11 +537,19 @@
                 }
 
                 _currentItems = (existingRules || []).map(function(r) {
+                    var ranges = parseTimeRanges(r.timeRangesJson);
+                    var mode = normalizeAvailabilityMode(r.availabilityMode);
+                    if (ranges.length === 0) {
+                        mode = 'AllDay';
+                    }
+
                     return {
                         siteId: r.siteId,
                         siteName: r.siteName,
                         upstreamModelName: r.upstreamModelName || r.siteModelName,
-                        siteModelName: r.siteModelName
+                        siteModelName: r.siteModelName,
+                        availabilityMode: mode,
+                        timeRanges: ranges
                     };
                 });
                 renderRouteList();
@@ -510,14 +626,16 @@
             siteId: selectedItem.siteId,
             siteName: selectedItem.siteName,
             upstreamModelName: selectedItem.siteModelName,
-            siteModelName: selectedItem.siteModelName
+            siteModelName: selectedItem.siteModelName,
+            availabilityMode: 'AllDay',
+            timeRanges: []
         });
 
         renderRouteList();
         persistCurrentQueue('已追加候选实例');
     }
 
-    function renderRouteList() {
+    function renderRouteList(openAvailabilityIndex) {
         var list = document.getElementById('routeList');
         var emptyState = document.getElementById('queueListEmptyState');
 
@@ -535,15 +653,22 @@
             row.className = 'route-item';
             row.draggable = true;
             row.setAttribute('data-index', String(index));
+            var availabilityLabel = getAvailabilitySummary(item);
             row.innerHTML =
                 '<span class="drag-handle">⠿</span>' +
                 '<span class="priority-num">' + (index + 1) + '</span>' +
                 '<div class="site-info">' +
-                    '<div class="site-name">' + escHtml(item.siteName) + '</div>' +
-                    '<div class="remote-name">上游模型：' + escHtml(item.upstreamModelName) + '</div>' +
-                    '<div class="remote-name">站点实例：' + escHtml(item.siteModelName) + '</div>' +
+                    '<div class="site-name-row">' +
+                        '<span class="site-name">' + escHtml(item.siteName) + '</span>' +
+                        '<span class="route-badge ' + availabilityLabel.badgeClass + '">' + escHtml(availabilityLabel.text) + '</span>' +
+                    '</div>' +
+                    '<div class="remote-name">上游模型：' + escHtml(item.upstreamModelName) + ' · 站点实例：' + escHtml(item.siteModelName) + '</div>' +
                 '</div>' +
-                '<button type="button" class="btn btn-sm btn-outline-danger" onclick="removeItem(' + index + ')">移除</button>';
+                '<button type="button" class="btn btn-sm btn-outline-secondary availability-trigger" onclick="toggleAvailabilityEditor(event, ' + index + ')">时间规则</button>' +
+                '<div class="route-actions">' +
+                    '<button type="button" class="btn btn-sm btn-outline-danger" onclick="removeItem(' + index + ')">移除</button>' +
+                '</div>' +
+                buildAvailabilityEditorHtml(item, index, openAvailabilityIndex === index);
             list.appendChild(row);
         });
 
@@ -610,6 +735,76 @@
         persistCurrentQueue('已移除候选实例');
     }
 
+    function buildAvailabilityEditorHtml(item, index, isOpen) {
+        var mode = normalizeAvailabilityMode(item.availabilityMode);
+        var range = getPrimaryTimeRange(item);
+        var timeClass = mode === 'AllDay' ? 'time-range-fields is-hidden' : 'time-range-fields';
+        var popoverClass = isOpen ? 'availability-popover open' : 'availability-popover';
+        return '<div class="' + popoverClass + '" data-availability-index="' + index + '">' +
+            '<select class="form-select form-select-sm" onchange="updateAvailabilityMode(' + index + ', this.value)">' +
+                '<option value="AllDay"' + (mode === 'AllDay' ? ' selected' : '') + '>全天可用</option>' +
+                '<option value="AvailableOnly"' + (mode === 'AvailableOnly' ? ' selected' : '') + '>仅指定时间可用</option>' +
+                '<option value="Unavailable"' + (mode === 'Unavailable' ? ' selected' : '') + '>指定时间不可用</option>' +
+            '</select>' +
+            '<span class="' + timeClass + '">' +
+                '<input type="time" class="form-control form-control-sm" value="' + escHtml(range.start) + '" onchange="updateAvailabilityTime(' + index + ', \'start\', this.value)" />' +
+                '<span class="text-secondary">至</span>' +
+                '<input type="time" class="form-control form-control-sm" value="' + escHtml(range.end) + '" onchange="updateAvailabilityTime(' + index + ', \'end\', this.value)" />' +
+            '</span>' +
+            '<span class="availability-hint">留空或无效配置会按全天可用处理</span>' +
+        '</div>';
+    }
+
+    function toggleAvailabilityEditor(event, index) {
+        event.stopPropagation();
+        var current = document.querySelector('[data-availability-index="' + index + '"]');
+        if (!current) {
+            return;
+        }
+
+        var shouldOpen = !current.classList.contains('open');
+        document.querySelectorAll('.availability-popover.open').forEach(function(el) {
+            el.classList.remove('open');
+        });
+        if (shouldOpen) {
+            current.classList.add('open');
+        }
+    }
+
+    function updateAvailabilityMode(index, mode) {
+        var item = _currentItems[index];
+        if (!item) {
+            return;
+        }
+
+        item.availabilityMode = normalizeAvailabilityMode(mode);
+        if (item.availabilityMode === 'AllDay') {
+            item.timeRanges = [];
+        } else if (!item.timeRanges || item.timeRanges.length === 0) {
+            item.timeRanges = [{ start: '00:00', end: '23:59' }];
+        }
+
+        renderRouteList(index);
+        persistCurrentQueue('时间范围已更新');
+    }
+
+    function updateAvailabilityTime(index, field, value) {
+        var item = _currentItems[index];
+        if (!item) {
+            return;
+        }
+
+        if (normalizeAvailabilityMode(item.availabilityMode) === 'AllDay') {
+            item.availabilityMode = 'Unavailable';
+        }
+
+        var range = getPrimaryTimeRange(item);
+        range[field] = value || (field === 'start' ? '00:00' : '23:59');
+        item.timeRanges = [range];
+        renderRouteList(index);
+        persistCurrentQueue('时间范围已更新');
+    }
+
     function persistCurrentQueue(successMessage) {
         if (!_currentEntryName) {
             return;
@@ -619,10 +814,14 @@
             entryName: _currentEntryName,
             successMessage: successMessage,
             rules: _currentItems.map(function(item) {
+                var mode = normalizeAvailabilityMode(item.availabilityMode);
+                var ranges = mode === 'AllDay' ? [] : normalizeTimeRanges(item.timeRanges);
                 return {
                     upstreamModelName: item.upstreamModelName,
                     siteId: item.siteId,
-                    siteModelName: item.siteModelName
+                    siteModelName: item.siteModelName,
+                    availabilityMode: ranges.length === 0 ? 'AllDay' : mode,
+                    timeRangesJson: ranges.length === 0 ? '' : JSON.stringify(ranges)
                 };
             })
         };
@@ -680,6 +879,65 @@
         el.className = 'alert alert-' + (success ? 'success' : 'danger');
         el.style.display = 'block';
         setTimeout(function() { el.style.display = 'none'; }, 3000);
+    }
+
+    function normalizeAvailabilityMode(mode) {
+        return mode === 'AvailableOnly' || mode === 'Unavailable' ? mode : 'AllDay';
+    }
+
+    function parseTimeRanges(timeRangesJson) {
+        if (!timeRangesJson) {
+            return [];
+        }
+
+        try {
+            return normalizeTimeRanges(JSON.parse(timeRangesJson));
+        } catch (err) {
+            return [];
+        }
+    }
+
+    function normalizeTimeRanges(ranges) {
+        if (!Array.isArray(ranges)) {
+            return [];
+        }
+
+        return ranges
+            .map(function(range) {
+                return {
+                    start: range.start || range.Start,
+                    end: range.end || range.End
+                };
+            })
+            .filter(function(range) { return isValidTime(range.start) && isValidTime(range.end); });
+    }
+
+    function getPrimaryTimeRange(item) {
+        var ranges = normalizeTimeRanges(item.timeRanges);
+        if (ranges.length > 0) {
+            return ranges[0];
+        }
+
+        return { start: '00:00', end: '23:59' };
+    }
+
+    function getAvailabilitySummary(item) {
+        var mode = normalizeAvailabilityMode(item.availabilityMode);
+        var ranges = normalizeTimeRanges(item.timeRanges);
+        if (mode === 'AllDay' || ranges.length === 0) {
+            return { text: '全天可用', badgeClass: 'route-badge-muted' };
+        }
+
+        var range = ranges[0];
+        if (mode === 'AvailableOnly') {
+            return { text: range.start + '-' + range.end + ' 可用', badgeClass: '' };
+        }
+
+        return { text: range.start + '-' + range.end + ' 不可用', badgeClass: 'route-badge-warning' };
+    }
+
+    function isValidTime(value) {
+        return /^\d{2}:\d{2}$/.test(value || '');
     }
 
     function escHtml(str) {

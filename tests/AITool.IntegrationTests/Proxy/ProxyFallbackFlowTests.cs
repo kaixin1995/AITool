@@ -118,6 +118,66 @@ public sealed class ProxyFallbackFlowTests
     }
 
     /// <summary>
+    /// 验证未传时间配置的候选规则会按全天可用保存，兼容旧页面和旧调用。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_defaults_missing_availability_to_all_day()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/route-rules/save",
+            new StringContent(
+                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\"}]}",
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var rule = await db.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod");
+
+        rule.AvailabilityMode.Should().Be("AllDay");
+        rule.TimeRangesJson.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// 验证时间配置保存后能从列表接口以小写字段重新读回，保证页面刷新后仍可解析。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_persists_availability_time_range_for_reload()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/route-rules/save",
+            new StringContent(
+                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\",\"availabilityMode\":\"Unavailable\",\"timeRangesJson\":\"[{\\\"start\\\":\\\"14:00\\\",\\\"end\\\":\\\"18:59\\\"}]\"}]}",
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var rule = await db.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod");
+
+        rule.AvailabilityMode.Should().Be("Unavailable");
+        rule.TimeRangesJson.Should().Contain("\"start\":\"14:00\"");
+        rule.TimeRangesJson.Should().Contain("\"end\":\"18:59\"");
+
+        var listResponse = await client.GetAsync("/api/admin/route-rules/list?modelName=chat-prod");
+        var listBody = await listResponse.Content.ReadAsStringAsync();
+
+        listBody.Should().Contain("\"availabilityMode\":\"Unavailable\"");
+        listBody.Should().Contain("\\\"start\\\":\\\"14:00\\\"");
+        listBody.Should().Contain("\\\"end\\\":\\\"18:59\\\"");
+    }
+
+    /// <summary>
     /// 验证规则列表在首次读取后，再次保存路由仍会立即返回最新顺序。
     /// </summary>
     [Fact]
@@ -215,6 +275,49 @@ public sealed class ProxyFallbackFlowTests
         logs[1].AttemptedModel.Should().Be("glm-5.1");
         logs[1].Status.Should().Be("success");
         logs[1].IsFinalResult.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 验证候选规则命中不可用时间段时，代理会直接跳过并请求下一顺位。
+    /// </summary>
+    [Fact]
+    public async Task Post_chat_completions_skips_route_in_unavailable_time_range()
+    {
+        var fakeForwardService = new FakeProxyForwardService
+        {
+            ForwardResultFactory = _ => new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "{\"choices\":[{\"message\":{\"content\":\"success-from-available-route\"}}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":2}}",
+                InputTokens = 1,
+                OutputTokens = 2
+            }
+        };
+        await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var firstRule = await db.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod" && x.Priority == 0);
+            firstRule.AvailabilityMode = "Unavailable";
+            firstRule.TimeRangesJson = "[{\"start\":\"00:00\",\"end\":\"23:59\"}]";
+            await db.SaveChangesAsync();
+        }
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"chat-prod\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].TargetModelName.Should().Be("glm-5.1-a");
     }
 
     /// <summary>

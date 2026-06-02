@@ -100,6 +100,18 @@
                                 <li class="nav-item" role="presentation">
                                     <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabResponses" type="button" role="tab">Responses</button>
                                 </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabCompletions" type="button" role="tab">Completions</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabEmbeddings" type="button" role="tab">Embeddings</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabCountTokens" type="button" role="tab">Count Tokens</button>
+                                </li>
+                                <li class="nav-item" role="presentation">
+                                    <button class="nav-link" data-bs-toggle="tab" data-bs-target="#tabResponsesCompact" type="button" role="tab">Responses Compact</button>
+                                </li>
                             </ul>
                         </div>
                         <div class="card-body">
@@ -192,6 +204,90 @@
                                         <div>
                                             <div class="simulator-section-title">响应结果</div>
                                             <pre id="responsesChatResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="tab-pane fade" id="tabCompletions" role="tabpanel">
+                                    <div class="d-flex justify-content-between align-items-center mb-3">
+                                        <code id="completionsUrl" class="simulator-endpoint-code"></code>
+                                        <div class="d-flex gap-2 align-items-center">
+                                            <div class="form-check form-switch mb-0">
+                                                <input class="form-check-input" type="checkbox" id="completionsStreamToggle">
+                                                <label class="form-check-label" for="completionsStreamToggle">流式</label>
+                                            </div>
+                                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('completionsUrl').textContent)">复制 URL</button>
+                                            <button type="button" class="btn btn-sm btn-primary" id="btnCompletions" onclick="sendCompletions()">发送请求</button>
+                                        </div>
+                                    </div>
+                                    <div class="simulator-panel-grid">
+                                        <div>
+                                            <div class="simulator-section-title">请求示例</div>
+                                            <pre id="completionsRequest" class="simulator-pre"></pre>
+                                        </div>
+                                        <div>
+                                            <div class="simulator-section-title">响应结果</div>
+                                            <pre id="completionsResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="tab-pane fade" id="tabEmbeddings" role="tabpanel">
+                                    <div class="d-flex justify-content-between align-items-center mb-3">
+                                        <code id="embeddingsUrl" class="simulator-endpoint-code"></code>
+                                        <div class="d-flex gap-2 align-items-center">
+                                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('embeddingsUrl').textContent)">复制 URL</button>
+                                            <button type="button" class="btn btn-sm btn-primary" id="btnEmbeddings" onclick="sendEmbeddings()">发送请求</button>
+                                        </div>
+                                    </div>
+                                    <div class="simulator-panel-grid">
+                                        <div>
+                                            <div class="simulator-section-title">请求示例</div>
+                                            <pre id="embeddingsRequest" class="simulator-pre"></pre>
+                                        </div>
+                                        <div>
+                                            <div class="simulator-section-title">响应结果</div>
+                                            <pre id="embeddingsResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="tab-pane fade" id="tabCountTokens" role="tabpanel">
+                                    <div class="d-flex justify-content-between align-items-center mb-3">
+                                        <code id="countTokensUrl" class="simulator-endpoint-code"></code>
+                                        <div class="d-flex gap-2 align-items-center">
+                                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('countTokensUrl').textContent)">复制 URL</button>
+                                            <button type="button" class="btn btn-sm btn-primary" id="btnCountTokens" onclick="sendCountTokens()">发送请求</button>
+                                        </div>
+                                    </div>
+                                    <div class="simulator-panel-grid">
+                                        <div>
+                                            <div class="simulator-section-title">请求示例</div>
+                                            <pre id="countTokensRequest" class="simulator-pre"></pre>
+                                        </div>
+                                        <div>
+                                            <div class="simulator-section-title">响应结果</div>
+                                            <pre id="countTokensResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div class="tab-pane fade" id="tabResponsesCompact" role="tabpanel">
+                                    <div class="d-flex justify-content-between align-items-center mb-3">
+                                        <code id="responsesCompactUrl" class="simulator-endpoint-code"></code>
+                                        <div class="d-flex gap-2 align-items-center">
+                                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="copyText(document.getElementById('responsesCompactUrl').textContent)">复制 URL</button>
+                                            <button type="button" class="btn btn-sm btn-primary" id="btnResponsesCompact" onclick="sendResponsesCompact()">发送请求</button>
+                                        </div>
+                                    </div>
+                                    <div class="simulator-panel-grid">
+                                        <div>
+                                            <div class="simulator-section-title">请求示例</div>
+                                            <pre id="responsesCompactRequest" class="simulator-pre"></pre>
+                                        </div>
+                                        <div>
+                                            <div class="simulator-section-title">响应结果</div>
+                                            <pre id="responsesCompactResponse" class="simulator-pre simulator-result-pre">尚未请求</pre>
                                         </div>
                                     </div>
                                 </div>
@@ -980,6 +1076,7 @@
             return false;
         }
 
+
         function updateEndpointTexts() {
             var baseUrl = getBaseUrl();
             var openAiModelsUrl = document.getElementById('openAiModelsUrl');
@@ -997,6 +1094,22 @@
             var responsesUrl = document.getElementById('responsesUrl');
             if (responsesUrl) {
                 responsesUrl.textContent = baseUrl ? baseUrl + '/v1/responses' : '/v1/responses';
+            }
+            var completionsUrl = document.getElementById('completionsUrl');
+            if (completionsUrl) {
+                completionsUrl.textContent = baseUrl ? baseUrl + '/v1/completions' : '/v1/completions';
+            }
+            var embeddingsUrl = document.getElementById('embeddingsUrl');
+            if (embeddingsUrl) {
+                embeddingsUrl.textContent = baseUrl ? baseUrl + '/v1/embeddings' : '/v1/embeddings';
+            }
+            var countTokensUrl = document.getElementById('countTokensUrl');
+            if (countTokensUrl) {
+                countTokensUrl.textContent = baseUrl ? baseUrl + '/v1/messages/count_tokens' : '/v1/messages/count_tokens';
+            }
+            var responsesCompactUrl = document.getElementById('responsesCompactUrl');
+            if (responsesCompactUrl) {
+                responsesCompactUrl.textContent = baseUrl ? baseUrl + '/v1/responses/compact' : '/v1/responses/compact';
             }
         }
 
@@ -1073,12 +1186,76 @@
                 }
             };
 
+            var completionsExample = {
+                method: 'POST',
+                url: document.getElementById('completionsUrl').textContent,
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Bearer ' + accessKey
+                },
+                body: {
+                    model: modelName,
+                    prompt: message,
+                    stream: !!document.getElementById('completionsStreamToggle')?.checked
+                }
+            };
+
+            var embeddingsExample = {
+                method: 'POST',
+                url: document.getElementById('embeddingsUrl').textContent,
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Bearer ' + accessKey
+                },
+                body: {
+                    model: modelName,
+                    input: message
+                }
+            };
+
+            var countTokensExample = {
+                method: 'POST',
+                url: document.getElementById('countTokensUrl').textContent,
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': accessKey,
+                    'anthropic-version': '2023-06-01'
+                },
+                body: {
+                    model: modelName,
+                    messages: [
+                        { role: 'user', content: message }
+                    ]
+                }
+            };
+
+            var responsesCompactExample = {
+                method: 'POST',
+                url: document.getElementById('responsesCompactUrl').textContent,
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Bearer ' + accessKey
+                },
+                body: {
+                    model: modelName,
+                    input: message
+                }
+            };
+
             openAiModelsRequest.textContent = prettyJson(openAiModelsExample);
             openAiChatRequest.textContent = prettyJson(openAiChatExample);
             anthropicChatRequest.textContent = prettyJson(anthropicChatExample);
             if (responsesChatRequest) {
                 responsesChatRequest.textContent = prettyJson(responsesChatExample);
             }
+            var completionsRequest = document.getElementById('completionsRequest');
+            var embeddingsRequest = document.getElementById('embeddingsRequest');
+            var countTokensRequest = document.getElementById('countTokensRequest');
+            var responsesCompactRequest = document.getElementById('responsesCompactRequest');
+            if (completionsRequest) completionsRequest.textContent = prettyJson(completionsExample);
+            if (embeddingsRequest) embeddingsRequest.textContent = prettyJson(embeddingsExample);
+            if (countTokensRequest) countTokensRequest.textContent = prettyJson(countTokensExample);
+            if (responsesCompactRequest) responsesCompactRequest.textContent = prettyJson(responsesCompactExample);
         }
 
         function prettyJson(value) {
@@ -1163,7 +1340,6 @@
 
         async function sendOpenAiChat() {
             if (!validateInputs(true)) return;
-            if (!ensureProtocolModel('OpenAI', false)) return;
             await sendJsonRequest({
                 buttonId: 'btnOpenAiChat',
                 outputId: 'openAiChatResponse',
@@ -1186,7 +1362,6 @@
 
         async function sendAnthropicChat() {
             if (!validateInputs(true)) return;
-            if (!ensureProtocolModel('Anthropic', false)) return;
             await sendJsonRequest({
                 buttonId: 'btnAnthropicChat',
                 outputId: 'anthropicChatResponse',
@@ -1227,6 +1402,87 @@
                 },
                 protocolName: 'Responses',
                 isStreaming: document.getElementById('responsesStreamToggle').checked
+            });
+        }
+
+        // legacy Completions 用于验证旧版客户端兼容和 SSE 格式转换。
+        async function sendCompletions() {
+            if (!validateInputs(true)) return;
+            await sendJsonRequest({
+                buttonId: 'btnCompletions',
+                outputId: 'completionsResponse',
+                path: '/v1/completions',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Bearer ' + getAccessKey()
+                },
+                body: {
+                    model: getModelName(),
+                    prompt: getMessage(),
+                    stream: document.getElementById('completionsStreamToggle').checked
+                },
+                protocolName: 'Completions',
+                isStreaming: document.getElementById('completionsStreamToggle').checked
+            });
+        }
+
+        // Embeddings 用于验证向量接口的透传和兼容链路。
+        async function sendEmbeddings() {
+            if (!validateInputs(true)) return;
+            await sendJsonRequest({
+                buttonId: 'btnEmbeddings',
+                outputId: 'embeddingsResponse',
+                path: '/v1/embeddings',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Bearer ' + getAccessKey()
+                },
+                body: {
+                    model: getModelName(),
+                    input: getMessage()
+                },
+                protocolName: 'Embeddings'
+            });
+        }
+
+        // Count Tokens 用于验证 Anthropic 客户端预估 token 的兼容入口。
+        async function sendCountTokens() {
+            if (!validateInputs(true)) return;
+            await sendJsonRequest({
+                buttonId: 'btnCountTokens',
+                outputId: 'countTokensResponse',
+                path: '/v1/messages/count_tokens',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': getAccessKey(),
+                    'anthropic-version': '2023-06-01'
+                },
+                body: {
+                    model: getModelName(),
+                    messages: [
+                        { role: 'user', content: getMessage() }
+                    ]
+                },
+                protocolName: 'Count Tokens'
+            });
+        }
+
+        // Responses Compact 用于验证 Codex/Responses 压缩扩展入口。
+        async function sendResponsesCompact() {
+            if (!validateInputs(true)) return;
+            await sendJsonRequest({
+                buttonId: 'btnResponsesCompact',
+                outputId: 'responsesCompactResponse',
+                path: '/v1/responses/compact',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: 'Bearer ' + getAccessKey()
+                },
+                body: {
+                    model: getModelName(),
+                    input: getMessage()
+                },
+                protocolName: 'Responses Compact'
             });
         }
 
@@ -1931,16 +2187,15 @@
             document.getElementById('anthropicStreamToggle')?.addEventListener('change', renderAllExamples);
             document.getElementById('responsesStreamToggle')?.addEventListener('change', renderAllExamples);
             document.querySelector('button[data-bs-target="#tabOpenAi"]')?.addEventListener('shown.bs.tab', function () {
-                ensureProtocolModel('OpenAI', true);
+                renderAllExamples();
             });
             document.querySelector('button[data-bs-target="#tabAnthropic"]')?.addEventListener('shown.bs.tab', function () {
-                ensureProtocolModel('Anthropic', true);
+                renderAllExamples();
             });
             document.querySelector('button[data-bs-target="#tabResponses"]')?.addEventListener('shown.bs.tab', function () {
                 renderAllExamples();
             });
 
-            ensureProtocolModel('OpenAI', true);
             renderAllExamples();
 
             window.copyTraceContent = async function (button) {
