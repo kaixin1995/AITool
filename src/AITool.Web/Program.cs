@@ -3,7 +3,6 @@ using AITool.Application.Common;
 using AITool.Application.Detection;
 using AITool.Application.Operations;
 using AITool.Application.Proxy;
-using AITool.Application.Routing;
 using AITool.Application.SiteCatalog;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Health;
@@ -12,7 +11,6 @@ using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
-using AITool.Infrastructure.Routing;
 using AITool.Infrastructure.Scheduling;
 using AITool.Web.Services;
 using Hangfire;
@@ -94,9 +92,6 @@ builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 
 // 注册模型探测服务，用于检测模型可用性。
 builder.Services.AddHttpClient<IModelProbeService, OpenAiModelProbeService>();
-
-// 注册路由选择服务，用于根据优先级匹配代理路由。
-builder.Services.AddScoped<IRouteSelectionService, RouteSelectionService>();
 
 // 注册代理主入口实体配置。
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
