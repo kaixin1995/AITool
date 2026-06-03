@@ -104,4 +104,9 @@ public sealed class ConversationTurnLog
     /// 附加元数据 JSON。
     /// </summary>
     public string MetadataJson { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 自定义会话标题；为空时由界面按来源和内容推导默认标题。
+    /// </summary>
+    public string ConversationTitle { get; set; } = string.Empty;
 }

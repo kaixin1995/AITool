@@ -127,7 +127,8 @@ public sealed class ConversationLogBatchWriter : BackgroundService
             OutputTokens = entry.OutputTokens,
             IsStreaming = entry.IsStreaming,
             Status = entry.Status,
-            MetadataJson = entry.MetadataJson
+            MetadataJson = entry.MetadataJson,
+            ConversationTitle = entry.ConversationTitle
         }).ToList();
 
         dbContext.ConversationTurnLogs.AddRange(logs);

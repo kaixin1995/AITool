@@ -1,3 +1,4 @@
+using AITool.Application.Operations;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace AITool.Web.Pages.Admin.Chat;
@@ -7,8 +8,24 @@ namespace AITool.Web.Pages.Admin.Chat;
 /// </summary>
 public class IndexModel : PageModel
 {
+    private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
+
+    public IndexModel(ISystemRuntimeSettingsService systemRuntimeSettingsService)
+    {
+        _systemRuntimeSettingsService = systemRuntimeSettingsService;
+    }
+
+    /// <summary>
+    /// 是否启用对话记录页签。
+    /// </summary>
+    public bool ConversationLogEnabled { get; private set; }
+
     /// <summary>
     /// 处理页面首次访问。
     /// </summary>
-    public void OnGet() { }
+    public async Task OnGetAsync()
+    {
+        var settings = await _systemRuntimeSettingsService.GetOrCreateAsync();
+        ConversationLogEnabled = settings.ConversationLogEnabled;
+    }
 }

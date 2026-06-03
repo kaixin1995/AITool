@@ -61,6 +61,11 @@ public sealed class SystemRuntimeSettings
     public bool DeveloperFeaturesEnabled { get; set; }
 
     /// <summary>
+    /// 标记是否启用对话记录功能，用于控制对话记录页面显示以及对话记录写入。
+    /// </summary>
+    public bool ConversationLogEnabled { get; set; } = true;
+
+    /// <summary>
     /// 并发打满时的处理策略。
     /// 0 = SkipOnFull：跳到下一顺位模型；
     /// 1 = WaitForSlot：排队等待直到释放或超时。

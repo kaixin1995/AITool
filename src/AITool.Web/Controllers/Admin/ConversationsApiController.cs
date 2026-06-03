@@ -1,3 +1,4 @@
+using AITool.Application.Operations;
 using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
@@ -14,11 +15,16 @@ public sealed class ConversationsApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly ConversationExtractionService _conversationExtractionService;
+    private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
 
-    public ConversationsApiController(AppDbContext dbContext, ConversationExtractionService conversationExtractionService)
+    public ConversationsApiController(
+        AppDbContext dbContext,
+        ConversationExtractionService conversationExtractionService,
+        ISystemRuntimeSettingsService systemRuntimeSettingsService)
     {
         _dbContext = dbContext;
         _conversationExtractionService = conversationExtractionService;
+        _systemRuntimeSettingsService = systemRuntimeSettingsService;
     }
 
     /// <summary>
@@ -35,6 +41,11 @@ public sealed class ConversationsApiController : ControllerBase
         [FromQuery] DateTimeOffset? endTime,
         CancellationToken cancellationToken)
     {
+        if (!await IsConversationLogEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
         var (rangeStart, rangeEnd) = ResolveTimeRange(rangeType, startTime, endTime);
 
         var query = _dbContext.ConversationTurnLogs.AsNoTracking().AsQueryable();
@@ -67,17 +78,26 @@ public sealed class ConversationsApiController : ControllerBase
                     .Select(x => _conversationExtractionService.NormalizeConversationText(GzipTextCompression.Decompress(x.UserInputText)))
                     .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
                 var totalTokens = group.Sum(x => x.InputTokens + x.CachedTokens + x.OutputTokens);
+                var customTitle = group
+                    .Select(x => x.ConversationTitle)
+                    .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
+                var defaultTitle = ResolveSessionTitle(latest.SourceTool, string.Empty, preview, latest.SessionId);
+                var title = ResolveSessionTitle(latest.SourceTool, customTitle, preview, latest.SessionId);
                 return new
                 {
                     GroupKey = group.Key,
                     SourceTool = latest.SourceTool,
+                    SourceToolText = GetSourceToolText(latest.SourceTool),
                     SessionIdShort = string.IsNullOrWhiteSpace(latest.SessionId) ? "无会话" : latest.SessionId[..Math.Min(8, latest.SessionId.Length)],
                     LastActivityAt = latest.CreatedAt,
                     LastActivityAtText = latest.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
                     TurnCount = group.Count(),
                     TotalTokens = totalTokens,
                     TotalTokensText = FormatTokenCount(totalTokens),
-                    Preview = preview.Length > 60 ? preview[..60] : preview
+                    Preview = preview.Length > 60 ? preview[..60] : preview,
+                    Title = title,
+                    DefaultTitle = defaultTitle,
+                    IsCustomTitle = !string.IsNullOrWhiteSpace(customTitle)
                 };
             })
             .OrderByDescending(x => x.LastActivityAt)
@@ -92,6 +112,11 @@ public sealed class ConversationsApiController : ControllerBase
     [HttpDelete("sessions")]
     public async Task<IActionResult> DeleteSession([FromQuery] string groupKey, CancellationToken cancellationToken)
     {
+        if (!await IsConversationLogEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
         if (string.IsNullOrWhiteSpace(groupKey))
         {
             return BadRequest(new { message = "groupKey 不能为空" });
@@ -112,6 +137,45 @@ public sealed class ConversationsApiController : ControllerBase
     }
 
     /// <summary>
+    /// 更新会话标题；传空值时回退为默认标题。
+    /// </summary>
+    [HttpPost("sessions/title")]
+    public async Task<IActionResult> UpdateSessionTitle([FromBody] UpdateConversationTitleRequest request, CancellationToken cancellationToken)
+    {
+        if (!await IsConversationLogEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        if (string.IsNullOrWhiteSpace(request.GroupKey))
+        {
+            return BadRequest(new { message = "groupKey 不能为空" });
+        }
+
+        var logs = await _dbContext.ConversationTurnLogs
+            .Where(x => x.ConversationGroupKey == request.GroupKey)
+            .ToListAsync(cancellationToken);
+        if (logs.Count == 0)
+        {
+            return NotFound(new { message = "会话不存在" });
+        }
+
+        var normalizedTitle = (request.Title ?? string.Empty).Trim();
+        if (normalizedTitle.Length > 200)
+        {
+            normalizedTitle = normalizedTitle[..200];
+        }
+
+        foreach (var log in logs)
+        {
+            log.ConversationTitle = normalizedTitle;
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return Ok(new { title = normalizedTitle });
+    }
+
+    /// <summary>
     /// 查询某个会话下的对话记录。
     /// </summary>
     [HttpGet("turns")]
@@ -122,6 +186,11 @@ public sealed class ConversationsApiController : ControllerBase
         [FromQuery] DateTimeOffset? endTime,
         CancellationToken cancellationToken)
     {
+        if (!await IsConversationLogEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
         if (string.IsNullOrWhiteSpace(groupKey))
         {
             return BadRequest(new { message = "groupKey 不能为空" });
@@ -199,6 +268,69 @@ public sealed class ConversationsApiController : ControllerBase
     }
 
     /// <summary>
+    /// 判断对话记录功能是否启用。
+    /// </summary>
+    private async Task<bool> IsConversationLogEnabledAsync(CancellationToken cancellationToken)
+    {
+        var settings = await _systemRuntimeSettingsService.GetOrCreateAsync(cancellationToken);
+        return settings.ConversationLogEnabled;
+    }
+
+    /// <summary>
+    /// 根据来源、标题覆盖和内容推导会话列表标题。
+    /// </summary>
+    private static string ResolveSessionTitle(string sourceTool, string customTitle, string preview, string sessionId)
+    {
+        if (!string.IsNullOrWhiteSpace(customTitle))
+        {
+            return customTitle;
+        }
+
+        if (string.Equals(sourceTool, "chat", StringComparison.OrdinalIgnoreCase))
+        {
+            return "对话测试";
+        }
+
+        if (string.Equals(sourceTool, "proxy", StringComparison.OrdinalIgnoreCase))
+        {
+            return "代理";
+        }
+
+        if (string.Equals(sourceTool, "codex", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(sourceTool, "claude-code", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(sourceTool, "open-code", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!string.IsNullOrWhiteSpace(preview))
+            {
+                return preview.Length > 40 ? preview[..40] : preview;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(preview))
+        {
+            return preview.Length > 40 ? preview[..40] : preview;
+        }
+
+        return string.IsNullOrWhiteSpace(sessionId) ? "未命名会话" : sessionId[..Math.Min(8, sessionId.Length)];
+    }
+
+    /// <summary>
+    /// 将来源标识转为界面展示文案。
+    /// </summary>
+    private static string GetSourceToolText(string sourceTool)
+    {
+        return sourceTool switch
+        {
+            "chat" => "对话测试",
+            "proxy" => "代理",
+            "claude-code" => "Claude Code",
+            "codex" => "Codex",
+            "open-code" => "OpenCode",
+            _ => sourceTool
+        };
+    }
+
+    /// <summary>
     /// 将大 token 数量格式化成更紧凑的缩写文本。
     /// </summary>
     private static string FormatTokenCount(int value)
@@ -220,4 +352,20 @@ public sealed class ConversationsApiController : ControllerBase
 
         return value.ToString();
     }
+}
+
+/// <summary>
+/// 会话标题更新请求。
+/// </summary>
+public sealed class UpdateConversationTitleRequest
+{
+    /// <summary>
+    /// 会话分组键。
+    /// </summary>
+    public string GroupKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 自定义标题；传空值时清空自定义标题并回退为默认标题。
+    /// </summary>
+    public string? Title { get; set; }
 }

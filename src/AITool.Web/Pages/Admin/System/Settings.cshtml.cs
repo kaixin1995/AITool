@@ -127,6 +127,7 @@ public class SettingsModel : PageModel
             UsageLogRetentionDays = settings.UsageLogRetentionDays,
             UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
             DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled,
+            ConversationLogEnabled = settings.ConversationLogEnabled,
             ConcurrencyMode = settings.ConcurrencyMode,
             ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds
         };

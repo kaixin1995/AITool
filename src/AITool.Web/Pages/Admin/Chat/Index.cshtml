@@ -8,9 +8,12 @@
     <li class="nav-item" role="presentation">
         <button class="nav-link active" id="chatTestTab" data-bs-toggle="tab" data-bs-target="#chatTestPane" type="button" role="tab">对话测试</button>
     </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="conversationLogTab" data-bs-toggle="tab" data-bs-target="#conversationLogPane" type="button" role="tab">对话记录</button>
-    </li>
+    @if (Model.ConversationLogEnabled)
+    {
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="conversationLogTab" data-bs-toggle="tab" data-bs-target="#conversationLogPane" type="button" role="tab">对话记录</button>
+        </li>
+    }
 </ul>
 
 <div class="tab-content">
@@ -1257,8 +1260,88 @@
 
     </div><!-- /chatTestPane -->
 
-    <!-- 对话记录 -->
-    <div class="tab-pane fade" id="conversationLogPane" role="tabpanel">
-        <iframe id="conversationLogIframe" src="/Admin/Conversations?layout=minimal" style="width:100%;height:calc(100vh - 200px);border:0;border-radius:18px;"></iframe>
-    </div>
+    @if (Model.ConversationLogEnabled)
+    {
+        <!-- 对话记录 -->
+        <div class="tab-pane fade" id="conversationLogPane" role="tabpanel">
+            <iframe id="conversationLogIframe" src="/Admin/Conversations?layout=minimal" style="width:100%;height:calc(100vh - 200px);border:0;border-radius:18px;"></iframe>
+        </div>
+    }
 </div><!-- /tab-content -->
+
+<script>
+    document.addEventListener('DOMContentLoaded', function () {
+        var chatTestTab = document.getElementById('chatTestTab');
+        var conversationLogTab = document.getElementById('conversationLogTab');
+        var conversationLogIframe = document.getElementById('conversationLogIframe');
+        var allowedPanes = ['#chatTestPane'];
+        if (conversationLogTab) {
+            allowedPanes.push('#conversationLogPane');
+        }
+
+        function syncChatTabHash(hash) {
+            if (!hash || allowedPanes.indexOf(hash) < 0) {
+                return;
+            }
+
+            var url = new URL(window.location.href);
+            url.hash = hash;
+            window.history.replaceState({}, '', url.toString());
+        }
+
+        function syncConversationIframeHash(hash) {
+            if (!conversationLogIframe || !hash || hash !== '#conversationLogPane') {
+                return;
+            }
+
+            try {
+                var iframeUrl = new URL(conversationLogIframe.src, window.location.origin);
+                iframeUrl.hash = hash;
+                if (conversationLogIframe.contentWindow && conversationLogIframe.contentWindow.location.origin === window.location.origin) {
+                    conversationLogIframe.contentWindow.history.replaceState({}, '', iframeUrl.toString());
+                } else {
+                    conversationLogIframe.src = iframeUrl.toString();
+                }
+            } catch {
+                var fallbackUrl = new URL(conversationLogIframe.src, window.location.origin);
+                fallbackUrl.hash = hash;
+                conversationLogIframe.src = fallbackUrl.toString();
+            }
+        }
+
+        function activateChatTabFromLocation() {
+            var hash = (window.location.hash || '').toLowerCase();
+            var targetTab = null;
+
+            if (hash === '#conversationlogpane') {
+                targetTab = conversationLogTab;
+            } else if (hash === '#chattestpane') {
+                targetTab = chatTestTab;
+            }
+
+            if (targetTab && window.bootstrap && bootstrap.Tab) {
+                bootstrap.Tab.getOrCreateInstance(targetTab).show();
+            }
+        }
+
+        chatTestTab?.addEventListener('shown.bs.tab', function () {
+            syncChatTabHash('#chatTestPane');
+        });
+        conversationLogTab?.addEventListener('shown.bs.tab', function () {
+            syncChatTabHash('#conversationLogPane');
+            syncConversationIframeHash('#conversationLogPane');
+        });
+
+        window.addEventListener('message', function (event) {
+            if (!event.data || event.data.type !== 'conversation-log-sync-hash') {
+                return;
+            }
+
+            if (event.data.hash === '#conversationLogPane') {
+                syncChatTabHash('#conversationLogPane');
+            }
+        });
+
+        activateChatTabFromLocation();
+    });
+</script>

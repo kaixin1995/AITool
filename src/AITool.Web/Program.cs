@@ -396,6 +396,13 @@ static async Task EnsureProxyUsageLogSchemaAsync(AppDbContext dbContext)
             await command.ExecuteNonQueryAsync();
         }
 
+        if (!await ColumnExistsAsync(connection, "SystemRuntimeSettings", "ConversationLogEnabled"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE SystemRuntimeSettings ADD COLUMN ConversationLogEnabled INTEGER NOT NULL DEFAULT 1";
+            await command.ExecuteNonQueryAsync();
+        }
+
         if (!await ColumnExistsAsync(connection, "ProxyRouteRules", "AvailabilityMode"))
         {
             await using var command = connection.CreateCommand();
@@ -474,7 +481,8 @@ CREATE TABLE IF NOT EXISTS ConversationTurnLogs (
     OutputTokens INTEGER NOT NULL,
     IsStreaming INTEGER NOT NULL,
     Status TEXT NOT NULL,
-    MetadataJson TEXT NOT NULL
+    MetadataJson TEXT NOT NULL,
+    ConversationTitle TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_CreatedAt ON ConversationTurnLogs (CreatedAt);
 CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_RequestId ON ConversationTurnLogs (RequestId);
@@ -493,6 +501,12 @@ CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_SourceTool_SessionId_CreatedA
         if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "UserCreatedAt"))
         {
             command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN UserCreatedAt TEXT NULL;";
+            await command.ExecuteNonQueryAsync();
+        }
+
+        if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "ConversationTitle"))
+        {
+            command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN ConversationTitle TEXT NOT NULL DEFAULT '';";
             await command.ExecuteNonQueryAsync();
         }
     }

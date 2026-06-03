@@ -126,6 +126,10 @@
                 <input asp-for="Input.DeveloperFeaturesEnabled" class="form-check-input" type="checkbox" />
                 <label asp-for="Input.DeveloperFeaturesEnabled" class="form-check-label form-label-tip">启用开发者功能<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="开启后才会显示调试工具入口，包括调用调试、客户端模拟和开发者追踪页面。它也会让系统开始保留最近 100 条内存中的调用轨迹，方便排查代理请求、路由选择和协议转换过程。">?</span></label>
             </div>
+            <div class="form-check form-switch mt-3">
+                <input asp-for="Input.ConversationLogEnabled" class="form-check-input" type="checkbox" />
+                <label asp-for="Input.ConversationLogEnabled" class="form-check-label form-label-tip">启用对话记录功能<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="开启后才会显示对话记录界面，并允许代理请求和对话测试继续写入结构化对话记录。关闭后不会再展示对话记录页签，也不会继续落库新的对话记录。">?</span></label>
+            </div>
         </div>
     </div>
 

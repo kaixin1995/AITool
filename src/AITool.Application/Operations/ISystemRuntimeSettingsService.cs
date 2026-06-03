@@ -79,6 +79,11 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public bool DeveloperFeaturesEnabled { get; set; }
 
     /// <summary>
+    /// 控制对话记录页面及记录写入功能是否启用。
+    /// </summary>
+    public bool ConversationLogEnabled { get; set; }
+
+    /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
     /// </summary>
     public int ConcurrencyMode { get; set; }

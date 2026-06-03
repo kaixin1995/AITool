@@ -21,25 +21,48 @@
 
 <!-- 第一行：来源 + 关键词 + 查询按钮 -->
 <div class="conversation-log-filter-bar @(isMinimal ? "conversation-filter-minimal" : "")">
-    <select id="rangeTypeSelect" class="form-select form-select-sm" style="width:130px">
-        <option value="day" selected>按天</option>
-        <option value="week">按周</option>
-        <option value="month">按月</option>
-        <option value="custom">指定范围</option>
-    </select>
-    <input id="startTimeInput" type="datetime-local" step="60" class="form-control form-control-sm conversation-custom-range" style="width:190px;display:none" />
-    <input id="endTimeInput" type="datetime-local" step="60" class="form-control form-control-sm conversation-custom-range" style="width:190px;display:none" />
-    <select id="sourceToolSelect" class="form-select form-select-sm" style="width:140px">
-        <option value="">全部来源</option>
-        <option value="proxy">代理</option>
-        <option value="chat">对话测试</option>
-        <option value="claude-code">Claude Code</option>
-        <option value="codex">Codex</option>
-        <option value="open-code">Open Code</option>
-    </select>
-    <select id="requestModelSelect" class="form-select form-select-sm" style="width:160px">
-        <option value="">全部路由入口</option>
-    </select>
+    <div class="conversation-filter-item">
+        <span class="conversation-filter-label">时间范围:</span>
+        <select id="rangeTypeSelect" class="form-select form-select-sm" style="width:130px">
+            <option value="day" selected>按天</option>
+            <option value="week">按周</option>
+            <option value="month">按月</option>
+            <option value="custom">指定范围</option>
+        </select>
+    </div>
+    <div class="conversation-filter-item conversation-custom-range" style="display:none">
+        <span class="conversation-filter-label">开始时间:</span>
+        <input id="startTimeInput" type="datetime-local" step="60" class="form-control form-control-sm" style="width:190px" />
+    </div>
+    <div class="conversation-filter-item conversation-custom-range" style="display:none">
+        <span class="conversation-filter-label">结束时间:</span>
+        <input id="endTimeInput" type="datetime-local" step="60" class="form-control form-control-sm" style="width:190px" />
+    </div>
+    <div class="conversation-filter-item">
+        <span class="conversation-filter-label">来源:</span>
+        <select id="sourceToolSelect" class="form-select form-select-sm" style="width:140px">
+            <option value="">全部来源</option>
+            <option value="proxy">代理</option>
+            <option value="chat">对话测试</option>
+            <option value="claude-code">Claude Code</option>
+            <option value="codex">Codex</option>
+            <option value="open-code">Open Code</option>
+        </select>
+    </div>
+    <div class="conversation-filter-item">
+        <span class="conversation-filter-label">路由入口:</span>
+        <select id="requestModelSelect" class="form-select form-select-sm" style="width:160px">
+            <option value="">全部路由入口</option>
+        </select>
+    </div>
+    <div class="conversation-filter-item">
+        <span class="conversation-filter-label">对话角色:</span>
+        <select id="roleFilterSelect" class="form-select form-select-sm" style="width:120px">
+            <option value="all">全部</option>
+            <option value="user">我</option>
+            <option value="assistant">AI</option>
+        </select>
+    </div>
     <button type="button" class="btn btn-primary btn-sm" onclick="handleQuery()">查询</button>
     <button type="button" class="btn btn-outline-secondary btn-sm" onclick="refreshCurrentSession()">刷新</button>
 </div>
@@ -77,6 +100,29 @@
     </div>
 </div>
 
+<!-- 会话改名弹窗 -->
+<div class="conversation-delete-modal" id="conversationRenameModal" aria-hidden="true">
+    <div class="conversation-delete-dialog" role="dialog" aria-modal="true" aria-labelledby="conversationRenameModalTitle">
+        <div class="conversation-delete-header">
+            <div>
+                <div class="conversation-delete-title" id="conversationRenameModalTitle">修改会话标题</div>
+                <div class="conversation-delete-subtitle">留空后保存会恢复默认标题。</div>
+            </div>
+            <button type="button" class="conversation-delete-close" id="cancelRenameSessionIconButton" aria-label="关闭">×</button>
+        </div>
+        <div class="conversation-delete-body">
+            <label for="renameSessionInput" class="form-label">会话标题</label>
+            <input id="renameSessionInput" type="text" class="form-control" maxlength="200" />
+            <div class="form-text" id="renameSessionPlaceholderHint"></div>
+            <div class="conversation-delete-error" id="conversationRenameError"></div>
+        </div>
+        <div class="conversation-delete-footer">
+            <button type="button" class="btn btn-secondary btn-sm" id="cancelRenameSessionButton">取消</button>
+            <button type="button" class="btn btn-primary btn-sm" id="confirmRenameSessionButton">保存</button>
+        </div>
+    </div>
+</div>
+
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css" />
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.0/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
@@ -93,6 +139,18 @@
         gap: 12px;
         align-items: center;
         flex-wrap: wrap;
+    }
+
+    .conversation-filter-item {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    .conversation-filter-label {
+        font-size: 13px;
+        color: #475569;
+        white-space: nowrap;
     }
 
     /* 左右分栏主体，固定高度 = 视口高度 - 顶部栏 - 筛选栏 - 间距 */
@@ -188,6 +246,16 @@
 
     .conversation-session-delete:hover {
         background: rgba(220, 38, 38, 0.08);
+    }
+
+    .conversation-session-rename {
+        color: #2563eb;
+        font-size: 12px;
+        white-space: nowrap;
+    }
+
+    .conversation-session-rename:hover {
+        color: #1d4ed8;
     }
 
     .conversation-session-meta {
@@ -317,6 +385,10 @@
         gap: 12px;
         margin-bottom: 14px;
         align-items: flex-start;
+    }
+
+    .conversation-msg.conversation-msg-hidden {
+        display: none;
     }
 
     /* 用户消息靠右 */
@@ -574,7 +646,33 @@
 <script>
     var currentSessionGroupKey = '';
     var currentSessionTitle = '';
+    var currentSessionDefaultTitle = '';
+    var currentSessionCustomTitle = '';
+    var currentRoleFilter = 'all';
+    var lastTurnsPayload = [];
     var pendingDeleteSession = null;
+    var pendingRenameSession = null;
+
+    function syncConversationHash(hash) {
+        if (!hash || window.parent !== window) {
+            return;
+        }
+
+        var url = new URL(window.location.href);
+        url.hash = hash;
+        window.history.replaceState({}, '', url.toString());
+    }
+
+    function notifyParentConversationHash(hash) {
+        if (!hash || window.parent === window) {
+            return;
+        }
+
+        window.parent.postMessage({
+            type: 'conversation-log-sync-hash',
+            hash: hash
+        }, window.location.origin);
+    }
 
     /* 配置 marked 使用 highlight.js 做代码高亮 */
     marked.setOptions({
@@ -631,19 +729,35 @@
             loadSessions();
         }
     });
+    function getRoleFilterValue() {
+        return document.getElementById('roleFilterSelect')?.value || 'all';
+    }
+
+    document.getElementById('roleFilterSelect').addEventListener('change', function() {
+        currentRoleFilter = getRoleFilterValue();
+        applyRoleFilterToTurns();
+    });
 
     /* 查询按钮：自定义模式下校验后查询，其他模式直接查询 */
     function handleQuery() {
+        currentRoleFilter = getRoleFilterValue();
+        syncConversationLocation('#conversationLogPane');
         loadSessions();
     }
 
     function refreshCurrentSession() {
+        currentRoleFilter = getRoleFilterValue();
         if (currentSessionGroupKey) {
             loadTurns(currentSessionGroupKey, currentSessionTitle, true);
             return;
         }
 
         loadSessions();
+    }
+
+    function syncConversationLocation(hash) {
+        syncConversationHash(hash);
+        notifyParentConversationHash(hash);
     }
 
     /* 构造时间范围查询参数 */
@@ -662,6 +776,7 @@
 
     /* 查询会话列表 */
     async function loadSessions() {
+        currentRoleFilter = getRoleFilterValue();
         var sourceTool = document.getElementById('sourceToolSelect').value || '';
         var requestModel = document.getElementById('requestModelSelect').value || '';
         var timeParams = buildTimeParams();
@@ -687,8 +802,13 @@
             var button = document.createElement('button');
             button.type = 'button';
             button.className = 'conversation-session-item';
-            button.innerHTML = '<div class="fw-semibold text-truncate">' + escapeHtml(item.preview || '未命名会话') + '</div>'
-                + '<div class="small text-muted mt-1 text-truncate">' + escapeHtml(item.sourceTool) + ' · ' + escapeHtml(item.sessionIdShort) + '</div>'
+            button.setAttribute('data-group-key', item.groupKey || '');
+            button.setAttribute('data-default-title', item.defaultTitle || item.title || item.sessionIdShort || '未命名会话');
+            button.innerHTML = '<div class="d-flex align-items-center justify-content-between gap-2">'
+                + '<div class="fw-semibold text-truncate conversation-session-title">' + escapeHtml(item.title || '未命名会话') + '</div>'
+                + '<button type="button" class="btn btn-link btn-sm p-0 text-decoration-none conversation-session-rename">改名</button>'
+                + '</div>'
+                + '<div class="small text-muted mt-1 text-truncate">' + escapeHtml(item.sourceToolText || item.sourceTool) + ' · ' + escapeHtml(item.sessionIdShort) + '</div>'
                 + '<div class="small text-muted mt-1 conversation-session-meta">' + escapeHtml(item.lastActivityAtText) + ' · ' + item.turnCount + ' 条</div>'
                 + '<div class="small text-muted conversation-session-meta conversation-session-tokens">' + escapeHtml(item.totalTokensText || String(item.totalTokens || 0)) + ' tokens</div>';
             button.addEventListener('click', function() {
@@ -697,8 +817,21 @@
                 card.classList.add('active');
                 button.classList.add('active');
                 currentSessionGroupKey = item.groupKey;
-                currentSessionTitle = item.preview || item.sessionIdShort;
+                currentSessionTitle = item.title || item.sessionIdShort;
+                currentSessionDefaultTitle = item.defaultTitle || item.title || item.sessionIdShort;
+                currentSessionCustomTitle = item.isCustomTitle ? (item.title || '') : '';
+                syncConversationLocation('#conversationLogPane');
                 loadTurns(item.groupKey, currentSessionTitle);
+            });
+
+            var renameButton = button.querySelector('.conversation-session-rename');
+            renameButton.addEventListener('click', function(event) {
+                event.stopPropagation();
+                showRenameSessionModal(
+                    item.groupKey,
+                    item.title || item.sessionIdShort,
+                    item.defaultTitle || item.title || item.sessionIdShort,
+                    item.isCustomTitle ? (item.title || '') : '');
             });
 
             var actions = document.createElement('div');
@@ -719,29 +852,24 @@
         });
     }
 
-    /* 查询某个会话的对话内容并渲染为聊天气泡 */
-    async function loadTurns(groupKey, sessionTitle, scrollToBottom) {
-        currentSessionGroupKey = groupKey || '';
-        currentSessionTitle = sessionTitle || '对话详情';
-        document.getElementById('conversationDetailTitle').textContent = currentSessionTitle;
-        var timeParams = buildTimeParams();
-        var res = await fetch('/api/admin/conversations/turns?groupKey=' + encodeURIComponent(groupKey) + '&' + timeParams.toString());
-        var data = await res.json();
+    function renderTurns(items, scrollToBottom) {
+        currentRoleFilter = getRoleFilterValue();
         var container = document.getElementById('conversationTurns');
         container.innerHTML = '';
 
-        if (!data.items || data.items.length === 0) {
+        if (!items || items.length === 0) {
             container.innerHTML = '<div class="conversation-turns-empty text-muted">当前会话没有可展示的消息。</div>';
             return;
         }
 
-        data.items.forEach(function(item) {
+        items.forEach(function(item) {
             var turn = document.createElement('div');
             turn.className = 'conversation-turn';
 
             if (item.userInputText) {
                 var userRow = document.createElement('div');
                 userRow.className = 'conversation-msg conversation-msg-user';
+                userRow.setAttribute('data-role', 'user');
                 userRow.innerHTML = '<div class="conversation-avatar conversation-avatar-user">👤</div>'
                     + '<div class="conversation-msg-body">'
                     + '<div class="conversation-msg-meta">' + escapeHtml(item.userCreatedAtText || item.createdAtText || '') + ' · 输入 ' + formatSideTokens(item.inputTokens, item.cachedTokens) + '</div>'
@@ -753,6 +881,7 @@
             if (item.assistantOutputMarkdown) {
                 var aiRow = document.createElement('div');
                 aiRow.className = 'conversation-msg';
+                aiRow.setAttribute('data-role', 'assistant');
                 aiRow.innerHTML = '<div class="conversation-avatar conversation-avatar-assistant">🤖</div>'
                     + '<div class="conversation-msg-body">'
                     + '<div class="conversation-msg-meta">' + escapeHtml(item.createdAtText || '') + ' · ' + escapeHtml(item.requestModel || '') + ' · 输出 ' + formatTokenCount(item.outputTokens || 0) + '</div>'
@@ -764,9 +893,33 @@
             container.appendChild(turn);
         });
 
+        applyRoleFilterToTurns();
+
         if (scrollToBottom) {
             scrollConversationToBottom();
         }
+    }
+
+    function applyRoleFilterToTurns() {
+        var roleFilter = getRoleFilterValue();
+        currentRoleFilter = roleFilter;
+        document.querySelectorAll('#conversationTurns .conversation-msg').forEach(function (item) {
+            var role = item.getAttribute('data-role') || '';
+            var shouldHide = roleFilter !== 'all' && role !== roleFilter;
+            item.classList.toggle('conversation-msg-hidden', shouldHide);
+        });
+    }
+
+    /* 查询某个会话的对话内容并渲染为聊天气泡 */
+    async function loadTurns(groupKey, sessionTitle, scrollToBottom) {
+        currentSessionGroupKey = groupKey || '';
+        currentSessionTitle = sessionTitle || '对话详情';
+        document.getElementById('conversationDetailTitle').textContent = currentSessionTitle;
+        var timeParams = buildTimeParams();
+        var res = await fetch('/api/admin/conversations/turns?groupKey=' + encodeURIComponent(groupKey) + '&' + timeParams.toString());
+        var data = await res.json();
+        lastTurnsPayload = Array.isArray(data.items) ? data.items : [];
+        renderTurns(lastTurnsPayload, scrollToBottom);
     }
 
     /* 用 marked 渲染 AI 回复的 Markdown 内容 */
@@ -1079,6 +1232,86 @@
         loadSessions();
     }
 
+    function showRenameSessionModal(groupKey, displayTitle, defaultTitle, currentTitle) {
+        pendingRenameSession = {
+            groupKey: groupKey,
+            displayTitle: displayTitle || '当前会话',
+            defaultTitle: defaultTitle || displayTitle || '当前会话'
+        };
+        document.getElementById('renameSessionInput').value = currentTitle || '';
+        document.getElementById('renameSessionInput').placeholder = pendingRenameSession.defaultTitle;
+        document.getElementById('renameSessionPlaceholderHint').textContent = '默认标题：' + pendingRenameSession.defaultTitle;
+        document.getElementById('conversationRenameError').style.display = 'none';
+        document.getElementById('conversationRenameError').textContent = '';
+        document.getElementById('conversationRenameModal').classList.add('show');
+        document.getElementById('conversationRenameModal').setAttribute('aria-hidden', 'false');
+        document.getElementById('renameSessionInput').focus();
+        document.getElementById('renameSessionInput').select();
+    }
+
+    function hideRenameSessionModal() {
+        document.getElementById('conversationRenameModal').classList.remove('show');
+        document.getElementById('conversationRenameModal').setAttribute('aria-hidden', 'true');
+        pendingRenameSession = null;
+    }
+
+    async function confirmRenameSession() {
+        if (!pendingRenameSession || !pendingRenameSession.groupKey) {
+            return;
+        }
+
+        var confirmButton = document.getElementById('confirmRenameSessionButton');
+        var error = document.getElementById('conversationRenameError');
+        confirmButton.disabled = true;
+        confirmButton.textContent = '保存中...';
+        error.style.display = 'none';
+        error.textContent = '';
+
+        var title = document.getElementById('renameSessionInput').value || '';
+        var normalizedTitle = title.trim();
+        var res = await fetch('/api/admin/conversations/sessions/title', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ groupKey: pendingRenameSession.groupKey, title: title })
+        });
+
+        confirmButton.disabled = false;
+        confirmButton.textContent = '保存';
+
+        if (!res.ok) {
+            error.textContent = '更新标题失败，请稍后重试。';
+            error.style.display = 'block';
+            return;
+        }
+
+        updateSessionTitleLocally(
+            pendingRenameSession.groupKey,
+            normalizedTitle || pendingRenameSession.defaultTitle,
+            pendingRenameSession.defaultTitle,
+            !!normalizedTitle);
+        hideRenameSessionModal();
+    }
+
+    function updateSessionTitleLocally(groupKey, title, defaultTitle, isCustomTitle) {
+        var sessionButton = Array.from(document.querySelectorAll('.conversation-session-item')).find(function (item) {
+            return item.getAttribute('data-group-key') === groupKey;
+        }) || null;
+        var sessionTitle = sessionButton ? sessionButton.querySelector('.conversation-session-title') : null;
+        if (sessionButton) {
+            sessionButton.setAttribute('data-default-title', defaultTitle || title || '未命名会话');
+        }
+        if (sessionTitle) {
+            sessionTitle.textContent = title || '未命名会话';
+        }
+
+        if (currentSessionGroupKey === groupKey) {
+            currentSessionTitle = title || '未命名会话';
+            currentSessionDefaultTitle = defaultTitle || title || '未命名会话';
+            currentSessionCustomTitle = isCustomTitle ? (title || '') : '';
+            document.getElementById('conversationDetailTitle').textContent = currentSessionTitle;
+        }
+    }
+
     function scrollConversationToBottom() {
         var container = document.getElementById('conversationTurns');
         if (!container) {
@@ -1114,14 +1347,31 @@
     document.getElementById('cancelDeleteSessionButton').addEventListener('click', hideDeleteSessionModal);
     document.getElementById('cancelDeleteSessionIconButton').addEventListener('click', hideDeleteSessionModal);
     document.getElementById('confirmDeleteSessionButton').addEventListener('click', confirmDeleteSession);
+    document.getElementById('cancelRenameSessionButton').addEventListener('click', hideRenameSessionModal);
+    document.getElementById('cancelRenameSessionIconButton').addEventListener('click', hideRenameSessionModal);
+    document.getElementById('confirmRenameSessionButton').addEventListener('click', confirmRenameSession);
+    document.getElementById('renameSessionInput').addEventListener('keydown', function (event) {
+        if (event.key === 'Enter') {
+            event.preventDefault();
+            confirmRenameSession();
+        }
+    });
     document.getElementById('conversationDeleteModal').addEventListener('click', function(event) {
         if (event.target === this) {
             hideDeleteSessionModal();
         }
     });
+    document.getElementById('conversationRenameModal').addEventListener('click', function(event) {
+        if (event.target === this) {
+            hideRenameSessionModal();
+        }
+    });
     document.addEventListener('keydown', function(event) {
         if (event.key === 'Escape' && document.getElementById('conversationDeleteModal').classList.contains('show')) {
             hideDeleteSessionModal();
+        }
+        if (event.key === 'Escape' && document.getElementById('conversationRenameModal').classList.contains('show')) {
+            hideRenameSessionModal();
         }
     });
 
@@ -1162,4 +1412,27 @@
 
     loadRouteEntries();
     loadSessions();
+
+    (function () {
+        var conversationLogAllowedHash = '#conversationLogPane';
+
+        function activateConversationFromLocation() {
+            var hash = (window.location.hash || '').toLowerCase();
+            if (hash === conversationLogAllowedHash.toLowerCase()) {
+                syncConversationLocation(conversationLogAllowedHash);
+            }
+        }
+
+        window.addEventListener('message', function (event) {
+            if (!event.data || event.data.type !== 'conversation-log-sync-hash') {
+                return;
+            }
+
+            if (event.data.hash && event.data.hash.toLowerCase() === conversationLogAllowedHash.toLowerCase()) {
+                syncConversationHash(conversationLogAllowedHash);
+            }
+        });
+
+        activateConversationFromLocation();
+    })();
 </script>

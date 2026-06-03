@@ -1,3 +1,5 @@
+using AITool.Application.Operations;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace AITool.Web.Pages.Admin.Conversations;
@@ -7,7 +9,21 @@ namespace AITool.Web.Pages.Admin.Conversations;
 /// </summary>
 public class IndexModel : PageModel
 {
-    public void OnGet()
+    private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
+
+    public IndexModel(ISystemRuntimeSettingsService systemRuntimeSettingsService)
     {
+        _systemRuntimeSettingsService = systemRuntimeSettingsService;
+    }
+
+    public async Task<IActionResult> OnGetAsync()
+    {
+        var settings = await _systemRuntimeSettingsService.GetOrCreateAsync();
+        if (!settings.ConversationLogEnabled)
+        {
+            return NotFound();
+        }
+
+        return Page();
     }
 }
