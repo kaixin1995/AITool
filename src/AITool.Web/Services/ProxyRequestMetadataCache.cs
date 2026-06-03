@@ -581,10 +581,13 @@ public sealed class ProxyRequestMetadataCache
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var sites = await dbContext.Sites
+                    // 查询全部站点（含禁用），以便在管理页面展示真实站点名和启用状态。
+                    var siteRows = await dbContext.Sites
                         .AsNoTracking()
-                        .Where(s => s.IsEnabled)
-                        .ToDictionaryAsync(s => s.Id, s => s.Name, cancellationToken);
+                        .Select(s => new { s.Id, s.Name, s.IsEnabled })
+                        .ToListAsync(cancellationToken);
+                    var sites = siteRows.ToDictionary(s => s.Id, s => s.Name);
+                    var siteEnabledMap = siteRows.ToDictionary(s => s.Id, s => s.IsEnabled);
                     var rules = await dbContext.ProxyRouteRules
                         .AsNoTracking()
                         .OrderBy(r => r.Priority)
@@ -612,7 +615,8 @@ public sealed class ProxyRequestMetadataCache
                             {
                                 RuleId = r.Id,
                                 SiteId = r.SiteId,
-                                SiteName = sites.TryGetValue(r.SiteId, out var siteName) ? siteName : "(未知站点)",
+                                SiteName = sites.TryGetValue(r.SiteId, out var siteName) ? siteName : "(已删除站点)",
+                                SiteEnabled = siteEnabledMap.TryGetValue(r.SiteId, out var enabled) && enabled,
                                 UpstreamModelName = r.UpstreamModelName,
                                 SiteModelName = r.SiteModelName,
                                 Priority = r.Priority,

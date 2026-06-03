@@ -155,6 +155,10 @@ public sealed class RouteRuleListItem
     /// </summary>
     public bool IsEnabled { get; set; }
     /// <summary>
+    /// 站点是否启用，用于在管理页面区分已禁用站点。
+    /// </summary>
+    public bool SiteEnabled { get; set; } = true;
+    /// <summary>
     /// 时间可用性模式，旧规则为空时按全天可用处理。
     /// </summary>
     public string AvailabilityMode { get; set; } = "AllDay";

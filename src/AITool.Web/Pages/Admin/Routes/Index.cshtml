@@ -279,6 +279,18 @@
         color: #c2410c;
     }
 
+    /* 站点已禁用标签样式。 */
+    .badge-disabled {
+        border-color: #d1d5db;
+        background: #f3f4f6;
+        color: #9ca3af;
+    }
+
+    /* 站点被禁用时站点名变灰。 */
+    .site-disabled {
+        color: #9ca3af;
+    }
+
     .remote-name {
         font-size: 12px;
         color: var(--text-secondary, #888);
@@ -546,6 +558,7 @@
                     return {
                         siteId: r.siteId,
                         siteName: r.siteName,
+                        siteEnabled: r.siteEnabled !== false,
                         upstreamModelName: r.upstreamModelName || r.siteModelName,
                         siteModelName: r.siteModelName,
                         availabilityMode: mode,
@@ -659,7 +672,8 @@
                 '<span class="priority-num">' + (index + 1) + '</span>' +
                 '<div class="site-info">' +
                     '<div class="site-name-row">' +
-                        '<span class="site-name">' + escHtml(item.siteName) + '</span>' +
+                        '<span class="site-name' + (item.siteEnabled ? '' : ' site-disabled') + '">' + escHtml(item.siteName) + '</span>' +
+                        (item.siteEnabled ? '' : '<span class="route-badge badge-disabled">站点已禁用</span>') +
                         '<span class="route-badge ' + availabilityLabel.badgeClass + '">' + escHtml(availabilityLabel.text) + '</span>' +
                     '</div>' +
                     '<div class="remote-name">上游模型：' + escHtml(item.upstreamModelName) + ' · 站点实例：' + escHtml(item.siteModelName) + '</div>' +
