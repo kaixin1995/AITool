@@ -14,37 +14,54 @@
 
 ## 结论先行
 
-### 三方共有的主协议接口
+> 字段级对齐明细请以工具最新生成的 [protocol-sync-report.md](protocol-sync-report.md) 为准；本文主要维护长期协议/URL 参考信息。
+
+### 三方当前共有的主协议接口
 
 | 协议 | Method | URL | 说明 |
 | --- | --- | --- | --- |
-| OpenAI | GET | `/v1/models` | 模型列表。三方都有，但 Anthropic 客户端识别方式不同。 |
 | OpenAI | POST | `/v1/chat/completions` | Chat Completions。 |
 | OpenAI | POST | `/v1/responses` | Responses API。 |
 | Anthropic | GET | `/v1/models` | Anthropic models 格式。三方都有，但识别方式不同。 |
 | Anthropic | POST | `/v1/messages` | Anthropic Messages。 |
 
-### 两个参考项目都有、当前项目缺失的主协议接口
+### 与 new-api 对比：当前项目缺失的接口
 
-| 协议 | Method | URL | 说明 |
-| --- | --- | --- | --- |
-| OpenAI | GET | `/v1/responses` | CPA 与当前项目都支持 Responses WebSocket。 |
-| OpenAI | POST | `/v1/images/generations` | 图像生成。new-api 与 CPA 都有。 |
-| OpenAI | POST | `/v1/images/edits` | 图像编辑。new-api 与 CPA 都有。 |
-| OpenAI | POST | `/v1/videos` | 视频创建。new-api 与 CPA 都有。 |
-| OpenAI | GET | `/v1/videos/:id` | 视频任务/对象查询。new-api 与 CPA 都有。 |
+| 协议 | 分类 | Method | URL | 说明 |
+| --- | --- | --- | --- | --- |
+| OpenAI | legacy | POST | `/v1/edits` | 旧式 edits。 |
+| OpenAI | 主协议 | POST | `/v1/audio/speech` | 语音合成。 |
+| OpenAI | 主协议 | POST | `/v1/audio/transcriptions` | 音频转录。 |
+| OpenAI | 主协议 | POST | `/v1/audio/translations` | 音频翻译。 |
+| OpenAI | 主协议 | POST | `/v1/images/edits` | 图像编辑。 |
+| OpenAI | 主协议 | POST | `/v1/images/generations` | 图像生成。 |
+| OpenAI | 主协议 | POST | `/v1/moderations` | Moderations。 |
+| OpenAI | 主协议 | POST | `/v1/videos` | 视频创建。 |
+| OpenAI | 主协议 | GET | `/v1/videos/:id` | 视频查询。 |
 
-### CPA 与当前项目共有、new-api 缺失的 Anthropic 接口
+### 与 CPA / CLIProxyAPI 对比：当前项目缺失的接口
 
-| 协议 | Method | URL | 说明 |
-| --- | --- | --- | --- |
-| Anthropic | POST | `/v1/messages/count_tokens` | Count Tokens。CPA 与当前项目都有。 |
+| 协议 | 分类 | Method | URL | 说明 |
+| --- | --- | --- | --- | --- |
+| OpenAI | 主协议 | POST | `/v1/images/edits` | 图像编辑。 |
+| OpenAI | 主协议 | POST | `/v1/images/generations` | 图像生成。 |
+| OpenAI | 主协议 | POST | `/v1/videos` | 视频创建。 |
+| OpenAI | 主协议 | GET | `/v1/videos/:id` | 视频查询。 |
+
+### 当前项目已实现、但并非两个参考项目都具备的接口
+
+| 协议 | Method | URL | new-api | CPA / CLIProxyAPI | 说明 |
+| --- | --- | --- | --- | --- | --- |
+| Anthropic | POST | `/v1/messages/count_tokens` | — | ✅ | Count Tokens。 |
+| OpenAI | GET | `/v1/models` | — | ✅ | OpenAI 模型列表。 |
+| OpenAI | GET | `/v1/models/:model` | ✅ | — | OpenAI 单模型查询。 |
+| OpenAI | GET | `/v1/responses` | — | ✅ | Responses WebSocket。 |
 
 ## OpenAI 主协议 / 主流兼容接口对比
 
 | Method | URL | new-api | CPA / CLIProxyAPI | 当前项目 AITool | 备注 |
 | --- | --- | --- | --- | --- | --- |
-| GET | `/v1/models` | ✅ | ✅ | ✅ | 模型列表。 |
+| GET | `/v1/models` | — | ✅ | ✅ | OpenAI 模型列表。new-api 当前未按 OpenAI 主协议入口暴露该路径。 |
 | GET | `/v1/models/:model` | ✅ | — | ✅ | 单模型查询。当前项目已新增。 |
 | POST | `/v1/chat/completions` | ✅ | ✅ | ✅ | Chat Completions。 |
 | POST | `/v1/completions` | ✅ | ✅ | ✅ | OpenAI legacy Completions。当前项目已新增，并复用原有路由选择、熔断、兼容桥接链路；非流式和流式 SSE 都会从 Chat Completions 格式转换为 legacy `text_completion` 格式。 |

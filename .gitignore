@@ -27,7 +27,6 @@ x86/
 [Aa][Rr][Mm]/
 [Aa][Rr][Mm]64/
 bld/
-docs/
 [Bb]in/
 [Oo]bj/
 [Oo]ut/
@@ -380,3 +379,4 @@ FodyWeavers.xsd
 # 外部参考项目，保留各自 Git 仓库用于单独拉取更新
 /reference-projects/
 /protocol-sync-report.md
+/docs/protocol-sync-report.md
