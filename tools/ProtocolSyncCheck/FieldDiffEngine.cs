@@ -5,161 +5,143 @@ namespace ProtocolSyncCheck;
 /// </summary>
 internal static class FieldDiffEngine
 {
-    /// <summary>
-    /// 将 new-api 的 Go struct 映射到协议接口分组。
-    /// 每个分组代表一个 API 接口的请求体或响应体。
-    /// </summary>
-    public static List<ProtocolStructGroup> BuildGroups(List<GoStructDefinition> structs)
-    {
-        var structIndex = structs.ToDictionary(s => s.Name, StringComparer.OrdinalIgnoreCase);
-
-        var groups = new List<ProtocolStructGroup>();
-
-        // OpenAI Chat Completions 请求
-        AddGroup(groups, structIndex, "OpenAI Chat Completions 请求",
-            ["GeneralOpenAIRequest"],
-            "OpenAI Chat/Completions/Embeddings 统一请求体（model, messages, stream, tools 等）");
-
-        // OpenAI Chat Completions 非流式响应
-        AddGroup(groups, structIndex, "OpenAI Chat Completions 响应",
-            ["OpenAITextResponse", "OpenAITextResponseChoice"],
-            "Chat Completions 非流式响应（id, choices, usage 等）");
-
-        // OpenAI Chat Completions 流式 chunk
-        AddGroup(groups, structIndex, "OpenAI Chat Completions 流式 chunk",
-            ["ChatCompletionsStreamResponse", "ChatCompletionsStreamResponseChoice", "ChatCompletionsStreamResponseChoiceDelta"],
-            "Chat Completions SSE 流式响应 chunk");
-
-        // OpenAI Chat Completions 消息内容
-        AddGroup(groups, structIndex, "OpenAI 消息体",
-            ["Message", "MediaContent"],
-            "请求中的 messages 数组元素及其多媒体内容块");
-
-        // OpenAI 工具调用
-        AddGroup(groups, structIndex, "OpenAI 工具调用",
-            ["ToolCallRequest", "ToolCallResponse", "FunctionRequest", "FunctionResponse"],
-            "请求和响应中的工具定义与调用");
-
-        // OpenAI Usage
-        AddGroup(groups, structIndex, "OpenAI Usage",
-            ["Usage", "InputTokenDetails", "OutputTokenDetails"],
-            "Token 用量统计（含缓存和分类详情）");
-
-        // OpenAI Responses 请求
-        AddGroup(groups, structIndex, "OpenAI Responses 请求",
-            ["OpenAIResponsesRequest"],
-            "Responses API 请求体");
-
-        // OpenAI Responses 响应
-        AddGroup(groups, structIndex, "OpenAI Responses 响应",
-            ["OpenAIResponsesResponse", "ResponsesOutput", "ResponsesOutputContent"],
-            "Responses API 非流式响应");
-
-        // OpenAI Responses 流式事件
-        AddGroup(groups, structIndex, "OpenAI Responses 流式事件",
-            ["ResponsesStreamResponse"],
-            "Responses API SSE 流式事件");
-
-        // OpenAI Embeddings 请求
-        AddGroup(groups, structIndex, "OpenAI Embeddings 请求",
-            ["EmbeddingRequest"],
-            "Embeddings API 请求体");
-
-        // OpenAI Embeddings 响应
-        AddGroup(groups, structIndex, "OpenAI Embeddings 响应",
-            ["EmbeddingResponse", "EmbeddingResponseItem"],
-            "Embeddings API 响应体");
-
-        // Anthropic Messages 请求
-        AddGroup(groups, structIndex, "Anthropic Messages 请求",
-            ["ClaudeRequest", "ClaudeMessage"],
-            "Anthropic Messages API 请求体");
-
-        // Anthropic Messages 响应
-        AddGroup(groups, structIndex, "Anthropic Messages 响应",
-            ["ClaudeResponse", "ClaudeMediaMessage"],
-            "Anthropic Messages API 响应和 SSE 事件");
-
-        // Anthropic Usage
-        AddGroup(groups, structIndex, "Anthropic Usage",
-            ["ClaudeUsage", "ClaudeCacheCreationUsage"],
-            "Anthropic token 用量统计");
-
-        // Anthropic 工具
-        AddGroup(groups, structIndex, "Anthropic 工具",
-            ["Tool", "ClaudeWebSearchTool", "ClaudeToolChoice"],
-            "Anthropic 工具定义与选择");
-
-        // Anthropic Thinking
-        AddGroup(groups, structIndex, "Anthropic Thinking",
-            ["Thinking"],
-            "Anthropic thinking 配置（budget_tokens 等）");
-
-        // Legacy Completions 流式响应
-        AddGroup(groups, structIndex, "Legacy Completions 流式响应",
-            ["CompletionsStreamResponse"],
-            "Legacy Completions SSE 流式响应");
-
-        return groups;
-    }
 
     /// <summary>
-    /// 计算每个分组中 new-api 有但当前项目未处理的字段。
+    /// 计算每个分组中的字段对齐情况。
     /// </summary>
     public static List<FieldDiffResult> ComputeDiffs(
         List<ProtocolStructGroup> groups,
-        HashSet<string> currentProjectFields)
+        Dictionary<string, CurrentFieldUsage> currentProjectFields)
     {
         var results = new List<FieldDiffResult>();
 
         foreach (var group in groups)
         {
-            var allRefFields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var field in group.Fields)
+            var fieldMap = group.Fields
+                .GroupBy(field => field.JsonName, StringComparer.OrdinalIgnoreCase)
+                .OrderBy(grouping => grouping.Key, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var rows = new List<FieldAlignmentRow>();
+            foreach (var fieldGroup in fieldMap)
             {
-                allRefFields.Add(field.JsonName);
+                currentProjectFields.TryGetValue(fieldGroup.Key, out var currentUsage);
+
+                var referenceFields = fieldGroup.ToList();
+                var referenceTypes = string.Join(" / ", referenceFields
+                    .Select(field => field.GoType)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(type => type, StringComparer.OrdinalIgnoreCase));
+
+                var typeMatchStatus = EvaluateTypeMatch(referenceFields, currentUsage);
+                rows.Add(new FieldAlignmentRow(
+                    fieldGroup.Key,
+                    referenceTypes,
+                    referenceFields.All(field => field.OmitEmpty),
+                    currentUsage is not null,
+                    currentUsage?.DisplayTypeHints ?? "—",
+                    typeMatchStatus));
             }
 
-            var missing = allRefFields
-                .Where(f => !currentProjectFields.Contains(f))
-                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            var matched = allRefFields
-                .Where(f => currentProjectFields.Contains(f))
-                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
-                .ToList();
-
-            results.Add(new FieldDiffResult(group, matched, missing));
+            results.Add(new FieldDiffResult(group, rows));
         }
 
         return results;
     }
 
-    private static void AddGroup(
-        List<ProtocolStructGroup> groups,
-        Dictionary<string, GoStructDefinition> structIndex,
-        string label,
-        string[] structNames,
-        string description)
+    /// <summary>
+    /// 评估字段在类型层面是否存在明显不一致。
+    /// </summary>
+    private static FieldTypeMatchStatus EvaluateTypeMatch(List<GoStructField> referenceFields, CurrentFieldUsage? currentUsage)
     {
-        var fields = new List<GoStructField>();
-        var foundStructs = new List<string>();
-
-        foreach (var name in structNames)
+        if (currentUsage is null)
         {
-            if (structIndex.TryGetValue(name, out var def))
-            {
-                fields.AddRange(def.Fields);
-                foundStructs.Add(name);
-            }
+            return FieldTypeMatchStatus.Missing;
         }
 
-        if (fields.Count > 0)
+        // 当前项目大量通过 JsonNode / JsonObject 动态透传或组装字段。
+        // 只在存在“强类型且明显不一致”的证据时才判为类型不一致，避免把动态处理误报为缺口。
+        if (currentUsage.TypeHints.Contains("json") || currentUsage.TypeHints.Contains("scalar"))
         {
-            groups.Add(new ProtocolStructGroup(label, description, foundStructs, fields));
+            return FieldTypeMatchStatus.Matched;
         }
+
+        var referenceKinds = referenceFields
+            .Select(field => NormalizeGoTypeKind(field.GoType))
+            .Where(kind => kind != "unknown")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (referenceKinds.Count == 0 || referenceKinds.Contains("json"))
+        {
+            return FieldTypeMatchStatus.Matched;
+        }
+
+        var currentKinds = currentUsage.TypeHints
+            .Select(NormalizeCurrentTypeKind)
+            .Where(kind => kind != "unknown" && kind != "json" && kind != "scalar")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (currentKinds.Count == 0)
+        {
+            return FieldTypeMatchStatus.Matched;
+        }
+
+        return currentKinds.Overlaps(referenceKinds)
+            ? FieldTypeMatchStatus.Matched
+            : FieldTypeMatchStatus.TypeMismatch;
     }
+
+    /// <summary>
+    /// 将 Go 类型归一化为更适合比较的 JSON 类型类别。
+    /// </summary>
+    private static string NormalizeGoTypeKind(string goType)
+    {
+        var type = goType.Trim().TrimStart('*');
+        if (type.StartsWith("[]", StringComparison.Ordinal))
+        {
+            return "array";
+        }
+
+        if (type.StartsWith("map[", StringComparison.Ordinal))
+        {
+            return "object";
+        }
+
+        return type switch
+        {
+            "string" => "string",
+            "bool" => "bool",
+            "int" or "int32" or "int64" or "uint" or "uint32" or "uint64" or "float32" or "float64" => "number",
+            "interface{}" or "any" => "json",
+            _ when type.Contains("Response", StringComparison.OrdinalIgnoreCase)
+                || type.Contains("Request", StringComparison.OrdinalIgnoreCase)
+                || type.Contains("Message", StringComparison.OrdinalIgnoreCase)
+                || type.Contains("Content", StringComparison.OrdinalIgnoreCase)
+                || type.Contains("Tool", StringComparison.OrdinalIgnoreCase)
+                || type.Contains("Usage", StringComparison.OrdinalIgnoreCase)
+                || type.Contains("Thinking", StringComparison.OrdinalIgnoreCase) => "object",
+            _ => "unknown"
+        };
+    }
+
+    /// <summary>
+    /// 将当前项目扫描到的类型线索归一化为可对比的类别。
+    /// </summary>
+    private static string NormalizeCurrentTypeKind(string currentType)
+    {
+        return currentType switch
+        {
+            "string" => "string",
+            "bool" => "bool",
+            "number" => "number",
+            "array" => "array",
+            "object" => "object",
+            "null" => "null",
+            "json" or "scalar" => currentType,
+            _ => "unknown"
+        };
+    }
+
 }
 
 /// <summary>
@@ -178,15 +160,43 @@ internal sealed class ProtocolStructGroup(
 }
 
 /// <summary>
-/// 字段对比结果。
+/// 单个字段的对齐行。
 /// </summary>
-internal sealed class FieldDiffResult(
-    ProtocolStructGroup group,
-    List<string> matchedFields,
-    List<string> missingFields)
+internal sealed class FieldAlignmentRow(
+    string fieldName,
+    string referenceType,
+    bool optional,
+    bool isDetected,
+    string currentTypeHint,
+    FieldTypeMatchStatus typeMatchStatus)
+{
+    public string FieldName { get; } = fieldName;
+    public string ReferenceType { get; } = referenceType;
+    public bool Optional { get; } = optional;
+    public bool IsDetected { get; } = isDetected;
+    public string CurrentTypeHint { get; } = currentTypeHint;
+    public FieldTypeMatchStatus TypeMatchStatus { get; } = typeMatchStatus;
+    public bool IsAligned => TypeMatchStatus == FieldTypeMatchStatus.Matched;
+}
+
+/// <summary>
+/// 字段对齐结果。
+/// </summary>
+internal sealed class FieldDiffResult(ProtocolStructGroup group, List<FieldAlignmentRow> rows)
 {
     public ProtocolStructGroup Group { get; } = group;
-    public List<string> MatchedFields { get; } = matchedFields;
-    public List<string> MissingFields { get; } = missingFields;
-    public bool HasMissing => MissingFields.Count > 0;
+    public List<FieldAlignmentRow> Rows { get; } = rows;
+    public List<FieldAlignmentRow> AlignedRows => Rows.Where(row => row.IsAligned).ToList();
+    public List<FieldAlignmentRow> MisalignedRows => Rows.Where(row => !row.IsAligned).ToList();
+    public bool HasMismatch => MisalignedRows.Count > 0;
+}
+
+/// <summary>
+/// 字段类型对齐状态。
+/// </summary>
+internal enum FieldTypeMatchStatus
+{
+    Matched,
+    Missing,
+    TypeMismatch
 }

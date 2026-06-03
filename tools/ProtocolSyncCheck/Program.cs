@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 
@@ -5,7 +6,10 @@ using System.Text.RegularExpressions;
 using ProtocolSyncCheck;
 
 var repositoryRoot = ResolveRepositoryRoot(args);
-var outputPath = Path.Combine(repositoryRoot, "protocol-sync-report.md");
+var outputPath = Path.Combine(repositoryRoot, "docs", "protocol-sync-report.md");
+
+// 拉取参考项目最新代码
+GitPullHelper.PullReferenceProjects(repositoryRoot);
 
 // 路由级扫描
 var catalog = ProtocolCatalog.CreateDefault();
@@ -30,11 +34,13 @@ var currentProjectFiles = Directory
     .ToArray();
 
 var currentFields = CSharpFieldScanner.ScanFiles(currentProjectFiles);
-var structGroups = FieldDiffEngine.BuildGroups(goStructs);
-var fieldDiffs = FieldDiffEngine.ComputeDiffs(structGroups, currentFields);
+var newApiStructGroups = NewApiFieldGroupBuilder.BuildGroups(repositoryRoot, goStructs);
+var newApiFieldDiffs = FieldDiffEngine.ComputeDiffs(newApiStructGroups, currentFields);
+var cpaFieldGroups = CpaFieldGroupBuilder.BuildGroups(repositoryRoot);
+var cpaFieldDiffs = FieldDiffEngine.ComputeDiffs(cpaFieldGroups, currentFields);
 
 // 生成报告
-var report = ProtocolReportBuilder.Build(results, catalog, fieldDiffs);
+var report = ProtocolReportBuilder.Build(results, catalog, newApiFieldDiffs, cpaFieldDiffs);
 File.WriteAllText(outputPath, report, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
 Console.WriteLine($"协议同步报告已生成：{Path.GetRelativePath(repositoryRoot, outputPath)}");
@@ -42,7 +48,7 @@ foreach (var result in results)
 {
     Console.WriteLine($"{result.ProjectName}: {result.Routes.Count} routes");
 }
-Console.WriteLine($"字段级对比：{goStructs.Count} 个 Go struct，{currentFields.Count} 个当前项目字段，{fieldDiffs.Count} 个分组");
+Console.WriteLine($"字段级对比：new-api {goStructs.Count} 个 Go struct、{newApiFieldDiffs.Count} 个分组；CPA {cpaFieldDiffs.Count} 个分组；当前项目 {currentFields.Count} 个字段");
 
 /// <summary>
 /// 解析当前仓库根目录，默认从工具运行目录向上查找项目标记文件。
@@ -592,322 +598,203 @@ internal static class ProtocolReportBuilder
 {
     /// <summary>
     /// 根据三方扫描结果和字段级对比生成完整 Markdown 报告。
+    /// 报告主体只保留两类信息：参考项目已支持但当前项目未实现的接口，以及已实现接口的字段对齐情况。
     /// </summary>
-    public static string Build(IReadOnlyList<ProjectScanResult> results, ProtocolCatalog catalog, List<FieldDiffResult> fieldDiffs)
+    public static string Build(
+        IReadOnlyList<ProjectScanResult> results,
+        ProtocolCatalog catalog,
+        List<FieldDiffResult> newApiFieldDiffs,
+        List<FieldDiffResult> cpaFieldDiffs)
     {
         var current = results.First(result => result.ProjectName == "当前项目 AITool");
         var references = results.Where(result => result.ProjectName != current.ProjectName).ToArray();
+        var newApi = references.First(result => result.ProjectName == "new-api");
+        var cpa = references.First(result => result.ProjectName == "CPA / CLIProxyAPI");
         var builder = new StringBuilder();
 
         builder.AppendLine("# 协议同步检查报告");
         builder.AppendLine();
-
-        // 一句话结论
-        AppendSummary(builder, current, references, fieldDiffs);
-        // 路由级同步
-        AppendCurrentRouteSyncStatus(builder, current, references);
-        // 字段级差异（只列 ⚠️）
-        AppendFieldDiffReport(builder, fieldDiffs);
-        // 附录：全量矩阵、501/stub 折叠
-        builder.AppendLine();
-        builder.AppendLine("---");
-        builder.AppendLine();
-        builder.AppendLine("<details>");
-        builder.AppendLine("<summary>📎 附录：全量路由支持矩阵、501/stub 路由、覆盖范围</summary>");
-        builder.AppendLine();
-        AppendReferenceOnlyRoutes(builder, current, references, catalog);
-        AppendRouteMatrix(builder, results);
-        AppendStubRoutes(builder, results);
-        AppendIgnoredNote(builder);
-        builder.AppendLine();
-        builder.AppendLine("</details>");
-
+        AppendOverview(builder, current, newApi, cpa, catalog, newApiFieldDiffs, cpaFieldDiffs);
+        AppendReferenceRouteComparison(builder, current, newApi, catalog);
+        AppendFieldAlignmentReport(builder, "new-api", newApiFieldDiffs);
+        AppendReferenceRouteComparison(builder, current, cpa, catalog);
+        AppendFieldAlignmentReport(builder, "CPA / CLIProxyAPI", cpaFieldDiffs);
         return builder.ToString();
     }
 
     /// <summary>
-    /// 顶部一句话结论：路由是否有风险 + 字段是否有差异。
+    /// 输出报告顶部总览，只汇总用户关心的两件事。
     /// </summary>
-    private static void AppendSummary(StringBuilder builder, ProjectScanResult current, IReadOnlyList<ProjectScanResult> references, List<FieldDiffResult> fieldDiffs)
+    private static void AppendOverview(
+        StringBuilder builder,
+        ProjectScanResult current,
+        ProjectScanResult newApi,
+        ProjectScanResult cpa,
+        ProtocolCatalog catalog,
+        List<FieldDiffResult> newApiFieldDiffs,
+        List<FieldDiffResult> cpaFieldDiffs)
     {
-        var currentRoutes = current.Routes.Where(r => !r.IsNotImplemented).ToArray();
-        var referenceIndex = references.ToDictionary(
-            r => r.ProjectName,
-            r => r.Routes.Where(route => !route.IsNotImplemented)
-                .Select(route => route.Key)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase),
-            StringComparer.OrdinalIgnoreCase);
+        var newApiReferenceOnlyRoutes = CollectReferenceOnlyRoutes(current, newApi, catalog);
+        var cpaReferenceOnlyRoutes = CollectReferenceOnlyRoutes(current, cpa, catalog);
+        var newApiMismatchedGroups = newApiFieldDiffs.Where(diff => diff.HasMismatch).ToList();
+        var newApiAlignedGroups = newApiFieldDiffs.Where(diff => !diff.HasMismatch).ToList();
+        var cpaMismatchedGroups = cpaFieldDiffs.Where(diff => diff.HasMismatch).ToList();
+        var cpaAlignedGroups = cpaFieldDiffs.Where(diff => !diff.HasMismatch).ToList();
 
-        // 检查是否有路由在某个参考项目中消失
-        var routeWarnings = new List<string>();
-        foreach (var route in currentRoutes)
-        {
-            foreach (var reference in references)
-            {
-                if (!referenceIndex[reference.ProjectName].Contains(route.Key))
-                {
-                    routeWarnings.Add($"`{route.Method} {route.Path}` 在 {reference.ProjectName} 中未检测到");
-                }
-            }
-        }
-
-        // 检查字段差异
-        var fieldWarningCount = fieldDiffs.Where(d => d.HasMissing)
-            .SelectMany(d => d.MissingFields)
-            .Count();
-
-        var allFieldCount = fieldDiffs.SelectMany(d => d.Group.Fields).Count();
-        var matchedFieldCount = allFieldCount - fieldWarningCount;
-
-        // 输出结论
-        if (routeWarnings.Count == 0 && fieldWarningCount == 0)
-        {
-            builder.AppendLine("> ✅ **所有已实现路由在参考项目中均仍被检测到，所有协议字段均已覆盖。**");
-        }
-        else if (routeWarnings.Count > 0)
-        {
-            builder.AppendLine($"> ⚠️ **发现 {routeWarnings.Count} 个路由同步风险：** {string.Join("；", routeWarnings)}");
-        }
-
-        if (fieldWarningCount > 0)
-        {
-            builder.AppendLine($"> 📋 **字段覆盖：{matchedFieldCount}/{allFieldCount}**（new-api 中有 {fieldWarningCount} 个 JSON 字段在当前项目代码中未检测到，详见下方）");
-        }
-
+        builder.AppendLine("## 总览");
         builder.AppendLine();
-        builder.AppendLine($"| 指标 | 数值 |");
-        builder.AppendLine($"| --- | ---: |");
-        builder.AppendLine($"| 当前项目已实现路由 | {currentRoutes.Length} |");
-        builder.AppendLine($"| new-api 扫描 struct | {fieldDiffs.SelectMany(d => d.Group.StructNames).Distinct().Count()} 个 |");
-        builder.AppendLine($"| 字段总覆盖 | {matchedFieldCount}/{allFieldCount} |");
+        builder.AppendLine($"- new-api 已支持但本项目未实现的接口：**{newApiReferenceOnlyRoutes.Count}** 个");
+        builder.AppendLine($"- CPA / CLIProxyAPI 已支持但本项目未实现的接口：**{cpaReferenceOnlyRoutes.Count}** 个");
+        builder.AppendLine($"- 基于 new-api 的未对齐分组：**{newApiMismatchedGroups.Count}** 个，完全对齐分组：**{newApiAlignedGroups.Count}** 个");
+        builder.AppendLine($"- 基于 CPA / CLIProxyAPI 的未对齐分组：**{cpaMismatchedGroups.Count}** 个，完全对齐分组：**{cpaAlignedGroups.Count}** 个");
+        builder.AppendLine();
     }
 
     /// <summary>
-    /// 核心章节：逐条列出当前项目已有路由，并标注各参考项目是否仍支持。
+    /// 按单个参考项目展示该项目已支持但当前项目未实现的接口。
     /// </summary>
-    private static void AppendCurrentRouteSyncStatus(StringBuilder builder, ProjectScanResult current, IReadOnlyList<ProjectScanResult> references)
+    private static void AppendReferenceRouteComparison(
+        StringBuilder builder,
+        ProjectScanResult current,
+        ProjectScanResult reference,
+        ProtocolCatalog catalog)
     {
-        var currentRoutes = current.Routes.Where(route => !route.IsNotImplemented).ToArray();
+        var routes = CollectReferenceOnlyRoutes(current, reference, catalog);
 
-        var referenceIndex = references.ToDictionary(
-            r => r.ProjectName,
-            r => r.Routes.Where(route => !route.IsNotImplemented)
-                .Select(route => route.Key)
-                .ToHashSet(StringComparer.OrdinalIgnoreCase),
-            StringComparer.OrdinalIgnoreCase);
-
-        builder.AppendLine("## 路由同步状态");
+        builder.AppendLine($"## 与 {EscapeMarkdown(reference.ProjectName)} 对比");
+        builder.AppendLine();
+        builder.AppendLine($"### {EscapeMarkdown(reference.ProjectName)} 已支持但本项目未实现的接口");
         builder.AppendLine();
 
-        if (currentRoutes.Length == 0)
+        if (routes.Count == 0)
         {
-            builder.AppendLine("当前项目未扫描到已实现的路由。");
-            return;
-        }
-
-        builder.Append("| Method | URL | 说明 |");
-        foreach (var reference in references)
-        {
-            builder.Append(' ').Append(EscapeMarkdown(reference.ProjectName)).Append(" |");
-        }
-        builder.AppendLine();
-
-        builder.Append("| --- | --- | --- |");
-        foreach (var _ in references)
-        {
-            builder.Append(" --- |");
-        }
-        builder.AppendLine();
-
-        foreach (var route in currentRoutes)
-        {
-            builder.Append($"| {route.Method} | `{route.Path}` | {EscapeMarkdown(route.Description)} |");
-            foreach (var reference in references)
-            {
-                var supported = referenceIndex[reference.ProjectName].Contains(route.Key);
-                builder.Append(supported ? " ✅ |" : " ⚠️ |");
-            }
+            builder.AppendLine($"✅ 当前没有发现 {EscapeMarkdown(reference.ProjectName)} 已支持但本项目尚未实现的 OpenAI / Anthropic 接口。");
             builder.AppendLine();
-        }
-    }
-
-    /// <summary>
-    /// 字段级差异报告：只列出有差异的分组，只显示 ⚠️ 字段，已匹配的折叠。
-    /// </summary>
-    private static void AppendFieldDiffReport(StringBuilder builder, List<FieldDiffResult> fieldDiffs)
-    {
-        builder.AppendLine();
-        builder.AppendLine("## 字段级差异（new-api → 当前项目）");
-        builder.AppendLine();
-        builder.AppendLine("> 自动对比 new-api Go struct 中的 JSON 字段与当前项目代码中实际出现的字段名。");
-        builder.AppendLine("> ⚠️ 代表 new-api 有但当前项目代码中未检测到。你的代理如果是透传 body，大部分字段不需要显式处理，这里重点关注**桥接转换**相关的字段。");
-        builder.AppendLine();
-
-        var withMissing = fieldDiffs.Where(d => d.HasMissing).ToList();
-        var allMatched = fieldDiffs.Where(d => !d.HasMissing).ToList();
-
-        if (withMissing.Count == 0)
-        {
-            builder.AppendLine("✅ 所有字段均已覆盖，无差异。");
             return;
         }
 
-        foreach (var diff in withMissing)
+        builder.AppendLine("| 协议 | 分类 | Method | URL | 说明 |");
+        builder.AppendLine("| --- | --- | --- | --- | --- |");
+        foreach (var item in routes)
         {
-            builder.AppendLine($"### {EscapeMarkdown(diff.Group.Label)}");
+            builder.AppendLine($"| {EscapeMarkdown(item.Target.Protocol)} | {EscapeMarkdown(item.Target.Category)} | {item.Target.Method} | `{item.Target.Path}` | {EscapeMarkdown(item.Target.Description)} |");
+        }
+
+        builder.AppendLine();
+    }
+
+    /// <summary>
+    /// 输出已实现接口的字段对齐情况：明确标注当前字段对比基于哪个参考项目。
+    /// </summary>
+    private static void AppendFieldAlignmentReport(StringBuilder builder, string referenceProjectName, List<FieldDiffResult> fieldDiffs)
+    {
+        var mismatchedGroups = fieldDiffs
+            .Where(diff => diff.HasMismatch)
+            .OrderByDescending(diff => diff.MisalignedRows.Count)
+            .ThenBy(diff => diff.Group.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var alignedGroups = fieldDiffs
+            .Where(diff => !diff.HasMismatch)
+            .OrderBy(diff => diff.Group.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        builder.AppendLine($"### 基于 {EscapeMarkdown(referenceProjectName)} 的字段对齐情况");
+        builder.AppendLine();
+        builder.AppendLine($"> 当前字段明细对比来源：**{EscapeMarkdown(referenceProjectName)}**。表格仅展示**未对齐字段**。`当前类型线索` 来自当前项目对 JsonNode / JsonObject 的实际读写代码。");
+        builder.AppendLine();
+
+        builder.AppendLine("#### 完全对齐（简要）");
+        builder.AppendLine();
+        if (alignedGroups.Count == 0)
+        {
+            builder.AppendLine("- 无");
+        }
+        else
+        {
+            foreach (var diff in alignedGroups)
+            {
+                builder.AppendLine($"- **{EscapeMarkdown(diff.Group.Label)}**：{diff.Rows.Count}/{diff.Rows.Count} 字段已对齐");
+            }
+        }
+
+        builder.AppendLine();
+        builder.AppendLine("#### 未对齐接口");
+        builder.AppendLine();
+
+        if (mismatchedGroups.Count == 0)
+        {
+            builder.AppendLine($"✅ 当前基于 {EscapeMarkdown(referenceProjectName)} 的字段扫描中，已实现接口字段均已对齐。");
+            builder.AppendLine();
+            return;
+        }
+
+        foreach (var diff in mismatchedGroups)
+        {
+            builder.AppendLine($"##### {EscapeMarkdown(diff.Group.Label)}");
             builder.AppendLine();
             builder.AppendLine($"> {EscapeMarkdown(diff.Group.Description)}");
             builder.AppendLine();
-
-            // 只列未检测到的字段，紧凑格式
-            builder.AppendLine(string.Join(" ", diff.MissingFields.Select(f => $"`{f}`")));
+            builder.AppendLine($"- 对齐情况：{diff.AlignedRows.Count}/{diff.Rows.Count}");
+            builder.AppendLine($"- 未对齐字段：{diff.MisalignedRows.Count}");
             builder.AppendLine();
-            builder.AppendLine($"<details><summary>✅ 已覆盖 {diff.MatchedFields.Count} 个：{string.Join(", ", diff.MatchedFields.Take(8))}{(diff.MatchedFields.Count > 8 ? " ..." : "")}</summary>");
-            builder.AppendLine();
-            builder.AppendLine(string.Join(", ", diff.MatchedFields.Select(f => $"`{f}`")));
-            builder.AppendLine();
-            builder.AppendLine("</details>");
-            builder.AppendLine();
-        }
-
-        if (allMatched.Count > 0)
-        {
-            builder.AppendLine("<details><summary>✅ 完全匹配的分组（点击展开）</summary>");
-            builder.AppendLine();
-            foreach (var diff in allMatched)
+            builder.AppendLine("| 字段 | 参考类型 | 可选 | 当前状态 | 当前类型线索 |");
+            builder.AppendLine("| --- | --- | --- | --- | --- |");
+            foreach (var row in diff.MisalignedRows)
             {
-                builder.AppendLine($"- **{EscapeMarkdown(diff.Group.Label)}**：全部 {diff.MatchedFields.Count} 个字段");
-            }
-            builder.AppendLine();
-            builder.AppendLine("</details>");
-        }
-    }
-
-    /// <summary>
-    /// 参考信息：列出参考项目支持但当前项目暂未实现的路由，仅作参考提示。
-    /// </summary>
-    private static void AppendReferenceOnlyRoutes(StringBuilder builder, ProjectScanResult current, IReadOnlyList<ProjectScanResult> references, ProtocolCatalog catalog)
-    {
-        var currentKeys = current.Routes.Where(route => !route.IsNotImplemented).Select(route => route.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var referenceRoutes = references
-            .SelectMany(result => result.Routes.Where(route => !route.IsNotImplemented).Select(route => new { Project = result.ProjectName, Route = route }))
-            .GroupBy(item => item.Route.Key, StringComparer.OrdinalIgnoreCase)
-            .ToDictionary(group => group.Key, group => group.ToList(), StringComparer.OrdinalIgnoreCase);
-
-        // 只列出 catalog 中主协议/legacy 分类的路由（排除扩展和 stub）
-        var refOnly = catalog.SyncTargets
-            .Where(target => referenceRoutes.ContainsKey(target.Key) && !currentKeys.Contains(target.Key))
-            .ToArray();
-
-        builder.AppendLine();
-        builder.AppendLine("## 参考信息：参考项目已支持但当前项目暂未实现的路由");
-        builder.AppendLine();
-        builder.AppendLine("> 以下路由仅作参考，不视为同步缺口。后续如需新增接口可优先考虑这些路由。");
-        builder.AppendLine();
-
-        if (refOnly.Length == 0)
-        {
-            builder.AppendLine("当前没有发现参考项目支持但当前项目未实现的主协议或 legacy 路由。");
-            return;
-        }
-
-        builder.AppendLine("| 协议 | 分类 | Method | URL | 参考项目 | 说明 |");
-        builder.AppendLine("| --- | --- | --- | --- | --- | --- |");
-        foreach (var target in refOnly)
-        {
-            var projects = string.Join("、", referenceRoutes[target.Key].Select(item => item.Project).Distinct(StringComparer.OrdinalIgnoreCase));
-            builder.AppendLine($"| {target.Protocol} | {target.Category} | {target.Method} | `{target.Path}` | {EscapeMarkdown(projects)} | {EscapeMarkdown(target.Description)} |");
-        }
-    }
-
-    /// <summary>
-    /// 追加三方路由支持矩阵。
-    /// </summary>
-    private static void AppendRouteMatrix(StringBuilder builder, IReadOnlyList<ProjectScanResult> results)
-    {
-        var allRoutes = results
-            .SelectMany(result => result.Routes.Where(route => !route.IsNotImplemented))
-            .GroupBy(route => route.Key, StringComparer.OrdinalIgnoreCase)
-            .Select(group => group.First())
-            .OrderBy(route => route.Protocol, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(route => route.Category, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(route => route.Path, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(route => route.Method, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-
-        builder.AppendLine();
-        builder.AppendLine("## 已识别路由支持矩阵");
-        builder.AppendLine();
-        builder.Append("| 协议 | 分类 | Method | URL | 说明 |");
-        foreach (var result in results)
-        {
-            builder.Append(' ').Append(EscapeMarkdown(result.ProjectName)).Append(" |");
-        }
-        builder.AppendLine();
-        builder.Append("| --- | --- | --- | --- | --- |");
-        foreach (var _ in results)
-        {
-            builder.Append(" --- |");
-        }
-        builder.AppendLine();
-
-        foreach (var route in allRoutes)
-        {
-            builder.Append($"| {route.Protocol} | {route.Category} | {route.Method} | `{route.Path}` | {EscapeMarkdown(route.Description)} |");
-            foreach (var result in results)
-            {
-                var matched = result.Routes.FirstOrDefault(item => string.Equals(item.Key, route.Key, StringComparison.OrdinalIgnoreCase) && !item.IsNotImplemented);
-                builder.Append(' ').Append(matched is null ? "—" : $"✅ {FormatSource(matched)}").Append(" |");
+                builder.AppendLine($"| `{row.FieldName}` | `{EscapeMarkdown(row.ReferenceType)}` | {FormatOptional(row.Optional)} | {FormatFieldStatus(row.TypeMatchStatus)} | {EscapeMarkdown(row.CurrentTypeHint)} |");
             }
             builder.AppendLine();
         }
     }
 
     /// <summary>
-    /// 追加已识别但属于 501 或 stub 的路由，避免误当作同步缺口。
+    /// 收集单个参考项目已支持但当前项目未实现的接口。
     /// </summary>
-    private static void AppendStubRoutes(StringBuilder builder, IReadOnlyList<ProjectScanResult> results)
+    private static List<ReferenceOnlyRoute> CollectReferenceOnlyRoutes(
+        ProjectScanResult current,
+        ProjectScanResult reference,
+        ProtocolCatalog catalog)
     {
-        var stubs = results
-            .SelectMany(result => result.Routes.Where(route => route.IsNotImplemented).Select(route => new { Project = result.ProjectName, Route = route }))
-            .OrderBy(item => item.Route.Path, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Route.Method, StringComparer.OrdinalIgnoreCase)
-            .ToArray();
+        var currentKeys = current.Routes
+            .Where(route => !route.IsNotImplemented)
+            .Select(route => route.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        builder.AppendLine();
-        builder.AppendLine("## 已识别但不作为同步缺口的 501 / stub 路由");
-        builder.AppendLine();
-        if (stubs.Length == 0)
-        {
-            builder.AppendLine("本次没有识别到 501 / stub 路由。");
-            return;
-        }
+        var referenceKeys = reference.Routes
+            .Where(route => !route.IsNotImplemented)
+            .Select(route => route.Key)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
-        builder.AppendLine("| 项目 | Method | URL | 说明 | 代码位置 |");
-        builder.AppendLine("| --- | --- | --- | --- | --- |");
-        foreach (var item in stubs)
-        {
-            builder.AppendLine($"| {EscapeMarkdown(item.Project)} | {item.Route.Method} | `{item.Route.Path}` | {EscapeMarkdown(item.Route.Description)} | {FormatSource(item.Route)} |");
-        }
+        return catalog.SyncTargets
+            .Where(target => referenceKeys.Contains(target.Key) && !currentKeys.Contains(target.Key))
+            .Select(target => new ReferenceOnlyRoute(target))
+            .OrderBy(item => item.Target.Protocol, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Target.Category, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Target.Path, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.Target.Method, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     /// <summary>
-    /// 追加当前第一版工具的覆盖范围说明。
+    /// 将字段对齐状态转换为直观文案。
     /// </summary>
-    private static void AppendIgnoredNote(StringBuilder builder)
+    private static string FormatFieldStatus(FieldTypeMatchStatus status)
     {
-        builder.AppendLine();
-        builder.AppendLine("## 覆盖范围说明");
-        builder.AppendLine();
-        builder.AppendLine("本工具第一版只扫描当前项目关心的 OpenAI / Anthropic 主协议、legacy 接口和已知扩展路径。Gemini、MJ、Suno、Jimeng、管理后台、OAuth、健康检查和 provider alias 暂不作为主协议同步缺口。后续如果需要跟踪新的协议族，应先把路径加入工具中的 `ProtocolCatalog`。 ");
+        return status switch
+        {
+            FieldTypeMatchStatus.Missing => "未检测到",
+            FieldTypeMatchStatus.TypeMismatch => "类型线索不一致",
+            _ => "已对齐"
+        };
     }
 
     /// <summary>
-    /// 格式化路由源码位置为 Markdown 链接。
+    /// 格式化字段可选性。
     /// </summary>
-    private static string FormatSource(ProtocolRoute route)
+    private static string FormatOptional(bool optional)
     {
-        return $"[{route.SourcePath}:{route.LineNumber}]({route.SourcePath}#L{route.LineNumber})";
+        return optional ? "是" : "否";
     }
 
     /// <summary>
@@ -916,5 +803,100 @@ internal static class ProtocolReportBuilder
     private static string EscapeMarkdown(string value)
     {
         return value.Replace("|", "\\|", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 参考项目已支持但当前项目未实现的接口项。
+    /// </summary>
+    private sealed record ReferenceOnlyRoute(RouteClassification Target);
+}
+/// <summary>
+/// 拉取参考项目（new-api、CLIProxyAPI）的最新代码。
+/// </summary>
+internal static class GitPullHelper
+{
+    /// <summary>
+    /// 拉取参考项目的最新代码，拉取失败时输出警告但不中断主流程。
+    /// </summary>
+    public static void PullReferenceProjects(string repositoryRoot)
+    {
+        var referenceDir = Path.Combine(repositoryRoot, "reference-projects");
+        if (!Directory.Exists(referenceDir))
+        {
+            Console.WriteLine("⚠️ 未找到 reference-projects 目录，跳过拉取。");
+            return;
+        }
+
+        foreach (var projectDir in Directory.EnumerateDirectories(referenceDir))
+        {
+            if (!Directory.Exists(Path.Combine(projectDir, ".git")))
+            {
+                continue;
+            }
+
+            var projectName = Path.GetFileName(projectDir);
+            Console.Write($"正在拉取 {projectName} 最新代码...");
+            var (success, output) = RunGitPull(projectDir);
+            if (success)
+            {
+                Console.WriteLine($" ✅ {ExtractPullSummary(output)}");
+            }
+            else
+            {
+                Console.WriteLine($" ⚠️ 拉取失败：{output.Split('\n').FirstOrDefault()}");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 在指定目录执行 git pull，返回是否成功及命令输出。
+    /// </summary>
+    private static (bool Success, string Output) RunGitPull(string workingDirectory)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = "git",
+                Arguments = "pull --ff-only",
+                WorkingDirectory = workingDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(psi);
+            if (process is null)
+            {
+                return (false, "无法启动 git 进程");
+            }
+
+            var output = process.StandardOutput.ReadToEnd();
+            var error = process.StandardError.ReadToEnd();
+            process.WaitForExit();
+
+            return process.ExitCode == 0
+                ? (true, string.IsNullOrEmpty(output) ? error : output)
+                : (false, string.IsNullOrEmpty(error) ? output : error);
+        }
+        catch (Exception ex)
+        {
+            return (false, ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 从 git pull 输出中提取简要摘要（如文件变更数）。
+    /// </summary>
+    private static string ExtractPullSummary(string output)
+    {
+        var firstLine = output.Split('\n').FirstOrDefault()?.Trim();
+        if (string.IsNullOrEmpty(firstLine) || firstLine.Equals("Already up to date.", StringComparison.OrdinalIgnoreCase))
+        {
+            return "已是最新";
+        }
+
+        return firstLine;
     }
 }
