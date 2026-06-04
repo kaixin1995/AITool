@@ -1313,9 +1313,15 @@
             var hash = (window.location.hash || '').toLowerCase();
             var targetTab = null;
 
-            if (hash === '#conversationlogpane') {
+            if (!hash) {
+                syncChatTabHash('#chatTestPane');
+                targetTab = chatTestTab;
+            } else if (hash === '#conversationlogpane') {
                 targetTab = conversationLogTab;
             } else if (hash === '#chattestpane') {
+                targetTab = chatTestTab;
+            } else {
+                syncChatTabHash('#chatTestPane');
                 targetTab = chatTestTab;
             }
 
