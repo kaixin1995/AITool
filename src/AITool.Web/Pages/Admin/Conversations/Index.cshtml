@@ -1011,16 +1011,23 @@
 
     function formatTokenCount(value) {
         var tokenValue = Number(value || 0);
-        if (tokenValue >= 1000000000) {
-            return (tokenValue / 1000000000).toFixed(tokenValue >= 10000000000 ? 0 : 1).replace(/\.0$/, '') + 'G';
-        }
+        var abs = Math.abs(tokenValue);
+        var units = [
+            { threshold: 1000000000000000000, suffix: 'E' },
+            { threshold: 1000000000000000, suffix: 'P' },
+            { threshold: 1000000000000, suffix: 'T' },
+            { threshold: 1000000000, suffix: 'B' },
+            { threshold: 1000000, suffix: 'M' },
+            { threshold: 1000, suffix: 'K' }
+        ];
 
-        if (tokenValue >= 1000000) {
-            return (tokenValue / 1000000).toFixed(tokenValue >= 10000000 ? 0 : 1).replace(/\.0$/, '') + 'M';
-        }
-
-        if (tokenValue >= 1000) {
-            return (tokenValue / 1000).toFixed(tokenValue >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'K';
+        for (var i = 0; i < units.length; i++) {
+            var unit = units[i];
+            if (abs >= unit.threshold) {
+                var scaled = tokenValue / unit.threshold;
+                var formatted = Math.abs(scaled) >= 10 ? scaled.toFixed(0) : scaled.toFixed(1);
+                return formatted.replace(/\.0$/, '') + unit.suffix;
+            }
         }
 
         return String(tokenValue);

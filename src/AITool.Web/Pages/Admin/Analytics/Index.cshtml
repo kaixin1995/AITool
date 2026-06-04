@@ -1057,13 +1057,15 @@
                 return `${year}-${month}-${day}T${hours}:${minutes}`;
             }
 
-            // Tokens 统一按数量级自动换单位，避免大数难读。
+            // Tokens 统一按标准英文大数单位自动换算，避免大数难读。
             function formatTokenValue(value) {
                 const number = Number(value || 0);
                 const abs = Math.abs(number);
                 const units = [
+                    { threshold: 1e18, suffix: 'E', digits: 2 },
+                    { threshold: 1e15, suffix: 'P', digits: 2 },
                     { threshold: 1e12, suffix: 'T', digits: 2 },
-                    { threshold: 1e9, suffix: 'G', digits: 2 },
+                    { threshold: 1e9, suffix: 'B', digits: 2 },
                     { threshold: 1e6, suffix: 'M', digits: 2 },
                     { threshold: 1e3, suffix: 'K', digits: 2 }
                 ];

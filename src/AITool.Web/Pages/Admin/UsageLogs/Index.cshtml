@@ -944,7 +944,7 @@
             return '-';
         }
 
-        var units = ['', 'K', 'M', 'G', 'T'];
+        var units = ['', 'K', 'M', 'B', 'T', 'P', 'E'];
         var unitIndex = 0;
         while (Math.abs(number) >= 1000 && unitIndex < units.length - 1) {
             number = number / 1000;
