@@ -619,6 +619,7 @@ internal static class ProtocolReportBuilder
         AppendFieldAlignmentReport(builder, "new-api", newApiFieldDiffs);
         AppendReferenceRouteComparison(builder, current, cpa, catalog);
         AppendFieldAlignmentReport(builder, "CPA / CLIProxyAPI", cpaFieldDiffs);
+        AppendReferenceFieldComparison(builder, newApiFieldDiffs, cpaFieldDiffs);
         return builder.ToString();
     }
 
@@ -749,6 +750,118 @@ internal static class ProtocolReportBuilder
     }
 
     /// <summary>
+    /// 追加 new-api 与 CPA / CLIProxyAPI 的字段基线互相比对。
+    /// </summary>
+    private static void AppendReferenceFieldComparison(
+        StringBuilder builder,
+        List<FieldDiffResult> newApiFieldDiffs,
+        List<FieldDiffResult> cpaFieldDiffs)
+    {
+        var newApiIndex = newApiFieldDiffs.ToDictionary(diff => NormalizeReferenceGroupLabel(diff.Group.Label), StringComparer.OrdinalIgnoreCase);
+        var cpaIndex = cpaFieldDiffs.ToDictionary(diff => NormalizeReferenceGroupLabel(diff.Group.Label), StringComparer.OrdinalIgnoreCase);
+        var commonGroupKeys = newApiIndex.Keys
+            .Intersect(cpaIndex.Keys, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        builder.AppendLine("## CPA / CLIProxyAPI 与 new-api 字段基线对比");
+        builder.AppendLine();
+        builder.AppendLine("> 对比基础：仅比较**当前项目已经实现的接口**中，new-api 与 CPA / CLIProxyAPI 都能建立字段基线的分组。这里比较的是两个参考项目之间的字段基线，不涉及当前项目字段是否已实现。");
+        builder.AppendLine();
+
+        if (commonGroupKeys.Count == 0)
+        {
+            builder.AppendLine("当前没有可同时在 new-api 与 CPA / CLIProxyAPI 中建立字段基线的共同接口分组。");
+            builder.AppendLine();
+            return;
+        }
+
+        foreach (var key in commonGroupKeys)
+        {
+            var newApiDiff = newApiIndex[key];
+            var cpaDiff = cpaIndex[key];
+            var rows = BuildReferenceComparisonRows(newApiDiff, cpaDiff);
+            var alignedCount = rows.Count(row => row.Category == "两边都有");
+
+            builder.AppendLine($"### {EscapeMarkdown(key)}");
+            builder.AppendLine();
+            builder.AppendLine($"- 字段基线对齐：{alignedCount}/{rows.Count}");
+            builder.AppendLine($"- new-api 字段数：{newApiDiff.Rows.Count}");
+            builder.AppendLine($"- CPA / CLIProxyAPI 字段数：{cpaDiff.Rows.Count}");
+            builder.AppendLine();
+            builder.AppendLine("| 字段 | 类别 | new-api 类型 | new-api 可选 | CPA 类型 | CPA 可选 |");
+            builder.AppendLine("| --- | --- | --- | --- | --- | --- |");
+            foreach (var row in rows)
+            {
+                builder.AppendLine($"| `{row.FieldName}` | {row.Category} | {FormatReferenceType(row.NewApiType)} | {FormatNullableOptional(row.NewApiOptional)} | {FormatReferenceType(row.CpaType)} | {FormatNullableOptional(row.CpaOptional)} |");
+            }
+            builder.AppendLine();
+        }
+    }
+
+    /// <summary>
+    /// 构建两个参考项目字段基线的逐字段对比行。
+    /// </summary>
+    private static List<ReferenceFieldComparisonRow> BuildReferenceComparisonRows(FieldDiffResult newApiDiff, FieldDiffResult cpaDiff)
+    {
+        var newApiRows = newApiDiff.Rows.ToDictionary(row => row.FieldName, StringComparer.OrdinalIgnoreCase);
+        var cpaRows = cpaDiff.Rows.ToDictionary(row => row.FieldName, StringComparer.OrdinalIgnoreCase);
+        var allFields = newApiRows.Keys
+            .Union(cpaRows.Keys, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(field => field, StringComparer.OrdinalIgnoreCase);
+
+        var rows = new List<ReferenceFieldComparisonRow>();
+        foreach (var field in allFields)
+        {
+            newApiRows.TryGetValue(field, out var newApiRow);
+            cpaRows.TryGetValue(field, out var cpaRow);
+
+            var category = (newApiRow, cpaRow) switch
+            {
+                ({ } left, { } right) when !string.Equals(left.ReferenceType, right.ReferenceType, StringComparison.OrdinalIgnoreCase) => "两边都有 / 类型不同",
+                ({ }, { }) => "两边都有",
+                ({ }, null) => "仅 new-api",
+                (null, { }) => "仅 CPA",
+                _ => "未知"
+            };
+
+            rows.Add(new ReferenceFieldComparisonRow(
+                field,
+                category,
+                newApiRow?.ReferenceType,
+                newApiRow?.Optional,
+                cpaRow?.ReferenceType,
+                cpaRow?.Optional));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// 规范化参考项目字段分组名，方便 new-api 与 CPA 对齐。
+    /// </summary>
+    private static string NormalizeReferenceGroupLabel(string label)
+    {
+        return label.Replace("（CPA）", string.Empty, StringComparison.Ordinal).Trim();
+    }
+
+    /// <summary>
+    /// 格式化参考类型展示。
+    /// </summary>
+    private static string FormatReferenceType(string? type)
+    {
+        return string.IsNullOrWhiteSpace(type) ? "—" : $"`{EscapeMarkdown(type)}`";
+    }
+
+    /// <summary>
+    /// 格式化可选状态展示。
+    /// </summary>
+    private static string FormatNullableOptional(bool? optional)
+    {
+        return optional is null ? "—" : FormatOptional(optional.Value);
+    }
+
+    /// <summary>
     /// 收集单个参考项目已支持但当前项目未实现的接口。
     /// </summary>
     private static List<ReferenceOnlyRoute> CollectReferenceOnlyRoutes(
@@ -804,6 +917,17 @@ internal static class ProtocolReportBuilder
     {
         return value.Replace("|", "\\|", StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// 参考项目字段基线对比行。
+    /// </summary>
+    private sealed record ReferenceFieldComparisonRow(
+        string FieldName,
+        string Category,
+        string? NewApiType,
+        bool? NewApiOptional,
+        string? CpaType,
+        bool? CpaOptional);
 
     /// <summary>
     /// 参考项目已支持但当前项目未实现的接口项。

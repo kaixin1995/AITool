@@ -4,8 +4,7 @@ namespace ProtocolSyncCheck;
 
 /// <summary>
 /// 为 new-api 构建接口级字段分组。
-/// 请求类分组基于实际处理函数中的字段访问动态提取，避免再用写死字段白名单。
-/// 响应类分组仍直接基于对应 DTO 结构体，因为这些结构本身就是明确的接口响应模型。
+/// 字段分组基于实际处理函数中的字段访问动态提取，避免再用写死字段白名单或 DTO 全量字段。
 /// </summary>
 internal static class NewApiFieldGroupBuilder
 {
@@ -35,8 +34,42 @@ internal static class NewApiFieldGroupBuilder
                     ["textRequest"])
             ]);
 
-        AddStructGroup(groups, structIndex, "OpenAI Chat Completions 响应", "Chat Completions 非流式响应", ["OpenAITextResponse", "OpenAITextResponseChoice"]);
-        AddStructGroup(groups, structIndex, "OpenAI Chat Completions 流式响应", "Chat Completions SSE 流式响应", ["ChatCompletionsStreamResponse", "ChatCompletionsStreamResponseChoice", "ChatCompletionsStreamResponseChoiceDelta"]);
+        AddDynamicRequestGroup(
+            groups,
+            structIndex,
+            "OpenAI Chat Completions 响应",
+            "Chat Completions 非流式响应",
+            ["OpenAITextResponse", "OpenAITextResponseChoice"],
+            [
+                new NewApiScanSource(
+                    Path.Combine(newApiRoot, "relay", "channel", "openai", "relay-openai.go"),
+                    ["func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError)"],
+                    ["simpleResponse", "choice"]),
+                new NewApiScanSource(
+                    Path.Combine(newApiRoot, "relay", "channel", "claude", "relay-claude.go"),
+                    ["func ResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.OpenAITextResponse"],
+                    ["fullTextResponse", "choice"])
+            ]);
+        AddDynamicRequestGroup(
+            groups,
+            structIndex,
+            "OpenAI Chat Completions 流式响应",
+            "Chat Completions SSE 流式响应",
+            ["ChatCompletionsStreamResponse", "ChatCompletionsStreamResponseChoice", "ChatCompletionsStreamResponseChoiceDelta"],
+            [
+                new NewApiScanSource(
+                    Path.Combine(newApiRoot, "relay", "channel", "openai", "helper.go"),
+                    [
+                        "func ProcessStreamResponse(streamResponse dto.ChatCompletionsStreamResponse, responseTextBuilder *strings.Builder, toolCount *int) error",
+                        "func handleLastResponse(lastStreamData string, responseId *string, createAt *int64,",
+                        "func HandleFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, lastStreamData string,"
+                    ],
+                    ["streamResponse", "lastStreamResponse", "choice", "response"]),
+                new NewApiScanSource(
+                    Path.Combine(newApiRoot, "relay", "channel", "claude", "relay-claude.go"),
+                    ["func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.ChatCompletionsStreamResponse"],
+                    ["response", "choice"])
+            ]);
 
         AddDynamicRequestGroup(
             groups,
@@ -55,8 +88,30 @@ internal static class NewApiFieldGroupBuilder
                     ["request"])
             ]);
 
-        AddStructGroup(groups, structIndex, "OpenAI Responses 响应", "Responses API 非流式响应", ["OpenAIResponsesResponse", "ResponsesOutput", "ResponsesOutputContent"]);
-        AddStructGroup(groups, structIndex, "OpenAI Responses 流式事件", "Responses API SSE 流式事件", ["ResponsesStreamResponse"]);
+        AddDynamicRequestGroup(
+            groups,
+            structIndex,
+            "OpenAI Responses 响应",
+            "Responses API 非流式响应",
+            ["OpenAIResponsesResponse", "ResponsesOutput", "ResponsesOutputContent"],
+            [
+                new NewApiScanSource(
+                    Path.Combine(newApiRoot, "relay", "channel", "openai", "relay_responses.go"),
+                    ["func OaiResponsesHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError)"],
+                    ["responsesResponse", "tool"])
+            ]);
+        AddDynamicRequestGroup(
+            groups,
+            structIndex,
+            "OpenAI Responses 流式事件",
+            "Responses API SSE 流式事件",
+            ["ResponsesStreamResponse"],
+            [
+                new NewApiScanSource(
+                    Path.Combine(newApiRoot, "relay", "channel", "openai", "relay_responses.go"),
+                    ["func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError)"],
+                    ["streamResponse"])
+            ]);
 
         AddDynamicRequestGroup(
             groups,
@@ -75,7 +130,22 @@ internal static class NewApiFieldGroupBuilder
                     ["request"])
             ]);
 
-        AddStructGroup(groups, structIndex, "OpenAI Embeddings 响应", "Embeddings API 响应体", ["EmbeddingResponse", "EmbeddingResponseItem"]);
+        AddDynamicRequestGroup(
+            groups,
+            structIndex,
+            "OpenAI Embeddings 响应",
+            "Embeddings API 响应体",
+            ["EmbeddingResponse", "EmbeddingResponseItem", "OpenAIEmbeddingResponse", "OpenAIEmbeddingResponseItem"],
+            [
+                new NewApiScanSource(
+                    Path.Combine(newApiRoot, "relay", "channel", "mokaai", "relay-mokaai.go"),
+                    ["func embeddingResponseMoka2OpenAI(response *dto.EmbeddingResponse) *dto.OpenAIEmbeddingResponse"],
+                    ["openAIEmbeddingResponse"]),
+                new NewApiScanSource(
+                    Path.Combine(newApiRoot, "relay", "channel", "gemini", "relay-gemini.go"),
+                    ["func GeminiEmbeddingHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError)"],
+                    ["openAIResponse"])
+            ]);
 
         AddDynamicRequestGroup(
             groups,
@@ -106,7 +176,23 @@ internal static class NewApiFieldGroupBuilder
                     ["c"])
             ]);
 
-        AddStructGroup(groups, structIndex, "Anthropic Messages 响应", "Anthropic Messages API 响应和 SSE 事件", ["ClaudeResponse", "ClaudeMediaMessage"]);
+        AddDynamicRequestGroup(
+            groups,
+            structIndex,
+            "Anthropic Messages 响应",
+            "Anthropic Messages API 响应和 SSE 事件",
+            ["ClaudeResponse", "ClaudeMediaMessage"],
+            [
+                new NewApiScanSource(
+                    Path.Combine(newApiRoot, "relay", "channel", "claude", "relay-claude.go"),
+                    [
+                        "func StreamResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.ChatCompletionsStreamResponse",
+                        "func ResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.OpenAITextResponse",
+                        "func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *dto.ChatCompletionsStreamResponse, claudeInfo *ClaudeResponseInfo) bool",
+                        "func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, httpResp *http.Response, data []byte) *types.NewAPIError"
+                    ],
+                    ["claudeResponse", "message"])
+            ]);
 
         AddDynamicRequestGroup(
             groups,
@@ -121,7 +207,18 @@ internal static class NewApiFieldGroupBuilder
                     ["textRequest"])
             ]);
 
-        AddStructGroup(groups, structIndex, "Legacy Completions 流式响应", "Legacy Completions SSE 流式响应", ["CompletionsStreamResponse"]);
+        AddDynamicRequestGroup(
+            groups,
+            structIndex,
+            "Legacy Completions 流式响应",
+            "Legacy Completions SSE 流式响应",
+            ["CompletionsStreamResponse"],
+            [
+                new NewApiScanSource(
+                    Path.Combine(newApiRoot, "relay", "channel", "openai", "helper.go"),
+                    ["func processCompletionsStreamResponse(streamResponse dto.CompletionsStreamResponse, responseTextBuilder *strings.Builder)"],
+                    ["streamResponse", "choice"])
+            ]);
         return groups;
     }
 
@@ -280,6 +377,9 @@ internal static class NewApiMemberAccessScanner
             "GetMaxTokens" => ["MaxTokens", "MaxCompletionTokens"],
             "ParseInput" => ["Input"],
             "GetTools" => ["Tools"],
+            "SetStringContent" or "StringContent" => ["Content"],
+            "SetToolCalls" => ["ToolCalls"],
+            "GetReasoningContent" => ["ReasoningContent", "Reasoning"],
             "GetEfforts" => ["Thinking", "Reasoning", "ReasoningEffort"],
             "IsStringSystem" or "GetStringSystem" or "SetStringSystem" or "ParseSystem" => ["System"],
             _ => []
