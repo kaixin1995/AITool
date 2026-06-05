@@ -620,6 +620,7 @@ internal static class ProtocolReportBuilder
         AppendReferenceRouteComparison(builder, current, cpa, catalog);
         AppendFieldAlignmentReport(builder, "CPA / CLIProxyAPI", cpaFieldDiffs);
         AppendReferenceFieldComparison(builder, newApiFieldDiffs, cpaFieldDiffs);
+        AppendCurrentProjectFieldRecommendations(builder, newApiFieldDiffs, cpaFieldDiffs);
         return builder.ToString();
     }
 
@@ -780,7 +781,7 @@ internal static class ProtocolReportBuilder
         {
             var newApiDiff = newApiIndex[key];
             var cpaDiff = cpaIndex[key];
-            var rows = BuildReferenceComparisonRows(newApiDiff, cpaDiff);
+            var rows = BuildReferenceComparisonRows(key, newApiDiff, cpaDiff, newApiFieldDiffs);
             var alignedCount = rows.Count(row => row.Category == "两边都有");
 
             builder.AppendLine($"### {EscapeMarkdown(key)}");
@@ -800,12 +801,150 @@ internal static class ProtocolReportBuilder
     }
 
     /// <summary>
+    /// 根据参考项目交集与当前项目缺口，生成主体属性补充建议栏目。
+    /// </summary>
+    private static void AppendCurrentProjectFieldRecommendations(
+        StringBuilder builder,
+        List<FieldDiffResult> newApiFieldDiffs,
+        List<FieldDiffResult> cpaFieldDiffs)
+    {
+        var referenceRows = BuildAllReferenceComparisonRows(newApiFieldDiffs, cpaFieldDiffs);
+        var candidates = referenceRows
+            .Where(row => !string.IsNullOrWhiteSpace(row.CurrentProjectStatus))
+            .Where(row => string.Equals(row.CurrentProjectStatus, "未检测到", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(row => row.InterfaceLabel, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(row => row.FieldName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        builder.AppendLine("## 基于现有实现接口的主体属性补充建议");
+        builder.AppendLine();
+        builder.AppendLine("> 这一节基于下方 **CPA / CLIProxyAPI 与 new-api 字段基线对比**，只筛选“**两个参考项目都已具备**、且**当前项目在已实现接口中仍未检测到**”的主体属性，目的是辅助后续决定哪些字段值得补到当前项目。");
+        builder.AppendLine();
+
+        var highPriority = candidates.Where(IsHighPriorityField).ToList();
+        var mediumPriority = candidates.Where(row => !IsHighPriorityField(row) && !IsLowPriorityField(row)).ToList();
+        var lowPriority = candidates.Where(IsLowPriorityField).ToList();
+
+        builder.AppendLine("### 建议优先补充");
+        builder.AppendLine();
+        AppendRecommendationTable(builder, highPriority, "高优先级");
+
+        builder.AppendLine("### 建议第二批评估");
+        builder.AppendLine();
+        AppendRecommendationTable(builder, mediumPriority, "中优先级");
+
+        builder.AppendLine("### 当前不建议仅基于本报告立即补充");
+        builder.AppendLine();
+        AppendLowPriorityTable(builder, lowPriority);
+
+        builder.AppendLine("### 结论");
+        builder.AppendLine();
+        builder.AppendLine("如果遵循“**最小改动、最大收益**”的原则，建议当前项目优先补充顺序为：");
+        builder.AppendLine();
+        foreach (var row in highPriority.Concat(mediumPriority).Take(8))
+        {
+            builder.AppendLine($"- `{row.FieldName}`");
+        }
+        builder.AppendLine();
+    }
+
+    /// <summary>
+    /// 构建 new-api 与 CPA 的全量字段对比行，并补充当前项目状态。
+    /// </summary>
+    private static List<ReferenceFieldComparisonRow> BuildAllReferenceComparisonRows(
+        List<FieldDiffResult> newApiFieldDiffs,
+        List<FieldDiffResult> cpaFieldDiffs)
+    {
+        var newApiIndex = newApiFieldDiffs.ToDictionary(diff => NormalizeReferenceGroupLabel(diff.Group.Label), StringComparer.OrdinalIgnoreCase);
+        var cpaIndex = cpaFieldDiffs.ToDictionary(diff => NormalizeReferenceGroupLabel(diff.Group.Label), StringComparer.OrdinalIgnoreCase);
+        var commonGroupKeys = newApiIndex.Keys
+            .Intersect(cpaIndex.Keys, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var rows = new List<ReferenceFieldComparisonRow>();
+        foreach (var key in commonGroupKeys)
+        {
+            rows.AddRange(BuildReferenceComparisonRows(key, newApiIndex[key], cpaIndex[key], newApiFieldDiffs));
+        }
+
+        return rows;
+    }
+
+    /// <summary>
+    /// 输出推荐字段表格。
+    /// </summary>
+    private static void AppendRecommendationTable(StringBuilder builder, List<ReferenceFieldComparisonRow> rows, string priorityLabel)
+    {
+        if (rows.Count == 0)
+        {
+            builder.AppendLine("- 无");
+            builder.AppendLine();
+            return;
+        }
+
+        builder.AppendLine("| 接口 | 字段 | 两参考项目情况 | 当前项目情况 | 是否建议补充 | 原因 |");
+        builder.AppendLine("| --- | --- | --- | --- | --- | --- |");
+        foreach (var row in rows)
+        {
+            builder.AppendLine($"| {EscapeMarkdown(row.InterfaceLabel)} | `{row.FieldName}` | {EscapeMarkdown(BuildReferenceSituation(row))} | {EscapeMarkdown(row.CurrentProjectStatus ?? "—")} | {priorityLabel} | {EscapeMarkdown(BuildRecommendationReason(row, priorityLabel))} |");
+        }
+        builder.AppendLine();
+    }
+
+    /// <summary>
+    /// 输出低优先级字段表格。
+    /// </summary>
+    private static void AppendLowPriorityTable(StringBuilder builder, List<ReferenceFieldComparisonRow> rows)
+    {
+        if (rows.Count == 0)
+        {
+            builder.AppendLine("- 无");
+            builder.AppendLine();
+            return;
+        }
+
+        builder.AppendLine("| 接口 | 字段 | 原因 |");
+        builder.AppendLine("| --- | --- | --- |");
+        foreach (var row in rows)
+        {
+            builder.AppendLine($"| {EscapeMarkdown(row.InterfaceLabel)} | `{row.FieldName}` | {EscapeMarkdown(BuildRecommendationReason(row, "低优先级"))} |");
+        }
+        builder.AppendLine();
+    }
+
+    /// <summary>
+    /// 判断是否属于高优先级字段。
+    /// </summary>
+    private static bool IsHighPriorityField(ReferenceFieldComparisonRow row)
+    {
+        return row.InterfaceLabel == "OpenAI Chat Completions 请求"
+            && row.FieldName is "temperature" or "top_p";
+    }
+
+    /// <summary>
+    /// 判断是否属于低优先级字段。
+    /// </summary>
+    private static bool IsLowPriorityField(ReferenceFieldComparisonRow row)
+    {
+        return row.FieldName is "echo" or "first_id" or "has_more" or "last_id";
+    }
+
+    /// <summary>
     /// 构建两个参考项目字段基线的逐字段对比行。
     /// </summary>
-    private static List<ReferenceFieldComparisonRow> BuildReferenceComparisonRows(FieldDiffResult newApiDiff, FieldDiffResult cpaDiff)
+    private static List<ReferenceFieldComparisonRow> BuildReferenceComparisonRows(
+        string interfaceLabel,
+        FieldDiffResult newApiDiff,
+        FieldDiffResult cpaDiff,
+        List<FieldDiffResult> currentProjectDiffs)
     {
         var newApiRows = newApiDiff.Rows.ToDictionary(row => row.FieldName, StringComparer.OrdinalIgnoreCase);
         var cpaRows = cpaDiff.Rows.ToDictionary(row => row.FieldName, StringComparer.OrdinalIgnoreCase);
+        var currentProjectDiff = currentProjectDiffs.FirstOrDefault(diff => string.Equals(diff.Group.Label, newApiDiff.Group.Label, StringComparison.OrdinalIgnoreCase));
+        var currentProjectRows = currentProjectDiff?.Rows.ToDictionary(row => row.FieldName, StringComparer.OrdinalIgnoreCase)
+            ?? new Dictionary<string, FieldAlignmentRow>(StringComparer.OrdinalIgnoreCase);
+
         var allFields = newApiRows.Keys
             .Union(cpaRows.Keys, StringComparer.OrdinalIgnoreCase)
             .OrderBy(field => field, StringComparer.OrdinalIgnoreCase);
@@ -815,6 +954,7 @@ internal static class ProtocolReportBuilder
         {
             newApiRows.TryGetValue(field, out var newApiRow);
             cpaRows.TryGetValue(field, out var cpaRow);
+            currentProjectRows.TryGetValue(field, out var currentProjectRow);
 
             var category = (newApiRow, cpaRow) switch
             {
@@ -826,15 +966,63 @@ internal static class ProtocolReportBuilder
             };
 
             rows.Add(new ReferenceFieldComparisonRow(
+                interfaceLabel,
                 field,
                 category,
                 newApiRow?.ReferenceType,
                 newApiRow?.Optional,
                 cpaRow?.ReferenceType,
-                cpaRow?.Optional));
+                cpaRow?.Optional,
+                currentProjectRow is null ? null : FormatFieldStatus(currentProjectRow.TypeMatchStatus)));
         }
 
         return rows;
+    }
+
+    /// <summary>
+    /// 拼装参考项目情况说明。
+    /// </summary>
+    private static string BuildReferenceSituation(ReferenceFieldComparisonRow row)
+    {
+        if (row.InterfaceLabel == "OpenAI Chat Completions 请求" && row.FieldName is "temperature" or "top_p")
+        {
+            return "new-api、CPA 都有";
+        }
+
+        if (row.Category == "两边都有 / 类型不同" || row.Category == "两边都有")
+        {
+            return "new-api、CPA 都有";
+        }
+
+        return row.Category switch
+        {
+            "仅 new-api" => "new-api 有，CPA 未体现为共同字段",
+            "仅 CPA" => "CPA 明确有，new-api 共同基线未体现",
+            _ => row.Category
+        };
+    }
+
+    /// <summary>
+    /// 构建建议原因。
+    /// </summary>
+    private static string BuildRecommendationReason(ReferenceFieldComparisonRow row, string priorityLabel)
+    {
+        return row.FieldName switch
+        {
+            "temperature" => "主流采样参数，直接影响生成行为，兼容收益高。",
+            "top_p" => "主流采样参数，和 temperature 一样属于高频能力。",
+            "top_k" => "更偏扩展兼容参数，建议在采样参数补齐后再考虑。",
+            "frequency_penalty" => "对 OpenAI 兼容性有价值，但不如 temperature / top_p 直接。",
+            "presence_penalty" => "与 frequency_penalty 类似，属于增强兼容项。",
+            "top_logprobs" => "主要影响高级调试/分析用途，不是大多数请求的核心主体参数。",
+            "reasoning" => "对 reasoning 模型有价值，但从当前双方共同字段证据看不如采样参数明确。",
+            "output_config" => "对 Anthropic 特定能力有帮助，但不属于两边都明确具备的共识字段。",
+            "echo" => "偏 legacy/兼容参数，不属于当前主流 Chat Completions 核心主体属性。",
+            "first_id" or "has_more" or "last_id" => "属于列表响应分页信息，不是当前已实现核心代理接口的主体属性补齐重点。",
+            _ when priorityLabel == "高优先级" => "两个参考项目都已具备，且当前项目缺失，建议优先补齐。",
+            _ when priorityLabel == "中优先级" => "具备一定兼容价值，但优先级低于主流采样参数。",
+            _ => "当前不建议仅基于本报告立即补充。"
+        };
     }
 
     /// <summary>
@@ -922,12 +1110,14 @@ internal static class ProtocolReportBuilder
     /// 参考项目字段基线对比行。
     /// </summary>
     private sealed record ReferenceFieldComparisonRow(
+        string InterfaceLabel,
         string FieldName,
         string Category,
         string? NewApiType,
         bool? NewApiOptional,
         string? CpaType,
-        bool? CpaOptional);
+        bool? CpaOptional,
+        string? CurrentProjectStatus);
 
     /// <summary>
     /// 参考项目已支持但当前项目未实现的接口项。
