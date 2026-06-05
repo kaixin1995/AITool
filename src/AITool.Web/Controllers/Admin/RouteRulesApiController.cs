@@ -88,6 +88,10 @@ public sealed class SiteInstanceItem
     /// 协议类型。
     /// </summary>
     public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点是否启用，用于在管理页面区分已禁用站点。
+    /// </summary>
+    public bool SiteEnabled { get; set; } = true;
 }
 
 /// <summary>
