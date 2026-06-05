@@ -59,6 +59,21 @@ internal static class FieldDiffEngine
             return FieldTypeMatchStatus.Missing;
         }
 
+        if (currentUsage.TypeHints.Contains("pass-through"))
+        {
+            return FieldTypeMatchStatus.PassThrough;
+        }
+
+        if (currentUsage.TypeHints.Contains("conversion"))
+        {
+            return FieldTypeMatchStatus.BridgeHandled;
+        }
+
+        if (currentUsage.TypeHints.Contains("semantic-target") || currentUsage.TypeHints.Contains("semantic-source"))
+        {
+            return FieldTypeMatchStatus.SemanticHandled;
+        }
+
         // 当前项目大量通过 JsonNode / JsonObject 动态透传或组装字段。
         // 只在存在“强类型且明显不一致”的证据时才判为类型不一致，避免把动态处理误报为缺口。
         if (currentUsage.TypeHints.Contains("json") || currentUsage.TypeHints.Contains("scalar"))
@@ -176,7 +191,9 @@ internal sealed class FieldAlignmentRow(
     public bool IsDetected { get; } = isDetected;
     public string CurrentTypeHint { get; } = currentTypeHint;
     public FieldTypeMatchStatus TypeMatchStatus { get; } = typeMatchStatus;
-    public bool IsAligned => TypeMatchStatus == FieldTypeMatchStatus.Matched;
+    public bool IsAligned => TypeMatchStatus != FieldTypeMatchStatus.Missing && TypeMatchStatus != FieldTypeMatchStatus.TypeMismatch;
+    public bool IsPassThrough => TypeMatchStatus == FieldTypeMatchStatus.PassThrough;
+    public bool IsBridgeHandled => TypeMatchStatus == FieldTypeMatchStatus.BridgeHandled || TypeMatchStatus == FieldTypeMatchStatus.SemanticHandled;
 }
 
 /// <summary>
@@ -197,6 +214,9 @@ internal sealed class FieldDiffResult(ProtocolStructGroup group, List<FieldAlign
 internal enum FieldTypeMatchStatus
 {
     Matched,
+    PassThrough,
+    BridgeHandled,
+    SemanticHandled,
     Missing,
     TypeMismatch
 }

@@ -1084,6 +1084,9 @@ internal static class ProtocolReportBuilder
     {
         return status switch
         {
+            FieldTypeMatchStatus.PassThrough => "已透传",
+            FieldTypeMatchStatus.BridgeHandled => "已兼容中转",
+            FieldTypeMatchStatus.SemanticHandled => "已语义映射",
             FieldTypeMatchStatus.Missing => "未检测到",
             FieldTypeMatchStatus.TypeMismatch => "类型线索不一致",
             _ => "已对齐"
