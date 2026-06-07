@@ -96,6 +96,14 @@ builder.Services.AddScoped<ModelHealthRequestService>();
 // 注册使用日志服务，记录每次代理调用的 Token 用量。
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
+var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
+    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
+    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
+builder.Services.AddSingleton(new AITool.Infrastructure.Conversations.ConversationLogFileOptions
+{
+    RootPath = conversationLogRootPath
+});
+builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogStore, AITool.Infrastructure.Conversations.FileConversationLogStore>();
 builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>());
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();

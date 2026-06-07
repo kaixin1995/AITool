@@ -1,0 +1,444 @@
+using System.Text;
+using System.Text.Json;
+using AITool.Application.Conversations;
+using AITool.Domain.Proxy;
+using AITool.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+
+namespace AITool.Infrastructure.Conversations;
+
+/// <summary>
+/// 基于本地 JSONL 文件的对话记录存储。
+/// </summary>
+public sealed class FileConversationLogStore : IConversationLogStore
+{
+    private const string FileExtension = ".jsonl";
+    private const string LegacyImportMarkerFileName = ".legacy-db-imported";
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
+    private readonly SemaphoreSlim _storageLock = new(1, 1);
+    private readonly ConversationLogFileOptions _options;
+    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly ILogger<FileConversationLogStore> _logger;
+    private volatile bool _legacyImportChecked;
+
+    /// <summary>
+    /// 初始化本地文件对话记录存储。
+    /// </summary>
+    public FileConversationLogStore(
+        ConversationLogFileOptions options,
+        IServiceScopeFactory scopeFactory,
+        ILogger<FileConversationLogStore> logger)
+    {
+        _options = options;
+        _scopeFactory = scopeFactory;
+        _logger = logger;
+    }
+
+    /// <summary>
+    /// 批量追加对话记录到按天分片的本地 JSONL 文件。
+    /// </summary>
+    public async Task AppendBatchAsync(IReadOnlyList<ConversationTurnLog> logs, CancellationToken cancellationToken = default)
+    {
+        if (logs.Count == 0)
+        {
+            return;
+        }
+
+        await _storageLock.WaitAsync(cancellationToken);
+        try
+        {
+            EnsureRootDirectory();
+            await AppendBatchUnlockedAsync(logs, cancellationToken);
+        }
+        finally
+        {
+            _storageLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 按时间范围与筛选条件读取本地对话记录。
+    /// </summary>
+    public async Task<IReadOnlyList<ConversationTurnLog>> QueryAsync(ConversationLogQuery query, CancellationToken cancellationToken = default)
+    {
+        await EnsureLegacyDatabaseImportedAsync(cancellationToken);
+
+        await _storageLock.WaitAsync(cancellationToken);
+        try
+        {
+            EnsureRootDirectory();
+            var filePaths = ResolveCandidateFilePaths(query.StartTime, query.EndTime);
+            var logs = await ReadRecordsFromFilesUnlockedAsync(filePaths, cancellationToken);
+            return logs
+                .Where(x => x.CreatedAt >= query.StartTime && x.CreatedAt < query.EndTime)
+                .Where(x => string.IsNullOrWhiteSpace(query.SourceTool)
+                    || string.Equals(x.SourceTool, query.SourceTool, StringComparison.OrdinalIgnoreCase))
+                .Where(x => string.IsNullOrWhiteSpace(query.RequestModel)
+                    || string.Equals(x.RequestModel, query.RequestModel, StringComparison.Ordinal))
+                .Where(x => string.IsNullOrWhiteSpace(query.SessionKeyword)
+                    || x.SessionId.Contains(query.SessionKeyword, StringComparison.OrdinalIgnoreCase))
+                .Where(x => string.IsNullOrWhiteSpace(query.GroupKey)
+                    || string.Equals(x.ConversationGroupKey, query.GroupKey, StringComparison.Ordinal))
+                .OrderBy(x => x.CreatedAt)
+                .ToList();
+        }
+        finally
+        {
+            _storageLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 删除某个会话的全部本地记录。
+    /// </summary>
+    public async Task<int> DeleteSessionAsync(string groupKey, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(groupKey))
+        {
+            return 0;
+        }
+
+        await EnsureLegacyDatabaseImportedAsync(cancellationToken);
+
+        await _storageLock.WaitAsync(cancellationToken);
+        try
+        {
+            EnsureRootDirectory();
+            var totalRemoved = 0;
+            foreach (var filePath in EnumerateAllLogFiles())
+            {
+                var records = await ReadRecordsFromFileUnlockedAsync(filePath, cancellationToken);
+                if (records.Count == 0)
+                {
+                    continue;
+                }
+
+                var keptRecords = records
+                    .Where(x => !string.Equals(x.ConversationGroupKey, groupKey, StringComparison.Ordinal))
+                    .ToList();
+                var removedCount = records.Count - keptRecords.Count;
+                if (removedCount <= 0)
+                {
+                    continue;
+                }
+
+                totalRemoved += removedCount;
+                await RewriteFileUnlockedAsync(filePath, keptRecords, cancellationToken);
+            }
+
+            return totalRemoved;
+        }
+        finally
+        {
+            _storageLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 更新某个会话的自定义标题。
+    /// </summary>
+    public async Task<int> UpdateSessionTitleAsync(string groupKey, string title, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(groupKey))
+        {
+            return 0;
+        }
+
+        await EnsureLegacyDatabaseImportedAsync(cancellationToken);
+
+        await _storageLock.WaitAsync(cancellationToken);
+        try
+        {
+            EnsureRootDirectory();
+            var updatedCount = 0;
+            foreach (var filePath in EnumerateAllLogFiles())
+            {
+                var records = await ReadRecordsFromFileUnlockedAsync(filePath, cancellationToken);
+                if (records.Count == 0)
+                {
+                    continue;
+                }
+
+                var changed = false;
+                foreach (var record in records.Where(x => string.Equals(x.ConversationGroupKey, groupKey, StringComparison.Ordinal)))
+                {
+                    if (string.Equals(record.ConversationTitle, title, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    record.ConversationTitle = title;
+                    updatedCount++;
+                    changed = true;
+                }
+
+                if (changed)
+                {
+                    await RewriteFileUnlockedAsync(filePath, records, cancellationToken);
+                }
+            }
+
+            return updatedCount;
+        }
+        finally
+        {
+            _storageLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 清理本地对话记录中过期的数据。
+    /// </summary>
+    public async Task PruneExpiredAsync(CancellationToken cancellationToken = default)
+    {
+        await _storageLock.WaitAsync(cancellationToken);
+        try
+        {
+            EnsureRootDirectory();
+            var cutoff = DateTimeOffset.Now.AddDays(-ConversationLogStoragePolicy.RetentionDays);
+            var cutoffLocalDate = cutoff.ToLocalTime().Date;
+            foreach (var filePath in EnumerateAllLogFiles())
+            {
+                var fileDate = ResolveFileDate(filePath);
+                if (fileDate.HasValue && fileDate.Value < cutoffLocalDate)
+                {
+                    File.Delete(filePath);
+                    continue;
+                }
+
+                var records = await ReadRecordsFromFileUnlockedAsync(filePath, cancellationToken);
+                if (records.Count == 0)
+                {
+                    continue;
+                }
+
+                var keptRecords = records
+                    .Where(x => x.CreatedAt >= cutoff)
+                    .ToList();
+                if (keptRecords.Count == records.Count)
+                {
+                    continue;
+                }
+
+                await RewriteFileUnlockedAsync(filePath, keptRecords, cancellationToken);
+            }
+        }
+        finally
+        {
+            _storageLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 首次切换为本地文件存储时，把数据库里保留窗口内的历史记录导入到本地，避免旧会话立即消失。
+    /// </summary>
+    private async Task EnsureLegacyDatabaseImportedAsync(CancellationToken cancellationToken)
+    {
+        if (_legacyImportChecked)
+        {
+            return;
+        }
+
+        await _storageLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_legacyImportChecked)
+            {
+                return;
+            }
+
+            EnsureRootDirectory();
+            var markerPath = Path.Combine(_options.RootPath, LegacyImportMarkerFileName);
+            if (File.Exists(markerPath))
+            {
+                _legacyImportChecked = true;
+                return;
+            }
+
+            using var scope = _scopeFactory.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var cutoff = DateTimeOffset.Now.AddDays(-ConversationLogStoragePolicy.RetentionDays);
+            var legacyLogs = (await dbContext.ConversationTurnLogs
+                    .AsNoTracking()
+                    .ToListAsync(cancellationToken))
+                .Where(x => x.CreatedAt >= cutoff)
+                .OrderBy(x => x.CreatedAt)
+                .ToList();
+            if (legacyLogs.Count > 0)
+            {
+                await AppendBatchUnlockedAsync(legacyLogs, cancellationToken);
+            }
+
+            await File.WriteAllTextAsync(markerPath, DateTimeOffset.UtcNow.ToString("O"), cancellationToken);
+            _legacyImportChecked = true;
+        }
+        finally
+        {
+            _storageLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 追加写入时按本地日期分片，减少单文件增长速度。
+    /// </summary>
+    private async Task AppendBatchUnlockedAsync(IReadOnlyList<ConversationTurnLog> logs, CancellationToken cancellationToken)
+    {
+        foreach (var group in logs.GroupBy(x => BuildDayFilePath(x.CreatedAt)))
+        {
+            await using var stream = new FileStream(group.Key, FileMode.Append, FileAccess.Write, FileShare.Read);
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+            foreach (var log in group.OrderBy(x => x.CreatedAt))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await writer.WriteLineAsync(JsonSerializer.Serialize(log, SerializerOptions));
+            }
+        }
+    }
+
+    /// <summary>
+    /// 从多个候选分片文件中读取并反序列化记录。
+    /// </summary>
+    private async Task<List<ConversationTurnLog>> ReadRecordsFromFilesUnlockedAsync(IEnumerable<string> filePaths, CancellationToken cancellationToken)
+    {
+        var records = new List<ConversationTurnLog>();
+        foreach (var filePath in filePaths)
+        {
+            records.AddRange(await ReadRecordsFromFileUnlockedAsync(filePath, cancellationToken));
+        }
+
+        return records;
+    }
+
+    /// <summary>
+    /// 逐行读取单个 JSONL 文件，避免一次性把整文件文本读入内存。
+    /// </summary>
+    private async Task<List<ConversationTurnLog>> ReadRecordsFromFileUnlockedAsync(string filePath, CancellationToken cancellationToken)
+    {
+        var records = new List<ConversationTurnLog>();
+        if (!File.Exists(filePath))
+        {
+            return records;
+        }
+
+        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (!reader.EndOfStream)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            try
+            {
+                var record = JsonSerializer.Deserialize<ConversationTurnLog>(line, SerializerOptions);
+                if (record is not null)
+                {
+                    records.Add(record);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "解析本地对话记录失败，文件={FilePath}", filePath);
+            }
+        }
+
+        return records;
+    }
+
+    /// <summary>
+    /// 通过临时文件原子替换分片内容，避免更新标题或删除会话时留下半写入文件。
+    /// </summary>
+    private static async Task RewriteFileUnlockedAsync(string filePath, IReadOnlyList<ConversationTurnLog> records, CancellationToken cancellationToken)
+    {
+        if (records.Count == 0)
+        {
+            if (File.Exists(filePath))
+            {
+                File.Delete(filePath);
+            }
+
+            return;
+        }
+
+        var tempFilePath = filePath + ".tmp";
+        await using (var stream = new FileStream(tempFilePath, FileMode.Create, FileAccess.Write, FileShare.None))
+        await using (var writer = new StreamWriter(stream, new UTF8Encoding(false)))
+        {
+            foreach (var record in records.OrderBy(x => x.CreatedAt))
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await writer.WriteLineAsync(JsonSerializer.Serialize(record, SerializerOptions));
+            }
+        }
+
+        File.Move(tempFilePath, filePath, true);
+    }
+
+    /// <summary>
+    /// 根据查询时间范围推导需要读取的本地日期分片。
+    /// </summary>
+    private IReadOnlyList<string> ResolveCandidateFilePaths(DateTimeOffset startTime, DateTimeOffset endTime)
+    {
+        var startDate = startTime.ToLocalTime().Date;
+        var endDate = (endTime <= startTime ? startTime : endTime.AddTicks(-1)).ToLocalTime().Date;
+        var filePaths = new List<string>();
+        for (var current = startDate; current <= endDate; current = current.AddDays(1))
+        {
+            filePaths.Add(Path.Combine(_options.RootPath, current.ToString("yyyyMMdd") + FileExtension));
+        }
+
+        return filePaths;
+    }
+
+    /// <summary>
+    /// 枚举当前本地根目录下全部分片文件。
+    /// </summary>
+    private IEnumerable<string> EnumerateAllLogFiles()
+    {
+        if (!Directory.Exists(_options.RootPath))
+        {
+            return [];
+        }
+
+        return Directory.EnumerateFiles(_options.RootPath, "*" + FileExtension, SearchOption.TopDirectoryOnly)
+            .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 生成某条记录所属的按天分片文件路径。
+    /// </summary>
+    private string BuildDayFilePath(DateTimeOffset createdAt)
+    {
+        return Path.Combine(_options.RootPath, createdAt.ToLocalTime().ToString("yyyyMMdd") + FileExtension);
+    }
+
+    /// <summary>
+    /// 从文件名中解析对应的本地日期。
+    /// </summary>
+    private static DateTime? ResolveFileDate(string filePath)
+    {
+        var fileName = Path.GetFileNameWithoutExtension(filePath);
+        return DateTime.TryParseExact(fileName, "yyyyMMdd", null, System.Globalization.DateTimeStyles.None, out var date)
+            ? date.Date
+            : null;
+    }
+
+    /// <summary>
+    /// 确保本地根目录存在。
+    /// </summary>
+    private void EnsureRootDirectory()
+    {
+        if (string.IsNullOrWhiteSpace(_options.RootPath))
+        {
+            throw new InvalidOperationException("未配置对话记录本地目录");
+        }
+
+        Directory.CreateDirectory(_options.RootPath);
+    }
+}

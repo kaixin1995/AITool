@@ -52,12 +52,17 @@ public sealed class ConversationPageTests
         minimalPageHtml.Should().Contain("showDeleteSessionModal");
         minimalPageHtml.Should().NotContain("window.confirm");
 
-        var sessionsResponse = await client.GetAsync("/api/admin/conversations/sessions?rangeType=all&sourceTool=claude-code");
+        var sessionsResponse = await client.GetAsync("/api/admin/conversations/sessions?rangeType=day&sourceTool=claude-code");
         var sessionsBody = await sessionsResponse.Content.ReadAsStringAsync();
         sessionsResponse.StatusCode.Should().Be(HttpStatusCode.OK, sessionsBody);
         sessionsBody.Should().Contain("claude-code");
         sessionsBody.Should().Contain("4a101580");
         sessionsBody.Should().Contain("totalTokensText");
+
+        var invalidRangeResponse = await client.GetAsync("/api/admin/conversations/sessions?rangeType=all&sourceTool=claude-code");
+        var invalidRangeBody = await invalidRangeResponse.Content.ReadAsStringAsync();
+        invalidRangeResponse.StatusCode.Should().Be(HttpStatusCode.BadRequest, invalidRangeBody);
+        invalidRangeBody.Should().Contain("最多只允许查询");
 
         var turnsResponse = await client.GetAsync("/api/admin/conversations/turns?groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
         var turnsBody = await turnsResponse.Content.ReadAsStringAsync();
@@ -69,7 +74,7 @@ public sealed class ConversationPageTests
         turnsBody.Should().Contain("\\\"action\\\":\\\"update\\\"");
         turnsBody.Should().Contain("```csharp");
 
-        var allTurnsResponse = await client.GetAsync("/api/admin/conversations/turns?rangeType=all&groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
+        var allTurnsResponse = await client.GetAsync("/api/admin/conversations/turns?rangeType=week&groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
         var allTurnsBody = await allTurnsResponse.Content.ReadAsStringAsync();
         allTurnsResponse.StatusCode.Should().Be(HttpStatusCode.OK, allTurnsBody);
         allTurnsBody.Should().Contain("昨天的历史消息");

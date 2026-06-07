@@ -1,5 +1,7 @@
 using AITool.Application.Common;
+using AITool.Application.Conversations;
 using AITool.Domain.Operations;
+using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 
@@ -15,6 +17,10 @@ public sealed class LogRetentionService : ILogRetentionService
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
+    /// 对话记录本地存储，用于清理本地保留窗口之外的历史数据。
+    /// </summary>
+    private readonly IConversationLogStore _conversationLogStore;
+    /// <summary>
     /// 当前 UTC 时间提供器，测试时可替换为固定时间
     /// </summary>
     private readonly Func<DateTimeOffset> _utcNowProvider;
@@ -22,17 +28,18 @@ public sealed class LogRetentionService : ILogRetentionService
     /// <summary>
     /// 注入数据库上下文，使用系统当前 UTC 时间
     /// </summary>
-    public LogRetentionService(AppDbContext dbContext)
-        : this(dbContext, () => DateTimeOffset.UtcNow)
+    public LogRetentionService(AppDbContext dbContext, IConversationLogStore conversationLogStore)
+        : this(dbContext, conversationLogStore, () => DateTimeOffset.UtcNow)
     {
     }
 
     /// <summary>
     /// 为测试提供固定时间入口，避免边界场景受当前时间漂移影响
     /// </summary>
-    public LogRetentionService(AppDbContext dbContext, Func<DateTimeOffset> utcNowProvider)
+    public LogRetentionService(AppDbContext dbContext, IConversationLogStore conversationLogStore, Func<DateTimeOffset> utcNowProvider)
     {
         _dbContext = dbContext;
+        _conversationLogStore = conversationLogStore;
         _utcNowProvider = utcNowProvider;
     }
 
@@ -53,6 +60,15 @@ public sealed class LogRetentionService : ILogRetentionService
         }
 
         var now = _utcNowProvider();
+        var conversationCutoff = now.AddDays(-ConversationLogStoragePolicy.RetentionDays);
+
+        var allConversationLogs = await _dbContext.ConversationTurnLogs.ToListAsync(cancellationToken);
+        var oldConversationLogs = allConversationLogs
+            .Where(l => l.CreatedAt < conversationCutoff)
+            .ToList();
+        _dbContext.ConversationTurnLogs.RemoveRange(oldConversationLogs);
+        await _conversationLogStore.PruneExpiredAsync(cancellationToken);
+
         if (!settings.UsageLogAutoCleanupEnabled)
         {
             settings.LastUsageLogPrunedAt = now;
@@ -72,12 +88,6 @@ public sealed class LogRetentionService : ILogRetentionService
             .Where(l => l.RequestedAt < usageCutoff)
             .ToList();
         _dbContext.ProxyUsageLogs.RemoveRange(oldUsageLogs);
-
-        var allConversationLogs = await _dbContext.ConversationTurnLogs.ToListAsync(cancellationToken);
-        var oldConversationLogs = allConversationLogs
-            .Where(l => l.CreatedAt < usageCutoff)
-            .ToList();
-        _dbContext.ConversationTurnLogs.RemoveRange(oldConversationLogs);
 
         var prunedAt = now;
         settings.LastUsageLogPrunedAt = prunedAt;

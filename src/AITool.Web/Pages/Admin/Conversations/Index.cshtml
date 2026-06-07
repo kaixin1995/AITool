@@ -784,18 +784,20 @@
             + '&requestModel=' + encodeURIComponent(requestModel)
             + '&' + timeParams.toString();
 
-        var res = await fetch(url);
-        var data = await res.json();
         var container = document.getElementById('conversationSessions');
         container.innerHTML = '';
 
-        if (!data.items || data.items.length === 0) {
-            container.innerHTML = '<div class="p-3 text-muted">暂无匹配会话。</div>';
-            document.getElementById('conversationTurns').innerHTML = '<div class="conversation-turns-empty text-muted">请选择左侧会话查看内容。</div>';
-            return;
-        }
+        try {
+            var res = await fetch(url);
+            var data = await readConversationApiJson(res, '加载会话失败');
 
-        data.items.forEach(function(item, index) {
+            if (!data.items || data.items.length === 0) {
+                container.innerHTML = '<div class="p-3 text-muted">暂无匹配会话。</div>';
+                document.getElementById('conversationTurns').innerHTML = '<div class="conversation-turns-empty text-muted">请选择左侧会话查看内容。</div>';
+                return;
+            }
+
+            data.items.forEach(function(item, index) {
             var card = document.createElement('div');
             card.className = 'conversation-session-card';
 
@@ -846,10 +848,14 @@
             card.appendChild(actions);
             container.appendChild(card);
 
-            if (index === 0) {
-                button.click();
-            }
-        });
+                if (index === 0) {
+                    button.click();
+                }
+            });
+        } catch (err) {
+            container.innerHTML = '<div class="p-3 text-danger">' + escapeHtml(err.message || '加载会话失败') + '</div>';
+            document.getElementById('conversationTurns').innerHTML = '<div class="conversation-turns-empty text-muted">请选择左侧会话查看内容。</div>';
+        }
     }
 
     function renderTurns(items, scrollToBottom) {
@@ -916,10 +922,31 @@
         currentSessionTitle = sessionTitle || '对话详情';
         document.getElementById('conversationDetailTitle').textContent = currentSessionTitle;
         var timeParams = buildTimeParams();
-        var res = await fetch('/api/admin/conversations/turns?groupKey=' + encodeURIComponent(groupKey) + '&' + timeParams.toString());
-        var data = await res.json();
-        lastTurnsPayload = Array.isArray(data.items) ? data.items : [];
-        renderTurns(lastTurnsPayload, scrollToBottom);
+
+        try {
+            var res = await fetch('/api/admin/conversations/turns?groupKey=' + encodeURIComponent(groupKey) + '&' + timeParams.toString());
+            var data = await readConversationApiJson(res, '加载会话详情失败');
+            lastTurnsPayload = Array.isArray(data.items) ? data.items : [];
+            renderTurns(lastTurnsPayload, scrollToBottom);
+        } catch (err) {
+            lastTurnsPayload = [];
+            document.getElementById('conversationTurns').innerHTML = '<div class="conversation-turns-empty text-danger">' + escapeHtml(err.message || '加载会话详情失败') + '</div>';
+        }
+    }
+
+    async function readConversationApiJson(response, fallbackMessage) {
+        var data = {};
+        try {
+            data = await response.json();
+        } catch (e) {
+            data = {};
+        }
+
+        if (!response.ok) {
+            throw new Error((data && data.message) ? data.message : fallbackMessage);
+        }
+
+        return data || {};
     }
 
     /* 用 marked 渲染 AI 回复的 Markdown 内容 */

@@ -1,8 +1,6 @@
 using System.Threading.Channels;
 using AITool.Application.Conversations;
 using AITool.Domain.Proxy;
-using AITool.Infrastructure.Persistence;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -21,13 +19,16 @@ public sealed class ConversationLogBatchWriter : BackgroundService
         SingleReader = true,
         SingleWriter = false
     });
-    private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IConversationLogStore _conversationLogStore;
     private readonly ILogger<ConversationLogBatchWriter> _logger;
     private readonly bool _writeThroughMode;
 
-    public ConversationLogBatchWriter(IServiceScopeFactory scopeFactory, ILogger<ConversationLogBatchWriter> logger, IHostEnvironment hostEnvironment)
+    public ConversationLogBatchWriter(
+        IConversationLogStore conversationLogStore,
+        ILogger<ConversationLogBatchWriter> logger,
+        IHostEnvironment hostEnvironment)
     {
-        _scopeFactory = scopeFactory;
+        _conversationLogStore = conversationLogStore;
         _logger = logger;
         _writeThroughMode = hostEnvironment.IsEnvironment("Testing");
     }
@@ -96,6 +97,39 @@ public sealed class ConversationLogBatchWriter : BackgroundService
                 _logger.LogError(ex, "后台批量写入对话记录失败");
             }
         }
+
+        await DrainRemainingEntriesAsync();
+    }
+
+    /// <summary>
+    /// 服务优雅停止时尽量把队列里剩余的记录落盘，降低批量写入导致的数据丢失窗口。
+    /// </summary>
+    private async Task DrainRemainingEntriesAsync()
+    {
+        var buffer = new List<ConversationTurnEntry>(MaxBatchSize);
+        try
+        {
+            while (_channel.Reader.TryRead(out var entry))
+            {
+                buffer.Add(entry);
+                if (buffer.Count < MaxBatchSize)
+                {
+                    continue;
+                }
+
+                await FlushBatchAsync(buffer, CancellationToken.None);
+                buffer.Clear();
+            }
+
+            if (buffer.Count > 0)
+            {
+                await FlushBatchAsync(buffer, CancellationToken.None);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "停止服务时刷新剩余对话记录失败");
+        }
     }
 
     private async Task FlushBatchAsync(List<ConversationTurnEntry> batch, CancellationToken cancellationToken)
@@ -105,8 +139,6 @@ public sealed class ConversationLogBatchWriter : BackgroundService
             return;
         }
 
-        using var scope = _scopeFactory.CreateScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var logs = batch.Select(entry => new ConversationTurnLog
         {
             RequestId = entry.RequestId,
@@ -131,7 +163,6 @@ public sealed class ConversationLogBatchWriter : BackgroundService
             ConversationTitle = entry.ConversationTitle
         }).ToList();
 
-        dbContext.ConversationTurnLogs.AddRange(logs);
-        await dbContext.SaveChangesAsync(cancellationToken);
+        await _conversationLogStore.AppendBatchAsync(logs, cancellationToken);
     }
 }

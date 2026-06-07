@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
@@ -156,14 +157,16 @@ internal sealed class ConversationLoggingWebApplicationFactory : WebApplicationF
     internal async Task AssertConversationAsync(Func<ConversationTurnLog, bool> predicate, Action<ConversationTurnLog> assertAction)
     {
         await using var scope = Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var conversationLogStore = scope.ServiceProvider.GetRequiredService<IConversationLogStore>();
 
         ConversationTurnLog? log = null;
         for (var i = 0; i < 20; i++)
         {
-            log = (await db.ConversationTurnLogs
-                    .AsNoTracking()
-                    .ToListAsync())
+            log = (await conversationLogStore.QueryAsync(new ConversationLogQuery
+                {
+                    StartTime = DateTimeOffset.Now.AddDays(-7),
+                    EndTime = DateTimeOffset.Now.AddDays(1)
+                }))
                 .Where(x => predicate(x))
                 .OrderByDescending(x => x.CreatedAt)
                 .FirstOrDefault();

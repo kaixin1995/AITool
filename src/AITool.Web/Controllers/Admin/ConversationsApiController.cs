@@ -1,8 +1,7 @@
+using AITool.Application.Conversations;
 using AITool.Application.Operations;
 using AITool.Infrastructure.Conversations;
-using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
@@ -13,16 +12,16 @@ namespace AITool.Web.Controllers.Admin;
 [Route("api/admin/conversations")]
 public sealed class ConversationsApiController : ControllerBase
 {
-    private readonly AppDbContext _dbContext;
+    private readonly IConversationLogStore _conversationLogStore;
     private readonly ConversationExtractionService _conversationExtractionService;
     private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
 
     public ConversationsApiController(
-        AppDbContext dbContext,
+        IConversationLogStore conversationLogStore,
         ConversationExtractionService conversationExtractionService,
         ISystemRuntimeSettingsService systemRuntimeSettingsService)
     {
-        _dbContext = dbContext;
+        _conversationLogStore = conversationLogStore;
         _conversationExtractionService = conversationExtractionService;
         _systemRuntimeSettingsService = systemRuntimeSettingsService;
     }
@@ -46,28 +45,19 @@ public sealed class ConversationsApiController : ControllerBase
             return NotFound();
         }
 
-        var (rangeStart, rangeEnd) = ResolveTimeRange(rangeType, startTime, endTime);
-
-        var query = _dbContext.ConversationTurnLogs.AsNoTracking().AsQueryable();
-
-        if (!string.IsNullOrWhiteSpace(sourceTool))
+        if (!TryResolveTimeRange(rangeType, startTime, endTime, out var range, out var errorMessage))
         {
-            query = query.Where(x => x.SourceTool == sourceTool);
+            return BadRequest(new { message = errorMessage });
         }
 
-        if (!string.IsNullOrWhiteSpace(requestModel))
+        var items = await _conversationLogStore.QueryAsync(new ConversationLogQuery
         {
-            query = query.Where(x => x.RequestModel == requestModel);
-        }
-
-        if (!string.IsNullOrWhiteSpace(sessionKeyword))
-        {
-            query = query.Where(x => x.SessionId.Contains(sessionKeyword));
-        }
-
-        // SQLite 对 DateTimeOffset 的 Where 比较无法翻译为 SQL，先拉到内存再过滤时间范围。
-        var items = await query.ToListAsync(cancellationToken);
-        items = items.Where(x => x.CreatedAt >= rangeStart && x.CreatedAt < rangeEnd).ToList();
+            StartTime = range.Start,
+            EndTime = range.End,
+            SourceTool = sourceTool ?? string.Empty,
+            RequestModel = requestModel ?? string.Empty,
+            SessionKeyword = sessionKeyword ?? string.Empty
+        }, cancellationToken);
 
         var sessions = items
             .GroupBy(x => x.ConversationGroupKey)
@@ -122,18 +112,13 @@ public sealed class ConversationsApiController : ControllerBase
             return BadRequest(new { message = "groupKey 不能为空" });
         }
 
-        var logs = await _dbContext.ConversationTurnLogs
-            .Where(x => x.ConversationGroupKey == groupKey)
-            .ToListAsync(cancellationToken);
-
-        if (logs.Count == 0)
+        var deletedCount = await _conversationLogStore.DeleteSessionAsync(groupKey, cancellationToken);
+        if (deletedCount == 0)
         {
             return NotFound(new { message = "会话不存在或已删除" });
         }
 
-        _dbContext.ConversationTurnLogs.RemoveRange(logs);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        return Ok(new { deletedCount = logs.Count });
+        return Ok(new { deletedCount });
     }
 
     /// <summary>
@@ -152,26 +137,18 @@ public sealed class ConversationsApiController : ControllerBase
             return BadRequest(new { message = "groupKey 不能为空" });
         }
 
-        var logs = await _dbContext.ConversationTurnLogs
-            .Where(x => x.ConversationGroupKey == request.GroupKey)
-            .ToListAsync(cancellationToken);
-        if (logs.Count == 0)
-        {
-            return NotFound(new { message = "会话不存在" });
-        }
-
         var normalizedTitle = (request.Title ?? string.Empty).Trim();
         if (normalizedTitle.Length > 200)
         {
             normalizedTitle = normalizedTitle[..200];
         }
 
-        foreach (var log in logs)
+        var updatedCount = await _conversationLogStore.UpdateSessionTitleAsync(request.GroupKey, normalizedTitle, cancellationToken);
+        if (updatedCount == 0)
         {
-            log.ConversationTitle = normalizedTitle;
+            return NotFound(new { message = "会话不存在" });
         }
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         return Ok(new { title = normalizedTitle });
     }
 
@@ -196,15 +173,17 @@ public sealed class ConversationsApiController : ControllerBase
             return BadRequest(new { message = "groupKey 不能为空" });
         }
 
-        var (rangeStart, rangeEnd) = ResolveTimeRange(rangeType, startTime, endTime);
-        var logs = await _dbContext.ConversationTurnLogs
-            .AsNoTracking()
-            .Where(x => x.ConversationGroupKey == groupKey)
-            .ToListAsync(cancellationToken);
+        if (!TryResolveTimeRange(rangeType, startTime, endTime, out var range, out var errorMessage))
+        {
+            return BadRequest(new { message = errorMessage });
+        }
 
-        logs = logs
-            .Where(x => x.CreatedAt >= rangeStart && x.CreatedAt < rangeEnd)
-            .ToList();
+        var logs = await _conversationLogStore.QueryAsync(new ConversationLogQuery
+        {
+            StartTime = range.Start,
+            EndTime = range.End,
+            GroupKey = groupKey
+        }, cancellationToken);
 
         var items = logs
             .OrderBy(x => x.CreatedAt)
@@ -231,10 +210,23 @@ public sealed class ConversationsApiController : ControllerBase
     /// 根据 rangeType 解析出实际的起止时间。
     /// day = 当天，week = 本周一到今天，month = 本月1号到今天，custom = 使用传入的 startTime/endTime。
     /// </summary>
-    private static (DateTimeOffset Start, DateTimeOffset End) ResolveTimeRange(string? rangeType, DateTimeOffset? startTime, DateTimeOffset? endTime)
+    private static bool TryResolveTimeRange(
+        string? rangeType,
+        DateTimeOffset? startTime,
+        DateTimeOffset? endTime,
+        out (DateTimeOffset Start, DateTimeOffset End) range,
+        out string errorMessage)
     {
         var now = DateTimeOffset.Now;
         var normalized = string.IsNullOrWhiteSpace(rangeType) ? "day" : rangeType.Trim().ToLowerInvariant();
+        errorMessage = string.Empty;
+
+        if (normalized == "all")
+        {
+            range = default;
+            errorMessage = $"对话记录单次最多只允许查询 {ConversationLogStoragePolicy.MaxQueryDays} 天，请改用指定范围分段查看。";
+            return false;
+        }
 
         if (normalized == "custom")
         {
@@ -245,18 +237,33 @@ public sealed class ConversationsApiController : ControllerBase
                 customEnd = customStart.AddMinutes(1);
             }
 
-            return (customStart, customEnd);
+            if (customEnd - customStart > TimeSpan.FromDays(ConversationLogStoragePolicy.MaxQueryDays))
+            {
+                range = default;
+                errorMessage = $"对话记录单次最多只允许查询 {ConversationLogStoragePolicy.MaxQueryDays} 天。";
+                return false;
+            }
+
+            range = (customStart, customEnd);
+            return true;
         }
 
         var endOfToday = StartOfDay(now).AddDays(1);
-
-        return normalized switch
+        range = normalized switch
         {
             "week" => (StartOfDay(now).AddDays(-((7 + (int)now.DayOfWeek - (int)DayOfWeek.Monday) % 7)), endOfToday),
             "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), endOfToday),
-            "all" => (DateTimeOffset.MinValue, now),
-            _ => (StartOfDay(now), endOfToday) // day 为默认
+            _ => (StartOfDay(now), endOfToday)
         };
+
+        if (range.End - range.Start > TimeSpan.FromDays(ConversationLogStoragePolicy.MaxQueryDays))
+        {
+            range = default;
+            errorMessage = $"对话记录单次最多只允许查询 {ConversationLogStoragePolicy.MaxQueryDays} 天。";
+            return false;
+        }
+
+        return true;
     }
 
     /// <summary>
