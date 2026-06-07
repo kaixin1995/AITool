@@ -192,6 +192,180 @@ public static partial class ProxyProtocolBridge
     }
 
     /// <summary>
+    /// 将 Chat Completions 请求体转换为 Responses API 请求体。
+    /// </summary>
+    public static string ConvertChatRequestToResponses(string requestBody, string targetModelName, bool enableStreaming)
+    {
+        var root = JsonNode.Parse(requestBody) as JsonObject;
+        if (root is null)
+        {
+            return requestBody;
+        }
+
+        var payload = new JsonObject
+        {
+            ["model"] = targetModelName,
+            ["stream"] = enableStreaming
+        };
+
+        var input = new JsonArray();
+        string? instructions = null;
+
+        if (root.TryGetPropertyValue("messages", out var messagesNode) && messagesNode is JsonArray messages)
+        {
+            foreach (var messageNode in messages)
+            {
+                if (messageNode is not JsonObject messageObj)
+                {
+                    continue;
+                }
+
+                var role = messageObj["role"]?.ToString() ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(role))
+                {
+                    continue;
+                }
+
+                if (string.Equals(role, "system", StringComparison.OrdinalIgnoreCase))
+                {
+                    var systemText = ExtractOpenAiContentAsString(messageObj["content"]);
+                    if (!string.IsNullOrWhiteSpace(systemText))
+                    {
+                        instructions = string.IsNullOrWhiteSpace(instructions)
+                            ? systemText
+                            : string.Concat(instructions, "\n", systemText);
+                    }
+
+                    continue;
+                }
+
+                if (string.Equals(role, "tool", StringComparison.OrdinalIgnoreCase))
+                {
+                    input.Add(new JsonObject
+                    {
+                        ["type"] = "function_call_output",
+                        ["call_id"] = messageObj["tool_call_id"]?.DeepClone() ?? string.Empty,
+                        ["output"] = messageObj["content"]?.DeepClone() ?? string.Empty
+                    });
+                    continue;
+                }
+
+                var content = ConvertChatContentToResponses(messageObj["content"], role);
+                var inputMessage = new JsonObject
+                {
+                    ["type"] = "message",
+                    ["role"] = role,
+                    ["content"] = content
+                };
+
+                if (string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase)
+                    && messageObj["tool_calls"] is JsonArray toolCalls)
+                {
+                    if (content is not JsonArray assistantContentArray)
+                    {
+                        assistantContentArray = new JsonArray();
+                        inputMessage["content"] = assistantContentArray;
+                    }
+
+                    foreach (var toolCall in toolCalls)
+                    {
+                        if (toolCall is not JsonObject toolCallObj)
+                        {
+                            continue;
+                        }
+
+                        var callId = toolCallObj["id"]?.ToString();
+                        assistantContentArray.Add(new JsonObject
+                        {
+                            ["type"] = "function_call",
+                            ["id"] = toolCallObj["id"]?.DeepClone() ?? $"fc_{Guid.NewGuid():N}",
+                            ["call_id"] = string.IsNullOrWhiteSpace(callId) ? $"call_{Guid.NewGuid():N}" : callId,
+                            ["name"] = toolCallObj["function"]?["name"]?.DeepClone() ?? string.Empty,
+                            ["arguments"] = toolCallObj["function"]?["arguments"]?.DeepClone() ?? "{}"
+                        });
+                    }
+                }
+
+                input.Add(inputMessage);
+            }
+        }
+
+        payload["input"] = input;
+
+        if (!string.IsNullOrWhiteSpace(instructions))
+        {
+            payload["instructions"] = instructions;
+        }
+
+        CopyIfPresent(root, payload, "temperature");
+        CopyIfPresent(root, payload, "top_p");
+        CopyIfPresent(root, payload, "user");
+        CopyIfPresent(root, payload, "metadata");
+        CopyIfPresent(root, payload, "store");
+
+        if (root.TryGetPropertyValue("max_completion_tokens", out var maxCompletionTokens) && maxCompletionTokens is not null)
+        {
+            payload["max_output_tokens"] = maxCompletionTokens.DeepClone();
+        }
+        else if (root.TryGetPropertyValue("max_tokens", out var maxTokens) && maxTokens is not null)
+        {
+            payload["max_output_tokens"] = maxTokens.DeepClone();
+        }
+
+        if (root.TryGetPropertyValue("reasoning_effort", out var reasoningEffortNode) && reasoningEffortNode is not null)
+        {
+            payload["reasoning"] = new JsonObject
+            {
+                ["effort"] = reasoningEffortNode.DeepClone()
+            };
+        }
+
+        if (root.TryGetPropertyValue("tools", out var toolsNode) && toolsNode is JsonArray toolsArray)
+        {
+            var responsesTools = new JsonArray();
+            foreach (var toolNode in toolsArray)
+            {
+                if (toolNode is not JsonObject toolObj)
+                {
+                    continue;
+                }
+
+                var toolType = toolObj["type"]?.ToString() ?? "function";
+                if (string.Equals(toolType, "function", StringComparison.OrdinalIgnoreCase))
+                {
+                    responsesTools.Add(new JsonObject
+                    {
+                        ["type"] = "function",
+                        ["name"] = toolObj["function"]?["name"]?.DeepClone() ?? string.Empty,
+                        ["description"] = toolObj["function"]?["description"]?.DeepClone(),
+                        ["parameters"] = toolObj["function"]?["parameters"]?.DeepClone() ?? new JsonObject()
+                    });
+                }
+                else
+                {
+                    responsesTools.Add(toolObj.DeepClone());
+                }
+            }
+
+            payload["tools"] = responsesTools;
+        }
+
+        if (root.TryGetPropertyValue("tool_choice", out var toolChoiceNode) && toolChoiceNode is not null)
+        {
+            payload["tool_choice"] = ConvertChatToolChoiceToResponses(toolChoiceNode);
+        }
+
+        if (root.TryGetPropertyValue("parallel_tool_calls", out var parallelToolCallsNode)
+            && parallelToolCallsNode is JsonValue parallelToolCallsValue
+            && parallelToolCallsValue.TryGetValue(out bool parallelToolCalls))
+        {
+            payload["parallel_tool_calls"] = parallelToolCalls;
+        }
+
+        return payload.ToJsonString();
+    }
+
+    /// <summary>
     /// 将 Chat Completions 非流式响应转换为 Responses API 非流式响应。
     /// </summary>
     public static string ConvertChatResponseToResponses(string chatResponseBody)
@@ -758,6 +932,697 @@ public static partial class ProxyProtocolBridge
         }
 
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// 将 Responses API 非流式响应转换为 Chat Completions 非流式响应。
+    /// </summary>
+    public static string ConvertResponsesResponseToChat(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            var root = doc.RootElement;
+
+            var responseId = root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                ? idEl.GetString() ?? $"chatcmpl-{Guid.NewGuid():N}"
+                : $"chatcmpl-{Guid.NewGuid():N}";
+            var responseModel = root.TryGetProperty("model", out var modelEl) && modelEl.ValueKind == JsonValueKind.String
+                ? modelEl.GetString() ?? modelName
+                : modelName;
+            var createdAt = root.TryGetProperty("created_at", out var createdAtEl) && createdAtEl.ValueKind == JsonValueKind.Number
+                ? createdAtEl.GetInt64()
+                : DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+
+            string? contentText = null;
+            string? reasoningText = null;
+            var toolCalls = new JsonArray();
+            var finishReason = "stop";
+
+            if (root.TryGetProperty("output", out var outputEl) && outputEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in outputEl.EnumerateArray())
+                {
+                    if (!item.TryGetProperty("type", out var itemTypeEl) || itemTypeEl.ValueKind != JsonValueKind.String)
+                    {
+                        continue;
+                    }
+
+                    var itemType = itemTypeEl.GetString();
+                    if (string.Equals(itemType, "message", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (item.TryGetProperty("content", out var contentEl) && contentEl.ValueKind == JsonValueKind.Array)
+                        {
+                            var textParts = new List<string>();
+                            foreach (var part in contentEl.EnumerateArray())
+                            {
+                                if (!part.TryGetProperty("type", out var partTypeEl) || partTypeEl.ValueKind != JsonValueKind.String)
+                                {
+                                    continue;
+                                }
+
+                                var partType = partTypeEl.GetString();
+                                if ((string.Equals(partType, "output_text", StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(partType, "text", StringComparison.OrdinalIgnoreCase))
+                                    && part.TryGetProperty("text", out var textEl)
+                                    && textEl.ValueKind == JsonValueKind.String)
+                                {
+                                    textParts.Add(textEl.GetString() ?? string.Empty);
+                                }
+                                else if ((string.Equals(partType, "reasoning", StringComparison.OrdinalIgnoreCase)
+                                          || string.Equals(partType, "reasoning_summary", StringComparison.OrdinalIgnoreCase))
+                                         && part.TryGetProperty("text", out var reasoningEl)
+                                         && reasoningEl.ValueKind == JsonValueKind.String)
+                                {
+                                    reasoningText = string.Concat(reasoningText, reasoningEl.GetString() ?? string.Empty);
+                                }
+                            }
+
+                            if (textParts.Count > 0)
+                            {
+                                contentText = string.Concat(contentText, string.Join(string.Empty, textParts));
+                            }
+                        }
+                    }
+                    else if (string.Equals(itemType, "function_call", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var callId = item.TryGetProperty("call_id", out var callIdEl) && callIdEl.ValueKind == JsonValueKind.String
+                            ? callIdEl.GetString() ?? string.Empty
+                            : string.Empty;
+                        var toolName = item.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+                            ? nameEl.GetString() ?? string.Empty
+                            : string.Empty;
+                        var arguments = item.TryGetProperty("arguments", out var argsEl)
+                            ? argsEl.ValueKind == JsonValueKind.String ? argsEl.GetString() ?? "{}" : argsEl.GetRawText()
+                            : "{}";
+
+                        toolCalls.Add(new JsonObject
+                        {
+                            ["id"] = string.IsNullOrWhiteSpace(callId) ? $"call_{Guid.NewGuid():N}" : callId,
+                            ["type"] = "function",
+                            ["function"] = new JsonObject
+                            {
+                                ["name"] = toolName,
+                                ["arguments"] = arguments
+                            }
+                        });
+                        finishReason = "tool_calls";
+                    }
+                }
+            }
+
+            var promptTokens = inputTokens;
+            var completionTokens = outputTokens;
+            if (root.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
+            {
+                if (usageEl.TryGetProperty("input_tokens", out var inputEl) && inputEl.ValueKind == JsonValueKind.Number)
+                {
+                    promptTokens = inputEl.GetInt32();
+                }
+
+                if (usageEl.TryGetProperty("output_tokens", out var usageOutputTokensEl) && usageOutputTokensEl.ValueKind == JsonValueKind.Number)
+                {
+                    completionTokens = usageOutputTokensEl.GetInt32();
+                }
+
+                if (usageEl.TryGetProperty("input_tokens_details", out var detailsEl)
+                    && detailsEl.ValueKind == JsonValueKind.Object
+                    && detailsEl.TryGetProperty("cached_tokens", out var cachedEl)
+                    && cachedEl.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens = cachedEl.GetInt32();
+                }
+            }
+
+            var messageObject = new JsonObject
+            {
+                ["role"] = "assistant",
+                ["content"] = contentText ?? string.Empty
+            };
+
+            if (!string.IsNullOrWhiteSpace(reasoningText))
+            {
+                messageObject["reasoning_content"] = reasoningText;
+            }
+
+            if (toolCalls.Count > 0)
+            {
+                messageObject["tool_calls"] = toolCalls;
+            }
+
+            return new JsonObject
+            {
+                ["id"] = responseId,
+                ["object"] = "chat.completion",
+                ["created"] = createdAt,
+                ["model"] = responseModel,
+                ["choices"] = new JsonArray
+                {
+                    new JsonObject
+                    {
+                        ["index"] = 0,
+                        ["message"] = messageObject,
+                        ["finish_reason"] = finishReason
+                    }
+                },
+                ["usage"] = new JsonObject
+                {
+                    ["prompt_tokens"] = promptTokens,
+                    ["prompt_tokens_details"] = new JsonObject
+                    {
+                        ["cached_tokens"] = cachedTokens,
+                        ["cached_creation_tokens"] = 0
+                    },
+                    ["completion_tokens"] = completionTokens,
+                    ["total_tokens"] = promptTokens + completionTokens
+                }
+            }.ToJsonString();
+        }
+        catch
+        {
+            return responseBody;
+        }
+    }
+
+    /// <summary>
+    /// 将 Responses SSE 事件流整体转换为 Chat Completions SSE。
+    /// </summary>
+    public static string ConvertResponsesStreamingToChat(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
+    {
+        try
+        {
+            var contentText = new StringBuilder();
+            var reasoningText = new StringBuilder();
+            var toolCalls = new Dictionary<int, (string Id, string Name, StringBuilder Arguments)>();
+            var finalModelName = modelName;
+            var finishReason = "stop";
+            var promptTokens = inputTokens;
+            var completionTokens = outputTokens;
+
+            using var reader = new StringReader(responseBody);
+            string? line;
+            string currentEvent = string.Empty;
+            var dataLines = new List<string>();
+            var builder = new StringBuilder();
+            var roleChunkSent = false;
+
+            void FlushEvent()
+            {
+                if (dataLines.Count == 0)
+                {
+                    currentEvent = string.Empty;
+                    return;
+                }
+
+                var payload = string.Join("\n", dataLines);
+                dataLines.Clear();
+
+                if (string.IsNullOrWhiteSpace(payload) || string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentEvent = string.Empty;
+                    return;
+                }
+
+                using var doc = JsonDocument.Parse(payload);
+                var root = doc.RootElement;
+                var eventType = !string.IsNullOrWhiteSpace(currentEvent)
+                    ? currentEvent
+                    : (root.TryGetProperty("type", out var typeEl) && typeEl.ValueKind == JsonValueKind.String
+                        ? typeEl.GetString() ?? string.Empty
+                        : string.Empty);
+
+                if (string.Equals(eventType, "response.created", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(eventType, "response.in_progress", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (root.TryGetProperty("response", out var responseEl)
+                        && responseEl.ValueKind == JsonValueKind.Object
+                        && responseEl.TryGetProperty("model", out var modelEl)
+                        && modelEl.ValueKind == JsonValueKind.String)
+                    {
+                        finalModelName = modelEl.GetString() ?? finalModelName;
+                    }
+
+                    currentEvent = string.Empty;
+                    return;
+                }
+
+                if (string.Equals(eventType, "response.output_text.delta", StringComparison.OrdinalIgnoreCase))
+                {
+                    var deltaText = root.TryGetProperty("delta", out var deltaEl) && deltaEl.ValueKind == JsonValueKind.String
+                        ? deltaEl.GetString() ?? string.Empty
+                        : string.Empty;
+                    if (!string.IsNullOrEmpty(deltaText))
+                    {
+                        if (!roleChunkSent)
+                        {
+                            builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                            {
+                                ["role"] = "assistant",
+                                ["content"] = string.Empty
+                            }, null, null));
+                            roleChunkSent = true;
+                        }
+
+                        contentText.Append(deltaText);
+                        builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                        {
+                            ["content"] = deltaText
+                        }, null, null));
+                    }
+
+                    currentEvent = string.Empty;
+                    return;
+                }
+
+                if (string.Equals(eventType, "response.output_item.added", StringComparison.OrdinalIgnoreCase)
+                    && root.TryGetProperty("item", out var messageItemEl)
+                    && messageItemEl.ValueKind == JsonValueKind.Object
+                    && messageItemEl.TryGetProperty("type", out var messageItemTypeEl)
+                    && messageItemTypeEl.ValueKind == JsonValueKind.String
+                    && string.Equals(messageItemTypeEl.GetString(), "message", StringComparison.OrdinalIgnoreCase)
+                    && messageItemEl.TryGetProperty("content", out var messageContentEl)
+                    && messageContentEl.ValueKind == JsonValueKind.Array)
+                {
+                    var extractedTexts = new List<string>();
+                    foreach (var contentPart in messageContentEl.EnumerateArray())
+                    {
+                        if (!contentPart.TryGetProperty("type", out var contentPartTypeEl)
+                            || contentPartTypeEl.ValueKind != JsonValueKind.String)
+                        {
+                            continue;
+                        }
+
+                        var contentPartType = contentPartTypeEl.GetString();
+                        if ((string.Equals(contentPartType, "output_text", StringComparison.OrdinalIgnoreCase)
+                                || string.Equals(contentPartType, "text", StringComparison.OrdinalIgnoreCase))
+                            && contentPart.TryGetProperty("text", out var contentPartTextEl)
+                            && contentPartTextEl.ValueKind == JsonValueKind.String)
+                        {
+                            extractedTexts.Add(contentPartTextEl.GetString() ?? string.Empty);
+                        }
+                    }
+
+                    if (extractedTexts.Count > 0)
+                    {
+                        var deltaText = string.Concat(extractedTexts);
+                        if (!roleChunkSent)
+                        {
+                            builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                            {
+                                ["role"] = "assistant",
+                                ["content"] = string.Empty
+                            }, null, null));
+                            roleChunkSent = true;
+                        }
+
+                        contentText.Append(deltaText);
+                        builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                        {
+                            ["content"] = deltaText
+                        }, null, null));
+                    }
+
+                    currentEvent = string.Empty;
+                    return;
+                }
+
+                if (string.Equals(eventType, "response.reasoning_summary_text.delta", StringComparison.OrdinalIgnoreCase))
+                {
+                    var deltaText = root.TryGetProperty("delta", out var deltaEl) && deltaEl.ValueKind == JsonValueKind.String
+                        ? deltaEl.GetString() ?? string.Empty
+                        : string.Empty;
+                    if (!string.IsNullOrEmpty(deltaText))
+                    {
+                        if (!roleChunkSent)
+                        {
+                            builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                            {
+                                ["role"] = "assistant",
+                                ["content"] = string.Empty
+                            }, null, null));
+                            roleChunkSent = true;
+                        }
+
+                        reasoningText.Append(deltaText);
+                        builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                        {
+                            ["reasoning_content"] = deltaText
+                        }, null, null));
+                    }
+
+                    currentEvent = string.Empty;
+                    return;
+                }
+
+                if (string.Equals(eventType, "response.output_item.added", StringComparison.OrdinalIgnoreCase)
+                    && root.TryGetProperty("item", out var itemEl)
+                    && itemEl.ValueKind == JsonValueKind.Object
+                    && itemEl.TryGetProperty("type", out var itemTypeEl)
+                    && itemTypeEl.ValueKind == JsonValueKind.String
+                    && string.Equals(itemTypeEl.GetString(), "function_call", StringComparison.OrdinalIgnoreCase))
+                {
+                    var index = root.TryGetProperty("output_index", out var indexEl) && indexEl.ValueKind == JsonValueKind.Number
+                        ? indexEl.GetInt32()
+                        : toolCalls.Count;
+                    var callId = itemEl.TryGetProperty("call_id", out var callIdEl) && callIdEl.ValueKind == JsonValueKind.String
+                        ? callIdEl.GetString() ?? string.Empty
+                        : string.Empty;
+                    var name = itemEl.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+                        ? nameEl.GetString() ?? string.Empty
+                        : string.Empty;
+
+                    toolCalls[index] = (string.IsNullOrWhiteSpace(callId) ? $"call_{Guid.NewGuid():N}" : callId, name, new StringBuilder());
+
+                    if (!roleChunkSent)
+                    {
+                        builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                        {
+                            ["role"] = "assistant",
+                            ["content"] = string.Empty
+                        }, null, null));
+                        roleChunkSent = true;
+                    }
+
+                    builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                    {
+                        ["tool_calls"] = new JsonArray
+                        {
+                            new JsonObject
+                            {
+                                ["index"] = index,
+                                ["id"] = toolCalls[index].Id,
+                                ["type"] = "function",
+                                ["function"] = new JsonObject
+                                {
+                                    ["name"] = name,
+                                    ["arguments"] = string.Empty
+                                }
+                            }
+                        }
+                    }, null, null));
+
+                    currentEvent = string.Empty;
+                    return;
+                }
+
+                if (string.Equals(eventType, "response.function_call_arguments.delta", StringComparison.OrdinalIgnoreCase))
+                {
+                    var index = root.TryGetProperty("output_index", out var indexEl) && indexEl.ValueKind == JsonValueKind.Number
+                        ? indexEl.GetInt32()
+                        : -1;
+                    var deltaText = root.TryGetProperty("delta", out var deltaEl) && deltaEl.ValueKind == JsonValueKind.String
+                        ? deltaEl.GetString() ?? string.Empty
+                        : string.Empty;
+                    if (index >= 0 && toolCalls.TryGetValue(index, out var toolCall) && !string.IsNullOrEmpty(deltaText))
+                    {
+                        toolCall.Arguments.Append(deltaText);
+                        toolCalls[index] = toolCall;
+
+                        if (!roleChunkSent)
+                        {
+                            builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                            {
+                                ["role"] = "assistant",
+                                ["content"] = string.Empty
+                            }, null, null));
+                            roleChunkSent = true;
+                        }
+
+                        builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                        {
+                            ["tool_calls"] = new JsonArray
+                            {
+                                new JsonObject
+                                {
+                                    ["index"] = index,
+                                    ["function"] = new JsonObject
+                                    {
+                                        ["arguments"] = deltaText
+                                    }
+                                }
+                            }
+                        }, null, null));
+                    }
+
+                    currentEvent = string.Empty;
+                    return;
+                }
+
+                if (string.Equals(eventType, "response.completed", StringComparison.OrdinalIgnoreCase)
+                    && root.TryGetProperty("response", out var completedResponse)
+                    && completedResponse.ValueKind == JsonValueKind.Object)
+                {
+                    if (completedResponse.TryGetProperty("model", out var modelEl) && modelEl.ValueKind == JsonValueKind.String)
+                    {
+                        finalModelName = modelEl.GetString() ?? finalModelName;
+                    }
+
+                    if (completedResponse.TryGetProperty("output", out var completedOutputEl)
+                        && completedOutputEl.ValueKind == JsonValueKind.Array)
+                    {
+                        var extractedTexts = new List<string>();
+                        foreach (var outputItem in completedOutputEl.EnumerateArray())
+                        {
+                            if (!outputItem.TryGetProperty("type", out var outputItemTypeEl)
+                                || outputItemTypeEl.ValueKind != JsonValueKind.String
+                                || !string.Equals(outputItemTypeEl.GetString(), "message", StringComparison.OrdinalIgnoreCase)
+                                || !outputItem.TryGetProperty("content", out var outputContentEl)
+                                || outputContentEl.ValueKind != JsonValueKind.Array)
+                            {
+                                continue;
+                            }
+
+                            foreach (var outputContentPart in outputContentEl.EnumerateArray())
+                            {
+                                if (!outputContentPart.TryGetProperty("type", out var outputContentTypeEl)
+                                    || outputContentTypeEl.ValueKind != JsonValueKind.String)
+                                {
+                                    continue;
+                                }
+
+                                var outputContentType = outputContentTypeEl.GetString();
+                                if ((string.Equals(outputContentType, "output_text", StringComparison.OrdinalIgnoreCase)
+                                        || string.Equals(outputContentType, "text", StringComparison.OrdinalIgnoreCase))
+                                    && outputContentPart.TryGetProperty("text", out var outputContentTextEl)
+                                    && outputContentTextEl.ValueKind == JsonValueKind.String)
+                                {
+                                    extractedTexts.Add(outputContentTextEl.GetString() ?? string.Empty);
+                                }
+                            }
+                        }
+
+                        if (extractedTexts.Count > 0 && contentText.Length == 0)
+                        {
+                            var completedText = string.Concat(extractedTexts);
+                            if (!roleChunkSent)
+                            {
+                                builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                                {
+                                    ["role"] = "assistant",
+                                    ["content"] = string.Empty
+                                }, null, null));
+                                roleChunkSent = true;
+                            }
+
+                            contentText.Append(completedText);
+                            builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject
+                            {
+                                ["content"] = completedText
+                            }, null, null));
+                        }
+                    }
+
+                    if (completedResponse.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
+                    {
+                        if (usageEl.TryGetProperty("input_tokens", out var inputEl) && inputEl.ValueKind == JsonValueKind.Number)
+                        {
+                            promptTokens = inputEl.GetInt32();
+                        }
+
+                        if (usageEl.TryGetProperty("output_tokens", out var outputEl) && outputEl.ValueKind == JsonValueKind.Number)
+                        {
+                            completionTokens = outputEl.GetInt32();
+                        }
+
+                        if (usageEl.TryGetProperty("input_tokens_details", out var detailsEl)
+                            && detailsEl.ValueKind == JsonValueKind.Object
+                            && detailsEl.TryGetProperty("cached_tokens", out var cachedEl)
+                            && cachedEl.ValueKind == JsonValueKind.Number)
+                        {
+                            cachedTokens = cachedEl.GetInt32();
+                        }
+                    }
+
+                    finishReason = toolCalls.Count > 0 ? "tool_calls" : "stop";
+                    builder.Append(BuildChatCompletionChunk(finalModelName, new JsonObject(), finishReason, new JsonObject
+                    {
+                        ["prompt_tokens"] = promptTokens,
+                        ["prompt_tokens_details"] = new JsonObject
+                        {
+                            ["cached_tokens"] = cachedTokens,
+                            ["cached_creation_tokens"] = 0
+                        },
+                        ["completion_tokens"] = completionTokens,
+                        ["total_tokens"] = promptTokens + completionTokens
+                    }));
+                    builder.Append("data: [DONE]\n\n");
+                }
+
+                currentEvent = string.Empty;
+            }
+
+            while ((line = reader.ReadLine()) is not null)
+            {
+                if (line.StartsWith("event:", StringComparison.OrdinalIgnoreCase))
+                {
+                    currentEvent = line.Length > 6 ? line[6..].Trim() : string.Empty;
+                    continue;
+                }
+
+                if (string.IsNullOrEmpty(line))
+                {
+                    FlushEvent();
+                    continue;
+                }
+
+                if (line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+                {
+                    var data = line.Length > 5 ? line[5..] : string.Empty;
+                    if (data.StartsWith(' '))
+                    {
+                        data = data[1..];
+                    }
+
+                    dataLines.Add(data);
+                }
+            }
+
+            FlushEvent();
+            return builder.ToString();
+        }
+        catch
+        {
+            return responseBody;
+        }
+    }
+
+    /// <summary>
+    /// 转换 Chat 消息内容为 Responses content 数组。
+    /// </summary>
+    private static JsonNode? ConvertChatContentToResponses(JsonNode? content, string role)
+    {
+        if (content is null)
+        {
+            return new JsonArray();
+        }
+
+        if (content is JsonValue value && value.TryGetValue(out string? stringContent))
+        {
+            return new JsonArray
+            {
+                new JsonObject
+                {
+                    ["type"] = string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase) ? "output_text" : "input_text",
+                    ["text"] = stringContent ?? string.Empty
+                }
+            };
+        }
+
+        if (content is not JsonArray contentArray)
+        {
+            return content.DeepClone();
+        }
+
+        var result = new JsonArray();
+        foreach (var part in contentArray)
+        {
+            if (part is not JsonObject partObj)
+            {
+                continue;
+            }
+
+            var type = partObj["type"]?.ToString() ?? string.Empty;
+            if (string.Equals(type, "text", StringComparison.OrdinalIgnoreCase))
+            {
+                result.Add(new JsonObject
+                {
+                    ["type"] = string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase) ? "output_text" : "input_text",
+                    ["text"] = partObj["text"]?.DeepClone() ?? string.Empty
+                });
+                continue;
+            }
+
+            if (string.Equals(type, "image_url", StringComparison.OrdinalIgnoreCase))
+            {
+                result.Add(new JsonObject
+                {
+                    ["type"] = "input_image",
+                    ["image_url"] = partObj["image_url"]?["url"]?.DeepClone() ?? string.Empty
+                });
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 转换 Chat tool_choice 为 Responses tool_choice。
+    /// </summary>
+    private static JsonNode? ConvertChatToolChoiceToResponses(JsonNode toolChoice)
+    {
+        if (toolChoice is JsonValue value && value.TryGetValue(out string? stringValue))
+        {
+            return stringValue;
+        }
+
+        if (toolChoice is JsonObject obj)
+        {
+            var typeValue = obj["type"]?.ToString() ?? string.Empty;
+            if (string.Equals(typeValue, "function", StringComparison.OrdinalIgnoreCase))
+            {
+                var functionName = obj["function"]?["name"]?.ToString();
+                if (!string.IsNullOrWhiteSpace(functionName))
+                {
+                    return new JsonObject
+                    {
+                        ["type"] = "function",
+                        ["name"] = functionName
+                    };
+                }
+            }
+        }
+
+        return toolChoice.DeepClone();
+    }
+
+    /// <summary>
+    /// 构造单个 Chat Completions SSE 数据块。
+    /// </summary>
+    private static string BuildChatCompletionChunk(string modelName, JsonObject deltaObject, string? finishReason, JsonObject? usage)
+    {
+        var payload = new JsonObject
+        {
+            ["id"] = $"chatcmpl-{Guid.NewGuid():N}",
+            ["object"] = "chat.completion.chunk",
+            ["created"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            ["model"] = modelName,
+            ["choices"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["index"] = 0,
+                    ["delta"] = deltaObject,
+                    ["finish_reason"] = finishReason is null ? null : JsonValue.Create(finishReason)
+                }
+            }
+        };
+
+        if (usage is not null)
+        {
+            payload["usage"] = usage;
+        }
+
+        return $"data: {payload.ToJsonString()}\n\n";
     }
 
     /// <summary>

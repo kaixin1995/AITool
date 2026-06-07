@@ -51,7 +51,11 @@
                                 }
                                 @if (site.SupportsAnthropic)
                                 {
-                                    <span class="badge bg-secondary">Anthropic</span>
+                                    <span class="badge bg-secondary me-1">Anthropic</span>
+                                }
+                                @if (!site.SupportsOpenAi && !site.SupportsAnthropic)
+                                {
+                                    <span class="badge bg-info text-dark">Responses</span>
                                 }
                             </td>
                         </tr>

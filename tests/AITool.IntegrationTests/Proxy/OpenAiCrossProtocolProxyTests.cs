@@ -61,6 +61,102 @@ public sealed class OpenAiCrossProtocolProxyTests
     }
 
     /// <summary>
+    /// 验证仅存在 Responses 站点时，OpenAI Chat 入口会自动走 Responses 兼容转发。
+    /// </summary>
+    [Fact]
+    public async Task Post_chat_completions_bridges_to_responses_route_when_only_responses_site_exists()
+    {
+        var fakeForwardService = new OpenAiCrossProtocolFakeProxyForwardService
+        {
+            ResponseResultFactory = static request => new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "{\"id\":\"resp_test\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-4.1-real\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"responses-bridged-ok\"}]}],\"usage\":{\"input_tokens\":9,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens\":4,\"total_tokens\":13}}",
+                InputTokens = 9,
+                CachedTokens = 2,
+                OutputTokens = 4
+            }
+        };
+        await using var factory = new OpenAiCrossProtocolWebApplicationFactory(fakeForwardService, "Responses");
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"system\",\"content\":\"be helpful\"},{\"role\":\"user\",\"content\":\"hello\"}],\"max_tokens\":32}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "openai-cross-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
+        fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"instructions\":\"be helpful\"");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"input\"");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"max_output_tokens\":32");
+
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("object").GetString().Should().Be("chat.completion");
+        document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("responses-bridged-ok");
+        document.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32().Should().Be(9);
+        document.RootElement.GetProperty("usage").GetProperty("prompt_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(2);
+        document.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32().Should().Be(4);
+    }
+
+    /// <summary>
+    /// 验证 Responses 流式事件能够实时转换为 OpenAI SSE 分片。
+    /// </summary>
+    [Fact]
+    public async Task Post_chat_completions_stream_bridges_responses_events_to_openai_sse_chunks()
+    {
+        var fakeForwardService = new OpenAiCrossProtocolFakeProxyForwardService
+        {
+            ResponsesStreamingLines =
+            [
+                "event: response.created",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"gpt-4.1-real\",\"output\":[],\"usage\":null}}",
+                string.Empty,
+                "event: response.output_text.delta",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"responses-stream\",\"output_index\":0,\"content_index\":0}",
+                string.Empty,
+                "event: response.completed",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-4.1-real\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"responses-stream\"}]}],\"usage\":{\"input_tokens\":9,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens\":4,\"total_tokens\":13}}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new OpenAiCrossProtocolWebApplicationFactory(fakeForwardService, "Responses");
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"auto\",\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "openai-cross-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        response.Content.Headers.ContentType?.MediaType.Should().Be("text/event-stream");
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
+        fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses");
+        fakeForwardService.Requests[0].EnableStreaming.Should().BeTrue();
+        body.Should().Contain("\"role\":\"assistant\"");
+        body.Should().Contain("\"content\":\"responses-stream\"");
+        body.Should().Contain("\"finish_reason\":\"stop\"");
+        body.Should().Contain("\"prompt_tokens\":9");
+        body.Should().Contain("\"cached_tokens\":2");
+        body.Should().Contain("\"completion_tokens\":4");
+        body.Should().Contain("data: [DONE]");
+    }
+
+    /// <summary>
     /// 验证 Anthropic 流式事件能够实时转换为 OpenAI SSE 分片。
     /// </summary>
     [Fact]
@@ -177,13 +273,18 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
     /// 保存当前测试使用的伪造转发服务。
     /// </summary>
     private readonly OpenAiCrossProtocolFakeProxyForwardService _fakeForwardService;
+    /// <summary>
+    /// 保存当前测试站点声明的协议类型。
+    /// </summary>
+    private readonly string _siteProtocol;
 
     /// <summary>
     /// 初始化跨协议代理测试宿主。
     /// </summary>
-    public OpenAiCrossProtocolWebApplicationFactory(OpenAiCrossProtocolFakeProxyForwardService fakeForwardService)
+    public OpenAiCrossProtocolWebApplicationFactory(OpenAiCrossProtocolFakeProxyForwardService fakeForwardService, string siteProtocol = "Anthropic")
     {
         _fakeForwardService = fakeForwardService;
+        _siteProtocol = siteProtocol;
     }
 
     /// <summary>
@@ -231,9 +332,9 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
             Name = "Anthropic Only Site",
             BaseUrl = "https://anthropic-only.example.com",
             ApiKey = "anthropic-only-key",
-            ProtocolType = "Anthropic",
-            SupportsOpenAi = false,
-            SupportsAnthropic = true,
+            ProtocolType = _siteProtocol,
+            SupportsOpenAi = string.Equals(_siteProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase),
+            SupportsAnthropic = string.Equals(_siteProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase),
             IsEnabled = true
         });
 
@@ -292,16 +393,42 @@ internal sealed class OpenAiCrossProtocolFakeProxyForwardService : IProxyForward
     /// </summary>
     public List<string>? AnthropicStreamingLines { get; set; }
     /// <summary>
+    /// 保存测试时返回的 Responses 流式响应片段。
+    /// </summary>
+    public List<string>? ResponsesStreamingLines { get; set; }
+    /// <summary>
+    /// 允许按请求动态生成 Responses 非流式结果，便于覆盖 Responses-only 场景。
+    /// </summary>
+    public Func<ProxyForwardRequest, ProxyForwardResult>? ResponseResultFactory { get; set; }
+    /// <summary>
     /// 允许按请求动态生成流式转发结果，便于覆盖特殊断言场景。
     /// </summary>
     public Func<ProxyForwardRequest, ProxyForwardResult>? StreamingResultFactory { get; set; }
 
     /// <summary>
-    /// 用固定 Anthropic 响应验证 OpenAI 入口收到的最终格式已经转换回 OpenAI。
+    /// 用固定 Anthropic / Responses 响应验证 OpenAI 入口收到的最终格式已经转换回 OpenAI。
     /// </summary>
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         Requests.Add(CloneRequest(request));
+
+        if (string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            if (ResponseResultFactory is not null)
+            {
+                return Task.FromResult(ResponseResultFactory(request));
+            }
+
+            return Task.FromResult(new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "{\"id\":\"resp_default\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-4.1-real\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"responses-default-ok\"}]}],\"usage\":{\"input_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens\":8,\"total_tokens\":15}}",
+                InputTokens = 7,
+                CachedTokens = 1,
+                OutputTokens = 8
+            });
+        }
 
         return Task.FromResult(new ProxyForwardResult
         {
@@ -315,7 +442,7 @@ internal sealed class OpenAiCrossProtocolFakeProxyForwardService : IProxyForward
     }
 
     /// <summary>
-    /// 模拟流式转发过程，并按测试设定回放 Anthropic 事件流。
+    /// 模拟流式转发过程，并按测试设定回放 Anthropic / Responses 事件流。
     /// </summary>
     public async Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
@@ -323,6 +450,47 @@ internal sealed class OpenAiCrossProtocolFakeProxyForwardService : IProxyForward
         CancellationToken cancellationToken = default)
     {
         Requests.Add(CloneRequest(request));
+
+        if (string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            var responseLines = ResponsesStreamingLines ??
+            [
+                "event: response.created",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_default\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"gpt-4.1-real\",\"output\":[],\"usage\":null}}",
+                string.Empty,
+                "event: response.output_text.delta",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"responses-stream-default\",\"output_index\":0,\"content_index\":0}",
+                string.Empty,
+                "event: response.completed",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_default\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-4.1-real\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"responses-stream-default\"}]}],\"usage\":{\"input_tokens\":7,\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens\":8,\"total_tokens\":15}}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ];
+
+            foreach (var line in responseLines)
+            {
+                await onSseDataAsync(line, cancellationToken);
+            }
+
+            var responsesResult = StreamingResultFactory?.Invoke(request) ?? new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = string.Join("\n", responseLines),
+                InputTokens = 7,
+                CachedTokens = 1,
+                OutputTokens = 8,
+                IsStreaming = true,
+                HasStartedStreaming = true
+            };
+
+            responsesResult.ResponseBody = string.IsNullOrWhiteSpace(responsesResult.ResponseBody)
+                ? string.Join("\n", responseLines)
+                : responsesResult.ResponseBody;
+            responsesResult.IsStreaming = true;
+            return responsesResult;
+        }
 
         var lines = AnthropicStreamingLines ??
         [

@@ -288,11 +288,6 @@ public class CreateModel : PageModel
     /// </summary>
     public async Task<IActionResult> OnPostAsync(CancellationToken cancellationToken)
     {
-        if (!Command.SupportsOpenAi && !Command.SupportsAnthropic)
-        {
-            ModelState.AddModelError("Command.SupportsOpenAi", "至少选择一种支持协议");
-        }
-
         if (!ModelState.IsValid) return Page();
 
         // 站点不再由页面选择默认协议，这里仅保留兼容字段的推导值。
@@ -318,6 +313,11 @@ public class CreateModel : PageModel
     /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
+        if (!supportsOpenAi && !supportsAnthropic)
+        {
+            return "Responses";
+        }
+
         return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";
     }
 }

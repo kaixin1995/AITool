@@ -115,11 +115,6 @@ public class EditModel : PageModel
     /// </summary>
     public async Task<IActionResult> OnPostAsync(Guid id, CancellationToken cancellationToken)
     {
-        if (!SupportsOpenAi && !SupportsAnthropic)
-        {
-            ModelState.AddModelError(nameof(SupportsOpenAi), "至少选择一种支持协议");
-        }
-
         if (!ModelState.IsValid) return Page();
 
         try
@@ -159,6 +154,11 @@ public class EditModel : PageModel
     /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
+        if (!supportsOpenAi && !supportsAnthropic)
+        {
+            return "Responses";
+        }
+
         return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";
     }
 }

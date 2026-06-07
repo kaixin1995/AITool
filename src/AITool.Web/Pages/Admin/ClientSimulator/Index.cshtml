@@ -50,6 +50,7 @@
         {
             item.SupportsOpenAi ? "OpenAI 原生" : null,
             item.SupportsAnthropic ? "Anthropic 原生" : null,
+            !item.SupportsOpenAi && !item.SupportsAnthropic ? "Responses 原生" : null,
             !item.SupportsOpenAi && item.CanUseOpenAi ? "OpenAI 兼容" : null,
             !item.SupportsAnthropic && item.CanUseAnthropic ? "Anthropic 兼容" : null
         }.Where(x => x is not null));
@@ -264,6 +265,7 @@
         else if (capability.CanUseOpenAi) supported.push('OpenAI 兼容');
         if (capability.SupportsAnthropic) supported.push('Anthropic 原生');
         else if (capability.CanUseAnthropic) supported.push('Anthropic 兼容');
+        if (!capability.SupportsOpenAi && !capability.SupportsAnthropic) supported.push('Responses 原生');
         hint.textContent = '当前模型支持协议：' + supported.join(' / ');
         hint.className = 'form-text text-muted';
     }

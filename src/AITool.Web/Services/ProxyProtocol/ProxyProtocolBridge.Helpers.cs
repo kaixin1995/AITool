@@ -1228,6 +1228,24 @@ public static partial class ProxyProtocolBridge
             return contentElement.GetString() ?? string.Empty;
         }
 
+        if (delta.TryGetProperty("content", out contentElement) && contentElement.ValueKind == JsonValueKind.Array)
+        {
+            var parts = new List<string>();
+            foreach (var item in contentElement.EnumerateArray())
+            {
+                var text = ExtractElementText(item, "text", "content");
+                if (text is not null)
+                {
+                    parts.Add(text);
+                }
+            }
+
+            if (parts.Count > 0)
+            {
+                return string.Join("\n", parts);
+            }
+        }
+
         return null;
     }
 

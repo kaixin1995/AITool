@@ -611,6 +611,133 @@ public sealed partial class OpenAiProxyController
     }
 
     /// <summary>
+    /// 将 Responses SSE 事件实时转换为 OpenAI Chat Completions SSE 数据块。
+    /// </summary>
+    /// <param name="forwardRequest">已经完成路由选择和 Responses 请求体准备的上游转发请求。</param>
+    /// <param name="modelName">客户端请求使用的模型名称。</param>
+    /// <param name="cancellationToken">用于中断当前流式转发的取消令牌。</param>
+    /// <returns>返回转换后的 OpenAI SSE 流式转发结果。</returns>
+    private async Task<StreamForwardOutcome> ForwardResponsesStreamAsOpenAiAsync(
+        ProxyForwardRequest forwardRequest,
+        string modelName,
+        CancellationToken cancellationToken)
+    {
+        if (!Response.HasStarted)
+        {
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+
+        var responseBuilder = new StringBuilder();
+        var pendingSseLines = new List<string>();
+        var startedWriting = false;
+        var receivedDoneEvent = false;
+        var inputTokens = 0;
+        var cachedTokens = 0;
+        var outputTokens = 0;
+
+        async Task WriteChunkAsync(string chunk, CancellationToken token)
+        {
+            if (string.IsNullOrEmpty(chunk))
+            {
+                return;
+            }
+
+            responseBuilder.Append(chunk);
+            await Response.WriteAsync(chunk, token);
+            await Response.Body.FlushAsync(token);
+            startedWriting = true;
+        }
+
+        async Task FlushResponsesSseBlockAsync(CancellationToken token)
+        {
+            if (!TryExtractSseEventPayload(pendingSseLines, out var eventName, out var payload))
+            {
+                pendingSseLines.Clear();
+                return;
+            }
+
+            pendingSseLines.Clear();
+            if (string.IsNullOrWhiteSpace(payload) || string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+            var openAiChunk = ProxyProtocolBridge.ConvertResponsesStreamingToChat($"event: {eventName}\ndata: {payload}\n\n", modelName, inputTokens, cachedTokens, outputTokens);
+            if (!string.IsNullOrEmpty(openAiChunk))
+            {
+                await WriteChunkAsync(openAiChunk, token);
+            }
+
+            if (string.Equals(eventName, "response.completed", StringComparison.OrdinalIgnoreCase))
+            {
+                receivedDoneEvent = true;
+            }
+        }
+
+        var result = await _forwardService.ForwardStreamingAsync(
+            forwardRequest,
+            async (line, token) =>
+            {
+                if (string.IsNullOrEmpty(line))
+                {
+                    await FlushResponsesSseBlockAsync(token);
+                    return;
+                }
+
+                pendingSseLines.Add(line);
+            },
+            cancellationToken);
+
+        if (pendingSseLines.Count > 0)
+        {
+            await FlushResponsesSseBlockAsync(cancellationToken);
+        }
+
+        result.ResponseBody = responseBuilder.ToString();
+        result.IsStreaming = true;
+        result.HasStartedStreaming = startedWriting;
+        result.InputTokens = inputTokens;
+        result.CachedTokens = cachedTokens;
+        result.OutputTokens = outputTokens;
+
+        if (result.Success && !receivedDoneEvent)
+        {
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage ??= startedWriting
+                ? "stream interrupted before response.completed"
+                : "stream ended before any complete SSE event";
+        }
+
+        if (!result.Success && startedWriting)
+        {
+            result.IsStreamInterrupted = true;
+        }
+
+        if (result.IsStreamInterrupted && startedWriting)
+        {
+            try
+            {
+                await Response.WriteAsync("data: [DONE]\n\n", CancellationToken.None);
+                await Response.Body.FlushAsync(CancellationToken.None);
+            }
+            catch
+            {
+            }
+        }
+
+        return new StreamForwardOutcome
+        {
+            Result = result,
+            CanFallback = !startedWriting
+        };
+    }
+
+    /// <summary>
     /// 将 Anthropic 原生 SSE 事件实时转换为 OpenAI Chat Completions SSE 数据块。
     /// </summary>
     /// <param name="forwardRequest">已经完成路由选择和 Anthropic 请求体准备的上游转发请求。</param>

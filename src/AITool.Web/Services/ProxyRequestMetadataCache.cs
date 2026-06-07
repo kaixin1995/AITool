@@ -1145,6 +1145,11 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
+        if (!supportsOpenAi && !supportsAnthropic)
+        {
+            return "Responses";
+        }
+
         return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
     }
 
@@ -1452,6 +1457,11 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public bool SupportsProtocol(string protocolType)
     {
+        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Equals(ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
+        }
+
         if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
         {
             return SupportsAnthropic;
@@ -1476,6 +1486,16 @@ public sealed class CachedProxyRouteTarget
         if (SupportsProtocol(clientProtocol))
         {
             return clientProtocol;
+        }
+
+        if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase) && SupportsProtocol("Responses"))
+        {
+            return "Responses";
+        }
+
+        if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase) && SupportsProtocol("Responses"))
+        {
+            return "Responses";
         }
 
         return string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)

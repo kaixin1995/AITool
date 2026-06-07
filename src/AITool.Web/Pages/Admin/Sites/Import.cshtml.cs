@@ -151,6 +151,11 @@ public class ImportModel : PageModel
     /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
+        if (!supportsOpenAi && !supportsAnthropic)
+        {
+            return "Responses";
+        }
+
         return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";
     }
 }

@@ -210,6 +210,9 @@ public sealed class AnthropicProxyController : ControllerBase
                 requestBody,
                 route.SiteModelName,
                 enableStreaming);
+            var effectiveProtocolType = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                ? "OpenAI"
+                : actualProtocolType;
             var forwardRequest = new ProxyForwardRequest
             {
                 TargetBaseUrl = route.BaseUrl,
@@ -222,12 +225,15 @@ public sealed class AnthropicProxyController : ControllerBase
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                ForwardHeaders = forwardHeaders
+                ForwardHeaders = forwardHeaders,
+                TargetPath = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                    ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
+                    : null
             };
 
             if (enableStreaming)
             {
-                var streamOutcome = string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase)
+                var streamOutcome = string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase)
                     ? await ForwardOpenAiStreamAsAnthropicAsync(
                         forwardRequest,
                         modelName,
@@ -349,7 +355,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 SafeSucceedRoute(route.RouteId);
                 await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, result.ResponseBody, modelName, false, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, result.TotalDurationMs)), cancellationToken);
                 if (result.IsStreaming &&
-                    string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
                     HttpContext.Response.HasStarted)
                 {
                     return new EmptyResult();
@@ -364,7 +370,8 @@ public sealed class AnthropicProxyController : ControllerBase
                     result.InputTokens,
                     result.CachedTokens,
                     result.OutputTokens);
-                if (result.IsStreaming && result.HasStartedStreaming && result.IsStreamInterrupted && string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+                if (result.IsStreaming && result.HasStartedStreaming && result.IsStreamInterrupted &&
+                    string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
                 {
                     responseBody = ProxyProtocolBridge.EnsureAnthropicStreamClosed(responseBody, modelName, result.InputTokens, result.CachedTokens, result.OutputTokens);
                 }
@@ -588,6 +595,70 @@ public sealed class AnthropicProxyController : ControllerBase
 
         async Task FlushOpenAiSseBlockAsync(CancellationToken token)
         {
+            if (string.Equals(forwardRequest.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!TryExtractSseEventPayload(pendingSseLines, out var responsesEventName, out var responsesPayload))
+                {
+                    pendingSseLines.Clear();
+                    return;
+                }
+
+                pendingSseLines.Clear();
+                if (string.Equals(responsesPayload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+                {
+                    state.ReceivedDoneEvent = true;
+                    return;
+                }
+
+                var openAiSse = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
+                    $"event: {responsesEventName}\ndata: {responsesPayload}\n\n",
+                    modelName,
+                    state.InputTokens,
+                    state.CachedTokens,
+                    state.OutputTokens);
+                if (string.IsNullOrEmpty(openAiSse))
+                {
+                    return;
+                }
+
+                if (!startedWriting)
+                {
+                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
+                }
+
+                using var reader = new StringReader(openAiSse);
+                string? line;
+                var openAiSseLines = new List<string>();
+                while ((line = reader.ReadLine()) is not null)
+                {
+                    if (string.IsNullOrEmpty(line))
+                    {
+                        if (TryExtractSseDataPayload(openAiSseLines, out var openAiJsonText))
+                        {
+                            openAiSseLines.Clear();
+                            if (string.Equals(openAiJsonText, "[DONE]", StringComparison.OrdinalIgnoreCase))
+                            {
+                                state.ReceivedDoneEvent = true;
+                                continue;
+                            }
+
+                            var convertedResponsesChunk = ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(openAiJsonText, state);
+                            await WriteChunkAsync(convertedResponsesChunk, token);
+                        }
+                        else
+                        {
+                            openAiSseLines.Clear();
+                        }
+
+                        continue;
+                    }
+
+                    openAiSseLines.Add(line);
+                }
+
+                return;
+            }
+
             if (!TryExtractSseDataPayload(pendingSseLines, out var jsonText))
             {
                 pendingSseLines.Clear();

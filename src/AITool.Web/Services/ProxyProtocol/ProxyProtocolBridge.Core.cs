@@ -116,13 +116,37 @@ public static partial class ProxyProtocolBridge
                 return ReplaceOpenAiModelAndEnsureStreamUsage(requestBody, targetModelName, enableStreaming);
             }
 
+            if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+            {
+                return ReplaceOpenAiModelAndEnsureStreamUsage(requestBody, targetModelName, enableStreaming);
+            }
+
             return ReplaceModelName(requestBody, targetModelName);
+        }
+
+        if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(targetProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return ConvertChatRequestToResponses(requestBody, targetModelName, enableStreaming);
+        }
+
+        if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(targetProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
+        {
+            return ConvertResponsesRequestToChat(requestBody, targetModelName, enableStreaming);
         }
 
         var rootNode = JsonNode.Parse(requestBody) as JsonObject;
         if (rootNode is null)
         {
             return requestBody;
+        }
+
+        if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(targetProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            var openAiRequestBody = BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming);
+            return ConvertChatRequestToResponses(openAiRequestBody, targetModelName, enableStreaming);
         }
 
         return string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
@@ -146,6 +170,26 @@ public static partial class ProxyProtocolBridge
         if (string.Equals(clientProtocol, upstreamProtocol, StringComparison.OrdinalIgnoreCase))
         {
             return responseBody;
+        }
+
+        if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(upstreamProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return isStreaming
+                ? ConvertResponsesStreamingToChat(responseBody, modelName, inputTokens, cachedTokens, outputTokens)
+                : ConvertResponsesResponseToChat(responseBody, modelName, inputTokens, cachedTokens, outputTokens);
+        }
+
+        if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(upstreamProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            var openAiResponseBody = isStreaming
+                ? ConvertResponsesStreamingToChat(responseBody, modelName, inputTokens, cachedTokens, outputTokens)
+                : ConvertResponsesResponseToChat(responseBody, modelName, inputTokens, cachedTokens, outputTokens);
+
+            return isStreaming
+                ? BuildAnthropicStreamingResponseFromOpenAi(openAiResponseBody, modelName, inputTokens, cachedTokens, outputTokens)
+                : BuildAnthropicResponseFromOpenAi(openAiResponseBody, modelName, inputTokens, cachedTokens, outputTokens);
         }
 
         if (isStreaming)

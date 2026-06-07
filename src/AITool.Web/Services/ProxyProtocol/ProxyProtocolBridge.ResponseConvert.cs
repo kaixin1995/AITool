@@ -552,6 +552,29 @@ public static partial class ProxyProtocolBridge
         var (finishReason, toolCallBlocks, usageInfo) = ExtractOpenAiStreamingMetadata(responseBody);
         var stopReason = MapOpenAiFinishReason(finishReason);
 
+        if (contentText is null)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(responseBody);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("choices", out var singleChoices)
+                    && singleChoices.ValueKind == JsonValueKind.Array
+                    && singleChoices.GetArrayLength() > 0)
+                {
+                    var selectedChoice = GetPreferredOpenAiChoice(singleChoices);
+                    if (selectedChoice is { } choice
+                        && choice.TryGetProperty("message", out var messageElement))
+                    {
+                        contentText = ExtractContentFromMessage(messageElement);
+                    }
+                }
+            }
+            catch
+            {
+            }
+        }
+
         int upstreamInput = usageInfo.UpstreamInput > 0 ? usageInfo.UpstreamInput : inputTokens;
         int upstreamOutput = usageInfo.UpstreamOutput > 0 ? usageInfo.UpstreamOutput : outputTokens;
         int cacheCreation = usageInfo.CacheCreation;

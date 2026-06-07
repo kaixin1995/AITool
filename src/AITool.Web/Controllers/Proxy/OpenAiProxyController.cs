@@ -413,7 +413,9 @@ public sealed partial class OpenAiProxyController : ControllerBase
             streamingBridgeFactory: static (controller, forwardRequest, modelName, _) =>
                 string.Equals(forwardRequest.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
                     ? controller.ForwardAnthropicStreamAsOpenAiAsync(forwardRequest, modelName, CancellationToken.None)
-                    : controller.ForwardOpenAiStreamPassthroughAsync(forwardRequest, CancellationToken.None),
+                    : string.Equals(forwardRequest.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                        ? controller.ForwardResponsesStreamAsOpenAiAsync(forwardRequest, modelName, CancellationToken.None)
+                        : controller.ForwardOpenAiStreamPassthroughAsync(forwardRequest, CancellationToken.None),
             cancellationToken: cancellationToken);
     }
 
@@ -571,7 +573,11 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                TargetPath = defaultTargetPathFactory is null ? null : defaultTargetPathFactory(route)
+                TargetPath = defaultTargetPathFactory is null
+                    ? (string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                        ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
+                        : null)
+                    : defaultTargetPathFactory(route)
             };
 
             if (enableStreaming)

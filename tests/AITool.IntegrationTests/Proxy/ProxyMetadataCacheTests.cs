@@ -414,6 +414,23 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
     }
 
     /// <summary>
+    /// 仅支持 Responses 的缓存路由应为 OpenAI / Anthropic 客户端都返回 Responses 协议。
+    /// </summary>
+    [Fact]
+    public void ResolveProtocolForClient_prefers_responses_for_openai_and_anthropic_clients()
+    {
+        var route = new CachedProxyRouteTarget
+        {
+            ProtocolType = "Responses",
+            SupportsOpenAi = false,
+            SupportsAnthropic = false
+        };
+
+        route.ResolveProtocolForClient("OpenAI").Should().Be("Responses");
+        route.ResolveProtocolForClient("Anthropic").Should().Be("Responses");
+    }
+
+    /// <summary>
     /// 释放测试过程中创建的资源。
     /// </summary>
     public async ValueTask DisposeAsync()

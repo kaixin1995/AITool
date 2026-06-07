@@ -521,6 +521,11 @@ public sealed class RouteRulesApiController : ControllerBase
     /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
     {
+        if (!supportsOpenAi && !supportsAnthropic)
+        {
+            return "Responses";
+        }
+
         return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
     }
 
