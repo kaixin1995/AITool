@@ -86,7 +86,10 @@ public sealed class ModelHealthRequestService
             PreparedRequestBody = requestBody,
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.DetectionRequestTimeoutSeconds,
-            RetryCount = runtimeSettings.DetectionRetryCount
+            RetryCount = runtimeSettings.DetectionRetryCount,
+            TargetPath = string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                ? SiteEndpointPathResolver.ResolvePath(site.EndpointPathMode, "responses")
+                : null
         }, cancellationToken);
 
         var status = forwardResult.Success ? "success" : "fail";
@@ -180,6 +183,32 @@ public sealed class ModelHealthRequestService
                     }
                 },
                 ["max_tokens"] = 64,
+                ["stream"] = false
+            });
+        }
+
+        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["model"] = modelName,
+                ["input"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["type"] = "message",
+                        ["role"] = "user",
+                        ["content"] = new[]
+                        {
+                            new Dictionary<string, object?>
+                            {
+                                ["type"] = "input_text",
+                                ["text"] = message
+                            }
+                        }
+                    }
+                },
+                ["max_output_tokens"] = 64,
                 ["stream"] = false
             });
         }

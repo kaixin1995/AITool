@@ -479,7 +479,10 @@ public sealed class ChatApiController : ControllerBase
                     PreparedRequestBody = requestBody,
                     EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
-                    RetryCount = runtimeSettings.ProxyRetryCount
+                    RetryCount = runtimeSettings.ProxyRetryCount,
+                    TargetPath = string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                        ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
+                        : null
                 }, cancellationToken);
 
                 attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success, requestBody, forwardResult.ResponseBody ?? ""));
@@ -829,7 +832,10 @@ public sealed class ChatApiController : ControllerBase
             PreparedRequestBody = requestBody,
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
-            RetryCount = runtimeSettings.ProxyRetryCount
+            RetryCount = runtimeSettings.ProxyRetryCount,
+            TargetPath = string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                ? SiteEndpointPathResolver.ResolvePath(mapping.EndpointPathMode, "responses")
+                : null
         }, cancellationToken);
 
         sw.Stop();
@@ -1034,9 +1040,11 @@ public sealed class ChatApiController : ControllerBase
 
         try
         {
-            var targetUrl = protocolType == "Anthropic"
+            var targetUrl = string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
                 ? SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "messages")
-                : SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "chat/completions");
+                : string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                    ? SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "responses")
+                    : SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "chat/completions");
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
             {
                 Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
@@ -1284,7 +1292,7 @@ public sealed class ChatApiController : ControllerBase
             return JsonSerializer.Serialize(anthropicPayload);
         }
 
-        var payload = new Dictionary<string, object?>
+        var openAiPayload = new Dictionary<string, object?>
         {
             ["model"] = modelName,
             ["messages"] = new[]
@@ -1301,7 +1309,7 @@ public sealed class ChatApiController : ControllerBase
 
         if (enableStreaming)
         {
-            payload["stream_options"] = new Dictionary<string, object?>
+            openAiPayload["stream_options"] = new Dictionary<string, object?>
             {
                 ["include_usage"] = true
             };
@@ -1310,10 +1318,16 @@ public sealed class ChatApiController : ControllerBase
         if (enableReasoning)
         {
             // OpenAI 兼容协议使用 reasoning_effort 参数
-            payload["reasoning_effort"] = effort;
+            openAiPayload["reasoning_effort"] = effort;
         }
 
-        return JsonSerializer.Serialize(payload);
+        var openAiBody = JsonSerializer.Serialize(openAiPayload);
+        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return ProxyProtocolBridge.ConvertChatRequestToResponses(openAiBody, modelName, enableStreaming);
+        }
+
+        return openAiBody;
     }
 
     /// <summary>
@@ -1419,42 +1433,36 @@ public sealed class ChatApiController : ControllerBase
             return false;
         }
 
-        if (root.TryGetProperty("usage", out var rootUsage))
+        if (protocolType == "Responses")
         {
-            (state.InputTokens, state.CachedTokens, state.OutputTokens) = ExtractUsageMetrics(rootUsage, state.InputTokens, state.CachedTokens, state.OutputTokens);
-        }
-
-        if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
-        {
-            var first = choices[0];
-            if (first.TryGetProperty("delta", out var delta))
+            var openAiSse = ProxyProtocolBridge.ConvertResponsesStreamingToChat($"event: {eventName}\ndata: {data}\n\n", string.Empty, state.InputTokens, state.CachedTokens, state.OutputTokens);
+            if (string.IsNullOrEmpty(openAiSse))
             {
-                var reasoningChunk = ExtractReasoningText(delta);
-                if (!string.IsNullOrWhiteSpace(reasoningChunk))
+                return false;
+            }
+
+            foreach (var rawLine in openAiSse.Split('\n'))
+            {
+                var line = rawLine.TrimEnd('\r');
+                if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (state.FirstTokenLatencyMs == 0)
-                    {
-                        state.FirstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
-                    }
-                    reasoningBuilder.Append(reasoningChunk);
-                    state.HadAnyContent = true;
-                    await onReasoningChunk(reasoningChunk);
+                    continue;
                 }
 
-                var contentChunk = ExtractDeltaContent(delta);
-                if (!string.IsNullOrWhiteSpace(contentChunk))
+                var jsonText = line["data: ".Length..];
+                if (jsonText == "[DONE]")
                 {
-                    if (state.FirstTokenLatencyMs == 0)
-                    {
-                        state.FirstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
-                    }
-                    contentBuilder.Append(contentChunk);
-                    state.HadAnyContent = true;
-                    await onContentChunk(contentChunk);
+                    return true;
                 }
+
+                using var openAiDoc = JsonDocument.Parse(jsonText);
+                await ProcessOpenAiChunkAsync(openAiDoc.RootElement, stopwatch, onContentChunk, onReasoningChunk, contentBuilder, reasoningBuilder, state, cancellationToken);
             }
+
+            return false;
         }
 
+        await ProcessOpenAiChunkAsync(root, stopwatch, onContentChunk, onReasoningChunk, contentBuilder, reasoningBuilder, state, cancellationToken);
         return false;
     }
 
@@ -1463,6 +1471,12 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private static (string Content, string ReasoningContent) ExtractChatPayload(string responseBody, string protocolType)
     {
+        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            responseBody = ProxyProtocolBridge.ConvertResponsesResponseToChat(responseBody, string.Empty, 0, 0, 0);
+            protocolType = "OpenAI";
+        }
+
         try
         {
             using var doc = JsonDocument.Parse(responseBody);
@@ -1528,6 +1542,56 @@ public sealed class ChatApiController : ControllerBase
         }
 
         return (responseBody, string.Empty);
+    }
+
+    /// <summary>
+    /// 处理单个 OpenAI Chat SSE 数据块。
+    /// </summary>
+    private static async Task ProcessOpenAiChunkAsync(
+        JsonElement root,
+        Stopwatch stopwatch,
+        Func<string, Task> onContentChunk,
+        Func<string, Task> onReasoningChunk,
+        StringBuilder contentBuilder,
+        StringBuilder reasoningBuilder,
+        SseBlockProcessState state,
+        CancellationToken cancellationToken)
+    {
+        if (root.TryGetProperty("usage", out var rootUsage))
+        {
+            (state.InputTokens, state.CachedTokens, state.OutputTokens) = ExtractUsageMetrics(rootUsage, state.InputTokens, state.CachedTokens, state.OutputTokens);
+        }
+
+        if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
+        {
+            var first = choices[0];
+            if (first.TryGetProperty("delta", out var delta))
+            {
+                var reasoningChunk = ExtractReasoningText(delta);
+                if (!string.IsNullOrWhiteSpace(reasoningChunk))
+                {
+                    if (state.FirstTokenLatencyMs == 0)
+                    {
+                        state.FirstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+                    }
+                    reasoningBuilder.Append(reasoningChunk);
+                    state.HadAnyContent = true;
+                    await onReasoningChunk(reasoningChunk);
+                }
+
+                var contentChunk = ExtractDeltaContent(delta);
+                if (!string.IsNullOrWhiteSpace(contentChunk))
+                {
+                    if (state.FirstTokenLatencyMs == 0)
+                    {
+                        state.FirstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+                    }
+                    contentBuilder.Append(contentChunk);
+                    state.HadAnyContent = true;
+                    await onContentChunk(contentChunk);
+                }
+            }
+        }
     }
 
     /// <summary>

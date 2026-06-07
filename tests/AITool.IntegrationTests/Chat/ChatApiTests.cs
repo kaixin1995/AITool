@@ -55,6 +55,37 @@ public sealed class ChatApiTests
     }
 
     /// <summary>
+    /// 验证发送聊天消息到 Responses-only 目标时，会构造 Responses 请求并命中 responses 路径。
+    /// </summary>
+    [Fact]
+    public async Task Post_send_uses_responses_protocol_for_responses_only_targets()
+    {
+        var fakeForwardService = new ChatFakeProxyForwardService();
+        await using var factory = new ChatWebApplicationFactory(fakeForwardService, null, "Responses");
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/chat/send",
+            new StringContent(
+                $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"message\":\"hello\",\"enableReasoning\":false,\"enableStreaming\":false}}",
+                Encoding.UTF8,
+                "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().HaveCount(1);
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
+        fakeForwardService.Requests[0].RequestBody.Should().Contain("\"input\"");
+        fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses");
+
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("success").GetBoolean().Should().BeTrue();
+        document.RootElement.GetProperty("content").GetString().Should().Be("responses-chat-ok");
+        document.RootElement.GetProperty("inputTokens").GetInt32().Should().Be(5);
+        document.RootElement.GetProperty("outputTokens").GetInt32().Should().Be(7);
+    }
+
+    /// <summary>
     /// 模型下拉的候选站点模型应返回站点名和模型名。
     /// </summary>
     [Fact]
@@ -132,6 +163,39 @@ public sealed class ChatApiTests
         body.Should().Contain("\"success\":true");
         body.Should().Contain("\"inputTokens\":4");
         body.Should().Contain("\"outputTokens\":6");
+        body.Should().Contain("event: done");
+    }
+
+    /// <summary>
+    /// 验证流式聊天命中 Responses-only 目标时，会打到 responses 路径并把 Responses SSE 转回聊天流。
+    /// </summary>
+    [Fact]
+    public async Task Post_send_stream_uses_responses_protocol_and_returns_stream_events()
+    {
+        var fakeForwardService = new ChatFakeProxyForwardService();
+        var fakeHttpFactory = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("Responses"));
+        await using var factory = new ChatWebApplicationFactory(fakeForwardService, fakeHttpFactory, "Responses");
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/chat/send-stream",
+            new StringContent(
+                $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"message\":\"hello-stream\",\"enableReasoning\":false,\"enableStreaming\":true}}",
+                Encoding.UTF8,
+                "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        response.Content.Headers.ContentType!.MediaType.Should().Be("text/event-stream");
+        fakeHttpFactory.Handler.Requests.Should().HaveCount(1);
+        fakeHttpFactory.Handler.Requests[0].RequestUri!.AbsoluteUri.Should().EndWith("/v1/responses");
+        fakeHttpFactory.Handler.Requests[0].Content!.ReadAsStringAsync().GetAwaiter().GetResult().Should().Contain("\"input\"");
+        body.Should().Contain("event: token");
+        body.Should().Contain("responses-stream-ok");
+        body.Should().Contain("event: meta");
+        body.Should().Contain("\"success\":true");
+        body.Should().Contain("\"inputTokens\":5");
+        body.Should().Contain("\"outputTokens\":7");
         body.Should().Contain("event: done");
     }
 
@@ -261,20 +325,26 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     private readonly IHttpClientFactory? _httpClientFactory;
 
     /// <summary>
+    /// 保存当前测试站点声明的协议类型。
+    /// </summary>
+    private readonly string _siteProtocol;
+
+    /// <summary>
     /// 创建聊天接口测试宿主，并使用默认的 HTTP 客户端工厂。
     /// </summary>
     public ChatWebApplicationFactory(ChatFakeProxyForwardService fakeForwardService)
-        : this(fakeForwardService, null)
+        : this(fakeForwardService, null, "Anthropic")
     {
     }
 
     /// <summary>
     /// 创建聊天接口测试宿主，并注入模拟转发服务和可选的 HTTP 客户端工厂。
     /// </summary>
-    public ChatWebApplicationFactory(ChatFakeProxyForwardService fakeForwardService, IHttpClientFactory? httpClientFactory)
+    public ChatWebApplicationFactory(ChatFakeProxyForwardService fakeForwardService, IHttpClientFactory? httpClientFactory, string siteProtocol = "Anthropic")
     {
         _fakeForwardService = fakeForwardService;
         _httpClientFactory = httpClientFactory;
+        _siteProtocol = siteProtocol;
     }
 
     /// <summary>
@@ -324,9 +394,9 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
                 Name = "Anthropic Site",
                 BaseUrl = "https://anthropic.example.com",
                 ApiKey = "anthropic-key",
-                ProtocolType = "Anthropic",
-                SupportsOpenAi = false,
-                SupportsAnthropic = true,
+                ProtocolType = _siteProtocol,
+                SupportsOpenAi = string.Equals(_siteProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase),
+                SupportsAnthropic = string.Equals(_siteProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase),
                 IsEnabled = true
             },
             new Site
@@ -432,7 +502,8 @@ internal sealed class ChatFakeProxyForwardService : IProxyForwardService
             PreparedRequestBody = request.PreparedRequestBody,
             EnableStreaming = request.EnableStreaming,
             RequestTimeoutSeconds = request.RequestTimeoutSeconds,
-            RetryCount = request.RetryCount
+            RetryCount = request.RetryCount,
+            TargetPath = request.TargetPath
         });
 
         RequestStarted?.TrySetResult(true);
@@ -450,6 +521,19 @@ internal sealed class ChatFakeProxyForwardService : IProxyForwardService
                 ResponseBody = "{\"content\":[{\"type\":\"text\",\"text\":\"anthropic-ok\"}],\"usage\":{\"input_tokens\":3,\"output_tokens\":5}}",
                 InputTokens = 3,
                 OutputTokens = 5
+            };
+        }
+
+        if (request.ProtocolType == "Responses")
+        {
+            return new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "{\"id\":\"resp_test\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"response-model\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"responses-chat-ok\"}]}],\"usage\":{\"input_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens\":7,\"total_tokens\":12}}",
+                InputTokens = 5,
+                CachedTokens = 1,
+                OutputTokens = 7
             };
         }
 
@@ -514,34 +598,55 @@ internal sealed class ChatFakeHttpClientFactory : IHttpClientFactory
 /// </summary>
 internal sealed class ChatStreamingHttpMessageHandler : HttpMessageHandler
 {
+    private readonly string _siteProtocol;
+
     /// <summary>
     /// 记录测试期间发送出去的 HTTP 请求。
     /// </summary>
     public List<HttpRequestMessage> Requests { get; } = [];
 
+    public ChatStreamingHttpMessageHandler(string siteProtocol = "Anthropic")
+    {
+        _siteProtocol = siteProtocol;
+    }
+
     /// <summary>
-    /// 模拟 Anthropic SSE，验证流式聊天链路会按真实协议解析思考与正文。
+    /// 模拟上游流式响应，验证聊天链路会按真实协议解析思考与正文。
     /// </summary>
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         Requests.Add(CloneRequest(request));
 
-        var payload = string.Join(
-            "\n",
-            "event: message_start",
-            "data: {\"message\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}",
-            string.Empty,
-            "event: content_block_delta",
-            "data: {\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ponder\"}}",
-            string.Empty,
-            "event: content_block_delta",
-            "data: {\"delta\":{\"type\":\"text_delta\",\"text\":\"stream-ok\"}}",
-            string.Empty,
-            "event: message_delta",
-            "data: {\"usage\":{\"output_tokens\":6}}",
-            string.Empty,
-            "data: [DONE]",
-            string.Empty);
+        var payload = string.Equals(_siteProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
+            ? string.Join(
+                "\n",
+                "event: response.created",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_stream\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"response-model\",\"output\":[],\"usage\":null}}",
+                string.Empty,
+                "event: response.output_text.delta",
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"responses-stream-ok\",\"output_index\":0,\"content_index\":0}",
+                string.Empty,
+                "event: response.completed",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_stream\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"response-model\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"responses-stream-ok\"}]}],\"usage\":{\"input_tokens\":5,\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens\":7,\"total_tokens\":12}}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty)
+            : string.Join(
+                "\n",
+                "event: message_start",
+                "data: {\"message\":{\"usage\":{\"input_tokens\":4,\"output_tokens\":0}}}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ponder\"}}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"delta\":{\"type\":\"text_delta\",\"text\":\"stream-ok\"}}",
+                string.Empty,
+                "event: message_delta",
+                "data: {\"usage\":{\"output_tokens\":6}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty);
 
         var response = new HttpResponseMessage(HttpStatusCode.OK)
         {
