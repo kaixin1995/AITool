@@ -402,7 +402,9 @@
 
 - `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml`
 - `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml.cs`
+- `src/AITool.Admin/Controllers/Admin/UsageLogsApiController.cs`
 - `tests/AITool.Admin.IntegrationTests/UsageLogsPageSmokeTests.cs`
+- `tests/AITool.Admin.IntegrationTests/AdminHostSmokeTests.cs`
 
 #### 第一块页面迁移已实现能力
 
@@ -411,6 +413,9 @@
 - `AITool.Admin` 中已新增对应的 `UsageLogsApiController`，开始承接列表、汇总和链路详情这三类只读查询接口
 - UsageLogs 页面脚本已开始迁入 `AITool.Admin`，当前已具备基础的筛选、分页、汇总加载和详情抽屉联动逻辑
 - `AITool.Admin.IntegrationTests` 已能直接访问 `/Admin/UsageLogs` 页面与对应只读 API，并验证最小页面/API 联动
+- 本轮已把独立 Admin 宿主中的 UsageLogs 查询接口继续向 Web 侧现有语义靠齐，补齐了查询 DTO、分页响应 DTO、详情 DTO、汇总 DTO，以及站点模型名称解析逻辑
+- 本轮已补强 Admin 独立宿主的 UsageLogs 集成测试数据，覆盖了失败重试后成功、不同来源、不同协议和模型关键字筛选这几类真实查询场景
+- 本轮继续补强了 `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml` 的前端展示，把模型列、状态徽标与详情抽屉继续向真实链路信息靠齐，开始展示请求模型、站点模型、重试/回退/最终结果标记，以及更完整的尝试级指标和错误信息
 
 #### 第一块页面迁移状态
 
@@ -418,6 +423,8 @@
 - 当前页面骨架、只读接口和最小宿主联动已经成立
 - `/Admin/UsageLogs` 对应的列表、汇总、链路详情三类只读 API 已在 `AITool.Admin` 中接入并通过独立宿主测试验证
 - 页面脚本已经开始迁移，但样式与更复杂的前端交互仍属于“继续收口中”状态
+- 本轮完成后，`AITool.Admin.IntegrationTests` 中关于 UsageLogs 的独立宿主验证已提升到 **4/4 通过**，能覆盖页面访问、汇总列表、请求详情与筛选条件生效
+- 本轮完成后，独立 Admin 宿主中的 UsageLogs 页面对真实链路细节的展示完整度又向前推进了一步，但与 `AITool.Web` 中更成熟的页面体验仍未完全收口
 
 ---
 
@@ -538,6 +545,38 @@
 - 再接 patch
 - 再接实时流
 - 再增强 sequence/ack 持久化元数据
+
+---
+
+## 五、最近一轮进度同步
+
+### 本轮完成了什么
+
+- 继续补强了 `AITool.Admin` 中 `/Admin/UsageLogs` 对应的独立宿主只读接口，把查询参数、分页响应、汇总响应和请求详情响应全部显式收口成 DTO，减少页面端与接口端字段语义漂移
+- 对 `src/AITool.Admin/Controllers/Admin/UsageLogsApiController.cs` 增加了站点模型名称解析、统一的模型关键字匹配逻辑，以及与页面筛选条件一致的查询入口
+- 扩充了 `tests/AITool.Admin.IntegrationTests/AdminHostSmokeTests.cs` 的种子数据，增加了失败后重试成功、不同协议、不同来源与不同时间的日志样本，便于后续继续验证独立 Admin 宿主中的 UsageLogs 链路
+- 扩充了 `tests/AITool.Admin.IntegrationTests/UsageLogsPageSmokeTests.cs`，当前已覆盖页面访问、列表/汇总/详情联动以及来源/状态/模型关键字筛选三类核心场景
+- 继续完善了 `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml`，把模型列与详情抽屉继续向真实链路表达靠齐，开始显示请求模型、站点模型、回退/重试/最终结果标记，以及更完整的尝试级指标和错误信息
+- 已重新执行 `dotnet build src/AITool.Admin/AITool.Admin.csproj`，结果为 **构建成功，0 error**
+- 已重新执行 `dotnet test tests/AITool.Admin.IntegrationTests/AITool.Admin.IntegrationTests.csproj`，结果为 **4/4 通过**
+
+### 当前还剩什么
+
+- `/Admin/UsageLogs` 页面本身仍需继续向 `AITool.Web` 现有页面行为靠齐，尤其是样式细节、更多展示字段、列表行信息密度与详情抽屉内容完整度
+- 还没有开始第二批 `/Admin/*` 页面与接口迁移，当前主线仍需在 UsageLogs 进一步收口后再进入边界清理与下一批页面迁移
+- `AITool.Core` 物理独立宿主、patch 增量同步、实时事件流与 sequence/ack 持久化增强仍未进入本轮实施
+
+### 当前阻塞点是什么
+
+- 目前没有新的代码级阻塞
+- 但独立 Admin 宿主中的 `/Admin/UsageLogs` 仍属于“已打通最小可用链路，但尚未完全对齐 Web 侧行为”的阶段，因此下一轮仍应继续围绕这块收口，而不是过早跳到 `AITool.Core` 物理拆分
+- 当前构建输出仍存在来自既有 `AITool.Infrastructure` 文件的 nullability warning，本轮未改动这些历史文件，也没有影响本轮 Admin UsageLogs 相关链路验证
+
+### 下一步准备做什么
+
+- 继续完善 `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml`，把更多 Web 侧已存在的展示细节、字段和交互逐步迁入独立 Admin 宿主
+- 在 UsageLogs 页面继续稳定后，开始进入宿主共享边界清理，优先判断 `DeveloperInvocationTraceStore`、`ModelConcurrencyLimiter`、`ProxyRequestMetadataCache` 这几类服务的归属
+- 每完成一个小阶段后继续同步更新本文档，并补充对应测试验证结果
 
 ---
 

@@ -277,22 +277,112 @@
         color: #c77800;
     }
 
-    .usage-log-chip-stream {
-        position: relative;
-        background: #e8f0ff;
-        color: #3366cc;
+    .usage-log-chip-warning {
+        background: #fff3cd;
+        color: #996c00;
     }
 
-    .usage-log-chip-stream-interrupted::after {
-        content: '';
-        position: absolute;
-        top: 3px;
-        right: 3px;
-        width: 8px;
-        height: 8px;
-        border-radius: 50%;
-        background: #dc3545;
-        box-shadow: 0 0 0 2px #fff;
+    .usage-log-chip-danger {
+        background: #fbe9eb;
+        color: #c62828;
+    }
+
+    .usage-log-model-cell {
+        min-width: 0;
+    }
+
+    .usage-log-model-primary {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-width: 0;
+        max-width: 100%;
+    }
+
+    .usage-log-model-primary code {
+        max-width: 100%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .usage-log-model-secondary {
+        margin-top: 4px;
+        color: #64748b;
+        font-size: 12px;
+        line-height: 1.4;
+        word-break: break-all;
+    }
+
+    .usage-log-detail-summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 12px;
+    }
+
+    .usage-log-detail-summary-item {
+        min-width: 0;
+    }
+
+    .usage-log-detail-summary-label {
+        color: #64748b;
+        font-size: 12px;
+        margin-bottom: 4px;
+    }
+
+    .usage-log-detail-summary-value {
+        color: #0f172a;
+        font-size: 14px;
+        font-weight: 600;
+        word-break: break-word;
+    }
+
+    .usage-log-attempt-metrics {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+    }
+
+    .usage-log-attempt-meta {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 8px 12px;
+        margin-top: 12px;
+    }
+
+    .usage-log-attempt-meta-item {
+        min-width: 0;
+    }
+
+    .usage-log-attempt-meta-label {
+        color: #64748b;
+        font-size: 12px;
+        margin-bottom: 2px;
+    }
+
+    .usage-log-attempt-meta-value {
+        color: #0f172a;
+        font-size: 13px;
+        word-break: break-word;
+    }
+
+    .usage-log-detail-error {
+        margin-top: 12px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: #fff5f5;
+        border: 1px solid #fecaca;
+        color: #991b1b;
+        font-size: 13px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    .usage-log-detail-success-note {
+        margin-top: 12px;
+        color: #64748b;
+        font-size: 12px;
     }
 
     .usage-logs-help-button {
@@ -617,7 +707,7 @@
             row.innerHTML =
                 '<td>' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</td>' +
                 '<td>' + renderSourceBadge(source) + '</td>' +
-                '<td><code>' + escHtml(readValue(item, ['attemptedModel', 'requestModel']) || '-') + '</code></td>' +
+                '<td class="usage-log-model-cell">' + renderModelCell(item) + '</td>' +
                 '<td>' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</td>' +
                 '<td>' + renderStatusBadge(status, item) + '</td>' +
                 '<td>' + renderLatencyBadges(item) + '</td>' +
@@ -751,13 +841,18 @@
             return;
         }
 
+        var firstAttempt = attempts[0] || {};
         var summaryHtml = '' +
             '<div class="card">' +
                 '<div class="card-body">' +
-                    '<div class="small text-secondary mb-1">路由入口：' + escHtml(routeEntry || '-') + '</div>' +
-                    '<div class="small text-secondary mb-1">请求协议：' + escHtml(formatProtocolType(protocolType)) + '</div>' +
-                    '<div class="small text-secondary mb-1">调用方式：' + escHtml(formatForwardingMode(forwardingMode)) + '</div>' +
-                    '<div class="small text-secondary">思考等级：' + escHtml(reasoningEffort || '-') + '</div>' +
+                    '<div class="usage-log-detail-summary-grid">' +
+                        renderSummaryItem('路由入口', routeEntry || '-') +
+                        renderSummaryItem('请求协议', formatProtocolType(protocolType)) +
+                        renderSummaryItem('调用方式', formatForwardingMode(forwardingMode)) +
+                        renderSummaryItem('思考等级', reasoningEffort || '-') +
+                        renderSummaryItem('请求模型', readValue(data, ['requestModel']) || routeEntry || '-') +
+                        renderSummaryItem('首个站点', readValue(firstAttempt, ['siteName', 'targetSiteName']) || '-') +
+                    '</div>' +
                 '</div>' +
             '</div>';
 
@@ -765,6 +860,10 @@
             var status = readValue(item, ['status']) || '-';
             var attemptedModel = readValue(item, ['attemptedModel', 'requestModel']) || '-';
             var errorMessage = readValue(item, ['errorMessage']) || '';
+            var siteModelName = readValue(item, ['siteModelName']) || '';
+            var retryCount = Number(readValue(item, ['retryCount']) || 0);
+            var fallbackTriggered = !!readValue(item, ['fallbackTriggered']);
+            var isFinalResult = !!readValue(item, ['isFinalResult']);
             return '' +
                 '<div class="card">' +
                     '<div class="card-body">' +
@@ -772,13 +871,28 @@
                             '<div>' +
                                 '<div class="fw-semibold">第 ' + (index + 1) + ' 次尝试</div>' +
                                 '<div class="small text-secondary">模型：' + escHtml(attemptedModel) + '</div>' +
+                                (siteModelName ? '<div class="small text-secondary">站点模型：' + escHtml(siteModelName) + '</div>' : '') +
                             '</div>' +
                             renderStatusBadge(status, item) +
                         '</div>' +
-                        '<div class="small text-secondary mb-1">站点：' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</div>' +
-                        '<div class="small text-secondary mb-1">时间：' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</div>' +
-                        '<div class="small text-secondary mb-1">Tokens：' + escHtml(formatNumber(readValue(item, ['totalTokens']) || 0)) + '</div>' +
-                        '<div class="small text-secondary">错误：' + escHtml(errorMessage || '-') + '</div>' +
+                        '<div class="usage-log-attempt-meta">' +
+                            renderAttemptMetaItem('站点', readValue(item, ['siteName', 'targetSiteName']) || '-') +
+                            renderAttemptMetaItem('时间', formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) +
+                            renderAttemptMetaItem('调用方式', formatForwardingMode(readValue(item, ['forwardingMode']) || forwardingMode)) +
+                            renderAttemptMetaItem('思考等级', readValue(item, ['reasoningEffort']) || reasoningEffort || '-') +
+                            renderAttemptMetaItem('回退触发', fallbackTriggered ? '是' : '否') +
+                            renderAttemptMetaItem('最终结果', isFinalResult ? '是' : '否') +
+                            (retryCount > 0 ? renderAttemptMetaItem('重试次数', formatNumber(retryCount)) : '') +
+                        '</div>' +
+                        '<div class="usage-log-attempt-metrics">' +
+                            renderMetricChip('输入 ' + formatNumber(readValue(item, ['inputTokens']) || 0), 'total') +
+                            renderMetricChip('缓存 ' + formatNumber(readValue(item, ['cachedTokens']) || 0), 'first') +
+                            renderMetricChip('输出 ' + formatNumber(readValue(item, ['outputTokens']) || 0), 'stream') +
+                            renderMetricChip('总计 ' + formatNumber(readValue(item, ['totalTokens']) || 0), 'warning') +
+                            renderMetricChip('总耗时 ' + formatDuration(readValue(item, ['totalDurationMs']) || 0), 'total') +
+                            renderMetricChip('首字 ' + formatDuration(readValue(item, ['firstTokenLatencyMs']) || 0), 'first') +
+                        '</div>' +
+                        (errorMessage ? '<div class="usage-log-detail-error">' + escHtml(errorMessage) + '</div>' : '<div class="usage-log-detail-success-note">当前尝试没有错误信息</div>') +
                     '</div>' +
                 '</div>';
         }).join('');
@@ -789,7 +903,16 @@
     function renderStatusBadge(status, item) {
         var normalized = String(status || '').toLowerCase();
         var success = normalized === 'success' || normalized === 'ok';
-        return '<span class="badge bg-' + (success ? 'success' : 'danger') + '">' + escHtml(success ? '成功' : (status || '失败')) + '</span>';
+        var fallbackTriggered = !!readValue(item, ['fallbackTriggered']);
+        var streamInterrupted = !!readValue(item, ['isStreamInterrupted']);
+        var label = success ? '成功' : (status || '失败');
+        if (fallbackTriggered && success) {
+            label = '回退后成功';
+        } else if (streamInterrupted && !success) {
+            label = '流中断';
+        }
+
+        return '<span class="badge bg-' + (success ? 'success' : 'danger') + '">' + escHtml(label) + '</span>';
     }
 
     function formatProtocolType(protocolType) {
@@ -807,6 +930,77 @@
         }
 
         return '-';
+    }
+
+    function renderModelCell(item) {
+        var attemptedModel = readValue(item, ['attemptedModel', 'requestModel']) || '-';
+        var requestModel = readValue(item, ['requestModel']) || '';
+        var siteModelName = readValue(item, ['siteModelName']) || '';
+        var lines = [];
+
+        if (requestModel && requestModel !== attemptedModel) {
+            lines.push('请求模型：' + requestModel);
+        }
+
+        if (siteModelName) {
+            lines.push('站点模型：' + siteModelName);
+        }
+
+        return '' +
+            '<div class="usage-log-model-primary">' +
+                '<code>' + escHtml(attemptedModel) + '</code>' +
+                renderAttemptFlags(item) +
+            '</div>' +
+            (lines.length ? '<div class="usage-log-model-secondary">' + escHtml(lines.join(' ｜ ')) + '</div>' : '');
+    }
+
+    function renderAttemptFlags(item) {
+        var chips = [];
+        var retryCount = Number(readValue(item, ['retryCount']) || 0);
+        if (retryCount > 0) {
+            chips.push(renderMetricChip('重试 ' + formatNumber(retryCount), 'warning'));
+        }
+
+        if (!!readValue(item, ['fallbackTriggered'])) {
+            chips.push(renderMetricChip('已回退', 'danger'));
+        }
+
+        if (!!readValue(item, ['isFinalResult'])) {
+            chips.push(renderMetricChip('最终', 'total'));
+        }
+
+        return chips.join('');
+    }
+
+    function renderSummaryItem(label, value) {
+        return '' +
+            '<div class="usage-log-detail-summary-item">' +
+                '<div class="usage-log-detail-summary-label">' + escHtml(label) + '</div>' +
+                '<div class="usage-log-detail-summary-value">' + escHtml(value) + '</div>' +
+            '</div>';
+    }
+
+    function renderAttemptMetaItem(label, value) {
+        return '' +
+            '<div class="usage-log-attempt-meta-item">' +
+                '<div class="usage-log-attempt-meta-label">' + escHtml(label) + '</div>' +
+                '<div class="usage-log-attempt-meta-value">' + escHtml(value) + '</div>' +
+            '</div>';
+    }
+
+    function renderMetricChip(label, style) {
+        var className = 'usage-log-chip usage-log-chip-total';
+        if (style === 'first') {
+            className = 'usage-log-chip usage-log-chip-first';
+        } else if (style === 'stream') {
+            className = 'usage-log-chip usage-log-chip-stream';
+        } else if (style === 'warning') {
+            className = 'usage-log-chip usage-log-chip-warning';
+        } else if (style === 'danger') {
+            className = 'usage-log-chip usage-log-chip-danger';
+        }
+
+        return '<span class="' + className + '">' + escHtml(label) + '</span>';
     }
 
     function renderSourceBadge(source) {
