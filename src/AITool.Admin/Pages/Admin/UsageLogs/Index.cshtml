@@ -667,6 +667,7 @@
             throw new Error('无法加载汇总数据');
         }
 
+        hideUsageLogsStatus();
         var data = await response.json();
         document.getElementById('summaryTotalRequests').textContent = formatNumber(readValue(data, ['totalRequests', 'requestCount', 'totalCount']) || 0);
         document.getElementById('summarySuccessRate').textContent = formatPercent(readValue(data, ['successRate']) || 0);
@@ -681,6 +682,7 @@
             throw new Error('无法加载日志列表');
         }
 
+        hideUsageLogsStatus();
         var data = await response.json();
         var items = Array.isArray(data) ? data : (data.items || data.logs || []);
         usageLogsCurrentPage = Number(readValue(data, ['page']) || usageLogsCurrentPage);
@@ -1050,6 +1052,16 @@
         el.textContent = message;
         el.className = 'alert alert-' + (success ? 'success' : 'danger');
         el.style.display = 'block';
+    }
+
+    function hideUsageLogsStatus() {
+        var el = document.getElementById('usageLogsStatus');
+        if (!el) {
+            return;
+        }
+
+        el.textContent = '';
+        el.style.display = 'none';
     }
 
     function readValue(source, keys) {

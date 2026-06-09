@@ -26,6 +26,21 @@ public sealed class UsageLogsPageSmokeTests
         html.Should().Contain("筛选与汇总");
         html.Should().Contain("总请求");
         html.Should().Contain("查看链路");
+    }
+
+    /// <summary>
+    /// 页面新增的展示结构和详情状态在独立宿主中应可见，避免前端链路只停留在脚本层而没有实际输出。
+    /// </summary>
+    [Fact]
+    public async Task Usage_logs_page_contains_extended_visual_structures_in_independent_admin_host()
+    {
+        await using var factory = new AdminHostWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync("/Admin/UsageLogs");
+        var html = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK, html);
         html.Should().Contain("usage-log-model-secondary");
         html.Should().Contain("usage-log-detail-summary-grid");
         html.Should().Contain("usage-log-chip-danger");

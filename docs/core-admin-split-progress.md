@@ -558,8 +558,9 @@
 - 扩充了 `tests/AITool.Admin.IntegrationTests/UsageLogsPageSmokeTests.cs`，当前已覆盖页面访问、列表/汇总/详情联动以及来源/状态/模型关键字筛选三类核心场景
 - 继续完善了 `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml`，把模型列与详情抽屉继续向真实链路表达靠齐，开始显示请求模型、站点模型、回退/重试/最终结果标记，以及更完整的尝试级指标和错误信息
 - 本轮又进一步补强了 UsageLogs 页面骨架验证，增加对新样式结构和详情展示容器的覆盖，确保页面侧新增展示逻辑至少被独立宿主测试触达
+- 本轮继续补强了前端状态提示行为，汇总和列表在成功加载后会主动隐藏错误提示，避免独立 Admin 宿主中的 UsageLogs 页面在一次失败后长期残留旧错误状态
 - 已重新执行 `dotnet build src/AITool.Admin/AITool.Admin.csproj`，结果为 **构建成功，0 error**
-- 已重新执行 `dotnet test tests/AITool.Admin.IntegrationTests/AITool.Admin.IntegrationTests.csproj`，结果为 **4/4 通过**
+- 已重新执行 `dotnet test tests/AITool.Admin.IntegrationTests/AITool.Admin.IntegrationTests.csproj`，结果为 **5/5 通过**
 
 ### 当前还剩什么
 
