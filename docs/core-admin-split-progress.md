@@ -317,13 +317,14 @@
 
 最新一轮完整验证结果：
 
-- ApplicationTests：`97/97` 通过
+- ApplicationTests：`99/99` 通过
 - IntegrationTests：`175/175` 通过
 - AITool.Web：构建成功，`0 warning / 0 error`
 - AITool.Admin：单独构建成功
-- AITool.Admin.IntegrationTests：`1/1` 通过
+- AITool.Admin.IntegrationTests：`3/3` 通过
+- AITool.slnx：整体构建成功，`0 error`
 
-这说明当前主宿主与核心协议链路仍然稳定，没有被双宿主改造破坏，同时独立 Admin 宿主也已经具备最小测试可验证性。
+这说明当前主宿主与核心协议链路仍然稳定，没有被双宿主改造破坏，同时独立 Admin 宿主已经不只是能启动，而且开始承载真实页面与只读接口并通过验证。
 
 ---
 
@@ -340,6 +341,7 @@
 #### Admin 测试宿主状态
 
 - `AITool.Admin.IntegrationTests` 已能独立启动 Admin 宿主并完成最小 smoke test
+- 之所以单独拆测试工程，是为了避免与 `AITool.Web` 顶级 `Program` 的宿主入口冲突
 - 后续不再需要围绕宿主入口做基础打通，只需在其上继续增加真实页面或接口验证
 
 ---
@@ -389,31 +391,33 @@
 #### UsageLog 消费状态
 
 - **UsageLog 这条真实链路已经具备最小消费入库闭环**
-- 但目前仍属于骨架级能力，还没有与独立 Admin 页面真正连通
+- 当前 `/Admin/UsageLogs` 真实页面还没有切到独立 `AITool.Admin` 宿主
+- 当前阶段只能说明：数据链路已经具备页面迁移条件，但页面本身尚未迁移
 
 ---
 
-### 未完成：第一块真实 Admin 页面/接口迁移验证
+### 已完成：第一块真实 Admin 页面/接口迁移验证
 
-目前 `AITool.Admin` 宿主只是骨架，还没有真正迁入一块可验证的 Admin 页面或接口。
+已经完成：
 
-#### 建议的优先顺序
+- `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml`
+- `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml.cs`
+- `tests/AITool.Admin.IntegrationTests/UsageLogsPageSmokeTests.cs`
 
-优先迁移一块风险较低、可独立验证的页面或接口，例如：
+#### 第一块页面迁移已实现能力
 
-- 先迁一个只读页面
-- 或先迁一个简单的 `/api/admin/*` 接口
-- 或先迁 `/Admin/System/Settings` 中不依赖 Core 写操作的一小部分只读展示
+- `/Admin/UsageLogs` 已开始由独立 `AITool.Admin` 宿主承载
+- 页面基础路由、标题、筛选骨架、汇总卡片和列表框架已迁入 `AITool.Admin`
+- `AITool.Admin` 中已新增对应的 `UsageLogsApiController`，开始承接列表、汇总和链路详情这三类只读查询接口
+- UsageLogs 页面脚本已开始迁入 `AITool.Admin`，当前已具备基础的筛选、分页、汇总加载和详情抽屉联动逻辑
+- `AITool.Admin.IntegrationTests` 已能直接访问 `/Admin/UsageLogs` 页面与对应只读 API，并验证最小页面/API 联动
 
-#### 原因
+#### 第一块页面迁移状态
 
-一旦迁移一块真实页面成功，就说明：
-
-- 独立 Admin 宿主可运行
-- 基础依赖已收口
-- 页面迁移方式是可行的
-
-目前这一步还没开始真正落地。
+- **第一块真实 Admin 页面迁移验证已打通**
+- 当前页面骨架、只读接口和最小宿主联动已经成立
+- `/Admin/UsageLogs` 对应的列表、汇总、链路详情三类只读 API 已在 `AITool.Admin` 中接入并通过独立宿主测试验证
+- 页面脚本已经开始迁移，但样式与更复杂的前端交互仍属于“继续收口中”状态
 
 ---
 

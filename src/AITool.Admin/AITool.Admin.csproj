@@ -11,7 +11,6 @@
   <ItemGroup>
     <ProjectReference Include="..\AITool.Application\AITool.Application.csproj" />
     <ProjectReference Include="..\AITool.Infrastructure\AITool.Infrastructure.csproj" />
-    <ProjectReference Include="..\AITool.Web\AITool.Web.csproj" />
   </ItemGroup>
 
   <ItemGroup>

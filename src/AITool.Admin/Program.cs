@@ -23,7 +23,6 @@ builder.Host.UseNLog();
 var startupLogger = LogManager.GetLogger("Startup");
 var applicationVersion = "1.0.1.4-admin";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
-builder.Services.AddSingleton(new AITool.Web.Services.AppVersionInfo(applicationVersion));
 
 var serverPort = builder.Configuration.GetValue<int?>("AdminServer:Port") ?? builder.Configuration.GetValue<int?>("Server:Port") ?? 5030;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");

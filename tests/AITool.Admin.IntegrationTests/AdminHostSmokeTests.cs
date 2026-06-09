@@ -1,6 +1,12 @@
 using System.Net;
+using AITool.Domain.Proxy;
+using AITool.Infrastructure.Persistence;
 using FluentAssertions;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace AITool.Admin.IntegrationTests;
 
@@ -27,4 +33,73 @@ public sealed class AdminHostSmokeTests
 
 internal sealed class AdminHostWebApplicationFactory : WebApplicationFactory<AITool.Admin.AdminProgramMarker>
 {
+    private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-admin-host-{Guid.NewGuid():N}.db");
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Testing");
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<DbContextOptions<AppDbContext>>();
+            services.RemoveAll<AppDbContext>();
+            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+        });
+    }
+
+    protected override void ConfigureClient(HttpClient client)
+    {
+        base.ConfigureClient(client);
+        SeedAsync().GetAwaiter().GetResult();
+    }
+
+    private async Task SeedAsync()
+    {
+        await using var scope = Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        await db.Database.EnsureDeletedAsync();
+        await db.Database.EnsureCreatedAsync();
+
+        var siteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        db.Sites.Add(new AITool.Domain.Sites.Site
+        {
+            Id = siteId,
+            Name = "Admin Host Site",
+            BaseUrl = "https://admin-host.example.com",
+            ApiKey = "site-key",
+            ProtocolType = "OpenAI",
+            SupportsOpenAi = true,
+            SupportsAnthropic = false,
+            IsEnabled = true
+        });
+        db.ProxyUsageLogs.Add(new ProxyUsageLog
+        {
+            RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            AccessKeyId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+            ProtocolType = "OpenAI",
+            ForwardingMode = "direct",
+            RequestModel = "chat-prod",
+            AttemptedModel = "gpt-5.4",
+            TargetSiteId = siteId,
+            Status = "success",
+            Source = "proxy",
+            RetryCount = 0,
+            AttemptIndex = 1,
+            IsFinalResult = true,
+            FallbackTriggered = false,
+            ErrorMessage = string.Empty,
+            InputTokens = 10,
+            CachedTokens = 2,
+            OutputTokens = 6,
+            TotalTokens = 18,
+            IsStreaming = false,
+            IsStreamInterrupted = false,
+            FirstTokenLatencyMs = 30,
+            StreamDurationMs = 0,
+            TotalDurationMs = 80,
+            ReasoningEffort = string.Empty,
+            RequestedAt = new DateTimeOffset(2026, 6, 10, 10, 0, 0, TimeSpan.Zero)
+        });
+
+        await db.SaveChangesAsync();
+    }
 }
