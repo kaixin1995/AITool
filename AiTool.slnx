@@ -7,6 +7,7 @@
     <Project Path="src/AITool.Web/AITool.Web.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/AITool.Admin.IntegrationTests/AITool.Admin.IntegrationTests.csproj" />
     <Project Path="tests/AITool.ApplicationTests/AITool.ApplicationTests.csproj" />
     <Project Path="tests/AITool.IntegrationTests/AITool.IntegrationTests.csproj" />
   </Folder>

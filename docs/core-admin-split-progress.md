@@ -1,0 +1,544 @@
+# Core / Admin 拆分当前进展说明
+
+## 文档目的
+
+这份文档用于记录 **Core / Admin 双宿主拆分** 当前已经完成的工作，以及后续仍未完成的事项，方便在后续继续开发时快速对齐现状。
+
+这份文档是阶段性进展记录，不替代整体设计文档与协议文档。
+
+相关文档：
+
+- [core-admin-split-design.md](core-admin-split-design.md)
+- [core-admin-split-implementation-checklist.md](core-admin-split-implementation-checklist.md)
+- [core-admin-split-communication-protocol.md](core-admin-split-communication-protocol.md)
+
+---
+
+## 当前目标回顾
+
+当前拆分目标是：
+
+- **Core 进程**：无页面、只提供接口、面向 Claude Code / OpenCode / Codex / 代理客户端
+- **Admin 进程**：承载全部 `/Admin/*` 页面，面向管理员
+- Core 不再依赖当前业务数据库
+- Admin 作为配置权威源与历史数据中心
+- Core 与 Admin 通过：
+  - 配置同步协议
+  - 事件流协议
+  - ack / replay / spool
+  进行通信
+
+在物理拆成两个独立宿主之前，先在当前单体内把协议与运行模型打通，确保核心链路稳定，再推进双宿主落地。
+
+---
+
+## 一、当前已经完成的内容
+
+### 已完成：Core 运行时配置快照模型
+
+已经完成并接入：
+
+- `src/AITool.Application/CoreRuntime/CoreRuntimeConfigSnapshot.cs`
+- `src/AITool.Application/CoreRuntime/ICoreRuntimeConfigProvider.cs`
+- `src/AITool.Infrastructure/CoreRuntime/CoreRuntimeConfigProvider.cs`
+- `src/AITool.Infrastructure/CoreRuntime/CoreRuntimeConfigSnapshotBuilder.cs`
+- `src/AITool.Infrastructure/Operations/SystemRuntimeSettingsService.cs`
+- `src/AITool.Application/Operations/ISystemRuntimeSettingsService.cs`
+
+#### 已实现能力
+
+- 定义了 Core 运行时完整配置快照模型
+- 支持从 Admin 当前数据库中的主数据构建完整快照
+- 支持稳定计算配置哈希 `ConfigHash`
+- Core 当前内存持有一份生效快照
+- Core 启动时可以从本地 `last-good-config.json` 恢复最后一次成功配置
+
+#### 配置快照能力状态
+
+- 已可工作
+- 已有测试覆盖
+
+---
+
+### 已完成：Core 全量同步最小闭环
+
+已经完成并接入：
+
+- `src/AITool.Web/Controllers/Core/CoreConfigController.cs`
+- `src/AITool.Web/Controllers/Core/CoreConfigSyncController.cs`
+- `src/AITool.Web/Controllers/Core/CoreConfigHandshakeController.cs`
+- `src/AITool.Web/Controllers/Core/CoreRuntimeStatusController.cs`
+- `src/AITool.Application/CoreRuntime/CoreAdminHandshakeModels.cs`
+- `src/AITool.Infrastructure/CoreRuntime/CoreConfigSyncDecisionResolver.cs`
+
+#### 当前接口
+
+- `GET /api/core/config/status`
+- `POST /api/core/config/full-sync`
+- `POST /api/core/config/handshake`
+- `GET /api/core/health`
+- `GET /api/core/ready`
+- `GET /api/core/runtime/status`
+
+#### 配置同步已实现能力
+
+- Core 无配置时 `ready=false`
+- Admin 可下发完整配置快照
+- Core 会校验：
+  - `ConfigVersion`
+  - `ConfigHash`
+  - 最小主配置完整性
+- 同版本同哈希会被 `ignored`
+- 握手时可以返回当前：
+  - 已应用配置版本
+  - 已应用配置哈希
+  - 是否 ready
+  - 当前同步建议（`noop` / `full-sync-required` / `admin-version-behind`）
+
+#### 全量同步闭环状态
+
+- 最小闭环已打通
+- 已有应用测试与集成测试验证
+
+---
+
+### 已完成：Core 本地 last-good-config 恢复
+
+已经完成并接入：
+
+- `src/AITool.Infrastructure/CoreRuntime/CoreRuntimeConfigFileOptions.cs`
+- `src/AITool.Infrastructure/CoreRuntime/CoreRuntimeConfigProvider.cs`
+- `src/AITool.Web/Program.cs`
+
+#### 本地恢复已实现能力
+
+- Core 在设置当前快照后，会把配置写入本地文件
+- Core 启动时会尝试恢复该文件
+- 如果没有可恢复配置，会保持 `not-ready`，等待 Admin 下发首个完整快照
+
+#### 本地恢复状态
+
+- 已可工作
+- 已有测试验证
+
+---
+
+### 已完成：Core 事件模型与最小事件总线
+
+已经完成并接入：
+
+- `src/AITool.Application/CoreRuntime/CoreAdminEventModels.cs`
+- `src/AITool.Infrastructure/CoreRuntime/CoreAdminEventEnvelopeBuilder.cs`
+- `src/AITool.Infrastructure/CoreRuntime/CoreEventSequenceProvider.cs`
+- `src/AITool.Infrastructure/CoreRuntime/CoreAdminEventBus.cs`
+
+#### 事件模型已实现能力
+
+- 定义统一 `CoreAdminEventEnvelope`
+- 已定义事件负载：
+  - `CoreUsageLogEvent`
+  - `CoreConversationTurnEvent`
+- 使用单进程全局递增 `SequenceId`
+- 提供最小内存事件总线
+
+#### 事件总线状态
+
+- 已工作
+- 已有测试验证
+
+---
+
+### 已完成：两条真实链路接入事件发布
+
+#### UsageLog 链路
+
+已经完成：
+
+- `src/AITool.Infrastructure/CoreRuntime/CoreUsageLogEventPublisher.cs`
+- `src/AITool.Infrastructure/Proxy/UsageLogService.cs`
+
+当前行为：
+
+- 继续保留原有数据库落库逻辑
+- 同时额外发布一份 UsageLog 事件到 Core 事件总线
+
+#### Conversation 链路
+
+已经完成：
+
+- `src/AITool.Infrastructure/Conversations/CoreConversationEventPublisher.cs`
+- `src/AITool.Infrastructure/Conversations/ConversationLogService.cs`
+
+当前行为：
+
+- 继续保留原有对话记录持久化逻辑
+- 同时额外发布一份 Conversation 事件到 Core 事件总线
+
+#### 真实事件接入状态
+
+- 已可工作
+- 已有测试验证
+
+---
+
+### 已完成：spool / ack / replay 最小可靠闭环
+
+已经完成并接入：
+
+- `src/AITool.Infrastructure/CoreRuntime/CoreEventSpoolOptions.cs`
+- `src/AITool.Infrastructure/CoreRuntime/CoreEventSpoolStore.cs`
+- `src/AITool.Infrastructure/CoreRuntime/CoreEventSpoolBackgroundService.cs`
+- `src/AITool.Application/CoreRuntime/CoreAdminAckModels.cs`
+- `src/AITool.Web/Controllers/Core/CoreEventAckController.cs`
+
+#### 事件可靠性接口
+
+- `POST /api/core/events/ack`
+- `GET /api/core/events/replay?afterSequenceId=...`
+
+#### 可靠事件已实现能力
+
+- 发布的事件会进入内存总线
+- 后台服务会把事件写入本地 spool JSONL 文件
+- Core 可以：
+  - 读取最新 `latestSequenceId`
+  - 判断 `hasSpoolBacklog`
+  - 根据 `afterSequenceId` replay 积压事件
+  - 根据 ack 序号清理已确认事件
+
+#### 可靠事件闭环状态
+
+- 最小可靠事件闭环已打通
+- 已有应用测试与集成测试验证
+
+---
+
+### 已完成：Admin 最小客户端与 UsageLog 真实消费入库
+
+已经完成：
+
+- `src/AITool.Infrastructure/CoreRuntime/CoreAdminClient.cs`
+- `src/AITool.Infrastructure/CoreRuntime/AdminUsageLogEventIngestor.cs`
+- `tests/AITool.ApplicationTests/CoreRuntime/AdminUsageLogEventIngestorTests.cs`
+- `tests/AITool.IntegrationTests/Core/CoreUsageLogAdminIngestTests.cs`
+- `tests/AITool.IntegrationTests/Core/CoreAdminClientTests.cs`
+
+#### Admin 消费已实现能力
+
+- Admin 侧最小客户端已支持：
+  - `HandshakeAsync(...)`
+  - `FullSyncAsync(...)`
+  - `AckAsync(...)`
+  - `ReplayAsync(...)`
+- Admin 现在已经不只是“会调用 Core 协议”，而是能够：
+  - 读取 `replay`
+  - 解析 `usage-log` 事件
+  - 将 UsageLog 事件写入 Admin 当前数据库中的 `ProxyUsageLogs`
+  - 返回最大连续 sequence，供上层提交 `ack`
+- 已做最小幂等去重，避免 replay 或重复提交写入完全相同的日志记录
+
+#### Admin 消费状态
+
+- **UsageLog 这条真实链路已经具备最小消费入库闭环**
+- 但目前仍属于骨架级能力，还没有与独立 Admin 页面真正连通
+
+---
+
+### 已完成：独立 AITool.Admin 宿主骨架
+
+已经完成：
+
+- `src/AITool.Admin/AITool.Admin.csproj`
+- `src/AITool.Admin/Program.cs`
+- `AITool.slnx` 已包含 `AITool.Admin`
+- `tests/AITool.Admin.IntegrationTests/AITool.Admin.IntegrationTests.csproj`
+- `tests/AITool.Admin.IntegrationTests/AdminHostSmokeTests.cs`
+
+#### Admin 宿主已实现能力
+
+- `AITool.Admin` 宿主工程已经创建
+- `AITool.Admin` 已能单独 `dotnet build`
+- 已接入：
+  - Razor Pages
+  - Controllers
+  - Authentication / Authorization
+  - 数据库
+  - CoreAdminClient
+- `AITool.Admin.IntegrationTests` 已能单独拉起 Admin 宿主并完成最小 smoke test
+
+#### Admin 宿主状态
+
+- **宿主本体已能单独编译成功**
+- **独立测试工程已打通最小宿主启动验证**
+
+---
+
+### 已完成：第一批宿主共享能力抽取
+
+已经完成或开始接入：
+
+- `src/AITool.Infrastructure/Hosting/AppVersionInfo.cs`
+- `src/AITool.Infrastructure/Hosting/HttpLogFormatter.cs`
+- `src/AITool.Infrastructure/Hosting/AdminAuthOptions.cs`
+- `src/AITool.Infrastructure/Hosting/HttpExceptionLoggingFilter.cs`
+
+以及：
+
+- `src/AITool.Web/GlobalUsings.cs`
+- `src/AITool.Web/Services/AdminAuthService.cs`
+- `src/AITool.Web/Program.cs`
+- `src/AITool.Admin/Program.cs`
+
+#### 当前作用
+
+- 把一部分宿主公共能力从 `AITool.Web.Services` 中抽出，供双宿主复用
+- 避免在 `AITool.Admin` 中重复实现这些类型
+
+#### 宿主共享层状态
+
+- 第一轮抽取已完成
+- 当前 `AITool.Admin` 仍然临时直接复用部分 `AITool.Web.Services` 中的实现类型
+- 后续还需要继续收口：
+  - 哪些应抽成真正的宿主共享层
+  - 哪些应只属于 Admin
+  - 哪些应通过 Core API 替代，而不再直接引用 Web 侧实现
+
+---
+
+### 已完成：当前主线完整验证
+
+在持续推进期间，以下一直保持通过：
+
+- `dotnet test tests/AITool.ApplicationTests/AITool.ApplicationTests.csproj`
+- `dotnet test tests/AITool.IntegrationTests/AITool.IntegrationTests.csproj`
+- `dotnet build src/AITool.Web/AITool.Web.csproj`
+- `dotnet build src/AITool.Admin/AITool.Admin.csproj`
+- `dotnet test tests/AITool.Admin.IntegrationTests/AITool.Admin.IntegrationTests.csproj`
+
+最新一轮完整验证结果：
+
+- ApplicationTests：`97/97` 通过
+- IntegrationTests：`175/175` 通过
+- AITool.Web：构建成功，`0 warning / 0 error`
+- AITool.Admin：单独构建成功
+- AITool.Admin.IntegrationTests：`1/1` 通过
+
+这说明当前主宿主与核心协议链路仍然稳定，没有被双宿主改造破坏，同时独立 Admin 宿主也已经具备最小测试可验证性。
+
+---
+
+## 二、当前还未完成的内容
+
+下面这些是下一阶段必须继续推进的工作。
+
+---
+
+### 已关闭：AITool.Admin 独立测试工程跑通
+
+这部分已经完成。
+
+#### Admin 测试宿主状态
+
+- `AITool.Admin.IntegrationTests` 已能独立启动 Admin 宿主并完成最小 smoke test
+- 后续不再需要围绕宿主入口做基础打通，只需在其上继续增加真实页面或接口验证
+
+---
+
+### 未完成：宿主共享层边界完全清理
+
+虽然第一批共享能力已经抽取，但还没有完全结束。
+
+#### 还需要继续确认的内容
+
+- `DeveloperInvocationTraceStore`
+- `ModelConcurrencyLimiter`
+- `ProxyRequestMetadataCache`
+- `ModelVendorCatalogService`
+- `AnalyticsBackgroundQueryExecutor`
+
+#### 这些服务要继续判断
+
+- 哪些应该继续留在 `AITool.Web.Services`
+- 哪些应该抽到可共享宿主层
+- 哪些应该只属于 Admin
+- 哪些后续应通过 Core API 替代，而不应在 Admin 宿主直接引用
+
+#### 当前边界结论
+
+宿主共享层已经从“完全混杂”进入“边界已暴露”的阶段，但还没有最终定型。
+
+---
+
+### 已完成：Admin 真实事件链路最小消费入库
+
+已经完成：
+
+- `src/AITool.Infrastructure/CoreRuntime/AdminUsageLogEventIngestor.cs`
+- `tests/AITool.ApplicationTests/CoreRuntime/AdminUsageLogEventIngestorTests.cs`
+- `tests/AITool.IntegrationTests/Core/CoreUsageLogAdminIngestTests.cs`
+
+#### UsageLog 消费已实现能力
+
+- Admin 现在已经不只是“会调用 Core 协议”，而是能够：
+  - 读取 `replay`
+  - 解析 `usage-log` 事件
+  - 将 UsageLog 事件写入 Admin 当前数据库中的 `ProxyUsageLogs`
+  - 返回最大连续 sequence，供上层提交 `ack`
+- 已做最小幂等去重，避免 replay 或重复提交写入完全相同的日志记录
+
+#### UsageLog 消费状态
+
+- **UsageLog 这条真实链路已经具备最小消费入库闭环**
+- 但目前仍属于骨架级能力，还没有与独立 Admin 页面真正连通
+
+---
+
+### 未完成：第一块真实 Admin 页面/接口迁移验证
+
+目前 `AITool.Admin` 宿主只是骨架，还没有真正迁入一块可验证的 Admin 页面或接口。
+
+#### 建议的优先顺序
+
+优先迁移一块风险较低、可独立验证的页面或接口，例如：
+
+- 先迁一个只读页面
+- 或先迁一个简单的 `/api/admin/*` 接口
+- 或先迁 `/Admin/System/Settings` 中不依赖 Core 写操作的一小部分只读展示
+
+#### 原因
+
+一旦迁移一块真实页面成功，就说明：
+
+- 独立 Admin 宿主可运行
+- 基础依赖已收口
+- 页面迁移方式是可行的
+
+目前这一步还没开始真正落地。
+
+---
+
+### 未完成：Core 真正物理独立宿主
+
+当前虽然已经完成了大量 Core 协议与运行时模型工作，但它们仍然跑在当前 `AITool.Web` 宿主中。
+
+#### 核心宿主拆分待办
+
+- 单独创建真正的 `AITool.Core` 宿主工程
+- 把 `/v1/*`、`/api/core/*` 真正迁到 `AITool.Core`
+- 让 `AITool.Web` 逐步退出核心代理角色
+
+#### 核心宿主当前状态
+
+- 协议与事件模型已经具备迁出条件
+- 但物理 Core 宿主拆分还没开始真正实施
+
+---
+
+### 未完成：patch 增量更新协议
+
+当前配置同步只有：
+
+- `full-sync`
+- `handshake`
+- `noop / full-sync-required / admin-version-behind`
+
+#### 还没有做
+
+- `patch` 协议模型
+- `baseVersion` 校验后的增量更新应用
+- 增量失败后自动回退到全量同步
+
+这部分还在后续阶段。
+
+---
+
+### 未完成：事件流实时消费通道
+
+当前事件链路仍然是：
+
+- 发布 → 总线 → spool → replay/ack
+
+#### 实时消费待办
+
+- 真正的 Core → Admin 长连接实时推送
+- Admin 长连接消费
+- 实时流与 replay 的衔接
+
+目前属于：
+
+- **可靠协议最小闭环已完成**
+- **实时推送通道尚未接入**
+
+---
+
+### 未完成：事件 sequence / ack 持久化元数据增强
+
+当前已经有：
+
+- `CoreEventSequenceProvider`
+- `CoreEventSpoolStore`
+- `Ack`
+- `Replay`
+
+#### 但还没做的更稳妥能力
+
+- sequence 持久化元数据文件
+- ack 持久化元数据文件
+- Core 重启后恢复 sequence/ack 状态
+- 更细粒度的 spool 文件轮转策略
+
+目前最小版本已经能工作，但这部分仍然可以继续增强。
+
+---
+
+## 三、当前阶段的整体判断
+
+当前已经完成：
+
+- Core 协议闭环
+- Core 最小可靠事件闭环
+- Admin 最小客户端闭环
+- AITool.Admin 独立宿主骨架编译通过
+- AITool.Admin 独立测试宿主跑通最小启动验证
+
+这说明我们已经从“只有设计文档”的阶段，进入了：
+
+> **双宿主架构的真实实施阶段。**
+
+当前真正的主任务不再是继续堆 Core 协议，而是：
+
+- 让 Admin 真正消费并入库
+- 迁移第一块真实页面或接口
+- 继续清理宿主共享边界
+- 再逐步把 Core 真正迁出到独立宿主
+
+---
+
+## 四、建议的下一步顺序
+
+建议按这个顺序继续推进：
+
+### 下一步
+
+- 先让 Admin 完成一条真实事件链路的消费入库
+- 优先建议选择 `UsageLog` 链路
+
+### 再下一步
+
+- 迁移一块低风险真实页面或接口
+- 让独立 Admin 宿主开始承载真实功能
+
+### 之后
+
+- 再开始真正的 `AITool.Core` 宿主拆分
+- 再接 patch
+- 再接实时流
+- 再增强 sequence/ack 持久化元数据
+
+---
+
+## 五、结论
+
+当前项目状态可以概括为：
+
+> **协议与运行时基础已经打好，双宿主也开始真正落地；现在独立 Admin 宿主已经能单独编译和测试启动，下一阶段重点应转向真实事件消费入库与第一块页面/接口迁移。**
