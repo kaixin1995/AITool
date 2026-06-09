@@ -153,3 +153,110 @@ public sealed class CoreUsageLogEvent
     /// </summary>
     public DateTimeOffset RequestedAt { get; set; } = DateTimeOffset.UtcNow;
 }
+
+/// <summary>
+/// 对话记录对应的 Core 事件负载。
+/// 为了降低第一阶段接入成本，字段尽量与现有 ConversationTurnEntry 保持一致。
+/// </summary>
+public sealed class CoreConversationTurnEvent
+{
+    /// <summary>
+    /// 请求链路标识。
+    /// </summary>
+    public Guid RequestId { get; set; }
+
+    /// <summary>
+    /// 助手侧时间。
+    /// </summary>
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 用户发起时间。
+    /// </summary>
+    public DateTimeOffset? UserCreatedAt { get; set; }
+
+    /// <summary>
+    /// 工具来源。
+    /// </summary>
+    public string SourceTool { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 会话标识。
+    /// </summary>
+    public string SessionId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 会话分组键。
+    /// </summary>
+    public string ConversationGroupKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 访问密钥标识。
+    /// </summary>
+    public Guid AccessKeyId { get; set; }
+
+    /// <summary>
+    /// 请求模型名。
+    /// </summary>
+    public string RequestModel { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
+    public string ProtocolType { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 请求路径。
+    /// </summary>
+    public string RequestPath { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 来源入口。
+    /// </summary>
+    public string Source { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 用户输入文本。
+    /// </summary>
+    public string UserInputText { get; set; } = string.Empty;
+
+    /// <summary>
+    /// AI 输出 Markdown。
+    /// </summary>
+    public string AssistantOutputMarkdown { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 输入 Token。
+    /// </summary>
+    public int InputTokens { get; set; }
+
+    /// <summary>
+    /// 缓存 Token。
+    /// </summary>
+    public int CachedTokens { get; set; }
+
+    /// <summary>
+    /// 输出 Token。
+    /// </summary>
+    public int OutputTokens { get; set; }
+
+    /// <summary>
+    /// 是否流式。
+    /// </summary>
+    public bool IsStreaming { get; set; }
+
+    /// <summary>
+    /// 状态。
+    /// </summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 附加元数据 JSON。
+    /// </summary>
+    public string MetadataJson { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 自定义会话标题。
+    /// </summary>
+    public string ConversationTitle { get; set; } = string.Empty;
+}

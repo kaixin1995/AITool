@@ -2,15 +2,20 @@ using System.Net;
 using System.Net.Http.Json;
 using AITool.Application.CoreRuntime;
 using AITool.Application.Operations;
+using AITool.Application.UsageLogs;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace AITool.IntegrationTests.Core;
 
@@ -91,6 +96,8 @@ internal sealed class CoreConfigSyncWebApplicationFactory : WebApplicationFactor
             services.RemoveAll<DbContextOptions<AppDbContext>>();
             services.RemoveAll<AppDbContext>();
             services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            services.RemoveAll<IHostEnvironment>();
+            services.AddSingleton<IHostEnvironment>(new CoreTestsHostEnvironment());
         });
     }
 
@@ -108,6 +115,39 @@ internal sealed class CoreConfigSyncWebApplicationFactory : WebApplicationFactor
         await using var scope = Services.CreateAsyncScope();
         var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
         return await settingsService.BuildCoreRuntimeConfigSnapshotAsync(configVersion);
+    }
+
+    internal async Task PublishUsageLogEventAsync()
+    {
+        await using var scope = Services.CreateAsyncScope();
+        var service = scope.ServiceProvider.GetRequiredService<IUsageLogService>();
+        await service.LogAsync(new UsageLogEntry
+        {
+            RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            AccessKeyId = Guid.Parse("66666666-6666-6666-6666-666666666666"),
+            ProtocolType = "OpenAI",
+            ForwardingMode = "direct",
+            RequestModel = "chat-prod",
+            AttemptedModel = "gpt-5.4",
+            TargetSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
+            Status = "success",
+            Source = "proxy",
+            RetryCount = 0,
+            AttemptIndex = 1,
+            IsFinalResult = true,
+            FallbackTriggered = false,
+            ErrorMessage = string.Empty,
+            InputTokens = 10,
+            CachedTokens = 2,
+            OutputTokens = 6,
+            IsStreaming = false,
+            IsStreamInterrupted = false,
+            FirstTokenLatencyMs = 30,
+            StreamDurationMs = 0,
+            TotalDurationMs = 80,
+            ReasoningEffort = string.Empty,
+            RequestedAt = new DateTimeOffset(2026, 6, 10, 10, 0, 0, TimeSpan.Zero)
+        });
     }
 
     private async Task SeedAsync()

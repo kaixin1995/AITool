@@ -1,4 +1,5 @@
 using AITool.Application.CoreRuntime;
+using AITool.Infrastructure.CoreRuntime;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Web.Controllers.Core;
@@ -12,13 +13,20 @@ public sealed class CoreRuntimeStatusController : ControllerBase
 {
     private static readonly DateTimeOffset StartedAt = DateTimeOffset.UtcNow;
     private readonly ICoreRuntimeConfigProvider _configProvider;
+    private readonly CoreEventSequenceProvider _sequenceProvider;
+    private readonly CoreEventSpoolStore _spoolStore;
 
     /// <summary>
     /// 初始化 Core 运行时状态控制器。
     /// </summary>
-    public CoreRuntimeStatusController(ICoreRuntimeConfigProvider configProvider)
+    public CoreRuntimeStatusController(
+        ICoreRuntimeConfigProvider configProvider,
+        CoreEventSequenceProvider sequenceProvider,
+        CoreEventSpoolStore spoolStore)
     {
         _configProvider = configProvider;
+        _sequenceProvider = sequenceProvider;
+        _spoolStore = spoolStore;
     }
 
     /// <summary>
@@ -55,7 +63,8 @@ public sealed class CoreRuntimeStatusController : ControllerBase
             state = _configProvider.IsReady ? "ready" : "not-ready",
             coreStartedAt = StartedAt,
             activeRequestCount = 0,
-            latestSequenceId = 0L,
+            latestSequenceId = _sequenceProvider.Current,
+            hasSpoolBacklog = _spoolStore.HasBacklog(),
             appliedConfigVersion = current?.ConfigVersion ?? 0L,
             appliedConfigHash = current?.ConfigHash ?? string.Empty
         });

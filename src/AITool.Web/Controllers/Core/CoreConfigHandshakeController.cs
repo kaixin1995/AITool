@@ -15,13 +15,20 @@ public sealed class CoreConfigHandshakeController : ControllerBase
     private static readonly string CoreInstanceId = $"core-{Environment.ProcessId}";
     private static readonly DateTimeOffset CoreStartedAt = DateTimeOffset.UtcNow;
     private readonly ICoreRuntimeConfigProvider _configProvider;
+    private readonly CoreEventSequenceProvider _sequenceProvider;
+    private readonly CoreEventSpoolStore _spoolStore;
 
     /// <summary>
     /// 初始化握手控制器。
     /// </summary>
-    public CoreConfigHandshakeController(ICoreRuntimeConfigProvider configProvider)
+    public CoreConfigHandshakeController(
+        ICoreRuntimeConfigProvider configProvider,
+        CoreEventSequenceProvider sequenceProvider,
+        CoreEventSpoolStore spoolStore)
     {
         _configProvider = configProvider;
+        _sequenceProvider = sequenceProvider;
+        _spoolStore = spoolStore;
     }
 
     /// <summary>
@@ -44,9 +51,10 @@ public sealed class CoreConfigHandshakeController : ControllerBase
             AppliedConfigVersion = current?.ConfigVersion ?? 0L,
             AppliedConfigHash = current?.ConfigHash ?? string.Empty,
             Ready = _configProvider.IsReady,
-            LatestSequenceId = 0L,
+            LatestSequenceId = _sequenceProvider.Current,
             ActiveRequestCount = 0,
-            ConfigSyncDecision = decision
+            ConfigSyncDecision = decision,
+            HasSpoolBacklog = _spoolStore.HasBacklog()
         });
     }
 }

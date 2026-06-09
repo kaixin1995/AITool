@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AITool.Infrastructure.Hosting;
 using Microsoft.Extensions.Configuration;
 
 namespace AITool.Web.Services;

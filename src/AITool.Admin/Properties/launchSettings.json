@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "AITool.Admin": {
+      "commandName": "Project",
+      "launchBrowser": true,
+      "environmentVariables": {
+        "ASPNETCORE_ENVIRONMENT": "Development"
+      },
+      "applicationUrl": "https://localhost:48036;http://localhost:48037"
+    }
+  }
+}

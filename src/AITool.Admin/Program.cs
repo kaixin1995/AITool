@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Text;
 using AITool.Application.Common;
 using AITool.Application.Operations;
 using AITool.Application.Proxy;
@@ -31,16 +32,13 @@ builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
 
-var applicationVersion = "1.0.1.4";
+var applicationVersion = "1.0.1.4-admin";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 
-var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
+var serverPort = builder.Configuration.GetValue<int?>("AdminServer:Port") ?? builder.Configuration.GetValue<int?>("Server:Port") ?? 5030;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
 
-// 注册 Razor Pages，作为管理后台的页面框架。
 builder.Services.AddRazorPages();
-
-// 注册 API 控制器，用于代理转发端点。
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<HttpExceptionLoggingFilter>();
@@ -76,13 +74,18 @@ builder.Services
         };
     });
 builder.Services.AddAuthorization();
-builder.Services.AddSingleton<AdminAuthService>();
 
-// 数据库文件放在软件根目录下。
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(connectionString));
+
+builder.Services.Configure<ProxyForwardingOptions>(
+    builder.Configuration.GetSection(ProxyForwardingOptions.SectionName));
+
+builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
+builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
+builder.Services.AddScoped<ModelHealthRequestService>();
 
 builder.Services.AddSingleton(new CoreRuntimeConfigFileOptions
 {
@@ -93,18 +96,6 @@ builder.Services.AddSingleton(new CoreRuntimeConfigFileOptions
 builder.Services.AddSingleton<CoreRuntimeConfigProvider>();
 builder.Services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>(sp => sp.GetRequiredService<CoreRuntimeConfigProvider>());
 
-// 注册代理转发配置，统一控制单路由超时和失败重试策略。
-builder.Services.Configure<ProxyForwardingOptions>(
-    builder.Configuration.GetSection(ProxyForwardingOptions.SectionName));
-
-// 注册站点目录客户端，用于拉取远程站点模型列表。
-builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
-
-// 注册代理主入口实体配置。
-builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
-builder.Services.AddScoped<ModelHealthRequestService>();
-
-// 注册使用日志服务，记录每次代理调用的 Token 用量。
 builder.Services.AddSingleton<CoreEventSequenceProvider>();
 builder.Services.AddSingleton<CoreAdminEventBus>();
 builder.Services.AddSingleton(new CoreEventSpoolOptions
@@ -119,6 +110,7 @@ builder.Services.AddSingleton<CoreUsageLogEventPublisher>();
 builder.Services.AddSingleton<AITool.Infrastructure.Conversations.CoreConversationEventPublisher>();
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
+
 var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
     ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
     : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
@@ -135,23 +127,17 @@ builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogService, AITool.Infrastructure.Conversations.ConversationLogService>();
 builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationExtractionService>();
 
-// 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点。
 builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<ProxyRequestMetadataCache>();
 builder.Services.AddSingleton<ModelVendorCatalogService>();
 
-// 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
-
-// 注册系统运行时设置服务，统一管理持久化的超时、重试和日志保留配置。
 builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
 
-// 注册 Hangfire 检测调度器。
 builder.Services.AddSingleton<HangfireDetectionScheduler>();
 builder.Services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AnalyticsBackgroundQueryExecutor>());
 
-// 注册 Hangfire 内存存储与仪表盘。
 builder.Services.AddHangfire(config => config
     .UseSimpleAssemblyNameTypeSerializer()
     .UseRecommendedSerializerSettings()
@@ -196,10 +182,9 @@ startupLogger.Info(
     applicationVersion,
     app.Environment.EnvironmentName,
     serverPort);
-Console.WriteLine($"AI Tool 已启动：http://127.0.0.1:{serverPort}");
-Console.WriteLine($"AI Tool 已启动：http://{GetLocalIpAddress()}:{serverPort}");
+Console.WriteLine($"AI Tool Admin 已启动：http://127.0.0.1:{serverPort}");
+Console.WriteLine($"AI Tool Admin 已启动：http://{GetLocalIpAddress()}:{serverPort}");
 
-// 启用静态文件服务，提供 wwwroot 下的 CSS/JS 等资源。
 if (!app.Environment.IsEnvironment("Testing"))
 {
     app.UseExceptionHandler(exceptionApp =>
@@ -254,104 +239,42 @@ app.Use(async (context, next) =>
         return;
     }
 
-    var authService = context.RequestServices.GetRequiredService<AdminAuthService>();
     var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
     var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
         ? "/Login"
         : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
-
-    if (IsAdminApiRequest(context.Request))
-    {
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        return;
-    }
-
-    if (IsHangfireRequest(context.Request))
-    {
-        context.Response.Redirect(loginUrl);
-        return;
-    }
-
-    if (authService.HasPasswordConfigured())
-    {
-        context.Response.Redirect(loginUrl);
-        return;
-    }
-
     context.Response.Redirect(loginUrl);
 });
 
-// 映射健康检查端点，作为集成测试的验证入口。
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
-
-// 启用 Hangfire 仪表盘，仅限本地访问。
+app.MapControllers();
+app.MapRazorPages();
 app.UseHangfireDashboard("/hangfire");
-
-// 注册日志清理定时任务，每天凌晨 3 点执行。
 RecurringJob.AddOrUpdate<ILogRetentionService>(
     "log-retention-prune",
     svc => svc.PruneAsync(CancellationToken.None),
     "0 3 * * *");
 
-// 映射 Razor Pages 路由。
-app.MapRazorPages();
-
-// 映射 API 控制器路由，用于代理转发端点。
-app.MapControllers();
-
 app.Run();
 
-/// <summary>
-/// 判断是否为后台请求。
-/// </summary>
 static bool IsAdminRequest(HttpRequest request)
 {
-    return IsAdminPageRequest(request) || IsAdminApiRequest(request) || IsHangfireRequest(request);
+    return request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase)
+        || request.Path.StartsWithSegments("/Login", StringComparison.OrdinalIgnoreCase)
+        || request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase);
 }
 
-/// <summary>
-/// 判断是否为后台页面请求。
-/// </summary>
-static bool IsAdminPageRequest(HttpRequest request)
-{
-    var path = request.Path;
-    return path == "/" || path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase);
-}
-
-/// <summary>
-/// 判断是否为登录页请求。
-/// </summary>
 static bool IsLoginPageRequest(HttpRequest request)
 {
-    return request.Path == "/Login";
+    return request.Path.StartsWithSegments("/Login", StringComparison.OrdinalIgnoreCase);
 }
 
-/// <summary>
-/// 判断是否为后台接口请求。
-/// </summary>
-static bool IsAdminApiRequest(HttpRequest request)
-{
-    return request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase);
-}
-
-/// <summary>
-/// 判断是否为 Hangfire 请求。
-/// </summary>
-static bool IsHangfireRequest(HttpRequest request)
-{
-    return request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase);
-}
-
-/// <summary>
-/// 获取本机 IPv4 地址。
-/// </summary>
 static string GetLocalIpAddress()
 {
     try
     {
-        var addresses = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName());
-        var ipv4 = addresses.FirstOrDefault(x => x.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !System.Net.IPAddress.IsLoopback(x));
-        return ipv4?.ToString() ?? "127.0.0.1";
+        var host = System.Net.Dns.GetHostEntry(System.Net.Dns.GetHostName());
+        var address = host.AddressList.FirstOrDefault(ip => ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !System.Net.IPAddress.IsLoopback(ip));
+        return address?.ToString() ?? "127.0.0.1";
     }
     catch
     {
@@ -359,144 +282,110 @@ static string GetLocalIpAddress()
     }
 }
 
-/// <summary>
-/// 安全读取请求体。
-/// </summary>
 static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, CancellationToken cancellationToken)
 {
     try
     {
-        request.EnableBuffering();
-        using var reader = new StreamReader(request.Body, leaveOpen: true);
-        request.Body.Position = 0;
-        var requestBody = await reader.ReadToEndAsync(cancellationToken);
-        request.Body.Position = 0;
-        return requestBody;
-    }
-    catch (OperationCanceledException)
-    {
-        return "<canceled>";
+        if (request.Body is null || !request.Body.CanRead)
+        {
+            return string.Empty;
+        }
+
+        if (!request.Body.CanSeek)
+        {
+            request.EnableBuffering();
+        }
+
+        request.Body.Seek(0, SeekOrigin.Begin);
+        using var reader = new StreamReader(request.Body, Encoding.UTF8, detectEncodingFromByteOrderMarks: false, leaveOpen: true);
+        var body = await reader.ReadToEndAsync(cancellationToken);
+        request.Body.Seek(0, SeekOrigin.Begin);
+        return body;
     }
     catch
     {
-        return "<unavailable>";
+        return string.Empty;
     }
 }
 
-/// <summary>
-/// 为历史数据库补齐代理日志新增列，避免旧库因 EnsureCreated 不重建而缺字段。
-/// </summary>
 static async Task EnsureProxyUsageLogSchemaAsync(AppDbContext dbContext)
 {
-    var connection = dbContext.Database.GetDbConnection();
-    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
-    if (shouldCloseConnection)
+    await using var connection = dbContext.Database.GetDbConnection();
+    if (connection.State != System.Data.ConnectionState.Open)
     {
         await connection.OpenAsync();
     }
 
-    try
-    {
-        if (!await ColumnExistsAsync(connection, "ProxyUsageLogs", "ForwardingMode"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE ProxyUsageLogs ADD COLUMN ForwardingMode TEXT NULL";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "SiteModelMappings", "MaxConcurrency"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE SiteModelMappings ADD COLUMN MaxConcurrency INTEGER NOT NULL DEFAULT 0";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "Sites", "EndpointPathMode"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE Sites ADD COLUMN EndpointPathMode TEXT NOT NULL DEFAULT 'standard-root'";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "SystemRuntimeSettings", "ConcurrencyMode"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE SystemRuntimeSettings ADD COLUMN ConcurrencyMode INTEGER NOT NULL DEFAULT 0";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "SystemRuntimeSettings", "ConcurrencyQueueTimeoutSeconds"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE SystemRuntimeSettings ADD COLUMN ConcurrencyQueueTimeoutSeconds INTEGER NOT NULL DEFAULT 120";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "SystemRuntimeSettings", "ConversationLogEnabled"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE SystemRuntimeSettings ADD COLUMN ConversationLogEnabled INTEGER NOT NULL DEFAULT 1";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "ProxyRouteRules", "AvailabilityMode"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE ProxyRouteRules ADD COLUMN AvailabilityMode TEXT NOT NULL DEFAULT 'AllDay'";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "ProxyRouteRules", "TimeRangesJson"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE ProxyRouteRules ADD COLUMN TimeRangesJson TEXT NOT NULL DEFAULT ''";
-            await command.ExecuteNonQueryAsync();
-        }
-    }
-    finally
-    {
-        if (shouldCloseConnection)
-        {
-            await connection.CloseAsync();
-        }
-    }
-}
-
-/// <summary>
-/// 检查指定表是否已经存在目标列。
-/// </summary>
-static async Task<bool> ColumnExistsAsync(DbConnection connection, string tableName, string columnName)
-{
     await using var command = connection.CreateCommand();
-    command.CommandText = $"PRAGMA table_info({tableName})";
-    await using var reader = await command.ExecuteReaderAsync();
-    while (await reader.ReadAsync())
+    command.CommandText = @"
+CREATE TABLE IF NOT EXISTS ProxyUsageLogs (
+    Id TEXT NOT NULL PRIMARY KEY,
+    RequestId TEXT NOT NULL,
+    AccessKeyId TEXT NOT NULL,
+    ProtocolType TEXT NOT NULL,
+    ForwardingMode TEXT NULL,
+    RequestModel TEXT NOT NULL,
+    AttemptedModel TEXT NOT NULL,
+    TargetSiteId TEXT NOT NULL,
+    Status TEXT NOT NULL,
+    Source TEXT NOT NULL,
+    RetryCount INTEGER NOT NULL,
+    AttemptIndex INTEGER NOT NULL,
+    IsFinalResult INTEGER NOT NULL,
+    FallbackTriggered INTEGER NOT NULL,
+    ErrorMessage TEXT NOT NULL,
+    InputTokens INTEGER NOT NULL,
+    CachedTokens INTEGER NOT NULL,
+    OutputTokens INTEGER NOT NULL,
+    TotalTokens INTEGER NOT NULL,
+    IsStreaming INTEGER NOT NULL,
+    IsStreamInterrupted INTEGER NOT NULL DEFAULT 0,
+    FirstTokenLatencyMs INTEGER NOT NULL,
+    StreamDurationMs INTEGER NOT NULL,
+    TotalDurationMs INTEGER NOT NULL,
+    ReasoningEffort TEXT NOT NULL DEFAULT '',
+    RequestedAt TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_RequestedAt ON ProxyUsageLogs (RequestedAt);
+CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_RequestId ON ProxyUsageLogs (RequestId);
+";
+    await command.ExecuteNonQueryAsync();
+
+    if (!await ColumnExistsAsync(connection, "ProxyUsageLogs", "CachedTokens"))
     {
-        if (string.Equals(reader[1]?.ToString(), columnName, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
+        command.CommandText = "ALTER TABLE ProxyUsageLogs ADD COLUMN CachedTokens INTEGER NOT NULL DEFAULT 0";
+        await command.ExecuteNonQueryAsync();
     }
 
-    return false;
+    if (!await ColumnExistsAsync(connection, "ProxyUsageLogs", "IsStreamInterrupted"))
+    {
+        command.CommandText = "ALTER TABLE ProxyUsageLogs ADD COLUMN IsStreamInterrupted INTEGER NOT NULL DEFAULT 0";
+        await command.ExecuteNonQueryAsync();
+    }
+
+    if (!await ColumnExistsAsync(connection, "ProxyUsageLogs", "ReasoningEffort"))
+    {
+        command.CommandText = "ALTER TABLE ProxyUsageLogs ADD COLUMN ReasoningEffort TEXT NOT NULL DEFAULT ''";
+        await command.ExecuteNonQueryAsync();
+    }
+
+    if (!await ColumnExistsAsync(connection, "ProxyUsageLogs", "ForwardingMode"))
+    {
+        command.CommandText = "ALTER TABLE ProxyUsageLogs ADD COLUMN ForwardingMode TEXT NULL";
+        await command.ExecuteNonQueryAsync();
+    }
 }
 
-/// <summary>
-/// 为历史数据库补齐结构化对话记录表，避免旧库缺少新功能所需表结构。
-/// </summary>
 static async Task EnsureConversationLogSchemaAsync(AppDbContext dbContext)
 {
-    var connection = dbContext.Database.GetDbConnection();
-    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
-    if (shouldCloseConnection)
+    await using var connection = dbContext.Database.GetDbConnection();
+    if (connection.State != System.Data.ConnectionState.Open)
     {
         await connection.OpenAsync();
     }
 
-    try
-    {
-        await using var command = connection.CreateCommand();
-        command.CommandText = @"
+    await using var command = connection.CreateCommand();
+    command.CommandText = @"
 CREATE TABLE IF NOT EXISTS ConversationTurnLogs (
     Id TEXT NOT NULL PRIMARY KEY,
     RequestId TEXT NOT NULL,
@@ -525,37 +414,41 @@ CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_RequestId ON ConversationTurn
 CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_ConversationGroupKey ON ConversationTurnLogs (ConversationGroupKey);
 CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_SourceTool_SessionId_CreatedAt ON ConversationTurnLogs (SourceTool, SessionId, CreatedAt);
 ";
-        await command.ExecuteNonQueryAsync();
+    await command.ExecuteNonQueryAsync();
 
-        // 旧表可能包含已废弃的 AssistantOutputPlainText 列，需要移除。
-        if (await ColumnExistsAsync(connection, "ConversationTurnLogs", "AssistantOutputPlainText"))
-        {
-            command.CommandText = "ALTER TABLE ConversationTurnLogs DROP COLUMN AssistantOutputPlainText;";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "UserCreatedAt"))
-        {
-            command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN UserCreatedAt TEXT NULL;";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "ConversationTitle"))
-        {
-            command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN ConversationTitle TEXT NOT NULL DEFAULT '';";
-            await command.ExecuteNonQueryAsync();
-        }
-    }
-    finally
+    if (await ColumnExistsAsync(connection, "ConversationTurnLogs", "AssistantOutputPlainText"))
     {
-        if (shouldCloseConnection)
-        {
-            await connection.CloseAsync();
-        }
+        command.CommandText = "ALTER TABLE ConversationTurnLogs DROP COLUMN AssistantOutputPlainText;";
+        await command.ExecuteNonQueryAsync();
+    }
+
+    if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "UserCreatedAt"))
+    {
+        command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN UserCreatedAt TEXT NULL;";
+        await command.ExecuteNonQueryAsync();
+    }
+
+    if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "ConversationTitle"))
+    {
+        command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN ConversationTitle TEXT NOT NULL DEFAULT '';";
+        await command.ExecuteNonQueryAsync();
     }
 }
 
-/// <summary>
-/// 程序入口。
-/// </summary>
+static async Task<bool> ColumnExistsAsync(DbConnection connection, string tableName, string columnName)
+{
+    await using var command = connection.CreateCommand();
+    command.CommandText = $"PRAGMA table_info({tableName})";
+    await using var reader = await command.ExecuteReaderAsync();
+    while (await reader.ReadAsync())
+    {
+        if (string.Equals(reader[1]?.ToString(), columnName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 public partial class Program;

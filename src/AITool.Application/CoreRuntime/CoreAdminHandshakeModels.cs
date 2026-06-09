@@ -76,6 +76,11 @@ public sealed class CoreAdminHandshakeResponse
     public int ActiveRequestCount { get; set; }
 
     /// <summary>
+    /// Core 当前是否已具备配置积压。
+    /// </summary>
+    public bool HasSpoolBacklog { get; set; }
+
+    /// <summary>
     /// 配置对齐决策。
     /// </summary>
     public string ConfigSyncDecision { get; set; } = string.Empty;
