@@ -4,6 +4,7 @@ using AITool.Application.Operations;
 using AITool.Application.Proxy;
 using AITool.Application.SiteCatalog;
 using AITool.Application.UsageLogs;
+using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.OpenAI;
@@ -82,6 +83,15 @@ var connectionString = builder.Configuration.GetConnectionString("DefaultConnect
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseSqlite(connectionString));
 
+builder.Services.AddSingleton(new CoreRuntimeConfigFileOptions
+{
+    FilePath = builder.Environment.IsEnvironment("Testing")
+        ? Path.Combine(Path.GetTempPath(), $"aitool-core-runtime-config-{Guid.NewGuid():N}.json")
+        : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "core-runtime", "last-good-config.json")
+});
+builder.Services.AddSingleton<CoreRuntimeConfigProvider>();
+builder.Services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>(sp => sp.GetRequiredService<CoreRuntimeConfigProvider>());
+
 // 注册代理转发配置，统一控制单路由超时和失败重试策略。
 builder.Services.Configure<ProxyForwardingOptions>(
     builder.Configuration.GetSection(ProxyForwardingOptions.SectionName));
@@ -94,6 +104,9 @@ builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
 builder.Services.AddScoped<ModelHealthRequestService>();
 
 // 注册使用日志服务，记录每次代理调用的 Token 用量。
+builder.Services.AddSingleton<CoreEventSequenceProvider>();
+builder.Services.AddSingleton<CoreAdminEventBus>();
+builder.Services.AddSingleton<CoreUsageLogEventPublisher>();
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
 var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
@@ -156,6 +169,11 @@ using (var scope = app.Services.CreateScope())
     }
 
     var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
+    var configProvider = scope.ServiceProvider.GetRequiredService<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
+    if (!await configProvider.TryLoadFromFileAsync())
+    {
+        startupLogger.Warn("Core 启动时未找到可恢复的 last-good-config，将等待 Admin 下发首个完整配置快照后进入 ready 状态。");
+    }
     var circuitStore = scope.ServiceProvider.GetRequiredService<RouteCircuitStateStore>();
     var settings = await settingsService.GetOrCreateAsync();
     circuitStore.UpdateOptions(

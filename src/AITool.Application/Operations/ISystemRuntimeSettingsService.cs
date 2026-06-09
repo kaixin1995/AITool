@@ -1,3 +1,4 @@
+using AITool.Application.CoreRuntime;
 using AITool.Domain.Operations;
 
 namespace AITool.Application.Operations;
@@ -16,6 +17,11 @@ public interface ISystemRuntimeSettingsService
     /// 按请求内容更新系统运行时设置，并返回保存后的最新结果。
     /// </summary>
     Task<SystemRuntimeSettings> UpdateAsync(UpdateSystemRuntimeSettingsRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 从当前权威数据源构建一份完整的 Core 运行时配置快照。
+    /// </summary>
+    Task<CoreRuntimeConfigSnapshot> BuildCoreRuntimeConfigSnapshotAsync(long configVersion, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 按给定条件清空使用日志，并返回本次实际删除的记录数量。

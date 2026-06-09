@@ -1,5 +1,5 @@
 using AITool.Application.UsageLogs;
-using AITool.Domain.Proxy;
+using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
@@ -13,6 +13,7 @@ namespace AITool.ApplicationTests.Proxy;
 
 /// <summary>
 /// 验证使用日志服务是否能正确写入数据库，并补齐统计字段和回退链路信息。
+/// 同时覆盖 UsageLog 旁路事件发布，确保后续切换事件流时不需要再回头改这条主链路出口。
 /// </summary>
 public sealed class UsageLogServiceTests : IDisposable
 {
@@ -32,39 +33,38 @@ public sealed class UsageLogServiceTests : IDisposable
     private readonly UsageLogService _service;
 
     /// <summary>
+    /// Core 事件总线，用于读取 UsageLog 旁路发布出来的事件。
+    /// </summary>
+    private readonly CoreAdminEventBus _eventBus;
+
+    /// <summary>
     /// 初始化独立的测试容器和数据库，避免不同用例之间共享状态。
     /// </summary>
     public UsageLogServiceTests()
     {
-        // 单独保留一份选项实例，便于注册到容器中。
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-
-        // 这里构建最小服务集合，只保留批量写入器运行所必需的依赖。
         var services = new ServiceCollection();
-        services.AddSingleton(options);
-        // 为每个测试提供独立内存库，确保断言只覆盖当前场景的数据。
-        services.AddDbContext<AppDbContext>(dbOptions => dbOptions.UseInMemoryDatabase(Guid.NewGuid().ToString()));
+        var databaseName = Guid.NewGuid().ToString();
+        services.AddDbContext<AppDbContext>(dbOptions => dbOptions.UseInMemoryDatabase(databaseName));
         _serviceProvider = services.BuildServiceProvider();
-        // 直接拿到上下文，后续用来读取落库结果。
         _dbContext = _serviceProvider.GetRequiredService<AppDbContext>();
 
-        // 使用真实批量写入器，尽量覆盖日志服务与持久化层的协作路径。
+        _eventBus = new CoreAdminEventBus();
+        var sequenceProvider = new CoreEventSequenceProvider();
+        var eventPublisher = new CoreUsageLogEventPublisher(sequenceProvider, _eventBus);
         var batchWriter = new ProxyUsageLogBatchWriter(
             _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<ProxyUsageLogBatchWriter>.Instance,
             new TestHostEnvironment());
-        _service = new UsageLogService(batchWriter);
+        _service = new UsageLogService(batchWriter, eventPublisher);
     }
 
     /// <summary>
     /// 正常日志写入后，应能查到完整记录，并且总 Token 数是各部分之和。
+    /// 同时应额外生成一条 usage-log 事件，为后续 Admin 事件消费打基础。
     /// </summary>
     [Fact]
     public async Task LogAsync_persists_entry_with_correct_total_tokens()
     {
-        // 这条日志同时覆盖流式字段和 Token 统计字段。
         var entry = new UsageLogEntry
         {
             AccessKeyId = Guid.NewGuid(),
@@ -83,7 +83,6 @@ public sealed class UsageLogServiceTests : IDisposable
 
         await _service.LogAsync(entry);
 
-        // 读取唯一一条记录，确认服务已真正完成持久化。
         var log = await _dbContext.ProxyUsageLogs.SingleAsync();
         log.ProtocolType.Should().Be("OpenAI");
         log.RequestModel.Should().Be("gpt-5");
@@ -93,6 +92,9 @@ public sealed class UsageLogServiceTests : IDisposable
         log.IsStreaming.Should().BeTrue();
         log.FirstTokenLatencyMs.Should().Be(5400);
         log.TotalDurationMs.Should().Be(8000);
+
+        var envelope = await _eventBus.Reader.ReadAsync();
+        envelope.EventType.Should().Be("usage-log");
     }
 
     /// <summary>
@@ -101,9 +103,7 @@ public sealed class UsageLogServiceTests : IDisposable
     [Fact]
     public async Task LogAsync_persists_attempt_metadata_for_fallback_flow()
     {
-        // 用同一个请求标识串联整个回退过程，便于验证是否原样落库。
         var requestId = Guid.NewGuid();
-        // 这条记录模拟一次失败的中间尝试，重点覆盖回退链路字段。
         var entry = new UsageLogEntry
         {
             AccessKeyId = Guid.NewGuid(),
@@ -130,7 +130,6 @@ public sealed class UsageLogServiceTests : IDisposable
 
         await _service.LogAsync(entry);
 
-        // 只写入一条记录时，直接读取单条结果验证关键元数据。
         var log = await _dbContext.ProxyUsageLogs.SingleAsync();
         log.RequestId.Should().Be(requestId);
         log.AttemptedModel.Should().Be("glm-5.1");
@@ -148,7 +147,6 @@ public sealed class UsageLogServiceTests : IDisposable
     {
         for (var i = 0; i < 3; i++)
         {
-            // 使用循环变量区分模型名和 Token 值，便于确认不是同一条数据被覆盖。
             await _service.LogAsync(new UsageLogEntry
             {
                 AccessKeyId = Guid.NewGuid(),
@@ -161,13 +159,13 @@ public sealed class UsageLogServiceTests : IDisposable
             });
         }
 
-        // 取回全部记录，确认累计生成了三条独立日志。
-        var logs = await _dbContext.ProxyUsageLogs.ToListAsync();
+        var logs = await _dbContext.ProxyUsageLogs.OrderBy(x => x.RequestModel).ToListAsync();
         logs.Should().HaveCount(3);
+        logs.Select(x => x.RequestModel).Should().Equal("model-0", "model-1", "model-2");
     }
 
     /// <summary>
-    /// 释放数据库上下文和服务容器，避免内存数据库与作用域对象残留。
+    /// 释放测试使用的内存数据库与依赖容器。
     /// </summary>
     public void Dispose()
     {
@@ -176,28 +174,13 @@ public sealed class UsageLogServiceTests : IDisposable
     }
 
     /// <summary>
-    /// 为批量写入器提供最小化宿主环境，避免测试依赖真实运行目录配置。
+    /// 测试专用宿主环境，强制后台写入器走直写模式，避免测试等待后台任务调度。
     /// </summary>
     private sealed class TestHostEnvironment : IHostEnvironment
     {
-        /// <summary>
-        /// 标记当前环境名称，便于底层组件按测试环境运行。
-        /// </summary>
         public string EnvironmentName { get; set; } = "Testing";
-
-        /// <summary>
-        /// 声明应用名称，满足宿主环境接口要求。
-        /// </summary>
-        public string ApplicationName { get; set; } = "AITool.ApplicationTests";
-
-        /// <summary>
-        /// 以当前测试运行目录作为内容根目录即可满足场景需要。
-        /// </summary>
+        public string ApplicationName { get; set; } = "AITool.Tests";
         public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
-
-        /// <summary>
-        /// 使用空文件提供器，避免测试触发实际文件访问。
-        /// </summary>
-        public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+        public IFileProvider ContentRootFileProvider { get; set; } = null!;
     }
 }
