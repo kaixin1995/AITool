@@ -42,6 +42,20 @@ builder.Services.AddControllers(options =>
 builder.Services.AddMemoryCache();
 builder.Services.AddScoped<HttpExceptionLoggingFilter>();
 
+// 注册 CORS 策略，允许 Admin 宿主（5030）的前端 JavaScript 跨域调用 Core 代理端点。
+// 双宿主部署时 Admin 页面和 Core API 分属不同端口，浏览器需要 CORS 头才能正常通信。
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AdminCors", policy =>
+    {
+        var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+            ?? ["http://127.0.0.1:5030", "http://localhost:5030"];
+        policy.WithOrigins(allowedOrigins)
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
+
 // Core 宿主使用配置快照，不依赖数据库。
 // 运行时配置从 Admin 通过全量同步下发到本地文件，启动时可从 last-good-config 恢复。
 builder.Services.AddSingleton(new CoreRuntimeConfigFileOptions
@@ -176,6 +190,10 @@ if (!app.Environment.IsEnvironment("Testing"))
         });
     });
 }
+
+// 启用 CORS，确保 Admin 宿主的前端页面可以跨域调用 Core 代理端点。
+// 必须在 MapControllers 之前注册，否则 CORS 头不会被写入响应。
+app.UseCors("AdminCors");
 
 // Core 宿主仅映射 API 控制器，不映射 Razor Pages。
 // 代理端点 /v1/* 和 Core 管理端点 /api/core/* 由控制器提供。
