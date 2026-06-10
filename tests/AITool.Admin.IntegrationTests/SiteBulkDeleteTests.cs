@@ -2,15 +2,19 @@ using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
-using AITool.Web.Pages.Admin.Sites;
+using AITool.Admin.Pages.Admin.Sites;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 
-namespace AITool.IntegrationTests.Sites;
+namespace AITool.Admin.IntegrationTests;
 
 /// <summary>
-/// 站点管理测试，验证批量删除站点会同步删除关联映射
+/// 站点管理测试，验证批量删除站点会同步删除关联映射。
+/// <para>
+/// 此测试从 AITool.IntegrationTests 迁移至此，因为站点管理页面模型
+/// （<see cref="IndexModel"/>）已从 Web 宿主迁移到 Admin 宿主。
+/// </para>
 /// </summary>
 public sealed class SiteBulkDeleteTests
 {

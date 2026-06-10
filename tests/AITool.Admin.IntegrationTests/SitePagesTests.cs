@@ -8,10 +8,14 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace AITool.IntegrationTests.Sites;
+namespace AITool.Admin.IntegrationTests;
 
 /// <summary>
-/// 站点页面集成测试，验证批量删除表单和站点目录入口可正常访问
+/// 站点页面集成测试，验证批量删除表单和站点目录入口可正常访问。
+/// <para>
+/// 此测试从 AITool.IntegrationTests 迁移至此，因为站点管理页面
+/// 已从 Web 宿主迁移到 Admin 宿主。
+/// </para>
 /// </summary>
 public sealed class SitePagesTests
 {
@@ -46,6 +50,9 @@ public sealed class SitePagesTests
         html.Should().NotContain("<form method=\"post\" asp-page-handler=\"Delete\"");
     }
 
+    /// <summary>
+    /// 验证当目录客户端抛出异常时，拉取模型接口会返回错误信息。
+    /// </summary>
     [Fact]
     public async Task Get_fetch_models_returns_error_message_when_catalog_client_throws()
     {
@@ -59,13 +66,12 @@ public sealed class SitePagesTests
         body.Should().Contain("\"success\":false");
         body.Should().Contain("模拟拉取异常");
     }
-
 }
 
 /// <summary>
-/// 用于构建 SitePagesWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// 用于构建 SitePagesTests 对应的 Admin 测试宿主，并准备隔离的测试数据。
 /// </summary>
-internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Program>
+internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<AITool.Admin.AdminProgramMarker>
 {
     private readonly bool _shouldThrowOnFetchModels;
 
@@ -209,6 +215,9 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<Pro
     }
 }
 
+/// <summary>
+/// 模拟目录客户端在拉取模型时抛出异常的场景。
+/// </summary>
 internal sealed class ThrowingSiteCatalogClient : ISiteCatalogClient
 {
     public Task<IReadOnlyList<string>> GetModelsAsync(AITool.Domain.Sites.Site site, CancellationToken cancellationToken)

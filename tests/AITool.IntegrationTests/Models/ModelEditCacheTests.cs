@@ -2,7 +2,6 @@ using AITool.Domain.Models;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
-using AITool.Web.Pages.Admin.Models;
 using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
@@ -12,7 +11,13 @@ using Microsoft.Extensions.DependencyInjection;
 namespace AITool.IntegrationTests.Models;
 
 /// <summary>
-/// 模型编辑缓存测试，验证保存后聊天相关缓存会立刻失效并重新加载。
+/// 缓存失效集成测试。
+/// 验证通过 <see cref="AdminCacheInvalidationService"/> 失效模型元数据后，
+/// <see cref="ProxyRequestMetadataCache"/> 会立刻重新加载最新数据。
+/// <para>
+/// 此测试不再依赖具体的页面模型（EditModel 已迁移至 Admin 宿主），
+/// 而是直接验证缓存失效服务与运行时缓存之间的交互。
+/// </para>
 /// </summary>
 public sealed class ModelEditCacheTests : IAsyncDisposable
 {
@@ -44,10 +49,14 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
     }
 
     /// <summary>
-    /// 验证保存模型后，已启用模型的缓存会立即失效并重新加载。
+    /// 验证通过缓存失效服务失效模型元数据后，运行时缓存会立即重新加载最新数据。
+    /// <para>
+    /// 模拟管理员在后台修改模型名称的场景：先读取缓存确认旧值，
+    /// 然后直接修改数据库记录并调用失效服务，最后验证缓存已刷新为新值。
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task OnPostAsync_invalidates_enabled_model_cache_immediately()
+    public async Task InvalidateModelMetadata_reloads_enabled_model_cache_immediately()
     {
         await using var scope = _serviceProvider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -83,21 +92,22 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         });
         await db.SaveChangesAsync();
 
+        // 预热缓存，确认旧值
         var cachedBeforeEdit = await cache.GetEnabledModelAsync(modelId, CancellationToken.None);
         cachedBeforeEdit.Should().NotBeNull();
         cachedBeforeEdit!.ModelName.Should().Be("old-model");
 
+        // 模拟后台修改模型操作：直接修改数据库并调用失效服务
+        var model = await db.ModelLibraryItems.FindAsync([modelId]);
+        model!.ModelName = "new-model";
+        model.DisplayName = "New Model";
+        await db.SaveChangesAsync();
+
         var cacheInvalidation = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
+        cacheInvalidation.InvalidateModelMetadata();
+        cacheInvalidation.InvalidateRouteTargets();
 
-        var page = new EditModel(db, cacheInvalidation)
-        {
-            ModelName = "new-model",
-            DisplayName = "New Model",
-            IsEnabled = true
-        };
-
-        await page.OnPostAsync(modelId, CancellationToken.None);
-
+        // 验证缓存已刷新为新值
         var cachedAfterEdit = await cache.GetEnabledModelAsync(modelId, CancellationToken.None);
         cachedAfterEdit.Should().NotBeNull();
         cachedAfterEdit!.ModelName.Should().Be("new-model");

@@ -23,34 +23,31 @@
                     <div class="sidebar-brand-icon">AI</div>
                     <div class="sidebar-brand-content">
                         <div class="sidebar-brand-text">AI Tool</div>
-                        <div class="sidebar-brand-sub">管理后台</div>
+                        <div class="sidebar-brand-sub">代理宿主</div>
                     </div>
                 </div>
                 <button class="sidebar-collapse-toggle" id="sidebarCollapseToggle" type="button" title="折叠侧边栏">‹</button>
             </div>
             <nav class="sidebar-nav">
-                <!-- 概览 -->
+                <!-- 代理运行时 -->
                 <div class="sidebar-section">
-                    <div class="sidebar-section-title">概览</div>
-                    <a class="sidebar-link" href="/" title="仪表盘首页">
-                        <span class="sidebar-link-icon">📊</span>仪表盘
+                    <div class="sidebar-section-title">代理运行时</div>
+                    <a class="sidebar-link" href="/" title="代理状态">
+                        <span class="sidebar-link-icon">📊</span>代理状态
                     </a>
-                    <a class="sidebar-link" href="/Admin/Chat" title="对话">
-                        <span class="sidebar-link-icon">💬</span>对话
+                    <a class="sidebar-link" href="/Admin/Chat" title="对话测试">
+                        <span class="sidebar-link-icon">💬</span>对话测试
                     </a>
                 </div>
-                <!-- 监控运维 -->
+                <!-- 开发调试 -->
                 <div class="sidebar-section">
-                    <div class="sidebar-section-title">监控运维</div>
+                    <div class="sidebar-section-title">开发调试</div>
                     @if (runtimeSettings.DeveloperFeaturesEnabled)
                     {
                         <a class="sidebar-link" href="/Admin/Developer/Invocations" title="调试工具">
                             <span class="sidebar-link-icon">🛠️</span>调试工具
                         </a>
                     }
-                    <a class="sidebar-link" href="/Admin/UsageLogs" title="使用日志">
-                        <span class="sidebar-link-icon">📋</span>使用日志
-                    </a>
                     <a class="sidebar-link" href="/Admin/System/Settings" title="系统设置">
                         <span class="sidebar-link-icon">⚙️</span>系统设置
                     </a>

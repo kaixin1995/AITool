@@ -1,5 +1,4 @@
 using System.Net;
-using System.Net.Http.Headers;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -8,13 +7,20 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace AITool.IntegrationTests.Models;
+namespace AITool.Admin.IntegrationTests;
 
 /// <summary>
-/// 验证模型编辑页支持手动新增关联站点。
+/// 模型编辑页面集成测试，验证手动新增关联站点和内联删除行为。
+/// <para>
+/// 此测试从 AITool.IntegrationTests 迁移至此，因为模型管理页面
+/// 已从 Web 宿主迁移到 Admin 宿主。
+/// </para>
 /// </summary>
 public sealed class ModelEditPageTests
 {
+    /// <summary>
+    /// 验证模型编辑页面展示手动新增关联站点的表单。
+    /// </summary>
     [Fact]
     public async Task Get_model_edit_page_shows_manual_site_mapping_form()
     {
@@ -34,6 +40,9 @@ public sealed class ModelEditPageTests
         html.Should().NotContain("Alpha Site</option>");
     }
 
+    /// <summary>
+    /// 验证模型列表页面使用内联删除行为而不是 confirm 弹窗。
+    /// </summary>
     [Fact]
     public async Task Get_models_page_contains_inline_delete_behavior()
     {
@@ -51,6 +60,9 @@ public sealed class ModelEditPageTests
         html.Should().NotContain("onclick=\"return confirm('确认删除该模型？')\"");
     }
 
+    /// <summary>
+    /// 验证通过 AJAX 删除模型会返回 JSON 而不是重定向页面。
+    /// </summary>
     [Fact]
     public async Task Post_delete_model_ajax_returns_json_without_redirecting_page()
     {
@@ -90,6 +102,9 @@ public sealed class ModelEditPageTests
         modelExists.Should().BeFalse();
     }
 
+    /// <summary>
+    /// 验证通过表单提交新增站点映射会创建手动关联记录。
+    /// </summary>
     [Fact]
     public async Task Post_add_mapping_creates_manual_site_mapping()
     {
@@ -129,6 +144,9 @@ public sealed class ModelEditPageTests
         mapping.IsEnabled.Should().BeTrue();
     }
 
+    /// <summary>
+    /// 从 HTML 中提取防伪造令牌。
+    /// </summary>
     private static string ExtractAntiForgeryToken(string html)
     {
         const string tokenName = "__RequestVerificationToken";
@@ -142,11 +160,23 @@ public sealed class ModelEditPageTests
     }
 }
 
-internal sealed class ModelEditPageWebApplicationFactory : WebApplicationFactory<Program>
+/// <summary>
+/// 用于构建 ModelEditPageTests 对应的 Admin 测试宿主，并准备隔离的测试数据。
+/// </summary>
+internal sealed class ModelEditPageWebApplicationFactory : WebApplicationFactory<AITool.Admin.AdminProgramMarker>
 {
+    /// <summary>
+    /// 测试使用的模型标识。
+    /// </summary>
     internal static readonly Guid ModelId = Guid.Parse("aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb");
+    /// <summary>
+    /// 保存当前测试使用的临时数据库路径。
+    /// </summary>
     private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-model-edit-{Guid.NewGuid():N}.db");
 
+    /// <summary>
+    /// 配置模型编辑页面测试所需的数据库。
+    /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
@@ -158,12 +188,18 @@ internal sealed class ModelEditPageWebApplicationFactory : WebApplicationFactory
         });
     }
 
+    /// <summary>
+    /// 创建客户端后初始化当前测试场景的数据。
+    /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
         SeedAsync().GetAwaiter().GetResult();
     }
 
+    /// <summary>
+    /// 准备当前测试场景所需的数据。
+    /// </summary>
     private async Task SeedAsync()
     {
         await using var scope = Services.CreateAsyncScope();

@@ -9,10 +9,14 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace AITool.IntegrationTests.Analytics;
+namespace AITool.Admin.IntegrationTests;
 
 /// <summary>
-/// 可视化页面集成测试，验证页面入口和聚合接口都可正常工作。
+/// 可视化页面集成测试，验证 Admin 宿主的页面入口和聚合接口都可正常工作。
+/// <para>
+/// 此测试从 AITool.IntegrationTests 迁移至此，因为统计分析页面和控制器
+/// 已从 Web 宿主迁移到 Admin 宿主。反射引用也已更新为指向 Admin 控制器。
+/// </para>
 /// </summary>
 public sealed class AnalyticsPageTests
 {
@@ -40,7 +44,7 @@ public sealed class AnalyticsPageTests
     }
 
     /// <summary>
-    /// 验证页面时间范围筛选已移除“全部”入口及相关提示。
+    /// 验证页面时间范围筛选已移除"全部"入口及相关提示。
     /// </summary>
     [Fact]
     public async Task Get_analytics_page_hides_all_range_entry_and_notice()
@@ -112,7 +116,7 @@ public sealed class AnalyticsPageTests
     }
 
     /// <summary>
-    /// 验证按月统计在按周聚合时，会展示实际日期范围而不是生硬的“某日 周”。
+    /// 验证按月统计在按周聚合时，会展示实际日期范围而不是生硬的"某日 周"。
     /// </summary>
     [Fact]
     public async Task Get_dashboard_month_range_uses_week_bucket_date_range_labels()
@@ -390,11 +394,12 @@ public sealed class AnalyticsPageTests
     }
 
     /// <summary>
-    /// 通过反射调用私有的时间范围解析逻辑，避免仅为测试扩大生产代码可见性。
+    /// 通过反射调用 Admin 控制器中私有的时间范围解析逻辑，
+    /// 避免仅为测试扩大生产代码可见性。
     /// </summary>
     private static (DateTimeOffset StartTime, DateTimeOffset EndTime) ResolveTimeRangeCore(string rangeType)
     {
-        var method = typeof(AITool.Web.Controllers.Admin.AnalyticsApiController)
+        var method = typeof(AITool.Admin.Controllers.Admin.AnalyticsApiController)
             .GetMethod("ResolveTimeRange", BindingFlags.NonPublic | BindingFlags.Static);
 
         method.Should().NotBeNull();
@@ -403,31 +408,23 @@ public sealed class AnalyticsPageTests
     }
 
     /// <summary>
-    /// 后台统计允许先返回 pending，因此测试按短轮询等待最终结果。
+    /// 获取统计看板接口的响应体。Admin 宿主直接同步查询数据库，
+    /// 因此总是返回 200，不再需要轮询等待后台队列。
     /// </summary>
     private static async Task<string> GetDashboardBodyAsync(HttpClient client, string url)
     {
-        for (var attempt = 0; attempt < 8; attempt++)
-        {
-            var response = await client.GetAsync(url);
-            var body = await response.Content.ReadAsStringAsync();
-            if (response.StatusCode == HttpStatusCode.OK)
-            {
-                return body;
-            }
-
-            response.StatusCode.Should().Be(HttpStatusCode.Accepted, body);
-            await Task.Delay(200);
-        }
-
-        throw new Xunit.Sdk.XunitException("分析看板接口在预期时间内未返回最终结果");
+        var response = await client.GetAsync(url);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        return body;
     }
 }
 
 /// <summary>
-/// 用于构建 AnalyticsWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// 用于构建 Admin 宿主的测试 WebApplicationFactory，
+/// 配置隔离的 SQLite 数据库并准备统计测试所需的种子数据。
 /// </summary>
-internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<Program>
+internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<AITool.Admin.AdminProgramMarker>
 {
     /// <summary>
     /// 第一个测试站点的固定标识。
