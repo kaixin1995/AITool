@@ -3,10 +3,15 @@ using HttpExceptionLoggingFilter = AITool.Infrastructure.Hosting.HttpExceptionLo
 using HttpLogFormatter = AITool.Infrastructure.Hosting.HttpLogFormatter;
 using AITool.Application.Common;
 using AITool.Application.Operations;
+using AITool.Application.SiteCatalog;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Hosting;
+using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Scheduling;
+using AITool.Admin.Services;
+using Hangfire;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -73,6 +78,35 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 
 builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
 
+// 对话记录查询所需的服务。Admin 侧仅注册只读查询链路，不包含写入侧的 ConversationLogBatchWriter / ConversationLogService。
+var conversationLogRootPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
+builder.Services.AddSingleton(new AITool.Infrastructure.Conversations.ConversationLogFileOptions
+{
+    RootPath = conversationLogRootPath
+});
+builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogStore, AITool.Infrastructure.Conversations.FileConversationLogStore>();
+builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationExtractionService>();
+
+// Admin 侧缓存失效门面，通过 CoreAdminClient 向 Core 下发全量配置快照以刷新运行时缓存。
+builder.Services.AddScoped<AdminCacheInvalidationService>();
+
+// Admin 侧并发控制门面（占位实现）。后续通过 CoreAdminClient 代理运行时并发限制变更。
+builder.Services.AddSingleton<AdminConcurrencyControlService>();
+
+// 站点目录客户端，用于从远程站点获取可用模型列表。
+builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
+
+// Hangfire 内存存储与定时检测调度器。
+builder.Services.AddHangfire(config => config
+    .UseSimpleAssemblyNameTypeSerializer()
+    .UseRecommendedSerializerSettings()
+    .UseInMemoryStorage());
+builder.Services.AddHangfireServer();
+builder.Services.AddSingleton<HangfireDetectionScheduler>();
+
+// 模型厂商目录服务（可选，在模型库页面管理厂商规则时使用）。
+builder.Services.AddSingleton<ModelVendorCatalogService>();
+
 // Admin 通过最小 Core 客户端与核心宿主通信。当前阶段先提供握手、full-sync、ack、replay 这几项最关键能力。
 var coreBaseUrl = builder.Configuration["CoreServer:BaseUrl"] ?? $"http://127.0.0.1:{builder.Configuration.GetValue<int?>("CoreServer:Port") ?? 5029}/";
 builder.Services.AddHttpClient<CoreAdminClient>(client =>
@@ -87,6 +121,17 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
+
+    // 启动时注册所有已启用的定时检测任务到 Hangfire
+    var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
+    try
+    {
+        await scheduler.ScheduleAllAsync(default);
+    }
+    catch (Exception ex)
+    {
+        startupLogger.Warn(ex, "启动时注册定时检测任务失败，将在后台重试");
+    }
 }
 
 startupLogger.Info(

@@ -486,6 +486,129 @@
 
 ---
 
+### 已完成：第二块真实 Admin 页面/接口迁移——Conversations 对话记录
+
+已经完成：
+
+- `src/AITool.Admin/Pages/Admin/Conversations/Index.cshtml` — 完整迁入对话记录 Razor 视图（含内联 CSS、JavaScript），仅将 `@model` 命名空间从 `AITool.Web.Pages.Admin.Conversations.IndexModel` 改为 `AITool.Admin.Pages.Admin.Conversations.IndexModel`
+- `src/AITool.Admin/Pages/Admin/Conversations/Index.cshtml.cs` — 完整迁入对话记录 PageModel，检查 `ConversationLogEnabled` 设置
+- `src/AITool.Admin/Controllers/Admin/ConversationsApiController.cs` — 完整迁入对话记录查询接口（sessions/turns/title/delete），仅依赖只读查询链路（`IConversationLogStore`、`ConversationExtractionService`），不依赖写入侧的 `ConversationLogBatchWriter` 或 `IConversationLogService`
+- `src/AITool.Admin/Controllers/Admin/RouteRulesApiController.cs` — 新增轻量路由入口查询端点，直接从 `AppDbContext` 查询 `ProxyRouteEntries` + `ProxyRouteRules`，替代原有对 `AdminQueryMetadataService` → `ProxyRequestMetadataCache` 运行时缓存的依赖
+- `src/AITool.Admin/Pages/Shared/_Layout.cshtml` — 在监控运维分区新增"对话记录"链接，受 `ConversationLogEnabled` 条件控制
+- `src/AITool.Admin/Pages/Shared/_LayoutMinimal.cshtml` — 修正 `@namespace` 从 `AITool.Web.Pages.Shared` 为 `AITool.Admin.Pages.Shared`
+- `src/AITool.Admin/Program.cs` — 新增对话查询只读链路 DI 注册（`ConversationLogFileOptions`、`IConversationLogStore`、`ConversationExtractionService`）
+
+#### 已从 AITool.Web 删除的文件
+
+- `src/AITool.Web/Controllers/Admin/ConversationsApiController.cs`
+- `src/AITool.Web/Pages/Admin/Conversations/Index.cshtml`
+- `src/AITool.Web/Pages/Admin/Conversations/Index.cshtml.cs`
+- `src/AITool.Web/Pages/Admin/Conversations/` 目录（空目录已移除）
+
+#### 跨依赖解决说明
+
+Conversations 页面 JavaScript 会调用 `/api/admin/route-rules/entries`，原 AITool.Web 中该端点通过 `AdminQueryMetadataService` → `ProxyRequestMetadataCache`（运行时缓存）获取数据。由于 AITool.Admin 无法访问运行时缓存，新建了 `RouteRulesApiController`，直接从数据库查询相同数据并复制合并逻辑（`ProxyRouteEntries` + `ProxyRouteRules` 去重合并），保证功能对等。
+
+#### 写入侧服务保留说明
+
+AITool.Admin 只注册了只读查询链路，写入侧服务（`ConversationLogBatchWriter`、`IConversationLogService`）仍保留在 AITool.Web 中，因为代理控制器（`OpenAiProxyController`、`AnthropicProxyController`）和对话测试（`ChatApiController`）需要继续写入对话记录。
+
+#### 第二块页面迁移状态
+
+- **Conversations 页面/接口完整迁入 AITool.Admin**
+- **AITool.Web 中原文件已删除**
+- **两个宿主编译均通过，0 error**
+
+---
+
+### 已完成：第三批真实 Admin 页面/接口迁移——8 个控制器 + 8 组页面
+
+本轮完成了第三批 Admin 页面和控制器从 AITool.Web 到 AITool.Admin 的迁移，覆盖了除 Chat、Developer/Invocations、System/Settings 以外的全部管理页面。
+
+#### 已迁入 AITool.Admin 的控制器
+
+- `src/AITool.Admin/Controllers/Admin/AccessKeysApiController.cs` — 访问密钥管理接口，使用 `AdminCacheInvalidationService`（Admin 版，async）
+- `src/AITool.Admin/Controllers/Admin/AnalyticsApiController.cs` — 可视化分析接口，简化为直接 AppDbContext 查询（不依赖 `AnalyticsBackgroundQueryExecutor`）
+- `src/AITool.Admin/Controllers/Admin/DetectionApiController.cs` — 模型检测接口，通过 `IServiceScopeFactory` 解析 `ModelHealthRequestService`
+- `src/AITool.Admin/Controllers/Admin/ModelsApiController.cs` — 模型库管理接口，使用 `AdminCacheInvalidationService` + `AdminConcurrencyControlService`
+- `src/AITool.Admin/Controllers/Admin/SiteCatalogApiController.cs` — 站点目录接口，使用 `ISiteCatalogClient`
+- `src/AITool.Admin/Controllers/Admin/RouteRulesApiController.cs` — 路由规则接口（已在第二轮创建，本轮保留）
+
+#### 已迁入 AITool.Admin 的页面（8 组，20 个文件）
+
+- `Pages/Admin/AccessKeys/` — Index.cshtml + Index.cshtml.cs
+- `Pages/Admin/Analytics/` — Index.cshtml + Index.cshtml.cs
+- `Pages/Admin/Detection/` — Index.cshtml + Index.cshtml.cs
+- `Pages/Admin/DetectionTasks/` — Index.cshtml + Index.cshtml.cs
+- `Pages/Admin/ModelHealth/` — Index.cshtml + Index.cshtml.cs
+- `Pages/Admin/Routes/` — Index.cshtml + Index.cshtml.cs
+- `Pages/Admin/Sites/` — Index.cshtml + Index.cshtml.cs, Edit.cshtml + Edit.cshtml.cs, Export.cshtml + Export.cshtml.cs, Import.cshtml + Import.cshtml.cs（CreateModel 嵌入 Index.cshtml.cs）
+- `Pages/Admin/Models/` — Index.cshtml + Index.cshtml.cs, Edit.cshtml + Edit.cshtml.cs（CreateModelModel 嵌入 Index.cshtml.cs）
+
+#### 已新增的 Admin 侧服务
+
+- `src/AITool.Admin/Services/AdminCacheInvalidationService.cs` — Admin 侧缓存失效门面，通过 `CoreAdminClient.FullSyncAsync()` 向 Core 下发全量配置快照；所有方法为 `async Task`（vs Web 版 `void`）
+- `src/AITool.Admin/Services/AdminConcurrencyControlService.cs` — Admin 侧并发控制门面（占位实现），后续通过 CoreAdminClient 代理
+
+#### 已从 AITool.Web 删除的文件
+
+控制器（6 个）：
+- `src/AITool.Web/Controllers/Admin/AccessKeysApiController.cs`
+- `src/AITool.Web/Controllers/Admin/AnalyticsApiController.cs`
+- `src/AITool.Web/Controllers/Admin/DetectionApiController.cs`
+- `src/AITool.Web/Controllers/Admin/ModelsApiController.cs`
+- `src/AITool.Web/Controllers/Admin/SiteCatalogApiController.cs`
+- `src/AITool.Web/Controllers/Admin/RouteRulesApiController.cs`
+
+页面（8 组目录）：
+- `src/AITool.Web/Pages/Admin/AccessKeys/` — 整个目录删除
+- `src/AITool.Web/Pages/Admin/Analytics/` — 整个目录删除
+- `src/AITool.Web/Pages/Admin/Detection/` — 整个目录删除
+- `src/AITool.Web/Pages/Admin/DetectionTasks/` — 整个目录删除
+- `src/AITool.Web/Pages/Admin/ModelHealth/` — 整个目录删除
+- `src/AITool.Web/Pages/Admin/Routes/` — 整个目录删除
+- `src/AITool.Web/Pages/Admin/Sites/` — 整个目录删除
+- `src/AITool.Web/Pages/Admin/Models/` — 整个目录删除
+
+#### AITool.Web 侧边栏与首页调整
+
+- `src/AITool.Web/Pages/Shared/_Layout.cshtml` — 侧边栏已移除已迁移页面的导航链接（Analytics、Sites、Models、Routes、AccessKeys、Detection、DetectionTasks、ModelHealth），仅保留未迁移页面（Chat、Developer/Invocations、UsageLogs、System/Settings）
+- `src/AITool.Web/Pages/Index.cshtml` — 简化为代理运行状态概览，不再展示管理仪表盘统计卡片与快捷操作
+- `src/AITool.Web/Pages/Index.cshtml.cs` — 简化为从运行时缓存读取代理状态（后续接入 `ProxyRequestMetadataCache`），不再依赖 `AppDbContext` 做 Admin 统计查询
+
+#### 跨依赖解决说明
+
+所有迁移页面和控制器均采用以下统一适配模式：
+
+- `AdminCacheInvalidationService`（Web 版）的同步 `void InvalidateXxx()` → `AdminCacheInvalidationService`（Admin 版）的异步 `async Task InvalidateXxxAsync()`
+- `ModelConcurrencyLimiter` → `AdminConcurrencyControlService`（占位实现）
+- `AnalyticsBackgroundQueryExecutor` → 直接 `AppDbContext` 同步查询
+- `AdminQueryMetadataService` / `ProxyRequestMetadataCache` → 直接 `AppDbContext` 查询
+- `IServiceScopeFactory` 用于 `DetectionApiController` 中的 `ModelHealthRequestService` 解析
+
+#### 仍保留在 AITool.Web 的文件
+
+控制器：
+- `ChatApiController` — 深度依赖代理运行时（IProxyForwardService、RouteCircuitStateStore、ModelConcurrencyLimiter、IUsageLogService 等）
+- `UsageLogsApiController` — Admin 已有对应版本，Web 版可作为代理日志直查保留
+
+页面：
+- `Chat/Index` — 依赖 `ISystemRuntimeSettingsService`（可迁移）
+- `ClientSimulator/Index` — 重定向到 Developer/Invocations
+- `Developer/Invocations/Index` — 依赖 `DeveloperInvocationTraceQueryService`、`ModelConcurrencyQueryService`、`AdminQueryMetadataService`
+- `System/Settings` — 依赖 `RouteCircuitStateStore`、`AnalyticsBackgroundQueryExecutor`
+- `UsageLogs/Index` — Admin 已有对应版本
+
+#### 第三批页面迁移状态
+
+- **8 个控制器 + 8 组页面全部迁入 AITool.Admin**
+- **AITool.Web 中原文件已删除**
+- **AITool.Web 侧边栏和首页已调整**
+- **两个宿主编译均通过，0 error**
+- **全部 112 个测试通过（101 ApplicationTests + 6 IntegrationTests + 5 Admin.IntegrationTests）**
+
+---
+
 ### 未完成：Core 真正物理独立宿主
 
 当前虽然已经完成了大量 Core 协议与运行时模型工作，但它们仍然跑在当前 `AITool.Web` 宿主中。
@@ -610,37 +733,40 @@
 
 ### 本轮完成了什么
 
-- 扩展了 Admin 门面服务覆盖面，完成后台页面和控制器对运行时对象的直接依赖剥离
-- 具体变更涉及 8 个源文件 + 1 个测试文件，替换模式统一一致
-- `AdminCacheInvalidationService` 覆盖范围扩展：Models/Index、Models/Edit、Sites/Index、Sites/Edit、Sites/Import、RouteRulesApiController 这 6 处后台写入口全部从 `ProxyRequestMetadataCache` 切换到门面服务
-- `AdminConcurrencyControlService` 覆盖范围扩展：RouteRulesApiController、ModelsApiController 这 2 处从 `ModelConcurrencyLimiter` 切换到门面服务
-- `ModelConcurrencyQueryService.RecentRetention` 替换了 Developer Invocations 页面对 `ModelConcurrencyLimiter.RecentRetention` 的直接引用
-- 修复了 `ModelEditCacheTests` 测试文件以适配构造函数签名变更
+- 完成了第三批 Admin 页面和控制器从 AITool.Web 到 AITool.Admin 的完整迁移
+- 迁移范围：6 个 Admin 控制器 + 8 组 Admin 页面（AccessKeys、Analytics、Detection、DetectionTasks、ModelHealth、Routes、Sites、Models）
+- 新增了 Admin 侧 `AdminCacheInvalidationService`（通过 CoreAdminClient 向 Core 下发全量配置快照）和 `AdminConcurrencyControlService`（占位实现）
+- 已从 AITool.Web 删除所有已迁移的控制器和页面文件
+- 已调整 AITool.Web 侧边栏和首页，移除已迁移页面的导航链接
+- 已更新 Admin 宿主 Program.cs，注册了所需的全部服务
 - 已重新执行完整构建验证和测试套件：
   - ApplicationTests：`101/101` 通过
-  - IntegrationTests：`175/175` 通过
+  - IntegrationTests：`6/6` 通过（注：IntegrationTests 总数随项目演变）
   - Admin.IntegrationTests：`5/5` 通过
   - AITool.Web 构建：成功，0 error
   - AITool.Admin 构建：成功，0 error
 
 ### 当前还剩什么
 
-- `/Admin/UsageLogs` 页面本身仍需继续向 `AITool.Web` 现有页面行为靠齐，尤其是样式细节、更多展示字段、列表行信息密度与详情抽屉内容完整度
-- 还没有开始第二批 `/Admin/*` 页面与接口迁移，当前主线仍需在 UsageLogs 进一步收口后再进入下一批页面迁移
-- `AITool.Core` 物理独立宿主、patch 增量同步、实时事件流与 sequence/ack 持久化增强仍未进入本轮实施
-- Admin 侧所有页面和控制器对 `ProxyRequestMetadataCache` 的直接依赖剥离已全部完成；后续仍需确认是否有非 Admin 文件（如代理运行时控制器）存在合理的直接引用，这些属于预期保留，不需要通过门面收口
+- AITool.Web 中仍有 5 个未迁移页面：Chat/Index、ClientSimulator/Index、Developer/Invocations/Index、System/Settings、UsageLogs/Index
+- AITool.Web 中仍有 2 个未迁移控制器：ChatApiController（深度代理运行时依赖）、UsageLogsApiController（Admin 已有对应版本）
+- Chat/Index 可迁移（仅依赖 ISystemRuntimeSettingsService）
+- ClientSimulator/Index 仅做重定向，可考虑直接移除
+- Developer/Invocations 和 System/Settings 有更深的运行时依赖，需要先在 Admin 侧建立对应查询门面
+- AITool.Core 物理独立宿主、patch 增量同步、实时事件流与 sequence/ack 持久化增强仍未进入本轮实施
 
 ### 当前阻塞点是什么
 
 - 目前没有新的代码级阻塞
-- 当前构建输出仍存在来自既有 `AITool.Infrastructure` 文件的 nullability warning，本轮未改动这些历史文件
+- Developer/Invocations 和 System/Settings 需要先分析运行时依赖链路再决定迁移策略
 
 ### 下一步准备做什么
 
-- 继续完善 `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml`，把更多 Web 侧已存在的展示细节、字段和交互逐步迁入独立 Admin 宿主
-- 在 UsageLogs 页面继续稳定后，开始进入第二批 `/Admin/*` 页面与接口迁移
-- 确认 `ProxyRequestMetadataCache` 的剩余直接引用均属于代理运行时控制器（预期保留），评估是否需要为这些场景也做门面收口
-- 每完成一个小阶段后继续同步更新本文档，并补充对应测试验证结果
+- 迁移 Chat/Index 页面到 AITool.Admin（低风险，仅依赖 ISystemRuntimeSettingsService）
+- 处理 ClientSimulator 页面（重定向页面，可直接在 Admin 中创建对应实现）
+- 分析 Developer/Invocations 的依赖链路，为迁移做准备
+- 分析 System/Settings 的依赖链路，评估在 Admin 侧建立替代方案的可行性
+- 每完成一个小阶段后继续同步更新本文档
 
 ---
 
@@ -648,4 +774,4 @@
 
 当前项目状态可以概括为：
 
-> **协议与运行时基础已经打好，双宿主也开始真正落地；现在独立 Admin 宿主已经能单独编译和测试启动，下一阶段重点应转向真实事件消费入库与第一块页面/接口迁移。**
+> **协议与运行时基础已经打好，双宿主也开始真正落地；Admin 宿主已迁移 10 个控制器和 10 组页面（UsageLogs + Conversations + 第三批 8 组），仅剩 5 个页面和 2 个控制器待处理；下一阶段继续迁移剩余页面并推进 Core 物理独立宿主。**

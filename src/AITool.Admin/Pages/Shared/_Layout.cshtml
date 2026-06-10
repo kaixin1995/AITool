@@ -83,6 +83,12 @@
                     <a class="sidebar-link" href="/Admin/UsageLogs" title="使用日志">
                         <span class="sidebar-link-icon">📋</span>使用日志
                     </a>
+                    @if (runtimeSettings.ConversationLogEnabled)
+                    {
+                        <a class="sidebar-link" href="/Admin/Conversations" title="对话记录">
+                            <span class="sidebar-link-icon">🗨️</span>对话记录
+                        </a>
+                    }
                     <a class="sidebar-link" href="/Admin/System/Settings" title="系统设置">
                         <span class="sidebar-link-icon">⚙️</span>系统设置
                     </a>
