@@ -130,6 +130,8 @@ builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogS
 builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>());
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
+builder.Services.AddSingleton<DeveloperInvocationTraceQueryService>();
+builder.Services.AddSingleton<ModelConcurrencyQueryService>();
 builder.Services.AddSingleton<ModelConcurrencyLimiter>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogService, AITool.Infrastructure.Conversations.ConversationLogService>();
@@ -138,6 +140,8 @@ builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationEx
 // 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点。
 builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<ProxyRequestMetadataCache>();
+builder.Services.AddSingleton<AdminQueryMetadataService>();
+builder.Services.AddSingleton<AdminCacheInvalidationService>();
 builder.Services.AddSingleton<ModelVendorCatalogService>();
 
 // 注册日志保留策略服务，定时清理过期日志。

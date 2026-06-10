@@ -1,46 +1,11 @@
 using AITool.Application.Operations;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.ClientSimulator;
-
-/// <summary>
-/// 客户端模拟器中的模型展示项。
-/// </summary>
-public sealed class ClientSimulatorModelItemViewModel
-{
-    /// <summary>
-    /// 模型名称。
-    /// </summary>
-    public string ModelName { get; set; } = string.Empty;
-
-    /// <summary>
-    /// 当前模型可命中的路由数量。
-    /// </summary>
-    public int RouteCount { get; set; }
-
-    /// <summary>
-    /// 模型是否支持 OpenAI 协议。
-    /// </summary>
-    public bool SupportsOpenAi { get; set; }
-
-    /// <summary>
-    /// 模型是否支持 Anthropic 协议。
-    /// </summary>
-    public bool SupportsAnthropic { get; set; }
-
-    /// <summary>
-    /// 当前环境下是否允许通过 OpenAI 协议调用。
-    /// </summary>
-    public bool CanUseOpenAi { get; set; }
-
-    /// <summary>
-    /// 当前环境下是否允许通过 Anthropic 协议调用。
-    /// </summary>
-    public bool CanUseAnthropic { get; set; }
-}
 
 /// <summary>
 /// 客户端模拟器页面模型，当前仅作为开发者调试入口的兼容跳转页。

@@ -5,6 +5,393 @@ using Microsoft.EntityFrameworkCore;
 namespace AITool.Admin.Controllers.Admin;
 
 /// <summary>
+/// 前端查询调用日志列表时使用的请求参数。
+/// 当前阶段先对齐 UsageLogs 页面已接入的筛选项，确保独立 Admin 宿主中的页面和只读接口使用同一套查询语义。
+/// </summary>
+public sealed class AdminUsageLogListQueryDto
+{
+    /// <summary>
+    /// 页码。
+    /// </summary>
+    public int Page { get; set; } = 1;
+
+    /// <summary>
+    /// 每页条数。
+    /// </summary>
+    public int PageSize { get; set; } = 20;
+
+    /// <summary>
+    /// 时间范围类型。
+    /// </summary>
+    public string RangeType { get; set; } = "day";
+
+    /// <summary>
+    /// 自定义开始时间。
+    /// </summary>
+    public DateTimeOffset? StartTime { get; set; }
+
+    /// <summary>
+    /// 自定义结束时间。
+    /// </summary>
+    public DateTimeOffset? EndTime { get; set; }
+
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
+    public Guid? SiteId { get; set; }
+
+    /// <summary>
+    /// 来源筛选。
+    /// </summary>
+    public string Source { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 状态筛选。
+    /// </summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 模型关键字。
+    /// </summary>
+    public string ModelKeyword { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 调用日志分页列表响应。
+/// </summary>
+public sealed class AdminUsageLogListResponseDto
+{
+    /// <summary>
+    /// 页码。
+    /// </summary>
+    public int Page { get; set; }
+
+    /// <summary>
+    /// 每页条数。
+    /// </summary>
+    public int PageSize { get; set; }
+
+    /// <summary>
+    /// 总记录数。
+    /// </summary>
+    public int TotalCount { get; set; }
+
+    /// <summary>
+    /// 总页数。
+    /// </summary>
+    public int TotalPages { get; set; }
+
+    /// <summary>
+    /// 当前页数据。
+    /// </summary>
+    public List<AdminUsageLogListItemDto> Items { get; set; } = [];
+}
+
+/// <summary>
+/// 调用日志列表项。
+/// </summary>
+public sealed class AdminUsageLogListItemDto
+{
+    /// <summary>
+    /// 记录标识。
+    /// </summary>
+    public Guid Id { get; set; }
+
+    /// <summary>
+    /// 请求标识。
+    /// </summary>
+    public Guid RequestId { get; set; }
+
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
+    public string ProtocolType { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 请求模型名称。
+    /// </summary>
+    public string RequestModel { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 实际尝试的模型名称。
+    /// </summary>
+    public string AttemptedModel { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
+    public string SiteModelName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 目标站点名称。
+    /// </summary>
+    public string SiteName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 状态。
+    /// </summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 来源。
+    /// </summary>
+    public string Source { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 重试次数。
+    /// </summary>
+    public int RetryCount { get; set; }
+
+    /// <summary>
+    /// 尝试序号。
+    /// </summary>
+    public int AttemptIndex { get; set; }
+
+    /// <summary>
+    /// 是否为最终结果。
+    /// </summary>
+    public bool IsFinalResult { get; set; }
+
+    /// <summary>
+    /// 是否触发回退。
+    /// </summary>
+    public bool FallbackTriggered { get; set; }
+
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
+    public int InputTokens { get; set; }
+
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
+    public int CachedTokens { get; set; }
+
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
+    public int OutputTokens { get; set; }
+
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
+    public int TotalTokens { get; set; }
+
+    /// <summary>
+    /// 是否为流式返回。
+    /// </summary>
+    public bool IsStreaming { get; set; }
+
+    /// <summary>
+    /// 流是否被中断。
+    /// </summary>
+    public bool IsStreamInterrupted { get; set; }
+
+    /// <summary>
+    /// 首字延迟。
+    /// </summary>
+    public int FirstTokenLatencyMs { get; set; }
+
+    /// <summary>
+    /// 流式持续时间。
+    /// </summary>
+    public int StreamDurationMs { get; set; }
+
+    /// <summary>
+    /// 总耗时。
+    /// </summary>
+    public int TotalDurationMs { get; set; }
+
+    /// <summary>
+    /// 请求时间。
+    /// </summary>
+    public DateTimeOffset RequestedAt { get; set; }
+}
+
+/// <summary>
+/// 单次调用尝试详情。
+/// </summary>
+public sealed class AdminUsageLogAttemptDto
+{
+    /// <summary>
+    /// 记录标识。
+    /// </summary>
+    public Guid Id { get; set; }
+
+    /// <summary>
+    /// 尝试序号。
+    /// </summary>
+    public int AttemptIndex { get; set; }
+
+    /// <summary>
+    /// 实际尝试的模型名称。
+    /// </summary>
+    public string AttemptedModel { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 调用模式。
+    /// </summary>
+    public string ForwardingMode { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
+    public string SiteModelName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
+    public string SiteName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 状态。
+    /// </summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 是否为最终结果。
+    /// </summary>
+    public bool IsFinalResult { get; set; }
+
+    /// <summary>
+    /// 是否触发回退。
+    /// </summary>
+    public bool FallbackTriggered { get; set; }
+
+    /// <summary>
+    /// 错误信息。
+    /// </summary>
+    public string ErrorMessage { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
+    public int InputTokens { get; set; }
+
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
+    public int CachedTokens { get; set; }
+
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
+    public int OutputTokens { get; set; }
+
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
+    public int TotalTokens { get; set; }
+
+    /// <summary>
+    /// 是否为流式返回。
+    /// </summary>
+    public bool IsStreaming { get; set; }
+
+    /// <summary>
+    /// 流是否被中断。
+    /// </summary>
+    public bool IsStreamInterrupted { get; set; }
+
+    /// <summary>
+    /// 首字延迟。
+    /// </summary>
+    public int FirstTokenLatencyMs { get; set; }
+
+    /// <summary>
+    /// 流式持续时间。
+    /// </summary>
+    public int StreamDurationMs { get; set; }
+
+    /// <summary>
+    /// 总耗时。
+    /// </summary>
+    public int TotalDurationMs { get; set; }
+
+    /// <summary>
+    /// 思考等级。
+    /// </summary>
+    public string ReasoningEffort { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 请求时间。
+    /// </summary>
+    public DateTimeOffset RequestedAt { get; set; }
+}
+
+/// <summary>
+/// 请求链路详情响应。
+/// </summary>
+public sealed class AdminUsageLogRequestDetailDto
+{
+    /// <summary>
+    /// 请求标识。
+    /// </summary>
+    public Guid RequestId { get; set; }
+
+    /// <summary>
+    /// 请求模型名称。
+    /// </summary>
+    public string RequestModel { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 路由入口名称。
+    /// </summary>
+    public string RouteEntry { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
+    public string ProtocolType { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 调用模式。
+    /// </summary>
+    public string ForwardingMode { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 思考等级。
+    /// </summary>
+    public string ReasoningEffort { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 所有尝试明细。
+    /// </summary>
+    public List<AdminUsageLogAttemptDto> Attempts { get; set; } = [];
+}
+
+/// <summary>
+/// 调用日志摘要卡片数据。
+/// </summary>
+public sealed class AdminUsageLogSummaryDto
+{
+    /// <summary>
+    /// 请求总数。
+    /// </summary>
+    public int TotalRequests { get; set; }
+
+    /// <summary>
+    /// 失败请求数。
+    /// </summary>
+    public int FailedRequests { get; set; }
+
+    /// <summary>
+    /// 成功率。
+    /// </summary>
+    public double SuccessRate { get; set; }
+
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
+    public int TotalTokens { get; set; }
+
+    /// <summary>
+    /// 最大耗时。
+    /// </summary>
+    public int MaxDurationMs { get; set; }
+}
+
+/// <summary>
 /// Admin 独立宿主中的调用日志查询接口。
 /// 当前阶段先把这块只读接口迁过来，配合 UsageLogs 页面完成第一块真实页面的宿主内联动验证。
 /// </summary>
@@ -24,75 +411,73 @@ public sealed class UsageLogsApiController : ControllerBase
 
     /// <summary>
     /// 获取调用日志列表。
-    /// 当前阶段先提供页面最低可用所需的数据筛选和分页能力。
+    /// 当前阶段对齐独立 Admin 页面已接入的筛选、分页和详情入口所需字段。
     /// </summary>
     [HttpGet("list")]
-    public async Task<IActionResult> GetList(
-        [FromQuery] int page = 1,
-        [FromQuery] int pageSize = 20,
-        [FromQuery] string? rangeType = null,
-        [FromQuery] DateTimeOffset? startTime = null,
-        [FromQuery] DateTimeOffset? endTime = null,
-        [FromQuery] Guid? siteId = null,
-        [FromQuery] string? source = null,
-        [FromQuery] string? status = null,
-        [FromQuery] string? modelKeyword = null,
-        CancellationToken cancellationToken = default)
+    public async Task<ActionResult<AdminUsageLogListResponseDto>> GetList([FromQuery] AdminUsageLogListQueryDto query, CancellationToken cancellationToken)
     {
-        var (rangeStart, rangeEnd) = ResolveTimeRange(rangeType, startTime, endTime);
-        var allLogs = await _dbContext.ProxyUsageLogs
-            .AsNoTracking()
-            .ToListAsync(cancellationToken);
-        var filtered = allLogs
-            .Where(x => x.RequestedAt >= rangeStart && x.RequestedAt < rangeEnd)
-            .Where(x => !siteId.HasValue || x.TargetSiteId == siteId.Value)
-            .Where(x => string.IsNullOrWhiteSpace(source) || string.Equals(x.Source, source, StringComparison.OrdinalIgnoreCase))
-            .Where(x => string.IsNullOrWhiteSpace(status) || string.Equals(x.Status, status, StringComparison.OrdinalIgnoreCase))
-            .Where(x => string.IsNullOrWhiteSpace(modelKeyword)
-                || (!string.IsNullOrWhiteSpace(x.RequestModel) && x.RequestModel.Contains(modelKeyword, StringComparison.OrdinalIgnoreCase))
-                || (!string.IsNullOrWhiteSpace(x.AttemptedModel) && x.AttemptedModel.Contains(modelKeyword, StringComparison.OrdinalIgnoreCase)))
-            .OrderByDescending(x => x.RequestedAt)
-            .ToList();
-
         var sites = await _dbContext.Sites
             .AsNoTracking()
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+        var routeRules = await _dbContext.ProxyRouteRules
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
+        var (rangeStart, rangeEnd) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
+        var pageSize = Math.Clamp(query.PageSize, 1, 100);
+
+        // 当前仍使用 SQLite，先整体取回再做 DateTimeOffset 相关过滤和排序，避免数据库端翻译失败。
+        var filtered = (await _dbContext.ProxyUsageLogs
+                .AsNoTracking()
+                .ToListAsync(cancellationToken))
+            .Where(x => x.RequestedAt >= rangeStart && x.RequestedAt < rangeEnd)
+            .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+            .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
+            .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
+            .Where(x => IsModelMatched(x, query.ModelKeyword))
+            .OrderByDescending(x => x.RequestedAt)
+            .ToList();
+
         var totalCount = filtered.Count;
-        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)Math.Max(1, pageSize));
-        var normalizedPage = totalPages == 0 ? 1 : Math.Min(Math.Max(1, page), totalPages);
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
+        var page = totalPages == 0 ? 1 : Math.Min(Math.Max(1, query.Page), totalPages);
         var items = filtered
-            .Skip((normalizedPage - 1) * Math.Max(1, pageSize))
-            .Take(Math.Max(1, pageSize))
-            .Select(x => new
+            .Skip((page - 1) * pageSize)
+            .Take(pageSize)
+            .Select(x => new AdminUsageLogListItemDto
             {
-                x.Id,
-                x.RequestId,
-                x.ProtocolType,
-                x.RequestModel,
-                x.AttemptedModel,
+                Id = x.Id,
+                RequestId = x.RequestId,
+                ProtocolType = x.ProtocolType,
+                RequestModel = x.RequestModel,
+                AttemptedModel = x.AttemptedModel,
+                SiteModelName = ResolveSiteModelName(routeRules, x.TargetSiteId, x.AttemptedModel),
                 SiteName = sites.TryGetValue(x.TargetSiteId, out var siteName) ? siteName : "-",
-                x.Status,
-                x.Source,
-                x.InputTokens,
-                x.CachedTokens,
-                x.OutputTokens,
-                x.TotalTokens,
-                x.IsStreaming,
-                x.IsStreamInterrupted,
-                x.FirstTokenLatencyMs,
-                x.StreamDurationMs,
-                x.TotalDurationMs,
-                x.RequestedAt
+                Status = x.Status,
+                Source = x.Source,
+                RetryCount = x.RetryCount,
+                AttemptIndex = x.AttemptIndex,
+                IsFinalResult = x.IsFinalResult,
+                FallbackTriggered = x.FallbackTriggered,
+                InputTokens = x.InputTokens,
+                CachedTokens = x.CachedTokens,
+                OutputTokens = x.OutputTokens,
+                TotalTokens = x.TotalTokens,
+                IsStreaming = x.IsStreaming,
+                IsStreamInterrupted = x.IsStreamInterrupted,
+                FirstTokenLatencyMs = x.FirstTokenLatencyMs,
+                StreamDurationMs = x.StreamDurationMs,
+                TotalDurationMs = x.TotalDurationMs,
+                RequestedAt = x.RequestedAt
             })
             .ToList();
 
-        return Ok(new
+        return Ok(new AdminUsageLogListResponseDto
         {
-            page = normalizedPage,
-            pageSize = Math.Max(1, pageSize),
-            totalCount,
-            totalPages,
-            items
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = totalCount,
+            TotalPages = totalPages,
+            Items = items
         });
     }
 
@@ -100,28 +485,19 @@ public sealed class UsageLogsApiController : ControllerBase
     /// 获取调用日志汇总信息。
     /// </summary>
     [HttpGet("summary")]
-    public async Task<IActionResult> GetSummary(
-        [FromQuery] string? rangeType = null,
-        [FromQuery] DateTimeOffset? startTime = null,
-        [FromQuery] DateTimeOffset? endTime = null,
-        [FromQuery] Guid? siteId = null,
-        [FromQuery] string? source = null,
-        [FromQuery] string? status = null,
-        [FromQuery] string? modelKeyword = null,
-        CancellationToken cancellationToken = default)
+    public async Task<ActionResult<AdminUsageLogSummaryDto>> GetSummary([FromQuery] AdminUsageLogListQueryDto query, CancellationToken cancellationToken)
     {
-        var (rangeStart, rangeEnd) = ResolveTimeRange(rangeType, startTime, endTime);
-        var logs = await _dbContext.ProxyUsageLogs
-            .AsNoTracking()
-            .ToListAsync(cancellationToken);
-        var filtered = logs
+        var (rangeStart, rangeEnd) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
+
+        // 汇总与列表共用同一套筛选逻辑，避免页面筛选条件和摘要卡片统计口径不一致。
+        var filtered = (await _dbContext.ProxyUsageLogs
+                .AsNoTracking()
+                .ToListAsync(cancellationToken))
             .Where(x => x.RequestedAt >= rangeStart && x.RequestedAt < rangeEnd)
-            .Where(x => !siteId.HasValue || x.TargetSiteId == siteId.Value)
-            .Where(x => string.IsNullOrWhiteSpace(source) || string.Equals(x.Source, source, StringComparison.OrdinalIgnoreCase))
-            .Where(x => string.IsNullOrWhiteSpace(status) || string.Equals(x.Status, status, StringComparison.OrdinalIgnoreCase))
-            .Where(x => string.IsNullOrWhiteSpace(modelKeyword)
-                || (!string.IsNullOrWhiteSpace(x.RequestModel) && x.RequestModel.Contains(modelKeyword, StringComparison.OrdinalIgnoreCase))
-                || (!string.IsNullOrWhiteSpace(x.AttemptedModel) && x.AttemptedModel.Contains(modelKeyword, StringComparison.OrdinalIgnoreCase)))
+            .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+            .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
+            .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
+            .Where(x => IsModelMatched(x, query.ModelKeyword))
             .ToList();
 
         var totalRequests = filtered.Count;
@@ -131,13 +507,13 @@ public sealed class UsageLogsApiController : ControllerBase
             ? 0d
             : Math.Round(successRequests * 100d / totalRequests, 2, MidpointRounding.AwayFromZero);
 
-        return Ok(new
+        return Ok(new AdminUsageLogSummaryDto
         {
-            totalRequests,
-            failedRequests,
-            successRate,
-            totalTokens = filtered.Sum(x => x.TotalTokens),
-            maxDurationMs = filtered.Count == 0 ? 0 : filtered.Max(x => x.TotalDurationMs)
+            TotalRequests = totalRequests,
+            FailedRequests = failedRequests,
+            SuccessRate = successRate,
+            TotalTokens = filtered.Sum(x => x.TotalTokens),
+            MaxDurationMs = filtered.Count == 0 ? 0 : filtered.Max(x => x.TotalDurationMs)
         });
     }
 
@@ -145,8 +521,14 @@ public sealed class UsageLogsApiController : ControllerBase
     /// 获取指定请求的链路详情。
     /// </summary>
     [HttpGet("request-detail/{requestId:guid}")]
-    public async Task<IActionResult> GetRequestDetail(Guid requestId, CancellationToken cancellationToken)
+    public async Task<ActionResult<AdminUsageLogRequestDetailDto>> GetRequestDetail(Guid requestId, CancellationToken cancellationToken)
     {
+        var sites = await _dbContext.Sites
+            .AsNoTracking()
+            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+        var routeRules = await _dbContext.ProxyRouteRules
+            .AsNoTracking()
+            .ToListAsync(cancellationToken);
         var logs = await _dbContext.ProxyUsageLogs
             .AsNoTracking()
             .Where(x => x.RequestId == requestId)
@@ -156,43 +538,43 @@ public sealed class UsageLogsApiController : ControllerBase
             return NotFound(new { message = "请求不存在" });
         }
 
-        logs = logs
+        // 详情按尝试顺序和发起时间重新排序，保证页面侧打开抽屉后看到的链路与真实重试顺序一致。
+        var orderedLogs = logs
             .OrderBy(x => x.AttemptIndex)
             .ThenBy(x => x.RequestedAt)
             .ToList();
 
-        var sites = await _dbContext.Sites
-            .AsNoTracking()
-            .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
-
-        return Ok(new
+        return Ok(new AdminUsageLogRequestDetailDto
         {
-            requestId,
-            routeEntry = logs[0].RequestModel,
-            protocolType = logs[0].ProtocolType,
-            forwardingMode = logs.Select(x => x.ForwardingMode).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty,
-            reasoningEffort = logs.Select(x => x.ReasoningEffort).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty,
-            attempts = logs.Select(x => new
+            RequestId = requestId,
+            RequestModel = orderedLogs[0].RequestModel,
+            RouteEntry = orderedLogs[0].RequestModel,
+            ProtocolType = orderedLogs[0].ProtocolType,
+            ForwardingMode = orderedLogs.Select(x => x.ForwardingMode).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty,
+            ReasoningEffort = orderedLogs.Select(x => x.ReasoningEffort).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty,
+            Attempts = orderedLogs.Select(x => new AdminUsageLogAttemptDto
             {
-                x.Id,
-                x.AttemptIndex,
-                x.AttemptedModel,
+                Id = x.Id,
+                AttemptIndex = x.AttemptIndex,
+                AttemptedModel = x.AttemptedModel,
+                ForwardingMode = x.ForwardingMode ?? string.Empty,
+                SiteModelName = ResolveSiteModelName(routeRules, x.TargetSiteId, x.AttemptedModel),
                 SiteName = sites.TryGetValue(x.TargetSiteId, out var siteName) ? siteName : "-",
-                x.Status,
-                x.IsFinalResult,
-                x.FallbackTriggered,
-                x.ErrorMessage,
-                x.InputTokens,
-                x.CachedTokens,
-                x.OutputTokens,
-                x.TotalTokens,
-                x.IsStreaming,
-                x.IsStreamInterrupted,
-                x.FirstTokenLatencyMs,
-                x.StreamDurationMs,
-                x.TotalDurationMs,
-                x.ReasoningEffort,
-                x.RequestedAt
+                Status = x.Status,
+                IsFinalResult = x.IsFinalResult,
+                FallbackTriggered = x.FallbackTriggered,
+                ErrorMessage = x.ErrorMessage,
+                InputTokens = x.InputTokens,
+                CachedTokens = x.CachedTokens,
+                OutputTokens = x.OutputTokens,
+                TotalTokens = x.TotalTokens,
+                IsStreaming = x.IsStreaming,
+                IsStreamInterrupted = x.IsStreamInterrupted,
+                FirstTokenLatencyMs = x.FirstTokenLatencyMs,
+                StreamDurationMs = x.StreamDurationMs,
+                TotalDurationMs = x.TotalDurationMs,
+                ReasoningEffort = x.ReasoningEffort,
+                RequestedAt = x.RequestedAt
             }).ToList()
         });
     }
@@ -223,5 +605,41 @@ public sealed class UsageLogsApiController : ControllerBase
             "all" => (DateTimeOffset.MinValue, DateTimeOffset.MaxValue),
             _ => (new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset), now)
         };
+    }
+
+    /// <summary>
+    /// 判断模型名称是否命中关键字。
+    /// </summary>
+    private static bool IsModelMatched(AITool.Domain.Proxy.ProxyUsageLog log, string? modelKeyword)
+    {
+        if (string.IsNullOrWhiteSpace(modelKeyword))
+        {
+            return true;
+        }
+
+        var keyword = modelKeyword.Trim();
+        return ContainsIgnoreCase(log.RequestModel, keyword)
+            || ContainsIgnoreCase(log.AttemptedModel, keyword);
+    }
+
+    /// <summary>
+    /// 以大小写不敏感方式判断文本是否包含关键字。
+    /// </summary>
+    private static bool ContainsIgnoreCase(string? source, string keyword)
+    {
+        return !string.IsNullOrWhiteSpace(source)
+            && source.Contains(keyword, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 根据站点和上游模型名称解析站点模型名称。
+    /// </summary>
+    private static string ResolveSiteModelName(IEnumerable<AITool.Domain.Proxy.ProxyRouteRule> routeRules, Guid siteId, string attemptedModel)
+    {
+        return routeRules
+            .Where(x => x.SiteId == siteId && x.UpstreamModelName == attemptedModel)
+            .OrderBy(x => x.Priority)
+            .Select(x => x.SiteModelName)
+            .FirstOrDefault() ?? string.Empty;
     }
 }

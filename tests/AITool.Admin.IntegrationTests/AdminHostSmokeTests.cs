@@ -1,5 +1,6 @@
 using System.Net;
 using AITool.Domain.Proxy;
+using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -60,7 +61,7 @@ internal sealed class AdminHostWebApplicationFactory : WebApplicationFactory<AIT
         await db.Database.EnsureCreatedAsync();
 
         var siteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
-        db.Sites.Add(new AITool.Domain.Sites.Site
+        db.Sites.Add(new Site
         {
             Id = siteId,
             Name = "Admin Host Site",
@@ -71,34 +72,107 @@ internal sealed class AdminHostWebApplicationFactory : WebApplicationFactory<AIT
             SupportsAnthropic = false,
             IsEnabled = true
         });
-        db.ProxyUsageLogs.Add(new ProxyUsageLog
+
+        db.ProxyRouteRules.Add(new ProxyRouteRule
         {
-            RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-            AccessKeyId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
-            ProtocolType = "OpenAI",
-            ForwardingMode = "direct",
-            RequestModel = "chat-prod",
-            AttemptedModel = "gpt-5.4",
-            TargetSiteId = siteId,
-            Status = "success",
-            Source = "proxy",
-            RetryCount = 0,
-            AttemptIndex = 1,
-            IsFinalResult = true,
-            FallbackTriggered = false,
-            ErrorMessage = string.Empty,
-            InputTokens = 10,
-            CachedTokens = 2,
-            OutputTokens = 6,
-            TotalTokens = 18,
-            IsStreaming = false,
-            IsStreamInterrupted = false,
-            FirstTokenLatencyMs = 30,
-            StreamDurationMs = 0,
-            TotalDurationMs = 80,
-            ReasoningEffort = string.Empty,
-            RequestedAt = new DateTimeOffset(2026, 6, 10, 10, 0, 0, TimeSpan.Zero)
+            Id = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
+            SiteId = siteId,
+            ExternalModelName = "chat-prod",
+            UpstreamModelName = "gpt-5.4",
+            SiteModelName = "gpt-5.4-site",
+            Priority = 0,
+            ModelPriority = 0,
+            InstancePriority = 0,
+            IsEnabled = true,
+            AvailabilityMode = "AllDay",
+            TimeRangesJson = string.Empty
         });
+
+        db.ProxyUsageLogs.AddRange(
+            new ProxyUsageLog
+            {
+                RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                AccessKeyId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                ProtocolType = "OpenAI",
+                ForwardingMode = "direct",
+                RequestModel = "chat-prod",
+                AttemptedModel = "gpt-5.4",
+                TargetSiteId = siteId,
+                Status = "fail",
+                Source = "proxy",
+                RetryCount = 1,
+                AttemptIndex = 1,
+                IsFinalResult = false,
+                FallbackTriggered = true,
+                ErrorMessage = "首次尝试超时",
+                InputTokens = 10,
+                CachedTokens = 2,
+                OutputTokens = 0,
+                TotalTokens = 12,
+                IsStreaming = true,
+                IsStreamInterrupted = true,
+                FirstTokenLatencyMs = 0,
+                StreamDurationMs = 0,
+                TotalDurationMs = 1200,
+                ReasoningEffort = "medium",
+                RequestedAt = new DateTimeOffset(2026, 6, 10, 10, 0, 0, TimeSpan.Zero)
+            },
+            new ProxyUsageLog
+            {
+                RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                AccessKeyId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"),
+                ProtocolType = "OpenAI",
+                ForwardingMode = "direct",
+                RequestModel = "chat-prod",
+                AttemptedModel = "gpt-5.4",
+                TargetSiteId = siteId,
+                Status = "success",
+                Source = "proxy",
+                RetryCount = 1,
+                AttemptIndex = 2,
+                IsFinalResult = true,
+                FallbackTriggered = true,
+                ErrorMessage = string.Empty,
+                InputTokens = 10,
+                CachedTokens = 2,
+                OutputTokens = 6,
+                TotalTokens = 18,
+                IsStreaming = true,
+                IsStreamInterrupted = false,
+                FirstTokenLatencyMs = 30,
+                StreamDurationMs = 150,
+                TotalDurationMs = 300,
+                ReasoningEffort = "medium",
+                RequestedAt = new DateTimeOffset(2026, 6, 10, 10, 1, 0, TimeSpan.Zero)
+            },
+            new ProxyUsageLog
+            {
+                RequestId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
+                AccessKeyId = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+                ProtocolType = "Anthropic",
+                ForwardingMode = "bridge",
+                RequestModel = "claude-opus",
+                AttemptedModel = "claude-opus-4-8",
+                TargetSiteId = siteId,
+                Status = "success",
+                Source = "claude-code",
+                RetryCount = 0,
+                AttemptIndex = 1,
+                IsFinalResult = true,
+                FallbackTriggered = false,
+                ErrorMessage = string.Empty,
+                InputTokens = 128,
+                CachedTokens = 64,
+                OutputTokens = 96,
+                TotalTokens = 288,
+                IsStreaming = false,
+                IsStreamInterrupted = false,
+                FirstTokenLatencyMs = 20,
+                StreamDurationMs = 0,
+                TotalDurationMs = 180,
+                ReasoningEffort = "high",
+                RequestedAt = new DateTimeOffset(2026, 6, 11, 9, 30, 0, TimeSpan.Zero)
+            });
 
         await db.SaveChangesAsync();
     }

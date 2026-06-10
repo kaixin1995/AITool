@@ -17,9 +17,9 @@ public sealed class ModelsApiController : ControllerBase
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidationService;
     /// <summary>
     /// 模型并发限制器。
     /// </summary>
@@ -30,11 +30,11 @@ public sealed class ModelsApiController : ControllerBase
     /// </summary>
     public ModelsApiController(
         AppDbContext dbContext,
-        ProxyRequestMetadataCache metadataCache,
+        AdminCacheInvalidationService cacheInvalidationService,
         ModelConcurrencyLimiter concurrencyLimiter)
     {
         _dbContext = dbContext;
-        _metadataCache = metadataCache;
+        _cacheInvalidationService = cacheInvalidationService;
         _concurrencyLimiter = concurrencyLimiter;
     }
 
@@ -54,8 +54,8 @@ public sealed class ModelsApiController : ControllerBase
         _dbContext.ModelLibraryItems.RemoveRange(_dbContext.ModelLibraryItems);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateModelMetadata();
-        _metadataCache.InvalidateRouteTargets();
+        _cacheInvalidationService.InvalidateModelMetadata();
+        _cacheInvalidationService.InvalidateRouteTargets();
 
         return Ok(new
         {
@@ -84,7 +84,7 @@ public sealed class ModelsApiController : ControllerBase
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         // 配置保存后立即失效缓存，并同步更新运行中的限制器状态，仅影响后续新请求。
-        _metadataCache.InvalidateRouteTargets();
+        _cacheInvalidationService.InvalidateRouteTargets();
         _concurrencyLimiter.UpdateLimit(mapping.SiteId, mapping.RemoteModelName, mapping.MaxConcurrency);
 
         return Ok(new { mapping.MaxConcurrency });

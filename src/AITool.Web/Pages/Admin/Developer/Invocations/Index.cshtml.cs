@@ -1,6 +1,5 @@
 using AITool.Application.Operations;
 using AITool.Infrastructure.Persistence;
-using AITool.Web.Pages.Admin.ClientSimulator;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -65,34 +64,33 @@ public sealed class IndexModel : PageModel
     /// </summary>
     private readonly ISystemRuntimeSettingsService _runtimeSettingsService;
     /// <summary>
-    /// 调用跟踪存储。
+    /// 调用跟踪只读查询服务。
     /// </summary>
-    private readonly DeveloperInvocationTraceStore _traceStore;
+    private readonly DeveloperInvocationTraceQueryService _traceQueryService;
     /// <summary>
     /// 数据库上下文。
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理请求元数据缓存。
+    /// 后台查询元数据服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly AdminQueryMetadataService _adminQueryMetadataService;
 
     /// <summary>
     /// 开发者调用记录页面模型。
     /// </summary>
     public IndexModel(
         ISystemRuntimeSettingsService runtimeSettingsService,
-        DeveloperInvocationTraceStore traceStore,
+        DeveloperInvocationTraceQueryService traceQueryService,
         AppDbContext dbContext,
-        ModelConcurrencyLimiter concurrencyLimiter,
-        ProxyRequestMetadataCache metadataCache)
+        ModelConcurrencyQueryService modelConcurrencyQueryService,
+        AdminQueryMetadataService adminQueryMetadataService)
     {
         _runtimeSettingsService = runtimeSettingsService;
-        _traceStore = traceStore;
+        _traceQueryService = traceQueryService;
         _dbContext = dbContext;
-        _concurrencyLimiter = concurrencyLimiter;
-        // 调试页默认参数走内存缓存，避免每次打开都触发独立的数据库查询。
-        _metadataCache = metadataCache;
+        _modelConcurrencyQueryService = modelConcurrencyQueryService;
+        _adminQueryMetadataService = adminQueryMetadataService;
     }
 
     /// <summary>
@@ -112,9 +110,9 @@ public sealed class IndexModel : PageModel
     /// </summary>
     public string ActiveTab { get; private set; } = "invocations";
     /// <summary>
-    /// 模型并发限制器，用于读取当前真实活跃并发快照。
+    /// 模型并发只读查询服务。
     /// </summary>
-    private readonly ModelConcurrencyLimiter _concurrencyLimiter;
+    private readonly ModelConcurrencyQueryService _modelConcurrencyQueryService;
     /// <summary>
     /// 默认请求地址。
     /// </summary>
@@ -149,7 +147,7 @@ public sealed class IndexModel : PageModel
 
         ActiveTab = "invocations";
 
-        var entries = _traceStore.List();
+        var entries = _traceQueryService.List();
         InitialTotalCount = entries.Count;
         InitialFailedCount = entries.Count(x => x.Attempts.Any(a => !string.Equals(a.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)));
         InitialPendingCount = entries.Count(x => x.Attempts.Any(a => string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)));
@@ -168,7 +166,7 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        var entries = _traceStore.List();
+        var entries = _traceQueryService.List();
         var totalCount = entries.Count;
         var totalPages = Math.Max(1, (int)Math.Ceiling(totalCount / (double)PageSize));
         // Razor Pages 会把 page 当作保留路由字段参与绑定，这里改用 pageNumber 避免翻页始终回到第一页。
@@ -203,7 +201,7 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        var entry = _traceStore.Get(traceId);
+        var entry = _traceQueryService.Get(traceId);
         if (entry is null)
         {
             return NotFound();
@@ -223,7 +221,7 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        var snapshots = _concurrencyLimiter.ListRecent(ModelConcurrencyLimiter.RecentRetention);
+        var snapshots = _modelConcurrencyQueryService.ListRecent(ModelConcurrencyLimiter.RecentRetention);
         if (snapshots.Count == 0)
         {
             return new JsonResult(new DeveloperModelConcurrencyResponse
@@ -234,8 +232,8 @@ public sealed class IndexModel : PageModel
         }
 
         // 站点名和最大并发都走元数据缓存，避免并发面板每次刷新都直接查数据库。
-        var siteNames = await _metadataCache.GetEnabledSiteNamesAsync(cancellationToken);
-        var mappingLimits = await _metadataCache.GetModelConcurrencyLimitsAsync(cancellationToken);
+        var siteNames = await _adminQueryMetadataService.GetEnabledSiteNamesAsync(cancellationToken);
+        var mappingLimits = await _adminQueryMetadataService.GetModelConcurrencyLimitsAsync(cancellationToken);
 
         var items = snapshots
             .Select(x =>
@@ -378,9 +376,9 @@ public sealed class IndexModel : PageModel
         DefaultBaseUrl = $"{Request.Scheme}://{Request.Host}";
 
         // 默认密钥与调试模型清单走元数据缓存，5 秒内重复打开页面只查询一次数据库。
-        DefaultAccessKey = await _metadataCache.GetDeveloperDefaultAccessKeyAsync(cancellationToken);
+        DefaultAccessKey = await _adminQueryMetadataService.GetDeveloperDefaultAccessKeyAsync(cancellationToken);
 
-        var routeModels = await _metadataCache.GetDeveloperDebugModelsAsync(cancellationToken);
+        var routeModels = await _adminQueryMetadataService.GetDeveloperDebugModelsAsync(cancellationToken);
 
         Models = routeModels.ToList();
         DefaultOpenAiModel = routeModels.FirstOrDefault(x => x.CanUseOpenAi)?.ModelName ?? string.Empty;

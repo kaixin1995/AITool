@@ -137,9 +137,9 @@ public sealed class SiteCatalogApiController : ControllerBase
     /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidationService;
 
     /// <summary>
     /// 批量抓取进度缓存。
@@ -149,11 +149,11 @@ public sealed class SiteCatalogApiController : ControllerBase
     /// <summary>
     /// 创建站点目录控制器。
     /// </summary>
-    public SiteCatalogApiController(AppDbContext dbContext, IServiceScopeFactory scopeFactory, ProxyRequestMetadataCache metadataCache)
+    public SiteCatalogApiController(AppDbContext dbContext, IServiceScopeFactory scopeFactory, AdminCacheInvalidationService cacheInvalidationService)
     {
         _dbContext = dbContext;
         _scopeFactory = scopeFactory;
-        _metadataCache = metadataCache;
+        _cacheInvalidationService = cacheInvalidationService;
     }
 
     /// <summary>
@@ -359,8 +359,8 @@ public sealed class SiteCatalogApiController : ControllerBase
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateModelMetadata();
-        _metadataCache.InvalidateRouteTargets();
+        _cacheInvalidationService.InvalidateModelMetadata();
+        _cacheInvalidationService.InvalidateRouteTargets();
         return Ok(new { importedCount });
     }
 

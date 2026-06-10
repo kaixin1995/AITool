@@ -77,17 +77,17 @@ public sealed class AccessKeysApiController : ControllerBase
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidationService;
 
     /// <summary>
     /// 创建访问密钥管理控制器。
     /// </summary>
-    public AccessKeysApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public AccessKeysApiController(AppDbContext dbContext, AdminCacheInvalidationService cacheInvalidationService)
     {
         _dbContext = dbContext;
-        _metadataCache = metadataCache;
+        _cacheInvalidationService = cacheInvalidationService;
     }
 
     /// <summary>
@@ -138,7 +138,7 @@ public sealed class AccessKeysApiController : ControllerBase
         };
         _dbContext.ProxyAccessKeys.Add(key);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateAccessKeys();
+        _cacheInvalidationService.InvalidateAccessKeys();
 
         return Ok(new CreateAccessKeyResult
         {
@@ -160,7 +160,7 @@ public sealed class AccessKeysApiController : ControllerBase
 
         key.IsEnabled = !key.IsEnabled;
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateAccessKeys();
+        _cacheInvalidationService.InvalidateAccessKeys();
 
         return Ok(new { keyId, isEnabled = key.IsEnabled });
     }
@@ -176,7 +176,7 @@ public sealed class AccessKeysApiController : ControllerBase
 
         _dbContext.ProxyAccessKeys.Remove(key);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateAccessKeys();
+        _cacheInvalidationService.InvalidateAccessKeys();
 
         return Ok(new { keyId });
     }

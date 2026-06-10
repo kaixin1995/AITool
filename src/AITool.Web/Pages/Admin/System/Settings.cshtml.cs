@@ -17,9 +17,9 @@ public class SettingsModel : PageModel
     /// </summary>
     private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidationService;
     /// <summary>
     /// 熔断状态存储。
     /// </summary>
@@ -34,12 +34,12 @@ public class SettingsModel : PageModel
     /// </summary>
     public SettingsModel(
         ISystemRuntimeSettingsService systemRuntimeSettingsService,
-        ProxyRequestMetadataCache metadataCache,
+        AdminCacheInvalidationService cacheInvalidationService,
         RouteCircuitStateStore circuitStore,
         AnalyticsBackgroundQueryExecutor analyticsQueryExecutor)
     {
         _systemRuntimeSettingsService = systemRuntimeSettingsService;
-        _metadataCache = metadataCache;
+        _cacheInvalidationService = cacheInvalidationService;
         _circuitStore = circuitStore;
         _analyticsQueryExecutor = analyticsQueryExecutor;
     }
@@ -86,7 +86,7 @@ public class SettingsModel : PageModel
         }
 
         var settings = await _systemRuntimeSettingsService.UpdateAsync(Input, cancellationToken);
-        _metadataCache.InvalidateRuntimeSettings();
+        _cacheInvalidationService.InvalidateRuntimeSettings();
         _circuitStore.UpdateOptions(
             TimeSpan.FromMinutes(settings.CircuitBreakerRecoveryMinutes),
             settings.CircuitBreakerFailureThreshold);
@@ -105,7 +105,7 @@ public class SettingsModel : PageModel
             EndTime = clearAll ? null : ClearUsageLogs.EndTime
         }, cancellationToken);
 
-        _metadataCache.InvalidateRuntimeSettings();
+        _cacheInvalidationService.InvalidateRuntimeSettings();
         _analyticsQueryExecutor.InvalidateAll();
         return RedirectToPage(new { statusMessage = clearAll ? $"已清空全部 UsageLogs，共 {deletedCount} 条" : $"已清空 {deletedCount} 条 UsageLogs" });
     }

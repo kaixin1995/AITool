@@ -37,6 +37,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
         services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
         services.AddSingleton<ProxyRequestMetadataCache>();
+        services.AddSingleton<AdminCacheInvalidationService>();
         services.AddSingleton<RouteCircuitStateStore>();
         services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
         _serviceProvider = services.BuildServiceProvider();
@@ -52,6 +53,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        var cacheInvalidationService = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
         var circuitStore = scope.ServiceProvider.GetRequiredService<RouteCircuitStateStore>();
         var analyticsQueryExecutor = scope.ServiceProvider.GetRequiredService<AnalyticsBackgroundQueryExecutor>();
 
@@ -79,7 +81,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         before.ProxyRetryCount.Should().Be(1);
         before.DeveloperFeaturesEnabled.Should().BeFalse();
 
-        var page = new SettingsModel(settingsService, cache, circuitStore, analyticsQueryExecutor)
+        var page = new SettingsModel(settingsService, cacheInvalidationService, circuitStore, analyticsQueryExecutor)
         {
             Input = new UpdateSystemRuntimeSettingsRequest
             {

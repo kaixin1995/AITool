@@ -319,8 +319,13 @@ public sealed class ChatApiController : ControllerBase
     private readonly IUsageLogService _usageLogService;
     /// <summary>
     /// 代理元数据缓存。
+    /// 这里继续承载运行时选路、已启用模型和运行时设置读取。
     /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
+    /// <summary>
+    /// 后台查询元数据服务。
+    /// </summary>
+    private readonly AdminQueryMetadataService _adminQueryMetadataService;
     /// <summary>
     /// HttpClient 工厂。
     /// </summary>
@@ -347,6 +352,7 @@ public sealed class ChatApiController : ControllerBase
         RouteCircuitStateStore circuitStore,
         IUsageLogService usageLogService,
         ProxyRequestMetadataCache metadataCache,
+        AdminQueryMetadataService adminQueryMetadataService,
         IHttpClientFactory httpClientFactory,
         ModelConcurrencyLimiter concurrencyLimiter,
         ConversationExtractionService conversationExtractionService,
@@ -357,6 +363,7 @@ public sealed class ChatApiController : ControllerBase
         _circuitStore = circuitStore;
         _usageLogService = usageLogService;
         _metadataCache = metadataCache;
+        _adminQueryMetadataService = adminQueryMetadataService;
         _httpClientFactory = httpClientFactory;
         _concurrencyLimiter = concurrencyLimiter;
         _conversationExtractionService = conversationExtractionService;
@@ -369,7 +376,7 @@ public sealed class ChatApiController : ControllerBase
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
-        var models = await _metadataCache.GetChatModelsAsync(cancellationToken);
+        var models = await _adminQueryMetadataService.GetChatModelsAsync(cancellationToken);
         return Ok(models);
     }
 
@@ -379,7 +386,7 @@ public sealed class ChatApiController : ControllerBase
     [HttpGet("targets")]
     public async Task<IActionResult> GetTargets(CancellationToken cancellationToken)
     {
-        var targets = await _metadataCache.GetChatTargetsAsync(cancellationToken);
+        var targets = await _adminQueryMetadataService.GetChatTargetsAsync(cancellationToken);
         return Ok(targets.Select(x => new ChatModelTargetItem
         {
             MappingId = x.MappingId,
@@ -396,7 +403,7 @@ public sealed class ChatApiController : ControllerBase
     [HttpGet("models/{modelId:guid}/targets")]
     public async Task<IActionResult> GetModelTargets(Guid modelId, CancellationToken cancellationToken)
     {
-        var targets = await _metadataCache.GetChatTargetsAsync(modelId, cancellationToken);
+        var targets = await _adminQueryMetadataService.GetChatTargetsAsync(modelId, cancellationToken);
         return Ok(targets.Select(x => new ChatModelTargetItem
         {
             MappingId = x.MappingId,
@@ -764,7 +771,7 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private async Task<CachedFallbackTarget?> ResolveSelectedTargetAsync(Guid modelId, Guid mappingId, CancellationToken cancellationToken)
     {
-        var targets = await _metadataCache.GetChatTargetsAsync(modelId, cancellationToken);
+        var targets = await _adminQueryMetadataService.GetChatTargetsAsync(modelId, cancellationToken);
         var selectedTarget = targets.FirstOrDefault(x => x.MappingId == mappingId);
         if (selectedTarget is null)
         {
