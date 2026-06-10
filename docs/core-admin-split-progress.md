@@ -858,6 +858,52 @@ public ProxyRequestMetadataCache(IMemoryCache memoryCache, IServiceScopeFactory 
 
 这部分已经完成。Core 物理独立宿主已创建，代理运行时已完全迁入 `AITool.Core`，配置快照驱动已实现。
 
+---
+
+### 已完成：Core / Admin 联合部署基础配置
+
+本轮完成了 Core 和 Admin 双宿主联合部署所需的基础配置文件和启动时自动同步机制。
+
+#### 已创建/修改文件
+
+配置文件：
+- `src/AITool.Core/appsettings.json` — Core 宿主独立配置，包含 `CoreServer:Port`（5029）、`ProxyForwarding`、日志级别等
+- `src/AITool.Admin/appsettings.json` — Admin 宿主独立配置，包含 `AdminServer:Port`（5030）、`CoreServer:BaseUrl`（`http://127.0.0.1:5029/`）、认证哈希、日志级别等
+
+开发配置：
+- `src/AITool.Core/Properties/launchSettings.json` — Core 开发环境配置，端口 5029
+- `src/AITool.Admin/Properties/launchSettings.json` — 修正 Admin 开发环境端口从 48036/48037 统一到 5030
+
+启动同步服务：
+- `src/AITool.Admin/Services/CoreConfigSyncHostedService.cs` — Admin 启动后自动将数据库配置构建为快照并同步到 Core 宿主的后台服务
+  - 启动后等待 2 秒（给 Core 启动时间）
+  - 从数据库通过 `ISystemRuntimeSettingsService.BuildCoreRuntimeConfigSnapshotAsync` 构建完整快照
+  - 通过 `CoreAdminClient.FullSyncAsync` 下发到 Core
+  - 如果 Core 尚未就绪，按指数退避重试（最多 5 次，基础间隔 3 秒）
+  - 在后台线程执行，不阻塞 Admin 宿主启动
+- `src/AITool.Admin/Program.cs` — 注册 `CoreConfigSyncHostedService`
+
+#### 联合部署端口分配
+
+| 宿主 | 默认端口 | 配置键 | 说明 |
+|------|---------|--------|------|
+| AITool.Core | 5029 | `CoreServer:Port` | 代理主端口，面向 API 客户端 |
+| AITool.Admin | 5030 | `AdminServer:Port` | 管理页面端口，面向管理员 |
+| AITool.Web（单体） | 5029 | `Server:Port` | 兼容模式，同时跑代理 + 管理页面 |
+
+#### Admin → Core 通信配置
+
+- Admin 通过 `CoreServer:BaseUrl` 配置项指定 Core 的地址，默认 `http://127.0.0.1:5029/`
+- Admin 通过 `CoreAdminClient`（HttpClient）与 Core 通信
+- 通信能力：握手、全量同步、事件确认、事件回放
+
+#### 联合部署配置状态
+
+- **Core 和 Admin 均已有独立 appsettings.json**
+- **Core 和 Admin 均已有 launchSettings.json 开发配置**
+- **Admin 启动时自动同步配置到 Core 的机制已实现**
+- **全部 302 个测试通过（101 + 127 + 46 + 28），零回归**
+
 #### 核心宿主当前状态
 
 - 协议与事件模型已经具备迁出条件
@@ -973,31 +1019,31 @@ public ProxyRequestMetadataCache(IMemoryCache memoryCache, IServiceScopeFactory 
 ### 本轮完成了什么
 
 - 完成了 `ProxyRequestMetadataCache` 全部 6 个 DB 依赖运行时方法的双路径（快照 vs DB）改造
-  - `GetRuntimeSettingsAsync`、`GetAccessKeysAsync`、`GetRouteTargetsAsync`、`GetEnabledModelsAsync`、`GetFallbackMappingsAsync`（主文件）
-  - `GetModelConcurrencyLimitsAsync`（AdminQueries partial class）
-  - 每个方法在 `_configProvider` 非 null 时从快照同步读取，null 时保持原有 DB 查询不变
 - 更新 Core `Program.cs` DI 注册，`ProxyRequestMetadataCache` 使用工厂模式注入 `ICoreRuntimeConfigProvider`
-- 更新 `CoreConfigSyncController` 在 `SetCurrent(snapshot)` 后立即失效全部运行时缓存，确保新快照立即生效
-- 新增 5 个代理端点集成测试（`CoreProxyEndpointTests.cs`），验证密钥校验、模型列表查询、缓存失效重建等关键代理路径
-- 修复 Core `Program.cs` 缺少 `using Microsoft.Extensions.Caching.Memory` 导致的 CS0246 编译错误
-- 全部 155 个测试通过（28 Core + 127 Web/Admin），零回归
+- 更新 `CoreConfigSyncController` 在 `SetCurrent(snapshot)` 后立即失效全部运行时缓存
+- 新增 5 个代理端点集成测试（`CoreProxyEndpointTests.cs`）
+- 为 Core 和 Admin 创建独立 `appsettings.json`，明确端口分配（Core 5029，Admin 5030）
+- 为 Core 创建 `launchSettings.json` 开发配置，修正 Admin 的 `launchSettings.json` 端口
+- 新增 `CoreConfigSyncHostedService`：Admin 启动后自动从数据库构建配置快照并同步到 Core
+- 全部 302 个测试通过（101 ApplicationTests + 127 IntegrationTests + 46 Admin.IntegrationTests + 28 Core.IntegrationTests），零回归
 
 ### 当前还剩什么
 
 - AITool.Web 中仍有 3 个 Admin 页面：Developer/Invocations/Index、System/Settings（不可迁移，代理运行时依赖）、Chat/Index（Admin 已有，Web 保留用于 JS API）
 - AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（不可迁移，深度代理运行时依赖）
-- Core 与 Admin 双宿主联合部署方案尚未实施
+- Docker / 容器化部署配置尚未创建
 - patch 增量同步、实时事件流与 sequence/ack 持久化增强仍未实施
+- CORS 配置尚未添加（双宿主跨域场景）
 
 ### 当前阻塞点是什么
 
-- Core 和 Admin 的联合运行（Core 跑代理、Admin 跑管理页面）需要部署配置与集成测试
 - AITool.Web 中仍有少量 Admin 页面因代理运行时依赖而无法迁移
+- 双宿主联合部署需要 Docker 或反向代理配置来完善生产环境部署
 
 ### 下一步准备做什么
 
-- 推进 Core / Admin 联合部署配置（launchSettings、Docker 等）
 - 探索代理端点更完整的集成测试（实际代理转发、并发控制、熔断等）
+- 考虑添加 Dockerfile / docker-compose 双宿主编排
 - 每完成一个小阶段后继续同步更新本文档
 
 ---
@@ -1006,4 +1052,4 @@ public ProxyRequestMetadataCache(IMemoryCache memoryCache, IServiceScopeFactory 
 
 当前项目状态可以概括为：
 
-> **协议与运行时基础已经打好，双宿主也开始真正落地；Admin 宿主已迁移 10 个控制器和 11 组页面（UsageLogs + Conversations + Chat + 第三批 8 组），46 个集成测试全部通过；集成测试缓存失效修复完成，297 个测试全部通过；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；ProxyRequestMetadataCache 已完成全部 6 个 DB 依赖方法的双路径改造（快照 vs DB），Core 宿主可完全从配置快照驱动代理运行时，零数据库依赖；28 个 Core 集成测试全部通过（3 冒烟 + 20 端点测试 + 5 代理端点测试），127 个 Web/Admin 测试全部通过，总计 155 个测试零回归；页面迁移已触及天花板，剩余 2 个页面（Developer/Invocations、System/Settings）因代理运行时依赖不可迁移；下一阶段需推进 Core/Admin 双宿主联合部署配置与更完整的代理链路集成测试。**
+> **协议与运行时基础已经打好，双宿主也开始真正落地；Admin 宿主已迁移 10 个控制器和 11 组页面（UsageLogs + Conversations + Chat + 第三批 8 组），46 个集成测试全部通过；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；ProxyRequestMetadataCache 已完成全部 6 个 DB 依赖方法的双路径改造（快照 vs DB），Core 宿主可完全从配置快照驱动代理运行时，零数据库依赖；Core / Admin 联合部署基础配置已完成——独立 appsettings.json（Core 5029、Admin 5030）、独立 launchSettings.json、Admin 启动时自动同步配置到 Core 的 HostedService；302 个测试全部通过（101 ApplicationTests + 127 IntegrationTests + 46 Admin.IntegrationTests + 28 Core.IntegrationTests），零回归；页面迁移已触及天花板，剩余 2 个页面因代理运行时依赖不可迁移；下一阶段需推进更完整的代理链路集成测试、Docker/容器化部署配置与 CORS 跨域支持。**

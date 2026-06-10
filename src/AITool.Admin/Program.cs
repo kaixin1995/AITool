@@ -118,6 +118,10 @@ builder.Services.AddHttpClient<CoreAdminClient>(client =>
     client.Timeout = TimeSpan.FromSeconds(30);
 });
 
+// Admin 启动后自动将数据库配置同步到 Core 宿主。
+// 如果 Core 尚未就绪，会按指数退避重试，最多 5 次。
+builder.Services.AddHostedService<CoreConfigSyncHostedService>();
+
 var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
