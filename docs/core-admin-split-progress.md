@@ -911,6 +911,36 @@ public ProxyRequestMetadataCache(IMemoryCache memoryCache, IServiceScopeFactory 
 
 ---
 
+### 已完成：Core 代理转发端到端集成测试
+
+本轮新增 Core 代理转发链路的端到端集成测试，通过 `FakeProxyForwardService` 替换真实转发实现，在不依赖外部上游站点的情况下验证完整的代理链路（鉴权 → 路由解析 → 并发控制 → 转发调用 → 响应回写）。
+
+#### 新增测试文件
+
+- `tests/AITool.Core.IntegrationTests/CoreProxyForwardingTests.cs` — 8 个代理转发集成测试：
+  - `Chat_completions_non_streaming_returns_success_with_valid_key` — 非流式 Chat Completions 完整链路成功
+  - `Chat_completions_non_streaming_passes_correct_upstream_parameters` — 非流式转发参数正确传递
+  - `Chat_completions_streaming_returns_sse_events` — 流式 Chat Completions SSE 事件转发
+  - `Chat_completions_with_wrong_key_returns_unauthorized` — 无效密钥返回 401
+  - `Chat_completions_without_auth_returns_unauthorized` — 无认证头返回 401
+  - `Chat_completions_with_unknown_model_returns_not_found` — 未知模型返回 404
+  - `Chat_completions_fallback_to_second_route_when_first_fails` — 多路由回退机制验证
+  - `Embeddings_non_streaming_returns_success` — Embeddings 非流式转发
+
+#### 测试设计要点
+
+- **FakeProxyForwardService**：实现 `IProxyForwardService`，记录所有转发调用参数，支持自定义返回结果
+- **CoreProxyForwardingWebApplicationFactory**：扩展 `CoreHostWebApplicationFactory`，在 DI 中替换 `IProxyForwardService`
+- **配置通过 full-sync API 下发**：每个测试先通过 `POST /api/core/config/full-sync` 推送快照，无需数据库
+- **支持路由回退场景**：通过双路由配置快照 + 自定义 `ForwardResultFactory` 验证首条路由失败后自动回退
+
+#### 测试状态
+
+- **8 个新增测试全部通过**
+- **全部 36 个 Core 集成测试通过（原 28 + 新 8），零回归**
+
+---
+
 ### 未完成：patch 增量更新协议
 
 当前配置同步只有：
