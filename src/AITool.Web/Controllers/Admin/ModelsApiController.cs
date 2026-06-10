@@ -21,9 +21,9 @@ public sealed class ModelsApiController : ControllerBase
     /// </summary>
     private readonly AdminCacheInvalidationService _cacheInvalidationService;
     /// <summary>
-    /// 模型并发限制器。
+    /// 后台并发控制服务。
     /// </summary>
-    private readonly ModelConcurrencyLimiter _concurrencyLimiter;
+    private readonly AdminConcurrencyControlService _concurrencyControl;
 
     /// <summary>
     /// 创建模型管理控制器。
@@ -31,11 +31,11 @@ public sealed class ModelsApiController : ControllerBase
     public ModelsApiController(
         AppDbContext dbContext,
         AdminCacheInvalidationService cacheInvalidationService,
-        ModelConcurrencyLimiter concurrencyLimiter)
+        AdminConcurrencyControlService concurrencyControl)
     {
         _dbContext = dbContext;
         _cacheInvalidationService = cacheInvalidationService;
-        _concurrencyLimiter = concurrencyLimiter;
+        _concurrencyControl = concurrencyControl;
     }
 
     /// <summary>
@@ -85,7 +85,7 @@ public sealed class ModelsApiController : ControllerBase
 
         // 配置保存后立即失效缓存，并同步更新运行中的限制器状态，仅影响后续新请求。
         _cacheInvalidationService.InvalidateRouteTargets();
-        _concurrencyLimiter.UpdateLimit(mapping.SiteId, mapping.RemoteModelName, mapping.MaxConcurrency);
+        _concurrencyControl.UpdateLimit(mapping.SiteId, mapping.RemoteModelName, mapping.MaxConcurrency);
 
         return Ok(new { mapping.MaxConcurrency });
     }

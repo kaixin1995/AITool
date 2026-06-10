@@ -26,4 +26,10 @@ public sealed class ModelConcurrencyQueryService
     {
         return _concurrencyLimiter.ListRecent(retention);
     }
+
+    /// <summary>
+    /// 调试页默认保留最近 6 小时内出现过的模型并发记录。
+    /// 直接透传 <c>ModelConcurrencyLimiter.RecentRetention</c>，让管理侧无需引用运行时类型即可读取该常量。
+    /// </summary>
+    public static TimeSpan RecentRetention => ModelConcurrencyLimiter.RecentRetention;
 }

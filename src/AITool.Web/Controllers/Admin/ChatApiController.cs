@@ -318,12 +318,7 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private readonly IUsageLogService _usageLogService;
     /// <summary>
-    /// 代理元数据缓存。
-    /// 这里继续承载运行时选路、已启用模型和运行时设置读取。
-    /// </summary>
-    private readonly ProxyRequestMetadataCache _metadataCache;
-    /// <summary>
-    /// 后台查询元数据服务。
+    /// 后台查询元数据服务，统一承载模型、运行时设置和路由目标的只读查询。
     /// </summary>
     private readonly AdminQueryMetadataService _adminQueryMetadataService;
     /// <summary>
@@ -351,7 +346,6 @@ public sealed class ChatApiController : ControllerBase
         IProxyForwardService forwardService,
         RouteCircuitStateStore circuitStore,
         IUsageLogService usageLogService,
-        ProxyRequestMetadataCache metadataCache,
         AdminQueryMetadataService adminQueryMetadataService,
         IHttpClientFactory httpClientFactory,
         ModelConcurrencyLimiter concurrencyLimiter,
@@ -362,7 +356,6 @@ public sealed class ChatApiController : ControllerBase
         _forwardService = forwardService;
         _circuitStore = circuitStore;
         _usageLogService = usageLogService;
-        _metadataCache = metadataCache;
         _adminQueryMetadataService = adminQueryMetadataService;
         _httpClientFactory = httpClientFactory;
         _concurrencyLimiter = concurrencyLimiter;
@@ -427,13 +420,13 @@ public sealed class ChatApiController : ControllerBase
             return BadRequest(new { message = "请选择模型" });
 
         var sw = Stopwatch.StartNew();
-        var model = await _metadataCache.GetEnabledModelAsync(request.ModelId, cancellationToken);
+        var model = await _adminQueryMetadataService.GetEnabledModelAsync(request.ModelId, cancellationToken);
 
         if (model is null)
             return Ok(new ChatSendResult { Success = false, Error = "模型不存在或已禁用", ReasoningEnabled = request.EnableReasoning });
 
-        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
-        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
+        var runtimeSettings = await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken);
+        var allRoutes = await _adminQueryMetadataService.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
@@ -571,7 +564,7 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        var model = await _metadataCache.GetEnabledModelAsync(request.ModelId, cancellationToken);
+        var model = await _adminQueryMetadataService.GetEnabledModelAsync(request.ModelId, cancellationToken);
 
         if (model is null)
         {
@@ -579,8 +572,8 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
-        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
+        var runtimeSettings = await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken);
+        var allRoutes = await _adminQueryMetadataService.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
@@ -736,7 +729,7 @@ public sealed class ChatApiController : ControllerBase
         TimeSpan concurrencyQueueTimeout,
         CancellationToken cancellationToken)
     {
-        var mapping = await _metadataCache.GetFallbackTargetAsync(request.ModelId, cancellationToken);
+        var mapping = await _adminQueryMetadataService.GetFallbackTargetAsync(request.ModelId, cancellationToken);
 
         if (mapping is null)
             return Ok(new ChatSendResult { Success = false, Error = "该模型没有可用的站点映射", ReasoningEnabled = request.EnableReasoning });
@@ -755,7 +748,7 @@ public sealed class ChatApiController : ControllerBase
         TimeSpan concurrencyQueueTimeout,
         CancellationToken cancellationToken)
     {
-        var mapping = await _metadataCache.GetFallbackTargetAsync(request.ModelId, cancellationToken);
+        var mapping = await _adminQueryMetadataService.GetFallbackTargetAsync(request.ModelId, cancellationToken);
 
         if (mapping is null)
         {

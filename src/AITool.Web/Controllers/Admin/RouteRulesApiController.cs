@@ -98,32 +98,31 @@ public sealed class RouteRulesApiController : ControllerBase
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理元数据缓存。
-    /// 这里继续承载路由失效与运行时刷新入口。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidation;
     /// <summary>
     /// 后台查询元数据服务。
     /// </summary>
     private readonly AdminQueryMetadataService _adminQueryMetadataService;
     /// <summary>
-    /// 模型并发限制器，用于判断路由保存时是否存在正在调用的模型实例。
+    /// 后台并发控制服务，用于判断路由保存时是否存在正在调用的模型实例。
     /// </summary>
-    private readonly ModelConcurrencyLimiter _concurrencyLimiter;
+    private readonly AdminConcurrencyControlService _concurrencyControl;
 
     /// <summary>
     /// 创建路由规则控制器。
     /// </summary>
     public RouteRulesApiController(
         AppDbContext dbContext,
-        ProxyRequestMetadataCache metadataCache,
+        AdminCacheInvalidationService cacheInvalidation,
         AdminQueryMetadataService adminQueryMetadataService,
-        ModelConcurrencyLimiter concurrencyLimiter)
+        AdminConcurrencyControlService concurrencyControl)
     {
         _dbContext = dbContext;
-        _metadataCache = metadataCache;
+        _cacheInvalidation = cacheInvalidation;
         _adminQueryMetadataService = adminQueryMetadataService;
-        _concurrencyLimiter = concurrencyLimiter;
+        _concurrencyControl = concurrencyControl;
     }
 
     /// <summary>
@@ -160,7 +159,7 @@ public sealed class RouteRulesApiController : ControllerBase
             EntryName = entryName
         });
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateRouteTargets();
+        _cacheInvalidation.InvalidateRouteTargets();
 
         return Ok(new { message = "创建成功" });
     }
@@ -197,7 +196,7 @@ public sealed class RouteRulesApiController : ControllerBase
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateRouteTargets();
+        _cacheInvalidation.InvalidateRouteTargets();
 
         return Ok(new { message = "删除成功" });
     }
@@ -320,11 +319,11 @@ public sealed class RouteRulesApiController : ControllerBase
         var affectedRouteTargets = BuildAffectedRouteTargets(existingRules, request.Rules);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateAdminRouteMetadata();
-        var routeRefreshDeferred = _concurrencyLimiter.TryDeferRuntimeRouteTargetsRefresh(entryName, affectedRouteTargets, previousRouteTargets);
+        _cacheInvalidation.InvalidateAdminRouteMetadata();
+        var routeRefreshDeferred = _concurrencyControl.TryDeferRuntimeRouteTargetsRefresh(entryName, affectedRouteTargets, previousRouteTargets);
         if (!routeRefreshDeferred)
         {
-            _metadataCache.InvalidateRuntimeRouteTargets();
+            _cacheInvalidation.InvalidateRuntimeRouteTargets();
         }
 
         return Ok(new { message = routeRefreshDeferred ? "保存成功，调用中的模型会在当前请求结束后生效" : "保存成功" });
@@ -458,7 +457,7 @@ public sealed class RouteRulesApiController : ControllerBase
 
         rule.IsEnabled = !rule.IsEnabled;
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateRouteTargets();
+        _cacheInvalidation.InvalidateRouteTargets();
 
         return Ok(new { message = "状态已切换", isEnabled = rule.IsEnabled });
     }
@@ -475,7 +474,7 @@ public sealed class RouteRulesApiController : ControllerBase
 
         _dbContext.ProxyRouteRules.Remove(rule);
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache.InvalidateRouteTargets();
+        _cacheInvalidation.InvalidateRouteTargets();
 
         return Ok(new { message = "规则已删除" });
     }

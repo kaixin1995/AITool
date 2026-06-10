@@ -114,4 +114,36 @@ public sealed class AdminQueryMetadataService
     {
         return _metadataCache.GetDeveloperDebugModelsAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// 获取指定标识的已启用模型，未找到或已禁用时返回 null。
+    /// </summary>
+    public Task<CachedEnabledModel?> GetEnabledModelAsync(Guid modelId, CancellationToken cancellationToken)
+    {
+        return _metadataCache.GetEnabledModelAsync(modelId, cancellationToken);
+    }
+
+    /// <summary>
+    /// 获取当前运行时设置快照。
+    /// </summary>
+    public Task<CachedProxyRuntimeSettings> GetRuntimeSettingsAsync(CancellationToken cancellationToken)
+    {
+        return _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 获取指定模型名称的路由目标列表，用于调试对话选路。
+    /// </summary>
+    public Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsForModelAsync(string modelName, CancellationToken cancellationToken)
+    {
+        return _metadataCache.GetRouteTargetsForModelAsync(modelName, cancellationToken);
+    }
+
+    /// <summary>
+    /// 获取指定模型的兜底站点映射，用于无路由规则时的回退。
+    /// </summary>
+    public Task<CachedFallbackTarget?> GetFallbackTargetAsync(Guid modelId, CancellationToken cancellationToken)
+    {
+        return _metadataCache.GetFallbackTargetAsync(modelId, cancellationToken);
+    }
 }

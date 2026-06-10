@@ -67,26 +67,27 @@ public class EditModel : PageModel
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache? _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidation;
 
     /// <summary>
-    /// 模型编辑页面模型。
+    /// 包含缓存失效服务的构造函数。
     /// </summary>
     [ActivatorUtilitiesConstructor]
-    public EditModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public EditModel(AppDbContext dbContext, AdminCacheInvalidationService cacheInvalidation)
     {
         _dbContext = dbContext;
-        _metadataCache = metadataCache;
+        _cacheInvalidation = cacheInvalidation;
     }
 
     /// <summary>
-    /// 模型编辑页面模型。
+    /// 不含缓存失效服务的构造函数。
     /// </summary>
     public EditModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
+        _cacheInvalidation = null!;
     }
 
     /// <summary>
@@ -172,8 +173,8 @@ public class EditModel : PageModel
             model.DisplayName = DisplayName;            model.IsEnabled = IsEnabled;
 
             await _dbContext.SaveChangesAsync(cancellationToken);
-            _metadataCache?.InvalidateModelMetadata();
-            _metadataCache?.InvalidateRouteTargets();
+            _cacheInvalidation.InvalidateModelMetadata();
+            _cacheInvalidation.InvalidateRouteTargets();
             StatusMessage = "模型已更新";
             StatusSuccess = true;
         }
@@ -252,8 +253,8 @@ public class EditModel : PageModel
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);
-            _metadataCache?.InvalidateModelMetadata();
-            _metadataCache?.InvalidateRouteTargets();
+            _cacheInvalidation.InvalidateModelMetadata();
+            _cacheInvalidation.InvalidateRouteTargets();
             StatusMessage = "关联站点已添加";
             StatusSuccess = true;
             NewMapping = new ManualSiteMappingInput();
@@ -306,8 +307,8 @@ public class EditModel : PageModel
             await _dbContext.SaveChangesAsync(cancellationToken);
             await CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
 
-            _metadataCache?.InvalidateModelMetadata();
-            _metadataCache?.InvalidateRouteTargets();
+            _cacheInvalidation.InvalidateModelMetadata();
+            _cacheInvalidation.InvalidateRouteTargets();
             StatusMessage = $"站点关联已删除，并清理了 {affectedRules.Count} 条相关路由规则";
             StatusSuccess = true;
         }

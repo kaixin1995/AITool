@@ -221,7 +221,7 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        var snapshots = _modelConcurrencyQueryService.ListRecent(ModelConcurrencyLimiter.RecentRetention);
+        var snapshots = _modelConcurrencyQueryService.ListRecent(ModelConcurrencyQueryService.RecentRetention);
         if (snapshots.Count == 0)
         {
             return new JsonResult(new DeveloperModelConcurrencyResponse

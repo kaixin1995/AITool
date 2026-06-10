@@ -38,6 +38,7 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         services.AddMemoryCache();
         services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
         services.AddSingleton<ProxyRequestMetadataCache>();
+        services.AddSingleton<AdminCacheInvalidationService>();
         _serviceProvider = services.BuildServiceProvider();
         _memoryCache = _serviceProvider.GetRequiredService<IMemoryCache>();
     }
@@ -86,7 +87,9 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         cachedBeforeEdit.Should().NotBeNull();
         cachedBeforeEdit!.ModelName.Should().Be("old-model");
 
-        var page = new EditModel(db, cache)
+        var cacheInvalidation = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
+
+        var page = new EditModel(db, cacheInvalidation)
         {
             ModelName = "new-model",
             DisplayName = "New Model",

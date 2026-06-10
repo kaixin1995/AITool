@@ -19,26 +19,27 @@ public class IndexModel : PageModel
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache? _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidation;
 
     /// <summary>
-    /// 站点管理页面模型。
+    /// 包含缓存失效服务的构造函数。
     /// </summary>
     [ActivatorUtilitiesConstructor]
-    public IndexModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public IndexModel(AppDbContext dbContext, AdminCacheInvalidationService cacheInvalidation)
     {
         _dbContext = dbContext;
-        _metadataCache = metadataCache;
+        _cacheInvalidation = cacheInvalidation;
     }
 
     /// <summary>
-    /// 站点管理页面模型。
+    /// 不含缓存失效服务的构造函数。
     /// </summary>
     public IndexModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
+        _cacheInvalidation = null!;
     }
 
     /// <summary>
@@ -82,7 +83,7 @@ public class IndexModel : PageModel
             if (site is null) return RedirectToPage();
             site.IsEnabled = !site.IsEnabled;
             await _dbContext.SaveChangesAsync(cancellationToken);
-            _metadataCache?.InvalidateRouteTargets();
+            _cacheInvalidation.InvalidateRouteTargets();
             StatusMessage = "站点状态已切换";
             StatusSuccess = true;
         }
@@ -116,7 +117,7 @@ public class IndexModel : PageModel
             if (sites.Count == 0) return RedirectToPage();
 
             var deletedCount = await RemoveSitesAsync(sites.Select(x => x.Id), cancellationToken);
-            _metadataCache?.InvalidateRouteTargets();
+            _cacheInvalidation.InvalidateRouteTargets();
             StatusMessage = $"已批量删除 {deletedCount} 个站点";
             StatusSuccess = true;
         }
@@ -141,7 +142,7 @@ public class IndexModel : PageModel
             if (site is null) return RedirectToPage();
 
             await RemoveSitesAsync([siteId], cancellationToken);
-            _metadataCache?.InvalidateRouteTargets();
+            _cacheInvalidation.InvalidateRouteTargets();
             StatusMessage = "站点已删除";
             StatusSuccess = true;
         }
@@ -250,26 +251,27 @@ public class CreateModel : PageModel
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache? _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidation;
 
     /// <summary>
-    /// 站点新建页面模型。
+    /// 包含缓存失效服务的构造函数。
     /// </summary>
     [ActivatorUtilitiesConstructor]
-    public CreateModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public CreateModel(AppDbContext dbContext, AdminCacheInvalidationService cacheInvalidation)
     {
         _dbContext = dbContext;
-        _metadataCache = metadataCache;
+        _cacheInvalidation = cacheInvalidation;
     }
 
     /// <summary>
-    /// 站点新建页面模型。
+    /// 不含缓存失效服务的构造函数。
     /// </summary>
     public CreateModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
+        _cacheInvalidation = null!;
     }
 
     /// <summary>
@@ -304,7 +306,7 @@ public class CreateModel : PageModel
         });
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache?.InvalidateRouteTargets();
+        _cacheInvalidation.InvalidateRouteTargets();
         return RedirectToPage("./Index");
     }
 

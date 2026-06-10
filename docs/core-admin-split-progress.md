@@ -317,6 +317,40 @@
 - 它们不再适合继续停留在 `AITool.Web.Services` 里作为 Web 专属完整实现
 - 这一步也为后续 `AITool.Admin` 真正接管 Models / Analytics / System 相关页面能力提供了更稳定的共享基础
 
+### 已完成：Admin 门面服务扩展——后台页面/控制器对运行时对象的直接依赖剥离
+
+本轮完成了后台页面和控制器对运行时对象（`ProxyRequestMetadataCache`、`ModelConcurrencyLimiter`）的直接依赖剥离，通过已有门面服务（`AdminCacheInvalidationService`、`AdminConcurrencyControlService`、`ModelConcurrencyQueryService`）替代直接引用。
+
+#### 已完成文件
+
+- `src/AITool.Web/Pages/Admin/Models/Index.cshtml.cs` — 两个 PageModel（`IndexModel`、`CreateModelModel`）的 `ProxyRequestMetadataCache?` 替换为 `AdminCacheInvalidationService`，6 处 `_metadataCache?.InvalidateXxx()` 改为 `_cacheInvalidation.InvalidateXxx()`
+- `src/AITool.Web/Pages/Admin/Models/Edit.cshtml.cs` — `EditModel` 的 `ProxyRequestMetadataCache?` 替换为 `AdminCacheInvalidationService`，3 对失效调用替换
+- `src/AITool.Web/Pages/Admin/Sites/Index.cshtml.cs` — 两个 PageModel（`IndexModel`、`CreateModel`）的 `ProxyRequestMetadataCache?` 替换为 `AdminCacheInvalidationService`，4 处失效调用替换
+- `src/AITool.Web/Pages/Admin/Sites/Edit.cshtml.cs` — `EditModel` 的 `ProxyRequestMetadataCache?` 替换为 `AdminCacheInvalidationService`，1 处失效调用替换
+- `src/AITool.Web/Pages/Admin/Sites/Import.cshtml.cs` — `ImportModel` 的 `ProxyRequestMetadataCache?` 替换为 `AdminCacheInvalidationService`，1 处失效调用替换
+- `src/AITool.Web/Controllers/Admin/RouteRulesApiController.cs` — 混合依赖剥离：`ProxyRequestMetadataCache` → `AdminCacheInvalidationService`，`ModelConcurrencyLimiter` → `AdminConcurrencyControlService`，6 处失效调用 + 1 处并发控制调用替换
+- `src/AITool.Web/Controllers/Admin/ModelsApiController.cs` — `ModelConcurrencyLimiter` → `AdminConcurrencyControlService`，1 处 `UpdateLimit` 调用替换
+- `src/AITool.Web/Pages/Admin/Developer/Invocations/Index.cshtml.cs` — `ModelConcurrencyLimiter.RecentRetention` → `ModelConcurrencyQueryService.RecentRetention`，该文件不再引用 `ModelConcurrencyLimiter`
+- `tests/AITool.IntegrationTests/Models/ModelEditCacheTests.cs` — 测试适配：构造函数改用 `AdminCacheInvalidationService`，保留 `ProxyRequestMetadataCache` 用于只读断言
+- `src/AITool.Web/Controllers/Admin/ChatApiController.cs` — `ProxyRequestMetadataCache` 直接依赖剥离，改为通过 `AdminQueryMetadataService` 门面服务路由只读查询（`GetEnabledModelAsync`、`GetRuntimeSettingsAsync`、`GetRouteTargetsForModelAsync`、`GetFallbackTargetAsync`），`ModelConcurrencyLimiter.AcquireAsync` 保留为直接依赖（属于代理转发运行时链路，不属于管理操作）
+- `src/AITool.Web/Services/AdminQueryMetadataService.cs` — 新增 4 个只读查询方法支撑 ChatApiController 剥离需求
+
+#### 本轮替换模式
+
+所有页面/控制器均采用一致替换模式：
+
+- `ProxyRequestMetadataCache? _metadataCache` + `[ActivatorUtilitiesConstructor]` → `AdminCacheInvalidationService _cacheInvalidation`（非空），fallback 构造函数使用 `= null!`
+- `_metadataCache?.InvalidateXxx()` → `_cacheInvalidation.InvalidateXxx()`（去掉 `?.`，因为门面保证非空）
+- `ModelConcurrencyLimiter _concurrencyLimiter` → `AdminConcurrencyControlService _concurrencyControl`
+- `ModelConcurrencyLimiter.RecentRetention` → `ModelConcurrencyQueryService.RecentRetention`
+
+#### 门面服务扩展状态
+
+- **已可工作**
+- **全部测试通过**
+
+---
+
 ### 已完成：当前主线完整验证
 
 在持续推进期间，以下一直保持通过：
@@ -329,12 +363,11 @@
 
 最新一轮完整验证结果：
 
-- ApplicationTests：`99/99` 通过
+- ApplicationTests：`101/101` 通过
 - IntegrationTests：`175/175` 通过
-- AITool.Web：构建成功，`0 warning / 0 error`
+- AITool.Web：构建成功，`0 error`（34 warnings 均为既有 nullable 警告）
 - AITool.Admin：单独构建成功
-- AITool.Admin.IntegrationTests：`3/3` 通过
-- AITool.slnx：整体构建成功，`0 error`
+- AITool.Admin.IntegrationTests：`5/5` 通过
 
 这说明当前主宿主与核心协议链路仍然稳定，没有被双宿主改造破坏，同时独立 Admin 宿主已经不只是能启动，而且开始承载真实页面与只读接口并通过验证。
 
@@ -389,7 +422,10 @@
 - `ProxyRequestMetadataCache` 当前已经完成第五轮结构收口：除了职责显式分区、Admin 查询 partial 拆分、查询结果模型抽离外，后台查询读取已开始通过 `AdminQueryMetadataService` 门面服务对外暴露，Chat / RouteRules / Developer 三处调用方已经不再直接读取运行时缓存对象上的这批查询方法，并且 `Developer Invocations` 页面已清掉多余的直接缓存字段依赖；后续仍需继续扩大覆盖面并决定是否进一步迁入独立 Admin 宿主
 - `DeveloperInvocationTraceStore` 当前也已开始做最小边界收口：代理控制器继续直接写入运行时跟踪存储，而开发者后台页面读取已改走 `DeveloperInvocationTraceQueryService`，为后续把读写职责进一步分离提供了稳定起点
 - `ModelConcurrencyLimiter` 当前也已开始做最小边界收口：运行时获取/释放并发许可逻辑保持不变，而开发者后台页面读取最近并发快照已改走 `ModelConcurrencyQueryService`，为后续把后台查询读取与运行时控制对象继续分离提供了稳定起点
-- `ProxyRequestMetadataCache` 除了后台只读查询门面外，后台写操作的缓存失效也已开始通过 `AdminCacheInvalidationService` 收口，说明 Admin 侧对运行时缓存对象的直接依赖正在同时从“读”和“写”两个方向下降
+- `ProxyRequestMetadataCache` 除了后台只读查询门面外，后台写操作的缓存失效也已通过 `AdminCacheInvalidationService` 完成收口；当前 Models、Sites、RouteRules、SystemSettings 这四类后台写入口的全部页面和控制器已全部切换到 `AdminCacheInvalidationService`，不再直接依赖 `ProxyRequestMetadataCache`，说明 Admin 侧对运行时缓存对象的直接依赖正在同时从”读”和”写”两个方向下降
+- `ModelConcurrencyLimiter` 的后台写操作也已通过 `AdminConcurrencyControlService` 收口，覆盖 `UpdateLimit` 和 `TryDeferRuntimeRouteTargetsRefresh` 两个写操作入口；后台页面的只读常量引用也已通过 `ModelConcurrencyQueryService.RecentRetention` 收口；当前 `RouteRulesApiController` 和 `ModelsApiController` 已全部切换到门面服务，不再直接依赖 `ModelConcurrencyLimiter`
+- `DeveloperInvocationTraceStore` 后台页面已不再有任何直接引用
+- `ChatApiController` 已完成 `ProxyRequestMetadataCache` 依赖剥离：所有只读查询（`GetEnabledModel`、`GetRuntimeSettings`、`GetRouteTargetsForModel`、`GetFallbackTarget`）改走 `AdminQueryMetadataService`；`ModelConcurrencyLimiter.AcquireAsync` 保留直接依赖，因为它是代理转发运行时链路的一部分，不属于管理操作；至此 **Admin 侧所有页面和控制器均已完成对 `ProxyRequestMetadataCache` 的直接依赖剥离**，无剩余 Admin 文件直接引用该运行时缓存对象
 
 ---
 
@@ -574,32 +610,36 @@
 
 ### 本轮完成了什么
 
-- 继续补强了 `AITool.Admin` 中 `/Admin/UsageLogs` 对应的独立宿主只读接口，把查询参数、分页响应、汇总响应和请求详情响应全部显式收口成 DTO，减少页面端与接口端字段语义漂移
-- 对 `src/AITool.Admin/Controllers/Admin/UsageLogsApiController.cs` 增加了站点模型名称解析、统一的模型关键字匹配逻辑，以及与页面筛选条件一致的查询入口
-- 扩充了 `tests/AITool.Admin.IntegrationTests/AdminHostSmokeTests.cs` 的种子数据，增加了失败后重试成功、不同协议、不同来源与不同时间的日志样本，便于后续继续验证独立 Admin 宿主中的 UsageLogs 链路
-- 扩充了 `tests/AITool.Admin.IntegrationTests/UsageLogsPageSmokeTests.cs`，当前已覆盖页面访问、列表/汇总/详情联动以及来源/状态/模型关键字筛选三类核心场景
-- 继续完善了 `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml`，把模型列与详情抽屉继续向真实链路表达靠齐，开始显示请求模型、站点模型、回退/重试/最终结果标记，以及更完整的尝试级指标和错误信息
-- 本轮又进一步补强了 UsageLogs 页面骨架验证，增加对新样式结构和详情展示容器的覆盖，确保页面侧新增展示逻辑至少被独立宿主测试触达
-- 本轮继续补强了前端状态提示行为，汇总和列表在成功加载后会主动隐藏错误提示，避免独立 Admin 宿主中的 UsageLogs 页面在一次失败后长期残留旧错误状态
-- 已重新执行 `dotnet build src/AITool.Admin/AITool.Admin.csproj`，结果为 **构建成功，0 error**
-- 已重新执行 `dotnet test tests/AITool.Admin.IntegrationTests/AITool.Admin.IntegrationTests.csproj`，结果为 **5/5 通过**
+- 扩展了 Admin 门面服务覆盖面，完成后台页面和控制器对运行时对象的直接依赖剥离
+- 具体变更涉及 8 个源文件 + 1 个测试文件，替换模式统一一致
+- `AdminCacheInvalidationService` 覆盖范围扩展：Models/Index、Models/Edit、Sites/Index、Sites/Edit、Sites/Import、RouteRulesApiController 这 6 处后台写入口全部从 `ProxyRequestMetadataCache` 切换到门面服务
+- `AdminConcurrencyControlService` 覆盖范围扩展：RouteRulesApiController、ModelsApiController 这 2 处从 `ModelConcurrencyLimiter` 切换到门面服务
+- `ModelConcurrencyQueryService.RecentRetention` 替换了 Developer Invocations 页面对 `ModelConcurrencyLimiter.RecentRetention` 的直接引用
+- 修复了 `ModelEditCacheTests` 测试文件以适配构造函数签名变更
+- 已重新执行完整构建验证和测试套件：
+  - ApplicationTests：`101/101` 通过
+  - IntegrationTests：`175/175` 通过
+  - Admin.IntegrationTests：`5/5` 通过
+  - AITool.Web 构建：成功，0 error
+  - AITool.Admin 构建：成功，0 error
 
 ### 当前还剩什么
 
 - `/Admin/UsageLogs` 页面本身仍需继续向 `AITool.Web` 现有页面行为靠齐，尤其是样式细节、更多展示字段、列表行信息密度与详情抽屉内容完整度
-- 还没有开始第二批 `/Admin/*` 页面与接口迁移，当前主线仍需在 UsageLogs 进一步收口后再进入边界清理与下一批页面迁移
+- 还没有开始第二批 `/Admin/*` 页面与接口迁移，当前主线仍需在 UsageLogs 进一步收口后再进入下一批页面迁移
 - `AITool.Core` 物理独立宿主、patch 增量同步、实时事件流与 sequence/ack 持久化增强仍未进入本轮实施
+- Admin 侧所有页面和控制器对 `ProxyRequestMetadataCache` 的直接依赖剥离已全部完成；后续仍需确认是否有非 Admin 文件（如代理运行时控制器）存在合理的直接引用，这些属于预期保留，不需要通过门面收口
 
 ### 当前阻塞点是什么
 
 - 目前没有新的代码级阻塞
-- 但独立 Admin 宿主中的 `/Admin/UsageLogs` 仍属于“已打通最小可用链路，但尚未完全对齐 Web 侧行为”的阶段，因此下一轮仍应继续围绕这块收口，而不是过早跳到 `AITool.Core` 物理拆分
-- 当前构建输出仍存在来自既有 `AITool.Infrastructure` 文件的 nullability warning，本轮未改动这些历史文件，也没有影响本轮 Admin UsageLogs 相关链路验证
+- 当前构建输出仍存在来自既有 `AITool.Infrastructure` 文件的 nullability warning，本轮未改动这些历史文件
 
 ### 下一步准备做什么
 
 - 继续完善 `src/AITool.Admin/Pages/Admin/UsageLogs/Index.cshtml`，把更多 Web 侧已存在的展示细节、字段和交互逐步迁入独立 Admin 宿主
-- 在 UsageLogs 页面继续稳定后，开始进入宿主共享边界清理，优先判断 `DeveloperInvocationTraceStore`、`ModelConcurrencyLimiter`、`ProxyRequestMetadataCache` 这几类服务的归属
+- 在 UsageLogs 页面继续稳定后，开始进入第二批 `/Admin/*` 页面与接口迁移
+- 确认 `ProxyRequestMetadataCache` 的剩余直接引用均属于代理运行时控制器（预期保留），评估是否需要为这些场景也做门面收口
 - 每完成一个小阶段后继续同步更新本文档，并补充对应测试验证结果
 
 ---

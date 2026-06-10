@@ -83,32 +83,32 @@ public class IndexModel : PageModel
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache? _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidation;
     /// <summary>
     /// 模型厂商目录服务。
     /// </summary>
     private readonly ModelVendorCatalogService? _vendorCatalogService;
 
     /// <summary>
-    /// 注入元数据缓存和厂商目录服务。
+    /// 注入缓存失效服务和厂商目录服务。
     /// </summary>
     [ActivatorUtilitiesConstructor]
-    public IndexModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache, ModelVendorCatalogService vendorCatalogService)
+    public IndexModel(AppDbContext dbContext, AdminCacheInvalidationService cacheInvalidation, ModelVendorCatalogService vendorCatalogService)
     {
         _dbContext = dbContext;
-        _metadataCache = metadataCache;
+        _cacheInvalidation = cacheInvalidation;
         _vendorCatalogService = vendorCatalogService;
     }
 
     /// <summary>
-    /// 注入元数据缓存。
+    /// 注入缓存失效服务。
     /// </summary>
-    public IndexModel(AppDbContext dbContext, ModelVendorCatalogService vendorCatalogService)
+    public IndexModel(AppDbContext dbContext, AdminCacheInvalidationService cacheInvalidation)
     {
         _dbContext = dbContext;
-        _vendorCatalogService = vendorCatalogService;
+        _cacheInvalidation = cacheInvalidation;
     }
 
     /// <summary>
@@ -117,6 +117,7 @@ public class IndexModel : PageModel
     public IndexModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
+        _cacheInvalidation = null!;
     }
 
     /// <summary>
@@ -206,8 +207,8 @@ public class IndexModel : PageModel
             if (model is null) return RedirectToPage();
             model.IsEnabled = !model.IsEnabled;
             await _dbContext.SaveChangesAsync(cancellationToken);
-            _metadataCache?.InvalidateModelMetadata();
-            _metadataCache?.InvalidateRouteTargets();
+            _cacheInvalidation.InvalidateModelMetadata();
+            _cacheInvalidation.InvalidateRouteTargets();
             StatusMessage = "模型状态已切换";
             StatusSuccess = true;
         }
@@ -292,8 +293,8 @@ public class IndexModel : PageModel
             await _dbContext.SaveChangesAsync(cancellationToken);
             await CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
 
-            _metadataCache?.InvalidateModelMetadata();
-            _metadataCache?.InvalidateRouteTargets();
+            _cacheInvalidation.InvalidateModelMetadata();
+            _cacheInvalidation.InvalidateRouteTargets();
             StatusMessage = $"模型已删除，并清理了 {mappings.Count} 条站点关联、{affectedRules.Count} 条相关路由规则、{affectedMonitors.Count} 条健康监控，并解绑了 {affectedDetectionTasks.Count} 个检测任务";
             StatusSuccess = true;
 
@@ -479,26 +480,27 @@ public class CreateModelModel : PageModel
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache? _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidation;
 
     /// <summary>
-    /// 包含元数据缓存的构造函数。
+    /// 包含缓存失效服务的构造函数。
     /// </summary>
     [ActivatorUtilitiesConstructor]
-    public CreateModelModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public CreateModelModel(AppDbContext dbContext, AdminCacheInvalidationService cacheInvalidation)
     {
         _dbContext = dbContext;
-        _metadataCache = metadataCache;
+        _cacheInvalidation = cacheInvalidation;
     }
 
     /// <summary>
-    /// 不含元数据缓存的构造函数。
+    /// 不含缓存失效服务的构造函数。
     /// </summary>
     public CreateModelModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
+        _cacheInvalidation = null!;
     }
 
     /// <summary>
@@ -527,8 +529,8 @@ public class CreateModelModel : PageModel
         });
 
         await _dbContext.SaveChangesAsync(cancellationToken);
-        _metadataCache?.InvalidateModelMetadata();
-        _metadataCache?.InvalidateRouteTargets();
+        _cacheInvalidation.InvalidateModelMetadata();
+        _cacheInvalidation.InvalidateRouteTargets();
         return RedirectToPage("./Index");
     }
 }

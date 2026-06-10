@@ -18,18 +18,18 @@ public class EditModel : PageModel
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache? _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidation;
 
     /// <summary>
     /// 注入依赖并初始化编辑表单。
     /// </summary>
     [ActivatorUtilitiesConstructor]
-    public EditModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public EditModel(AppDbContext dbContext, AdminCacheInvalidationService cacheInvalidation)
     {
         _dbContext = dbContext;
-        _metadataCache = metadataCache;
+        _cacheInvalidation = cacheInvalidation;
     }
 
     /// <summary>
@@ -38,6 +38,7 @@ public class EditModel : PageModel
     public EditModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
+        _cacheInvalidation = null!;
     }
 
     /// <summary>
@@ -136,7 +137,7 @@ public class EditModel : PageModel
             site.IsEnabled = IsEnabled;
 
             await _dbContext.SaveChangesAsync(cancellationToken);
-            _metadataCache?.InvalidateRouteTargets();
+            _cacheInvalidation.InvalidateRouteTargets();
             StatusMessage = "站点已更新";
             StatusSuccess = true;
         }

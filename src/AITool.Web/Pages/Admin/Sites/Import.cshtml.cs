@@ -51,26 +51,27 @@ public class ImportModel : PageModel
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 代理元数据缓存。
+    /// 后台缓存失效服务。
     /// </summary>
-    private readonly ProxyRequestMetadataCache? _metadataCache;
+    private readonly AdminCacheInvalidationService _cacheInvalidation;
 
     /// <summary>
-    /// 站点导入页面模型。
+    /// 包含缓存失效服务的构造函数。
     /// </summary>
     [ActivatorUtilitiesConstructor]
-    public ImportModel(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public ImportModel(AppDbContext dbContext, AdminCacheInvalidationService cacheInvalidation)
     {
         _dbContext = dbContext;
-        _metadataCache = metadataCache;
+        _cacheInvalidation = cacheInvalidation;
     }
 
     /// <summary>
-    /// 站点导入页面模型。
+    /// 不含缓存失效服务的构造函数。
     /// </summary>
     public ImportModel(AppDbContext dbContext)
     {
         _dbContext = dbContext;
+        _cacheInvalidation = null!;
     }
 
     /// <summary>
@@ -134,7 +135,7 @@ public class ImportModel : PageModel
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);
-            _metadataCache?.InvalidateRouteTargets();
+            _cacheInvalidation.InvalidateRouteTargets();
             StatusMessage = $"成功导入 {created} 个站点";
             StatusSuccess = true;
         }
