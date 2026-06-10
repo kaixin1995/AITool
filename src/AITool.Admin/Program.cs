@@ -79,7 +79,10 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
 
 // 对话记录查询所需的服务。Admin 侧仅注册只读查询链路，不包含写入侧的 ConversationLogBatchWriter / ConversationLogService。
-var conversationLogRootPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
+// 测试环境使用随机临时目录作为 JSONL 根路径，确保每个测试工厂实例拥有隔离的文件存储，不会互相污染。
+var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
+    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
+    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
 builder.Services.AddSingleton(new AITool.Infrastructure.Conversations.ConversationLogFileOptions
 {
     RootPath = conversationLogRootPath

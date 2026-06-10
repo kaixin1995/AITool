@@ -237,6 +237,11 @@ public sealed class ChatApiTests
 
     /// <summary>
     /// 后台修改并发上限后，应立即影响后续新请求，而不必等待缓存自然过期。
+    /// <para>
+    /// 原始测试通过 /api/admin/models/mappings/{id}/concurrency 端点修改并发限制，
+    /// 该控制器已迁移到 Admin 宿主。现改为直接调用 ModelConcurrencyLimiter.UpdateLimit
+    /// 方法来修改并发限制，并同步更新数据库中的 MaxConcurrency 字段。
+    /// </para>
     /// </summary>
     [Fact]
     public async Task Put_concurrency_applies_new_limit_immediately()
@@ -264,12 +269,19 @@ public sealed class ChatApiTests
             CancellationToken.None);
         blockedHandle.Acquired.Should().BeFalse();
 
-        using var response = await client.PutAsync(
-            $"/api/admin/models/mappings/{ChatWebApplicationFactory.MappingId}/concurrency",
-            new StringContent("{\"maxConcurrency\":2}", Encoding.UTF8, "application/json"));
-        var body = await response.Content.ReadAsStringAsync();
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        // 直接通过 ModelConcurrencyLimiter 和数据库修改并发限制，
+        // 替代已迁移到 Admin 的 /api/admin/models/mappings/{id}/concurrency 端点
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var mapping = await db.SiteModelMappings.FindAsync(ChatWebApplicationFactory.MappingId);
+            mapping!.MaxConcurrency = 2;
+            await db.SaveChangesAsync();
+            // 数据库修改后需手动刷新并发限制缓存，否则 AcquireAsync 仍从缓存读取旧值并覆盖 UpdateLimit 的结果
+            var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+            metadataCache.InvalidateRuntimeRouteTargets();
+        }
+        limiter.UpdateLimit(ChatWebApplicationFactory.SiteId, ChatWebApplicationFactory.SiteModelName, 2);
 
         using var secondHandle = await limiter.AcquireAsync(
             factory.Services,

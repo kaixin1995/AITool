@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <!-- 只生成 zh-Hans 的语言资源 -->
+    <SatelliteResourceLanguages>zh</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AITool.Application\AITool.Application.csproj" />
+    <ProjectReference Include="..\AITool.Infrastructure\AITool.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Core 宿主不需要 Hangfire、EF Core Design 等管理端依赖，仅保留日志 -->
+    <PackageReference Include="NLog.Web.AspNetCore" Version="6.0.5" />
+  </ItemGroup>
+
+</Project>

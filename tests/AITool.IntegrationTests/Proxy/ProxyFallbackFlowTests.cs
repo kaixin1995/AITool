@@ -8,6 +8,7 @@ using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -18,231 +19,15 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 namespace AITool.IntegrationTests.Proxy;
 
 /// <summary>
-/// 代理回退链路集成测试，验证按顺序 fallback 并记录每次尝试日志
+/// 代理回退链路集成测试，验证按顺序 fallback 并记录每次尝试日志。
+/// <para>
+/// 路由规则管理（entries/save/list/delete）和路由页面的测试用例已迁移至
+/// AITool.Admin.IntegrationTests.RouteRulesTests，因为对应控制器和页面已从 Web 宿主
+/// 迁移到 Admin 宿主。本文件仅保留涉及代理转发行为的核心链路测试。
+/// </para>
 /// </summary>
 public sealed class ProxyFallbackFlowTests
 {
-    /// <summary>
-    /// 验证主路由入口列表会返回入口名称和候选数量。
-    /// </summary>
-    [Fact]
-    public async Task Get_entries_returns_master_entry_names_with_candidate_counts()
-    {
-        await using var factory = new ProxyFallbackWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var response = await client.GetAsync("/api/admin/route-rules/entries");
-        var body = await response.Content.ReadAsStringAsync();
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        body.Should().Contain("\"entryName\":\"chat-prod\"");
-        body.Should().Contain("\"candidateCount\":2");
-    }
-
-    /// <summary>
-    /// 验证新建空入口后，入口列表中能够立即看到该记录。
-    /// </summary>
-    [Fact]
-    public async Task Post_entries_creates_empty_master_entry_visible_in_entry_list()
-    {
-        await using var factory = new ProxyFallbackWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var createResponse = await client.PostAsync(
-            "/api/admin/route-rules/entries",
-            new StringContent("{\"entryName\":\"auto\"}", Encoding.UTF8, "application/json"));
-
-        createResponse.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        var listResponse = await client.GetAsync("/api/admin/route-rules/entries");
-        var listBody = await listResponse.Content.ReadAsStringAsync();
-
-        listBody.Should().Contain("\"entryName\":\"auto\"");
-        listBody.Should().Contain("\"candidateCount\":0");
-    }
-
-    /// <summary>
-    /// 验证删除入口时会一并移除该入口下的全部路由规则。
-    /// </summary>
-    [Fact]
-    public async Task Delete_entry_removes_all_rules_for_that_master_entry()
-    {
-        await using var factory = new ProxyFallbackWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var deleteResponse = await client.PostAsync(
-            "/api/admin/route-rules/entries/delete",
-            new StringContent("{\"entryName\":\"chat-prod\"}", Encoding.UTF8, "application/json"));
-
-        deleteResponse.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        await using var scope = factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var remaining = await db.ProxyRouteRules.CountAsync(x => x.ExternalModelName == "chat-prod");
-
-        remaining.Should().Be(0);
-    }
-
-    /// <summary>
-    /// 验证保存路由时支持为同一入口配置多组上游模型。
-    /// </summary>
-    [Fact]
-    public async Task Save_route_rules_accepts_multiple_upstream_model_groups()
-    {
-        await using var factory = new ProxyFallbackWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var response = await client.PostAsync(
-            "/api/admin/route-rules/save",
-            new StringContent(
-                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\"},{\"upstreamModelName\":\"glm-5.1\",\"siteId\":\"22222222-2222-2222-2222-222222222222\",\"siteModelName\":\"glm-5.1-a\"}]}",
-                Encoding.UTF8,
-                "application/json"));
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        await using var scope = factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var rules = await db.ProxyRouteRules
-            .Where(x => x.ExternalModelName == "chat-prod")
-            .OrderBy(x => x.Priority)
-            .ToListAsync();
-
-        rules.Should().HaveCount(2);
-        rules[0].UpstreamModelName.Should().Be("gpt-5.5");
-        rules[0].ModelPriority.Should().Be(0);
-        rules[0].InstancePriority.Should().Be(0);
-        rules[1].UpstreamModelName.Should().Be("glm-5.1");
-        rules[1].ModelPriority.Should().Be(1);
-        rules[1].InstancePriority.Should().Be(0);
-    }
-
-    /// <summary>
-    /// 验证未传时间配置的候选规则会按全天可用保存，兼容旧页面和旧调用。
-    /// </summary>
-    [Fact]
-    public async Task Save_route_rules_defaults_missing_availability_to_all_day()
-    {
-        await using var factory = new ProxyFallbackWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var response = await client.PostAsync(
-            "/api/admin/route-rules/save",
-            new StringContent(
-                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\"}]}",
-                Encoding.UTF8,
-                "application/json"));
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        await using var scope = factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var rule = await db.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod");
-
-        rule.AvailabilityMode.Should().Be("AllDay");
-        rule.TimeRangesJson.Should().BeEmpty();
-    }
-
-    /// <summary>
-    /// 验证时间配置保存后能从列表接口以小写字段重新读回，保证页面刷新后仍可解析。
-    /// </summary>
-    [Fact]
-    public async Task Save_route_rules_persists_availability_time_range_for_reload()
-    {
-        await using var factory = new ProxyFallbackWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var response = await client.PostAsync(
-            "/api/admin/route-rules/save",
-            new StringContent(
-                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\",\"availabilityMode\":\"Unavailable\",\"timeRangesJson\":\"[{\\\"start\\\":\\\"14:00\\\",\\\"end\\\":\\\"18:59\\\"}]\"}]}",
-                Encoding.UTF8,
-                "application/json"));
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        await using var scope = factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var rule = await db.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod");
-
-        rule.AvailabilityMode.Should().Be("Unavailable");
-        rule.TimeRangesJson.Should().Contain("\"start\":\"14:00\"");
-        rule.TimeRangesJson.Should().Contain("\"end\":\"18:59\"");
-
-        var listResponse = await client.GetAsync("/api/admin/route-rules/list?modelName=chat-prod");
-        var listBody = await listResponse.Content.ReadAsStringAsync();
-
-        listBody.Should().Contain("\"availabilityMode\":\"Unavailable\"");
-        listBody.Should().Contain("\\\"start\\\":\\\"14:00\\\"");
-        listBody.Should().Contain("\\\"end\\\":\\\"18:59\\\"");
-    }
-
-    /// <summary>
-    /// 验证规则列表在首次读取后，再次保存路由仍会立即返回最新顺序。
-    /// </summary>
-    [Fact]
-    public async Task Get_route_rule_list_refreshes_immediately_after_save()
-    {
-        await using var factory = new ProxyFallbackWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var warmupResponse = await client.GetAsync("/api/admin/route-rules/list?modelName=chat-prod");
-        var warmupBody = await warmupResponse.Content.ReadAsStringAsync();
-        warmupResponse.StatusCode.Should().Be(HttpStatusCode.OK, warmupBody);
-        warmupBody.IndexOf("gpt-5.5-a", StringComparison.Ordinal).Should().BeLessThan(warmupBody.IndexOf("glm-5.1-a", StringComparison.Ordinal));
-
-        var saveResponse = await client.PostAsync(
-            "/api/admin/route-rules/save",
-            new StringContent(
-                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"glm-5.1\",\"siteId\":\"22222222-2222-2222-2222-222222222222\",\"siteModelName\":\"glm-5.1-a\"},{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\"}]}",
-                Encoding.UTF8,
-                "application/json"));
-        saveResponse.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        var refreshedResponse = await client.GetAsync("/api/admin/route-rules/list?modelName=chat-prod");
-        var refreshedBody = await refreshedResponse.Content.ReadAsStringAsync();
-        refreshedResponse.StatusCode.Should().Be(HttpStatusCode.OK, refreshedBody);
-        refreshedBody.IndexOf("glm-5.1-a", StringComparison.Ordinal).Should().BeLessThan(refreshedBody.IndexOf("gpt-5.5-a", StringComparison.Ordinal));
-    }
-
-    /// <summary>
-    /// 验证路由页面包含搜索框，并且不会直接渲染调试用协议表达式。
-    /// </summary>
-    [Fact]
-    public async Task Get_routes_page_contains_search_box_and_hides_protocol_rendering_text()
-    {
-        await using var factory = new ProxyFallbackWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var response = await client.GetAsync("/Admin/Routes");
-        var html = await response.Content.ReadAsStringAsync();
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        html.Should().Contain("搜索站点或模型");
-        html.Should().NotContain("item.protocolType");
-    }
-
-    /// <summary>
-    /// 验证路由规则页面会串行保存拖拽结果，避免快速拖动时旧顺序覆盖新顺序。
-    /// </summary>
-    [Fact]
-    public async Task Get_routes_page_serializes_queue_save_requests()
-    {
-        await using var factory = new ProxyFallbackWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var response = await client.GetAsync("/Admin/Routes");
-        var html = await response.Content.ReadAsStringAsync();
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        html.Should().Contain("var _pendingRouteSave = null;");
-        html.Should().Contain("var _routeSaveInFlight = false;");
-        html.Should().Contain("function flushRouteSaveQueue()");
-        html.Should().Contain("if (_routeSaveInFlight || !_pendingRouteSave)");
-        html.Should().Contain("var saveRequest = _pendingRouteSave;");
-        html.Should().Contain("function syncEntryCandidateCount(entryName, candidateCount)");
-    }
-
     /// <summary>
     /// 验证首条路由失败后会回退到下一条路由，并完整记录每次尝试日志。
     /// </summary>
@@ -333,6 +118,7 @@ public sealed class ProxyFallbackFlowTests
         await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
         using var client = factory.CreateClient();
 
+        // 直接通过数据库设置首条路由为不可用时间段，替代已迁移的 admin API
         await using (var scope = factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -358,6 +144,10 @@ public sealed class ProxyFallbackFlowTests
 
     /// <summary>
     /// 验证访问密钥被禁用后，请求模型列表会返回未授权。
+    /// <para>
+    /// 原始测试通过 /api/admin/access-keys/toggle 端点禁用密钥，该控制器已迁移到 Admin 宿主。
+    /// 现改为直接通过数据库修改 ProxyAccessKey.IsEnabled 状态来准备测试数据。
+    /// </para>
     /// </summary>
     [Fact]
     public async Task Get_models_returns_unauthorized_after_access_key_is_disabled()
@@ -365,6 +155,7 @@ public sealed class ProxyFallbackFlowTests
         await using var factory = new ProxyFallbackWebApplicationFactory();
         using var client = factory.CreateClient();
 
+        // 先验证密钥启用时能正常访问
         var authorizedRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
         authorizedRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
 
@@ -374,9 +165,19 @@ public sealed class ProxyFallbackFlowTests
         initialResponse.StatusCode.Should().Be(HttpStatusCode.OK, initialBody);
         initialBody.Should().Contain("\"id\":\"chat-prod\"");
 
-        var toggleResponse = await client.PostAsync("/api/admin/access-keys/toggle/33333333-3333-3333-3333-333333333333", null);
-        toggleResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+        // 直接通过数据库禁用访问密钥，替代已迁移到 Admin 的 access-keys/toggle 端点
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var accessKey = await db.ProxyAccessKeys.SingleAsync();
+            accessKey.IsEnabled = false;
+            await db.SaveChangesAsync();
+            // 数据库修改后需手动刷新代理访问密钥缓存，否则代理仍使用旧缓存
+            var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+            metadataCache.InvalidateAccessKeys();
+        }
 
+        // 验证禁用后请求返回未授权
         var disabledRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
         disabledRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
 
@@ -385,7 +186,11 @@ public sealed class ProxyFallbackFlowTests
     }
 
     /// <summary>
-    /// 验证删除入口后，模型列表会及时刷新并移除对应模型。
+    /// 验证删除路由入口后，模型列表会及时刷新并移除对应模型。
+    /// <para>
+    /// 原始测试通过 /api/admin/route-rules/entries/delete 端点删除入口，该控制器已迁移到 Admin 宿主。
+    /// 现改为直接通过数据库删除 ProxyRouteEntry 和 ProxyRouteRule 记录来准备测试数据。
+    /// </para>
     /// </summary>
     [Fact]
     public async Task Get_models_refreshes_after_route_entry_is_deleted()
@@ -393,6 +198,7 @@ public sealed class ProxyFallbackFlowTests
         await using var factory = new ProxyFallbackWebApplicationFactory();
         using var client = factory.CreateClient();
 
+        // 先验证路由存在时模型列表包含 chat-prod
         var beforeRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
         beforeRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
         var beforeResponse = await client.SendAsync(beforeRequest);
@@ -401,12 +207,21 @@ public sealed class ProxyFallbackFlowTests
         beforeResponse.StatusCode.Should().Be(HttpStatusCode.OK, beforeBody);
         beforeBody.Should().Contain("\"id\":\"chat-prod\"");
 
-        var deleteResponse = await client.PostAsync(
-            "/api/admin/route-rules/entries/delete",
-            new StringContent("{\"entryName\":\"chat-prod\"}", Encoding.UTF8, "application/json"));
+        // 直接通过数据库删除路由入口和规则，替代已迁移到 Admin 的 route-rules/entries/delete 端点
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var entry = await db.ProxyRouteEntries.SingleAsync(x => x.EntryName == "chat-prod");
+            var rules = await db.ProxyRouteRules.Where(x => x.ExternalModelName == "chat-prod").ToListAsync();
+            db.ProxyRouteRules.RemoveRange(rules);
+            db.ProxyRouteEntries.Remove(entry);
+            await db.SaveChangesAsync();
+            // 数据库修改后需手动刷新运行时路由缓存，否则代理仍使用旧路由快照
+            var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+            metadataCache.InvalidateRouteTargets();
+        }
 
-        deleteResponse.StatusCode.Should().Be(HttpStatusCode.OK);
-
+        // 验证删除后模型列表不再包含 chat-prod
         var afterRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models");
         afterRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
         var afterResponse = await client.SendAsync(afterRequest);
@@ -444,6 +259,10 @@ public sealed class ProxyFallbackFlowTests
 
     /// <summary>
     /// 验证手动调整后的路由顺序会被保存，并被后续请求直接采用。
+    /// <para>
+    /// 原始测试通过 /api/admin/route-rules/save 端点调整顺序，该控制器已迁移到 Admin 宿主。
+    /// 现改为直接通过数据库修改 ProxyRouteRule 的 Priority 字段来准备测试数据。
+    /// </para>
     /// </summary>
     [Fact]
     public async Task Save_route_rules_persists_latest_manual_order_used_by_followup_request()
@@ -452,14 +271,23 @@ public sealed class ProxyFallbackFlowTests
         await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
         using var client = factory.CreateClient();
 
-        var saveResponse = await client.PostAsync(
-            "/api/admin/route-rules/save",
-            new StringContent(
-                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"glm-5.1\",\"siteId\":\"22222222-2222-2222-2222-222222222222\",\"siteModelName\":\"glm-5.1-a\"},{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\"}]}",
-                Encoding.UTF8,
-                "application/json"));
+        // 直接通过数据库调整路由顺序，替代已迁移到 Admin 的 route-rules/save 端点
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var firstRule = await db.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod" && x.UpstreamModelName == "gpt-5.5");
+            var secondRule = await db.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod" && x.UpstreamModelName == "glm-5.1");
 
-        saveResponse.StatusCode.Should().Be(HttpStatusCode.OK);
+            // 交换优先级：glm-5.1 变成首选，gpt-5.5 变成备选
+            firstRule.Priority = 1;
+            firstRule.ModelPriority = 1;
+            secondRule.Priority = 0;
+            secondRule.ModelPriority = 0;
+            await db.SaveChangesAsync();
+            // 数据库修改后需手动刷新运行时路由缓存，否则代理仍使用旧的优先级排序
+            var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+            metadataCache.InvalidateRouteTargets();
+        }
 
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
         {
@@ -471,39 +299,8 @@ public sealed class ProxyFallbackFlowTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         fakeForwardService.Requests.Should().HaveCount(2);
+        // 首选变为 glm-5.1-a
         fakeForwardService.Requests[0].TargetModelName.Should().Be("glm-5.1-a");
-    }
-
-    /// <summary>
-    /// 验证同一个站点可以在同一入口中配置多条不同的候选规则。
-    /// </summary>
-    [Fact]
-    public async Task Save_route_rules_allows_same_site_to_appear_multiple_times()
-    {
-        await using var factory = new ProxyFallbackWebApplicationFactory();
-        using var client = factory.CreateClient();
-
-        var response = await client.PostAsync(
-            "/api/admin/route-rules/save",
-            new StringContent(
-                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\"},{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-b\"}]}",
-                Encoding.UTF8,
-                "application/json"));
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-
-        await using var scope = factory.Services.CreateAsyncScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var rules = await db.ProxyRouteRules
-            .Where(x => x.ExternalModelName == "chat-prod")
-            .OrderBy(x => x.Priority)
-            .ToListAsync();
-
-        rules.Should().HaveCount(2);
-        rules[0].SiteId.Should().Be(Guid.Parse("11111111-1111-1111-1111-111111111111"));
-        rules[1].SiteId.Should().Be(Guid.Parse("11111111-1111-1111-1111-111111111111"));
-        rules[0].SiteModelName.Should().Be("gpt-5.5-a");
-        rules[1].SiteModelName.Should().Be("gpt-5.5-b");
     }
 
     /// <summary>

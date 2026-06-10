@@ -1,0 +1,223 @@
+using AITool.Application.Common;
+using AITool.Application.Conversations;
+using AITool.Application.Operations;
+using AITool.Application.Proxy;
+using AITool.Application.UsageLogs;
+using AITool.Core.Services;
+using AITool.Infrastructure.Conversations;
+using AITool.Infrastructure.CoreRuntime;
+using AITool.Infrastructure.Hosting;
+using AITool.Infrastructure.OpenAI;
+using AITool.Infrastructure.Operations;
+using AITool.Infrastructure.Proxy;
+using Microsoft.AspNetCore.Diagnostics;
+using Microsoft.AspNetCore.Http;
+using NLog;
+using NLog.Web;
+
+var builder = WebApplication.CreateBuilder(args);
+
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+builder.Logging.AddDebug();
+builder.Host.UseNLog();
+
+var startupLogger = LogManager.GetLogger("Startup");
+
+// Core 宿主版本号，与 Web 宿主区分。
+var applicationVersion = "1.0.1.4-core";
+builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
+
+// Core 宿主默认监听 5029 端口（代理主端口），与 Admin 的 5030 端口分开。
+var serverPort = builder.Configuration.GetValue<int?>("CoreServer:Port") ?? builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
+builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
+
+// 注册 API 控制器，用于代理转发端点和 Core 管理端点。
+// Core 宿主不注册 Razor Pages，不提供任何页面。
+builder.Services.AddControllers(options =>
+{
+    options.Filters.Add<HttpExceptionLoggingFilter>();
+});
+builder.Services.AddMemoryCache();
+builder.Services.AddScoped<HttpExceptionLoggingFilter>();
+
+// Core 宿主使用配置快照，不依赖数据库。
+// 运行时配置从 Admin 通过全量同步下发到本地文件，启动时可从 last-good-config 恢复。
+builder.Services.AddSingleton(new CoreRuntimeConfigFileOptions
+{
+    FilePath = builder.Environment.IsEnvironment("Testing")
+        ? Path.Combine(Path.GetTempPath(), $"aitool-core-runtime-config-{Guid.NewGuid():N}.json")
+        : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "core-runtime", "last-good-config.json")
+});
+builder.Services.AddSingleton<CoreRuntimeConfigProvider>();
+builder.Services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>(sp => sp.GetRequiredService<CoreRuntimeConfigProvider>());
+
+// 注册代理转发配置，统一控制单路由超时和失败重试策略。
+builder.Services.Configure<ProxyForwardingOptions>(
+    builder.Configuration.GetSection(ProxyForwardingOptions.SectionName));
+
+// 注册代理主入口实体配置。
+builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
+
+// 注册代理请求元数据缓存，缓存路由、密钥、并发限制等运行时数据。
+// Core 宿主的缓存数据来源是 Admin 下发的配置快照，而非直接查询数据库。
+builder.Services.AddSingleton<ProxyRequestMetadataCache>();
+builder.Services.AddSingleton<AdminQueryMetadataService>();
+
+// 注册并发控制与查询服务。
+builder.Services.AddSingleton<ModelConcurrencyLimiter>();
+builder.Services.AddSingleton<ModelConcurrencyQueryService>();
+
+// 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点。
+builder.Services.AddSingleton<RouteCircuitStateStore>();
+
+// 注册开发者调用追踪存储（代理运行时写入端）。
+builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
+builder.Services.AddSingleton<DeveloperInvocationTraceQueryService>();
+
+// 注册事件序列、事件总线与 spool，支撑 Core -> Admin 可靠事件推送。
+builder.Services.AddSingleton<CoreEventSequenceProvider>();
+builder.Services.AddSingleton<CoreAdminEventBus>();
+builder.Services.AddSingleton(new CoreEventSpoolOptions
+{
+    RootPath = builder.Environment.IsEnvironment("Testing")
+        ? Path.Combine(Path.GetTempPath(), $"aitool-core-event-spool-{Guid.NewGuid():N}")
+        : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "core-runtime", "spool")
+});
+builder.Services.AddSingleton<CoreEventSpoolStore>();
+builder.Services.AddHostedService<CoreEventSpoolBackgroundService>();
+
+// 注册使用日志事件发布器和批处理写入器。
+// Core 宿主发布事件到总线，后台写入器批量持久化到数据库。
+builder.Services.AddSingleton<CoreUsageLogEventPublisher>();
+builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
+
+// 注册对话日志批处理写入器和文件存储。
+var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
+    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
+    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
+builder.Services.AddSingleton(new ConversationLogFileOptions
+{
+    RootPath = conversationLogRootPath
+});
+builder.Services.AddSingleton<IConversationLogStore, FileConversationLogStore>();
+builder.Services.AddSingleton<ConversationLogBatchWriter>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ConversationLogBatchWriter>());
+builder.Services.AddSingleton<CoreConversationEventPublisher>();
+builder.Services.AddSingleton<IConversationLogService, ConversationLogService>();
+builder.Services.AddSingleton<ConversationExtractionService>();
+
+// 注册使用日志服务，记录每次代理调用的 Token 用量。
+builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
+
+var app = builder.Build();
+
+// Core 宿主启动时尝试从本地文件恢复上次的配置快照。
+// 如果没有可恢复配置，保持 not-ready 状态，等待 Admin 下发首个完整快照。
+using (var scope = app.Services.CreateScope())
+{
+    var configProvider = scope.ServiceProvider.GetRequiredService<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
+    if (!await configProvider.TryLoadFromFileAsync())
+    {
+        startupLogger.Warn("Core 启动时未找到可恢复的 last-good-config，将等待 Admin 下发首个完整配置快照后进入 ready 状态。");
+    }
+}
+
+startupLogger.Info(
+    "Core 宿主启动完成。Version={Version}, Environment={Environment}, Port={Port}",
+    applicationVersion,
+    app.Environment.EnvironmentName,
+    serverPort);
+Console.WriteLine($"AI Tool Core 已启动：http://127.0.0.1:{serverPort}");
+Console.WriteLine($"AI Tool Core 已启动：http://{GetLocalIpAddress()}:{serverPort}");
+
+// 全局异常处理。
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    app.UseExceptionHandler(exceptionApp =>
+    {
+        exceptionApp.Run(async context =>
+        {
+            var feature = context.Features.Get<IExceptionHandlerFeature>();
+            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
+            if (feature?.Error is OperationCanceledException)
+            {
+                return;
+            }
+
+            if (feature?.Error is not null)
+            {
+                var requestBody = await TryReadRequestBodySafelyAsync(context.Request, context.RequestAborted);
+
+                logger.LogError(feature.Error,
+                    "未处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
+                    context.Request.Path,
+                    context.Request.Method,
+                    context.TraceIdentifier,
+                    context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty,
+                    HttpLogFormatter.FormatBody(requestBody));
+            }
+
+            if (!context.Response.HasStarted)
+            {
+                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
+                context.Response.ContentType = "application/json; charset=utf-8";
+                await context.Response.WriteAsJsonAsync(new { message = "服务器内部异常" });
+            }
+        });
+    });
+}
+
+// Core 宿主仅映射 API 控制器，不映射 Razor Pages。
+// 代理端点 /v1/* 和 Core 管理端点 /api/core/* 由控制器提供。
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapControllers();
+
+app.Run();
+
+/// <summary>
+/// 获取本机 IPv4 地址。
+/// </summary>
+static string GetLocalIpAddress()
+{
+    try
+    {
+        var addresses = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName());
+        var ipv4 = addresses.FirstOrDefault(x => x.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !System.Net.IPAddress.IsLoopback(x));
+        return ipv4?.ToString() ?? "127.0.0.1";
+    }
+    catch
+    {
+        return "127.0.0.1";
+    }
+}
+
+/// <summary>
+/// 安全读取请求体。
+/// </summary>
+static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, CancellationToken cancellationToken)
+{
+    try
+    {
+        request.EnableBuffering();
+        using var reader = new StreamReader(request.Body, leaveOpen: true);
+        request.Body.Position = 0;
+        var requestBody = await reader.ReadToEndAsync(cancellationToken);
+        request.Body.Position = 0;
+        return requestBody;
+    }
+    catch (OperationCanceledException)
+    {
+        return "<canceled>";
+    }
+    catch
+    {
+        return "<unavailable>";
+    }
+}
+
+/// <summary>
+/// 程序入口。
+/// </summary>
+public partial class Program;

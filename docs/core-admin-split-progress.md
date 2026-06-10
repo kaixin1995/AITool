@@ -364,10 +364,50 @@
 最新一轮完整验证结果：
 
 - ApplicationTests：`101/101` 通过
-- IntegrationTests：`175/175` 通过
+- IntegrationTests：`127/127` 通过
+- Admin.IntegrationTests：`46/46` 通过
+- Core.IntegrationTests：`3/3` 通过
 - AITool.Web：构建成功，`0 error`（34 warnings 均为既有 nullable 警告）
 - AITool.Admin：单独构建成功
-- AITool.Admin.IntegrationTests：`5/5` 通过
+- AITool.Core：单独构建成功，`0 error`，`0 warning`
+- **总计：277 个测试全部通过，0 失败**
+
+### 已完成：集成测试缓存失效修复
+
+本轮修复了 AITool.IntegrationTests 中因直接数据库操作绕过 IMemoryCache 导致的 17 个测试失败。所有混合测试（同时涉及代理端点和后台管理操作）已统一采用"直接 DB 操作 + 手动缓存失效"模式。
+
+#### 修复背景
+
+在双宿主拆分过程中，部分集成测试原来通过 Admin API 触发缓存失效，但迁移后 Admin API 已不再由 Web 宿主承载。这些测试改为直接操作数据库，但 `ProxyRequestMetadataCache` 使用 IMemoryCache 缓存代理元数据，直接 DB 修改不会触发缓存刷新，导致代理仍使用旧缓存值，测试断言失败。
+
+#### 修复文件与内容
+
+- `tests/AITool.IntegrationTests/Proxy/ProxyFallbackFlowTests.cs` — 3 个测试添加缓存失效：
+  - `Get_models_returns_unauthorized_after_access_key_is_disabled` → `InvalidateAccessKeys()`
+  - `Get_models_refreshes_after_route_entry_is_deleted` → `InvalidateRouteTargets()`
+  - `Save_route_rules_persists_latest_manual_order_used_by_followup_request` → `InvalidateRouteTargets()`
+
+- `tests/AITool.IntegrationTests/Proxy/AnthropicProxyControllerTests.cs` — 2 个测试添加缓存失效：
+  - `Post_messages_returns_unauthorized_after_access_key_is_disabled` → `InvalidateAccessKeys()`
+  - `Post_messages_returns_not_found_after_route_entry_is_deleted` → `InvalidateRouteTargets()`
+
+- `tests/AITool.IntegrationTests/Chat/ChatApiTests.cs` — 1 个测试添加缓存失效：
+  - `Put_concurrency_applies_new_limit_immediately` → `InvalidateRuntimeRouteTargets()`（因为 `ModelConcurrencyLimiter.AcquireAsync` 每次调用都会从缓存读取 MaxConcurrency 并覆盖 `UpdateLimit` 的结果）
+
+- `tests/AITool.IntegrationTests/Conversations/ConversationPageTests.cs` — 已删除（纯 Admin 测试，已由 Admin 测试工程覆盖）
+
+#### 缓存失效方法选择规则
+
+| 数据库修改对象 | 对应失效方法 | 说明 |
+|---|---|---|
+| `ProxyAccessKeys` | `InvalidateAccessKeys()` | 访问密钥启用/禁用 |
+| `ProxyRouteEntries` / `ProxyRouteRules` | `InvalidateRouteTargets()` | 路由条目/规则增删改 |
+| `SiteModelMappings.MaxConcurrency` | `InvalidateRuntimeRouteTargets()` | 并发限制修改（含 ModelConcurrencyLimitsCacheKey） |
+
+#### 修复状态
+
+- **17 个失败测试全部修复，0 失败**
+- **274 个测试全部通过**
 
 这说明当前主宿主与核心协议链路仍然稳定，没有被双宿主改造破坏，同时独立 Admin 宿主已经不只是能启动，而且开始承载真实页面与只读接口并通过验证。
 
@@ -521,6 +561,26 @@ AITool.Admin 只注册了只读查询链路，写入侧服务（`ConversationLog
 
 ---
 
+### 已完成：Chat 对话测试页面迁移到 AITool.Admin
+
+已经完成：
+
+- `src/AITool.Admin/Pages/Admin/Chat/Index.cshtml` — 完整迁入对话测试 Razor 视图（含内联 CSS、JavaScript），仅将 `@model` 命名空间从 `AITool.Web.Pages.Admin.Chat.IndexModel` 改为 `AITool.Admin.Pages.Admin.Chat.IndexModel`
+- `src/AITool.Admin/Pages/Admin/Chat/Index.cshtml.cs` — 完整迁入对话测试 PageModel，仅依赖 `ISystemRuntimeSettingsService`，读取 `ConversationLogEnabled` 设置控制对话记录页签显示
+- `tests/AITool.Admin.IntegrationTests/ChatPageTests.cs` — 新增 Chat 页面冒烟测试（3 个测试用例），验证页面 UI 元素渲染、对话记录页签根据 ConversationLogEnabled 开关正确显示/隐藏
+
+#### JS API 端点保留说明
+
+Chat 页面中的 JavaScript 调用 `/api/admin/chat/*`（targets、send、send-stream）端点仍由 Core 宿主上的 `ChatApiController` 提供。该控制器深度依赖代理运行时组件（`IProxyForwardService`、`RouteCircuitStateStore`、`ModelConcurrencyLimiter` 等），暂不迁移到 Admin。由于当前部署为单进程模式，JS 使用相对路径访问这些端点不受影响。
+
+#### Chat 页面迁移状态
+
+- **Chat/Index 页面完整迁入 AITool.Admin**
+- **3 个 Chat 页面冒烟测试全部通过**
+- **46 个 Admin 集成测试全部通过**（含修复后全部 ConversationPageTests）
+
+---
+
 ### 已完成：第三批真实 Admin 页面/接口迁移——8 个控制器 + 8 组页面
 
 本轮完成了第三批 Admin 页面和控制器从 AITool.Web 到 AITool.Admin 的迁移，覆盖了除 Chat、Developer/Invocations、System/Settings 以外的全部管理页面。
@@ -589,15 +649,12 @@ AITool.Admin 只注册了只读查询链路，写入侧服务（`ConversationLog
 #### 仍保留在 AITool.Web 的文件
 
 控制器：
-- `ChatApiController` — 深度依赖代理运行时（IProxyForwardService、RouteCircuitStateStore、ModelConcurrencyLimiter、IUsageLogService 等）
-- `UsageLogsApiController` — Admin 已有对应版本，Web 版可作为代理日志直查保留
+- `ChatApiController` — 深度依赖代理运行时（IProxyForwardService、RouteCircuitStateStore、ModelConcurrencyLimiter、IUsageLogService 等），**不可迁移**
 
 页面：
-- `Chat/Index` — 依赖 `ISystemRuntimeSettingsService`（可迁移）
-- `ClientSimulator/Index` — 重定向到 Developer/Invocations
-- `Developer/Invocations/Index` — 依赖 `DeveloperInvocationTraceQueryService`、`ModelConcurrencyQueryService`、`AdminQueryMetadataService`
-- `System/Settings` — 依赖 `RouteCircuitStateStore`、`AnalyticsBackgroundQueryExecutor`
-- `UsageLogs/Index` — Admin 已有对应版本
+- `Developer/Invocations/Index` — 依赖 `DeveloperInvocationTraceQueryService`（→ `DeveloperInvocationTraceStore`）、`ModelConcurrencyQueryService`（→ `ModelConcurrencyLimiter`）、`AdminQueryMetadataService`（→ `ProxyRequestMetadataCache`），三个服务全部依赖代理运行时单例对象，**不可迁移**
+- `System/Settings` — 依赖 `RouteCircuitStateStore`（熔断状态）、`AnalyticsBackgroundQueryExecutor`（统计查询）、`AdminCacheInvalidationService`（缓存失效），**不可迁移**
+- `Chat/Index` — Admin 已有对应版本，Web 版保留是因为 JS API 端点仍由 Core 的 `ChatApiController` 提供
 
 #### 第三批页面迁移状态
 
@@ -606,6 +663,95 @@ AITool.Admin 只注册了只读查询链路，写入侧服务（`ConversationLog
 - **AITool.Web 侧边栏和首页已调整**
 - **两个宿主编译均通过，0 error**
 - **全部 112 个测试通过（101 ApplicationTests + 6 IntegrationTests + 5 Admin.IntegrationTests）**
+
+---
+
+### 已完成：AITool.Core 物理独立宿主创建
+
+本轮完成了 `AITool.Core` 物理独立宿主工程的创建，将代理运行时（Proxy Runtime）从 `AITool.Web` 完整复制出来，作为独立的纯 API 代理服务宿主。
+
+#### 已创建文件
+
+宿主骨架：
+- `src/AITool.Core/AITool.Core.csproj` — Core 宿主工程文件，仅依赖 Application + Infrastructure + NLog，无 Hangfire/EF Core/Razor Pages
+- `src/AITool.Core/Program.cs` — 纯代理运行时宿主入口，无 DB/无 Razor/无认证/无 Hangfire
+
+代理控制器（从 Web 复制，命名空间改为 `AITool.Core.Controllers.Proxy`）：
+- `Controllers/Proxy/AnthropicProxyController.cs`
+- `Controllers/Proxy/OpenAiProxyController.cs`
+- `Controllers/Proxy/OpenAiProxyController.Helpers.cs`
+- `Controllers/Proxy/OpenAiProxyController.Responses.cs`
+- `Controllers/Proxy/OpenAiProxyController.Streaming.cs`
+
+Core 管理控制器（从 Web 复制，命名空间改为 `AITool.Core.Controllers.Core`）：
+- `Controllers/Core/CoreConfigController.cs`
+- `Controllers/Core/CoreConfigHandshakeController.cs`
+- `Controllers/Core/CoreConfigSyncController.cs`
+- `Controllers/Core/CoreEventAckController.cs`
+- `Controllers/Core/CoreRuntimeStatusController.cs`
+
+运行时服务（从 Web 复制，命名空间改为 `AITool.Core.Services`）：
+- `Services/ProxyProtocol/Bridge.Core.cs`
+- `Services/ProxyProtocol/Helpers.cs`
+- `Services/ProxyProtocol/RequestConvert.cs`
+- `Services/ProxyProtocol/ResponseConvert.cs`
+- `Services/ProxyProtocol/Responses.cs`
+- `Services/ProxyProtocol/StreamToAnthropic.cs`
+- `Services/ProxyRequestMetadataCache.cs`
+- `Services/ProxyRequestMetadataCache.AdminQueries.cs`
+- `Services/ProxyRequestMetadataQueryModels.cs`
+- `Services/ModelConcurrencyLimiter.cs`
+- `Services/ModelConcurrencyQueryService.cs`
+- `Services/DeveloperInvocationTraceStore.cs`
+- `Services/DeveloperInvocationTraceQueryService.cs`
+- `Services/ConsoleProxyLogFormatter.cs`
+- `Services/AdminQueryMetadataService.cs`
+
+解决方案文件：
+- `AITool.slnx` — 已添加 `AITool.Core` 项目引用
+
+Core 程序标记：
+- `src/AITool.Core/CoreProgramMarker.cs` — 测试工程通过此类型定位 Core 程序集
+
+Core 独立测试工程：
+- `tests/AITool.Core.IntegrationTests/AITool.Core.IntegrationTests.csproj`
+- `tests/AITool.Core.IntegrationTests/CoreHostSmokeTests.cs` — 3 个冒烟测试（宿主启动、/health 端点、/api/core/health 端点）
+
+#### 已删除的冗余文件
+
+以下三个文件是从 Web 复制后的桥接壳，但其真实实现已在 `AITool.Infrastructure.Hosting` 中：
+- `Services/AppVersionInfo.cs` — 已删除（使用 `Infrastructure.Hosting.AppVersionInfo`）
+- `Services/HttpExceptionLoggingFilter.cs` — 已删除（使用 `Infrastructure.Hosting.HttpExceptionLoggingFilter`）
+- `Services/HttpLogFormatter.cs` — 已删除（使用 `Infrastructure.Hosting.HttpLogFormatter`）
+
+#### Core 宿主设计原则
+
+- **无数据库**：不依赖 EF Core / AppDbContext，运行时配置从 Admin 通过全量同步下发到本地文件
+- **无 Razor Pages**：纯 API 控制器，不提供任何页面
+- **无认证**：代理端点自行验证 AccessKey，不需要 ASP.NET Identity
+- **无 Hangfire**：后台任务由 HostedService 承担
+- **配置快照驱动**：使用 `CoreRuntimeConfigProvider` 从 `last-good-config.json` 恢复配置
+- **事件驱动**：通过 `CoreAdminEventBus` + `CoreEventSpoolStore` 可靠推送事件到 Admin
+
+#### Program.cs 关键差异（vs Web 的 Program.cs）
+
+| 特性 | AITool.Web | AITool.Core |
+|------|-----------|-------------|
+| Razor Pages | ✅ 注册 | ❌ 不注册 |
+| 数据库 / EF Core | ✅ 注册 | ❌ 不依赖 |
+| Hangfire | ✅ 注册 | ❌ 不使用 |
+| 认证 / 授权 | ✅ 注册 | ❌ 不使用 |
+| 配置来源 | 数据库直接查询 | Admin 下发配置快照 |
+| 默认端口 | 5030 | 5029（`CoreServer:Port`） |
+| 版本号 | 1.0.1.4 | 1.0.1.4-core |
+
+#### Core 宿主创建状态
+
+- **AITool.Core 独立编译通过，0 error，0 warning**
+- **AITool.Core 独立测试通过，3 个冒烟测试全部通过（宿主启动、/health、/api/core/health）**
+- **整个解决方案（11 个项目，含 Core.IntegrationTests）编译通过**
+- **277 个测试全部通过（101 + 127 + 46 + 3），0 失败**
+- **AITool.Web 仍可正常编译，不受影响**
 
 ---
 
@@ -733,39 +879,34 @@ AITool.Admin 只注册了只读查询链路，写入侧服务（`ConversationLog
 
 ### 本轮完成了什么
 
-- 完成了第三批 Admin 页面和控制器从 AITool.Web 到 AITool.Admin 的完整迁移
-- 迁移范围：6 个 Admin 控制器 + 8 组 Admin 页面（AccessKeys、Analytics、Detection、DetectionTasks、ModelHealth、Routes、Sites、Models）
-- 新增了 Admin 侧 `AdminCacheInvalidationService`（通过 CoreAdminClient 向 Core 下发全量配置快照）和 `AdminConcurrencyControlService`（占位实现）
-- 已从 AITool.Web 删除所有已迁移的控制器和页面文件
-- 已调整 AITool.Web 侧边栏和首页，移除已迁移页面的导航链接
-- 已更新 Admin 宿主 Program.cs，注册了所需的全部服务
-- 已重新执行完整构建验证和测试套件：
-  - ApplicationTests：`101/101` 通过
-  - IntegrationTests：`6/6` 通过（注：IntegrationTests 总数随项目演变）
-  - Admin.IntegrationTests：`5/5` 通过
-  - AITool.Web 构建：成功，0 error
-  - AITool.Admin 构建：成功，0 error
+- 创建了 `AITool.Core` 物理独立宿主工程，作为纯代理运行时服务
+  - 工程文件（csproj）、Program.cs、全部代理控制器和运行时服务已到位
+  - 清除了 3 个冗余桥接壳文件（AppVersionInfo、HttpExceptionLoggingFilter、HttpLogFormatter）
+  - 修复了 2 个代理控制器中 `HttpLogFormatter` 命名空间引用缺失
+- 将 `AITool.Core` 添加到 `AITool.slnx`
+- 创建了 `AITool.Core.IntegrationTests` 独立测试工程，3 个冒烟测试全部通过
+- 验证了整个解决方案编译通过（11 个项目，0 error，0 warning）
+- 验证了全部 277 个测试通过（ApplicationTests 101 + IntegrationTests 127 + Admin.IntegrationTests 46 + Core.IntegrationTests 3）
+- AITool.Web 不受任何影响，仍可正常编译和运行
 
 ### 当前还剩什么
 
-- AITool.Web 中仍有 5 个未迁移页面：Chat/Index、ClientSimulator/Index、Developer/Invocations/Index、System/Settings、UsageLogs/Index
-- AITool.Web 中仍有 2 个未迁移控制器：ChatApiController（深度代理运行时依赖）、UsageLogsApiController（Admin 已有对应版本）
-- Chat/Index 可迁移（仅依赖 ISystemRuntimeSettingsService）
-- ClientSimulator/Index 仅做重定向，可考虑直接移除
-- Developer/Invocations 和 System/Settings 有更深的运行时依赖，需要先在 Admin 侧建立对应查询门面
-- AITool.Core 物理独立宿主、patch 增量同步、实时事件流与 sequence/ack 持久化增强仍未进入本轮实施
+- AITool.Core 宿主已创建并验证可独立启动，但尚未添加代理转发端点的集成测试
+- AITool.Web 中仍有 3 个 Admin 页面：Developer/Invocations/Index、System/Settings（不可迁移，代理运行时依赖）、Chat/Index（Admin 已有，Web 保留用于 JS API）
+- AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（不可迁移，深度代理运行时依赖）
+- Core 与 Admin 双宿主联合部署方案尚未实施
+- patch 增量同步、实时事件流与 sequence/ack 持久化增强仍未实施
 
 ### 当前阻塞点是什么
 
-- 目前没有新的代码级阻塞
-- Developer/Invocations 和 System/Settings 需要先分析运行时依赖链路再决定迁移策略
+- AITool.Core 独立宿主已验证可启动和响应，但代理端点的真实集成测试还需添加
+- Core 和 Admin 的联合运行（Core 跑代理、Admin 跑管理页面）需要部署配置与集成测试
+- AITool.Web 中仍有少量 Admin 页面因代理运行时依赖而无法迁移
 
 ### 下一步准备做什么
 
-- 迁移 Chat/Index 页面到 AITool.Admin（低风险，仅依赖 ISystemRuntimeSettingsService）
-- 处理 ClientSimulator 页面（重定向页面，可直接在 Admin 中创建对应实现）
-- 分析 Developer/Invocations 的依赖链路，为迁移做准备
-- 分析 System/Settings 的依赖链路，评估在 Admin 侧建立替代方案的可行性
+- 为 AITool.Core 添加更多代理端点集成测试（配置同步、事件推送等）
+- 推进 Core / Admin 联合部署配置（launchSettings、Docker 等）
 - 每完成一个小阶段后继续同步更新本文档
 
 ---
@@ -774,4 +915,4 @@ AITool.Admin 只注册了只读查询链路，写入侧服务（`ConversationLog
 
 当前项目状态可以概括为：
 
-> **协议与运行时基础已经打好，双宿主也开始真正落地；Admin 宿主已迁移 10 个控制器和 10 组页面（UsageLogs + Conversations + 第三批 8 组），仅剩 5 个页面和 2 个控制器待处理；下一阶段继续迁移剩余页面并推进 Core 物理独立宿主。**
+> **协议与运行时基础已经打好，双宿主也开始真正落地；Admin 宿主已迁移 10 个控制器和 11 组页面（UsageLogs + Conversations + Chat + 第三批 8 组），46 个集成测试全部通过；集成测试缓存失效修复完成，277 个测试全部通过；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证），3 个独立冒烟测试全部通过；页面迁移已触及天花板，剩余 2 个页面（Developer/Invocations、System/Settings）因代理运行时依赖不可迁移；下一阶段需推进 Core 代理端点集成测试与双宿主联合部署。**
