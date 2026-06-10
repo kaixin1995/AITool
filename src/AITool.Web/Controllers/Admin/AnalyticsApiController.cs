@@ -1,3 +1,4 @@
+using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;

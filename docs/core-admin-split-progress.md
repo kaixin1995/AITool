@@ -273,37 +273,39 @@
 
 ---
 
-### 已完成：第一批宿主共享能力抽取
+### 已完成：第一批宿主共享边界继续收口
 
-已经完成或开始接入：
+本轮已继续推进：
 
-- `src/AITool.Infrastructure/Hosting/AppVersionInfo.cs`
-- `src/AITool.Infrastructure/Hosting/HttpLogFormatter.cs`
-- `src/AITool.Infrastructure/Hosting/AdminAuthOptions.cs`
-- `src/AITool.Infrastructure/Hosting/HttpExceptionLoggingFilter.cs`
+- `src/AITool.Infrastructure/Hosting/ModelVendorCatalogService.cs`
+- `src/AITool.Infrastructure/Hosting/AnalyticsBackgroundQueryExecutor.cs`
+- `src/AITool.Web/Services/ModelVendorCatalogService.cs`
+- `src/AITool.Web/Services/AnalyticsBackgroundQueryExecutor.cs`
+- `src/AITool.Web/Pages/Admin/Models/Index.cshtml.cs`
+- `src/AITool.Web/Pages/Admin/System/Settings.cshtml.cs`
+- `src/AITool.Web/Controllers/Admin/AnalyticsApiController.cs`
+- `tests/AITool.ApplicationTests/Hosting/ModelVendorCatalogServiceTests.cs`
+- `tests/AITool.IntegrationTests/System/SystemSettingsCacheTests.cs`
 
-以及：
+#### 本轮已实现能力
 
-- `src/AITool.Web/GlobalUsings.cs`
-- `src/AITool.Web/Services/AdminAuthService.cs`
-- `src/AITool.Web/Program.cs`
-- `src/AITool.Admin/Program.cs`
+- 已把 `ModelVendorCatalogService` 的核心实现从 `AITool.Web.Services` 收口到 `AITool.Infrastructure.Hosting`
+- `AITool.Web.Services.ModelVendorCatalogService` 已降为最小桥接壳，避免继续保留一份完整重复实现
+- Web 侧模型管理页已显式引用共享宿主层中的 `ModelVendorCatalogService`、`ModelVendorCatalog`、`ModelVendorDefinition`
+- 已补充共享宿主层的应用测试，覆盖：
+  - 命中厂商规则时返回正确厂商定义
+  - 未命中规则时正确回退到“未分类”厂商定义
+- 已把 `AnalyticsBackgroundQueryExecutor` 及其相关状态类型从 `AITool.Web.Services` 收口到 `AITool.Infrastructure.Hosting`
+- `AITool.Web.Services.AnalyticsBackgroundQueryExecutor` 已降为最小桥接壳，避免 Web 宿主继续保留完整后台查询执行器实现
+- Web 侧系统设置页与 Analytics 控制器已显式改为引用共享宿主层中的 `AnalyticsBackgroundQueryExecutor`
+- 已通过 `SystemSettingsCacheTests` 验证系统设置页在使用共享宿主层查询执行器后，缓存失效链路仍保持正常
 
-#### 当前作用
+#### 当前边界结论
 
-- 把一部分宿主公共能力从 `AITool.Web.Services` 中抽出，供双宿主复用
-- 避免在 `AITool.Admin` 中重复实现这些类型
-
-#### 宿主共享层状态
-
-- 第一轮抽取已完成
-- 当前 `AITool.Admin` 仍然临时直接复用部分 `AITool.Web.Services` 中的实现类型
-- 后续还需要继续收口：
-  - 哪些应抽成真正的宿主共享层
-  - 哪些应只属于 Admin
-  - 哪些应通过 Core API 替代，而不再直接引用 Web 侧实现
-
----
+- `ModelVendorCatalogService` 已可明确归入 **宿主共享层 / 偏 Admin 管理展示能力**
+- `AnalyticsBackgroundQueryExecutor` 已可明确归入 **宿主共享层 / 偏 Admin 统计分析后台能力**
+- 它们不再适合继续停留在 `AITool.Web.Services` 里作为 Web 专属完整实现
+- 这一步也为后续 `AITool.Admin` 真正接管 Models / Analytics / System 相关页面能力提供了更稳定的共享基础
 
 ### 已完成：当前主线完整验证
 
@@ -365,9 +367,15 @@
 - 哪些应该只属于 Admin
 - 哪些后续应通过 Core API 替代，而不应在 Admin 宿主直接引用
 
-#### 当前边界结论
+#### 宿主共享层当前边界结论
 
 宿主共享层已经从“完全混杂”进入“边界已暴露”的阶段，但还没有最终定型。
+当前已可以明确：
+
+- `ModelVendorCatalogService` 已开始收口到 `AITool.Infrastructure.Hosting`
+- 它更适合归入宿主共享层 / 偏 Admin 管理展示能力，而不是继续作为 `AITool.Web.Services` 的专属完整实现
+- `AnalyticsBackgroundQueryExecutor` 也明显偏 Admin，但本轮尚未开始实际迁移
+- `DeveloperInvocationTraceStore`、`ModelConcurrencyLimiter`、`ProxyRequestMetadataCache` 仍直接挂在 Core / Proxy 运行时链路上，当前不宜贸然整体迁出
 
 ---
 

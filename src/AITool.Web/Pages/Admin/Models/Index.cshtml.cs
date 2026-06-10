@@ -1,6 +1,7 @@
 using System.Text.Json;
 using AITool.Application.Models;
 using AITool.Domain.Models;
+using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;

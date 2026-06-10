@@ -1,5 +1,6 @@
 using AITool.Application.Operations;
 using AITool.Domain.Operations;
+using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
