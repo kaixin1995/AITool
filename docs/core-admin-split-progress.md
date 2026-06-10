@@ -366,11 +366,43 @@
 - ApplicationTests：`101/101` 通过
 - IntegrationTests：`127/127` 通过
 - Admin.IntegrationTests：`46/46` 通过
-- Core.IntegrationTests：`3/3` 通过
+- Core.IntegrationTests：`23/23` 通过（3 冒烟 + 20 端点测试）
 - AITool.Web：构建成功，`0 error`（34 warnings 均为既有 nullable 警告）
 - AITool.Admin：单独构建成功
 - AITool.Core：单独构建成功，`0 error`，`0 warning`
-- **总计：277 个测试全部通过，0 失败**
+- **总计：297 个测试全部通过，0 失败**
+
+### 已完成：Core API 端点集成测试
+
+本轮为 AITool.Core 独立宿主新增了 20 个全面的 API 端点集成测试，覆盖所有 8 个 Tier 1 Core API 端点。
+
+#### 已完成文件
+
+- `tests/AITool.Core.IntegrationTests/CoreApiEndpointTests.cs` — 新增，20 个端点集成测试
+- `tests/AITool.Core.IntegrationTests/CoreHostSmokeTests.cs` — 修改，`CoreHostWebApplicationFactory` 从 `internal` 改为 `public`，供端点测试引用
+
+#### 测试覆盖范围（20 个测试，5 个控制器）
+
+| 控制器 | 端点 | 测试数 | 说明 |
+|--------|------|--------|------|
+| CoreRuntimeStatusController | GET /health, GET /api/core/health | 2 | 健康检查 |
+| CoreRuntimeStatusController | GET /api/core/ready | 2 | 就绪检查（同步前/后） |
+| CoreRuntimeStatusController | GET /api/core/runtime/status | 2 | 运行时状态（同步前/后） |
+| CoreConfigController | GET /api/core/config/status | 2 | 配置状态（同步前/后） |
+| CoreConfigSyncController | POST /api/core/config/full-sync | 7 | 全量同步（合法/重复/零版本/错误哈希/无站点/无密钥/成功后状态） |
+| CoreConfigHandshakeController | POST /api/core/config/handshake | 2 | 握手（无配置/匹配配置） |
+| CoreEventAckController | POST /api/core/events/ack | 2 | 事件确认（合法/负序号） |
+| CoreEventAckController | GET /api/core/events/replay | 2 | 事件回放（初始空/负序号） |
+
+#### 测试隔离设计
+
+每个测试方法创建独立的 `CoreHostWebApplicationFactory` 实例（`await using var factory = new CoreHostWebApplicationFactory()`），确保测试之间完全隔离，不会因共享 singleton `CoreRuntimeConfigProvider` 而互相影响。此前曾使用 `IClassFixture` 共享工厂，但因全量同步测试写入共享状态导致 "before sync" 测试失败，已改为每测试独立工厂。
+
+#### Core API 端点测试状态
+
+- **20 个端点测试全部通过**
+- **覆盖所有 8 个 Tier 1 Core API 端点**
+- **每个测试完全隔离，无共享状态**
 
 ### 已完成：集成测试缓存失效修复
 
@@ -879,19 +911,17 @@ Core 独立测试工程：
 
 ### 本轮完成了什么
 
-- 创建了 `AITool.Core` 物理独立宿主工程，作为纯代理运行时服务
-  - 工程文件（csproj）、Program.cs、全部代理控制器和运行时服务已到位
-  - 清除了 3 个冗余桥接壳文件（AppVersionInfo、HttpExceptionLoggingFilter、HttpLogFormatter）
-  - 修复了 2 个代理控制器中 `HttpLogFormatter` 命名空间引用缺失
-- 将 `AITool.Core` 添加到 `AITool.slnx`
-- 创建了 `AITool.Core.IntegrationTests` 独立测试工程，3 个冒烟测试全部通过
-- 验证了整个解决方案编译通过（11 个项目，0 error，0 warning）
-- 验证了全部 277 个测试通过（ApplicationTests 101 + IntegrationTests 127 + Admin.IntegrationTests 46 + Core.IntegrationTests 3）
+- 为 AITool.Core 独立宿主新增了 20 个全面的 API 端点集成测试
+  - 覆盖所有 8 个 Tier 1 Core API 端点（健康检查、就绪检查、运行时状态、配置状态、全量同步、握手、事件确认、事件回放）
+  - 每个测试使用独立 WebApplicationFactory 实例，确保测试间完全隔离
+  - 解决了 IClassFixture 共享状态导致的测试交叉污染问题
+- 修改 `CoreHostWebApplicationFactory` 可见性从 `internal` 到 `public`，修复 CS0051 编译错误
+- 验证了全部 297 个测试通过（ApplicationTests 101 + IntegrationTests 127 + Admin.IntegrationTests 46 + Core.IntegrationTests 23）
 - AITool.Web 不受任何影响，仍可正常编译和运行
 
 ### 当前还剩什么
 
-- AITool.Core 宿主已创建并验证可独立启动，但尚未添加代理转发端点的集成测试
+- AITool.Core 宿主 API 端点集成测试已完成，但代理转发端点（/v1/*）的真实集成测试还需添加
 - AITool.Web 中仍有 3 个 Admin 页面：Developer/Invocations/Index、System/Settings（不可迁移，代理运行时依赖）、Chat/Index（Admin 已有，Web 保留用于 JS API）
 - AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（不可迁移，深度代理运行时依赖）
 - Core 与 Admin 双宿主联合部署方案尚未实施
@@ -905,7 +935,7 @@ Core 独立测试工程：
 
 ### 下一步准备做什么
 
-- 为 AITool.Core 添加更多代理端点集成测试（配置同步、事件推送等）
+- 为 AITool.Core 添加代理转发端点集成测试（/v1/* 代理链路）
 - 推进 Core / Admin 联合部署配置（launchSettings、Docker 等）
 - 每完成一个小阶段后继续同步更新本文档
 
@@ -915,4 +945,4 @@ Core 独立测试工程：
 
 当前项目状态可以概括为：
 
-> **协议与运行时基础已经打好，双宿主也开始真正落地；Admin 宿主已迁移 10 个控制器和 11 组页面（UsageLogs + Conversations + Chat + 第三批 8 组），46 个集成测试全部通过；集成测试缓存失效修复完成，277 个测试全部通过；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证），3 个独立冒烟测试全部通过；页面迁移已触及天花板，剩余 2 个页面（Developer/Invocations、System/Settings）因代理运行时依赖不可迁移；下一阶段需推进 Core 代理端点集成测试与双宿主联合部署。**
+> **协议与运行时基础已经打好，双宿主也开始真正落地；Admin 宿主已迁移 10 个控制器和 11 组页面（UsageLogs + Conversations + Chat + 第三批 8 组），46 个集成测试全部通过；集成测试缓存失效修复完成，297 个测试全部通过；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证），23 个独立测试全部通过（3 冒烟 + 20 端点测试）；页面迁移已触及天花板，剩余 2 个页面（Developer/Invocations、System/Settings）因代理运行时依赖不可迁移；下一阶段需推进 Core 代理转发端点集成测试与双宿主联合部署。**

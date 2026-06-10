@@ -60,7 +60,7 @@ public sealed class CoreHostSmokeTests
 /// Core 宿主测试工厂，使用 Testing 环境避免加载生产配置。
 /// Core 宿主不依赖数据库，所以不需要替换 DbContext。
 /// </summary>
-internal sealed class CoreHostWebApplicationFactory : WebApplicationFactory<AITool.Core.CoreProgramMarker>
+public sealed class CoreHostWebApplicationFactory : WebApplicationFactory<AITool.Core.CoreProgramMarker>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
