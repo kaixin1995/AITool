@@ -299,6 +299,15 @@
 - `AITool.Web.Services.AnalyticsBackgroundQueryExecutor` 已降为最小桥接壳，避免 Web 宿主继续保留完整后台查询执行器实现
 - Web 侧系统设置页与 Analytics 控制器已显式改为引用共享宿主层中的 `AnalyticsBackgroundQueryExecutor`
 - 已通过 `SystemSettingsCacheTests` 验证系统设置页在使用共享宿主层查询执行器后，缓存失效链路仍保持正常
+- 本轮继续对 `src/AITool.Web/Services/ProxyRequestMetadataCache.cs` 做了第一轮职责分区收口，先在同一类型内显式标出 Core 运行时元数据入口、Admin 查询元数据入口与共享失效入口，并把后台聊天/开发者/路由查询相关缓存失效进一步聚拢到独立方法中，后续可在不破坏代理链路的前提下继续拆分
+- 本轮继续把 `ProxyRequestMetadataCache` 中偏 Admin 查询的一组方法拆到 `src/AITool.Web/Services/ProxyRequestMetadataCache.AdminQueries.cs`，让主文件优先保留运行时路径、共享失效入口与共享辅助逻辑，进一步降低运行时逻辑与后台查询逻辑的混杂度
+- 本轮继续把路由规则页和客户端模拟器中被 `ProxyRequestMetadataCache` 直接引用的查询结果类型抽到 `src/AITool.Web/Services/ProxyRequestMetadataQueryModels.cs`，降低缓存服务对控制器和页面命名空间的直接耦合，为后续继续下沉到独立 Admin 查询服务做准备
+- 本轮已新增 `src/AITool.Web/Services/AdminQueryMetadataService.cs` 作为后台查询元数据服务雏形，并已把 Chat、RouteRules、Developer Invocations 这三处 Admin 调用方的查询读取从 `ProxyRequestMetadataCache` 直接依赖切到该服务，进一步降低后台页面对运行时缓存对象的直接耦合
+- 本轮继续清掉了 `Developer Invocations` 页面中对 `ProxyRequestMetadataCache` 已不再使用的直接字段依赖，说明这批后台查询读取切换后，页面层已经可以仅依赖 `AdminQueryMetadataService` 获取只读查询元数据
+- 本轮又新增 `src/AITool.Web/Services/DeveloperInvocationTraceQueryService.cs`，把后台开发者调用页对 `DeveloperInvocationTraceStore` 的读取动作收口到只读查询门面中，保持代理控制器继续直接写入运行时存储，而管理页读取开始走独立查询入口
+- 本轮继续新增 `src/AITool.Web/Services/ModelConcurrencyQueryService.cs`，把开发者并发面板对 `ModelConcurrencyLimiter` 的只读快照读取收口到查询门面中，后台页面不再直接依赖运行时并发控制对象本身的读取接口
+- 本轮继续新增 `src/AITool.Web/Services/AdminCacheInvalidationService.cs`，开始把后台写操作对 `ProxyRequestMetadataCache` 的直接失效调用统一收口；当前已覆盖 AccessKeys、Models、SiteCatalog、System Settings 这几类典型后台写入口
+- 本轮所有与上述调整直接相关的构建与集成测试已重新通过，包括 `ProxyMetadataCacheTests`、`SystemSettingsCacheTests`、`DeveloperInvocationsPageTests`、`ChatApiTests`、`ClientSimulatorPageTests`、`ProxyFallbackFlowTests` 这批高关联测试
 
 #### 当前边界结论
 
@@ -374,8 +383,12 @@
 
 - `ModelVendorCatalogService` 已开始收口到 `AITool.Infrastructure.Hosting`
 - 它更适合归入宿主共享层 / 偏 Admin 管理展示能力，而不是继续作为 `AITool.Web.Services` 的专属完整实现
-- `AnalyticsBackgroundQueryExecutor` 也明显偏 Admin，但本轮尚未开始实际迁移
+- `AnalyticsBackgroundQueryExecutor` 已开始收口到 `AITool.Infrastructure.Hosting`，并可明确视为宿主共享层 / 偏 Admin 统计分析后台能力
 - `DeveloperInvocationTraceStore`、`ModelConcurrencyLimiter`、`ProxyRequestMetadataCache` 仍直接挂在 Core / Proxy 运行时链路上，当前不宜贸然整体迁出
+- `ProxyRequestMetadataCache` 当前已经完成第五轮结构收口：除了职责显式分区、Admin 查询 partial 拆分、查询结果模型抽离外，后台查询读取已开始通过 `AdminQueryMetadataService` 门面服务对外暴露，Chat / RouteRules / Developer 三处调用方已经不再直接读取运行时缓存对象上的这批查询方法，并且 `Developer Invocations` 页面已清掉多余的直接缓存字段依赖；后续仍需继续扩大覆盖面并决定是否进一步迁入独立 Admin 宿主
+- `DeveloperInvocationTraceStore` 当前也已开始做最小边界收口：代理控制器继续直接写入运行时跟踪存储，而开发者后台页面读取已改走 `DeveloperInvocationTraceQueryService`，为后续把读写职责进一步分离提供了稳定起点
+- `ModelConcurrencyLimiter` 当前也已开始做最小边界收口：运行时获取/释放并发许可逻辑保持不变，而开发者后台页面读取最近并发快照已改走 `ModelConcurrencyQueryService`，为后续把后台查询读取与运行时控制对象继续分离提供了稳定起点
+- `ProxyRequestMetadataCache` 除了后台只读查询门面外，后台写操作的缓存失效也已开始通过 `AdminCacheInvalidationService` 收口，说明 Admin 侧对运行时缓存对象的直接依赖正在同时从“读”和“写”两个方向下降
 
 ---
 
