@@ -11,6 +11,7 @@
 - [core-admin-split-design.md](core-admin-split-design.md)
 - [core-admin-split-implementation-checklist.md](core-admin-split-implementation-checklist.md)
 - [core-admin-split-communication-protocol.md](core-admin-split-communication-protocol.md)
+- [core-admin-split-handoff.md](core-admin-split-handoff.md)
 
 ---
 
