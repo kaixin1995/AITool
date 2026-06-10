@@ -1,4 +1,5 @@
 using AITool.Application.CoreRuntime;
+using AITool.Core.Services;
 using AITool.Infrastructure.CoreRuntime;
 using Microsoft.AspNetCore.Mvc;
 
@@ -14,13 +15,17 @@ namespace AITool.Core.Controllers.Core;
 public sealed class CoreConfigSyncController : ControllerBase
 {
     private readonly ICoreRuntimeConfigProvider _configProvider;
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
     /// <summary>
     /// 初始化 Core 配置同步控制器。
     /// </summary>
-    public CoreConfigSyncController(ICoreRuntimeConfigProvider configProvider)
+    public CoreConfigSyncController(
+        ICoreRuntimeConfigProvider configProvider,
+        ProxyRequestMetadataCache metadataCache)
     {
         _configProvider = configProvider;
+        _metadataCache = metadataCache;
     }
 
     /// <summary>
@@ -67,7 +72,13 @@ public sealed class CoreConfigSyncController : ControllerBase
             return BadRequest(new { message = "配置快照缺少必要的站点或访问密钥数据" });
         }
 
+        // 先更新配置快照，再清除代理运行时的所有缓存条目。
+        // 缓存失效确保后续请求从新快照重新构建缓存数据。
         _configProvider.SetCurrent(snapshot);
+        _metadataCache.InvalidateAccessKeys();
+        _metadataCache.InvalidateRuntimeSettings();
+        _metadataCache.InvalidateRuntimeRouteTargets();
+
         return Ok(new
         {
             applied = true,

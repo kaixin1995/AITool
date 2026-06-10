@@ -12,6 +12,7 @@ using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Caching.Memory;
 using NLog;
 using NLog.Web;
 
@@ -61,7 +62,14 @@ builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
 
 // 注册代理请求元数据缓存，缓存路由、密钥、并发限制等运行时数据。
 // Core 宿主的缓存数据来源是 Admin 下发的配置快照，而非直接查询数据库。
-builder.Services.AddSingleton<ProxyRequestMetadataCache>();
+// 显式传入 ICoreRuntimeConfigProvider，使缓存方法在快照可用时优先从快照读取。
+builder.Services.AddSingleton<ProxyRequestMetadataCache>(sp =>
+{
+    var memoryCache = sp.GetRequiredService<IMemoryCache>();
+    var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
+    var configProvider = sp.GetRequiredService<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
+    return new ProxyRequestMetadataCache(memoryCache, scopeFactory, configProvider);
+});
 builder.Services.AddSingleton<AdminQueryMetadataService>();
 
 // 注册并发控制与查询服务。

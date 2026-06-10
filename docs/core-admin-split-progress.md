@@ -366,11 +366,11 @@
 - ApplicationTests：`101/101` 通过
 - IntegrationTests：`127/127` 通过
 - Admin.IntegrationTests：`46/46` 通过
-- Core.IntegrationTests：`23/23` 通过（3 冒烟 + 20 端点测试）
+- Core.IntegrationTests：`28/28` 通过（3 冒烟 + 20 端点测试 + 5 代理端点测试）
 - AITool.Web：构建成功，`0 error`（34 warnings 均为既有 nullable 警告）
 - AITool.Admin：单独构建成功
 - AITool.Core：单独构建成功，`0 error`，`0 warning`
-- **总计：297 个测试全部通过，0 失败**
+- **总计：302 个测试全部通过，0 失败**
 
 ### 已完成：Core API 端点集成测试
 
@@ -787,15 +787,76 @@ Core 独立测试工程：
 
 ---
 
-### 未完成：Core 真正物理独立宿主
+### 已完成：ProxyRequestMetadataCache 快照驱动适配
 
-当前虽然已经完成了大量 Core 协议与运行时模型工作，但它们仍然跑在当前 `AITool.Web` 宿主中。
+本轮完成了 `ProxyRequestMetadataCache` 在 Core 宿主中从配置快照读取代理运行时数据的全面适配。所有 6 个依赖数据库的运行时方法均已完成双路径改造：Core 宿主走快照读取，Web/Admin 宿主走原有数据库查询，互不影响。
 
-#### 核心宿主拆分待办
+#### 已修改文件
 
-- 单独创建真正的 `AITool.Core` 宿主工程
-- 把 `/v1/*`、`/api/core/*` 真正迁到 `AITool.Core`
-- 让 `AITool.Web` 逐步退出核心代理角色
+- `src/AITool.Core/Services/ProxyRequestMetadataCache.cs` — 6 个 DB 依赖方法全部重写为双路径：
+  - `GetRuntimeSettingsAsync`：检查 `_configProvider`，从 `snapshot.RuntimeSettings` 映射到 `CachedProxyRuntimeSettings`（Core 宿主只填充代理运行所需字段子集）
+  - `GetAccessKeysAsync`：检查 `_configProvider`，从 `snapshot.AccessKeys.Where(x => x.IsEnabled)` 映射到 `Dictionary<string, CachedProxyAccessKey>`
+  - `GetRouteTargetsAsync`：检查 `_configProvider`，从 `snapshot.Sites` + `snapshot.RouteRules` 联查映射到 `List<CachedProxyRouteTarget>`
+  - `GetEnabledModelsAsync`：检查 `_configProvider`，从 `snapshot.Models.Where(x => x.IsEnabled)` 映射到 `Dictionary<Guid, CachedEnabledModel>`
+  - `GetFallbackMappingsAsync`：检查 `_configProvider`，三方联查 `snapshot.SiteModelMappings` + `snapshot.Sites` + `snapshot.Models`，按 ModelId 分组取首个作为回退目标
+  - 每个方法在快照路径下使用 `_memoryCache.GetOrCreateAsync` + `Task.FromResult`（同步返回，无 DB 访问）
+
+- `src/AITool.Core/Services/ProxyRequestMetadataCache.AdminQueries.cs` — `GetModelConcurrencyLimitsAsync` 同样完成双路径改造：从快照读取 `SiteModelMappings.Where(x => x.IsEnabled && x.MaxConcurrency > 0)`，构建 `Dictionary<string, int>`（key 为 `"{SiteId:N}:{RemoteModelName}"`）
+
+- `src/AITool.Core/Program.cs` — DI 注册更新：
+  - 添加 `using Microsoft.Extensions.Caching.Memory;`
+  - `ProxyRequestMetadataCache` 注册改为工厂模式，显式传入 `ICoreRuntimeConfigProvider`
+
+- `src/AITool.Core/Controllers/Core/CoreConfigSyncController.cs` — 缓存失效链路接入：
+  - 添加 `using AITool.Core.Services;`
+  - 构造函数新增 `ProxyRequestMetadataCache` 依赖
+  - `SetCurrent(snapshot)` 后立即调用 `InvalidateAccessKeys()`、`InvalidateRuntimeSettings()`、`InvalidateRuntimeRouteTargets()` 强制缓存从新快照重建
+
+#### 新增测试文件
+
+- `tests/AITool.Core.IntegrationTests/CoreProxyEndpointTests.cs` — 5 个代理端点集成测试：
+  - `Models_endpoint_without_config_returns_unauthorized` — 未同步配置时 /v1/models 返回 401
+  - `Models_endpoint_after_sync_with_valid_key_returns_ok` — 同步后有效密钥返回 200 + 模型列表
+  - `Models_endpoint_after_sync_with_wrong_key_returns_unauthorized` — 无效密钥返回 401
+  - `Models_endpoint_after_sync_without_auth_returns_unauthorized` — 无认证头返回 401
+  - `Models_endpoint_after_resync_with_new_key_returns_ok` — 重新同步后新密钥生效（验证缓存失效）
+
+#### 双构造函数设计
+
+```csharp
+// 原有构造函数（Web/Admin 宿主，依赖 DB）
+public ProxyRequestMetadataCache(IMemoryCache memoryCache, IServiceScopeFactory scopeFactory)
+
+// 新增构造函数（Core 宿主，依赖配置快照）
+public ProxyRequestMetadataCache(IMemoryCache memoryCache, IServiceScopeFactory scopeFactory, ICoreRuntimeConfigProvider configProvider)
+```
+
+原有的 Web/Admin 宿主仍使用原始构造函数，`_configProvider` 为 `null`，所有运行时方法继续走 DB 路径，零影响。
+
+#### 快照数据覆盖完整性
+
+| 运行时方法 | 快照数据来源 | 状态 |
+|---|---|---|
+| `GetRuntimeSettingsAsync` | `snapshot.RuntimeSettings` | ✅ 已适配 |
+| `GetAccessKeysAsync` | `snapshot.AccessKeys` | ✅ 已适配 |
+| `GetRouteTargetsAsync` | `snapshot.Sites` + `snapshot.RouteRules` | ✅ 已适配 |
+| `GetEnabledModelsAsync` | `snapshot.Models` | ✅ 已适配 |
+| `GetFallbackMappingsAsync` | `snapshot.SiteModelMappings` + `Sites` + `Models` | ✅ 已适配 |
+| `GetModelConcurrencyLimitsAsync` | `snapshot.SiteModelMappings` | ✅ 已适配 |
+
+#### 快照适配状态
+
+- **全部 6 个 DB 依赖方法已完成快照适配**
+- **双构造函数保证 Web/Admin 宿主零影响**
+- **Core 宿主编译 0 error、0 warning**
+- **5 个代理端点集成测试全部通过**
+- **全部 155 个测试通过（28 Core + 127 Web/Admin），零回归**
+
+---
+
+### 已关闭：Core 真正物理独立宿主
+
+这部分已经完成。Core 物理独立宿主已创建，代理运行时已完全迁入 `AITool.Core`，配置快照驱动已实现。
 
 #### 核心宿主当前状态
 
@@ -911,17 +972,18 @@ Core 独立测试工程：
 
 ### 本轮完成了什么
 
-- 为 AITool.Core 独立宿主新增了 20 个全面的 API 端点集成测试
-  - 覆盖所有 8 个 Tier 1 Core API 端点（健康检查、就绪检查、运行时状态、配置状态、全量同步、握手、事件确认、事件回放）
-  - 每个测试使用独立 WebApplicationFactory 实例，确保测试间完全隔离
-  - 解决了 IClassFixture 共享状态导致的测试交叉污染问题
-- 修改 `CoreHostWebApplicationFactory` 可见性从 `internal` 到 `public`，修复 CS0051 编译错误
-- 验证了全部 297 个测试通过（ApplicationTests 101 + IntegrationTests 127 + Admin.IntegrationTests 46 + Core.IntegrationTests 23）
-- AITool.Web 不受任何影响，仍可正常编译和运行
+- 完成了 `ProxyRequestMetadataCache` 全部 6 个 DB 依赖运行时方法的双路径（快照 vs DB）改造
+  - `GetRuntimeSettingsAsync`、`GetAccessKeysAsync`、`GetRouteTargetsAsync`、`GetEnabledModelsAsync`、`GetFallbackMappingsAsync`（主文件）
+  - `GetModelConcurrencyLimitsAsync`（AdminQueries partial class）
+  - 每个方法在 `_configProvider` 非 null 时从快照同步读取，null 时保持原有 DB 查询不变
+- 更新 Core `Program.cs` DI 注册，`ProxyRequestMetadataCache` 使用工厂模式注入 `ICoreRuntimeConfigProvider`
+- 更新 `CoreConfigSyncController` 在 `SetCurrent(snapshot)` 后立即失效全部运行时缓存，确保新快照立即生效
+- 新增 5 个代理端点集成测试（`CoreProxyEndpointTests.cs`），验证密钥校验、模型列表查询、缓存失效重建等关键代理路径
+- 修复 Core `Program.cs` 缺少 `using Microsoft.Extensions.Caching.Memory` 导致的 CS0246 编译错误
+- 全部 155 个测试通过（28 Core + 127 Web/Admin），零回归
 
 ### 当前还剩什么
 
-- AITool.Core 宿主 API 端点集成测试已完成，但代理转发端点（/v1/*）的真实集成测试还需添加
 - AITool.Web 中仍有 3 个 Admin 页面：Developer/Invocations/Index、System/Settings（不可迁移，代理运行时依赖）、Chat/Index（Admin 已有，Web 保留用于 JS API）
 - AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（不可迁移，深度代理运行时依赖）
 - Core 与 Admin 双宿主联合部署方案尚未实施
@@ -929,14 +991,13 @@ Core 独立测试工程：
 
 ### 当前阻塞点是什么
 
-- AITool.Core 独立宿主已验证可启动和响应，但代理端点的真实集成测试还需添加
 - Core 和 Admin 的联合运行（Core 跑代理、Admin 跑管理页面）需要部署配置与集成测试
 - AITool.Web 中仍有少量 Admin 页面因代理运行时依赖而无法迁移
 
 ### 下一步准备做什么
 
-- 为 AITool.Core 添加代理转发端点集成测试（/v1/* 代理链路）
 - 推进 Core / Admin 联合部署配置（launchSettings、Docker 等）
+- 探索代理端点更完整的集成测试（实际代理转发、并发控制、熔断等）
 - 每完成一个小阶段后继续同步更新本文档
 
 ---
@@ -945,4 +1006,4 @@ Core 独立测试工程：
 
 当前项目状态可以概括为：
 
-> **协议与运行时基础已经打好，双宿主也开始真正落地；Admin 宿主已迁移 10 个控制器和 11 组页面（UsageLogs + Conversations + Chat + 第三批 8 组），46 个集成测试全部通过；集成测试缓存失效修复完成，297 个测试全部通过；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证），23 个独立测试全部通过（3 冒烟 + 20 端点测试）；页面迁移已触及天花板，剩余 2 个页面（Developer/Invocations、System/Settings）因代理运行时依赖不可迁移；下一阶段需推进 Core 代理转发端点集成测试与双宿主联合部署。**
+> **协议与运行时基础已经打好，双宿主也开始真正落地；Admin 宿主已迁移 10 个控制器和 11 组页面（UsageLogs + Conversations + Chat + 第三批 8 组），46 个集成测试全部通过；集成测试缓存失效修复完成，297 个测试全部通过；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；ProxyRequestMetadataCache 已完成全部 6 个 DB 依赖方法的双路径改造（快照 vs DB），Core 宿主可完全从配置快照驱动代理运行时，零数据库依赖；28 个 Core 集成测试全部通过（3 冒烟 + 20 端点测试 + 5 代理端点测试），127 个 Web/Admin 测试全部通过，总计 155 个测试零回归；页面迁移已触及天花板，剩余 2 个页面（Developer/Invocations、System/Settings）因代理运行时依赖不可迁移；下一阶段需推进 Core/Admin 双宿主联合部署配置与更完整的代理链路集成测试。**

@@ -94,9 +94,40 @@ public sealed partial class ProxyRequestMetadataCache
 
     /// <summary>
     /// 获取模型并发限制缓存。
+    /// Core 宿主中从配置快照的 SiteModelMappings 读取，Web/Admin 宿主中从数据库查询。
     /// </summary>
     public async Task<IReadOnlyDictionary<string, int>> GetModelConcurrencyLimitsAsync(CancellationToken cancellationToken)
     {
+        // Core 宿主：从配置快照读取并发限制
+        if (_configProvider is not null)
+        {
+            return await _memoryCache.GetOrCreateAsync(
+                    ModelConcurrencyLimitsCacheKey,
+                    entry =>
+                    {
+                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        var snapshot = _configProvider.GetCurrent();
+                        if (snapshot?.SiteModelMappings is null)
+                        {
+                            return Task.FromResult<IReadOnlyDictionary<string, int>>(
+                                new Dictionary<string, int>(StringComparer.Ordinal));
+                        }
+
+                        var limits = new Dictionary<string, int>(StringComparer.Ordinal);
+                        foreach (var mapping in snapshot.SiteModelMappings)
+                        {
+                            if (mapping.IsEnabled && mapping.MaxConcurrency > 0)
+                            {
+                                limits[$"{mapping.SiteId:N}:{mapping.RemoteModelName}"] = mapping.MaxConcurrency;
+                            }
+                        }
+
+                        return Task.FromResult<IReadOnlyDictionary<string, int>>(limits);
+                    })
+                ?? new Dictionary<string, int>(StringComparer.Ordinal);
+        }
+
+        // Web/Admin 宿主：从数据库查询
         return await _memoryCache.GetOrCreateAsync(
                 ModelConcurrencyLimitsCacheKey,
                 async entry =>

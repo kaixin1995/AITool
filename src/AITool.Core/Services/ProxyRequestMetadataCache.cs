@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AITool.Application.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
@@ -86,8 +87,16 @@ public sealed partial class ProxyRequestMetadataCache
     private readonly IMemoryCache _memoryCache;
     /// <summary>
     /// 服务作用域工厂。
+    /// 在 Web/Admin 宿主中用于创建数据库查询作用域；
+    /// 在纯 Core 宿主中不会被使用，因为数据直接从配置快照读取。
     /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
+    /// <summary>
+    /// Core 运行时配置提供者。
+    /// 仅在 Core 宿主中注册，用于从 Admin 下发的配置快照读取代理运行时数据。
+    /// 在 Web/Admin 宿主中为 null，此时回退到数据库查询。
+    /// </summary>
+    private readonly ICoreRuntimeConfigProvider? _configProvider;
     /// <summary>
     /// 正在等待活跃调用结束的路由快照，确保调用中的模型不会被新顺序影响。
     /// </summary>
@@ -97,12 +106,26 @@ public sealed partial class ProxyRequestMetadataCache
     /// </summary>
     private readonly object _deferredRouteTargetsLock = new();
     /// <summary>
-    /// 初始化代理请求元数据缓存。
+    /// 初始化代理请求元数据缓存（Web/Admin 宿主使用，通过数据库查询）。
     /// </summary>
     public ProxyRequestMetadataCache(IMemoryCache memoryCache, IServiceScopeFactory scopeFactory)
     {
         _memoryCache = memoryCache;
         _scopeFactory = scopeFactory;
+    }
+
+    /// <summary>
+    /// 初始化代理请求元数据缓存（Core 宿主使用，通过配置快照读取）。
+    /// 当 _configProvider 不为 null 时，所有代理运行时查询直接从内存快照获取，不依赖数据库。
+    /// </summary>
+    public ProxyRequestMetadataCache(
+        IMemoryCache memoryCache,
+        IServiceScopeFactory scopeFactory,
+        ICoreRuntimeConfigProvider configProvider)
+    {
+        _memoryCache = memoryCache;
+        _scopeFactory = scopeFactory;
+        _configProvider = configProvider;
     }
 
     /// <summary>
@@ -125,9 +148,39 @@ public sealed partial class ProxyRequestMetadataCache
 
     /// <summary>
     /// 获取运行时设置缓存。
+    /// Core 宿主中从配置快照的 RuntimeSettings 读取，Web/Admin 宿主中从数据库查询。
     /// </summary>
     public async Task<CachedProxyRuntimeSettings> GetRuntimeSettingsAsync(CancellationToken cancellationToken)
     {
+        // Core 宿主：从 Admin 下发的配置快照直接读取运行时设置
+        if (_configProvider is not null)
+        {
+            return await _memoryCache.GetOrCreateAsync(
+                    RuntimeSettingsCacheKey,
+                    entry =>
+                    {
+                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        var snapshot = _configProvider.GetCurrent();
+                        var s = snapshot?.RuntimeSettings;
+
+                        // 快照中未包含运行时设置时使用默认值
+                        return Task.FromResult(s is null
+                            ? new CachedProxyRuntimeSettings()
+                            : new CachedProxyRuntimeSettings
+                            {
+                                ProxyRequestTimeoutSeconds = s.ProxyRequestTimeoutSeconds,
+                                ProxyRetryCount = s.ProxyRetryCount,
+                                CircuitBreakerFailureThreshold = s.CircuitBreakerFailureThreshold,
+                                CircuitBreakerRecoveryMinutes = s.CircuitBreakerRecoveryMinutes,
+                                ConversationLogEnabled = s.ConversationLogEnabled,
+                                ConcurrencyMode = s.ConcurrencyMode,
+                                ConcurrencyQueueTimeoutSeconds = s.ConcurrencyQueueTimeoutSeconds
+                            });
+                    })
+                ?? new CachedProxyRuntimeSettings();
+        }
+
+        // Web/Admin 宿主：从数据库查询完整的运行时设置（包含检测相关字段）
         return await _memoryCache.GetOrCreateAsync(
                 RuntimeSettingsCacheKey,
                 async entry =>
@@ -493,9 +546,39 @@ public sealed partial class ProxyRequestMetadataCache
 
     /// <summary>
     /// 加载访问密钥缓存。
+    /// Core 宿主中直接从配置快照读取，Web/Admin 宿主中从数据库查询。
     /// </summary>
     private async Task<Dictionary<string, CachedProxyAccessKey>> GetAccessKeysAsync(CancellationToken cancellationToken)
     {
+        // Core 宿主：从 Admin 下发的配置快照直接读取密钥数据，不依赖数据库
+        if (_configProvider is not null)
+        {
+            return await _memoryCache.GetOrCreateAsync(
+                    AccessKeyCacheKey,
+                    entry =>
+                    {
+                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        var snapshot = _configProvider.GetCurrent();
+                        if (snapshot?.AccessKeys is null)
+                        {
+                            return Task.FromResult(new Dictionary<string, CachedProxyAccessKey>(StringComparer.Ordinal));
+                        }
+
+                        var keys = snapshot.AccessKeys
+                            .Where(x => x.IsEnabled)
+                            .Select(x => new CachedProxyAccessKey
+                            {
+                                Id = x.Id,
+                                AccessKeyHash = x.AccessKeyHash
+                            })
+                            .ToList();
+
+                        return Task.FromResult(keys.ToDictionary(x => x.AccessKeyHash, x => x, StringComparer.Ordinal));
+                    })
+                ?? [];
+        }
+
+        // Web/Admin 宿主：从数据库查询
         return await _memoryCache.GetOrCreateAsync(
                 AccessKeyCacheKey,
                 async entry =>
@@ -521,9 +604,59 @@ public sealed partial class ProxyRequestMetadataCache
 
     /// <summary>
     /// 加载路由目标缓存。
+    /// Core 宿主中从配置快照的 RouteRules 和 Sites 构建路由目标，Web/Admin 宿主中从数据库联表查询。
     /// </summary>
     private async Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsAsync(CancellationToken cancellationToken)
     {
+        // Core 宿主：从配置快照构建路由目标
+        if (_configProvider is not null)
+        {
+            return await _memoryCache.GetOrCreateAsync(
+                    RouteTargetsCacheKeyPrefix + "all",
+                    entry =>
+                    {
+                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        var snapshot = _configProvider.GetCurrent();
+                        if (snapshot?.RouteRules is null || snapshot.Sites is null)
+                        {
+                            return Task.FromResult<IReadOnlyList<CachedProxyRouteTarget>>([]);
+                        }
+
+                        // 构建站点查找字典，用于快速匹配路由规则关联的站点
+                        var sitesById = snapshot.Sites
+                            .Where(s => s.IsEnabled)
+                            .ToDictionary(s => s.Id, s => s);
+
+                        var targets = snapshot.RouteRules
+                            .Where(r => r.IsEnabled)
+                            .Join(sitesById.Values, r => r.SiteId, s => s.Id, (rule, site) => new CachedProxyRouteTarget
+                            {
+                                RouteId = rule.Id,
+                                SiteId = site.Id,
+                                SiteName = site.Name,
+                                ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
+                                EndpointPathMode = site.EndpointPathMode,
+                                SupportsOpenAi = site.SupportsOpenAi,
+                                SupportsAnthropic = site.SupportsAnthropic,
+                                ExternalModelName = rule.ExternalModelName,
+                                UpstreamModelName = rule.UpstreamModelName,
+                                SiteModelName = rule.SiteModelName,
+                                BaseUrl = site.BaseUrl,
+                                ApiKey = site.ApiKey,
+                                ModelPriority = rule.ModelPriority,
+                                InstancePriority = rule.InstancePriority,
+                                Priority = rule.Priority,
+                                AvailabilityMode = NormalizeAvailabilityMode(rule.AvailabilityMode),
+                                TimeRangesJson = NormalizeTimeRangesJson(rule.AvailabilityMode, rule.TimeRangesJson)
+                            })
+                            .ToList();
+
+                        return Task.FromResult<IReadOnlyList<CachedProxyRouteTarget>>(targets);
+                    })
+                ?? [];
+        }
+
+        // Web/Admin 宿主：从数据库联表查询
         return await _memoryCache.GetOrCreateAsync(
                 RouteTargetsCacheKeyPrefix + "all",
                 async entry =>
@@ -564,9 +697,40 @@ public sealed partial class ProxyRequestMetadataCache
 
     /// <summary>
     /// 加载已启用模型缓存。
+    /// Core 宿主中从配置快照的 Models 列表读取，Web/Admin 宿主中从数据库查询。
     /// </summary>
     private async Task<Dictionary<Guid, CachedEnabledModel>> GetEnabledModelsAsync(CancellationToken cancellationToken)
     {
+        // Core 宿主：从配置快照读取模型列表
+        if (_configProvider is not null)
+        {
+            return await _memoryCache.GetOrCreateAsync(
+                    EnabledModelsCacheKey,
+                    entry =>
+                    {
+                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        var snapshot = _configProvider.GetCurrent();
+                        if (snapshot?.Models is null)
+                        {
+                            return Task.FromResult(new Dictionary<Guid, CachedEnabledModel>());
+                        }
+
+                        var models = snapshot.Models
+                            .Where(x => x.IsEnabled)
+                            .Select(x => new CachedEnabledModel
+                            {
+                                ModelId = x.Id,
+                                ModelName = x.ModelName,
+                                DisplayName = x.DisplayName
+                            })
+                            .ToDictionary(x => x.ModelId, x => x);
+
+                        return Task.FromResult(models);
+                    })
+                ?? [];
+        }
+
+        // Web/Admin 宿主：从数据库查询
         return await _memoryCache.GetOrCreateAsync(
                 EnabledModelsCacheKey,
                 async entry =>
@@ -594,9 +758,75 @@ public sealed partial class ProxyRequestMetadataCache
 
     /// <summary>
     /// 加载兜底映射缓存。
+    /// Core 宿主中从配置快照的 SiteModelMappings + Sites + Models 构建，
+    /// Web/Admin 宿主中从数据库三表联查。
     /// </summary>
     private async Task<Dictionary<Guid, CachedFallbackTarget>> GetFallbackMappingsAsync(CancellationToken cancellationToken)
     {
+        // Core 宿主：从配置快照构建兜底映射
+        if (_configProvider is not null)
+        {
+            return await _memoryCache.GetOrCreateAsync(
+                    FallbackMappingsCacheKey,
+                    entry =>
+                    {
+                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        var snapshot = _configProvider.GetCurrent();
+                        if (snapshot?.SiteModelMappings is null || snapshot.Sites is null || snapshot.Models is null)
+                        {
+                            return Task.FromResult(new Dictionary<Guid, CachedFallbackTarget>());
+                        }
+
+                        var sitesById = snapshot.Sites
+                            .Where(s => s.IsEnabled)
+                            .ToDictionary(s => s.Id);
+                        var modelsById = snapshot.Models
+                            .Where(m => m.IsEnabled)
+                            .ToDictionary(m => m.Id);
+
+                        // 三表内存联查：映射 + 站点 + 模型
+                        var validMappings = snapshot.SiteModelMappings
+                            .Where(m => m.IsEnabled
+                                && sitesById.TryGetValue(m.SiteId, out var site)
+                                && modelsById.TryGetValue(m.ModelLibraryItemId, out _))
+                            .Select(m =>
+                            {
+                                var site = sitesById[m.SiteId];
+                                var model = modelsById[m.ModelLibraryItemId];
+                                return new { m.ModelLibraryItemId, model.ModelName, m.SiteId, site, m.RemoteModelName };
+                            })
+                            .ToList();
+
+                        // 按模型分组，每组取站点名字典序第一个作为兜底目标
+                        var fallbackTargets = validMappings
+                            .GroupBy(x => x.ModelLibraryItemId)
+                            .Select(grouped =>
+                            {
+                                var first = grouped
+                                    .OrderBy(x => x.site.Name, StringComparer.OrdinalIgnoreCase)
+                                    .First();
+
+                                return new CachedFallbackTarget
+                                {
+                                    ModelId = grouped.Key,
+                                    ModelName = first.ModelName,
+                                    SiteId = first.SiteId,
+                                    SiteName = first.site.Name,
+                                    ProtocolType = ResolveSiteProtocolType(first.site.SupportsOpenAi, first.site.SupportsAnthropic),
+                                    BaseUrl = first.site.BaseUrl,
+                                    EndpointPathMode = first.site.EndpointPathMode,
+                                    ApiKey = first.site.ApiKey,
+                                    SiteModelName = first.RemoteModelName
+                                };
+                            })
+                            .ToList();
+
+                        return Task.FromResult(fallbackTargets.ToDictionary(x => x.ModelId, x => x));
+                    })
+                ?? [];
+        }
+
+        // Web/Admin 宿主：从数据库三表联查
         return await _memoryCache.GetOrCreateAsync(
                 FallbackMappingsCacheKey,
                 async entry =>
