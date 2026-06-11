@@ -44,7 +44,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
     }
 
     /// <summary>
-    /// 验证更新系统设置后，通过 AdminCacheInvalidationService 触发缓存失效，
+    /// 验证更新系统设置后，通过直接调用 ProxyRequestMetadataCache 触发缓存失效，
     /// ProxyRequestMetadataCache 会立即重新加载最新设置。
     /// </summary>
     [Fact]
@@ -54,7 +54,6 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
-        var cacheInvalidationService = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
@@ -98,7 +97,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         }, CancellationToken.None);
 
         // 触发缓存失效，直接调用 ProxyRequestMetadataCache 的失效方法
-        cacheInvalidationService.InvalidateRuntimeSettings();
+        cache.InvalidateRuntimeSettings();
 
         // 验证缓存已刷新为新值
         var after = await cache.GetRuntimeSettingsAsync(CancellationToken.None);

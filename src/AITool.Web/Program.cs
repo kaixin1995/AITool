@@ -66,7 +66,6 @@ builder.Services.Configure<ProxyForwardingOptions>(
 
 // 注册代理主入口和站点健康检测服务。
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
-builder.Services.AddScoped<ModelHealthRequestService>();
 
 // 注册使用日志和事件链路服务。
 builder.Services.AddSingleton<CoreEventSequenceProvider>();
