@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Hosting;
 
-namespace AITool.Infrastructure.Hosting;
+namespace AITool.Admin.Services;
 
 /// <summary>
 /// 模型厂商目录。
@@ -74,8 +74,8 @@ public sealed class ModelVendorRuleDefinition
 }
 
 /// <summary>
-/// 模型厂商目录服务。
-/// 当前阶段先把这类明显偏管理端展示与配置维护的能力抽到宿主共享层，避免继续停留在 Web 专属命名空间下。
+/// 模型厂商目录服务，管理厂商定义与匹配规则的持久化和查询。
+/// 此服务仅被 Admin 宿主使用，负责模型管理页面的厂商分组展示。
 /// </summary>
 public sealed class ModelVendorCatalogService
 {

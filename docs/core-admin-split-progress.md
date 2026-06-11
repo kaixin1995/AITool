@@ -1502,6 +1502,17 @@ CoreEventPullService 现在同时消费三种事件类型：
 - ApplicationTests 全量通过 189 个测试，零回归
 - 至此六大事件类型的 Ingestor/Store 全部拥有独立测试覆盖
 
+### 本轮又完成了什么（ConfigApplied + CircuitBreaker + DeveloperTrace Publisher 独立测试）
+
+- 为 CoreConfigAppliedEventPublisher 创建了 3 个独立单元测试：全量同步字段投影、增量同步 changedCategories 保留、连续序号递增
+- 为 CoreCircuitBreakerEventPublisher 创建了 3 个独立单元测试：熔断参数投影、null 参数抛 ArgumentNullException、连续序号递增
+- 为 CoreDeveloperTraceEventPublisher 创建了 7 个集成测试：完成追踪字段投影、pending 状态跳过、长体截断（512 字符）、空体处理、null 入参异常、空 Attempts 空 ForwardingMode、连续序号递增
+- 新增测试文件：tests/AITool.ApplicationTests/CoreRuntime/CoreConfigAppliedEventPublisherTests.cs（3 个测试）
+- 新增测试文件：tests/AITool.ApplicationTests/CoreRuntime/CoreCircuitBreakerEventPublisherTests.cs（3 个测试）
+- 新增测试文件：tests/AITool.Core.IntegrationTests/CoreDeveloperTraceEventPublisherTests.cs（7 个测试）
+- ApplicationTests 全量通过 195 个测试（+6），Core.IntegrationTests 全量通过 54 个测试（+7），零回归
+- 至此六大事件类型的 Publisher 全部拥有独立测试覆盖
+- 发现并记录了不同事件类型的 OccurredAt 策略差异：ConfigApplied 和 CircuitBreaker 使用 DateTimeOffset.UtcNow，DeveloperTrace 使用 payload.FinishedAt（来自 entry.UpdatedAt）
 ### 当前还剩什么
 
 - AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
@@ -1518,6 +1529,30 @@ CoreEventPullService 现在同时消费三种事件类型：
 ### 下一步准备做什么
 
 - ~~推进实时事件流推送通道（WebSocket/SSE）~~ 已完成（SSE 双通道实现 + 死代码清理）
+- 探索更多事件类型消费（如 detection、性能指标等）
+- 每完成一个小阶段后继续同步更新本文档
+
+
+---
+
+## 阶段记录 — 2026-06-10/11 收口共享宿主层服务归属
+
+### 本轮完成了什么
+
+- **修复 AnalyticsApiController OOM Bug**：当 rangeType=all 且 bucketType=day 时，ResolveTimeRange 返回 DateTimeOffset.MinValue 作为起始时间，BuildBuckets 从公元元年起生成约 74 万个空桶导致内存溢出。修复方式：在 baseLogs 过滤之后，用实际数据边界替代 MinValue 起始时间，然后重新解析桶类型。修复后 14/14 AnalyticsPageTests 全部通过，49/49 Admin 集成测试全部通过。
+- **迁移 ModelVendorCatalogService**：从 Infrastructure/Hosting 层迁入 Admin/Services，命名空间由 AITool.Infrastructure.Hosting 改为 AITool.Admin.Services。此服务仅被 Admin 宿主使用（模型管理页面的厂商分组展示），不含代码库内部依赖。同时更新了 Admin/Pages/Admin/Models/Index.cshtml.cs 的 using 引用和 ApplicationTests 的 using 引用。
+- **删除死代码 AnalyticsBackgroundQueryExecutor**：经全面搜索确认零 DI 注册、零代码引用，属于纯死代码。Admin 的 AnalyticsApiController 已简化为直接 DB 查询，不再使用此 BackgroundService。
+
+### 当前还剩什么
+
+- AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
+- AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（深度代理运行时依赖，不可迁移）
+- AITool.Web/Services/ 中仅剩 2 个文件：AdminCacheInvalidationService + AdminQueryMetadataService
+- Docker / 容器化部署配置尚未创建（用户明确暂不需要）
+
+### 下一步准备做什么
+
+- 评估并推进更多共享宿主层服务向 Admin 侧归集
 - 探索更多事件类型消费（如 detection、性能指标等）
 - 每完成一个小阶段后继续同步更新本文档
 

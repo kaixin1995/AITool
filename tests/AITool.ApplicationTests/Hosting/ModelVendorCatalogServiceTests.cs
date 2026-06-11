@@ -1,4 +1,4 @@
-using AITool.Infrastructure.Hosting;
+using AITool.Admin.Services;
 using FluentAssertions;
 
 namespace AITool.ApplicationTests.Hosting;

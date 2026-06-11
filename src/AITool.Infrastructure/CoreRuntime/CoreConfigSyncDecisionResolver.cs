@@ -4,7 +4,7 @@ namespace AITool.Infrastructure.CoreRuntime;
 
 /// <summary>
 /// 根据 Admin 与 Core 当前配置状态推导同步决策。
-/// 这里先把握手后的最小判断集中到一个地方，后续接入 patch 与 replay 时可以继续扩展。
+/// 集中管理握手后的配置对齐判断，涵盖全量同步、增量 patch 和版本不匹配等场景。
 /// </summary>
 public static class CoreConfigSyncDecisionResolver
 {

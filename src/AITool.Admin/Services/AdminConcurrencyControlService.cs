@@ -1,8 +1,9 @@
 namespace AITool.Admin.Services;
 
 /// <summary>
-/// Admin 宿主侧的并发控制门面（占位实现）。
-/// 当前阶段 Admin 不直接操作运行时并发限制器，相关操作后续通过 CoreAdminClient 代理。
+/// Admin 宿主侧的并发控制门面。
+/// 负责在模型配置变更后，将新的并发限制参数同步到 Core 运行时。
+/// 当前为占位实现，后续将通过 CoreAdminClient 向 Core 下发并发限制变更。
 /// </summary>
 public sealed class AdminConcurrencyControlService
 {

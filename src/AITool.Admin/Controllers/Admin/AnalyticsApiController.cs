@@ -511,6 +511,16 @@ public sealed class AnalyticsApiController : ControllerBase
             .Where(x => string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.AttemptedModel, query.ModelName, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
+        // 对"全部"范围，用筛选后数据的实际时间边界替代 DateTimeOffset.MinValue，
+        // 避免从公元元年开始生成海量空桶导致内存溢出。
+        if (string.Equals(query.RangeType, "all", StringComparison.OrdinalIgnoreCase))
+        {
+            startTime = baseLogs.Count > 0
+                ? StartOfDay(baseLogs.Min(x => x.RequestedAt))
+                : StartOfDay(DateTimeOffset.Now);
+            bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
+        }
+
         // 站点筛选按"命中过该站点的尝试"统计，避免回退成功后把失败站点整条请求吞掉。
         var scopedLogs = query.SiteId.HasValue
             ? baseLogs.Where(x => x.TargetSiteId == query.SiteId.Value).ToList()
