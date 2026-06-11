@@ -60,46 +60,15 @@ builder.Services.AddSingleton(new CoreRuntimeConfigFileOptions
 builder.Services.AddSingleton<CoreRuntimeConfigProvider>();
 builder.Services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>(sp => sp.GetRequiredService<CoreRuntimeConfigProvider>());
 
-// 注册代理转发配置，统一控制单路由超时和失败重试策略。
-builder.Services.Configure<ProxyForwardingOptions>(
-    builder.Configuration.GetSection(ProxyForwardingOptions.SectionName));
-
-// 注册代理主入口和站点健康检测服务。
-builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
-
-// 注册使用日志和事件链路服务。
-builder.Services.AddSingleton<CoreEventSequenceProvider>();
-builder.Services.AddSingleton<CoreAdminEventBus>();
-builder.Services.AddSingleton(new CoreEventSpoolOptions
-{
-    RootPath = builder.Environment.IsEnvironment("Testing")
-        ? Path.Combine(Path.GetTempPath(), $"aitool-core-event-spool-{Guid.NewGuid():N}")
-        : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "core-runtime", "spool")
-});
-builder.Services.AddSingleton<CoreEventSpoolStore>();
-builder.Services.AddHostedService<CoreEventSpoolBackgroundService>();
-builder.Services.AddSingleton<CoreUsageLogEventPublisher>();
-builder.Services.AddSingleton<CoreConversationEventPublisher>();
-builder.Services.AddSingleton<CoreConfigAppliedEventPublisher>();
-builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
-builder.Services.AddSingleton<ConversationLogBatchWriter>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<ConversationLogBatchWriter>());
-builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
-builder.Services.AddSingleton<ModelConcurrencyLimiter>();
-builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
-builder.Services.AddSingleton<IConversationLogService, ConversationLogService>();
-
-// 注册熔断状态存储和代理请求元数据缓存。
-// Web 宿主必须显式传入 null 的 configProvider，否则 DI 会自动注入已注册的
-// CoreRuntimeConfigProvider 实例，导致缓存走 Core 配置快照路径而绕过数据库查询。
-builder.Services.AddSingleton<RouteCircuitStateStore>();
-builder.Services.AddSingleton<ProxyRequestMetadataCache>(sp =>
-    new ProxyRequestMetadataCache(
-        sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(),
-        sp.GetRequiredService<IServiceScopeFactory>(),
-        configProvider: null));
-builder.Services.AddSingleton<AdminQueryMetadataService>();
+// 注册代理运行时核心链路服务：代理转发、并发控制、熔断、事件总线、批处理写入器等。
+// Web 宿主传入 useCoreRuntimeConfigProviderForCache: false，使元数据缓存始终通过数据库查询获取数据。
+var coreEventSpoolRootPath = builder.Environment.IsEnvironment("Testing")
+    ? Path.Combine(Path.GetTempPath(), $"aitool-core-event-spool-{Guid.NewGuid():N}")
+    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "core-runtime", "spool");
+builder.Services.AddProxyRuntimeInfrastructure(
+    builder.Configuration.GetSection(ProxyForwardingOptions.SectionName),
+    coreEventSpoolRootPath,
+    useCoreRuntimeConfigProviderForCache: false);
 
 // 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();

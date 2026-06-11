@@ -65,75 +65,30 @@ builder.Services.AddSingleton(new CoreRuntimeConfigFileOptions
 builder.Services.AddSingleton<CoreRuntimeConfigProvider>();
 builder.Services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>(sp => sp.GetRequiredService<CoreRuntimeConfigProvider>());
 
-// 注册代理转发配置，统一控制单路由超时和失败重试策略。
-builder.Services.Configure<ProxyForwardingOptions>(
-    builder.Configuration.GetSection(ProxyForwardingOptions.SectionName));
+// 注册代理运行时核心链路服务：代理转发、并发控制、熔断、事件总线、批处理写入器等。
+// Core 宿主传入 useCoreRuntimeConfigProviderForCache: true，使元数据缓存优先从配置快照读取。
+var coreEventSpoolRootPath = builder.Environment.IsEnvironment("Testing")
+    ? Path.Combine(Path.GetTempPath(), $"aitool-core-event-spool-{Guid.NewGuid():N}")
+    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "core-runtime", "spool");
+builder.Services.AddProxyRuntimeInfrastructure(
+    builder.Configuration.GetSection(ProxyForwardingOptions.SectionName),
+    coreEventSpoolRootPath,
+    useCoreRuntimeConfigProviderForCache: true);
 
-// 注册代理主入口实体配置。
-builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
-
-// 注册代理请求元数据缓存，缓存路由、密钥、并发限制等运行时数据。
-// Core 宿主的缓存数据来源是 Admin 下发的配置快照，而非直接查询数据库。
-// 显式传入 ICoreRuntimeConfigProvider，使缓存方法在快照可用时优先从快照读取。
-builder.Services.AddSingleton<ProxyRequestMetadataCache>(sp =>
-{
-    var memoryCache = sp.GetRequiredService<IMemoryCache>();
-    var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
-    var configProvider = sp.GetRequiredService<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
-    return new ProxyRequestMetadataCache(memoryCache, scopeFactory, configProvider);
-});
-builder.Services.AddSingleton<AdminQueryMetadataService>();
-
-// 注册并发控制与查询服务。
-builder.Services.AddSingleton<ModelConcurrencyLimiter>();
+// 注册并发控制查询服务（Core 独有，用于管理端点查询当前并发状态）。
 builder.Services.AddSingleton<ModelConcurrencyQueryService>();
 
-// 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点。
-builder.Services.AddSingleton<RouteCircuitStateStore>();
-
-// 注册开发者调用追踪存储（代理运行时写入端）。
-builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
+// 注册开发者调用追踪查询服务（Core 独有，用于管理端点查询追踪记录）。
 builder.Services.AddSingleton<DeveloperInvocationTraceQueryService>();
 
-// 注册开发者追踪事件发布器，当追踪完成时将摘要发布到 Core 事件总线。
+// 注册开发者追踪事件发布器，当追踪完成时将摘要发布到 Core 事件总线（Core 独有）。
 builder.Services.AddSingleton<CoreDeveloperTraceEventPublisher>();
 
-// 注册路由回退事件发布器，当代理请求在路由间回退时发布 route-fallback 事件。
+// 注册路由回退事件发布器，当代理请求在路由间回退时发布 route-fallback 事件（Core 独有）。
 builder.Services.AddSingleton<CoreRouteFallbackEventPublisher>();
 
-// 注册配置变更应用事件发布器，配置成功应用后向事件总线发送确认通知。
-builder.Services.AddSingleton<CoreConfigAppliedEventPublisher>();
-
-// 注册熔断状态变更事件发布器，当路由因连续失败达到阈值被首次熔断时发布 circuit-breaker 事件。
+// 注册熔断状态变更事件发布器，当路由因连续失败达到阈值被首次熔断时发布 circuit-breaker 事件（Core 独有）。
 builder.Services.AddSingleton<CoreCircuitBreakerEventPublisher>();
-
-// 注册事件序列、事件总线与 spool，支撑 Core -> Admin 可靠事件推送。
-builder.Services.AddSingleton<CoreEventSequenceProvider>();
-builder.Services.AddSingleton<CoreAdminEventBus>();
-builder.Services.AddSingleton(new CoreEventSpoolOptions
-{
-    RootPath = builder.Environment.IsEnvironment("Testing")
-        ? Path.Combine(Path.GetTempPath(), $"aitool-core-event-spool-{Guid.NewGuid():N}")
-        : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "core-runtime", "spool")
-});
-builder.Services.AddSingleton<CoreEventSpoolStore>();
-builder.Services.AddHostedService<CoreEventSpoolBackgroundService>();
-
-// 注册使用日志事件发布器和批处理写入器。
-// Core 宿主发布事件到总线，后台写入器批量持久化到数据库。
-builder.Services.AddSingleton<CoreUsageLogEventPublisher>();
-builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
-
-// 注册对话日志批处理写入器。
-// 对话日志文件存储已通过 AddCommonInfrastructure 注册，此处仅补充批处理写入器。
-builder.Services.AddSingleton<ConversationLogBatchWriter>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<ConversationLogBatchWriter>());
-builder.Services.AddSingleton<CoreConversationEventPublisher>();
-builder.Services.AddSingleton<IConversationLogService, ConversationLogService>();
-
-// 注册使用日志服务，记录每次代理调用的 Token 用量。
-builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 
 var app = builder.Build();
 
