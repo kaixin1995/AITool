@@ -9,7 +9,7 @@ using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
-using AITool.Web.Services;
+using AITool.Infrastructure.Proxy;
 
 namespace AITool.Web.Controllers.Proxy;
 

@@ -1,8 +1,9 @@
 using AITool.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
+using Microsoft.Extensions.DependencyInjection;
 
-namespace AITool.Core.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
 /// ProxyRequestMetadataCache 中偏 Admin 查询侧的只读元数据访问入口。

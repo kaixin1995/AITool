@@ -1,5 +1,5 @@
 using AITool.Application.CoreRuntime;
-using AITool.Core.Services;
+using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;

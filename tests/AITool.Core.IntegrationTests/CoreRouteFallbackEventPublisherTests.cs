@@ -1,7 +1,8 @@
 using System.Text.Json;
 using AITool.Application.CoreRuntime;
-using AITool.Infrastructure.CoreRuntime;
 using AITool.Core.Services;
+using AITool.Infrastructure.CoreRuntime;
+using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 

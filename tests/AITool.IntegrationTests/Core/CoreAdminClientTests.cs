@@ -43,16 +43,17 @@ public sealed class CoreAdminClientTests
         await Task.Delay(150);
 
         var replay = await client.ReplayAsync(0);
-        replay.Should().HaveCount(1);
-        replay[0].EventType.Should().Be("usage-log");
+        replay.Should().HaveCount(2);
+        replay[0].EventType.Should().Be("config-applied");
+        replay[1].EventType.Should().Be("usage-log");
 
         var ackResult = await client.AckAsync(new CoreAdminAckRequest
         {
             AdminInstanceId = "admin-node-01",
-            AckedSequenceId = replay[0].SequenceId,
+            AckedSequenceId = replay[1].SequenceId,
             AckedAt = new DateTimeOffset(2026, 6, 10, 9, 1, 0, TimeSpan.Zero)
         });
-        ackResult.AckedSequenceId.Should().Be(replay[0].SequenceId);
+        ackResult.AckedSequenceId.Should().Be(replay[1].SequenceId);
 
         var handshakeAfter = await client.HandshakeAsync(new CoreAdminHandshakeRequest
         {

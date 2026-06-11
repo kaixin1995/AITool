@@ -1,8 +1,9 @@
-namespace AITool.Core.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
 /// 后台页面使用的只读查询元数据服务。
-/// 当前阶段先作为 `ProxyRequestMetadataCache` 的管理侧门面，逐步把 Admin 查询职责从运行时缓存对象中剥离出来。
+/// 当前阶段先作为 <see cref="ProxyRequestMetadataCache"/> 的管理侧门面，
+/// 逐步把 Admin 查询职责从运行时缓存对象中剥离出来。
 /// </summary>
 public sealed class AdminQueryMetadataService
 {

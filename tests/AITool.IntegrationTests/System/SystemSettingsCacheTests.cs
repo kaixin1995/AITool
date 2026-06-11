@@ -2,7 +2,7 @@ using AITool.Application.Operations;
 using AITool.Domain.Operations;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
-using AITool.Web.Services;
+using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;

@@ -2,7 +2,7 @@ using AITool.Domain.Models;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
-using AITool.Web.Services;
+using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;

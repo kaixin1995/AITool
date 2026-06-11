@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
 using System.Threading;
+using AITool.Infrastructure.Proxy;
 
+using AITool.Web.Services;
 namespace AITool.Web.Services;
 
 /// <summary>

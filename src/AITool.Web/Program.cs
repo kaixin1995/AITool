@@ -91,8 +91,14 @@ builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 builder.Services.AddSingleton<IConversationLogService, ConversationLogService>();
 
 // 注册熔断状态存储和代理请求元数据缓存。
+// Web 宿主必须显式传入 null 的 configProvider，否则 DI 会自动注入已注册的
+// CoreRuntimeConfigProvider 实例，导致缓存走 Core 配置快照路径而绕过数据库查询。
 builder.Services.AddSingleton<RouteCircuitStateStore>();
-builder.Services.AddSingleton<ProxyRequestMetadataCache>();
+builder.Services.AddSingleton<ProxyRequestMetadataCache>(sp =>
+    new ProxyRequestMetadataCache(
+        sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>(),
+        sp.GetRequiredService<IServiceScopeFactory>(),
+        configProvider: null));
 builder.Services.AddSingleton<AdminQueryMetadataService>();
 
 // 注册日志保留策略服务，定时清理过期日志。

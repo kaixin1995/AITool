@@ -1,6 +1,7 @@
+using AITool.Web.Services;
 using AITool.Domain.SiteCatalog;
 using AITool.Infrastructure.Persistence;
-using AITool.Web.Services;
+using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;

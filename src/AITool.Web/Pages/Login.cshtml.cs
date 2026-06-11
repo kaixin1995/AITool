@@ -1,4 +1,5 @@
 using System.Security.Claims;
+using AITool.Infrastructure.Proxy;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;

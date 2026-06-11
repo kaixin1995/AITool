@@ -4,6 +4,7 @@ using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
