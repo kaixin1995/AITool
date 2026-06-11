@@ -1491,6 +1491,17 @@ CoreEventPullService 现在同时消费三种事件类型：
 - 测试适配：`CoreEventPullServiceTests` 新增 `_configAppliedIngestor` 和 `_circuitBreakerIngestor` 字段，更新全部构造函数调用
 - 编译零错误，165 个 ApplicationTests 全部通过，零回归
 
+### 本轮又完成了什么（ConfigApplied + CircuitBreaker Ingestor/Store 独立测试补齐）
+
+- 为 `AdminConfigAppliedStore` 创建了 8 个独立单元测试：单条添加、倒序排列、容量裁剪（100 条上限）、过期清理（24 小时）、GetLatest 正确/空/过期、深拷贝验证
+- 为 `AdminConfigAppliedEventIngestor` 创建了 4 个独立单元测试：事件类型过滤、空批次、无匹配事件、畸形负载跳过
+- 为 `AdminCircuitBreakerStore` 创建了 8 个独立单元测试：单条添加、倒序排列、容量裁剪（200 条上限）、过期清理（6 小时）、GetLatest 正确/空/过期、深拷贝验证
+- 为 `AdminCircuitBreakerEventIngestor` 创建了 4 个独立单元测试：事件类型过滤、空批次、无匹配事件、畸形负载跳过
+- 新增测试文件：`tests/AITool.ApplicationTests/CoreRuntime/AdminConfigAppliedStoreAndIngestorTests.cs`（24 个测试）
+- 新增测试文件：`tests/AITool.ApplicationTests/CoreRuntime/AdminCircuitBreakerStoreAndIngestorTests.cs`（24 个测试）
+- ApplicationTests 全量通过 189 个测试，零回归
+- 至此六大事件类型的 Ingestor/Store 全部拥有独立测试覆盖
+
 ### 当前还剩什么
 
 - AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
