@@ -17,6 +17,7 @@ namespace AITool.Admin.Services;
 ///   <item><c>developer-trace</c> — 开发者调用追踪，写入 Admin 内存缓存</item>
 ///   <item><c>route-fallback</c> — 路由回退事件，写入 Admin 内存缓存</item>
 ///   <item><c>config-applied</c> — 配置变更应用确认，写入 Admin 内存缓存</item>
+///   <item><c>circuit-breaker</c> — 熔断状态变更事件，写入 Admin 内存缓存</item>
 /// </list>
 /// </para>
 /// <para>
@@ -32,6 +33,7 @@ public sealed class CoreEventPullService
     private readonly AdminDeveloperTraceEventIngestor _developerTraceIngestor;
     private readonly AdminRouteFallbackEventIngestor _routeFallbackIngestor;
     private readonly AdminConfigAppliedEventIngestor _configAppliedIngestor;
+    private readonly AdminCircuitBreakerEventIngestor _circuitBreakerIngestor;
     private readonly CoreEventAckStateStore _ackStateStore;
     private readonly ILogger<CoreEventPullService> _logger;
 
@@ -56,6 +58,7 @@ public sealed class CoreEventPullService
         AdminDeveloperTraceEventIngestor developerTraceIngestor,
         AdminRouteFallbackEventIngestor routeFallbackIngestor,
         AdminConfigAppliedEventIngestor configAppliedIngestor,
+        AdminCircuitBreakerEventIngestor circuitBreakerIngestor,
         CoreEventAckStateStore ackStateStore,
         ILogger<CoreEventPullService> logger,
         string? adminInstanceId = null)
@@ -66,6 +69,7 @@ public sealed class CoreEventPullService
         _developerTraceIngestor = developerTraceIngestor;
         _routeFallbackIngestor = routeFallbackIngestor;
         _configAppliedIngestor = configAppliedIngestor;
+        _circuitBreakerIngestor = circuitBreakerIngestor;
         _ackStateStore = ackStateStore;
         _logger = logger;
         _adminInstanceId = adminInstanceId ?? $"admin-{Environment.MachineName}-{Environment.ProcessId}";
@@ -110,6 +114,7 @@ public sealed class CoreEventPullService
         var developerTraceMax = await _developerTraceIngestor.IngestDeveloperTraceEventsAsync(envelopes, cancellationToken);
         var routeFallbackMax = await _routeFallbackIngestor.IngestRouteFallbackEventsAsync(envelopes, cancellationToken);
         var configAppliedMax = await _configAppliedIngestor.IngestConfigAppliedEventsAsync(envelopes, cancellationToken);
+        var circuitBreakerMax = await _circuitBreakerIngestor.IngestCircuitBreakerEventsAsync(envelopes, cancellationToken);
 
         // ack 序号始终推进到本批次最大值，确保 spool 中所有事件都被确认（包括无法消费的未知类型）
         var maxAcked = envelopes.Max(e => e.SequenceId);

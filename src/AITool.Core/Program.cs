@@ -106,6 +106,9 @@ builder.Services.AddSingleton<CoreRouteFallbackEventPublisher>();
 // 注册配置变更应用事件发布器，配置成功应用后向事件总线发送确认通知。
 builder.Services.AddSingleton<CoreConfigAppliedEventPublisher>();
 
+// 注册熔断状态变更事件发布器，当路由因连续失败达到阈值被首次熔断时发布 circuit-breaker 事件。
+builder.Services.AddSingleton<CoreCircuitBreakerEventPublisher>();
+
 // 注册事件序列、事件总线与 spool，支撑 Core -> Admin 可靠事件推送。
 builder.Services.AddSingleton<CoreEventSequenceProvider>();
 builder.Services.AddSingleton<CoreAdminEventBus>();
@@ -164,6 +167,31 @@ var app = builder.Build();
             catch (Exception ex)
             {
                 tracePublishLogger.LogWarning(ex, "发布开发者追踪事件失败，不影响代理主流程。TraceId={TraceId}", entry.TraceId);
+            }
+        });
+    };
+}
+
+// 将熔断状态存储的首次熔断事件连接到事件发布器。
+// RouteCircuitStateStore 的 OnCircuitOpened 事件在路由首次触发熔断时触发，
+// Publisher 接收后异步发布 circuit-breaker 事件到 Core 事件总线。
+// 使用 fire-and-forget 模式，发布失败不影响代理主流程。
+{
+    var circuitStore = app.Services.GetRequiredService<RouteCircuitStateStore>();
+    var circuitPublisher = app.Services.GetRequiredService<CoreCircuitBreakerEventPublisher>();
+    var circuitPublishLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CoreCircuitBreakerEventPublish");
+    circuitStore.OnCircuitOpened += (sender, args) =>
+    {
+        // fire-and-forget：熔断事件发布是辅助链路，不应阻塞代理主流程
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await circuitPublisher.PublishAsync(args);
+            }
+            catch (Exception ex)
+            {
+                circuitPublishLogger.LogWarning(ex, "发布熔断状态变更事件失败，不影响代理主流程。RouteId={RouteId}", args.RouteId);
             }
         });
     };

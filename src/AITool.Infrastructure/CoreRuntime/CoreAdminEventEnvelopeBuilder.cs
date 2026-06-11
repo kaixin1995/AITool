@@ -73,4 +73,19 @@ public static class CoreAdminEventEnvelopeBuilder
             PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
         };
     }
+
+    /// <summary>
+    /// 构造一条熔断状态变更事件信封。
+    /// </summary>
+    public static CoreAdminEventEnvelope CreateCircuitBreakerEnvelope(long sequenceId, CoreCircuitBreakerEvent payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return new CoreAdminEventEnvelope
+        {
+            SequenceId = sequenceId,
+            EventType = "circuit-breaker",
+            OccurredAt = payload.OccurredAt,
+            PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
+        };
+    }
 }

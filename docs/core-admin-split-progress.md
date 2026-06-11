@@ -1477,6 +1477,20 @@ CoreEventPullService 现在同时消费三种事件类型：
 - Core/Admin/Web 三侧 Program.cs 均注册了 ConfigApplied 相关服务
 - 编译零错误，全部测试零回归
 
+### 本轮又完成了什么（CircuitBreaker 熔断状态变更事件闭环）
+
+- 实现了 Core 侧 CircuitBreaker 事件发布器：`CoreCircuitBreakerEventPublisher`，通过订阅 `RouteCircuitStateStore.OnCircuitOpened` 事件，在路由因连续失败达到阈值被首次熔断时异步发布 circuit-breaker 事件到 CoreAdminEventBus
+- `RouteCircuitStateStore` 新增 `OnCircuitOpened` 事件和 `CircuitOpenedEventArgs`，在 `Block()` 方法触发熔断时（count >= threshold）fire-and-forget 发布，不阻塞代理主流程
+- 实现了 Admin 侧熔断状态变更内存存储 `AdminCircuitBreakerStore`（200 条上限，6 小时过期自动清理，线程安全）
+- 实现了 Admin 侧 CircuitBreaker 事件消费器 `AdminCircuitBreakerEventIngestor`，按 circuit-breaker 类型过滤并写入内存存储
+- `CoreEventPullService` 扩展为六 Ingestor 架构：usage-log、conversation-turn、developer-trace、route-fallback、config-applied、circuit-breaker
+- 新增 `CoreCircuitBreakerEvent` 事件模型（6 字段：RouteId、FailureCount、FailThreshold、BlockDuration、RecoveryTime、OccurredAt）
+- `CoreAdminEventEnvelopeBuilder` 新增 `CreateCircuitBreakerEnvelope` 信封构造方法
+- Core/Admin 双侧 Program.cs 均注册了 CircuitBreaker 相关服务
+- Core Program.cs 在 `RouteCircuitStateStore.OnCircuitOpened` 事件中通过 fire-and-forget 模式调用发布器，确保不阻塞代理主流程
+- 测试适配：`CoreEventPullServiceTests` 新增 `_configAppliedIngestor` 和 `_circuitBreakerIngestor` 字段，更新全部构造函数调用
+- 编译零错误，165 个 ApplicationTests 全部通过，零回归
+
 ### 当前还剩什么
 
 - AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
@@ -1502,4 +1516,4 @@ CoreEventPullService 现在同时消费三种事件类型：
 
 当前项目状态可以概括为：
 
-> **Admin 侧已实现五事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储，``developer-trace`` 和 ``route-fallback`` 事件写入 Admin 内存存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面 + RouteFallback 监控页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**
+> **Admin 侧已实现六事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储，``developer-trace`` 和 ``route-fallback`` 事件写入 Admin 内存存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面 + RouteFallback 监控页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。CircuitBreaker 熔断事件（第六条事件链路）已完成闭环。**

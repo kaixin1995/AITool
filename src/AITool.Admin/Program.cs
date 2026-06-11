@@ -114,6 +114,12 @@ builder.Services.AddSingleton<AdminConfigAppliedStore>();
 // Admin 侧 ConfigApplied 事件消费器，将 Core 配置变更确认事件写入内存存储。
 builder.Services.AddScoped<AdminConfigAppliedEventIngestor>();
 
+// Admin 侧熔断状态变更事件内存存储，缓存从 Core 拉取的 circuit-breaker 事件。
+// Singleton 生命周期：内存数据跨请求保持，6 小时过期自动清理，最多 200 条。
+builder.Services.AddSingleton<AdminCircuitBreakerStore>();
+// Admin 侧 CircuitBreaker 事件消费器，将 Core 代理产生的熔断事件写入内存存储。
+builder.Services.AddScoped<AdminCircuitBreakerEventIngestor>();
+
 // Admin 侧事件 ack 状态持久化，将已确认序号写入本地文件，确保重启后不重复消费历史事件。
 var ackMetaPath = builder.Environment.IsEnvironment("Testing")
     ? Path.Combine(Path.GetTempPath(), $"aitool-core-event-ack-{Guid.NewGuid():N}", "ack.meta")

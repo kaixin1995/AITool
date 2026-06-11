@@ -488,3 +488,47 @@ public sealed class CoreConfigAppliedEvent
     /// </summary>
     public DateTimeOffset OccurredAt { get; set; } = DateTimeOffset.UtcNow;
 }
+
+/// <summary>
+/// 熔断状态变更事件对应的 Core 事件负载。
+/// <para>
+/// 当某条路由因连续失败达到阈值触发熔断时，Core 发布此事件，
+/// Admin 侧消费后用于实时监控路由健康状态和熔断模式分析。
+/// </para>
+/// <para>
+/// 事件在熔断首次触发时产生（即连续失败计数首次达到阈值的瞬间），
+/// 不包含熔断恢复事件——恢复由时间窗口自动过期，无需额外通知。
+/// </para>
+/// </summary>
+public sealed class CoreCircuitBreakerEvent
+{
+    /// <summary>
+    /// 被熔断的路由标识。
+    /// </summary>
+    public Guid RouteId { get; set; }
+
+    /// <summary>
+    /// 触发熔断时的连续失败次数。
+    /// </summary>
+    public int FailureCount { get; set; }
+
+    /// <summary>
+    /// 熔断阈值（触发熔断所需的最小连续失败次数）。
+    /// </summary>
+    public int FailThreshold { get; set; }
+
+    /// <summary>
+    /// 熔断持续时长（路由被屏蔽的时间窗口）。
+    /// </summary>
+    public TimeSpan BlockDuration { get; set; }
+
+    /// <summary>
+    /// 熔断预计解除时间（UTC）。
+    /// </summary>
+    public DateTimeOffset RecoveryTime { get; set; }
+
+    /// <summary>
+    /// 事件发生时间（即熔断被触发的瞬间）。
+    /// </summary>
+    public DateTimeOffset OccurredAt { get; set; } = DateTimeOffset.UtcNow;
+}
