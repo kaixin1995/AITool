@@ -1535,7 +1535,38 @@ CoreEventPullService 现在同时消费三种事件类型：
 
 ---
 
-## 阶段记录 — 2026-06-10/11 收口共享宿主层服务归属
+## 阶段记录
+
+## 阶段记录 — 2026-06-12 统一 ModelConcurrencyLimiter 到 Infrastructure/Proxy 层（提交 70130d2）
+
+### 变更背景
+
+`ModelConcurrencyLimiter` 及其关联类型（`ConcurrencyAcquireMode`、`ConcurrencyAcquireResult`、`ActiveModelConcurrencyEntry`）原先在 `Core/Services` 和 `Web/Services` 各有一份完整副本，逻辑完全相同仅命名空间不同。随着 Core/Admin 双宿主架构推进，需要将这类共享代理基础设施统一到 `Infrastructure/Proxy` 层，消除双副本维护负担。
+
+### 具体变更
+
+- **新建** `src/AITool.Infrastructure/Proxy/ModelConcurrencyLimiter.cs`：包含 4 个公开类型（`ConcurrencyAcquireMode`、`ConcurrencyAcquireResult`、`ActiveModelConcurrencyEntry`、`ModelConcurrencyLimiter`），命名空间为 `AITool.Infrastructure.Proxy`
+- **更新** `src/AITool.Core/GlobalUsings.cs`：添加 4 个 `global using` 别名，将短名映射到 `AITool.Infrastructure.Proxy` 下的类型
+- **更新** `src/AITool.Web/GlobalUsings.cs`：同上，添加 4 个别名
+- **更新** `tests/AITool.IntegrationTests/Proxy/ModelConcurrencyLimiterTests.cs`：`using AITool.Web.Services` → 删除，已有 `using AITool.Infrastructure.Proxy`
+- **更新** `tests/AITool.IntegrationTests/Proxy/ProxyMetadataCacheTests.cs`：删除多余的 `using AITool.Web.Services`
+- **更新** `tests/AITool.IntegrationTests/Chat/ChatApiTests.cs`：`using AITool.Web.Services` → `using AITool.Infrastructure.Proxy`
+- **删除** `src/AITool.Core/Services/ModelConcurrencyLimiter.cs`
+- **删除** `src/AITool.Web/Services/ModelConcurrencyLimiter.cs`（Git 识别为 rename）
+
+### 编译与测试
+
+- 编译：0 错误
+- 代理相关测试：35 个全部通过
+- Core 宿主集成测试：54 个全部通过
+
+### 当前状态
+
+- `Core/Services` 目录下剩余 5 个文件：`ModelConcurrencyQueryService`、`CoreDeveloperTraceEventPublisher`、`CoreRouteFallbackEventPublisher`、`DeveloperInvocationTraceStore`、`DeveloperInvocationTraceQueryService`
+- `Web/Services` 目录下剩余 2 个文件：`DeveloperInvocationTraceStore`、`AdminAuthService`
+- 下一步统一目标：`DeveloperInvocationTraceStore`（Core 和 Web 各有一份）
+
+ — 2026-06-10/11 收口共享宿主层服务归属
 
 ### 本轮完成了什么
 
