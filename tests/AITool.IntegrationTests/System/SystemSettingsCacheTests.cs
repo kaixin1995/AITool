@@ -2,7 +2,6 @@ using AITool.Application.Operations;
 using AITool.Domain.Operations;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
-using AITool.Infrastructure.Proxy;
 using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
@@ -41,7 +40,6 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
         services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
         services.AddSingleton<ProxyRequestMetadataCache>();
-        services.AddSingleton<AdminCacheInvalidationService>();
         _serviceProvider = services.BuildServiceProvider();
     }
 
@@ -56,7 +54,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
-        var cacheInvalidationService = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
+        var cacheInvalidationService = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
@@ -99,7 +97,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
             DeveloperFeaturesEnabled = true
         }, CancellationToken.None);
 
-        // 触发缓存失效，模拟 Web 侧 AdminCacheInvalidationService 的行为
+        // 触发缓存失效，直接调用 ProxyRequestMetadataCache 的失效方法
         cacheInvalidationService.InvalidateRuntimeSettings();
 
         // 验证缓存已刷新为新值

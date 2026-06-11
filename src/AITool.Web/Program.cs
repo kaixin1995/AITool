@@ -140,7 +140,6 @@ builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationEx
 builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<ProxyRequestMetadataCache>();
 builder.Services.AddSingleton<AdminQueryMetadataService>();
-builder.Services.AddSingleton<AdminCacheInvalidationService>();
 
 // 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();

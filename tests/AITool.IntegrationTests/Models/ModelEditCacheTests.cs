@@ -43,7 +43,6 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         services.AddMemoryCache();
         services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
         services.AddSingleton<ProxyRequestMetadataCache>();
-        services.AddSingleton<AdminCacheInvalidationService>();
         _serviceProvider = services.BuildServiceProvider();
         _memoryCache = _serviceProvider.GetRequiredService<IMemoryCache>();
     }
@@ -103,7 +102,7 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         model.DisplayName = "New Model";
         await db.SaveChangesAsync();
 
-        var cacheInvalidation = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
+        var cacheInvalidation = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         cacheInvalidation.InvalidateModelMetadata();
         cacheInvalidation.InvalidateRouteTargets();
 
