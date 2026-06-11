@@ -1,5 +1,6 @@
 using AITool.Application.Operations;
 using AITool.Application.SiteCatalog;
+using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
@@ -51,7 +52,7 @@ public static class AdminInfrastructureExtensions
                 {
                     OnRedirectToLogin = context =>
                     {
-                        if (IsAdminRequest(context.Request))
+                        if (AdminRequestMatcher.IsAdminAuthRequest(context.Request))
                         {
                             var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
                             var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
@@ -87,14 +88,5 @@ public static class AdminInfrastructureExtensions
         services.AddSingleton<HangfireDetectionScheduler>();
 
         return services;
-    }
-
-    /// <summary>
-    /// 判断请求是否为后台管理请求（页面或 API）。
-    /// </summary>
-    private static bool IsAdminRequest(HttpRequest request)
-    {
-        return request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase)
-            || request.Path.StartsWithSegments("/Login", StringComparison.OrdinalIgnoreCase);
     }
 }

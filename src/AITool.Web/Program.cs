@@ -116,7 +116,7 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.Use(async (context, next) =>
 {
-    if (app.Environment.IsEnvironment("Testing") || !IsAdminRequest(context.Request) || IsLoginPageRequest(context.Request))
+    if (app.Environment.IsEnvironment("Testing") || !AdminRequestMatcher.IsAdminRequest(context.Request) || AdminRequestMatcher.IsLoginPageRequest(context.Request))
     {
         await next();
         return;
@@ -134,13 +134,13 @@ app.Use(async (context, next) =>
         ? "/Login"
         : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
 
-    if (IsAdminApiRequest(context.Request))
+    if (AdminRequestMatcher.IsAdminApiRequest(context.Request))
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
         return;
     }
 
-    if (IsHangfireRequest(context.Request))
+    if (AdminRequestMatcher.IsHangfireRequest(context.Request))
     {
         context.Response.Redirect(loginUrl);
         return;
@@ -174,47 +174,6 @@ app.MapRazorPages();
 app.MapControllers();
 
 app.Run();
-
-/// <summary>
-/// 判断是否为后台请求。
-/// </summary>
-static bool IsAdminRequest(HttpRequest request)
-{
-    return IsAdminPageRequest(request) || IsAdminApiRequest(request) || IsHangfireRequest(request);
-}
-
-/// <summary>
-/// 判断是否为后台页面请求。
-/// </summary>
-static bool IsAdminPageRequest(HttpRequest request)
-{
-    var path = request.Path;
-    return path == "/" || path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase);
-}
-
-/// <summary>
-/// 判断是否为登录页请求。
-/// </summary>
-static bool IsLoginPageRequest(HttpRequest request)
-{
-    return request.Path == "/Login";
-}
-
-/// <summary>
-/// 判断是否为后台接口请求。
-/// </summary>
-static bool IsAdminApiRequest(HttpRequest request)
-{
-    return request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase);
-}
-
-/// <summary>
-/// 判断是否为 Hangfire 请求。
-/// </summary>
-static bool IsHangfireRequest(HttpRequest request)
-{
-    return request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase);
-}
 
 /// <summary>
 /// 为历史数据库补齐代理日志新增列，避免旧库因 EnsureCreated 不重建而缺字段。
