@@ -67,6 +67,10 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly IConversationLogService _conversationLogService;
     /// <summary>
+    /// 负责在路由回退时发布 route-fallback 事件到 Admin 侧。
+    /// </summary>
+    private readonly CoreRouteFallbackEventPublisher _routeFallbackPublisher;
+    /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
     private readonly ILogger<AnthropicProxyController> _logger;
@@ -83,6 +87,7 @@ public sealed class AnthropicProxyController : ControllerBase
         ConversationExtractionService conversationExtractionService,
         IConversationLogService conversationLogService,
         ModelConcurrencyLimiter concurrencyLimiter,
+        CoreRouteFallbackEventPublisher routeFallbackPublisher,
         ILogger<AnthropicProxyController> logger)
     {
         _forwardService = forwardService;
@@ -93,6 +98,7 @@ public sealed class AnthropicProxyController : ControllerBase
         _conversationExtractionService = conversationExtractionService;
         _conversationLogService = conversationLogService;
         _concurrencyLimiter = concurrencyLimiter;
+        _routeFallbackPublisher = routeFallbackPublisher;
         _logger = logger;
     }
 
@@ -184,12 +190,26 @@ public sealed class AnthropicProxyController : ControllerBase
         var attemptIndex = 0;
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
+        // 记录上一条失败路由信息，在下一条候选路由开始时发布回退事件
+        (Guid RouteId, Guid SiteId, string SiteModelName, string? ErrorMessage)? lastFailedRoute = null;
 
         foreach (var route in allRoutes)
         {
             // 跳过已被熔断器屏蔽的路由
             if (IsRouteBlockedSafely(route.RouteId))
                 continue;
+
+            // 如果上一条路由已失败，此时已知下一条候选路由，发布回退事件
+            if (lastFailedRoute is not null)
+            {
+                await SafePublishRouteFallbackAsync(
+                    requestId, modelName,
+                    lastFailedRoute.Value.RouteId, lastFailedRoute.Value.SiteId, lastFailedRoute.Value.SiteModelName,
+                    route.RouteId, route.SiteId, route.SiteModelName,
+                    lastFailedRoute.Value.ErrorMessage ?? "unknown error",
+                    CancellationToken.None);
+                lastFailedRoute = null;
+            }
 
             attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("Anthropic");
@@ -306,6 +326,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 SafeBlockRoute(route.RouteId);
                 lastResult = streamResult;
+                lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, streamResult.ErrorMessage);
                 if (!streamOutcome.CanFallback)
                 {
                     return new EmptyResult();
@@ -411,6 +432,7 @@ public sealed class AnthropicProxyController : ControllerBase
             // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
             SafeBlockRoute(route.RouteId);
             lastResult = result;
+            lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, result.ErrorMessage);
         }
 
         // 所有路由均失败
@@ -1138,6 +1160,38 @@ public sealed class AnthropicProxyController : ControllerBase
             _logger.LogError(ex,
                 "更新路由失败状态失败，但继续尝试后续路由。RouteId={RouteId}",
                 routeId);
+        }
+    }
+
+    /// <summary>
+    /// 安全地发布路由回退事件。
+    /// 事件发布失败不应影响代理请求的正常回退流程。
+    /// </summary>
+    private async Task SafePublishRouteFallbackAsync(
+        Guid requestId,
+        string requestModel,
+        Guid fromRouteId,
+        Guid fromSiteId,
+        string fromSiteModelName,
+        Guid toRouteId,
+        Guid toSiteId,
+        string toSiteModelName,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _routeFallbackPublisher.PublishAsync(
+                requestId, requestModel,
+                fromRouteId, fromSiteId, fromSiteModelName,
+                toRouteId, toSiteId, toSiteModelName,
+                reason, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "发布路由回退事件失败，但不影响请求回退流程。RequestId={RequestId}, FromRouteId={FromRouteId}, ToRouteId={ToRouteId}",
+                requestId, fromRouteId, toRouteId);
         }
     }
 

@@ -43,4 +43,19 @@ public static class CoreAdminEventEnvelopeBuilder
             PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
         };
     }
+
+    /// <summary>
+    /// 构造一条路由回退事件信封。
+    /// </summary>
+    public static CoreAdminEventEnvelope CreateRouteFallbackEnvelope(long sequenceId, CoreRouteFallbackEvent payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return new CoreAdminEventEnvelope
+        {
+            SequenceId = sequenceId,
+            EventType = "route-fallback",
+            OccurredAt = payload.OccurredAt,
+            PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
+        };
+    }
 }

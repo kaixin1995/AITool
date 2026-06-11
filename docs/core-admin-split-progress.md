@@ -1401,6 +1401,17 @@ CoreEventPullService 现在同时消费三种事件类型：
 - 更新 CoreEventPullService 测试适配双 Ingestor，新增混合事件类型端到端测试
 - 全部 204 个测试零回归（ApplicationTests 113 + Admin 49 + Core 42）
 
+### 本轮又完成了什么（route-fallback 事件完整闭环）
+
+- 实现了 Core 侧 route-fallback 事件发布器：CoreRouteFallbackEventPublisher，在代理路由回退时发布事件到 CoreAdminEventBus
+- 在 OpenAiProxyController 和 AnthropicProxyController 中集成回退事件追踪和发布（lastFailedRoute 模式 + SafePublishRouteFallbackAsync 容错包装）
+- 实现了 Admin 侧路由回退事件内存存储 AdminRouteFallbackStore（200 条上限，6 小时过期自动清理）
+- 实现了 Admin 侧路由回退事件消费器 AdminRouteFallbackEventIngestor，按 route-fallback 类型过滤并写入内存存储
+- CoreEventPullService 扩展为四 Ingestor 架构：usage-log、conversation-turn、developer-trace、route-fallback
+- 新增 CoreRouteFallbackEvent 事件模型（10 字段）、CoreAdminEventEnvelopeBuilder.CreateRouteFallbackEnvelope 信封构造
+- Core/Admin 双侧 Program.cs 均注册了路由回退相关服务
+- 编写 2 个 Publisher 集成测试 + 11 个 Store/Ingestor 单元测试
+- 更新 CoreEventPullService 现有测试适配新参数
 ### 本轮又完成了什么（sequence/ack 持久化 + Spool 轮转）
 
 - 实现了 Core 事件 sequence 持久化元数据：`CoreEventSequenceProvider` 通过 `sequence.meta` 文件持久化序号，支持重启恢复、损坏容错
@@ -1426,7 +1437,8 @@ CoreEventPullService 现在同时消费三种事件类型：
 ### 下一步准备做什么
 
 - 推进实时事件流推送通道（WebSocket/SSE）
-- 推进更多事件类型消费（developer trace、detection、route fallback 等）
+- 探索更多事件类型消费（如 detection、性能指标等）
+- Admin 侧添加路由回退事件监控页面
 - 每完成一个小阶段后继续同步更新本文档
 
 ---
@@ -1435,4 +1447,4 @@ CoreEventPullService 现在同时消费三种事件类型：
 
 当前项目状态可以概括为：
 
-> **Admin 侧已实现三事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**
+> **Admin 侧已实现四事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储，``developer-trace`` 和 ``route-fallback`` 事件写入 Admin 内存存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**

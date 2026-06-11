@@ -997,6 +997,38 @@ public sealed partial class OpenAiProxyController
     }
 
     /// <summary>
+    /// 安全地发布路由回退事件。
+    /// 事件发布失败不应影响代理请求的正常回退流程。
+    /// </summary>
+    private async Task SafePublishRouteFallbackAsync(
+        Guid requestId,
+        string requestModel,
+        Guid fromRouteId,
+        Guid fromSiteId,
+        string fromSiteModelName,
+        Guid toRouteId,
+        Guid toSiteId,
+        string toSiteModelName,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _routeFallbackPublisher.PublishAsync(
+                requestId, requestModel,
+                fromRouteId, fromSiteId, fromSiteModelName,
+                toRouteId, toSiteId, toSiteModelName,
+                reason, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "发布路由回退事件失败，但不影响请求回退流程。RequestId={RequestId}, FromRouteId={FromRouteId}, ToRouteId={ToRouteId}",
+                requestId, fromRouteId, toRouteId);
+        }
+    }
+
+    /// <summary>
     /// 安全地补全一次开发者追踪尝试记录。
     /// </summary>
     private void SafeCompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)

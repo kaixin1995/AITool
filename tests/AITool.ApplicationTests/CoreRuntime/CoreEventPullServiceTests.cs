@@ -24,6 +24,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
     private readonly StubConversationLogStore _conversationStore;
     private readonly AdminConversationTurnEventIngestor _conversationTurnIngestor;
     private readonly AdminDeveloperTraceEventIngestor _developerTraceIngestor;
+    private readonly AdminRouteFallbackEventIngestor _routeFallbackIngestor;
     private readonly CoreEventAckStateStore _ackStateStore;
     private readonly string _ackMetaPath;
 
@@ -47,6 +48,11 @@ public sealed class CoreEventPullServiceTests : IDisposable
         _developerTraceIngestor = new AdminDeveloperTraceEventIngestor(
             traceStore, LoggerStub.Create<AdminDeveloperTraceEventIngestor>());
 
+        // 路由回退 Ingestor 使用空的内存存储，验证 route-fallback 事件能被正确分发
+        var routeFallbackStore = new AdminRouteFallbackStore();
+        _routeFallbackIngestor = new AdminRouteFallbackEventIngestor(
+            routeFallbackStore, LoggerStub.Create<AdminRouteFallbackEventIngestor>());
+
         // 使用独立的临时目录存放 ack.meta，确保测试之间互不干扰
         _ackMetaPath = Path.Combine(Path.GetTempPath(), $"aitool-test-ack-{Guid.NewGuid():N}", "ack.meta");
         _ackStateStore = new CoreEventAckStateStore(_ackMetaPath, LoggerStub.Create<CoreEventAckStateStore>());
@@ -64,7 +70,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 0, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _routeFallbackIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count = await service.PullAndProcessAsync(CancellationToken.None);
 
@@ -120,7 +126,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 3, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _routeFallbackIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count = await service.PullAndProcessAsync(CancellationToken.None);
 
@@ -151,7 +157,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 11, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _routeFallbackIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count = await service.PullAndProcessAsync(CancellationToken.None);
 
@@ -233,7 +239,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 3, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _routeFallbackIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count = await service.PullAndProcessAsync(CancellationToken.None);
 
@@ -267,7 +273,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 3, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _routeFallbackIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count1 = await service.PullAndProcessAsync(CancellationToken.None);
         count1.Should().Be(3);
@@ -307,7 +313,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
 
         // 第一个服务实例消费并 ack
         var service1 = new CoreEventPullService(
-            coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _ackStateStore,
+            coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _routeFallbackIngestor, _ackStateStore,
             LoggerStub.Create<CoreEventPullService>());
         var count1 = await service1.PullAndProcessAsync(CancellationToken.None);
         count1.Should().Be(5);
@@ -316,7 +322,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         // 模拟 Admin 重启：创建新的 ackStateStore 和 service 实例
         var ackStateStore2 = new CoreEventAckStateStore(_ackMetaPath, LoggerStub.Create<CoreEventAckStateStore>());
         var service2 = new CoreEventPullService(
-            coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, ackStateStore2,
+            coreClient, _usageLogIngestor, _conversationTurnIngestor, _developerTraceIngestor, _routeFallbackIngestor, ackStateStore2,
             LoggerStub.Create<CoreEventPullService>());
 
         // 新实例应从持久化文件恢复 ack 序号为 5

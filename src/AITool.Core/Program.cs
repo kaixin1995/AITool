@@ -100,6 +100,9 @@ builder.Services.AddSingleton<DeveloperInvocationTraceQueryService>();
 // 注册开发者追踪事件发布器，当追踪完成时将摘要发布到 Core 事件总线。
 builder.Services.AddSingleton<CoreDeveloperTraceEventPublisher>();
 
+// 注册路由回退事件发布器，当代理请求在路由间回退时发布 route-fallback 事件。
+builder.Services.AddSingleton<CoreRouteFallbackEventPublisher>();
+
 // 注册事件序列、事件总线与 spool，支撑 Core -> Admin 可靠事件推送。
 builder.Services.AddSingleton<CoreEventSequenceProvider>();
 builder.Services.AddSingleton<CoreAdminEventBus>();

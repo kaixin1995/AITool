@@ -138,6 +138,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// </summary>
     private readonly IConversationLogService _conversationLogService;
     /// <summary>
+    /// 负责在路由回退时发布 route-fallback 事件。
+    /// </summary>
+    private readonly CoreRouteFallbackEventPublisher _routeFallbackPublisher;
+    /// <summary>
     /// 模型并发限制器，按站点+模型粒度控制最大并发请求数。
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
@@ -158,6 +162,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         ConversationExtractionService conversationExtractionService,
         IConversationLogService conversationLogService,
         ModelConcurrencyLimiter concurrencyLimiter,
+        CoreRouteFallbackEventPublisher routeFallbackPublisher,
         ILogger<OpenAiProxyController> logger)
     {
         _forwardService = forwardService;
@@ -168,6 +173,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         _conversationExtractionService = conversationExtractionService;
         _conversationLogService = conversationLogService;
         _concurrencyLimiter = concurrencyLimiter;
+        _routeFallbackPublisher = routeFallbackPublisher;
         _logger = logger;
     }
 
@@ -532,6 +538,9 @@ public sealed partial class OpenAiProxyController : ControllerBase
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
+        // 记录上一轮失败的路由信息，在回退到下一条路由时发布 route-fallback 事件
+        (Guid RouteId, Guid SiteId, string SiteModelName, string? ErrorMessage)? lastFailedRoute = null;
+
         foreach (var route in allRoutes)
         {
             if (IsRouteBlockedSafely(route.RouteId))
@@ -542,6 +551,18 @@ public sealed partial class OpenAiProxyController : ControllerBase
             if (routeEligibility is not null && !routeEligibility(route, actualProtocolType))
             {
                 continue;
+            }
+
+            // 如果前一条路由失败且当前有可用的候选路由，发布回退事件
+            if (lastFailedRoute is not null)
+            {
+                await SafePublishRouteFallbackAsync(
+                    requestId, modelName,
+                    lastFailedRoute.Value.RouteId, lastFailedRoute.Value.SiteId, lastFailedRoute.Value.SiteModelName,
+                    route.RouteId, route.SiteId, route.SiteModelName,
+                    lastFailedRoute.Value.ErrorMessage ?? "unknown error",
+                    CancellationToken.None);
+                lastFailedRoute = null;
             }
 
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
@@ -657,6 +678,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 });
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
                 SafeBlockRoute(route.RouteId);
+                lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, streamResult.ErrorMessage);
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
                 {
@@ -737,6 +759,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
             });
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
             SafeBlockRoute(route.RouteId);
+            lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, result.ErrorMessage);
             lastResult = result;
         }
 

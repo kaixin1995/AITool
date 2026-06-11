@@ -373,3 +373,65 @@ public sealed class CoreDeveloperTraceEvent
     /// </summary>
     public int TotalDurationMs { get; set; }
 }
+
+/// <summary>
+/// 路由回退事件对应的 Core 事件负载。
+/// 当代理请求在某条路由上失败后回退到下一条路由时，Core 发布此事件，
+/// Admin 侧消费后用于实时监控路由健康状态和分析回退模式。
+/// <para>
+/// 每次回退切换产生一条事件，记录从哪条路由（源）切换到哪条路由（目标），
+/// 以及触发回退的具体原因（如上游超时、HTTP 错误等）。
+/// </para>
+/// </summary>
+public sealed class CoreRouteFallbackEvent
+{
+    /// <summary>
+    /// 关联的代理请求标识，可用于关联同一请求的 UsageLog 和 ConversationTurn 事件。
+    /// </summary>
+    public Guid RequestId { get; set; }
+
+    /// <summary>
+    /// 请求模型名（路由前的原始模型名）。
+    /// </summary>
+    public string RequestModel { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 回退源路由标识。
+    /// </summary>
+    public Guid FromRouteId { get; set; }
+
+    /// <summary>
+    /// 回退源站点标识。
+    /// </summary>
+    public Guid FromSiteId { get; set; }
+
+    /// <summary>
+    /// 回退源站点上的模型名。
+    /// </summary>
+    public string FromSiteModelName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 回退目标路由标识。
+    /// </summary>
+    public Guid ToRouteId { get; set; }
+
+    /// <summary>
+    /// 回退目标站点标识。
+    /// </summary>
+    public Guid ToSiteId { get; set; }
+
+    /// <summary>
+    /// 回退目标站点上的模型名。
+    /// </summary>
+    public string ToSiteModelName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 触发回退的原因（如 upstream timeout、HTTP 500、connection refused 等）。
+    /// </summary>
+    public string Reason { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 回退发生时间。
+    /// </summary>
+    public DateTimeOffset OccurredAt { get; set; } = DateTimeOffset.UtcNow;
+}
