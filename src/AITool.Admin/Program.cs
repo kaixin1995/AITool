@@ -5,7 +5,10 @@ using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.DependencyInjection;
 using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
+using AITool.Infrastructure.Retention;
 using AITool.Admin.Services;
+using Hangfire;
 using NLog;
 using NLog.Web;
 
@@ -33,6 +36,9 @@ builder.Services.AddCommonInfrastructure(conversationLogRootPath);
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
 builder.Services.AddAdminInfrastructure(connectionString);
+
+// 管理后台认证服务，用于 Login 页面密码验证和 AdminAuthenticationMiddleware。
+builder.Services.AddSingleton<AdminAuthService>();
 
 // Admin 侧 UsageLog 事件消费器，将 Core 代理产生的使用日志事件写入 Admin 数据库。
 builder.Services.AddScoped<AdminUsageLogEventIngestor>();
@@ -87,6 +93,9 @@ builder.Services.AddSingleton<AdminConcurrencyControlService>();
 // 模型厂商目录服务（可选，在模型库页面管理厂商规则时使用）。
 builder.Services.AddSingleton<ModelVendorCatalogService>();
 
+// 注册日志保留策略服务，定时清理过期日志。
+builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
+
 // Admin 通过最小 Core 客户端与核心宿主通信。当前阶段先提供握手、full-sync、ack、replay 这几项最关键能力。
 var coreBaseUrl = builder.Configuration["CoreServer:BaseUrl"] ?? $"http://127.0.0.1:{builder.Configuration.GetValue<int?>("CoreServer:Port") ?? 5029}/";
 builder.Services.AddHttpClient<CoreAdminClient>(client =>
@@ -120,9 +129,26 @@ startupLogger.Info(
     coreBaseUrl);
 Console.WriteLine($"AI Tool Admin 已启动：http://127.0.0.1:{serverPort}");
 
+// 全局异常处理：捕获未处理异常并记录详细日志，返回统一 JSON 错误响应。
+app.UseGlobalExceptionHandler(app.Environment);
+
 app.UseStaticFiles();
 app.UseAuthentication();
 app.UseAuthorization();
+app.UseAdminAuthentication();
+
+// 映射健康检查端点，作为集成测试的验证入口。
+app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+
+// 启用 Hangfire 仪表盘，仅限本地访问。
+app.UseHangfireDashboard("/hangfire");
+
+// 注册日志清理定时任务，每天凌晨 3 点执行。
+RecurringJob.AddOrUpdate<ILogRetentionService>(
+    "log-retention-prune",
+    svc => svc.PruneAsync(CancellationToken.None),
+    "0 3 * * *");
+
 app.MapControllers();
 app.MapRazorPages();
 app.Run();
