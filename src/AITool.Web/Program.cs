@@ -7,7 +7,6 @@ using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
-using AITool.Infrastructure.Scheduling;
 using Hangfire;
 using NLog;
 using NLog.Web;

@@ -1,5 +1,4 @@
 using AppVersionInfo = AITool.Infrastructure.Hosting.AppVersionInfo;
-using HttpLogFormatter = AITool.Infrastructure.Hosting.HttpLogFormatter;
 using AITool.Application.Common;
 using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
