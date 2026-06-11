@@ -29,8 +29,8 @@ var goStructs = GoStructScanner.ScanDirectory(
     Path.Combine(repositoryRoot, "reference-projects", "new-api", "dto"));
 
 var currentProjectFiles = Directory
-    .GetFiles(Path.Combine(repositoryRoot, "src", "AITool.Web", "Services", "ProxyProtocol"), "*.cs")
-    .Concat(Directory.GetFiles(Path.Combine(repositoryRoot, "src", "AITool.Web", "Controllers", "Proxy"), "*.cs"))
+    .GetFiles(Path.Combine(repositoryRoot, "src", "AITool.Infrastructure", "ProxyProtocol"), "*.cs")
+    .Concat(Directory.GetFiles(Path.Combine(repositoryRoot, "src", "AITool.Core", "Controllers", "Proxy"), "*.cs"))
     .ToArray();
 
 var currentFields = CSharpFieldScanner.ScanFiles(currentProjectFiles);
@@ -64,7 +64,7 @@ static string ResolveRepositoryRoot(string[] args)
     while (current is not null)
     {
         if (File.Exists(Path.Combine(current.FullName, "protocol-url-reference.md"))
-            || Directory.Exists(Path.Combine(current.FullName, "src", "AITool.Web")))
+            || Directory.Exists(Path.Combine(current.FullName, "src", "AITool.Core")))
         {
             return current.FullName;
         }
@@ -100,9 +100,9 @@ internal sealed class ProjectScanDefinition
             Name = "当前项目 AITool",
             Files = new[]
             {
-                RouteSourceFile.CSharpController(root, "src/AITool.Web/Controllers/Proxy/OpenAiProxyController.cs"),
-                RouteSourceFile.CSharpController(root, "src/AITool.Web/Controllers/Proxy/OpenAiProxyController.Responses.cs"),
-                RouteSourceFile.CSharpController(root, "src/AITool.Web/Controllers/Proxy/AnthropicProxyController.cs")
+                RouteSourceFile.CSharpController(root, "src/AITool.Core/Controllers/Proxy/OpenAiProxyController.cs"),
+                RouteSourceFile.CSharpController(root, "src/AITool.Core/Controllers/Proxy/OpenAiProxyController.Responses.cs"),
+                RouteSourceFile.CSharpController(root, "src/AITool.Core/Controllers/Proxy/AnthropicProxyController.cs")
             }
         };
     }

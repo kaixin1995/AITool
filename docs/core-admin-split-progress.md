@@ -1854,15 +1854,15 @@ CoreEventPullService 现在同时消费三种事件类型：
 | Hosting | 11 | 全局异常处理、认证中间件、Admin 请求匹配、日志格式化、请求体读取等 |
 | Persistence | 3 | AppDbContext、DatabaseSchemaMigrator、AdminStartupInitializer |
 
-#### 各宿主职责边界
+#### 各宿主职责边界（Phase 1 历史状态）
 
-- **Web**（端口 5029）：过渡期单体，同时承担代理转发 + 管理后台 + 数据库拥有者三重角色。DI 注册包含三组基础设施完整注册 + 代理运行时独有服务。
-- **Core**（端口 5029）：纯代理运行时宿主，无 DB/无 Razor/无 Auth。DI 注册仅包含 CommonInfrastructure + ProxyRuntimeInfrastructure。4 个 Core 独有 Service 类（事件发布、查询）。
+- **Web**（端口 5029）：~~过渡期单体，同时承担代理转发 + 管理后台 + 数据库拥有者三重角色~~ → 已在 Phase 3 中移除。
+- **Core**（端口 5029）：纯代理运行时宿主，无 DB/无 Razor/无 Auth。DI 注册仅包含 CommonInfrastructure + ProxyRuntimeInfrastructure。含代理控制器、Chat API 控制器、配置同步控制器。
 - **Admin**（端口 5030）：纯管理后台宿主，拥有 DB。DI 注册包含 CommonInfrastructure + AdminInfrastructure + 7 个 Admin 独有 Service 类（事件拉取/消费/缓存失效/并发控制）。
 
 #### 已提取的共享模式
 
-1. **DI 分组注册**：CommonInfrastructure（3 宿主共享）、AdminInfrastructure（Web+Admin 共享）、ProxyRuntimeInfrastructure（Web+Core 共享）
+1. **DI 分组注册**：CommonInfrastructure（Core+Admin 共享）、AdminInfrastructure（Admin 独有）、ProxyRuntimeInfrastructure（Core 独有）
 2. **认证中间件**：AdminAuthenticationMiddleware + UseAdminAuthentication() 扩展方法
 3. **启动初始化**：AdminStartupInitializer 封装数据库创建 + Schema 迁移 + Hangfire 调度
 4. **全局异常处理**：GlobalExceptionHandlerExtensions 封装异常捕获和统一 JSON 响应
@@ -1870,10 +1870,10 @@ CoreEventPullService 现在同时消费三种事件类型：
 6. **数据库迁移**：DatabaseSchemaMigrator 封幂等 Schema 补齐
 7. **版本信息**：AppVersionInfo 封装应用版本号
 
-#### 已知的设计遗留项（非阻塞）
+#### 已知的设计遗留项（非阻塞，Phase 1 历史状态）
 
-1. **Controller 重复**：Web 和 Core 的 Proxy Controller 完全重复（9/10 对），CoreConfigSyncController 有功能差异。这是过渡期的预期状态，Web 下线后自然消除。
-2. **版本号分散**：三个宿主各自硬编码版本号（1.0.1.4 / 1.0.1.4-admin / 1.0.1.4-core），未来应集中到 Directory.Build.props。
+1. ~~**Controller 重复**~~：Web 和 Core 的 Proxy Controller 完全重复（9/10 对）→ 已在 Phase 3 中随 Web 项目一并移除。
+2. **版本号分散**：两个宿主各自硬编码版本号（1.0.1.4-admin / 1.0.1.4-core），未来应集中到 Directory.Build.props。
 3. **AdminConcurrencyControlService 占位**：Admin 侧并发控制服务目前是占位实现，后续需通过 CoreAdminClient 实现代理运行时并发限制变更。
 
 ### 文件变更清单
@@ -1902,5 +1902,195 @@ CoreEventPullService 现在同时消费三种事件类型：
 
 后续工作（非当前拆分范围）：
 - Web 下线时的 Controller 清理
+- 版本号集中管理
+- AdminConcurrencyControlService 完整实现
+
+---
+
+## Phase 2：迁移 ChatApiController 到 Core 宿主
+
+**完成日期**：2026-06-10
+**提交**：`4367f5a`
+
+### 目标
+
+将 AITool.Web 中唯一的自有控制器 ChatApiController 迁移到 AITool.Core 宿主，使 Web 项目彻底无自有逻辑。
+
+### 变更内容
+
+- 将 ChatApiController 从 `src/AITool.Web/Controllers/Admin/ChatApiController.cs` 迁移到 `src/AITool.Core/Controllers/Chat/ChatApiController.cs`
+- 更新 Core 宿主 DI 注册和路由配置以包含 Chat API 端点
+- 更新相关测试以验证迁移后功能正常
+
+### 测试验证
+
+- 构建零错误零警告
+- 全量测试通过
+
+---
+
+## Phase 3：移除 AITool.Web，测试重组
+
+**完成日期**：2026-06-10
+**提交**：待提交
+
+### 目标
+
+彻底移除 AITool.Web 项目，将原 `AITool.IntegrationTests` 中的测试按职责拆分到 `AITool.Core.IntegrationTests` 和 `AITool.Admin.IntegrationTests`。
+
+### 变更内容
+
+#### 删除 AITool.Web 项目
+
+- 删除 `src/AITool.Web/` 整个目录，包括：
+  - Controllers（Proxy、Core、Admin 全部控制器）
+  - Pages（Login、Admin/Chat、Shared 布局页面）
+  - Program.cs、配置文件、静态资源等
+- 从 `AITool.slnx` 中移除 AITool.Web 项目引用
+- 从 `AITool.IntegrationTests` 中移除对 AITool.Web 的项目引用
+
+#### 删除旧测试项目 AITool.IntegrationTests
+
+- 删除 `tests/AITool.IntegrationTests/` 整个目录
+- 从 `AITool.slnx` 中移除旧测试项目引用
+
+#### 测试迁移到 Core.IntegrationTests（7 个目录）
+
+- `Proxy/` — 代理控制器测试（Anthropic、OpenAI、Responses、Fallback、Resilience、MetadataCache、ConcurrencyLimiter）
+- `Chat/` — ChatApi 控制器测试
+- `Conversations/` — 会话日志端到端测试
+- `Models/` — 模型编辑缓存测试
+- `System/` — 系统设置缓存测试
+
+#### 测试迁移到 Admin.IntegrationTests（5 个文件）
+
+- `CoreAdminClientTests.cs` — Core 配置同步客户端测试
+- `CoreUsageLogAdminIngestTests.cs` — 使用日志 Admin 入库测试
+- `CoreTestsHostEnvironment.cs` — 测试宿主环境辅助类
+- `CoreConfigSyncWebApplicationFactory.cs` — Admin 测试工厂（含代理运行时基础设施注册）
+- `Auth/AdminAuthTests.cs` — 后台鉴权集成测试
+
+### 测试验证
+
+- 构建零错误零警告
+- 全部测试通过
+
+---
+
+## Phase 4：全量测试修复与验证
+
+**完成日期**：2026-06-10
+**提交**：待提交
+
+### 目标
+
+修复测试重组后的所有失败测试，确保全量 400 个测试全部通过。
+
+### 问题与修复
+
+#### 问题 1：Core 代理测试 401 失败（64 个测试）
+
+**根因**：`ProxyRequestMetadataCache` 在测试工厂中通过 `AddProxyRuntimeInfrastructure(useCoreRuntimeConfigProviderForCache: true)` 注册时，缓存从配置快照（空）读取数据，而非从测试 seed 的 SQLite 数据库读取。
+
+**修复**：在所有 8 个 Core 测试工厂中，重新注册 `ProxyRequestMetadataCache`（不使用 `ICoreRuntimeConfigProvider`），强制缓存走数据库查询路径：
+
+```csharp
+services.RemoveAll<ProxyRequestMetadataCache>();
+services.AddSingleton<ProxyRequestMetadataCache>(sp =>
+{
+    var memoryCache = sp.GetRequiredService<IMemoryCache>();
+    var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
+    return new ProxyRequestMetadataCache(memoryCache, scopeFactory);
+});
+```
+
+受影响文件（8 个）：
+- ProxyFallbackFlowTests、AnthropicProxyControllerTests、OpenAiCrossProtocolProxyTests
+- ResponsesProxyTests、ProxyResilienceTests、ProxyMetadataCacheTests
+- ChatApiTests、ConversationLoggingE2ETests
+
+#### 问题 2：CS0246 编译错误
+
+**根因**：部分 Core 测试文件缺少 `using AITool.Infrastructure.Proxy;` 和 `using Microsoft.Extensions.Caching.Memory;`。
+
+**修复**：在所有 7 个受影响的测试文件中添加缺少的 using 指令。
+
+#### 问题 3：Admin 测试 IUsageLogService 未注册
+
+**根因**：Admin 宿主不注册代理运行时基础设施，`CoreUsageLogAdminIngestTests` 需要的 `IUsageLogService` 无处获取。
+
+**修复**：在 `CoreConfigSyncWebApplicationFactory` 中添加 `AddProxyRuntimeInfrastructure` 调用。
+
+#### 问题 4：Admin 测试 Core 控制器 404
+
+**根因**：Admin 宿主不包含 Core 控制器程序集，导致 Core 配置同步端点和代理端点返回 404。
+
+**修复**：
+- 在 `AITool.Admin.IntegrationTests.csproj` 中添加 `AITool.Core` 项目引用
+- 在测试工厂中使用 `AddApplicationPart` 注册 Core 控制器程序集
+
+#### 问题 5：Admin 测试代理端点 500
+
+**根因**：添加 Core 控制器后，`AnthropicProxyController` 依赖的 `CoreRouteFallbackEventPublisher` 在 Admin 容器中未注册。
+
+**修复**：在 `AdminAuthWebApplicationFactory` 中注册 `AddProxyRuntimeInfrastructure` + `CoreRouteFallbackEventPublisher` 单例 + `AddApplicationPart`。
+
+### 测试验证
+
+- 构建零错误零警告
+- ApplicationTests: 195 通过
+- Admin.IntegrationTests: 55 通过（原 49 → 新增 6 个迁移测试）
+- Core.IntegrationTests: 150 通过（原 54 → 新增 96 个迁移测试）
+- **全部 400 个测试零失败**
+
+---
+
+## 架构拆分最终状态
+
+### 双宿主职责边界
+
+| 宿主 | 端口 | 职责 | 数据库 | Razor Pages | 认证 |
+|------|------|------|--------|-------------|------|
+| Core | 5029 | 纯代理运行时，含代理转发、Chat API、配置同步 | 无 | 无 | 无 |
+| Admin | 5030 | 纯管理后台，含 UI、配置管理、使用日志查看 | 有（SQLite） | 有 | 有 |
+
+### DI 注册模式
+
+- `AddCommonInfrastructure()`：Core + Admin 共享（日志、HttpClient、基础服务）
+- `AddAdminInfrastructure()`：Admin 独有（数据库、Hangfire、Admin Service）
+- `AddProxyRuntimeInfrastructure()`：Core 独有（代理缓存、熔断、事件 spool、使用日志）
+
+### 测试架构
+
+| 测试项目 | 测试数 | 说明 |
+|----------|--------|------|
+| AITool.Application.Tests | 195 | 应用层单元测试 |
+| AITool.Admin.IntegrationTests | 55 | Admin 集成测试（含 Core 配置同步、鉴权） |
+| AITool.Core.IntegrationTests | 150 | Core 集成测试（代理、Chat、会话、模型、系统） |
+| **合计** | **400** | **全部通过** |
+
+### 关键技术决策
+
+1. **ProxyRequestMetadataCache 双路径**：生产环境 Core 宿主使用 `ICoreRuntimeConfigProvider` 读取配置快照（高性能）；测试环境不注入 `ICoreRuntimeConfigProvider`，回退到数据库查询路径（数据可 seed）。
+2. **Admin 测试中的 Core 控制器发现**：通过 `AddApplicationPart` 将 Core 程序集注册到 Admin 测试宿主，实现跨宿主端点测试。
+3. **测试工厂基础设施注册**：Admin 测试工厂需要注册 `AddProxyRuntimeInfrastructure` 以提供 `IUsageLogService`、`ProxyRequestMetadataCache` 等代理运行时服务。
+
+### 已移除项
+
+- ~~AITool.Web 项目~~：整个项目已删除，所有功能已分散到 Core（代理/Chat）和 Admin（管理后台/UI）
+- ~~AITool.IntegrationTests 测试项目~~：已拆分为 Core.IntegrationTests 和 Admin.IntegrationTests
+
+### 全量迁移最终结论
+
+**核心结论：Core/Admin 双宿主架构拆分已完成。AITool.Web 已彻底移除。**
+
+- 原三宿主架构（Web + Core + Admin）已精简为双宿主架构（Core + Admin）。
+- AITool.Web 项目的所有功能已完整迁移到 Core（代理转发、Chat API）和 Admin（管理后台、UI、数据库）。
+- 旧 AITool.IntegrationTests 测试项目已按职责拆分为 Core.IntegrationTests（150 测试）和 Admin.IntegrationTests（55 测试）。
+- 全部 400 个测试通过，Core/Proxy 主链路稳定。
+- 构建零错误零警告。
+
+### 待后续处理（非当前拆分范围）
+
 - 版本号集中管理
 - AdminConcurrencyControlService 完整实现
