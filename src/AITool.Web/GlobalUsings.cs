@@ -19,3 +19,11 @@ global using ModelConcurrencyLimiter = AITool.Infrastructure.Proxy.ModelConcurre
 global using ConcurrencyAcquireMode = AITool.Infrastructure.Proxy.ConcurrencyAcquireMode;
 global using ConcurrencyAcquireResult = AITool.Infrastructure.Proxy.ConcurrencyAcquireResult;
 global using ActiveModelConcurrencyEntry = AITool.Infrastructure.Proxy.ActiveModelConcurrencyEntry;
+
+// 开发者调用追踪相关类型，原先是 Web/Services 下的副本，现已统一到 Infrastructure/Proxy 层。
+global using DeveloperInvocationTraceStore = AITool.Infrastructure.Proxy.DeveloperInvocationTraceStore;
+global using DeveloperInvocationTraceRequest = AITool.Infrastructure.Proxy.DeveloperInvocationTraceRequest;
+global using DeveloperInvocationAttempt = AITool.Infrastructure.Proxy.DeveloperInvocationAttempt;
+global using DeveloperInvocationResult = AITool.Infrastructure.Proxy.DeveloperInvocationResult;
+global using DeveloperInvocationTraceEntry = AITool.Infrastructure.Proxy.DeveloperInvocationTraceEntry;
+global using DeveloperInvocationTraceAttempt = AITool.Infrastructure.Proxy.DeveloperInvocationTraceAttempt;
