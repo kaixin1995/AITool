@@ -1,19 +1,11 @@
-using AITool.Application.Common;
-using AITool.Application.Conversations;
-using AITool.Application.Operations;
 using AITool.Application.Proxy;
-using AITool.Application.UsageLogs;
 using AITool.Core.Services;
-using AITool.Infrastructure.Proxy;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.DependencyInjection;
 using AITool.Infrastructure.Hosting;
-using AITool.Infrastructure.OpenAI;
-using AITool.Infrastructure.Operations;
+using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
-using Microsoft.Extensions.Caching.Memory;
 using NLog;
 using NLog.Web;
 

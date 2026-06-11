@@ -1,4 +1,33 @@
 
+## 阶段记录 — 2026-06-12 代理运行时 DI 注册去重扩展方法提取（AddProxyRuntimeInfrastructure）
+
+### 动机
+Core/Program.cs 和 Web/Program.cs 中有约 30 行几乎完全相同的代理运行时 DI 注册代码，属于典型的复制粘贴冗余。随着 Core/Admin 双宿主架构推进，需要将这部分共享注册归纳到统一的扩展方法中，消除双副本维护负担。
+
+### 变更内容
+- **新增** `src/AITool.Infrastructure/DependencyInjection/ProxyRuntimeInfrastructureExtensions.cs`
+  - 包含 `AddProxyRuntimeInfrastructure()` 扩展方法，统一注册代理运行时共享服务
+  - 关键设计：`bool useCoreRuntimeConfigProviderForCache` 参数控制 ProxyRequestMetadataCache 是否从配置快照读取
+  - Core 宿主传入 true（走快照），Web 宿主传入 false（走数据库）
+  - 懒加载模式：在工厂 lambda 内部通过 `sp.GetRequiredService<ICoreRuntimeConfigProvider>()` 延迟解析，避免在注册阶段调用 BuildServiceProvider()
+- **修改** `src/AITool.Core/Program.cs` — 内联 DI 注册替换为 `AddProxyRuntimeInfrastructure()` 调用，保留 5 个 Core 独有服务
+- **修改** `src/AITool.Web/Program.cs` — 内联 DI 注册替换为 `AddProxyRuntimeInfrastructure()` 调用，保留 Web 独有服务
+
+### 三层 DI 扩展方法架构
+Infrastructure/DependencyInjection/ 现在包含 3 个扩展方法文件：
+- `CommonInfrastructureExtensions.cs` — 三宿主共享（Core + Web + Admin）
+- `AdminInfrastructureExtensions.cs` — Web + Admin 共享
+- `ProxyRuntimeInfrastructureExtensions.cs` — Core + Web 共享（本轮新增）
+
+### 编译与测试
+- 编译：0 错误，123 warnings（均为既有 nullable 警告）
+- 代理相关测试：86 个全部通过
+- 全量测试：54 个全部通过，零回归
+
+### 当前状态
+- DI 注册去重第三层已完成
+- Core/Program.cs 和 Web/Program.cs 中仍有少量未使用的 using 语句待清理
+
 ## 阶段记录 — 2026-06-12 统一 DeveloperInvocationTraceStore 到 Infrastructure/Proxy 层（提交 f707163）
 
 ### 动机
