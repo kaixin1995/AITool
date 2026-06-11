@@ -97,6 +97,9 @@ builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
 builder.Services.AddSingleton<DeveloperInvocationTraceQueryService>();
 
+// 注册开发者追踪事件发布器，当追踪完成时将摘要发布到 Core 事件总线。
+builder.Services.AddSingleton<CoreDeveloperTraceEventPublisher>();
+
 // 注册事件序列、事件总线与 spool，支撑 Core -> Admin 可靠事件推送。
 builder.Services.AddSingleton<CoreEventSequenceProvider>();
 builder.Services.AddSingleton<CoreAdminEventBus>();
@@ -134,6 +137,31 @@ builder.Services.AddSingleton<ConversationExtractionService>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 
 var app = builder.Build();
+
+// 将开发者追踪存储的完成事件连接到事件发布器。
+// Store 的 OnTraceCompleted 事件在追踪记录完成时触发，
+// Publisher 接收后异步发布 developer-trace 事件到 Core 事件总线。
+// 使用 fire-and-forget 模式，发布失败不影响代理主流程。
+{
+    var traceStore = app.Services.GetRequiredService<DeveloperInvocationTraceStore>();
+    var tracePublisher = app.Services.GetRequiredService<CoreDeveloperTraceEventPublisher>();
+    var tracePublishLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CoreDeveloperTraceEventPublish");
+    traceStore.OnTraceCompleted += entry =>
+    {
+        // fire-and-forget：追踪事件发布是辅助链路，不应阻塞代理主流程
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await tracePublisher.PublishAsync(entry);
+            }
+            catch (Exception ex)
+            {
+                tracePublishLogger.LogWarning(ex, "发布开发者追踪事件失败，不影响代理主流程。TraceId={TraceId}", entry.TraceId);
+            }
+        });
+    };
+}
 
 // Core 宿主启动时尝试从本地文件恢复上次的配置快照。
 // 如果没有可恢复配置，保持 not-ready 状态，等待 Admin 下发首个完整快照。

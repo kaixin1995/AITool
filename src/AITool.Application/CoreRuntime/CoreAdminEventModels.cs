@@ -260,3 +260,116 @@ public sealed class CoreConversationTurnEvent
     /// </summary>
     public string ConversationTitle { get; set; } = string.Empty;
 }
+
+/// <summary>
+/// 开发者调用追踪对应的 Core 事件负载。
+/// 当代理请求完成（成功或失败）时，Core 将调用摘要发布为事件，
+/// Admin 侧消费后在开发者调试页面展示近期的调用追踪。
+/// <para>
+/// 与 DeveloperInvocationTraceEntry 的区别：
+/// TraceEntry 是代理运行时的完整内部记录（含请求体、响应体、请求头等大量字段），
+/// 而 CoreDeveloperTraceEvent 只携带摘要信息，适合跨宿主传输和长期存储。
+/// </para>
+/// </summary>
+public sealed class CoreDeveloperTraceEvent
+{
+    /// <summary>
+    /// 跟踪标识。
+    /// </summary>
+    public Guid TraceId { get; set; }
+
+    /// <summary>
+    /// 请求标识。
+    /// </summary>
+    public Guid RequestId { get; set; }
+
+    /// <summary>
+    /// 协议类型（如 OpenAI、Anthropic）。
+    /// </summary>
+    public string ProtocolType { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 请求模型名（路由前的原始模型名）。
+    /// </summary>
+    public string RequestModel { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 实际尝试调用的模型名（路由后的上游模型名）。
+    /// </summary>
+    public string AttemptedModel { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 目标站点标识。
+    /// </summary>
+    public Guid? TargetSiteId { get; set; }
+
+    /// <summary>
+    /// 目标站点名称。
+    /// </summary>
+    public string TargetSiteName { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 转发模式（如 direct、upstream-protocol）。
+    /// </summary>
+    public string ForwardingMode { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 调用状态（success / error / pending）。
+    /// </summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 调用开始时间（即请求创建时间）。
+    /// </summary>
+    public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 调用结束时间（即结果完成时间）。
+    /// </summary>
+    public DateTimeOffset FinishedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 错误信息。成功时为空字符串。
+    /// </summary>
+    public string ErrorMessage { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 请求体预览（截断后的前 N 个字符）。
+    /// </summary>
+    public string RequestPreview { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 响应体预览（截断后的前 N 个字符）。
+    /// </summary>
+    public string ResponsePreview { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 来源标识。
+    /// </summary>
+    public string Source { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 是否为流式调用。
+    /// </summary>
+    public bool IsStreaming { get; set; }
+
+    /// <summary>
+    /// 输入 Token 数。
+    /// </summary>
+    public int InputTokens { get; set; }
+
+    /// <summary>
+    /// 缓存 Token 数。
+    /// </summary>
+    public int CachedTokens { get; set; }
+
+    /// <summary>
+    /// 输出 Token 数。
+    /// </summary>
+    public int OutputTokens { get; set; }
+
+    /// <summary>
+    /// 总耗时（毫秒）。
+    /// </summary>
+    public int TotalDurationMs { get; set; }
+}

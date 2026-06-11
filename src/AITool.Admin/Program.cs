@@ -96,6 +96,12 @@ builder.Services.AddScoped<AdminUsageLogEventIngestor>();
 // Admin 侧 ConversationTurn 事件消费器，将 Core 代理产生的对话记录事件写入 Admin 本地 JSONL 存储。
 builder.Services.AddScoped<AITool.Infrastructure.Conversations.AdminConversationTurnEventIngestor>();
 
+// Admin 侧开发者追踪内存存储，缓存从 Core 拉取的 developer-trace 事件摘要。
+// Singleton 生命周期：内存数据跨请求保持，6 小时过期自动清理，最多 100 条。
+builder.Services.AddSingleton<AdminDeveloperTraceStore>();
+// Admin 侧 DeveloperTrace 事件消费器，将 Core 代理产生的追踪事件写入内存存储。
+builder.Services.AddScoped<AdminDeveloperTraceEventIngestor>();
+
 // Admin 侧事件 ack 状态持久化，将已确认序号写入本地文件，确保重启后不重复消费历史事件。
 var ackMetaPath = builder.Environment.IsEnvironment("Testing")
     ? Path.Combine(Path.GetTempPath(), $"aitool-core-event-ack-{Guid.NewGuid():N}", "ack.meta")

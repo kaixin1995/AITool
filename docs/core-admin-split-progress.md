@@ -1183,6 +1183,56 @@ Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
 - 使用 `LoggerStub` 替代真实日志基础设施
 - 全部 196 个测试零回归（ApplicationTests 105 + Admin IntegrationTests 49 + Core IntegrationTests 42）
 
+### 已完成：DeveloperTraceEvent 第三条事件链路消费闭环
+
+本轮完成了 DeveloperTraceEvent（开发者调用追踪）从 Core 发布到 Admin 消费的完整闭环，是继 UsageLog 和 ConversationTurn 之后的第三条事件链路。
+
+#### 已创建/修改文件
+
+**Core 侧发布器：**
+-  — 新增，开发者调用追踪事件发布器，将  投影为  并发布到 Core 事件总线。请求体/响应体预览截断到 512 字符，避免大负载事件占用带宽
+
+**Admin 侧消费器：**
+-  — 新增，Admin 侧开发者追踪内存存储（Singleton），6 小时过期自动清理，最多 100 条
+-  — 新增，Admin 侧 DeveloperTrace 事件消费器，从事件流筛选  类型，按 TraceId 去重后写入内存存储
+
+**事件模型扩展：**
+-  — 新增  事件负载模型（20+ 字段，覆盖 TraceId、模型、站点、Token 用量、耗时、预览等）
+-  — 新增  工厂方法
+
+**Admin 侧集成：**
+-  — 改造为三 Ingestor 架构，新增  字段、构造函数参数和 ingest 调用
+-  — 新增 （Singleton）和 （Scoped）DI 注册
+
+**Core 侧集成：**
+-  — 新增  DI 注册和  事件订阅
+-  — 新增  事件，在追踪记录完成时触发
+
+**测试适配：**
+-  — 新增  字段和初始化，更新全部 7 处  构造函数调用
+
+#### 架构依赖说明
+
+ 初始放在  中，但因  不引用 ，而该发布器需要使用 （位于 ），导致编译失败。最终将该发布器移到 ，因为它自然属于 Core 宿主的代理运行时层。
+
+#### Triple Ingestor 架构
+
+CoreEventPullService 现在同时消费三种事件类型：
+
+| 事件类型 | Ingestor | 消费目标 | 持久化方式 |
+|---|---|---|---|
+|  | AdminUsageLogEventIngestor | Admin 数据库 | SQLite |
+|  | AdminConversationTurnEventIngestor | Admin 本地 JSONL | 文件 |
+|  | AdminDeveloperTraceEventIngestor | Admin 内存缓存 | 内存（6h 过期）|
+
+#### DeveloperTraceEvent 闭环状态
+
+- **Core 发布 → Admin 消费完整闭环已打通**
+- **全解决方案编译 0 error，0 warning**
+- **全部 6 个 CoreEventPullService 单元测试通过**
+- **Triple Ingestor 架构已确立，后续新增事件类型只需增加对应 Ingestor**
+
+---
 ### 未完成：事件流实时消费通道
 
 当前事件链路仍然是：
@@ -1345,7 +1395,7 @@ Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
 
 - 实现了 Admin 侧 ``conversation-turn`` 事件完整消费闭环
 - 新增 ``AdminConversationTurnEventIngestor``，从 Core 事件流提取对话记录事件并写入 Admin 本地 JSONL 存储
-- 改造 ``CoreEventPullService`` 为双 Ingestor 架构，同时消费 ``usage-log`` 和 ``conversation-turn`` 两种事件类型
+- 改造 ``CoreEventPullService`` 为三 Ingestor 架构，同时消费 ``usage-log`` 和 ``conversation-turn`` 两种事件类型
 - 在 Admin ``Program.cs`` 注册 ``AdminConversationTurnEventIngestor`` 为 Scoped 服务
 - 编写 7 个单元测试验证对话记录消费器（过滤、反序列化、去重、批量写入、异常容忍）
 - 更新 CoreEventPullService 测试适配双 Ingestor，新增混合事件类型端到端测试
@@ -1385,4 +1435,4 @@ Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
 
 当前项目状态可以概括为：
 
-> **Admin 侧已实现双事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**
+> **Admin 侧已实现三事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**

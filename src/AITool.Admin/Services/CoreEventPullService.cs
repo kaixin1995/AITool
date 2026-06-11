@@ -14,6 +14,7 @@ namespace AITool.Admin.Services;
 /// <list type="bullet">
 ///   <item><c>usage-log</c> — 代理使用日志，写入 Admin 数据库</item>
 ///   <item><c>conversation-turn</c> — 对话记录，写入 Admin 本地 JSONL 文件</item>
+///   <item><c>developer-trace</c> — 开发者调用追踪，写入 Admin 内存缓存</item>
 /// </list>
 /// </para>
 /// <para>
@@ -26,6 +27,7 @@ public sealed class CoreEventPullService
     private readonly CoreAdminClient _coreClient;
     private readonly AdminUsageLogEventIngestor _usageLogIngestor;
     private readonly AdminConversationTurnEventIngestor _conversationTurnIngestor;
+    private readonly AdminDeveloperTraceEventIngestor _developerTraceIngestor;
     private readonly CoreEventAckStateStore _ackStateStore;
     private readonly ILogger<CoreEventPullService> _logger;
 
@@ -47,6 +49,7 @@ public sealed class CoreEventPullService
         CoreAdminClient coreClient,
         AdminUsageLogEventIngestor usageLogIngestor,
         AdminConversationTurnEventIngestor conversationTurnIngestor,
+        AdminDeveloperTraceEventIngestor developerTraceIngestor,
         CoreEventAckStateStore ackStateStore,
         ILogger<CoreEventPullService> logger,
         string? adminInstanceId = null)
@@ -54,6 +57,7 @@ public sealed class CoreEventPullService
         _coreClient = coreClient;
         _usageLogIngestor = usageLogIngestor;
         _conversationTurnIngestor = conversationTurnIngestor;
+        _developerTraceIngestor = developerTraceIngestor;
         _ackStateStore = ackStateStore;
         _logger = logger;
         _adminInstanceId = adminInstanceId ?? $"admin-{Environment.MachineName}-{Environment.ProcessId}";
@@ -95,6 +99,7 @@ public sealed class CoreEventPullService
         // 按事件类型分别消费入库
         var usageLogMax = await _usageLogIngestor.IngestUsageLogEventsAsync(envelopes, cancellationToken);
         var conversationTurnMax = await _conversationTurnIngestor.IngestConversationTurnEventsAsync(envelopes, cancellationToken);
+        var developerTraceMax = await _developerTraceIngestor.IngestDeveloperTraceEventsAsync(envelopes, cancellationToken);
 
         // ack 序号始终推进到本批次最大值，确保 spool 中所有事件都被确认（包括无法消费的未知类型）
         var maxAcked = envelopes.Max(e => e.SequenceId);

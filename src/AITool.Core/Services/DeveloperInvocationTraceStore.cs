@@ -5,6 +5,11 @@ namespace AITool.Core.Services;
 
 /// <summary>
 /// 开发者调用跟踪存储。
+/// <para>
+/// 当追踪记录完成时（状态从 pending 变为 success / error 等），
+/// 会触发 <see cref="OnTraceCompleted"/> 事件，供外部订阅者（如事件发布器）消费。
+/// 事件触发是 fire-and-forget 方式，不会阻塞调用追踪的主流程。
+/// </para>
 /// </summary>
 public sealed class DeveloperInvocationTraceStore
 {
@@ -28,6 +33,13 @@ public sealed class DeveloperInvocationTraceStore
     /// 调用跟踪节点索引。
     /// </summary>
     private readonly Dictionary<Guid, LinkedListNode<DeveloperInvocationTraceEntry>> _nodes = [];
+
+    /// <summary>
+    /// 当追踪记录状态从 pending 变为最终状态时触发。
+    /// 订阅者可以将已完成的追踪发布为 Core 事件。
+    /// 参数为已完成的追踪记录的深拷贝，线程安全。
+    /// </summary>
+    public event Action<DeveloperInvocationTraceEntry>? OnTraceCompleted;
 
     /// <summary>
     /// 添加调用请求记录。
@@ -98,9 +110,12 @@ public sealed class DeveloperInvocationTraceStore
 
     /// <summary>
     /// 完成一次调用尝试并回写结果。
+    /// 当追踪记录状态从 pending 变为最终状态时，触发 <see cref="OnTraceCompleted"/> 事件。
     /// </summary>
     public void CompleteAttempt(Guid traceId, Guid attemptId, DeveloperInvocationResult result)
     {
+        DeveloperInvocationTraceEntry? completedEntry = null;
+
         lock (_gate)
         {
             PurgeExpiredUnsafe();
@@ -114,6 +129,8 @@ public sealed class DeveloperInvocationTraceStore
             {
                 return;
             }
+
+            var wasPending = string.Equals(node.Value.Status, "pending", StringComparison.OrdinalIgnoreCase);
 
             attempt.Status = result.Status;
             attempt.StatusCode = result.StatusCode;
@@ -142,6 +159,18 @@ public sealed class DeveloperInvocationTraceStore
             node.Value.OutputTokens = result.OutputTokens;
             node.Value.TotalDurationMs = result.TotalDurationMs;
             node.Value.UpdatedAt = DateTimeOffset.UtcNow;
+
+            // 状态从 pending 变为最终状态时，克隆一份给事件订阅者
+            if (wasPending && !string.Equals(result.Status, "pending", StringComparison.OrdinalIgnoreCase))
+            {
+                completedEntry = Clone(node.Value);
+            }
+        }
+
+        // 在锁外部触发事件，避免死锁风险
+        if (completedEntry is not null)
+        {
+            OnTraceCompleted?.Invoke(completedEntry);
         }
     }
 
