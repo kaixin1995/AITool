@@ -162,6 +162,122 @@ public sealed class CoreEventSpoolStore
     }
 
     /// <summary>
+    /// 清理超龄和超数的 spool 文件。
+    /// 这是独立于 ack 驱动的 TrimAckedAsync 的安全阀机制：
+    /// 即使 Admin 长时间不在线，Core 也不会无限积累 spool 文件导致磁盘空间耗尽。
+    /// 清理规则：
+    /// - 超过 MaxAgeDays 天数的文件直接删除
+    /// - 超过 MaxFileCount 数量的文件从最旧开始删除
+    /// </summary>
+    public async Task<int> PruneExpiredFilesAsync(CancellationToken cancellationToken = default)
+    {
+        await _fileLock.WaitAsync(cancellationToken);
+        try
+        {
+            EnsureRootDirectory();
+            var files = EnumerateSpoolFiles().ToList();
+            if (files.Count == 0)
+            {
+                return 0;
+            }
+
+            var deletedCount = 0;
+
+            // 先按天数清理：删除超过 MaxAgeDays 的旧文件
+            if (_options.MaxAgeDays > 0)
+            {
+                var cutoffDate = DateTimeOffset.Now.AddDays(-_options.MaxAgeDays);
+                foreach (var filePath in files)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var fileDate = ExtractDateFromFileName(filePath);
+                    if (fileDate.HasValue && fileDate.Value < cutoffDate)
+                    {
+                        try
+                        {
+                            File.Delete(filePath);
+                            _logger.LogInformation("已删除超龄 spool 文件：{FilePath}，文件日期={FileDate}", filePath, fileDate.Value.ToString("yyyy-MM-dd"));
+                            deletedCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "删除超龄 spool 文件失败：{FilePath}", filePath);
+                        }
+                    }
+                }
+            }
+
+            // 再按数量清理：如果文件总数超过 MaxFileCount，从最旧开始删除
+            if (_options.MaxFileCount > 0)
+            {
+                // 重新列举，因为上面可能已经删除了一些文件
+                var remainingFiles = EnumerateSpoolFiles().ToList();
+                if (remainingFiles.Count > _options.MaxFileCount)
+                {
+                    var excessCount = remainingFiles.Count - _options.MaxFileCount;
+                    // remainingFiles 已按文件名排序（即按日期排序），最旧的在前面
+                    foreach (var filePath in remainingFiles.Take(excessCount))
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        try
+                        {
+                            File.Delete(filePath);
+                            _logger.LogInformation("已删除超数 spool 文件：{FilePath}，当前文件数={RemainingCount}，上限={MaxFileCount}", filePath, remainingFiles.Count, _options.MaxFileCount);
+                            deletedCount++;
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "删除超数 spool 文件失败：{FilePath}", filePath);
+                        }
+                    }
+                }
+            }
+
+            return deletedCount;
+        }
+        finally
+        {
+            _fileLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 从 spool 文件名中提取日期部分。
+    /// 文件名格式为 events-{yyyyMMdd}.jsonl，提取出的日期表示该文件所属的本地日期。
+    /// 如果文件名格式不匹配，返回 null。
+    /// </summary>
+    internal static DateTimeOffset? ExtractDateFromFileName(string filePath)
+    {
+        var fileName = Path.GetFileNameWithoutExtension(filePath);
+        // fileName 形如 "events-20260610"
+        var dashIndex = fileName.IndexOf('-');
+        if (dashIndex < 0 || dashIndex + 1 >= fileName.Length)
+        {
+            return null;
+        }
+
+        var datePart = fileName[(dashIndex + 1)..];
+        if (datePart.Length != 8 || !int.TryParse(datePart, out var dateInt))
+        {
+            return null;
+        }
+
+        var year = dateInt / 10000;
+        var month = (dateInt / 100) % 100;
+        var day = dateInt % 100;
+
+        try
+        {
+            return new DateTimeOffset(year, month, day, 0, 0, 0, TimeSpan.Zero);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // 无效日期（如 20261300），返回 null
+            return null;
+        }
+    }
+
+    /// <summary>
     /// 确保 spool 根目录存在。
     /// </summary>
     private void EnsureRootDirectory()

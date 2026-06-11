@@ -1202,7 +1202,7 @@ Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
 
 ---
 
-### 未完成：事件 sequence / ack 持久化元数据增强
+### 已完成：事件 sequence / ack 持久化元数据增强 + Spool 文件轮转/清理策略
 
 当前已经有：
 
@@ -1213,12 +1213,27 @@ Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
 
 #### 但还没做的更稳妥能力
 
-- sequence 持久化元数据文件
-- ack 持久化元数据文件
-- Core 重启后恢复 sequence/ack 状态
-- 更细粒度的 spool 文件轮转策略
+#### sequence 持久化元数据
 
-目前最小版本已经能工作，但这部分仍然可以继续增强。
+- 已实现 `CoreEventSequenceProvider` 的文件持久化：通过 `sequence.meta` 文件存储最新序号
+- 原子写入机制：temp-file-then-rename，防止写入中断导致文件损坏
+- 启动时恢复优先级：meta 文件 → spool 文件扫描 → 从 0 开始
+- 对损坏/无效 meta 文件的容错处理（负数、非数字等）
+
+#### ack 持久化元数据
+
+- 已实现 `CoreEventAckStateStore` 的文件持久化：通过 `ack.meta` 文件存储已确认序号
+- 同样采用 temp-file-then-rename 原子写入
+- Admin 重启后能从 ack.meta 恢复上次确认位置，避免重复消费
+
+#### Spool 文件轮转/清理策略
+
+- 已实现两阶段清理机制，防止 Admin 长时间离线导致磁盘空间耗尽
+- `CoreEventSpoolOptions` 新增 `MaxAgeDays`（默认 30 天）和 `MaxFileCount`（默认 60 个）两个安全阀参数
+- `CoreEventSpoolStore.PruneExpiredFilesAsync` 实现两阶段清理：先按天数删除超龄文件，再按数量删除超数文件
+- `CoreEventSpoolBackgroundService` 已集成定期清理触发：每 100 条事件或每 1 小时触发一次清理检查
+- 清理失败不影响主链路事件写入
+- 22 个单元测试覆盖：ExtractDateFromFileName 解析、年龄清理、数量清理、联合清理、空目录、边界值等场景
 
 ---
 
@@ -1335,6 +1350,16 @@ Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
 - 编写 7 个单元测试验证对话记录消费器（过滤、反序列化、去重、批量写入、异常容忍）
 - 更新 CoreEventPullService 测试适配双 Ingestor，新增混合事件类型端到端测试
 - 全部 204 个测试零回归（ApplicationTests 113 + Admin 49 + Core 42）
+
+### 本轮又完成了什么（sequence/ack 持久化 + Spool 轮转）
+
+- 实现了 Core 事件 sequence 持久化元数据：`CoreEventSequenceProvider` 通过 `sequence.meta` 文件持久化序号，支持重启恢复、损坏容错
+- 实现了 Core 事件 ack 持久化元数据：`CoreEventAckStateStore` 通过 `ack.meta` 文件持久化确认序号，Admin 重启后从上次位置继续消费
+- 实现了 Spool 文件轮转/清理策略：两阶段清理（超龄删除 + 超数删除），防止磁盘空间无限增长
+- `CoreEventSpoolBackgroundService` 集成定期清理触发（每 100 条事件或每 1 小时）
+- 编写 22 个 spool 轮转单元测试 + 5 个 ack 持久化测试 + 5 个 sequence 持久化测试
+- 全部 347 个测试零回归（ApplicationTests 148 + Admin 49 + Core 42 + Integration 108）
+
 ### 当前还剩什么
 
 - AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
@@ -1342,16 +1367,14 @@ Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
 - AITool.Web/Services/ 中仅剩 2 个文件：`AdminCacheInvalidationService`（测试引用）+ `AdminQueryMetadataService`（ChatApiController 引用）
 - Docker / 容器化部署配置尚未创建（用户明确暂不需要）
 - 实时事件流推送（WebSocket/SSE）尚未实施（当前使用轮询拉取模式，已满足基本需求）
-- 事件 sequence/ack 持久化元数据增强仍未实施
 
 ### 当前阻塞点是什么
 
 - 暂无阻塞点
-- 后续重点工作转向事件持久化增强、实时推送通道和更多事件类型消费
+- 后续重点工作转向实时推送通道和更多事件类型消费
 
 ### 下一步准备做什么
 
-- 推进事件 sequence/ack 持久化元数据增强
 - 推进实时事件流推送通道（WebSocket/SSE）
 - 推进更多事件类型消费（developer trace、detection、route fallback 等）
 - 每完成一个小阶段后继续同步更新本文档
