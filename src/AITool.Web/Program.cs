@@ -11,7 +11,6 @@ using AITool.Infrastructure.Retention;
 using AITool.Infrastructure.Scheduling;
 using AITool.Web.Services;
 using Hangfire;
-using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.EntityFrameworkCore;
 using NLog;
 using NLog.Web;
@@ -109,42 +108,8 @@ startupLogger.Info(
 Console.WriteLine($"AI Tool 已启动：http://127.0.0.1:{serverPort}");
 Console.WriteLine($"AI Tool 已启动：http://{LocalIpAddressHelper.GetLocalIpAddress()}:{serverPort}");
 
-// 启用静态文件服务，提供 wwwroot 下的 CSS/JS 等资源。
-if (!app.Environment.IsEnvironment("Testing"))
-{
-    app.UseExceptionHandler(exceptionApp =>
-    {
-        exceptionApp.Run(async context =>
-        {
-            var feature = context.Features.Get<IExceptionHandlerFeature>();
-            var logger = context.RequestServices.GetRequiredService<ILogger<Program>>();
-            if (feature?.Error is OperationCanceledException)
-            {
-                return;
-            }
-
-            if (feature?.Error is not null)
-            {
-                var requestBody = await RequestBodyReader.TryReadRequestBodySafelyAsync(context.Request, context.RequestAborted);
-
-                logger.LogError(feature.Error,
-                    "未处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
-                    context.Request.Path,
-                    context.Request.Method,
-                    context.TraceIdentifier,
-                    context.Request.QueryString.HasValue ? context.Request.QueryString.Value : string.Empty,
-                    HttpLogFormatter.FormatBody(requestBody));
-            }
-
-            if (!context.Response.HasStarted)
-            {
-                context.Response.StatusCode = StatusCodes.Status500InternalServerError;
-                context.Response.ContentType = "application/json; charset=utf-8";
-                await context.Response.WriteAsJsonAsync(new { message = "服务器内部异常" });
-            }
-        });
-    });
-}
+// 全局异常处理：捕获未处理异常并记录详细日志，返回统一 JSON 错误响应。
+app.UseGlobalExceptionHandler(app.Environment);
 
 app.UseStaticFiles();
 app.UseWebSockets();
