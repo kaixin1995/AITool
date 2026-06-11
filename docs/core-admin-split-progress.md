@@ -1,3 +1,42 @@
+
+## 阶段记录 — 2026-06-12 统一 DeveloperInvocationTraceStore 到 Infrastructure/Proxy 层（提交 f707163）
+
+### 动机
+DeveloperInvocationTraceStore（含 5 个辅助类型）在 Core/Services 和 Web/Services 各存在一份副本，
+代码几乎完全相同（Core 版本多一个 OnTraceCompleted 事件），属于典型的复制粘贴冗余。
+
+### 变更内容
+- **新增** `src/AITool.Infrastructure/Proxy/DeveloperInvocationTraceStore.cs`
+  - 命名空间 `AITool.Infrastructure.Proxy`
+  - 包含 6 个 public 类型：DeveloperInvocationTraceStore（含 OnTraceCompleted 事件）、
+    DeveloperInvocationTraceRequest、DeveloperInvocationAttempt、DeveloperInvocationResult、
+    DeveloperInvocationTraceEntry、DeveloperInvocationTraceAttempt
+  - 统一版本保留 Core 版本的 OnTraceCompleted 事件机制
+- **修改** `src/AITool.Core/GlobalUsings.cs` — 添加 6 个类型别名
+- **修改** `src/AITool.Web/GlobalUsings.cs` — 添加 6 个类型别名
+- **删除** `src/AITool.Core/Services/DeveloperInvocationTraceStore.cs`（Git 识别为 rename）
+- **删除** `src/AITool.Web/Services/DeveloperInvocationTraceStore.cs`
+
+### 无需修改的文件
+- Core/Program.cs、Web/Program.cs — DI 注册通过 GlobalUsings 别名自动解析
+- Core/Services/DeveloperInvocationTraceQueryService.cs — 通过 GlobalUsings 别名解析
+- Core/Services/CoreDeveloperTraceEventPublisher.cs — 通过 GlobalUsings 别名解析
+- 所有 Controller 文件 — `using AITool.Core.Services;` / `using AITool.Web.Services;` 仍需保留给其他类型
+
+### 测试结果
+- DeveloperTrace 相关测试 7/7 通过
+- Proxy + Chat 相关测试 94/94 通过
+
+### 当前 Core/Services 剩余文件（3 个）
+- DeveloperInvocationTraceQueryService.cs
+- CoreDeveloperTraceEventPublisher.cs
+- CoreRouteFallbackEventPublisher.cs
+
+### 当前 Web/Services 剩余文件（1 个）
+- AdminAuthService.cs
+
+### Infrastructure/Proxy 目录现在共 12 个文件
+已包含 DeveloperInvocationTraceStore.cs。
 # Core / Admin 拆分当前进展说明
 > **协议与运行时基础已经打好，双宿主架构进入实质性页面迁移阶段；Admin 宿主已迁移 12 组页面（UsageLogs + Conversations + Chat + Developer/Invocations + System/Settings + 第三批 8 组），覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；ProxyRequestMetadataCache 已完成全部 6 个 DB 依赖方法的双路径改造（快照 vs DB），Core 宿主可完全从配置快照驱动代理运行时，零数据库依赖；Core / Admin 联合部署基础配置已完成——独立 appsettings.json（Core 5029、Admin 5030）、独立 launchSettings.json、Admin 启动时自动同步配置到 Core 的 HostedService；Developer/Invocations 页面迁移成功突破了此前"不可迁移"的判断，通过 CoreAdminClient 代理模式解决了三重运行时依赖问题；System/Settings 页面通过将熔断参数更新和缓存失效封装到 Core 全量同步流程中，彻底解决了 Admin 页面对 Core 运行时对象的直接依赖；Web 侧已迁移页面/控制器/服务的最终清理已完成——删除 10 个冗余文件、清理 7 个 DI 注册、重写/删除 3 个过时测试，Web/Services/ 仅剩 2 个仍有运行时消费者的文件；AITool.Web 中仅剩 Chat/Index 页面（Admin 已有对应版本）和 ChatApiController（深度代理运行时依赖，不可迁移）。**
 ### 已完成：Patch 增量同步协议
