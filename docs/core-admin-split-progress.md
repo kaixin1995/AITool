@@ -1825,3 +1825,82 @@ CoreEventPullService 现在同时消费三种事件类型：
 - Core/Program.cs 中的事件接线代码（DeveloperTrace、CircuitBreaker）是 Core 独有的启动逻辑，不需要跨宿主共享，保持在 Program.cs 中是合理的
 - 继续检查是否有其他可提取的共享模式
 - 评估整体架构拆分的完成度
+
+---
+
+## 阶段记录 — 2026-06-12 架构拆分完成度评估与最终清理
+
+### 本轮完成了什么
+
+- **Using 引用清理**：移除 Web/Program.cs 中未使用的 `using AITool.Infrastructure.Scheduling;`，移除 Admin/Program.cs 中未使用的 `using HttpLogFormatter` 别名。Admin/Program.cs 的 `using AITool.Infrastructure.Conversations;` 经验证仍被 `AdminConversationTurnEventIngestor` 使用，已恢复。
+- **Controller 层重复评估**：对比 Web 和 Core 的 Controller 目录，发现 9/10 对 Controller 文件是完全相同的代码副本（仅 namespace 不同），其中 CoreConfigSyncController 有实质功能差异（Core 版新增 patch-sync、缓存失效、熔断参数同步）。Web 独有 ChatApiController（依赖 DbContext），Core 独有 CoreEventStreamController 和 CoreDeveloperQueryController。Controller 重复是设计预期——Web 作为过渡期单体仍需保留完整的代理和管理功能，未来 Web 下线后其 Controller 自然移除。
+- **全面架构评估完成**：确认架构拆分已达到可交付状态。
+
+### 架构拆分最终状态总结
+
+#### 三宿主 Program.cs 行数
+
+| 宿主 | 行数 | 说明 |
+|------|------|------|
+| Web | ~128 | 从原始 435 行缩减到约 30%，保留 DI 注册、代理运行时初始化、中间件管道 |
+| Core | ~188 | 纯代理运行时，含事件接线、SSE、开发者查询等 Core 独有功能 |
+| Admin | ~131 | 纯管理后台，含事件消费器、HostedService 等 Admin 独有功能 |
+
+#### Infrastructure 层组织
+
+| 目录 | 文件数 | 说明 |
+|------|--------|------|
+| DependencyInjection | 3 | AddCommonInfrastructure / AddAdminInfrastructure / AddProxyRuntimeInfrastructure 三组 DI 注册 |
+| Hosting | 11 | 全局异常处理、认证中间件、Admin 请求匹配、日志格式化、请求体读取等 |
+| Persistence | 3 | AppDbContext、DatabaseSchemaMigrator、AdminStartupInitializer |
+
+#### 各宿主职责边界
+
+- **Web**（端口 5029）：过渡期单体，同时承担代理转发 + 管理后台 + 数据库拥有者三重角色。DI 注册包含三组基础设施完整注册 + 代理运行时独有服务。
+- **Core**（端口 5029）：纯代理运行时宿主，无 DB/无 Razor/无 Auth。DI 注册仅包含 CommonInfrastructure + ProxyRuntimeInfrastructure。4 个 Core 独有 Service 类（事件发布、查询）。
+- **Admin**（端口 5030）：纯管理后台宿主，拥有 DB。DI 注册包含 CommonInfrastructure + AdminInfrastructure + 7 个 Admin 独有 Service 类（事件拉取/消费/缓存失效/并发控制）。
+
+#### 已提取的共享模式
+
+1. **DI 分组注册**：CommonInfrastructure（3 宿主共享）、AdminInfrastructure（Web+Admin 共享）、ProxyRuntimeInfrastructure（Web+Core 共享）
+2. **认证中间件**：AdminAuthenticationMiddleware + UseAdminAuthentication() 扩展方法
+3. **启动初始化**：AdminStartupInitializer 封装数据库创建 + Schema 迁移 + Hangfire 调度
+4. **全局异常处理**：GlobalExceptionHandlerExtensions 封装异常捕获和统一 JSON 响应
+5. **Admin 认证服务**：AdminAuthService + AdminRequestMatcher 封装认证逻辑和路径匹配
+6. **数据库迁移**：DatabaseSchemaMigrator 封幂等 Schema 补齐
+7. **版本信息**：AppVersionInfo 封装应用版本号
+
+#### 已知的设计遗留项（非阻塞）
+
+1. **Controller 重复**：Web 和 Core 的 Proxy Controller 完全重复（9/10 对），CoreConfigSyncController 有功能差异。这是过渡期的预期状态，Web 下线后自然消除。
+2. **版本号分散**：三个宿主各自硬编码版本号（1.0.1.4 / 1.0.1.4-admin / 1.0.1.4-core），未来应集中到 Directory.Build.props。
+3. **AdminConcurrencyControlService 占位**：Admin 侧并发控制服务目前是占位实现，后续需通过 CoreAdminClient 实现代理运行时并发限制变更。
+
+### 文件变更清单
+
+- 修改 Web/Program.cs：移除未使用的 using AITool.Infrastructure.Scheduling
+- 修改 Admin/Program.cs：移除未使用的 using HttpLogFormatter 别名
+
+### 测试验证
+
+- 构建零错误零警告
+- ApplicationTests: 195 通过
+- Admin.IntegrationTests: 49 通过
+- IntegrationTests: 108 通过
+- Core.IntegrationTests: 54 通过
+- 全部 406 个测试零失败
+
+### 架构拆分完成度结论
+
+**核心结论：架构拆分已基本完成。**
+
+- 三个宿主的 Program.cs 均已精简到合理范围（128-188 行），启动逻辑已下沉到 Infrastructure 层。
+- 共享基础设施（认证、异常处理、数据库迁移、DI 注册）已全部提取到可复用的 Infrastructure 类。
+- Web 项目无 Services 残留，仅保留 Controllers + Pages。
+- Core 和 Admin 各自拥有独立的 Services，职责边界清晰。
+- 所有 406 个测试通过，Core/Proxy 主链路稳定。
+
+后续工作（非当前拆分范围）：
+- Web 下线时的 Controller 清理
+- 版本号集中管理
+- AdminConcurrencyControlService 完整实现
