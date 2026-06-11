@@ -8,12 +8,16 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace AITool.IntegrationTests.System;
+namespace AITool.Admin.IntegrationTests;
 
 /// <summary>
-/// 系统设置页面集成测试，验证页面可访问并展示关键字段
+/// 系统设置页面集成测试，验证 Admin 宿主上的设置页面可访问并展示关键字段。
+/// <para>
+/// 此测试从 AITool.IntegrationTests.System.SystemSettingsPageTests 迁移至 Admin 宿主，
+/// 因为设置页面已从 Web 宿主迁移到 Admin 宿主。
+/// </para>
 /// </summary>
-public sealed class SystemSettingsPageTests
+public sealed class SettingsPageTests
 {
     /// <summary>
     /// 验证系统设置页面会展示运行时配置字段。
@@ -21,7 +25,7 @@ public sealed class SystemSettingsPageTests
     [Fact]
     public async Task Get_settings_page_contains_runtime_setting_fields()
     {
-        await using var factory = new SystemSettingsWebApplicationFactory();
+        await using var factory = new SettingsWebApplicationFactory();
         using var client = factory.CreateClient();
 
         var response = await client.GetAsync("/Admin/System/Settings");
@@ -40,7 +44,7 @@ public sealed class SystemSettingsPageTests
     [Fact]
     public async Task Get_layout_hides_developer_invocation_navigation_when_feature_is_disabled()
     {
-        await using var factory = new SystemSettingsWebApplicationFactory(false);
+        await using var factory = new SettingsWebApplicationFactory(developerFeaturesEnabled: false);
         using var client = factory.CreateClient();
 
         var response = await client.GetAsync("/Admin/System/Settings");
@@ -56,7 +60,7 @@ public sealed class SystemSettingsPageTests
     [Fact]
     public async Task Get_layout_shows_developer_invocation_navigation_when_feature_is_enabled()
     {
-        await using var factory = new SystemSettingsWebApplicationFactory(true);
+        await using var factory = new SettingsWebApplicationFactory(developerFeaturesEnabled: true);
         using var client = factory.CreateClient();
 
         var response = await client.GetAsync("/Admin/System/Settings");
@@ -69,14 +73,15 @@ public sealed class SystemSettingsPageTests
 }
 
 /// <summary>
-/// 用于构建 SystemSettingsWebApplicationFactory 对应的测试宿主，并准备隔离的测试数据。
+/// 系统设置页面测试的 WebApplicationFactory，使用隔离的 SQLite 数据库。
 /// </summary>
-internal sealed class SystemSettingsWebApplicationFactory : WebApplicationFactory<Program>
+internal sealed class SettingsWebApplicationFactory : WebApplicationFactory<AITool.Admin.AdminProgramMarker>
 {
     /// <summary>
-    /// 保存当前测试使用的临时数据库路径。
+    /// 当前测试使用的临时数据库路径。
     /// </summary>
-    private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-system-settings-{Guid.NewGuid():N}.db");
+    private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-settings-{Guid.NewGuid():N}.db");
+
     /// <summary>
     /// 标记当前测试是否启用开发者功能。
     /// </summary>
@@ -85,13 +90,13 @@ internal sealed class SystemSettingsWebApplicationFactory : WebApplicationFactor
     /// <summary>
     /// 创建系统设置页面测试宿主，并记录开发者功能开关。
     /// </summary>
-    public SystemSettingsWebApplicationFactory(bool developerFeaturesEnabled = false)
+    public SettingsWebApplicationFactory(bool developerFeaturesEnabled = false)
     {
         _developerFeaturesEnabled = developerFeaturesEnabled;
     }
 
     /// <summary>
-    /// 配置系统设置页面测试所需的数据库。
+    /// 配置测试宿主依赖，接入隔离数据库。
     /// </summary>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -105,7 +110,7 @@ internal sealed class SystemSettingsWebApplicationFactory : WebApplicationFactor
     }
 
     /// <summary>
-    /// 创建客户端后初始化当前测试场景的数据。
+    /// 在客户端配置完成后执行测试数据初始化。
     /// </summary>
     protected override void ConfigureClient(HttpClient client)
     {
@@ -114,7 +119,7 @@ internal sealed class SystemSettingsWebApplicationFactory : WebApplicationFactor
     }
 
     /// <summary>
-    /// 准备当前测试场景所需的数据。
+    /// 准备当前测试场景所需的系统设置数据。
     /// </summary>
     private async Task EnsureDatabaseAsync()
     {

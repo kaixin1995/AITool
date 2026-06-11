@@ -20,7 +20,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace AITool.IntegrationTests.Core;
 
 /// <summary>
-/// 验证 Core 运行时配置全量同步最小闭环。
+/// 验证 Core 运行时配置全量同步和增量同步。
 /// </summary>
 public sealed class CoreConfigSyncTests
 {

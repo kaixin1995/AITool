@@ -144,6 +144,23 @@ using (var scope = app.Services.CreateScope())
     {
         startupLogger.Warn("Core 启动时未找到可恢复的 last-good-config，将等待 Admin 下发首个完整配置快照后进入 ready 状态。");
     }
+    else
+    {
+        // 恢复成功后，用快照中的熔断参数初始化 RouteCircuitStateStore，
+        // 确保熔断阈值和恢复时长与 Admin 侧配置一致，而非使用构造器默认值。
+        var restoredSnapshot = configProvider.GetCurrent();
+        if (restoredSnapshot?.RuntimeSettings is not null)
+        {
+            var circuitStore = scope.ServiceProvider.GetRequiredService<RouteCircuitStateStore>();
+            circuitStore.UpdateOptions(
+                TimeSpan.FromMinutes(restoredSnapshot.RuntimeSettings.CircuitBreakerRecoveryMinutes),
+                restoredSnapshot.RuntimeSettings.CircuitBreakerFailureThreshold);
+            startupLogger.Info(
+                "已从恢复快照初始化熔断参数：Threshold={Threshold}, RecoveryMinutes={RecoveryMinutes}",
+                restoredSnapshot.RuntimeSettings.CircuitBreakerFailureThreshold,
+                restoredSnapshot.RuntimeSettings.CircuitBreakerRecoveryMinutes);
+        }
+    }
 }
 
 startupLogger.Info(

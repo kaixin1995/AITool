@@ -1,4 +1,84 @@
 # Core / Admin 拆分当前进展说明
+> **协议与运行时基础已经打好，双宿主架构进入实质性页面迁移阶段；Admin 宿主已迁移 12 组页面（UsageLogs + Conversations + Chat + Developer/Invocations + System/Settings + 第三批 8 组），覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；ProxyRequestMetadataCache 已完成全部 6 个 DB 依赖方法的双路径改造（快照 vs DB），Core 宿主可完全从配置快照驱动代理运行时，零数据库依赖；Core / Admin 联合部署基础配置已完成——独立 appsettings.json（Core 5029、Admin 5030）、独立 launchSettings.json、Admin 启动时自动同步配置到 Core 的 HostedService；Developer/Invocations 页面迁移成功突破了此前"不可迁移"的判断，通过 CoreAdminClient 代理模式解决了三重运行时依赖问题；System/Settings 页面通过将熔断参数更新和缓存失效封装到 Core 全量同步流程中，彻底解决了 Admin 页面对 Core 运行时对象的直接依赖；Web 侧已迁移页面/控制器/服务的最终清理已完成——删除 10 个冗余文件、清理 7 个 DI 注册、重写/删除 3 个过时测试，Web/Services/ 仅剩 2 个仍有运行时消费者的文件；AITool.Web 中仅剩 Chat/Index 页面（Admin 已有对应版本）和 ChatApiController（深度代理运行时依赖，不可迁移）。**
+### 已完成：Patch 增量同步协议
+
+本轮完成了 Patch 增量同步协议的设计、实现和测试，Admin 写入后不再每次发送完整配置快照，而是只发送变更类别的完整列表，Core 端收到后仅替换对应集合并定向失效相关缓存。
+
+#### 已创建/修改文件
+
+**数据模型：**
+- `src/AITool.Application/CoreRuntime/ConfigPatchPayload.cs` — Patch 增量同步载荷数据模型，包含 7 个可空实体集合 + `Categories` 指定变更类别 + `PatchHash` 用于去重
+- `src/AITool.Application/CoreRuntime/CorePatchSyncResult.cs` — Patch 同步结果模型（`Applied`/`Ignored`/`ConfigVersion`/`ConfigHash`）
+
+**Core 端点：**
+- `src/AITool.Core/Controllers/Core/CoreConfigSyncController.cs` — 新增 `[HttpPost("patch-sync")]` 端点，包含 `PatchSync`、`MergePatch`、`InvalidateCacheForCategories` 三个核心方法
+
+**Admin 侧客户端：**
+- `src/AITool.Infrastructure/CoreRuntime/CoreAdminClient.cs` — 新增 `PatchSyncAsync(ConfigPatchPayload, CancellationToken)` 方法
+
+**Admin 侧缓存失效服务：**
+- `src/AITool.Admin/Services/AdminCacheInvalidationService.cs` — 重写为基于类别的增量同步，包含 6 个 `InvalidateXxxAsync` 公共方法 + `SyncToCoreAsync` 核心方法 + `BuildPatchAsync` 构建方法 + `FullSyncFallbackAsync` 回退方法 + `ComputePatchHash` 哈希方法
+
+**测试：**
+- `tests/AITool.Core.IntegrationTests/CorePatchSyncTests.cs` — 新增 6 个增量同步集成测试
+- `tests/AITool.IntegrationTests/Core/CoreConfigSyncTests.cs` — 移除 5 个已迁移到 Core 测试工程的 patch 测试，仅保留 2 个全量同步测试
+
+#### Patch 增量同步协议设计
+
+**7 个实体类别：** Sites、Models、SiteModelMappings、RouteEntries、RouteRules、AccessKeys、RuntimeSettings
+
+**同步流程：**
+1. Admin 写入数据库后调用 `AdminCacheInvalidationService.InvalidateXxxAsync()`
+2. 服务内部根据变更类别从数据库只读对应表，构建 `ConfigPatchPayload`
+3. 通过 `CoreAdminClient.PatchSyncAsync()` 发送到 Core
+4. Core 校验类别名称合法性、检查是否已初始化、比较版本号
+5. Core 调用 `MergePatch()` 将 Patch 数据合并到当前快照副本
+6. Core 调用 `InvalidateCacheForCategories()` 根据变更类别定向失效缓存
+7. 如果 Core 尚未初始化（返回 400），Admin 自动回退到全量同步
+
+**类别到缓存失效的映射：**
+| 变更类别 | 失效方法 | 说明 |
+|---|---|---|
+| AccessKeys | InvalidateAccessKeys | 访问密钥缓存 |
+| RuntimeSettings | InvalidateRuntimeSettings | 运行时设置缓存 |
+| Sites / RouteRules / RouteEntries | InvalidateRuntimeRouteTargets | 路由选择缓存 |
+| Models / SiteModelMappings | InvalidateRuntimeRouteTargets | 兜底映射/已启用模型缓存 |
+
+**去重机制：**
+- Patch 使用 `PatchHash`（SHA256）对携带数据进行哈希，Core 端比较合并后的全量哈希
+- 如果合并后哈希与当前快照一致，说明 Patch 实际没有带来变化，返回 `ignored: true`
+
+**版本号规则：**
+- Admin 每次同步递增 `_configVersion`（`Interlocked.Increment`）
+- Core 拒绝版本号不大于当前版本的 Patch，返回 `ignored: true`
+
+#### 测试覆盖（6 个测试）
+
+| 测试方法 | 验证内容 |
+|---|---|
+| `Patch_sync_rejected_when_core_not_initialized` | Core 未初始化时返回 400 |
+| `Patch_sync_updates_only_specified_categories` | 单类别（AccessKeys）Patch 成功，版本递增 |
+| `Patch_sync_ignores_stale_version` | 低版本号 Patch 被忽略 |
+| `Patch_sync_rejects_unknown_category` | 未知类别名称返回 400 |
+| `Patch_sync_rejects_empty_categories` | 空类别列表返回 400 |
+| `Patch_sync_updates_multiple_categories` | 多类别（Sites + RouteRules）Patch 成功 |
+
+#### 测试放置位置说明
+
+Patch 同步测试放置在 `tests/AITool.Core.IntegrationTests/`（而非 `tests/AITool.IntegrationTests/`），原因：
+- `AITool.IntegrationTests` 引用 `AITool.Web`，其 `WebApplicationFactory<Program>` 启动的是 Web 宿主
+- Web 宿主的 `CoreConfigSyncController` 只有 `full-sync` 端点，没有 `patch-sync`
+- `patch-sync` 端点仅存在于 `AITool.Core` 的 `CoreConfigSyncController` 中
+- `AITool.Core.IntegrationTests` 使用 `CoreHostWebApplicationFactory`（`WebApplicationFactory<AITool.Core.CoreProgramMarker>`），正确启动 Core 宿主
+
+#### Patch 增量同步状态
+
+- **Patch 增量同步协议已完整实现并通过测试**
+- **6/6 Patch 同步测试通过**
+- **2/2 全量同步测试通过**
+- **42/42 Core 集成测试全部通过**
+- **Admin 侧 `AdminCacheInvalidationService` 已重写为基于类别的增量同步**
+- **回退策略已验证：Core 未初始化时自动回退到全量同步**
 
 ## 文档目的
 
@@ -684,8 +764,8 @@ Chat 页面中的 JavaScript 调用 `/api/admin/chat/*`（targets、send、send-
 - `ChatApiController` — 深度依赖代理运行时（IProxyForwardService、RouteCircuitStateStore、ModelConcurrencyLimiter、IUsageLogService 等），**不可迁移**
 
 页面：
-- `Developer/Invocations/Index` — 依赖 `DeveloperInvocationTraceQueryService`（→ `DeveloperInvocationTraceStore`）、`ModelConcurrencyQueryService`（→ `ModelConcurrencyLimiter`）、`AdminQueryMetadataService`（→ `ProxyRequestMetadataCache`），三个服务全部依赖代理运行时单例对象，**不可迁移**
-- `System/Settings` — 依赖 `RouteCircuitStateStore`（熔断状态）、`AnalyticsBackgroundQueryExecutor`（统计查询）、`AdminCacheInvalidationService`（缓存失效），**不可迁移**
+- `Developer/Invocations/Index` — 已通过 CoreAdminClient 代理模式迁入 AITool.Admin（原判断"不可迁移"已被突破），AITool.Web 中原文件暂时保留
+- `System/Settings` — 已迁入 AITool.Admin（通过 Core 全量同步自动处理熔断参数和缓存失效），AITool.Web 中原文件暂时保留
 - `Chat/Index` — Admin 已有对应版本，Web 版保留是因为 JS API 端点仍由 Core 的 `ChatApiController` 提供
 
 #### 第三批页面迁移状态
@@ -695,6 +775,65 @@ Chat 页面中的 JavaScript 调用 `/api/admin/chat/*`（targets、send、send-
 - **AITool.Web 侧边栏和首页已调整**
 - **两个宿主编译均通过，0 error**
 - **全部 112 个测试通过（101 ApplicationTests + 6 IntegrationTests + 5 Admin.IntegrationTests）**
+
+---
+
+### 已完成：Developer/Invocations 开发者工具页面迁移到 AITool.Admin
+
+本轮完成了开发者工具页面（调用追踪、客户端模拟器、并发检测三合一）从 AITool.Web 到 AITool.Admin 的迁移。该页面此前因深度依赖 Core 运行时内存单例（`DeveloperInvocationTraceStore`、`ModelConcurrencyLimiter`、`ProxyRequestMetadataCache`）被认为"不可迁移"，本轮通过 CoreAdminClient 代理模式彻底解决了这一依赖。
+
+#### 已创建/修改文件
+
+共享 DTO（AITool.Application，双宿主共用）：
+- `src/AITool.Application/CoreRuntime/CoreDeveloperQueryModels.cs` — 新增 8 个开发者查询共享 DTO：
+  - `CoreDeveloperInvocationListResponse` — 分页调用记录列表响应
+  - `CoreDeveloperInvocationSummary` — 调用记录摘要
+  - `CoreDeveloperInvocationDetail` — 调用记录详情
+  - `CoreDeveloperInvocationAttempt` — 调用尝试记录
+  - `CoreDeveloperConcurrencyResponse` — 并发查询响应
+  - `CoreDeveloperConcurrencyItem` — 并发检测项
+  - `CoreDeveloperMetadataResponse` — 客户端模拟器元数据响应
+  - `CoreDeveloperModelItem` — 调试模型项
+
+Core API 端点（AITool.Core）：
+- `src/AITool.Core/Controllers/Core/CoreDeveloperQueryController.cs` — 新增 4 个开发者数据查询端点：
+  - `GET /api/core/developer/invocations/list` — 分页调用追踪列表
+  - `GET /api/core/developer/invocations/detail` — 单条调用追踪详情
+  - `GET /api/core/developer/concurrency` — 当前模型并发状态快照
+  - `GET /api/core/developer/metadata` — 客户端模拟器元数据（密钥、模型列表）
+
+Admin 侧客户端方法：
+- `src/AITool.Infrastructure/CoreRuntime/CoreAdminClient.cs` — 新增 4 个开发者查询代理方法 + `BaseAddress` 属性：
+  - `GetDeveloperInvocationsAsync` — 分页列表查询
+  - `GetDeveloperInvocationDetailAsync` — 详情查询
+  - `GetDeveloperConcurrencyAsync` — 并发状态查询
+  - `GetDeveloperMetadataAsync` — 模拟器元数据查询
+  - `BaseAddress` 属性 — 从 HttpClient 基地址推导 Core 公开 URL
+
+Admin 侧页面（AITool.Admin）：
+- `src/AITool.Admin/Pages/Admin/Developer/Invocations/Index.cshtml.cs` — Admin 版 PageModel，通过 CoreAdminClient 代理所有运行时数据查询，不再直接访问 Core 运行时内存单例
+- `src/AITool.Admin/Pages/Admin/Developer/Invocations/Index.cshtml` — Admin 版 Razor 视图（2288 行），含三页签 UI（调用追踪、客户端模拟器、并发检测），关键适配：
+  - `@model` 命名空间改为 `AITool.Admin.Pages.Admin.Developer.Invocations.IndexModel`
+  - 客户端模拟器的 `fetch('/v1/models')` 改为 `fetch(getBaseUrl() + '/v1/models')`，确保模型列表请求路由到 Core
+  - 客户端模拟器的 `fetch(options.path)` 改为 `fetch(getBaseUrl() + options.path)`，确保所有模拟请求路由到 Core
+  - 调用追踪/并发检测的 AJAX 请求继续走 Admin PageModel 的 `@Url.Page(...)` 端点，内部由 CoreAdminClient 代理到 Core
+
+#### 架构适配说明
+
+该页面迁移的关键突破在于解决了三重运行时依赖：
+
+1. **调用追踪数据**：原 Web 版直接读取 `DeveloperInvocationTraceStore` 内存单例 → Admin 版通过 CoreAdminClient 调用 Core 的 `/api/core/developer/invocations/list` 和 `/detail` 端点
+2. **并发状态数据**：原 Web 版直接读取 `ModelConcurrencyQueryService`（→ `ModelConcurrencyLimiter`）→ Admin 版通过 CoreAdminClient 调用 Core 的 `/api/core/developer/concurrency` 端点
+3. **模拟器元数据**：原 Web 版直接读取 `AdminQueryMetadataService`（→ `ProxyRequestMetadataCache`）→ Admin 版通过 CoreAdminClient 调用 Core 的 `/api/core/developer/metadata` 端点
+
+客户端模拟器的 API 请求（`/v1/chat/completions` 等）直接从浏览器发往 Core 宿主（通过 `getBaseUrl()` 获取 Core 地址），不经过 Admin 转发，保持低延迟。
+
+#### Developer/Invocations 页面迁移状态
+
+- **Developer/Invocations 页面完整迁入 AITool.Admin**
+- **Core 和 Admin 两个宿主编译均通过，0 error，0 warning**
+- **客户端模拟器请求正确路由到 Core，调用追踪/并发检测数据通过 CoreAdminClient 代理获取**
+- **AITool.Web 中原 Developer/Invocations 文件保留（运行时依赖仍在 Web 侧生效）**
 
 ---
 
@@ -911,6 +1050,51 @@ public ProxyRequestMetadataCache(IMemoryCache memoryCache, IServiceScopeFactory 
 
 ---
 
+### 已完成：System/Settings 系统设置页面迁移到 AITool.Admin
+
+本轮完成了系统设置页面从 AITool.Web 到 AITool.Admin 的迁移，并同步修复了 Core 全量同步链路中熔断参数未更新的架构缺口。
+
+#### 已创建文件
+
+Admin 侧页面：
+- `src/AITool.Admin/Pages/Admin/System/Settings.cshtml` — 完整迁入系统设置 Razor 视图，仅将 `@model` 命名空间改为 `AITool.Admin.Pages.Admin.System.SettingsModel`
+- `src/AITool.Admin/Pages/Admin/System/Settings.cshtml.cs` — Admin 版 PageModel，依赖 `ISystemRuntimeSettingsService`（直接 DB 读写）+ `AdminCacheInvalidationService`（触发 Core 全量同步），不再依赖 `RouteCircuitStateStore` 和 `AnalyticsBackgroundQueryExecutor`
+
+测试：
+- `tests/AITool.Admin.IntegrationTests/SettingsPageTests.cs` — 3 个集成测试：
+  - `Get_settings_page_contains_runtime_setting_fields` — 验证页面展示关键字段
+  - `Get_layout_hides_developer_invocation_navigation_when_feature_is_disabled` — 关闭开发者功能后不显示导航
+  - `Get_layout_shows_developer_invocation_navigation_when_feature_is_enabled` — 启用开发者功能后显示导航
+
+#### 已修复文件
+
+Core 全量同步熔断参数缺口：
+- `src/AITool.Core/Controllers/Core/CoreConfigSyncController.cs` — 新增 `RouteCircuitStateStore` 注入和 `ApplyCircuitBreakerSettings(snapshot)` 方法，确保 Core 收到 full-sync 后立即用新参数更新熔断状态
+- `src/AITool.Core/Program.cs` — Core 启动恢复 `last-good-config` 后，从快照中提取熔断参数初始化 `RouteCircuitStateStore`
+
+#### 架构适配说明
+
+Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
+
+| Web 版依赖 | Admin 版处理方式 |
+|---|---|
+| `ISystemRuntimeSettingsService` | 直接复用（Admin 已注册） |
+| `AdminCacheInvalidationService`（Web 同步版） | 替换为 Admin 版（async，通过 CoreAdminClient 推送） |
+| `RouteCircuitStateStore.UpdateOptions()` | 移到 Core 侧 full-sync 流程自动处理 |
+| `AnalyticsBackgroundQueryExecutor.InvalidateAll()` | 由 Core full-sync 触发缓存重建自动覆盖 |
+
+关键突破：原来 Settings 保存后需要同步调用 `_circuitStore.UpdateOptions()` 和 `_analyticsQueryExecutor.InvalidateAll()`，迁移后这两个操作被包含在 Core 的全量同步流程中——Admin 调用 `InvalidateRuntimeSettingsAsync()` 后，Core 收到快照会自动执行 `ApplyCircuitBreakerSettings()` 和缓存失效，不再需要 Admin 页面直接操作 Core 运行时对象。
+
+#### System/Settings 页面迁移状态
+
+- **Settings 页面完整迁入 AITool.Admin**
+- **Core 全量同步熔断参数缺口已修复**
+- **Core 启动熔断参数初始化已修复**
+- **3 个 Settings 集成测试全部通过**
+- **全部 299 个测试通过（101 ApplicationTests + 127 IntegrationTests + 36 Core.IntegrationTests + 35 Admin.IntegrationTests），零回归**
+
+---
+
 ### 已完成：Core 代理转发端到端集成测试
 
 本轮新增 Core 代理转发链路的端到端集成测试，通过 `FakeProxyForwardService` 替换真实转发实现，在不依赖外部上游站点的情况下验证完整的代理链路（鉴权 → 路由解析 → 并发控制 → 转发调用 → 响应回写）。
@@ -1042,44 +1226,101 @@ public ProxyRequestMetadataCache(IMemoryCache memoryCache, IServiceScopeFactory 
 - 再接实时流
 - 再增强 sequence/ack 持久化元数据
 
+
+### 已完成：Web 侧已迁移页面/控制器/服务的最终清理
+
+本轮完成了 AITool.Web 中所有已迁移到 AITool.Admin / AITool.Core 的冗余页面、控制器和服务文件的最终清理，以及对应的测试适配。
+
+#### 已删除的页面/视图文件（5 个）
+
+- `src/AITool.Web/Pages/Admin/Developer/Invocations/Index.cshtml` — 调用追踪 Razor 视图，已迁入 Core API + Admin 页面
+- `src/AITool.Web/Pages/Admin/Developer/Invocations/_InvocationTraceList.cshtml` — 调用追踪子视图
+- `src/AITool.Web/Pages/Admin/Developer/Invocations/Index.cshtml.cs` — 调用追踪 PageModel
+- `src/AITool.Web/Pages/Admin/System/Settings.cshtml` — 系统设置 Razor 视图，已迁入 Admin
+- `src/AITool.Web/Pages/Admin/System/Settings.cshtml.cs` — 系统设置 PageModel（4 参数构造函数）
+
+整个 `Developer/` 和 `System/` 目录已删除。
+
+#### 已删除的服务文件（5 个）
+
+- `src/AITool.Web/Services/DeveloperInvocationTraceQueryService.cs` — 开发者调用追踪查询服务，已由 Core 的 `CoreDeveloperQueryController` API 替代
+- `src/AITool.Web/Services/ModelConcurrencyQueryService.cs` — 并发查询服务，已由 Core API 替代
+- `src/AITool.Web/Services/AdminConcurrencyControlService.cs` — Admin 并发控制服务，已迁入 Admin 宿主
+- `src/AITool.Web/Services/ModelVendorCatalogService.cs` — 空桥接壳（真实实现在 Infrastructure.Hosting）
+- `src/AITool.Web/Services/AnalyticsBackgroundQueryExecutor.cs` — 空桥接壳（真实实现在 Infrastructure.Hosting）
+
+#### 已修改的文件
+
+- `src/AITool.Web/Program.cs` — 移除 7 个已删除服务的 DI 注册：
+  - `DeveloperInvocationTraceQueryService`（Singleton）
+  - `ModelConcurrencyQueryService`（Singleton）
+  - `AdminConcurrencyControlService`（Singleton）
+  - `ModelVendorCatalogService`（Singleton）
+  - `AnalyticsBackgroundQueryExecutor`（Singleton + HostedService）
+
+- `src/AITool.Web/Pages/Shared/_Layout.cshtml` — 移除 `ISystemRuntimeSettingsService` 注入和"开发调试"侧边栏分区（Developer/Invocations、System/Settings 链接），仅保留"代理运行时"分区（代理状态、对话测试）
+
+#### 已适配的测试文件
+
+- `tests/AITool.IntegrationTests/System/SystemSettingsCacheTests.cs` — 重写：不再构造 Web 版 `SettingsModel`（4 参数构造函数已删除），改为直接调用 `settingsService.UpdateAsync()` + `cacheInvalidationService.InvalidateRuntimeSettings()` 验证缓存刷新链路
+
+#### 已删除的测试文件（2 个）
+
+- `tests/AITool.IntegrationTests/System/SystemSettingsPageTests.cs` — 测试已迁移到 Admin 的 Settings 页面，由 `AITool.Admin.IntegrationTests/SettingsPageTests.cs` 替代
+- `tests/AITool.IntegrationTests/Developer/DeveloperInvocationsPageTests.cs` — 测试已迁移到 Core API + Admin 页面的 Invocations，不再需要 Web 侧页面测试
+
+#### 清理后 Web/Services/ 保留文件（2 个）
+
+- `AdminCacheInvalidationService.cs` — 同步版本，被 `ModelEditCacheTests` 引用
+- `AdminQueryMetadataService.cs` — 被 `ChatApiController` 引用
+
+#### Web 侧清理状态
+
+- **10 个冗余文件已删除（5 页面/视图 + 5 服务）**
+- **7 个 DI 注册已清理**
+- **2 个过时测试已删除，1 个测试已重写**
+- **49 个 IntegrationTests 全部通过，零回归**
+- **Web/Services/ 仅剩 2 个仍有运行时消费者的文件**
+
 ---
 
-## 五、最近一轮进度同步
+## 六、最近一轮进度同步
 
 ### 本轮完成了什么
 
-- 完成了 `ProxyRequestMetadataCache` 全部 6 个 DB 依赖运行时方法的双路径（快照 vs DB）改造
-- 更新 Core `Program.cs` DI 注册，`ProxyRequestMetadataCache` 使用工厂模式注入 `ICoreRuntimeConfigProvider`
-- 更新 `CoreConfigSyncController` 在 `SetCurrent(snapshot)` 后立即失效全部运行时缓存
-- 新增 5 个代理端点集成测试（`CoreProxyEndpointTests.cs`）
-- 为 Core 和 Admin 创建独立 `appsettings.json`，明确端口分配（Core 5029，Admin 5030）
-- 为 Core 创建 `launchSettings.json` 开发配置，修正 Admin 的 `launchSettings.json` 端口
-- 新增 `CoreConfigSyncHostedService`：Admin 启动后自动从数据库构建配置快照并同步到 Core
-- 全部 302 个测试通过（101 ApplicationTests + 127 IntegrationTests + 46 Admin.IntegrationTests + 28 Core.IntegrationTests），零回归
+- 完成了 Patch 增量同步协议的设计、实现和完整测试
+- 新增 `ConfigPatchPayload` 数据模型和 `CorePatchSyncResult` 结果模型
+- Core 端新增 `POST /api/core/config/patch-sync` 端点，支持按类别定向更新
+- Admin 侧 `CoreAdminClient` 新增 `PatchSyncAsync` 方法
+- Admin 侧 `AdminCacheInvalidationService` 重写为基于类别的增量同步，优先 Patch、回退全量
+- 修复了 Patch 测试放置位置问题（从 `AITool.IntegrationTests` 迁移到 `AITool.Core.IntegrationTests`）
+- 6/6 Patch 同步测试通过，2/2 全量同步测试通过，42/42 Core 集成测试通过
 
 ### 当前还剩什么
 
-- AITool.Web 中仍有 3 个 Admin 页面：Developer/Invocations/Index、System/Settings（不可迁移，代理运行时依赖）、Chat/Index（Admin 已有，Web 保留用于 JS API）
-- AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（不可迁移，深度代理运行时依赖）
-- Docker / 容器化部署配置尚未创建
-- patch 增量同步、实时事件流与 sequence/ack 持久化增强仍未实施
-- CORS 配置尚未添加（双宿主跨域场景）
+- AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
+- AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（深度代理运行时依赖，不可迁移）
+- AITool.Web/Services/ 中仅剩 2 个文件：`AdminCacheInvalidationService`（测试引用）+ `AdminQueryMetadataService`（ChatApiController 引用）
+- Docker / 容器化部署配置尚未创建（用户明确暂不需要）
+- 实时事件流推送通道与 sequence/ack 持久化增强仍未实施
+- CORS 配置尚未实施（双宿主跨域场景需要）
 
 ### 当前阻塞点是什么
 
-- AITool.Web 中仍有少量 Admin 页面因代理运行时依赖而无法迁移
-- 双宿主联合部署需要 Docker 或反向代理配置来完善生产环境部署
+- 暂无阻塞点
+- 后续重点工作转向实时事件流、CORS 配置与事件持久化增强
 
 ### 下一步准备做什么
 
-- 探索代理端点更完整的集成测试（实际代理转发、并发控制、熔断等）
-- 考虑添加 Dockerfile / docker-compose 双宿主编排
+- 推进 CORS 配置，确保双宿主跨域场景下前端请求正确路由
+- 推进 Admin-side 事件拉取 HostedService（定时 replay + ack）
+- 推进实时事件流推送通道
 - 每完成一个小阶段后继续同步更新本文档
 
 ---
 
-## 五、结论
+## 七、结论
 
 当前项目状态可以概括为：
 
-> **协议与运行时基础已经打好，双宿主也开始真正落地；Admin 宿主已迁移 10 个控制器和 11 组页面（UsageLogs + Conversations + Chat + 第三批 8 组），46 个集成测试全部通过；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；ProxyRequestMetadataCache 已完成全部 6 个 DB 依赖方法的双路径改造（快照 vs DB），Core 宿主可完全从配置快照驱动代理运行时，零数据库依赖；Core / Admin 联合部署基础配置已完成——独立 appsettings.json（Core 5029、Admin 5030）、独立 launchSettings.json、Admin 启动时自动同步配置到 Core 的 HostedService；302 个测试全部通过（101 ApplicationTests + 127 IntegrationTests + 46 Admin.IntegrationTests + 28 Core.IntegrationTests），零回归；页面迁移已触及天花板，剩余 2 个页面因代理运行时依赖不可迁移；下一阶段需推进更完整的代理链路集成测试、Docker/容器化部署配置与 CORS 跨域支持。**
+> **Patch 增量同步协议已完整实现：Admin 写入后只发送变更类别的完整列表，Core 端按类别定向合并并失效缓存，当 Core 未初始化时自动回退到全量同步。至此，Core ↔ Admin 的配置同步链路已从"仅全量同步"升级为"增量优先 + 全量兜底"的双模式架构。Admin 宿主已迁移 12 组页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；ProxyRequestMetadataCache 已完成全部 6 个 DB 依赖方法的双路径改造（快照 vs DB）；Core / Admin 联合部署基础配置已完成；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**

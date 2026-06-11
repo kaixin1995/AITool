@@ -1,47 +1,37 @@
 using AITool.Application.Operations;
-using AITool.Infrastructure.Hosting;
-using AITool.Infrastructure.Proxy;
-using AITool.Web.Services;
+using AITool.Admin.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
-namespace AITool.Web.Pages.Admin.System;
+namespace AITool.Admin.Pages.Admin.System;
 
 /// <summary>
 /// 系统设置页面模型。
+/// Admin 侧通过 <see cref="ISystemRuntimeSettingsService"/> 读写数据库中的系统设置，
+/// 保存后通过 <see cref="AdminCacheInvalidationService"/> 触发向 Core 宿主的全量配置同步，
+/// Core 收到新快照后会自动更新熔断参数和运行时缓存。
 /// </summary>
 public class SettingsModel : PageModel
 {
     /// <summary>
-    /// 系统运行时设置服务。
+    /// 系统运行时设置服务，用于读写数据库中的系统配置。
     /// </summary>
     private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
-    /// <summary>
-    /// 后台缓存失效服务。
-    /// </summary>
-    private readonly AdminCacheInvalidationService _cacheInvalidationService;
-    /// <summary>
-    /// 熔断状态存储。
-    /// </summary>
-    private readonly RouteCircuitStateStore _circuitStore;
-    /// <summary>
-    /// 统计查询执行器。
-    /// </summary>
-    private readonly AnalyticsBackgroundQueryExecutor _analyticsQueryExecutor;
 
     /// <summary>
-    /// 系统设置页面模型。
+    /// Admin 侧缓存失效服务，保存设置后触发向 Core 的全量配置同步。
+    /// </summary>
+    private readonly AdminCacheInvalidationService _cacheInvalidationService;
+
+    /// <summary>
+    /// 初始化系统设置页面模型。
     /// </summary>
     public SettingsModel(
         ISystemRuntimeSettingsService systemRuntimeSettingsService,
-        AdminCacheInvalidationService cacheInvalidationService,
-        RouteCircuitStateStore circuitStore,
-        AnalyticsBackgroundQueryExecutor analyticsQueryExecutor)
+        AdminCacheInvalidationService cacheInvalidationService)
     {
         _systemRuntimeSettingsService = systemRuntimeSettingsService;
         _cacheInvalidationService = cacheInvalidationService;
-        _circuitStore = circuitStore;
-        _analyticsQueryExecutor = analyticsQueryExecutor;
     }
 
     /// <summary>
@@ -75,7 +65,8 @@ public class SettingsModel : PageModel
     }
 
     /// <summary>
-    /// 处理页面提交请求。
+    /// 处理设置保存提交请求。
+    /// 保存到数据库后触发 Core 全量配置同步，使 Core 的熔断参数和运行时缓存即时更新。
     /// </summary>
     public async Task<IActionResult> OnPostAsync(CancellationToken cancellationToken)
     {
@@ -85,16 +76,20 @@ public class SettingsModel : PageModel
             return Page();
         }
 
-        var settings = await _systemRuntimeSettingsService.UpdateAsync(Input, cancellationToken);
-        _cacheInvalidationService.InvalidateRuntimeSettings();
-        _circuitStore.UpdateOptions(
-            TimeSpan.FromMinutes(settings.CircuitBreakerRecoveryMinutes),
-            settings.CircuitBreakerFailureThreshold);
+        // 将设置写入数据库
+        await _systemRuntimeSettingsService.UpdateAsync(Input, cancellationToken);
+
+        // 触发向 Core 的全量配置同步，Core 收到新快照后会自动：
+        // 1. 更新 ProxyRequestMetadataCache 中的运行时设置缓存
+        // 2. 调用 RouteCircuitStateStore.UpdateOptions 更新熔断参数
+        await _cacheInvalidationService.InvalidateRuntimeSettingsAsync(cancellationToken);
+
         return RedirectToPage(new { statusMessage = "设置已保存" });
     }
 
     /// <summary>
     /// 清理 UsageLogs。
+    /// 清理完成后同样触发 Core 全量配置同步。
     /// </summary>
     public async Task<IActionResult> OnPostClearUsageLogsAsync(bool clearAll, CancellationToken cancellationToken)
     {
@@ -105,13 +100,14 @@ public class SettingsModel : PageModel
             EndTime = clearAll ? null : ClearUsageLogs.EndTime
         }, cancellationToken);
 
-        _cacheInvalidationService.InvalidateRuntimeSettings();
-        _analyticsQueryExecutor.InvalidateAll();
+        // 触发向 Core 的全量配置同步
+        await _cacheInvalidationService.InvalidateRuntimeSettingsAsync(cancellationToken);
+
         return RedirectToPage(new { statusMessage = clearAll ? $"已清空全部 UsageLogs，共 {deletedCount} 条" : $"已清空 {deletedCount} 条 UsageLogs" });
     }
 
     /// <summary>
-    /// 加载系统设置。
+    /// 从数据库加载当前系统设置到表单。
     /// </summary>
     private async Task LoadAsync(CancellationToken cancellationToken)
     {

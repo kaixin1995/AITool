@@ -1,5 +1,5 @@
 @page
-@model AITool.Web.Pages.Admin.Developer.Invocations.IndexModel
+@model AITool.Admin.Pages.Admin.Developer.Invocations.IndexModel
 @using global::System.Text.Json
 @{
     ViewData["Title"] = "调试工具";
@@ -1322,7 +1322,7 @@
             output.textContent = '请求中...';
 
             try {
-                var response = await fetch('/v1/models', {
+                var response = await fetch(getBaseUrl() + '/v1/models', {
                     method: 'GET',
                     headers: {
                         Authorization: 'Bearer ' + getAccessKey()
@@ -1495,7 +1495,7 @@
             output.textContent = '请求中...';
 
             try {
-                var response = await fetch(options.path, {
+                var response = await fetch(getBaseUrl() + options.path, {
                     method: 'POST',
                     headers: options.headers,
                     body: JSON.stringify(options.body)

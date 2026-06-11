@@ -1,6 +1,4 @@
-@using AITool.Application.Operations
 @using AITool.Infrastructure.Hosting
-@inject ISystemRuntimeSettingsService RuntimeSettingsService
 @inject AppVersionInfo AppVersion
 <!DOCTYPE html>
 <html lang="zh-CN">
@@ -12,9 +10,6 @@
     <link href="~/css/theme.css" rel="stylesheet" />
 </head>
 <body>
-    @{
-        var runtimeSettings = await RuntimeSettingsService.GetOrCreateAsync();
-    }
     <div class="app-wrapper" id="appWrapper">
         <!-- 侧边栏 -->
         <aside class="app-sidebar">
@@ -37,19 +32,6 @@
                     </a>
                     <a class="sidebar-link" href="/Admin/Chat" title="对话测试">
                         <span class="sidebar-link-icon">💬</span>对话测试
-                    </a>
-                </div>
-                <!-- 开发调试 -->
-                <div class="sidebar-section">
-                    <div class="sidebar-section-title">开发调试</div>
-                    @if (runtimeSettings.DeveloperFeaturesEnabled)
-                    {
-                        <a class="sidebar-link" href="/Admin/Developer/Invocations" title="调试工具">
-                            <span class="sidebar-link-icon">🛠️</span>调试工具
-                        </a>
-                    }
-                    <a class="sidebar-link" href="/Admin/System/Settings" title="系统设置">
-                        <span class="sidebar-link-icon">⚙️</span>系统设置
                     </a>
                 </div>
             </nav>

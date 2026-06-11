@@ -1,10 +1,8 @@
 using AITool.Application.Operations;
 using AITool.Domain.Operations;
-using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
-using AITool.Web.Pages.Admin.System;
 using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.EntityFrameworkCore;
@@ -14,7 +12,12 @@ using Microsoft.Extensions.Caching.Memory;
 namespace AITool.IntegrationTests.System;
 
 /// <summary>
-/// 系统设置缓存测试，验证保存后代理运行时缓存会立刻刷新。
+/// 系统设置缓存测试，验证通过 ISystemRuntimeSettingsService 更新设置后，
+/// AdminCacheInvalidationService 能立即刷新 ProxyRequestMetadataCache 中的运行时缓存。
+/// <para>
+/// 此测试原来通过构造 Web 版 SettingsModel 来验证缓存刷新，在 Settings 页面
+/// 迁移到 Admin 宿主后，改为直接调用服务层方法验证同样的缓存失效链路。
+/// </para>
 /// </summary>
 public sealed class SystemSettingsCacheTests : IAsyncDisposable
 {
@@ -22,6 +25,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
     /// 保存测试使用的服务提供器。
     /// </summary>
     private readonly ServiceProvider _serviceProvider;
+
     /// <summary>
     /// 保存当前测试使用的临时数据库路径。
     /// </summary>
@@ -38,28 +42,26 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
         services.AddSingleton<ProxyRequestMetadataCache>();
         services.AddSingleton<AdminCacheInvalidationService>();
-        services.AddSingleton<RouteCircuitStateStore>();
-        services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
         _serviceProvider = services.BuildServiceProvider();
     }
 
     /// <summary>
-    /// 验证保存系统设置后，运行时设置缓存会立即失效并重新加载。
+    /// 验证更新系统设置后，通过 AdminCacheInvalidationService 触发缓存失效，
+    /// ProxyRequestMetadataCache 会立即重新加载最新设置。
     /// </summary>
     [Fact]
-    public async Task OnPostAsync_invalidates_runtime_settings_cache_immediately()
+    public async Task InvalidateRuntimeSettings_refreshes_cache_immediately()
     {
         await using var scope = _serviceProvider.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         var cacheInvalidationService = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
-        var circuitStore = scope.ServiceProvider.GetRequiredService<RouteCircuitStateStore>();
-        var analyticsQueryExecutor = scope.ServiceProvider.GetRequiredService<AnalyticsBackgroundQueryExecutor>();
 
         await db.Database.EnsureDeletedAsync();
         await db.Database.EnsureCreatedAsync();
 
+        // 插入初始设置数据
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
             Id = 1,
@@ -76,30 +78,31 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         });
         await db.SaveChangesAsync();
 
+        // 首次加载缓存，验证初始值
         var before = await cache.GetRuntimeSettingsAsync(CancellationToken.None);
         before.ProxyRequestTimeoutSeconds.Should().Be(8);
         before.ProxyRetryCount.Should().Be(1);
         before.DeveloperFeaturesEnabled.Should().BeFalse();
 
-        var page = new SettingsModel(settingsService, cacheInvalidationService, circuitStore, analyticsQueryExecutor)
+        // 通过服务层更新设置（模拟 Admin 侧保存操作）
+        await settingsService.UpdateAsync(new UpdateSystemRuntimeSettingsRequest
         {
-            Input = new UpdateSystemRuntimeSettingsRequest
-            {
-                ProxyRequestTimeoutSeconds = 18,
-                ProxyRetryCount = 4,
-                DetectionRequestTimeoutSeconds = 22,
-                DetectionRetryCount = 1,
-                DetectionConcurrency = 3,
-                CircuitBreakerFailureThreshold = 6,
-                CircuitBreakerRecoveryMinutes = 7,
-                UsageLogRetentionDays = 9,
-                UsageLogAutoCleanupEnabled = false,
-                DeveloperFeaturesEnabled = true
-            }
-        };
+            ProxyRequestTimeoutSeconds = 18,
+            ProxyRetryCount = 4,
+            DetectionRequestTimeoutSeconds = 22,
+            DetectionRetryCount = 1,
+            DetectionConcurrency = 3,
+            CircuitBreakerFailureThreshold = 6,
+            CircuitBreakerRecoveryMinutes = 7,
+            UsageLogRetentionDays = 9,
+            UsageLogAutoCleanupEnabled = false,
+            DeveloperFeaturesEnabled = true
+        }, CancellationToken.None);
 
-        await page.OnPostAsync(CancellationToken.None);
+        // 触发缓存失效，模拟 Web 侧 AdminCacheInvalidationService 的行为
+        cacheInvalidationService.InvalidateRuntimeSettings();
 
+        // 验证缓存已刷新为新值
         var after = await cache.GetRuntimeSettingsAsync(CancellationToken.None);
         after.ProxyRequestTimeoutSeconds.Should().Be(18);
         after.ProxyRetryCount.Should().Be(4);

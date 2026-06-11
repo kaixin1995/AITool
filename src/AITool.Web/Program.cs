@@ -130,8 +130,6 @@ builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogS
 builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>());
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
-builder.Services.AddSingleton<DeveloperInvocationTraceQueryService>();
-builder.Services.AddSingleton<ModelConcurrencyQueryService>();
 builder.Services.AddSingleton<ModelConcurrencyLimiter>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogService, AITool.Infrastructure.Conversations.ConversationLogService>();
@@ -142,8 +140,6 @@ builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<ProxyRequestMetadataCache>();
 builder.Services.AddSingleton<AdminQueryMetadataService>();
 builder.Services.AddSingleton<AdminCacheInvalidationService>();
-builder.Services.AddSingleton<AdminConcurrencyControlService>();
-builder.Services.AddSingleton<ModelVendorCatalogService>();
 
 // 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
@@ -153,8 +149,6 @@ builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsS
 
 // 注册 Hangfire 检测调度器。
 builder.Services.AddSingleton<HangfireDetectionScheduler>();
-builder.Services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<AnalyticsBackgroundQueryExecutor>());
 
 // 注册 Hangfire 内存存储与仪表盘。
 builder.Services.AddHangfire(config => config
