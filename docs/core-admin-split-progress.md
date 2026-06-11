@@ -1775,6 +1775,53 @@ CoreEventPullService 现在同时消费三种事件类型：
 
 ### 下一步准备做什么
 
-- 继续扫描 Core/Program.cs 和 Web/Program.cs 是否还有可提取的重复代码
-- 评估 Web/Program.cs 中认证中间件的可提取性
-- 每完成一个小阶段后继续同步更新本文档
+- 评估整体架构拆分完成度
+- 检查是否有其他可提取的共享模式
+
+
+---
+
+## 阶段记录 — 2026-06-12 认证中间件提取与启动初始化去重
+
+### 本轮完成了什么
+
+- **AdminAuthenticationMiddleware 提取**：将 Web/Program.cs 中 40 行内联认证中间件提取为独立的 AdminAuthenticationMiddleware 类，放在 Infrastructure/Hosting 命名空间下。新增 UseAdminAuthentication() 扩展方法，Web/Program.cs 中用一行 `app.UseAdminAuthentication()` 替换原来的 `app.Use(async (context, next) => { ... })` 内联中间件块。Web/Program.cs 从 142 行缩减到 132 行。
+- **AdminStartupInitializer 提取**：将 Web 和 Admin 两个 Program.cs 中重复的数据库初始化逻辑（EnsureCreated + Schema 迁移 + Hangfire 调度注册）提取为 AdminStartupInitializer 静态类，放在 Infrastructure/Persistence 命名空间下。Web/Program.cs 启动初始化 scope 简化为仅保留代理运行时独有的配置恢复和熔断参数初始化。Admin/Program.cs 的启动初始化 scope 完全消除。
+- **Using 清理**：移除 Web/Program.cs 中不再直接使用的 `Microsoft.EntityFrameworkCore`，移除 Admin/Program.cs 中不再直接使用的 `AITool.Infrastructure.Scheduling` 和 `Hangfire`。
+- **格式修正**：顺带修复 dotnet format 检测到的空白格式问题（Edit.cshtml.cs、ChatApiController.cs、测试文件）。
+
+### 文件变更清单
+
+- 新增 Infrastructure/Hosting/AdminAuthenticationMiddleware.cs（从 Web/Program.cs 内联中间件提取）
+- 新增 Infrastructure/Hosting/AdminAuthenticationMiddlewareExtensions.cs（UseAdminAuthentication 扩展方法）
+- 新增 Infrastructure/Persistence/AdminStartupInitializer.cs（Web/Admin 共享启动初始化）
+- 修改 Web/Program.cs：内联认证中间件替换为 UseAdminAuthentication()，启动初始化拆分为 AdminStartupInitializer + 独有配置恢复
+- 修改 Admin/Program.cs：启动初始化 scope 替换为 AdminStartupInitializer，移除 2 个不再使用的 using
+
+### 测试验证
+
+- 构建零错误
+- ApplicationTests: 195 通过
+- Admin.IntegrationTests: 49 通过
+- IntegrationTests: 108 通过
+- Core.IntegrationTests: 54 通过
+- 全部 406 个测试零失败
+
+### 当前 Web/Program.cs 状态
+
+- 约 132 行（从原始 435 行缩减到 30%）
+- 已提取：全局异常处理、本地 IP 查询、请求体读取、Admin 请求匹配、数据库迁移、认证中间件、启动初始化
+- 仍保留：DI 注册（无可提取，所有服务都是 Web 独有的组合）、代理运行时配置恢复和熔断初始化、中间件管道配置、端点映射
+
+### 当前 Admin/Program.cs 状态
+
+- 约 135 行
+- DI 注册占大部分（Admin 独有的事件消费器、存储、HostedService 等）
+- 启动初始化已通过 AdminStartupInitializer 简化
+- 管道配置已非常精简
+
+### 下一步准备做什么
+
+- Core/Program.cs 中的事件接线代码（DeveloperTrace、CircuitBreaker）是 Core 独有的启动逻辑，不需要跨宿主共享，保持在 Program.cs 中是合理的
+- 继续检查是否有其他可提取的共享模式
+- 评估整体架构拆分的完成度
