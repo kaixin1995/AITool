@@ -168,7 +168,7 @@ startupLogger.Info(
     app.Environment.EnvironmentName,
     serverPort);
 Console.WriteLine($"AI Tool Core 已启动：http://127.0.0.1:{serverPort}");
-Console.WriteLine($"AI Tool Core 已启动：http://{GetLocalIpAddress()}:{serverPort}");
+Console.WriteLine($"AI Tool Core 已启动：http://{LocalIpAddressHelper.GetLocalIpAddress()}:{serverPort}");
 
 // 全局异常处理。
 if (!app.Environment.IsEnvironment("Testing"))
@@ -186,7 +186,7 @@ if (!app.Environment.IsEnvironment("Testing"))
 
             if (feature?.Error is not null)
             {
-                var requestBody = await TryReadRequestBodySafelyAsync(context.Request, context.RequestAborted);
+                var requestBody = await RequestBodyReader.TryReadRequestBodySafelyAsync(context.Request, context.RequestAborted);
 
                 logger.LogError(feature.Error,
                     "未处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
@@ -217,47 +217,6 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapControllers();
 
 app.Run();
-
-/// <summary>
-/// 获取本机 IPv4 地址。
-/// </summary>
-static string GetLocalIpAddress()
-{
-    try
-    {
-        var addresses = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName());
-        var ipv4 = addresses.FirstOrDefault(x => x.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !System.Net.IPAddress.IsLoopback(x));
-        return ipv4?.ToString() ?? "127.0.0.1";
-    }
-    catch
-    {
-        return "127.0.0.1";
-    }
-}
-
-/// <summary>
-/// 安全读取请求体。
-/// </summary>
-static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, CancellationToken cancellationToken)
-{
-    try
-    {
-        request.EnableBuffering();
-        using var reader = new StreamReader(request.Body, leaveOpen: true);
-        request.Body.Position = 0;
-        var requestBody = await reader.ReadToEndAsync(cancellationToken);
-        request.Body.Position = 0;
-        return requestBody;
-    }
-    catch (OperationCanceledException)
-    {
-        return "<canceled>";
-    }
-    catch
-    {
-        return "<unavailable>";
-    }
-}
 
 /// <summary>
 /// 程序入口。

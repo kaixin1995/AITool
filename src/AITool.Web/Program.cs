@@ -4,6 +4,7 @@ using AITool.Application.Operations;
 using AITool.Application.Proxy;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.DependencyInjection;
+using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
@@ -106,7 +107,7 @@ startupLogger.Info(
     app.Environment.EnvironmentName,
     serverPort);
 Console.WriteLine($"AI Tool 已启动：http://127.0.0.1:{serverPort}");
-Console.WriteLine($"AI Tool 已启动：http://{GetLocalIpAddress()}:{serverPort}");
+Console.WriteLine($"AI Tool 已启动：http://{LocalIpAddressHelper.GetLocalIpAddress()}:{serverPort}");
 
 // 启用静态文件服务，提供 wwwroot 下的 CSS/JS 等资源。
 if (!app.Environment.IsEnvironment("Testing"))
@@ -124,7 +125,7 @@ if (!app.Environment.IsEnvironment("Testing"))
 
             if (feature?.Error is not null)
             {
-                var requestBody = await TryReadRequestBodySafelyAsync(context.Request, context.RequestAborted);
+                var requestBody = await RequestBodyReader.TryReadRequestBodySafelyAsync(context.Request, context.RequestAborted);
 
                 logger.LogError(feature.Error,
                     "未处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
@@ -249,47 +250,6 @@ static bool IsAdminApiRequest(HttpRequest request)
 static bool IsHangfireRequest(HttpRequest request)
 {
     return request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase);
-}
-
-/// <summary>
-/// 获取本机 IPv4 地址。
-/// </summary>
-static string GetLocalIpAddress()
-{
-    try
-    {
-        var addresses = System.Net.Dns.GetHostAddresses(System.Net.Dns.GetHostName());
-        var ipv4 = addresses.FirstOrDefault(x => x.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork && !System.Net.IPAddress.IsLoopback(x));
-        return ipv4?.ToString() ?? "127.0.0.1";
-    }
-    catch
-    {
-        return "127.0.0.1";
-    }
-}
-
-/// <summary>
-/// 安全读取请求体。
-/// </summary>
-static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, CancellationToken cancellationToken)
-{
-    try
-    {
-        request.EnableBuffering();
-        using var reader = new StreamReader(request.Body, leaveOpen: true);
-        request.Body.Position = 0;
-        var requestBody = await reader.ReadToEndAsync(cancellationToken);
-        request.Body.Position = 0;
-        return requestBody;
-    }
-    catch (OperationCanceledException)
-    {
-        return "<canceled>";
-    }
-    catch
-    {
-        return "<unavailable>";
-    }
 }
 
 /// <summary>
