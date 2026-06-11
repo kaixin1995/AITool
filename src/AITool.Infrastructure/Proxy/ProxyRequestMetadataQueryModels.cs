@@ -1,4 +1,4 @@
-namespace AITool.Web.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
 /// 路由规则配置页中展示的模型项，包含该模型的站点数量和路由配置状态。

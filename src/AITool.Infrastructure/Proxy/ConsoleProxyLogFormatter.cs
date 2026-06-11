@@ -1,4 +1,4 @@
-namespace AITool.Core.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
 /// 生成控制台代理日志的单行摘要，便于快速查看请求结果。
