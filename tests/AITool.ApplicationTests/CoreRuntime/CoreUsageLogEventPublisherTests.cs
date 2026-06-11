@@ -17,7 +17,7 @@ public sealed class CoreUsageLogEventPublisherTests
     [Fact]
     public async Task PublishAsync_projects_usage_log_into_event_envelope()
     {
-        var sequenceProvider = new CoreEventSequenceProvider();
+        var sequenceProvider = TestCoreEventSequenceProvider.Create();
         var eventBus = new CoreAdminEventBus();
         var publisher = new CoreUsageLogEventPublisher(sequenceProvider, eventBus);
         var entry = new UsageLogEntry

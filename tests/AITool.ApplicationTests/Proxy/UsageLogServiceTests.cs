@@ -1,4 +1,5 @@
 using AITool.Application.UsageLogs;
+using AITool.ApplicationTests.CoreRuntime;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
@@ -49,7 +50,7 @@ public sealed class UsageLogServiceTests : IDisposable
         _dbContext = _serviceProvider.GetRequiredService<AppDbContext>();
 
         _eventBus = new CoreAdminEventBus();
-        var sequenceProvider = new CoreEventSequenceProvider();
+        var sequenceProvider = TestCoreEventSequenceProvider.Create();
         var eventPublisher = new CoreUsageLogEventPublisher(sequenceProvider, _eventBus);
         var batchWriter = new ProxyUsageLogBatchWriter(
             _serviceProvider.GetRequiredService<IServiceScopeFactory>(),

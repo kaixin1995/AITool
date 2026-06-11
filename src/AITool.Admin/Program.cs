@@ -90,6 +90,25 @@ builder.Services.AddSingleton(new AITool.Infrastructure.Conversations.Conversati
 builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogStore, AITool.Infrastructure.Conversations.FileConversationLogStore>();
 builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationExtractionService>();
 
+// Admin 侧 UsageLog 事件消费器，将 Core 代理产生的使用日志事件写入 Admin 数据库。
+builder.Services.AddScoped<AdminUsageLogEventIngestor>();
+
+// Admin 侧 ConversationTurn 事件消费器，将 Core 代理产生的对话记录事件写入 Admin 本地 JSONL 存储。
+builder.Services.AddScoped<AITool.Infrastructure.Conversations.AdminConversationTurnEventIngestor>();
+
+// Admin 侧事件 ack 状态持久化，将已确认序号写入本地文件，确保重启后不重复消费历史事件。
+var ackMetaPath = builder.Environment.IsEnvironment("Testing")
+    ? Path.Combine(Path.GetTempPath(), $"aitool-core-event-ack-{Guid.NewGuid():N}", "ack.meta")
+    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "core-runtime", "ack.meta");
+builder.Services.AddSingleton(sp => {
+    var logger = sp.GetRequiredService<ILogger<CoreEventAckStateStore>>();
+    return new CoreEventAckStateStore(ackMetaPath, logger);
+});
+
+// Admin 侧事件拉取核心逻辑，从 HostedService 中提取出来以便独立测试。
+// HostedService 每个轮次创建新 scope 并通过 ActivatorUtilities 解析此服务。
+builder.Services.AddScoped<CoreEventPullService>();
+
 // Admin 侧缓存失效门面，通过 CoreAdminClient 向 Core 下发全量配置快照以刷新运行时缓存。
 builder.Services.AddScoped<AdminCacheInvalidationService>();
 
@@ -121,6 +140,10 @@ builder.Services.AddHttpClient<CoreAdminClient>(client =>
 // Admin 启动后自动将数据库配置同步到 Core 宿主。
 // 如果 Core 尚未就绪，会按指数退避重试，最多 5 次。
 builder.Services.AddHostedService<CoreConfigSyncHostedService>();
+
+// Admin 定时从 Core 拉取事件（replay）、消费入库（ingest）、提交确认（ack）。
+// 构成完整的事件消费闭环：Core 产生事件 → spool 兜底 → Admin 拉取 → 入库 → 确认。
+builder.Services.AddHostedService<CoreEventPullHostedService>();
 
 var app = builder.Build();
 

@@ -1125,23 +1125,63 @@ Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
 
 ---
 
-### 未完成：patch 增量更新协议
+### 已完成：Patch 增量同步协议
 
-当前配置同步只有：
+本轮实现了完整的 Patch 增量同步协议，使得配置同步从"每次全量"升级为"按类别增量推送"。
 
-- `full-sync`
-- `handshake`
-- `noop / full-sync-required / admin-version-behind`
+#### 新增文件
 
-#### 还没有做
+- `src/AITool.Application/CoreRuntime/ConfigPatchPayload.cs` — Patch 数据模型，包含 7 个可空实体集合 + Categories 标注 + PatchHash 去重
+- `tests/AITool.Core.IntegrationTests/CorePatchSyncTests.cs` — 6 个增量同步集成测试
 
-- `patch` 协议模型
-- `baseVersion` 校验后的增量更新应用
-- 增量失败后自动回退到全量同步
+#### 新增功能
 
-这部分还在后续阶段。
+- **ConfigPatchPayload**：DTO 包含 7 个可空实体集合（Sites/Models/SiteModelMappings/RouteEntries/RouteRules/AccessKeys/RuntimeSettings），Categories 字段指定哪些变更，PatchHash 用于去重
+- **Core patch-sync 端点**：`POST /api/core/config/patch-sync`，校验 Categories 非空、版本号递增、类别已知后，执行 MergePatch 替换指定集合并定向失效缓存
+- **类别定向缓存失效**：`InvalidateCacheForCategories` 方法将实体类别映射到具体的缓存失效调用，避免全量刷新
+- **Admin 侧 Patch 构建**：`AdminCacheInvalidationService.BuildPatchAsync` 只读取变更类别的数据库表
+- **自动回退全量同步**：Core 返回 400（未初始化）时，Admin 自动回退到全量同步
+- **SHA256 哈希去重**：Patch 端点比较 PatchHash 与当前快照中对应类别的哈希，相同则忽略
 
----
+#### 测试覆盖
+
+- 6 个 Patch 同步集成测试全部通过
+- 全量同步测试不受影响
+- 全部 302 个测试零回归
+
+
+
+### 已完成：Admin 侧事件拉取闭环（Replay → Ingest → Ack）
+
+本轮实现了 Admin 侧完整的事件拉取消费闭环，从 Core 拉取积压事件、消费入库、提交确认。
+
+#### 新增文件
+
+- `src/AITool.Admin/Services/CoreEventPullHostedService.cs` — BackgroundService 定时拉取服务
+- `src/AITool.Admin/Services/CoreEventPullService.cs` — 核心拉取逻辑，从 HostedService 提取的可独立测试的服务
+- `tests/AITool.ApplicationTests/CoreRuntime/CoreEventPullServiceTests.cs` — 4 个单元测试
+
+#### 实现内容
+
+- **CoreEventPullHostedService**：`BackgroundService`，每 10 秒创建新 DI scope 执行一轮拉取，启动后等待 5 秒确保 Core 可能就绪
+- **CoreEventPullService**：核心拉取逻辑单元，单次 `PullAndProcessAsync` 执行完整的 Replay → Ingest → Ack 流程
+  - 通过 `CoreAdminClient.ReplayAsync` 拉取 `_ackedSequenceId` 之后的所有积压事件
+  - 通过 `AdminUsageLogEventIngestor.IngestUsageLogEventsAsync` 消费 UsageLog 类型事件写入 Admin 数据库
+  - 通过 `CoreAdminClient.AckAsync` 提交确认，通知 Core 清理已处理的事件
+  - 非UsageLog 类型事件也会被 ack 以避免 spool 膨胀
+  - 跨轮次维护 `AckedSequenceId` 确保增量拉取
+- **DI 注册**：`CoreEventPullService` 注册为 Scoped，`CoreEventPullHostedService` 注册为 HostedService
+
+#### 测试覆盖
+
+- 4 个单元测试全部通过：
+  - 空积压事件返回 0，不执行 ack
+  - UsageLog 事件完整拉取 → 入库 → ack 流程
+  - 非 UsageLog 事件仍被 ack 防止 spool 膨胀
+  - 跨轮次 ack 序号正确传递
+- 使用 `StubHttpMessageHandler` 模拟 Core HTTP 接口
+- 使用 `LoggerStub` 替代真实日志基础设施
+- 全部 196 个测试零回归（ApplicationTests 105 + Admin IntegrationTests 49 + Core IntegrationTests 42）
 
 ### 未完成：事件流实时消费通道
 
@@ -1288,33 +1328,32 @@ Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
 
 ### 本轮完成了什么
 
-- 完成了 Patch 增量同步协议的设计、实现和完整测试
-- 新增 `ConfigPatchPayload` 数据模型和 `CorePatchSyncResult` 结果模型
-- Core 端新增 `POST /api/core/config/patch-sync` 端点，支持按类别定向更新
-- Admin 侧 `CoreAdminClient` 新增 `PatchSyncAsync` 方法
-- Admin 侧 `AdminCacheInvalidationService` 重写为基于类别的增量同步，优先 Patch、回退全量
-- 修复了 Patch 测试放置位置问题（从 `AITool.IntegrationTests` 迁移到 `AITool.Core.IntegrationTests`）
-- 6/6 Patch 同步测试通过，2/2 全量同步测试通过，42/42 Core 集成测试通过
-
+- 实现了 Admin 侧 ``conversation-turn`` 事件完整消费闭环
+- 新增 ``AdminConversationTurnEventIngestor``，从 Core 事件流提取对话记录事件并写入 Admin 本地 JSONL 存储
+- 改造 ``CoreEventPullService`` 为双 Ingestor 架构，同时消费 ``usage-log`` 和 ``conversation-turn`` 两种事件类型
+- 在 Admin ``Program.cs`` 注册 ``AdminConversationTurnEventIngestor`` 为 Scoped 服务
+- 编写 7 个单元测试验证对话记录消费器（过滤、反序列化、去重、批量写入、异常容忍）
+- 更新 CoreEventPullService 测试适配双 Ingestor，新增混合事件类型端到端测试
+- 全部 204 个测试零回归（ApplicationTests 113 + Admin 49 + Core 42）
 ### 当前还剩什么
 
 - AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
 - AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（深度代理运行时依赖，不可迁移）
 - AITool.Web/Services/ 中仅剩 2 个文件：`AdminCacheInvalidationService`（测试引用）+ `AdminQueryMetadataService`（ChatApiController 引用）
 - Docker / 容器化部署配置尚未创建（用户明确暂不需要）
-- 实时事件流推送通道与 sequence/ack 持久化增强仍未实施
-- CORS 配置尚未实施（双宿主跨域场景需要）
+- 实时事件流推送（WebSocket/SSE）尚未实施（当前使用轮询拉取模式，已满足基本需求）
+- 事件 sequence/ack 持久化元数据增强仍未实施
 
 ### 当前阻塞点是什么
 
 - 暂无阻塞点
-- 后续重点工作转向实时事件流、CORS 配置与事件持久化增强
+- 后续重点工作转向事件持久化增强、实时推送通道和更多事件类型消费
 
 ### 下一步准备做什么
 
-- 推进 CORS 配置，确保双宿主跨域场景下前端请求正确路由
-- 推进 Admin-side 事件拉取 HostedService（定时 replay + ack）
-- 推进实时事件流推送通道
+- 推进事件 sequence/ack 持久化元数据增强
+- 推进实时事件流推送通道（WebSocket/SSE）
+- 推进更多事件类型消费（developer trace、detection、route fallback 等）
 - 每完成一个小阶段后继续同步更新本文档
 
 ---
@@ -1323,4 +1362,4 @@ Settings 页面在 Web 版有 4 个依赖，迁移时分别处理：
 
 当前项目状态可以概括为：
 
-> **Patch 增量同步协议已完整实现：Admin 写入后只发送变更类别的完整列表，Core 端按类别定向合并并失效缓存，当 Core 未初始化时自动回退到全量同步。至此，Core ↔ Admin 的配置同步链路已从"仅全量同步"升级为"增量优先 + 全量兜底"的双模式架构。Admin 宿主已迁移 12 组页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；ProxyRequestMetadataCache 已完成全部 6 个 DB 依赖方法的双路径改造（快照 vs DB）；Core / Admin 联合部署基础配置已完成；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**
+> **Admin 侧已实现双事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**

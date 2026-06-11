@@ -18,7 +18,7 @@ public sealed class CoreConversationEventPublisherTests
     [Fact]
     public async Task PublishAsync_projects_conversation_turn_into_event_envelope()
     {
-        var sequenceProvider = new CoreEventSequenceProvider();
+        var sequenceProvider = TestCoreEventSequenceProvider.Create();
         var eventBus = new CoreAdminEventBus();
         var publisher = new CoreConversationEventPublisher(sequenceProvider, eventBus);
         var entry = new ConversationTurnEntry
