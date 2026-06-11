@@ -58,4 +58,19 @@ public static class CoreAdminEventEnvelopeBuilder
             PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
         };
     }
+
+    /// <summary>
+    /// 构造一条配置变更应用事件信封。
+    /// </summary>
+    public static CoreAdminEventEnvelope CreateConfigAppliedEnvelope(long sequenceId, CoreConfigAppliedEvent payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return new CoreAdminEventEnvelope
+        {
+            SequenceId = sequenceId,
+            EventType = "config-applied",
+            OccurredAt = payload.OccurredAt,
+            PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
+        };
+    }
 }

@@ -14,13 +14,17 @@ namespace AITool.Web.Controllers.Core;
 public sealed class CoreConfigSyncController : ControllerBase
 {
     private readonly ICoreRuntimeConfigProvider _configProvider;
+    private readonly CoreConfigAppliedEventPublisher _configAppliedPublisher;
 
     /// <summary>
     /// 初始化 Core 配置同步控制器。
     /// </summary>
-    public CoreConfigSyncController(ICoreRuntimeConfigProvider configProvider)
+    public CoreConfigSyncController(
+        ICoreRuntimeConfigProvider configProvider,
+        CoreConfigAppliedEventPublisher configAppliedPublisher)
     {
         _configProvider = configProvider;
+        _configAppliedPublisher = configAppliedPublisher;
     }
 
     /// <summary>
@@ -68,6 +72,15 @@ public sealed class CoreConfigSyncController : ControllerBase
         }
 
         _configProvider.SetCurrent(snapshot);
+
+        // 配置成功应用后，向事件总线发布确认通知
+        var previousVersion = current?.ConfigVersion ?? 0;
+        var previousHash = current?.ConfigHash ?? string.Empty;
+        _ = _configAppliedPublisher.PublishAsync(
+            "full", snapshot.ConfigVersion, snapshot.ConfigHash,
+            previousVersion, previousHash,
+            cancellationToken: HttpContext.RequestAborted);
+
         return Ok(new
         {
             applied = true,

@@ -1454,6 +1454,29 @@ CoreEventPullService 现在同时消费三种事件类型：
 - 在 `_Layout.cshtml` 监控运维导航区域添加了路由回退入口
 - 编译零错误，12 个 RouteFallback 相关测试全部通过，Admin 集成测试 49/49 全部通过
 
+
+### 本轮又完成了什么（SSE 实时推送 + 死代码清理 + 门面覆盖面确认）
+
+- 实现了 Core→Admin SSE 实时事件通知通道：Core 端 `CoreAdminEventBus` 新增 `Subscribe()`/`NotifyNewEvents()` SSE 订阅机制，使用 WeakReference 自动清理死订阅者
+- 实现了 Admin 端双通道拉取架构：`CoreEventPullHostedService` 同时运行轮询（10s 间隔，兜底）和 SSE 监听（实时），使用 SemaphoreSlim 桥接 SSE 通知到拉取循环
+- SSE 连接支持自动重连（5s 间隔），最小拉取间隔 500ms 防止密集通知风暴
+- 清理了 `CoreAdminClient` 中已废弃的 `StreamEventNotificationsAsync` 方法和 `SseNotification` 内部类（SSE 客户端功能已迁移到 `CoreEventPullHostedService` 直接使用 IHttpClientFactory）
+- 确认 Admin 门面覆盖面已完整：ProxyRequestMetadataCache 和 DeveloperInvocationTraceStore 在 Admin 页面/控制器中已无直接引用，仅 ChatApiController 有意保留 ModelConcurrencyLimiter.AcquireAsync（运行时写路径）
+- 新增 7 个 SSE 订阅单元测试（`CoreAdminEventBusSubscriptionTests`）+ 3 个 SSE 集成测试（`CoreEventStreamTests`），全部通过
+- 编译零错误，全部测试零回归
+
+### 本轮又完成了什么（ConfigApplied 配置变更事件闭环）
+
+- 实现了 Core 侧 ConfigApplied 事件发布器：`CoreConfigAppliedEventPublisher`，在配置同步成功后发布 config-applied 事件到 CoreAdminEventBus（fire-and-forget 模式，不阻塞同步响应）
+- Core 端 `CoreConfigSyncController`（Core 和 Web 两个版本）在 full-sync 和 patch-sync 成功后均触发事件发布，携带配置版本、哈希、同步模式、变更类别等审计信息
+- 实现了 Admin 侧配置变更内存存储 `AdminConfigAppliedStore`（100 条上限，24 小时过期自动清理，线程安全）
+- 实现了 Admin 侧 ConfigApplied 事件消费器 `AdminConfigAppliedEventIngestor`，按 config-applied 类型过滤并写入内存存储
+- `CoreEventPullService` 扩展为五 Ingestor 架构：usage-log、conversation-turn、developer-trace、route-fallback、config-applied
+- 新增 `CoreConfigAppliedEvent` 事件模型（7 字段：ConfigVersion、ConfigHash、SyncMode、ChangedCategories、PreviousConfigVersion、PreviousConfigHash、OccurredAt）
+- `CoreAdminEventEnvelopeBuilder` 新增 `CreateConfigAppliedEnvelope` 信封构造方法
+- Core/Admin/Web 三侧 Program.cs 均注册了 ConfigApplied 相关服务
+- 编译零错误，全部测试零回归
+
 ### 当前还剩什么
 
 - AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
@@ -1469,7 +1492,7 @@ CoreEventPullService 现在同时消费三种事件类型：
 
 ### 下一步准备做什么
 
-- 推进实时事件流推送通道（WebSocket/SSE）
+- ~~推进实时事件流推送通道（WebSocket/SSE）~~ 已完成（SSE 双通道实现 + 死代码清理）
 - 探索更多事件类型消费（如 detection、性能指标等）
 - 每完成一个小阶段后继续同步更新本文档
 
@@ -1479,4 +1502,4 @@ CoreEventPullService 现在同时消费三种事件类型：
 
 当前项目状态可以概括为：
 
-> **Admin 侧已实现四事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储，``developer-trace`` 和 ``route-fallback`` 事件写入 Admin 内存存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面 + RouteFallback 监控页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**
+> **Admin 侧已实现五事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储，``developer-trace`` 和 ``route-fallback`` 事件写入 Admin 内存存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面 + RouteFallback 监控页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**

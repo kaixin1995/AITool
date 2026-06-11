@@ -435,3 +435,56 @@ public sealed class CoreRouteFallbackEvent
     /// </summary>
     public DateTimeOffset OccurredAt { get; set; } = DateTimeOffset.UtcNow;
 }
+
+/// <summary>
+/// 配置变更应用事件对应的 Core 事件负载。
+/// <para>
+/// 当 Admin 通过 full-sync 或 patch-sync 向 Core 下发配置并成功应用后，
+/// Core 发布此事件作为确认通知。Admin 侧消费后可用于：
+/// <list type="bullet">
+///   <item>实时感知配置变更已生效</item>
+///   <item>记录配置变更历史审计日志</item>
+///   <item>触发 Admin 侧的缓存刷新或状态同步</item>
+/// </list>
+/// </para>
+/// </summary>
+public sealed class CoreConfigAppliedEvent
+{
+    /// <summary>
+    /// 应用后的配置版本号。
+    /// </summary>
+    public long ConfigVersion { get; set; }
+
+    /// <summary>
+    /// 应用后的配置哈希值。
+    /// </summary>
+    public string ConfigHash { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 同步模式：full（全量同步）或 patch（增量同步）。
+    /// </summary>
+    public string SyncMode { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 增量同步时变更的实体类别列表（如 Sites、Models 等）。
+    /// 全量同步时为空列表。
+    /// </summary>
+    public List<string> ChangedCategories { get; set; } = [];
+
+    /// <summary>
+    /// 配置应用前（旧）的版本号。
+    /// 首次同步时为 0。
+    /// </summary>
+    public long PreviousConfigVersion { get; set; }
+
+    /// <summary>
+    /// 配置应用前（旧）的哈希值。
+    /// 首次同步时为空字符串。
+    /// </summary>
+    public string PreviousConfigHash { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 事件发生时间（即配置被 Core 应用的时间）。
+    /// </summary>
+    public DateTimeOffset OccurredAt { get; set; } = DateTimeOffset.UtcNow;
+}

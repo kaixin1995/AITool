@@ -43,6 +43,11 @@ public sealed class CoreConfigSyncController : ControllerBase
     private readonly RouteCircuitStateStore _circuitStore;
 
     /// <summary>
+    /// 配置变更应用事件发布器，配置成功应用后向事件总线发送确认通知。
+    /// </summary>
+    private readonly CoreConfigAppliedEventPublisher _configAppliedPublisher;
+
+    /// <summary>
     /// 日志记录器。
     /// </summary>
     private readonly ILogger<CoreConfigSyncController> _logger;
@@ -54,11 +59,13 @@ public sealed class CoreConfigSyncController : ControllerBase
         ICoreRuntimeConfigProvider configProvider,
         ProxyRequestMetadataCache metadataCache,
         RouteCircuitStateStore circuitStore,
+        CoreConfigAppliedEventPublisher configAppliedPublisher,
         ILogger<CoreConfigSyncController> logger)
     {
         _configProvider = configProvider;
         _metadataCache = metadataCache;
         _circuitStore = circuitStore;
+        _configAppliedPublisher = configAppliedPublisher;
         _logger = logger;
     }
 
@@ -118,6 +125,14 @@ public sealed class CoreConfigSyncController : ControllerBase
         ApplyCircuitBreakerSettings(snapshot.RuntimeSettings);
 
         _logger.LogDebug("全量同步完成。Version={Version}, Hash={Hash}", snapshot.ConfigVersion, snapshot.ConfigHash);
+
+        // 配置成功应用后，向事件总线发布确认通知
+        var previousVersion = current?.ConfigVersion ?? 0;
+        var previousHash = current?.ConfigHash ?? string.Empty;
+        _ = _configAppliedPublisher.PublishAsync(
+            "full", snapshot.ConfigVersion, snapshot.ConfigHash,
+            previousVersion, previousHash,
+            cancellationToken: HttpContext.RequestAborted);
 
         return Ok(new
         {
@@ -215,6 +230,13 @@ public sealed class CoreConfigSyncController : ControllerBase
             merged.ConfigVersion,
             string.Join(", ", patch.Categories),
             merged.ConfigHash);
+
+        // 配置成功应用后，向事件总线发布确认通知
+        _ = _configAppliedPublisher.PublishAsync(
+            "patch", merged.ConfigVersion, merged.ConfigHash,
+            current.ConfigVersion, current.ConfigHash,
+            patch.Categories,
+            HttpContext.RequestAborted);
 
         return Ok(new CorePatchSyncResult
         {

@@ -103,6 +103,9 @@ builder.Services.AddSingleton<CoreDeveloperTraceEventPublisher>();
 // 注册路由回退事件发布器，当代理请求在路由间回退时发布 route-fallback 事件。
 builder.Services.AddSingleton<CoreRouteFallbackEventPublisher>();
 
+// 注册配置变更应用事件发布器，配置成功应用后向事件总线发送确认通知。
+builder.Services.AddSingleton<CoreConfigAppliedEventPublisher>();
+
 // 注册事件序列、事件总线与 spool，支撑 Core -> Admin 可靠事件推送。
 builder.Services.AddSingleton<CoreEventSequenceProvider>();
 builder.Services.AddSingleton<CoreAdminEventBus>();

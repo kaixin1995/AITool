@@ -117,6 +117,7 @@ builder.Services.AddSingleton<CoreEventSpoolStore>();
 builder.Services.AddHostedService<CoreEventSpoolBackgroundService>();
 builder.Services.AddSingleton<CoreUsageLogEventPublisher>();
 builder.Services.AddSingleton<AITool.Infrastructure.Conversations.CoreConversationEventPublisher>();
+builder.Services.AddSingleton<CoreConfigAppliedEventPublisher>();
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
 var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
