@@ -148,6 +148,9 @@ builder.Services.AddHttpClient<CoreAdminClient>(client =>
     client.BaseAddress = new Uri(coreBaseUrl, UriKind.Absolute);
     client.Timeout = TimeSpan.FromSeconds(30);
 });
+// SSE 专用 HttpClient，用于 CoreEventPullHostedService 实时监听 Core 事件通知流。
+// SSE 是无限流，不能用默认的 30 秒超时，必须设置无限超时。
+builder.Services.AddHttpClient("CoreSSE");
 
 // Admin 启动后自动将数据库配置同步到 Core 宿主。
 // 如果 Core 尚未就绪，会按指数退避重试，最多 5 次。

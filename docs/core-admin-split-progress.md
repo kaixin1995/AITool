@@ -1233,23 +1233,47 @@ CoreEventPullService 现在同时消费三种事件类型：
 - **Triple Ingestor 架构已确立，后续新增事件类型只需增加对应 Ingestor**
 
 ---
-### 未完成：事件流实时消费通道
+### 已完成：事件流实时消费通道（SSE）
 
-当前事件链路仍然是：
+#### SSE 实时通知通道已实现能力
 
-- 发布 → 总线 → spool → replay/ack
+- Core 侧新增 SSE 端点 `GET /api/core/events/stream`（`CoreEventStreamController`），返回 `text/event-stream`，支持多客户端并发订阅
+- `CoreAdminEventBus` 扩展为多订阅者 SSE 通知模式：`Subscribe()` 创建独立的 `SseSubscription`（有界通道，深度 64，DropOldest），`NotifyNewEvents()` 广播到所有活跃订阅者
+- 已 Dispose 订阅者通过 `WeakReference` 自动 GC 清理，无内存泄漏
+- `CoreEventSpoolBackgroundService` 在写入事件到 spool 后自动调用 `NotifyNewEvents`，触发 SSE 推送
+- Admin 侧 `CoreEventPullHostedService` 改造为双通道架构：同时运行定时轮询（10 秒，回退）和 SSE 实时监听，收到通知后立即触发拉取，延迟从最大 10 秒降低到亚秒级
+- SSE 断线自动重连（5 秒间隔），期间继续依赖定时轮询保证事件最终被拉取
+- Admin `Program.cs` 新增 `"CoreSSE"` 命名 HttpClient 注册（无超时，支持无限 SSE 流）
 
-#### 实时消费待办
+#### 已创建/修改文件
 
-- 真正的 Core → Admin 长连接实时推送
-- Admin 长连接消费
-- 实时流与 replay 的衔接
+**Core 侧 SSE 端点：**
+- `src/AITool.Core/Controllers/Core/CoreEventStreamController.cs` — 新增 SSE 端点控制器，订阅 CoreAdminEventBus 的事件通知并转换为 SSE 格式输出
 
-目前属于：
+**Core 侧事件总线扩展：**
+- `src/AITool.Infrastructure/CoreRuntime/CoreAdminEventBus.cs` — 新增 `Subscribe()` / `NotifyNewEvents()` 多订阅者 SSE 通知机制，SseSubscription 使用有界 Channel + WeakReference 自动清理
+- `src/AITool.Infrastructure/CoreRuntime/CoreEventSpoolBackgroundService.cs` — 写入 spool 后调用 `NotifyNewEvents()` 触发 SSE 推送
 
-- **可靠协议最小闭环已完成**
-- **实时推送通道尚未接入**
+**Admin 侧双通道拉取：**
+- `src/AITool.Admin/Services/CoreEventPullHostedService.cs` — 重写为双通道架构（SSE 实时 + 定时轮询回退），使用 SemaphoreSlim 桥接通知到拉取循环
+- `src/AITool.Admin/Program.cs` — 新增 "CoreSSE" 命名 HttpClient 注册
 
+**Admin 侧客户端：**
+- `src/AITool.Infrastructure/CoreRuntime/CoreAdminClient.cs` — 包含 `StreamEventNotificationsAsync` 方法（预留 SSE 客户端流式读取）
+
+#### 测试覆盖（10 个新测试）
+
+| 测试文件 | 测试数 | 验证内容 |
+|---|---|---|
+| `CoreAdminEventBusSubscriptionTests` | 7 | 独立订阅、广播、有序投递、死引用清理、有界通道 DropOldest、无订阅者安全、Dispose 行为 |
+| `CoreEventStreamTests` | 3 | SSE 内容类型/响应头、事件通知推送、多并发客户端 |
+
+#### SSE 实时通知通道状态
+
+- **Core SSE 端点已实现并测试通过**
+- **Admin 双通道拉取已实现（SSE 实时 + 定时轮询回退）**
+- **10 个新测试全部通过**
+- **全解决方案 368 个测试零回归（ApplicationTests 165 + IntegrationTests 108 + Core 47 + Admin 49）**
 ---
 
 ### 已完成：事件 sequence / ack 持久化元数据增强 + Spool 文件轮转/清理策略
@@ -1436,7 +1460,7 @@ CoreEventPullService 现在同时消费三种事件类型：
 - AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（深度代理运行时依赖，不可迁移）
 - AITool.Web/Services/ 中仅剩 2 个文件：`AdminCacheInvalidationService`（测试引用）+ `AdminQueryMetadataService`（ChatApiController 引用）
 - Docker / 容器化部署配置尚未创建（用户明确暂不需要）
-- 实时事件流推送（WebSocket/SSE）尚未实施（当前使用轮询拉取模式，已满足基本需求）
+- ~~实时事件流推送（SSE）~~ 已完成（本轮实现，双通道 SSE+轮询）
 
 ### 当前阻塞点是什么
 

@@ -128,6 +128,7 @@ public sealed class CoreAdminClient
         response.EnsureSuccessStatusCode();
         return (await response.Content.ReadFromJsonAsync<CoreDeveloperMetadataResponse>(cancellationToken))!;
     }
+
 }
 
 /// <summary>

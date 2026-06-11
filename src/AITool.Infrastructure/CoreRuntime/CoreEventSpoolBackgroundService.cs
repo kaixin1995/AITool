@@ -63,6 +63,9 @@ public sealed class CoreEventSpoolBackgroundService : BackgroundService
             {
                 await _spoolStore.AppendAsync(envelope, stoppingToken);
 
+                // 通知 SSE 端点有新事件已写入 spool，Admin 可以立即拉取
+                _eventBus.NotifyNewEvents(envelope.SequenceId);
+
                 // 检查是否需要执行 spool 清理
                 if (ShouldPrune())
                 {
