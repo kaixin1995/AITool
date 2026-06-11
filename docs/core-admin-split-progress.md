@@ -1421,6 +1421,15 @@ CoreEventPullService 现在同时消费三种事件类型：
 - 编写 22 个 spool 轮转单元测试 + 5 个 ack 持久化测试 + 5 个 sequence 持久化测试
 - 全部 347 个测试零回归（ApplicationTests 148 + Admin 49 + Core 42 + Integration 108）
 
+### 本轮又完成了什么（RouteFallback 监控页面闭环）
+
+- 创建了 Admin 侧 RouteFallback API 控制器：`RouteFallbackApiController`，提供 `/api/admin/route-fallback/list`（分页列表）和 `/api/admin/route-fallback/summary`（摘要统计）两个端点
+- API 控制器直接读取 `AdminRouteFallbackStore` 内存存储，无需数据库查询或 CoreAdminClient 代理
+- 创建了 Admin 侧 RouteFallback 监控 Razor 页面：`Pages/Admin/RouteFallback/Index.cshtml` + `Index.cshtml.cs`
+- 页面包含 4 个摘要统计卡片（回退总数、涉及源站点数、涉及目标站点数、最近回退时间）+ 筛选条件（模型关键字、回退原因）+ 分页列表 + 5 秒自动刷新
+- 在 `_Layout.cshtml` 监控运维导航区域添加了路由回退入口
+- 编译零错误，12 个 RouteFallback 相关测试全部通过，Admin 集成测试 49/49 全部通过
+
 ### 当前还剩什么
 
 - AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
@@ -1438,7 +1447,6 @@ CoreEventPullService 现在同时消费三种事件类型：
 
 - 推进实时事件流推送通道（WebSocket/SSE）
 - 探索更多事件类型消费（如 detection、性能指标等）
-- Admin 侧添加路由回退事件监控页面
 - 每完成一个小阶段后继续同步更新本文档
 
 ---
@@ -1447,4 +1455,4 @@ CoreEventPullService 现在同时消费三种事件类型：
 
 当前项目状态可以概括为：
 
-> **Admin 侧已实现四事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储，``developer-trace`` 和 ``route-fallback`` 事件写入 Admin 内存存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**
+> **Admin 侧已实现四事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储，``developer-trace`` 和 ``route-fallback`` 事件写入 Admin 内存存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面 + RouteFallback 监控页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。**
