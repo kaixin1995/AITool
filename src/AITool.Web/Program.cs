@@ -113,46 +113,7 @@ app.UseStaticFiles();
 app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();
-app.Use(async (context, next) =>
-{
-    if (app.Environment.IsEnvironment("Testing") || !AdminRequestMatcher.IsAdminRequest(context.Request) || AdminRequestMatcher.IsLoginPageRequest(context.Request))
-    {
-        await next();
-        return;
-    }
-
-    if (context.User.Identity?.IsAuthenticated == true)
-    {
-        await next();
-        return;
-    }
-
-    var authService = context.RequestServices.GetRequiredService<AdminAuthService>();
-    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
-    var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
-        ? "/Login"
-        : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
-
-    if (AdminRequestMatcher.IsAdminApiRequest(context.Request))
-    {
-        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-        return;
-    }
-
-    if (AdminRequestMatcher.IsHangfireRequest(context.Request))
-    {
-        context.Response.Redirect(loginUrl);
-        return;
-    }
-
-    if (authService.HasPasswordConfigured())
-    {
-        context.Response.Redirect(loginUrl);
-        return;
-    }
-
-    context.Response.Redirect(loginUrl);
-});
+app.UseAdminAuthentication();
 
 // 映射健康检查端点，作为集成测试的验证入口。
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
