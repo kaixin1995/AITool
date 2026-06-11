@@ -12,7 +12,6 @@ using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
-using AITool.Web.Services;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>

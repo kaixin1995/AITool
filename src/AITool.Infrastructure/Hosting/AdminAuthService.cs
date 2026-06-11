@@ -2,13 +2,18 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using AITool.Infrastructure.Hosting;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 
-namespace AITool.Web.Services;
+namespace AITool.Infrastructure.Hosting;
 
 /// <summary>
 /// 提供后台登录密码的读取、校验和初始化写入能力。
+/// <para>
+/// 管理后台认证服务，支持密码哈希校验和首次密码设置。
+/// 密码哈希存储在 appsettings.json 的 AdminAuth 配置节中，
+/// 修改后触发配置热重载使新密码立即生效。
+/// </para>
 /// </summary>
 public sealed class AdminAuthService
 {

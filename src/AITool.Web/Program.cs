@@ -9,7 +9,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
 using AITool.Infrastructure.Scheduling;
-using AITool.Web.Services;
 using Hangfire;
 using Microsoft.EntityFrameworkCore;
 using NLog;
