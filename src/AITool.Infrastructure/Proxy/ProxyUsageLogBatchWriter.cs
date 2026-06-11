@@ -42,6 +42,11 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
     /// 直写模式标志，测试环境下跳过队列直接写入数据库
     /// </summary>
     private readonly bool _writeThroughMode;
+    /// <summary>
+    /// 数据库是否可用。Core 宿主不注册 AppDbContext，此字段为 false，
+    /// FlushBatchAsync 会跳过数据库写入（事件已通过 CoreUsageLogEventPublisher 发出）。
+    /// </summary>
+    private readonly bool _databaseAvailable;
 
     /// <summary>
     /// 注入服务范围工厂、日志记录器和主机环境信息
@@ -51,6 +56,9 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
         _scopeFactory = scopeFactory;
         _logger = logger;
         _writeThroughMode = hostEnvironment.IsEnvironment("Testing");
+        // 检测 AppDbContext 是否注册。Core 宿主不调用 AddAdminInfrastructure，因此没有数据库服务。
+        using var probeScope = scopeFactory.CreateScope();
+        _databaseAvailable = probeScope.ServiceProvider.GetService<AppDbContext>() is not null;
     }
 
     /// <summary>
@@ -127,11 +135,20 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
     }
 
     /// <summary>
-    /// 将一批日志条目通过独立作用域写入数据库
+    /// 将一批日志条目通过独立作用域写入数据库。
+    /// Core 宿主没有数据库，直接跳过（事件已通过 CoreUsageLogEventPublisher 发到事件总线）。
     /// </summary>
     private async Task FlushBatchAsync(List<UsageLogEntry> batch, CancellationToken cancellationToken)
     {
         if (batch.Count == 0)
+        {
+            return;
+        }
+
+        // Core 宿主不注册 AppDbContext，跳过数据库写入。
+        // 代理使用日志已通过 CoreUsageLogEventPublisher 发布到事件总线，
+        // Admin 侧通过 AdminUsageLogEventIngestor 消费入库。
+        if (!_databaseAvailable)
         {
             return;
         }
