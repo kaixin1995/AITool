@@ -1558,6 +1558,41 @@ CoreEventPullService 现在同时消费三种事件类型：
 
 ---
 
+---
+
+## 阶段记录 — 2026-06-12 DI 注册去重扩展方法提取
+
+### 本轮完成了什么
+
+- **提取共享 DI 扩展方法**：新增  目录，包含两个扩展方法类：
+  -  — 三宿主共享注册：控制器（含 HttpExceptionLoggingFilter）、内存缓存、对话日志文件存储、对话提取服务
+  -  — Web+Admin 共享注册：Razor Pages、Cookie 认证与授权、EF Core 数据库上下文、系统运行时设置服务、站点目录客户端、Hangfire 内存存储与调度器
+- **Infrastructure.csproj 添加包引用**：，使扩展方法可以定义在 Infrastructure 层
+- **Core/Admin/Web 三个 Program.cs 简化**：各宿主用两行扩展调用替代大量重复的内联 DI 注册，代理运行时独有服务保持内联
+- **编译零错误，全部测试零回归**
+
+### 文件变更清单
+
+- 新增 
+- 新增 
+- 修改 （+1 包引用）
+- 修改 （内联 DI → AddCommonInfrastructure 调用）
+- 修改 （内联 DI → AddCommonInfrastructure + AddAdminInfrastructure 调用）
+- 修改 （内联 DI → AddCommonInfrastructure + AddAdminInfrastructure 调用）
+
+### 当前还剩什么
+
+- AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
+- AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（深度代理运行时依赖，不可迁移）
+- AITool.Web/Services/ 中仅剩 2 个文件：AdminCacheInvalidationService + AdminQueryMetadataService
+- Docker / 容器化部署配置尚未创建（用户明确暂不需要）
+
+### 下一步准备做什么
+
+- 评估 Web/Program.cs 中剩余的代理运行时 DI 注册是否可以进一步归纳
+- 探索更多事件类型消费（如 detection、性能指标等）
+- 每完成一个小阶段后继续同步更新本文档
+
 ## 七、结论
 
 当前项目状态可以概括为：
