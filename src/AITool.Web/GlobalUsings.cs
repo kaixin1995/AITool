@@ -13,3 +13,9 @@ global using SiteInstanceItem = AITool.Infrastructure.Proxy.SiteInstanceItem;
 global using DiscoveredSiteItem = AITool.Infrastructure.Proxy.DiscoveredSiteItem;
 global using RouteRuleListItem = AITool.Infrastructure.Proxy.RouteRuleListItem;
 global using ClientSimulatorModelItemViewModel = AITool.Infrastructure.Proxy.ClientSimulatorModelItemViewModel;
+
+// 模型并发控制相关类型，原先是 Web/Services 下的副本，现已统一到 Infrastructure/Proxy 层。
+global using ModelConcurrencyLimiter = AITool.Infrastructure.Proxy.ModelConcurrencyLimiter;
+global using ConcurrencyAcquireMode = AITool.Infrastructure.Proxy.ConcurrencyAcquireMode;
+global using ConcurrencyAcquireResult = AITool.Infrastructure.Proxy.ConcurrencyAcquireResult;
+global using ActiveModelConcurrencyEntry = AITool.Infrastructure.Proxy.ActiveModelConcurrencyEntry;

@@ -1598,3 +1598,43 @@ CoreEventPullService 现在同时消费三种事件类型：
 当前项目状态可以概括为：
 
 > **Admin 侧已实现六事件类型消费闭环：``usage-log`` 事件写入 Admin 数据库，``conversation-turn`` 事件写入 Admin 本地 JSONL 存储，``developer-trace`` 和 ``route-fallback`` 事件写入 Admin 内存存储。Admin 宿主通过 ``CoreEventPullHostedService`` 定时从 Core 拉取事件、按类型分发消费、统一提交确认。Core ↔ Admin 的配置同步已支持全量 + 增量双模式；Admin 宿主已迁移 12 组页面 + RouteFallback 监控页面，覆盖全部管理页面与系统配置能力；AITool.Core 物理独立宿主已创建并编译通过（纯代理运行时，无 DB/无 Razor/无认证）；Web 侧清理已完成，仅剩 ChatApiController（不可迁移）和 Chat/Index 页面。CircuitBreaker 熔断事件（第六条事件链路）已完成闭环。**
+---
+
+## 阶段记录 — 2026-06-12 统一代理元数据缓存到 Infrastructure 层并修复 DI 自动注入 bug
+
+### 本轮完成了什么
+
+- **统一 ProxyRequestMetadataCache 到 Infrastructure 层**：将 Core/Services 和 Web/Services 中的 ProxyRequestMetadataCache.cs、ProxyRequestMetadataCache.AdminQueries.cs、AdminQueryMetadataService.cs 三个文件统一迁移到 Infrastructure/Proxy 目录。Core 和 Web 中的旧副本已删除，所有控制器和测试文件的 using 引用已更新。
+- **修复 DI 自动注入 bug**：Web 宿主的 ProxyRequestMetadataCache 注册改为工厂委托模式（AddSingleton(sp => new T(...))），显式传入 configProvider: null，防止 DI 自动注入已注册的 CoreRuntimeConfigProvider 实例导致缓存走配置快照路径而绕过数据库查询。
+- **清理残留本地文件**：删除了 14 个从未提交过的本地残留副本文件（ConsoleProxyLogFormatter、ProxyProtocolBridge.*、ProxyRequestMetadataQueryModels），这些文件的命名空间虽不同但逻辑与 Infrastructure 版本完全一致，且 GlobalUsings.cs 已映射类型别名。
+- **修复 CoreAdminClientTests 断言**：测试中 replay 事件现在包含 config-applied + usage-log 两种类型（顺序），断言从 HaveCount(1) 更正为 HaveCount(2)，ack 引用从 replay[0] 更正为 replay[1]。
+
+### 文件变更清单
+
+- 重命名 Core/Services → Infrastructure/Proxy：AdminQueryMetadataService.cs、ProxyRequestMetadataCache.AdminQueries.cs、ProxyRequestMetadataCache.cs
+- 删除 Web/Services 副本：AdminQueryMetadataService.cs、ProxyRequestMetadataCache.AdminQueries.cs、ProxyRequestMetadataCache.cs
+- 修改 Web/Program.cs：ProxyRequestMetadataCache 注册改为工厂委托，显式传入 configProvider: null
+- 修改 ~20 个控制器和测试文件的 using 引用
+- 修改 CoreAdminClientTests.cs：修正 replay 事件计数和 ack 序号引用
+- 删除 14 个本地残留副本文件（从未提交）
+
+### 测试验证
+
+- Web 集成测试：108/108 通过
+- Core 集成测试（AITool.Core.IntegrationTests）：54/54 通过
+- IntegrationTests.Core 命名空间测试：7/7 通过
+- 编译零错误，全部测试零回归
+
+### 当前还剩什么
+
+- AITool.Web 中仍有 1 个 Admin 页面：Chat/Index（Admin 已有完整版本，Web 保留用于 JS API 端点）
+- AITool.Web 中仍有 1 个 Admin 控制器：ChatApiController（深度代理运行时依赖，不可迁移）
+- AITool.Web/Services/ 中仅剩 2 个文件：AdminCacheInvalidationService + AdminQueryMetadataService
+- Core/Services 和 Web/Services 中仍有重复副本：ModelConcurrencyLimiter、DeveloperInvocationTraceStore
+- Docker / 容器化部署配置尚未创建（用户明确暂不需要）
+
+### 下一步准备做什么
+
+- 统一 ModelConcurrencyLimiter 到 Infrastructure 层，消除 Core/Web 重复副本
+- 统一 DeveloperInvocationTraceStore 到 Infrastructure 层，消除 Core/Web 重复副本
+- 每完成一个小阶段后继续同步更新本文档

@@ -1,9 +1,7 @@
 using System.Collections.Concurrent;
 using System.Threading;
-using AITool.Infrastructure.Proxy;
 
-using AITool.Core.Services;
-namespace AITool.Core.Services;
+namespace AITool.Infrastructure.Proxy;
 
 /// <summary>
 /// 并发打满时的处理策略。
