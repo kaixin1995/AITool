@@ -9,7 +9,6 @@ using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
 using AITool.Infrastructure.Scheduling;
 using Hangfire;
-using Microsoft.EntityFrameworkCore;
 using NLog;
 using NLog.Web;
 
@@ -67,24 +66,13 @@ builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
 
 var app = builder.Build();
 
+// 执行管理后台启动初始化：数据库创建、Schema 迁移、Hangfire 调度注册。
+var initLogger = app.Services.GetRequiredService<ILogger<Program>>();
+await AdminStartupInitializer.InitializeAsync(app.Services, initLogger);
+
+// Web 宿主独有的代理运行时初始化：恢复配置快照、初始化熔断参数。
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.EnsureCreated();
-    await DatabaseSchemaMigrator.EnsureProxyUsageLogSchemaAsync(db);
-    await DatabaseSchemaMigrator.EnsureConversationLogSchemaAsync(db);
-
-    var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
-    try
-    {
-        await scheduler.ScheduleAllAsync(default);
-    }
-    catch (Exception ex)
-    {
-        var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
-        logger.LogWarning(ex, "启动时注册检测任务失败，将在下次启动时重试");
-    }
-
     var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
     var configProvider = scope.ServiceProvider.GetRequiredService<AITool.Application.CoreRuntime.ICoreRuntimeConfigProvider>();
     if (!await configProvider.TryLoadFromFileAsync())

@@ -6,9 +6,7 @@ using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.DependencyInjection;
 using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Persistence;
-using AITool.Infrastructure.Scheduling;
 using AITool.Admin.Services;
-using Hangfire;
 using NLog;
 using NLog.Web;
 
@@ -71,7 +69,8 @@ builder.Services.AddScoped<AdminCircuitBreakerEventIngestor>();
 var ackMetaPath = builder.Environment.IsEnvironment("Testing")
     ? Path.Combine(Path.GetTempPath(), $"aitool-core-event-ack-{Guid.NewGuid():N}", "ack.meta")
     : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "core-runtime", "ack.meta");
-builder.Services.AddSingleton(sp => {
+builder.Services.AddSingleton(sp =>
+{
     var logger = sp.GetRequiredService<ILogger<CoreEventAckStateStore>>();
     return new CoreEventAckStateStore(ackMetaPath, logger);
 });
@@ -110,22 +109,9 @@ builder.Services.AddHostedService<CoreEventPullHostedService>();
 
 var app = builder.Build();
 
-using (var scope = app.Services.CreateScope())
-{
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.EnsureCreated();
-
-    // 启动时注册所有已启用的定时检测任务到 Hangfire
-    var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
-    try
-    {
-        await scheduler.ScheduleAllAsync(default);
-    }
-    catch (Exception ex)
-    {
-        startupLogger.Warn(ex, "启动时注册定时检测任务失败，将在后台重试");
-    }
-}
+// 执行管理后台启动初始化：数据库创建、Schema 迁移、Hangfire 调度注册。
+var initLogger = app.Services.GetRequiredService<ILogger<Program>>();
+await AdminStartupInitializer.InitializeAsync(app.Services, initLogger);
 
 startupLogger.Info(
     "Admin 宿主启动完成。Version={Version}, Environment={Environment}, Port={Port}, CoreBaseUrl={CoreBaseUrl}",

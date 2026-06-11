@@ -170,7 +170,7 @@ public class EditModel : PageModel
             if (model is null) return RedirectToPage("./Index");
 
             model.ModelName = ModelName;
-            model.DisplayName = DisplayName;            model.IsEnabled = IsEnabled;
+            model.DisplayName = DisplayName; model.IsEnabled = IsEnabled;
 
             await _dbContext.SaveChangesAsync(cancellationToken);
             await _cacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);

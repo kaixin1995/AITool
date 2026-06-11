@@ -163,10 +163,10 @@ internal sealed class ConversationLoggingWebApplicationFactory : WebApplicationF
         for (var i = 0; i < 20; i++)
         {
             log = (await conversationLogStore.QueryAsync(new ConversationLogQuery
-                {
-                    StartTime = DateTimeOffset.Now.AddDays(-7),
-                    EndTime = DateTimeOffset.Now.AddDays(1)
-                }))
+            {
+                StartTime = DateTimeOffset.Now.AddDays(-7),
+                EndTime = DateTimeOffset.Now.AddDays(1)
+            }))
                 .Where(x => predicate(x))
                 .OrderByDescending(x => x.CreatedAt)
                 .FirstOrDefault();

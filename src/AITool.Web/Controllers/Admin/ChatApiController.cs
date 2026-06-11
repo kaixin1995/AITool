@@ -139,7 +139,7 @@ public sealed class ChatSendRequest
     /// <summary>
     /// 支持的思考强度选项。
     /// </summary>
-    public static readonly string[] ValidReasoningEfforts = ["low", "medium", "high", "xhigh","max"];
+    public static readonly string[] ValidReasoningEfforts = ["low", "medium", "high", "xhigh", "max"];
 
     /// <summary>
     /// 模型标识。
