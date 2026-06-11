@@ -1737,3 +1737,44 @@ CoreEventPullService 现在同时消费三种事件类型：
 - 统一 ModelConcurrencyLimiter 到 Infrastructure 层，消除 Core/Web 重复副本
 - 统一 DeveloperInvocationTraceStore 到 Infrastructure 层，消除 Core/Web 重复副本
 - 每完成一个小阶段后继续同步更新本文档
+
+---
+
+## 阶段记录 — 2026-06-12 继续 Program.cs 瘦身与共享工具类提取
+
+### 本轮完成了什么
+
+- **CoreRouteFallbackEventPublisher 验证**：确认该发布器已通过构造函数注入在 AnthropicProxyController 和 OpenAiProxyController 中使用，不需要像 DeveloperTrace/CircuitBreaker 那样在 Program.cs 中手动接线事件。DI 注册即可。
+- **AdminAuthService 迁移到 Infrastructure/Hosting**：将 AdminAuthService.cs 从 AITool.Web/Services 迁移到 AITool.Infrastructure/Hosting，消除 Web/Services 命名空间。更新 Login.cshtml.cs 和 Program.cs 的 using 引用，清除 5 个控制器文件中残留的无用 using AITool.Web.Services。删除已清空的 Web/Services 目录。
+- **IsAdmin* 请求匹配提取到 AdminRequestMatcher**：新增 AdminRequestMatcher 静态类到 Infrastructure/Hosting，提供 IsAdminRequest、IsAdminPageRequest、IsLoginPageRequest、IsAdminApiRequest、IsHangfireRequest、IsAdminAuthRequest 六个方法。Web/Program.cs 删除约 40 行内联 static 方法。AdminInfrastructureExtensions 用 IsAdminAuthRequest 替换私有 IsAdminRequest 方法。
+- **数据库迁移辅助方法提取到 DatabaseSchemaMigrator**：新增 DatabaseSchemaMigrator 静态类到 Infrastructure/Persistence，包含 EnsureProxyUsageLogSchemaAsync、EnsureConversationLogSchemaAsync、ColumnExistsAsync。Web/Program.cs 删除约 170 行内联迁移方法，减少到约 180 行。
+
+### 文件变更清单
+
+- 新增 Infrastructure/Hosting/AdminAuthService.cs（从 Web/Services 迁移）
+- 新增 Infrastructure/Hosting/AdminRequestMatcher.cs（从 Web/Program.cs 提取）
+- 新增 Infrastructure/Persistence/DatabaseSchemaMigrator.cs（从 Web/Program.cs 提取）
+- 删除 Web/Services/AdminAuthService.cs 和 Web/Services/ 目录
+- 修改 Web/Program.cs：删除 IsAdmin* 方法、数据库迁移方法，using 精简（移除 System.Data.Common、AITool.Web.Services）
+- 修改 Web/Pages/Login.cshtml.cs：using 从 AITool.Web.Services 改为 AITool.Infrastructure.Hosting
+- 修改 5 个控制器文件：移除无用 using AITool.Web.Services
+- 修改 AdminInfrastructureExtensions.cs：用 AdminRequestMatcher 替换私有 IsAdminRequest
+
+### 测试验证
+
+- 构建零错误
+- 登录相关测试：3/3 通过
+- 认证相关测试：6/6 通过
+- 集成测试：54/54 通过（含 Core + Web）
+
+### 当前 Web/Program.cs 状态
+
+- 约 180 行（从原始 435 行减少到不到一半）
+- 已提取：全局异常处理、本地 IP 查询、请求体读取、Admin 请求匹配、数据库迁移
+- 仍保留：DI 注册、启动初始化逻辑、认证中间件、Hangfire 配置、Schema 迁移调用
+
+### 下一步准备做什么
+
+- 继续扫描 Core/Program.cs 和 Web/Program.cs 是否还有可提取的重复代码
+- 评估 Web/Program.cs 中认证中间件的可提取性
+- 每完成一个小阶段后继续同步更新本文档
