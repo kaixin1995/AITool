@@ -1,20 +1,14 @@
 using AppVersionInfo = AITool.Infrastructure.Hosting.AppVersionInfo;
-using HttpExceptionLoggingFilter = AITool.Infrastructure.Hosting.HttpExceptionLoggingFilter;
 using HttpLogFormatter = AITool.Infrastructure.Hosting.HttpLogFormatter;
 using AITool.Application.Common;
-using AITool.Application.Operations;
-using AITool.Application.SiteCatalog;
+using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
+using AITool.Infrastructure.DependencyInjection;
 using AITool.Infrastructure.Hosting;
-using AITool.Infrastructure.OpenAI;
-using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Scheduling;
 using AITool.Admin.Services;
 using Hangfire;
-using Microsoft.AspNetCore.Authentication.Cookies;
-using Microsoft.AspNetCore.Http;
-using Microsoft.EntityFrameworkCore;
 using NLog;
 using NLog.Web;
 
@@ -32,69 +26,22 @@ builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 var serverPort = builder.Configuration.GetValue<int?>("AdminServer:Port") ?? builder.Configuration.GetValue<int?>("Server:Port") ?? 5030;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
 
-// Admin 独立宿主当前阶段先保留最小页面与控制器框架，后续再逐步把真实 /Admin/* 页面迁进来。
-builder.Services.AddRazorPages();
-builder.Services.AddControllers(options =>
-{
-    options.Filters.Add<HttpExceptionLoggingFilter>();
-});
-builder.Services.AddMemoryCache();
-builder.Services.AddScoped<HttpExceptionLoggingFilter>();
-
-builder.Services
-    .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
-    .AddCookie(options =>
-    {
-        options.LoginPath = "/Login";
-        options.AccessDeniedPath = "/Login";
-        options.Cookie.Name = "AITool.AdminAuth";
-        options.SlidingExpiration = true;
-        options.Events = new CookieAuthenticationEvents
-        {
-            OnRedirectToLogin = context =>
-            {
-                if (IsAdminRequest(context.Request))
-                {
-                    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
-                    var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
-                        ? "/Login"
-                        : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
-                    context.Response.Redirect(loginUrl);
-                    return Task.CompletedTask;
-                }
-
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                return Task.CompletedTask;
-            }
-        };
-    });
-builder.Services.AddAuthorization();
-
-// 当前数据库仍由 Admin 宿主使用，保证历史 UsageLogs、Conversations、Detection 等数据能够继续使用。
-var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
-var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlite(connectionString));
-
-builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
-
-// 对话记录查询所需的服务。Admin 侧仅注册只读查询链路，不包含写入侧的 ConversationLogBatchWriter / ConversationLogService。
-// 测试环境使用随机临时目录作为 JSONL 根路径，确保每个测试工厂实例拥有隔离的文件存储，不会互相污染。
+// 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器、对话日志存储。
 var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
     ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
     : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
-builder.Services.AddSingleton(new AITool.Infrastructure.Conversations.ConversationLogFileOptions
-{
-    RootPath = conversationLogRootPath
-});
-builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogStore, AITool.Infrastructure.Conversations.FileConversationLogStore>();
-builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationExtractionService>();
+builder.Services.AddCommonInfrastructure(conversationLogRootPath);
+
+// 注册 Web + Admin 共享的管理后台基础设施：Razor Pages、认证、数据库、Hangfire。
+var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
+builder.Services.AddAdminInfrastructure(connectionString);
 
 // Admin 侧 UsageLog 事件消费器，将 Core 代理产生的使用日志事件写入 Admin 数据库。
 builder.Services.AddScoped<AdminUsageLogEventIngestor>();
 
 // Admin 侧 ConversationTurn 事件消费器，将 Core 代理产生的对话记录事件写入 Admin 本地 JSONL 存储。
-builder.Services.AddScoped<AITool.Infrastructure.Conversations.AdminConversationTurnEventIngestor>();
+builder.Services.AddScoped<AdminConversationTurnEventIngestor>();
 
 // Admin 侧开发者追踪内存存储，缓存从 Core 拉取的 developer-trace 事件摘要。
 // Singleton 生命周期：内存数据跨请求保持，6 小时过期自动清理，最多 100 条。
@@ -138,17 +85,6 @@ builder.Services.AddScoped<AdminCacheInvalidationService>();
 
 // Admin 侧并发控制门面（占位实现）。后续通过 CoreAdminClient 代理运行时并发限制变更。
 builder.Services.AddSingleton<AdminConcurrencyControlService>();
-
-// 站点目录客户端，用于从远程站点获取可用模型列表。
-builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
-
-// Hangfire 内存存储与定时检测调度器。
-builder.Services.AddHangfire(config => config
-    .UseSimpleAssemblyNameTypeSerializer()
-    .UseRecommendedSerializerSettings()
-    .UseInMemoryStorage());
-builder.Services.AddHangfireServer();
-builder.Services.AddSingleton<HangfireDetectionScheduler>();
 
 // 模型厂商目录服务（可选，在模型库页面管理厂商规则时使用）。
 builder.Services.AddSingleton<ModelVendorCatalogService>();
@@ -205,11 +141,5 @@ app.UseAuthorization();
 app.MapControllers();
 app.MapRazorPages();
 app.Run();
-
-static bool IsAdminRequest(HttpRequest request)
-{
-    return request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase)
-        || request.Path.StartsWithSegments("/Login", StringComparison.OrdinalIgnoreCase);
-}
 
 public partial class Program;

@@ -6,6 +6,7 @@ using AITool.Application.UsageLogs;
 using AITool.Core.Services;
 using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
+using AITool.Infrastructure.DependencyInjection;
 using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Operations;
@@ -33,14 +34,11 @@ builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 var serverPort = builder.Configuration.GetValue<int?>("CoreServer:Port") ?? builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
 
-// 注册 API 控制器，用于代理转发端点和 Core 管理端点。
-// Core 宿主不注册 Razor Pages，不提供任何页面。
-builder.Services.AddControllers(options =>
-{
-    options.Filters.Add<HttpExceptionLoggingFilter>();
-});
-builder.Services.AddMemoryCache();
-builder.Services.AddScoped<HttpExceptionLoggingFilter>();
+// 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器、对话日志存储。
+var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
+    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
+    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
+builder.Services.AddCommonInfrastructure(conversationLogRootPath);
 
 // 注册 CORS 策略，允许 Admin 宿主（5030）的前端 JavaScript 跨域调用 Core 代理端点。
 // 双宿主部署时 Admin 页面和 Core API 分属不同端口，浏览器需要 CORS 头才能正常通信。
@@ -127,20 +125,12 @@ builder.Services.AddSingleton<CoreUsageLogEventPublisher>();
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
 
-// 注册对话日志批处理写入器和文件存储。
-var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
-    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
-    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
-builder.Services.AddSingleton(new ConversationLogFileOptions
-{
-    RootPath = conversationLogRootPath
-});
-builder.Services.AddSingleton<IConversationLogStore, FileConversationLogStore>();
+// 注册对话日志批处理写入器。
+// 对话日志文件存储已通过 AddCommonInfrastructure 注册，此处仅补充批处理写入器。
 builder.Services.AddSingleton<ConversationLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ConversationLogBatchWriter>());
 builder.Services.AddSingleton<CoreConversationEventPublisher>();
 builder.Services.AddSingleton<IConversationLogService, ConversationLogService>();
-builder.Services.AddSingleton<ConversationExtractionService>();
 
 // 注册使用日志服务，记录每次代理调用的 Token 用量。
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();

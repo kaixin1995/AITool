@@ -1,0 +1,100 @@
+using AITool.Application.Operations;
+using AITool.Application.SiteCatalog;
+using AITool.Infrastructure.OpenAI;
+using AITool.Infrastructure.Operations;
+using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Scheduling;
+using Hangfire;
+using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Http;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+
+namespace AITool.Infrastructure.DependencyInjection;
+
+/// <summary>
+/// Web + Admin 宿主共享的管理后台基础设施服务注册扩展方法。
+/// <para>
+/// 这些服务与后台管理、数据库访问相关：Razor Pages、Cookie 认证、
+/// EF Core 数据库上下文、Hangfire 调度器、站点目录客户端等。
+/// Core 宿主不使用数据库也不提供管理页面，因此不调用本方法。
+/// </para>
+/// </summary>
+public static class AdminInfrastructureExtensions
+{
+    /// <summary>
+    /// 注册 Web 和 Admin 宿主共享的管理后台基础设施服务。
+    /// <para>
+    /// 包括：Razor Pages、Cookie 认证与授权、EF Core 数据库上下文、
+    /// Hangfire 内存存储与调度器、站点目录客户端、系统运行时设置服务。
+    /// </para>
+    /// </summary>
+    /// <param name="services">服务集合。</param>
+    /// <param name="connectionString">SQLite 数据库连接字符串。</param>
+    public static IServiceCollection AddAdminInfrastructure(
+        this IServiceCollection services,
+        string connectionString)
+    {
+        services.AddRazorPages();
+
+        // 注册 Cookie 认证，配置登录页面和重定向逻辑。
+        // Web 和 Admin 共用相同的认证方案和 Cookie 名称。
+        services
+            .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+            .AddCookie(options =>
+            {
+                options.LoginPath = "/Login";
+                options.AccessDeniedPath = "/Login";
+                options.Cookie.Name = "AITool.AdminAuth";
+                options.SlidingExpiration = true;
+                options.Events = new CookieAuthenticationEvents
+                {
+                    OnRedirectToLogin = context =>
+                    {
+                        if (IsAdminRequest(context.Request))
+                        {
+                            var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
+                            var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
+                                ? "/Login"
+                                : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
+                            context.Response.Redirect(loginUrl);
+                            return Task.CompletedTask;
+                        }
+
+                        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                        return Task.CompletedTask;
+                    }
+                };
+            });
+        services.AddAuthorization();
+
+        // 注册 EF Core SQLite 数据库上下文。
+        services.AddDbContext<AppDbContext>(options =>
+            options.UseSqlite(connectionString));
+
+        // 注册系统运行时设置服务，管理持久化的超时、重试和日志保留配置。
+        services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
+
+        // 注册站点目录客户端，用于拉取远程站点模型列表。
+        services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
+
+        // 注册 Hangfire 内存存储与调度器。
+        services.AddHangfire(config => config
+            .UseSimpleAssemblyNameTypeSerializer()
+            .UseRecommendedSerializerSettings()
+            .UseInMemoryStorage());
+        services.AddHangfireServer();
+        services.AddSingleton<HangfireDetectionScheduler>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// 判断请求是否为后台管理请求（页面或 API）。
+    /// </summary>
+    private static bool IsAdminRequest(HttpRequest request)
+    {
+        return request.Path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase)
+            || request.Path.StartsWithSegments("/Login", StringComparison.OrdinalIgnoreCase);
+    }
+}

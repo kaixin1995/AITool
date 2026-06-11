@@ -1,21 +1,20 @@
 using System.Data.Common;
 using AITool.Application.Common;
+using AITool.Application.Conversations;
 using AITool.Application.Operations;
 using AITool.Application.Proxy;
-using AITool.Application.SiteCatalog;
 using AITool.Application.UsageLogs;
+using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
+using AITool.Infrastructure.DependencyInjection;
 using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Hosting;
-using AITool.Infrastructure.Operations;
-using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
 using AITool.Infrastructure.Scheduling;
 using AITool.Web.Services;
 using Hangfire;
-using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -37,53 +36,21 @@ builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
 
-// 注册 Razor Pages，作为管理后台的页面框架。
-builder.Services.AddRazorPages();
+// 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器、对话日志存储。
+var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
+    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
+    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
+builder.Services.AddCommonInfrastructure(conversationLogRootPath);
 
-// 注册 API 控制器，用于代理转发端点。
-builder.Services.AddControllers(options =>
-{
-    options.Filters.Add<HttpExceptionLoggingFilter>();
-});
-builder.Services.AddMemoryCache();
-builder.Services.AddScoped<HttpExceptionLoggingFilter>();
-
-builder.Services
-    .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
-    .AddCookie(options =>
-    {
-        options.LoginPath = "/Login";
-        options.AccessDeniedPath = "/Login";
-        options.Cookie.Name = "AITool.AdminAuth";
-        options.SlidingExpiration = true;
-        options.Events = new CookieAuthenticationEvents
-        {
-            OnRedirectToLogin = context =>
-            {
-                if (IsAdminRequest(context.Request))
-                {
-                    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
-                    var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
-                        ? "/Login"
-                        : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
-                    context.Response.Redirect(loginUrl);
-                    return Task.CompletedTask;
-                }
-
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                return Task.CompletedTask;
-            }
-        };
-    });
-builder.Services.AddAuthorization();
-builder.Services.AddSingleton<AdminAuthService>();
-
-// 数据库文件放在软件根目录下。
+// 注册 Web + Admin 共享的管理后台基础设施：Razor Pages、认证、数据库、Hangfire。
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlite(connectionString));
+builder.Services.AddAdminInfrastructure(connectionString);
 
+// Web 独有的管理后台认证服务。
+builder.Services.AddSingleton<AdminAuthService>();
+
+// 注册代理运行时核心链路服务。
 builder.Services.AddSingleton(new CoreRuntimeConfigFileOptions
 {
     FilePath = builder.Environment.IsEnvironment("Testing")
@@ -97,14 +64,11 @@ builder.Services.AddSingleton<AITool.Application.CoreRuntime.ICoreRuntimeConfigP
 builder.Services.Configure<ProxyForwardingOptions>(
     builder.Configuration.GetSection(ProxyForwardingOptions.SectionName));
 
-// 注册站点目录客户端，用于拉取远程站点模型列表。
-builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
-
-// 注册代理主入口实体配置。
+// 注册代理主入口和站点健康检测服务。
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
 builder.Services.AddScoped<ModelHealthRequestService>();
 
-// 注册使用日志服务，记录每次代理调用的 Token 用量。
+// 注册使用日志和事件链路服务。
 builder.Services.AddSingleton<CoreEventSequenceProvider>();
 builder.Services.AddSingleton<CoreAdminEventBus>();
 builder.Services.AddSingleton(new CoreEventSpoolOptions
@@ -116,46 +80,24 @@ builder.Services.AddSingleton(new CoreEventSpoolOptions
 builder.Services.AddSingleton<CoreEventSpoolStore>();
 builder.Services.AddHostedService<CoreEventSpoolBackgroundService>();
 builder.Services.AddSingleton<CoreUsageLogEventPublisher>();
-builder.Services.AddSingleton<AITool.Infrastructure.Conversations.CoreConversationEventPublisher>();
+builder.Services.AddSingleton<CoreConversationEventPublisher>();
 builder.Services.AddSingleton<CoreConfigAppliedEventPublisher>();
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
-var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
-    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
-    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
-builder.Services.AddSingleton(new AITool.Infrastructure.Conversations.ConversationLogFileOptions
-{
-    RootPath = conversationLogRootPath
-});
-builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogStore, AITool.Infrastructure.Conversations.FileConversationLogStore>();
-builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>());
+builder.Services.AddSingleton<ConversationLogBatchWriter>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ConversationLogBatchWriter>());
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
 builder.Services.AddSingleton<ModelConcurrencyLimiter>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
-builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogService, AITool.Infrastructure.Conversations.ConversationLogService>();
-builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationExtractionService>();
+builder.Services.AddSingleton<IConversationLogService, ConversationLogService>();
 
-// 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点。
+// 注册熔断状态存储和代理请求元数据缓存。
 builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<ProxyRequestMetadataCache>();
 builder.Services.AddSingleton<AdminQueryMetadataService>();
 
 // 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
-
-// 注册系统运行时设置服务，统一管理持久化的超时、重试和日志保留配置。
-builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
-
-// 注册 Hangfire 检测调度器。
-builder.Services.AddSingleton<HangfireDetectionScheduler>();
-
-// 注册 Hangfire 内存存储与仪表盘。
-builder.Services.AddHangfire(config => config
-    .UseSimpleAssemblyNameTypeSerializer()
-    .UseRecommendedSerializerSettings()
-    .UseInMemoryStorage());
-builder.Services.AddHangfireServer();
 
 var app = builder.Build();
 
