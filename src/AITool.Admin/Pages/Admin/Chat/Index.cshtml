@@ -701,12 +701,18 @@
         targetSelect.innerHTML = '<option value="">-- 加载中... --</option>';
 
         fetch(window.chatApiBaseUrl + '/api/admin/chat/targets')
-            .then(function(r) { return r.json(); })
+            .then(function(r) {
+                if (!r.ok) {
+                    throw new Error('HTTP ' + r.status);
+                }
+                return r.json();
+            })
             .then(function(data) {
-                chatTargets = data || [];
+                chatTargets = Array.isArray(data) ? data : [];
                 renderTargetSelect();
             })
-            .catch(function() {
+            .catch(function(err) {
+                console.error('loadTargets failed', err);
                 chatTargets = [];
                 targetSelect.innerHTML = '<option value="">-- 加载失败 --</option>';
             });
