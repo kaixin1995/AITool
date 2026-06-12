@@ -954,10 +954,10 @@
     }
 
     function renderModelCell(item) {
-        var requestModel = readValue(item, ['requestModel']) || '-';
+        var finalModel = readValue(item, ['attemptedModel', 'requestModel']) || '-';
         return '' +
             '<div class="usage-log-model-primary">' +
-                '<code>' + escHtml(requestModel) + '</code>' +
+                '<code>' + escHtml(finalModel) + '</code>' +
                 renderAttemptFlags(item) +
             '</div>';
     }
