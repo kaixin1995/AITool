@@ -126,7 +126,8 @@ public static class CoreRuntimeConfigSnapshotBuilder
                 CircuitBreakerRecoveryMinutes = runtimeSettings.CircuitBreakerRecoveryMinutes,
                 ConcurrencyMode = runtimeSettings.ConcurrencyMode,
                 ConcurrencyQueueTimeoutSeconds = runtimeSettings.ConcurrencyQueueTimeoutSeconds,
-                ConversationLogEnabled = runtimeSettings.ConversationLogEnabled
+                ConversationLogEnabled = runtimeSettings.ConversationLogEnabled,
+                DeveloperFeaturesEnabled = runtimeSettings.DeveloperFeaturesEnabled
             }
         };
 

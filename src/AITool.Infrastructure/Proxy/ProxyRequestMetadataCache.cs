@@ -170,7 +170,8 @@ public sealed partial class ProxyRequestMetadataCache
                                 CircuitBreakerRecoveryMinutes = s.CircuitBreakerRecoveryMinutes,
                                 ConversationLogEnabled = s.ConversationLogEnabled,
                                 ConcurrencyMode = s.ConcurrencyMode,
-                                ConcurrencyQueueTimeoutSeconds = s.ConcurrencyQueueTimeoutSeconds
+                                ConcurrencyQueueTimeoutSeconds = s.ConcurrencyQueueTimeoutSeconds,
+                                DeveloperFeaturesEnabled = s.DeveloperFeaturesEnabled
                             });
                     })
                 ?? new CachedProxyRuntimeSettings();

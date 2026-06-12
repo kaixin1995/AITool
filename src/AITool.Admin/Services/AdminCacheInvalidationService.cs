@@ -304,7 +304,8 @@ public sealed class AdminCacheInvalidationService
                 CircuitBreakerRecoveryMinutes = settings.CircuitBreakerRecoveryMinutes,
                 ConcurrencyMode = settings.ConcurrencyMode,
                 ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
-                ConversationLogEnabled = settings.ConversationLogEnabled
+                ConversationLogEnabled = settings.ConversationLogEnabled,
+                DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled
             };
         }
 

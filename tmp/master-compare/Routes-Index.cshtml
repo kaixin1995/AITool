@@ -1,5 +1,5 @@
 @page
-@model AITool.Admin.Pages.Admin.Routes.IndexModel
+@model AITool.Web.Pages.Admin.Routes.IndexModel
 @{
     ViewData["Title"] = "路由规则管理";
 }
@@ -694,41 +694,27 @@
         var list = document.getElementById('routeList');
         var draggedItem = null;
 
-        // 使用 addEventListener 而非 ondragstart 属性赋值，兼容 Chrome 新版本的拖拽行为。
-        // Chrome 149+ 对 HTML5 Drag API 做了更严格的限制：
-        //   - dragstart 必须调用 setData() 才能真正启动拖拽
-        //   - 按钮等交互子元素会阻止拖拽启动
-        list.addEventListener('dragstart', function(e) {
-            // 如果拖拽起始目标是按钮或时间规则编辑器内的元素，阻止拖拽启动
-            if (e.target.closest('button') || e.target.closest('.availability-popover')) {
-                e.preventDefault();
-                return;
-            }
-
+        list.ondragstart = function(e) {
             draggedItem = e.target.closest('.route-item');
             if (draggedItem) {
                 e.dataTransfer.effectAllowed = 'move';
-                // Chrome 新版本要求 setData 才能真正启动拖拽操作
-                e.dataTransfer.setData('text/plain', draggedItem.getAttribute('data-index'));
                 setTimeout(function() { draggedItem.classList.add('dragging'); }, 0);
             }
-        });
+        };
 
-        list.addEventListener('dragend', function() {
+        list.ondragend = function() {
             if (!draggedItem) {
                 return;
             }
 
             draggedItem.classList.remove('dragging');
             draggedItem = null;
-            var changed = syncItemsFromDOM();
+            syncItemsFromDOM();
             renderRouteList();
-            if (changed) {
-                persistCurrentQueue('顺序已更新');
-            }
-        });
+            persistCurrentQueue('顺序已更新');
+        };
 
-        list.addEventListener('dragover', function(e) {
+        list.ondragover = function(e) {
             e.preventDefault();
             e.dataTransfer.dropEffect = 'move';
             var target = e.target.closest('.route-item');
@@ -743,11 +729,7 @@
             } else {
                 list.insertBefore(draggedItem, target.nextSibling);
             }
-        });
-
-        list.addEventListener('drop', function(e) {
-            e.preventDefault();
-        });
+        };
     }
 
     function syncItemsFromDOM() {
@@ -759,13 +741,7 @@
                 reordered.push(_currentItems[index]);
             }
         });
-
-        var changed = reordered.length === _currentItems.length && reordered.some(function(item, index) {
-            return item !== _currentItems[index];
-        });
-
         _currentItems = reordered;
-        return changed;
     }
 
     function removeItem(index) {

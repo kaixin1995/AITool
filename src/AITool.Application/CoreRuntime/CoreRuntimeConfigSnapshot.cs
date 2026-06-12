@@ -326,4 +326,9 @@ public sealed class CoreRuntimeSettings
     /// 是否启用对话记录。
     /// </summary>
     public bool ConversationLogEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 是否启用开发者功能。
+    /// </summary>
+    public bool DeveloperFeaturesEnabled { get; set; }
 }
