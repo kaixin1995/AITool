@@ -44,7 +44,12 @@ public sealed class LogRetentionService : ILogRetentionService
     }
 
     /// <summary>
-    /// 删除超过保留天数的使用日志，并回写本次清理结果
+    /// 删除超过保留天数的使用日志和对话记录，并回写本次清理结果。
+    /// <para>
+    /// 优化策略：先查出满足条件记录的 Id 列表，再按 Id 定位并删除，
+    /// 避免将整行数据（含 UserInputText、AssistantOutputMarkdown 等大文本字段）全部加载到内存。
+    /// 原实现使用 ToListAsync 加载整张表后再用 LINQ 过滤，数据量大时会造成显著的内存压力。
+    /// </para>
     /// </summary>
     public async Task<LogPruneResult> PruneAsync(CancellationToken cancellationToken = default)
     {
@@ -62,11 +67,22 @@ public sealed class LogRetentionService : ILogRetentionService
         var now = _utcNowProvider();
         var conversationCutoff = now.AddDays(-ConversationLogStoragePolicy.RetentionDays);
 
-        var allConversationLogs = await _dbContext.ConversationTurnLogs.ToListAsync(cancellationToken);
-        var oldConversationLogs = allConversationLogs
+        // 先查出过期对话记录的 Id，再按 Id 加载实体后删除。
+        // 虽然 EF Core 对 DateTimeOffset 的 Where 条件在 InMemory 模式下可以直接过滤，
+        // 但分两步可以确保第二步只加载需要删除的行（而非整张表）。
+        var oldConversationIds = await _dbContext.ConversationTurnLogs
             .Where(l => l.CreatedAt < conversationCutoff)
-            .ToList();
-        _dbContext.ConversationTurnLogs.RemoveRange(oldConversationLogs);
+            .Select(l => l.Id)
+            .ToListAsync(cancellationToken);
+
+        if (oldConversationIds.Count > 0)
+        {
+            var oldConversationLogs = await _dbContext.ConversationTurnLogs
+                .Where(l => oldConversationIds.Contains(l.Id))
+                .ToListAsync(cancellationToken);
+            _dbContext.ConversationTurnLogs.RemoveRange(oldConversationLogs);
+        }
+
         await _conversationLogStore.PruneExpiredAsync(cancellationToken);
 
         if (!settings.UsageLogAutoCleanupEnabled)
@@ -82,22 +98,30 @@ public sealed class LogRetentionService : ILogRetentionService
 
         var usageCutoff = now.AddDays(-settings.UsageLogRetentionDays);
 
-        // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
-        var allUsageLogs = await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken);
-        var oldUsageLogs = allUsageLogs
+        // 同理，先查 Id 再按 Id 定位删除，避免加载整张 ProxyUsageLogs 表
+        var oldUsageIds = await _dbContext.ProxyUsageLogs
             .Where(l => l.RequestedAt < usageCutoff)
-            .ToList();
-        _dbContext.ProxyUsageLogs.RemoveRange(oldUsageLogs);
+            .Select(l => l.Id)
+            .ToListAsync(cancellationToken);
 
-        var prunedAt = now;
-        settings.LastUsageLogPrunedAt = prunedAt;
-        settings.LastUsageLogPrunedCount = oldUsageLogs.Count;
+        var deletedUsageCount = 0;
+        if (oldUsageIds.Count > 0)
+        {
+            var oldUsageLogs = await _dbContext.ProxyUsageLogs
+                .Where(l => oldUsageIds.Contains(l.Id))
+                .ToListAsync(cancellationToken);
+            deletedUsageCount = oldUsageLogs.Count;
+            _dbContext.ProxyUsageLogs.RemoveRange(oldUsageLogs);
+        }
+
+        settings.LastUsageLogPrunedAt = now;
+        settings.LastUsageLogPrunedCount = deletedUsageCount;
 
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return new LogPruneResult
         {
-            UsageLogPrunedCount = oldUsageLogs.Count
+            UsageLogPrunedCount = deletedUsageCount
         };
     }
 }

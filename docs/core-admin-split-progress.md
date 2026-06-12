@@ -1,5 +1,51 @@
 
 
+## 阶段记录 — 2026-06-12 后端内存风险优化（EventBus 有界化 + LogRetention 免全表加载）
+
+### 动机
+在排查 /Admin/Chat#conversationLogPane 页面潜在的内存泄漏问题时，发现了两个后端层面的内存风险点，虽非页面级泄漏的直接原因，但在长时间运行或高负载场景下可能导致后端内存持续增长。
+
+### 风险分析与修复
+
+**风险 1：CoreAdminEventBus 无界 Channel**
+- 问题：主事件通道使用 Channel.CreateUnbounded，当磁盘 I/O 变慢导致 Spool 后台服务消费不及时时，事件会无限堆积，极端情况下可能耗尽内存
+- 修复：将无界 Channel 改为有界 Channel（容量 10000，DropOldest 策略）
+  - 正常情况下 Spool 服务持续消费，通道内积压不会超过几百条
+  - 仅在极端场景（如磁盘 I/O 阻塞数分钟）才会触发丢弃，此时丢弃最早的事件，保证新事件入队
+- 附加改进：PublishAsync 方法改用同步 TryWrite 优先路径，减少 async state machine 分配
+- 附加改进：新增 _droppedCount 计数器（Interlocked），提供丢弃事件的监控可观测性
+
+**风险 2：LogRetentionService 全表加载到内存再过滤**
+- 问题：PruneAsync 方法使用 ToListAsync() 将整张 ConversationTurnLogs 和 ProxyUsageLogs 表加载到内存，再用 LINQ 过滤出过期记录。当表数据量大（含大文本字段如 UserInputText、AssistantOutputMarkdown）时，会造成显著内存压力
+- 修复：改为先查出满足条件记录的 Id 列表（只传主键），再按 Id 定位并删除
+  - 第一步：Where(cutoff).Select(Id).ToListAsync() — 只在数据库层面过滤，只加载 Guid 列表
+  - 第二步：Where(ids.Contains).ToListAsync() + RemoveRange — 按需加载需要删除的行
+  - 兼容性：使用 RemoveRange 而非 ExecuteDeleteAsync，因为 InMemory provider（测试用）不支持后者
+
+### 变更文件
+- 修改 src/AITool.Infrastructure/CoreRuntime/CoreAdminEventBus.cs
+  - Channel 声明从 CreateUnbounded 改为 CreateBounded（10000, DropOldest）
+  - 新增 _droppedCount 字段和 DroppedCount 属性
+  - PublishAsync 改用 TryWrite 优先 + WriteAsync 回退策略
+- 修改 src/AITool.Infrastructure/Retention/LogRetentionService.cs
+  - ConversationTurnLogs 清理从全表加载改为 Select(Id) + 按 Id 定位删除
+  - ProxyUsageLogs 清理从全表加载改为 Select(Id) + 按 Id 定位删除
+  - 删除过时注释（原注释声称 SQLite 无法翻译 DateTimeOffset 比较）
+
+### 影响范围
+- CoreAdminEventBus：仅影响 Core→Admin 事件管道，不涉及代理主链路
+- LogRetentionService：仅 Hangfire 定时任务（每天凌晨 3 点）调用，不涉及在线请求
+- 所有页面展示、在线请求处理完全不受影响
+
+### 测试验证
+- ApplicationTests: 195 通过，零失败
+- 编译零错误
+
+### 当前状态
+- 两个后端内存风险点已全部修复
+- 不影响 Core / Proxy 主链路稳定性
+
+
 ## 阶段记录 — 2026-06-10 ChatApiController 迁移到统一 IProxyCallRecorder
 
 ### 动机
