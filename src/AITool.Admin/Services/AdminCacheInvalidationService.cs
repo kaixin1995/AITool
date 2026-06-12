@@ -313,6 +313,18 @@ public sealed class AdminCacheInvalidationService
     /// </summary>
     private async Task FullSyncFallbackAsync(long version, CancellationToken cancellationToken)
     {
+        var siteCount = await _dbContext.Sites.AsNoTracking().CountAsync(cancellationToken);
+        var accessKeyCount = await _dbContext.ProxyAccessKeys.AsNoTracking().CountAsync(cancellationToken);
+
+        if (siteCount == 0 || accessKeyCount == 0)
+        {
+            _logger.LogInformation(
+                "跳过 Admin→Core 全量同步回退：当前数据库缺少必要配置。Sites={SiteCount}, AccessKeys={AccessKeyCount}。",
+                siteCount,
+                accessKeyCount);
+            return;
+        }
+
         var sites = await _dbContext.Sites.ToListAsync(cancellationToken);
         var models = await _dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
         var mappings = await _dbContext.SiteModelMappings.ToListAsync(cancellationToken);
