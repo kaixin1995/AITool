@@ -86,6 +86,11 @@ public sealed class IndexModel : PageModel
     public List<CoreDeveloperModelItem> Models { get; private set; } = [];
 
     /// <summary>
+    /// Core 查询失败时的页面提示。
+    /// </summary>
+    public string LoadErrorMessage { get; private set; } = string.Empty;
+
+    /// <summary>
     /// 处理页面首次加载请求。
     /// 检查开发者功能开关后，从 Core 获取初始调用追踪摘要和模拟器元数据。
     /// </summary>
@@ -100,21 +105,28 @@ public sealed class IndexModel : PageModel
         ActiveTab = "invocations";
 
         // 并行请求初始列表和模拟器元数据，减少页面加载延迟
-        var listTask = _coreClient.GetDeveloperInvocationsAsync(1, PageSize, cancellationToken);
-        var metadataTask = _coreClient.GetDeveloperMetadataAsync(cancellationToken);
+        try
+        {
+            var listTask = _coreClient.GetDeveloperInvocationsAsync(1, PageSize, cancellationToken);
+            var metadataTask = _coreClient.GetDeveloperMetadataAsync(cancellationToken);
 
-        await Task.WhenAll(listTask, metadataTask);
+            await Task.WhenAll(listTask, metadataTask);
 
-        var listResult = listTask.Result;
-        InitialTotalCount = listResult.TotalCount;
-        InitialFailedCount = listResult.FailedCount;
-        InitialPendingCount = listResult.PendingCount;
+            var listResult = listTask.Result;
+            InitialTotalCount = listResult.TotalCount;
+            InitialFailedCount = listResult.FailedCount;
+            InitialPendingCount = listResult.PendingCount;
 
-        var metadata = metadataTask.Result;
-        DefaultAccessKey = metadata.DefaultAccessKey;
-        DefaultOpenAiModel = metadata.DefaultOpenAiModel;
-        DefaultAnthropicModel = metadata.DefaultAnthropicModel;
-        Models = metadata.Models;
+            var metadata = metadataTask.Result;
+            DefaultAccessKey = metadata.DefaultAccessKey;
+            DefaultOpenAiModel = metadata.DefaultOpenAiModel;
+            DefaultAnthropicModel = metadata.DefaultAnthropicModel;
+            Models = metadata.Models;
+        }
+        catch (Exception ex)
+        {
+            LoadErrorMessage = ex.GetBaseException().Message;
+        }
 
         // 从 CoreAdminClient 的 BaseAddress 推导默认请求地址
         DefaultBaseUrl = GetCoreBaseUrl();

@@ -20,6 +20,10 @@
 }
 
 <div class="card developer-tools-card">
+    @if (!string.IsNullOrWhiteSpace(Model.LoadErrorMessage))
+    {
+        <div class="alert alert-warning m-3 mb-0">Core 调试数据加载失败：@Model.LoadErrorMessage</div>
+    }
     <div class="card-header p-0">
         <ul class="nav nav-tabs" role="tablist">
             <li class="nav-item" role="presentation">

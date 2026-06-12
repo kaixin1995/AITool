@@ -86,6 +86,7 @@ builder.Services.AddScoped<CoreEventPullService>();
 
 // Admin 侧缓存失效门面，通过 CoreAdminClient 向 Core 下发全量配置快照以刷新运行时缓存。
 builder.Services.AddSingleton<CoreSyncStatusStore>();
+builder.Services.AddSingleton<AdminQueryMetadataService>();
 builder.Services.AddScoped<AdminCacheInvalidationService>();
 
 // Admin 侧并发控制门面（占位实现）。后续通过 CoreAdminClient 代理运行时并发限制变更。
