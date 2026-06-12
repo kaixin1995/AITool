@@ -287,6 +287,25 @@
         color: #c62828;
     }
 
+    .usage-log-chip-stream {
+        position: relative;
+        gap: 6px;
+        background: #e8f0ff;
+        color: #3366cc;
+    }
+
+    .usage-log-chip-stream-interrupted::after {
+        content: '';
+        position: absolute;
+        top: 3px;
+        right: 3px;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #dc3545;
+        box-shadow: 0 0 0 2px #fff;
+    }
+
     .usage-log-model-cell {
         min-width: 0;
     }
@@ -935,25 +954,12 @@
     }
 
     function renderModelCell(item) {
-        var attemptedModel = readValue(item, ['attemptedModel', 'requestModel']) || '-';
-        var requestModel = readValue(item, ['requestModel']) || '';
-        var siteModelName = readValue(item, ['siteModelName']) || '';
-        var lines = [];
-
-        if (requestModel && requestModel !== attemptedModel) {
-            lines.push('请求模型：' + requestModel);
-        }
-
-        if (siteModelName) {
-            lines.push('站点模型：' + siteModelName);
-        }
-
+        var requestModel = readValue(item, ['requestModel']) || '-';
         return '' +
             '<div class="usage-log-model-primary">' +
-                '<code>' + escHtml(attemptedModel) + '</code>' +
+                '<code>' + escHtml(requestModel) + '</code>' +
                 renderAttemptFlags(item) +
-            '</div>' +
-            (lines.length ? '<div class="usage-log-model-secondary">' + escHtml(lines.join(' ｜ ')) + '</div>' : '');
+            '</div>';
     }
 
     function renderAttemptFlags(item) {
@@ -1120,11 +1126,13 @@
         var isInterrupted = !!readValue(item, ['isStreamInterrupted']);
         var firstLabel = isStreaming ? formatDuration(firstMs) : '-';
         var streamClass = 'usage-log-chip usage-log-chip-stream' + (isInterrupted ? ' usage-log-chip-stream-interrupted' : '');
+        var streamIcon = isStreaming ? '🌊' : '📄';
+        var streamText = isStreaming ? '流' : '非流';
         return '' +
             '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">' +
                 '<span class="usage-log-chip usage-log-chip-total">' + escHtml(formatDuration(totalMs)) + '</span>' +
                 '<span class="usage-log-chip usage-log-chip-first">' + escHtml(firstLabel) + '</span>' +
-                '<span class="' + streamClass + '">' + escHtml(isStreaming ? '流' : '非流') + '</span>' +
+                '<span class="' + streamClass + '">' + escHtml(streamIcon) + ' ' + escHtml(streamText) + '</span>' +
             '</div>';
     }
 
