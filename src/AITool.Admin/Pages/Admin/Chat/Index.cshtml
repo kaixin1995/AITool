@@ -36,7 +36,7 @@
                                 </div>
                                 <div class="col-auto">
                                     <div class="chat-toolbar-field">
-                                        <label class="chat-toolbar-field-label" for="targetSelect">站点 / 模型</label>
+                                        <label class="chat-toolbar-field-label" for="targetSelect">模型 / 站点 / 站点模型</label>
                                         <select id="targetSelect" class="form-select chat-toolbar-field-select">
                                             <option value="">-- 加载中... --</option>
                                         </select>
@@ -716,14 +716,18 @@
 
         chatTargets.forEach(function(target) {
             var modelName = target.modelDisplayName || '';
+            var siteName = target.siteName || '';
             var siteModelName = target.siteModelName || '';
-            if (keyword && modelName.toLowerCase().indexOf(keyword) < 0 && siteModelName.toLowerCase().indexOf(keyword) < 0) {
+            if (keyword
+                && modelName.toLowerCase().indexOf(keyword) < 0
+                && siteName.toLowerCase().indexOf(keyword) < 0
+                && siteModelName.toLowerCase().indexOf(keyword) < 0) {
                 return;
             }
 
             var opt = document.createElement('option');
             opt.value = target.mappingId;
-            opt.textContent = target.siteName + ' / ' + target.siteModelName;
+            opt.textContent = modelName + ' / ' + siteName + ' / ' + siteModelName;
             opt.dataset.modelId = target.modelId;
             targetSelect.appendChild(opt);
         });
