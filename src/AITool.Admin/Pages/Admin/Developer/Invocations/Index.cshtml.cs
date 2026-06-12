@@ -2,6 +2,7 @@ using AITool.Application.CoreRuntime;
 using AITool.Application.Operations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -26,6 +27,8 @@ public sealed class IndexModel : PageModel
     private readonly ISystemRuntimeSettingsService _runtimeSettingsService;
     private readonly CoreAdminClient _coreClient;
     private readonly AppDbContext _dbContext;
+    private readonly AdminDeveloperTraceStore _traceStore;
+    private readonly AdminQueryMetadataService _adminQueryMetadataService;
 
     /// <summary>
     /// 初始化开发者工具页面模型。
@@ -33,11 +36,15 @@ public sealed class IndexModel : PageModel
     public IndexModel(
         ISystemRuntimeSettingsService runtimeSettingsService,
         CoreAdminClient coreClient,
-        AppDbContext dbContext)
+        AppDbContext dbContext,
+        AdminDeveloperTraceStore traceStore,
+        AdminQueryMetadataService adminQueryMetadataService)
     {
         _runtimeSettingsService = runtimeSettingsService;
         _coreClient = coreClient;
         _dbContext = dbContext;
+        _traceStore = traceStore;
+        _adminQueryMetadataService = adminQueryMetadataService;
     }
 
     /// <summary>
@@ -105,24 +112,28 @@ public sealed class IndexModel : PageModel
 
         ActiveTab = "invocations";
 
-        // 并行请求初始列表和模拟器元数据，减少页面加载延迟
+        // 优先从 Admin 本地统一源读取调用追踪和模拟器元数据，避免页面直接依赖 Core developer 查询端点
         try
         {
-            var listTask = _coreClient.GetDeveloperInvocationsAsync(1, PageSize, cancellationToken);
-            var metadataTask = _coreClient.GetDeveloperMetadataAsync(cancellationToken);
-
-            await Task.WhenAll(listTask, metadataTask);
-
-            var listResult = listTask.Result;
+            var listResult = BuildListResponse(1);
             InitialTotalCount = listResult.TotalCount;
             InitialFailedCount = listResult.FailedCount;
             InitialPendingCount = listResult.PendingCount;
 
-            var metadata = metadataTask.Result;
-            DefaultAccessKey = metadata.DefaultAccessKey;
-            DefaultOpenAiModel = metadata.DefaultOpenAiModel;
-            DefaultAnthropicModel = metadata.DefaultAnthropicModel;
-            Models = metadata.Models;
+            DefaultAccessKey = await _adminQueryMetadataService.GetDeveloperDefaultAccessKeyAsync(cancellationToken);
+            Models = (await _adminQueryMetadataService.GetDeveloperDebugModelsAsync(cancellationToken))
+                .Select(item => new CoreDeveloperModelItem
+                {
+                    ModelName = item.ModelName,
+                    RouteCount = item.RouteCount,
+                    SupportsOpenAi = item.SupportsOpenAi,
+                    SupportsAnthropic = item.SupportsAnthropic,
+                    CanUseOpenAi = item.CanUseOpenAi,
+                    CanUseAnthropic = item.CanUseAnthropic
+                })
+                .ToList();
+            DefaultOpenAiModel = Models.FirstOrDefault(x => x.SupportsOpenAi)?.ModelName ?? string.Empty;
+            DefaultAnthropicModel = Models.FirstOrDefault(x => x.SupportsAnthropic)?.ModelName ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(DefaultAccessKey))
             {
@@ -154,7 +165,7 @@ public sealed class IndexModel : PageModel
 
         try
         {
-            var result = await _coreClient.GetDeveloperInvocationsAsync(pageNumber, PageSize, cancellationToken);
+            var result = BuildListResponse(pageNumber);
             return new JsonResult(result);
         }
         catch (Exception ex)
@@ -176,8 +187,13 @@ public sealed class IndexModel : PageModel
 
         try
         {
-            var result = await _coreClient.GetDeveloperInvocationDetailAsync(traceId, cancellationToken);
-            return new JsonResult(result);
+            var traceEvent = _traceStore.Get(traceId);
+            if (traceEvent is null)
+            {
+                return NotFound(new { message = $"跟踪记录 {traceId} 不存在或已过期" });
+            }
+
+            return new JsonResult(BuildDetailResponse(traceEvent));
         }
         catch (Exception ex)
         {
@@ -198,13 +214,122 @@ public sealed class IndexModel : PageModel
 
         try
         {
-            var result = await _coreClient.GetDeveloperConcurrencyAsync(cancellationToken);
-            return new JsonResult(result);
+            var result = BuildConcurrencyResponse(cancellationToken);
+            return new JsonResult(await result);
         }
         catch (Exception ex)
         {
             return StatusCode(503, new { message = ex.GetBaseException().Message });
         }
+    }
+
+    private CoreDeveloperInvocationListResponse BuildListResponse(int pageNumber)
+    {
+        pageNumber = Math.Max(1, pageNumber);
+        var allEntries = _traceStore.List();
+        var totalCount = allEntries.Count;
+        var failedCount = allEntries.Count(e => string.Equals(e.Status, "error", StringComparison.OrdinalIgnoreCase));
+        var pendingCount = allEntries.Count(e => string.Equals(e.Status, "pending", StringComparison.OrdinalIgnoreCase));
+        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)PageSize);
+        var effectivePage = totalPages == 0 ? 1 : Math.Min(pageNumber, totalPages);
+
+        var paged = allEntries
+            .Skip((effectivePage - 1) * PageSize)
+            .Take(PageSize)
+            .Select(ToSummary)
+            .ToList();
+
+        return new CoreDeveloperInvocationListResponse
+        {
+            TotalCount = totalCount,
+            FailedCount = failedCount,
+            PendingCount = pendingCount,
+            PageNumber = effectivePage,
+            PageSize = PageSize,
+            TotalPages = totalPages,
+            Entries = paged
+        };
+    }
+
+    private static CoreDeveloperInvocationSummary ToSummary(CoreDeveloperTraceEvent traceEvent)
+    {
+        return new CoreDeveloperInvocationSummary
+        {
+            TraceId = traceEvent.TraceId,
+            CreatedAt = traceEvent.StartedAt,
+            CreatedAtText = traceEvent.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+            Source = traceEvent.Source,
+            ProtocolType = traceEvent.ProtocolType,
+            RequestPath = string.Empty,
+            RequestModel = traceEvent.RequestModel,
+            SummarySite = traceEvent.TargetSiteName,
+            SummaryAttemptedModel = traceEvent.AttemptedModel,
+            Status = traceEvent.Status,
+            StatusText = traceEvent.Status,
+            StatusClass = traceEvent.Status,
+            StatusCode = 0,
+            TotalDurationMs = traceEvent.TotalDurationMs,
+            FailedAttemptCount = string.Equals(traceEvent.Status, "error", StringComparison.OrdinalIgnoreCase) ? 1 : 0,
+            PendingAttemptCount = string.Equals(traceEvent.Status, "pending", StringComparison.OrdinalIgnoreCase) ? 1 : 0,
+            SuccessAttemptCount = string.Equals(traceEvent.Status, "success", StringComparison.OrdinalIgnoreCase) ? 1 : 0
+        };
+    }
+
+    private static CoreDeveloperInvocationDetail BuildDetailResponse(CoreDeveloperTraceEvent traceEvent)
+    {
+        return new CoreDeveloperInvocationDetail
+        {
+            TraceId = traceEvent.TraceId,
+            RequestId = traceEvent.RequestId,
+            CreatedAt = traceEvent.StartedAt,
+            CreatedAtText = traceEvent.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+            UpdatedAt = traceEvent.FinishedAt,
+            UpdatedAtText = traceEvent.FinishedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+            Source = traceEvent.Source,
+            UserAgent = string.Empty,
+            ClientIp = string.Empty,
+            ProtocolType = traceEvent.ProtocolType,
+            UpstreamProtocolType = traceEvent.ProtocolType,
+            RequestPath = string.Empty,
+            RequestModel = traceEvent.RequestModel,
+            AttemptedModel = traceEvent.AttemptedModel,
+            TargetSiteId = traceEvent.TargetSiteId,
+            TargetSiteName = traceEvent.TargetSiteName,
+            SummarySite = traceEvent.TargetSiteName,
+            SummaryAttemptedModel = traceEvent.AttemptedModel,
+            RequestBody = traceEvent.RequestPreview,
+            RequestHeaders = [],
+            Status = traceEvent.Status,
+            StatusText = traceEvent.Status,
+            StatusClass = traceEvent.Status,
+            StatusCode = 0,
+            TotalDurationMs = traceEvent.TotalDurationMs,
+            InputTokens = traceEvent.InputTokens,
+            CachedTokens = traceEvent.CachedTokens,
+            OutputTokens = traceEvent.OutputTokens,
+            IsStreaming = traceEvent.IsStreaming,
+            ErrorMessage = traceEvent.ErrorMessage,
+            Attempts = []
+        };
+    }
+
+    private async Task<CoreDeveloperConcurrencyResponse> BuildConcurrencyResponse(CancellationToken cancellationToken)
+    {
+        var limits = await _adminQueryMetadataService.GetModelConcurrencyLimitsAsync(cancellationToken);
+        var items = limits.Select(kvp => new CoreDeveloperConcurrencyItem
+        {
+            ModelName = kvp.Key.Split(':').LastOrDefault() ?? kvp.Key,
+            SiteName = string.Empty,
+            ActiveCount = 0,
+            MaxConcurrency = kvp.Value > 0 ? kvp.Value : null,
+            QueueCount = 0
+        }).ToList();
+
+        return new CoreDeveloperConcurrencyResponse
+        {
+            RefreshedAt = DateTimeOffset.UtcNow,
+            Items = items
+        };
     }
 
     private async Task<string> GetDefaultAccessKeyFromAdminAsync(CancellationToken cancellationToken)
