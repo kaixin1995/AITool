@@ -113,6 +113,10 @@ public static class ProxyRuntimeInfrastructureExtensions
         // 注册对话日志服务，提供对话日志的写入和查询能力。
         services.AddSingleton<IConversationLogService, ConversationLogService>();
 
+        // 注册代理调用统一记录服务，将 UsageLog、DeveloperInvocationTrace、ConversationLog
+        // 三套写入逻辑收口到单一入口，避免代理管道中分散地重复采集。
+        services.AddSingleton<IProxyCallRecorder, ProxyCallRecorder>();
+
         return services;
     }
 }

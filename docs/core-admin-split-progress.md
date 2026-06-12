@@ -1,4 +1,52 @@
 
+
+## 阶段记录 — 2026-06-10 ChatApiController 迁移到统一 IProxyCallRecorder
+
+### 动机
+ChatApiController（Chat 调试页控制器）原本直接依赖 IUsageLogService 和 IConversationLogService 两个独立服务来记录使用日志和对话记录，且使用一个私有的 SafeLogChatConversationAsync 方法手动拼接记录逻辑。在代理管道数据记录统一为 IProxyCallRecorder 之后，ChatApiController 成为项目中唯一没有迁移到统一记录服务的调用方。本轮将其迁移到 IProxyCallRecorder，消除直接依赖，实现全项目统一数据记录入口。
+
+### 变更内容
+
+**ProxyCallContext 扩展（Application 层）：**
+- 修改 
+  - 新增  属性：预提取的用户输入文本，供调用方已有原始文本时直接传入
+  - 新增  属性：预提取的助手输出 Markdown，供流式场景下原始响应体已无法回放时使用
+
+**ProxyCallRecorder 扩展（Infrastructure 层）：**
+- 修改 
+  -  方法更新为优先使用预提取值：当  非空时直接使用，否则从 RequestBody 解析；当  非空时直接使用，否则从 ResponseBody 解析
+  - 仅当未预提取助手输出时，才尝试从请求体中提取工具结果
+
+**ChatApiController 迁移（Core 层）：**
+- 修改 
+  - 构造函数依赖从  +  替换为单一 
+  - 4 个 ProxyCallContext 构建站点统一配置：RequestId、ProtocolType、Source、RequestModel、IsStreaming、RequestBody、RequestPath（"/api/admin/chat"）、RequestedAt、RequestHeaders（含 X-AITool-Source="chat"）等字段
+  - 4 个  调用站点统一使用预提取字段： 设置为用户原始消息， 设置为转发结果中的 Content（非流式）或流式累积文本（流式）
+  - 删除旧的私有方法 
+  - 清理 using 引用：移除  和 ，新增  和 
+
+### 架构适配要点
+
+ChatApiController 的数据记录模式与代理控制器不同：
+- 代理控制器：从原始 HTTP 请求/响应体中提取对话内容（通过 ConversationExtractionService）
+- ChatApiController：已经持有用户原始消息文本（request.Message）和转发结果文本（payload.Content / streamResult.Content），不需要从 JSON 体中解析
+
+解决方案：在 ProxyCallContext 上新增两个预提取字段，让 ChatApiController 直接传入已知文本，ProxyCallRecorder 优先使用预提取值，仅在缺失时才回退到 ConversationExtractionService 解析。
+
+流式场景的特殊处理：ChatApiController 的 ForwardStreamAsync 返回 ChatStreamForwardResult，其 ResponseBody 是摘要字符串（如 "[SSE streaming] content=N chars..."），不可解析。通过 PreExtractedAssistantOutput 传入流式累积的完整文本，绕过 ResponseBody 解析。
+
+### 测试验证
+- ApplicationTests: 195 通过
+- Admin.IntegrationTests: 55 通过
+- Core.IntegrationTests: 150 通过
+- **全部 400 个测试零失败**
+- 编译零错误
+
+### 当前状态
+- ChatApiController 已完成统一数据记录迁移
+- 全项目所有代理调用记录入口（OpenAiProxyController、AnthropicProxyController、ChatApiController）均通过 IProxyCallRecorder 统一派发
+- ProxyCallContext 预提取机制已就绪，后续类似场景（如 Developer Simulator）可复用
+
 ## 阶段记录 — 2026-06-12 代理运行时 DI 注册去重扩展方法提取（AddProxyRuntimeInfrastructure）
 
 ### 动机

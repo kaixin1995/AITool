@@ -2,11 +2,9 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
-using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Conversations;
+using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -114,9 +112,9 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// </summary>
     private readonly IProxyForwardService _forwardService;
     /// <summary>
-    /// 负责记录代理请求的用量与结果。
+    /// 代理调用统一记录服务，从一份上下文派发到 UsageLog、DeveloperTrace、ConversationLog 三个存储。
     /// </summary>
-    private readonly IUsageLogService _usageLogService;
+    private readonly IProxyCallRecorder _proxyCallRecorder;
     /// <summary>
     /// 负责维护路由熔断状态，避免持续命中异常站点。
     /// </summary>
@@ -125,18 +123,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// 提供访问密钥、路由和运行时设置等缓存数据。
     /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
-    /// <summary>
-    /// 保存开发者调试页需要展示的调用追踪信息。
-    /// </summary>
-    private readonly DeveloperInvocationTraceStore _traceStore;
-    /// <summary>
-    /// 负责提取结构化对话内容并识别会话。
-    /// </summary>
-    private readonly ConversationExtractionService _conversationExtractionService;
-    /// <summary>
-    /// 负责异步写入结构化对话记录。
-    /// </summary>
-    private readonly IConversationLogService _conversationLogService;
     /// <summary>
     /// 负责在路由回退时发布 route-fallback 事件。
     /// </summary>
@@ -155,23 +141,17 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// </summary>
     public OpenAiProxyController(
         IProxyForwardService forwardService,
-        IUsageLogService usageLogService,
+        IProxyCallRecorder proxyCallRecorder,
         RouteCircuitStateStore circuitStore,
         ProxyRequestMetadataCache metadataCache,
-        DeveloperInvocationTraceStore traceStore,
-        ConversationExtractionService conversationExtractionService,
-        IConversationLogService conversationLogService,
         ModelConcurrencyLimiter concurrencyLimiter,
         CoreRouteFallbackEventPublisher routeFallbackPublisher,
         ILogger<OpenAiProxyController> logger)
     {
         _forwardService = forwardService;
-        _usageLogService = usageLogService;
+        _proxyCallRecorder = proxyCallRecorder;
         _circuitStore = circuitStore;
         _metadataCache = metadataCache;
-        _traceStore = traceStore;
-        _conversationExtractionService = conversationExtractionService;
-        _conversationLogService = conversationLogService;
         _concurrencyLimiter = concurrencyLimiter;
         _routeFallbackPublisher = routeFallbackPublisher;
         _logger = logger;
@@ -524,7 +504,33 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
         var requestSource = ResolveRequestSource(Request);
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
-        var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, routeLabel, modelName, requestBody);
+
+        // 生成本次请求的唯一标识，供 callContext、UsageLog、ConversationLog 共用
+        var requestId = Guid.NewGuid();
+
+        // 构建统一调用上下文，整个请求链路共享同一份上下文数据
+        var callContext = new ProxyCallContext
+        {
+            RequestId = requestId,
+            AccessKeyId = accessKey.Id,
+            ProtocolType = "OpenAI",
+            Source = requestSource,
+            RequestModel = modelName,
+            ReasoningEffort = reasoningEffort,
+            IsStreaming = enableStreaming,
+            RequestBody = requestBody,
+            RequestPath = requestPath,
+            RequestedAt = DateTimeOffset.UtcNow,
+            UserAgent = Request.Headers.UserAgent.ToString(),
+            ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+            RequestHeaders = DeveloperInvocationTraceStore.CaptureHeaders(Request.Headers)
+        };
+
+        // 通过统一记录服务创建开发者追踪（仅在开发者功能启用时生效）
+        var traceId = runtimeSettings.DeveloperFeaturesEnabled
+            ? _proxyCallRecorder.BeginTrace(callContext)
+            : null;
+
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
 
         if (allRoutes.Count == 0)
@@ -533,7 +539,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
         }
 
         ProxyForwardResult? lastResult = null;
-        var requestId = Guid.NewGuid();
         var attemptIndex = 0;
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
@@ -574,7 +579,16 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 continue;
             }
 
-            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
+            // 更新统一上下文中的本次尝试级字段
+            callContext.AttemptIndex = attemptIndex;
+            callContext.AttemptedModel = route.UpstreamModelName;
+            callContext.UpstreamProtocolType = actualProtocolType;
+            callContext.ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType);
+            callContext.TargetSiteId = route.SiteId;
+            callContext.TargetSiteName = route.SiteName;
+            callContext.RouteId = route.RouteId;
+
+            var traceAttemptId = _proxyCallRecorder.BeginTraceAttempt(traceId, callContext);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "OpenAI",
                 actualProtocolType,
@@ -601,6 +615,9 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     : defaultTargetPathFactory(route)
             };
 
+            // 记录预处理后的请求体到上下文
+            callContext.PreparedRequestBody = preparedRequestBody;
+
             if (enableStreaming)
             {
                 if (streamingBridgeFactory is null)
@@ -617,65 +634,34 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
                 SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
 
-                await SafeLogUsageAsync(new UsageLogEntry
-                {
-                    RequestId = requestId,
-                    AccessKeyId = accessKey.Id,
-                    ProtocolType = "OpenAI",
-                    ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
-                    RequestModel = modelName,
-                    AttemptedModel = route.UpstreamModelName,
-                    TargetSiteId = route.SiteId,
-                    Status = streamResult.Success ? "success" : "fail",
-                    Source = requestSource,
-                    RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
-                    AttemptIndex = attemptIndex,
-                    IsFinalResult = streamResult.Success,
-                    FallbackTriggered = !streamResult.Success,
-                    ErrorMessage = streamResult.Success ? string.Empty : (streamResult.ErrorMessage ?? string.Empty),
-                    InputTokens = streamResult.InputTokens,
-                    CachedTokens = streamResult.CachedTokens,
-                    OutputTokens = streamResult.OutputTokens,
-                    IsStreaming = true,
-                    IsStreamInterrupted = streamResult.IsStreamInterrupted,
-                    FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
-                    StreamDurationMs = streamResult.StreamDurationMs,
-                    TotalDurationMs = streamResult.TotalDurationMs,
-                    ReasoningEffort = reasoningEffort
-                }, CancellationToken.None);
+                // 将流式结果写入统一上下文后，一次性派发到各存储
+                callContext.Success = streamResult.Success;
+                callContext.StatusCode = streamResult.StatusCode;
+                callContext.ErrorMessage = streamResult.Success ? string.Empty : (streamResult.ErrorMessage ?? string.Empty);
+                callContext.ResponseBody = streamResult.ResponseBody;
+                callContext.IsStreaming = streamResult.IsStreaming;
+                callContext.IsStreamInterrupted = streamResult.IsStreamInterrupted;
+                callContext.InputTokens = streamResult.InputTokens;
+                callContext.CachedTokens = streamResult.CachedTokens;
+                callContext.OutputTokens = streamResult.OutputTokens;
+                callContext.FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs;
+                callContext.StreamDurationMs = streamResult.StreamDurationMs;
+                callContext.TotalDurationMs = streamResult.TotalDurationMs;
+                callContext.HasStartedStreaming = streamResult.HasStartedStreaming;
+                callContext.RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex;
+                callContext.IsFinalResult = streamResult.Success;
+                callContext.FallbackTriggered = !streamResult.Success;
+                await _proxyCallRecorder.RecordUsageAsync(callContext, CancellationToken.None);
 
                 if (streamResult.Success)
                 {
-                    await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None);
+                    await _proxyCallRecorder.RecordConversationAsync(callContext, CancellationToken.None);
                     SafeSucceedRoute(route.RouteId);
-                    SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
-                    {
-                        Status = "success",
-                        StatusCode = streamResult.StatusCode,
-                        ResponseBody = DeveloperInvocationTraceStore.FormatBody(streamResult.ResponseBody),
-                        ResponseContentType = "text/event-stream",
-                        IsStreaming = true,
-                        InputTokens = streamResult.InputTokens,
-                        CachedTokens = streamResult.CachedTokens,
-                        OutputTokens = streamResult.OutputTokens,
-                        TotalDurationMs = streamResult.TotalDurationMs
-                    });
+                    _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                     return new EmptyResult();
                 }
 
-                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
-                {
-                    Status = "fail",
-                    StatusCode = streamResult.StatusCode,
-                    ErrorMessage = streamResult.ErrorMessage ?? string.Empty,
-                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(streamResult.ResponseBody),
-                    ResponseContentType = "text/event-stream",
-                    IsStreaming = true,
-                    InputTokens = streamResult.InputTokens,
-                    CachedTokens = streamResult.CachedTokens,
-                    OutputTokens = streamResult.OutputTokens,
-                    TotalDurationMs = streamResult.TotalDurationMs
-                });
+                _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
                 SafeBlockRoute(route.RouteId);
                 lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, streamResult.ErrorMessage);
@@ -697,66 +683,41 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
             SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
 
-            await SafeLogUsageAsync(new UsageLogEntry
-            {
-                RequestId = requestId,
-                AccessKeyId = accessKey.Id,
-                ProtocolType = "OpenAI",
-                ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
-                RequestModel = modelName,
-                AttemptedModel = route.UpstreamModelName,
-                TargetSiteId = route.SiteId,
-                Status = result.Success ? "success" : "fail",
-                Source = requestSource,
-                RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
-                AttemptIndex = attemptIndex,
-                IsFinalResult = result.Success,
-                FallbackTriggered = !result.Success,
-                ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty),
-                InputTokens = result.InputTokens,
-                CachedTokens = result.CachedTokens,
-                OutputTokens = result.OutputTokens,
-                IsStreaming = result.IsStreaming,
-                IsStreamInterrupted = result.IsStreamInterrupted,
-                FirstTokenLatencyMs = result.FirstTokenLatencyMs,
-                StreamDurationMs = result.StreamDurationMs,
-                TotalDurationMs = result.TotalDurationMs,
-                ReasoningEffort = reasoningEffort
-            }, cancellationToken);
+            // 将非流式结果写入统一上下文后，一次性派发到各存储
+            callContext.Success = result.Success;
+            callContext.StatusCode = result.StatusCode;
+            callContext.ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty);
+            callContext.ResponseBody = result.ResponseBody;
+            callContext.IsStreaming = result.IsStreaming;
+            callContext.IsStreamInterrupted = result.IsStreamInterrupted;
+            callContext.InputTokens = result.InputTokens;
+            callContext.CachedTokens = result.CachedTokens;
+            callContext.OutputTokens = result.OutputTokens;
+            callContext.FirstTokenLatencyMs = result.FirstTokenLatencyMs;
+            callContext.StreamDurationMs = result.StreamDurationMs;
+            callContext.TotalDurationMs = result.TotalDurationMs;
+            callContext.HasStartedStreaming = result.HasStartedStreaming;
+            callContext.RetryCount = result.Success ? attemptIndex - 1 : attemptIndex;
+            callContext.IsFinalResult = result.Success;
+            callContext.FallbackTriggered = !result.Success;
+            await _proxyCallRecorder.RecordUsageAsync(callContext, cancellationToken);
 
             if (result.Success)
             {
+                // 成功时清除该路由的连续失败计数
                 SafeSucceedRoute(route.RouteId);
                 var responseBody = responseFactory(result, actualProtocolType, modelName);
-                await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, responseBody, modelName, result.IsStreaming, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, result.TotalDurationMs)), cancellationToken);
-                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
-                {
-                    Status = "success",
-                    StatusCode = result.StatusCode,
-                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(responseBody),
-                    ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json",
-                    IsStreaming = result.IsStreaming,
-                    InputTokens = result.InputTokens,
-                    CachedTokens = result.CachedTokens,
-                    OutputTokens = result.OutputTokens,
-                    TotalDurationMs = result.TotalDurationMs
-                });
+                await _proxyCallRecorder.RecordConversationAsync(callContext, cancellationToken);
+
+                // 将适配后的响应体和内容类型写入上下文，供开发者追踪使用
+                callContext.AdaptedResponseBody = responseBody;
+                callContext.ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
+                _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                 return Content(responseBody, result.IsStreaming ? "text/event-stream" : "application/json");
             }
 
-            SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
-            {
-                Status = "fail",
-                StatusCode = result.StatusCode,
-                ErrorMessage = result.ErrorMessage ?? string.Empty,
-                ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
-                ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json",
-                IsStreaming = result.IsStreaming,
-                InputTokens = result.InputTokens,
-                CachedTokens = result.CachedTokens,
-                OutputTokens = result.OutputTokens,
-                TotalDurationMs = result.TotalDurationMs
-            });
+            callContext.ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
+            _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
             SafeBlockRoute(route.RouteId);
             lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, result.ErrorMessage);

@@ -1,10 +1,7 @@
 using System.Text;
 using System.Text.Json;
-using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
-using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
@@ -39,9 +36,9 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly IProxyForwardService _forwardService;
     /// <summary>
-    /// 负责记录代理请求的用量与结果。
+    /// 代理调用统一记录服务，从一份上下文派发到 UsageLog、DeveloperTrace、ConversationLog 三个存储。
     /// </summary>
-    private readonly IUsageLogService _usageLogService;
+    private readonly IProxyCallRecorder _proxyCallRecorder;
     /// <summary>
     /// 负责维护路由熔断状态，避免持续命中异常站点。
     /// </summary>
@@ -51,21 +48,9 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
     /// <summary>
-    /// 保存开发者调试页需要展示的调用追踪信息。
-    /// </summary>
-    private readonly DeveloperInvocationTraceStore _traceStore;
-    /// <summary>
     /// 模型并发限制器，按站点+模型粒度控制最大并发请求数。
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
-    /// <summary>
-    /// 负责提取结构化对话内容并识别会话。
-    /// </summary>
-    private readonly ConversationExtractionService _conversationExtractionService;
-    /// <summary>
-    /// 负责异步写入结构化对话记录。
-    /// </summary>
-    private readonly IConversationLogService _conversationLogService;
     /// <summary>
     /// 负责在路由回退时发布 route-fallback 事件到 Admin 侧。
     /// </summary>
@@ -80,23 +65,17 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     public AnthropicProxyController(
         IProxyForwardService forwardService,
-        IUsageLogService usageLogService,
+        IProxyCallRecorder proxyCallRecorder,
         RouteCircuitStateStore circuitStore,
         ProxyRequestMetadataCache metadataCache,
-        DeveloperInvocationTraceStore traceStore,
-        ConversationExtractionService conversationExtractionService,
-        IConversationLogService conversationLogService,
         ModelConcurrencyLimiter concurrencyLimiter,
         CoreRouteFallbackEventPublisher routeFallbackPublisher,
         ILogger<AnthropicProxyController> logger)
     {
         _forwardService = forwardService;
-        _usageLogService = usageLogService;
+        _proxyCallRecorder = proxyCallRecorder;
         _circuitStore = circuitStore;
         _metadataCache = metadataCache;
-        _traceStore = traceStore;
-        _conversationExtractionService = conversationExtractionService;
-        _conversationLogService = conversationLogService;
         _concurrencyLimiter = concurrencyLimiter;
         _routeFallbackPublisher = routeFallbackPublisher;
         _logger = logger;
@@ -174,7 +153,32 @@ public sealed class AnthropicProxyController : ControllerBase
 
         // 读取运行时设置缓存，后台修改后会在短时间内刷新。
         var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
-        var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, "Anthropic", modelName, requestBody);
+
+        // 生成本次请求的唯一标识，供 callContext、UsageLog、ConversationLog 共用
+        var requestId = Guid.NewGuid();
+
+        // 构建统一调用上下文，整个请求链路共享同一份上下文数据
+        var callContext = new ProxyCallContext
+        {
+            RequestId = requestId,
+            AccessKeyId = accessKey.Id,
+            ProtocolType = "Anthropic",
+            Source = requestSource,
+            RequestModel = modelName,
+            ReasoningEffort = reasoningEffort,
+            IsStreaming = enableStreaming,
+            RequestBody = requestBody,
+            RequestPath = Request.Path,
+            RequestedAt = DateTimeOffset.UtcNow,
+            UserAgent = Request.Headers.UserAgent.ToString(),
+            ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+            RequestHeaders = DeveloperInvocationTraceStore.CaptureHeaders(Request.Headers)
+        };
+
+        // 通过统一记录服务创建开发者追踪（仅在开发者功能启用时生效）
+        var traceId = runtimeSettings.DeveloperFeaturesEnabled
+            ? _proxyCallRecorder.BeginTrace(callContext)
+            : null;
 
         // 获取已经和站点信息合并后的候选路由，优先尝试支持 Anthropic 原协议的站点。
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("Anthropic", modelName, cancellationToken);
@@ -186,7 +190,6 @@ public sealed class AnthropicProxyController : ControllerBase
 
         // 按优先级逐个尝试路由，失败则通知熔断器并继续下一个
         ProxyForwardResult? lastResult = null;
-        var requestId = Guid.NewGuid();
         var attemptIndex = 0;
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
@@ -224,7 +227,16 @@ public sealed class AnthropicProxyController : ControllerBase
                 continue;
             }
 
-            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
+            // 更新统一上下文中的本次尝试级字段
+            callContext.AttemptIndex = attemptIndex;
+            callContext.AttemptedModel = route.UpstreamModelName;
+            callContext.UpstreamProtocolType = actualProtocolType;
+            callContext.ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType);
+            callContext.TargetSiteId = route.SiteId;
+            callContext.TargetSiteName = route.SiteName;
+            callContext.RouteId = route.RouteId;
+
+            var traceAttemptId = _proxyCallRecorder.BeginTraceAttempt(traceId, callContext);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "Anthropic",
                 actualProtocolType,
@@ -252,17 +264,22 @@ public sealed class AnthropicProxyController : ControllerBase
                     : null
             };
 
+            // 记录预处理后的请求体到上下文
+            callContext.PreparedRequestBody = preparedRequestBody;
+
             if (enableStreaming)
             {
                 var streamOutcome = string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase)
                     ? await ForwardOpenAiStreamAsAnthropicAsync(
                         forwardRequest,
                         modelName,
+                        callContext,
                         traceId,
                         traceAttemptId,
                         cancellationToken)
                     : await ForwardAnthropicStreamPassthroughAsync(
                         forwardRequest,
+                        callContext,
                         traceId,
                         traceAttemptId,
                         cancellationToken);
@@ -274,54 +291,33 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
 
-                await SafeLogUsageAsync(new UsageLogEntry
-                {
-                    RequestId = requestId,
-                    AccessKeyId = accessKey.Id,
-                    ProtocolType = "Anthropic",
-                    ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType),
-                    RequestModel = modelName,
-                    AttemptedModel = route.UpstreamModelName,
-                    TargetSiteId = route.SiteId,
-                    Status = streamResult.Success ? "success" : "fail",
-                    Source = requestSource,
-                    RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
-                    AttemptIndex = attemptIndex,
-                    IsFinalResult = streamResult.Success,
-                    FallbackTriggered = !streamResult.Success,
-                    ErrorMessage = streamResult.Success ? string.Empty : (streamResult.ErrorMessage ?? string.Empty),
-                    InputTokens = streamResult.InputTokens,
-                    CachedTokens = streamResult.CachedTokens,
-                    OutputTokens = streamResult.OutputTokens,
-                    IsStreaming = streamResult.IsStreaming,
-                    IsStreamInterrupted = streamResult.IsStreamInterrupted,
-                    FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
-                    StreamDurationMs = streamResult.StreamDurationMs,
-                    TotalDurationMs = streamResult.TotalDurationMs,
-                    ReasoningEffort = reasoningEffort,
-                    RequestedAt = DateTimeOffset.UtcNow
-                }, CancellationToken.None);
+                // 将流式结果写入统一上下文后，一次性派发到各存储
+                callContext.Success = streamResult.Success;
+                callContext.StatusCode = streamResult.StatusCode;
+                callContext.ErrorMessage = streamResult.Success ? string.Empty : (streamResult.ErrorMessage ?? string.Empty);
+                callContext.ResponseBody = streamResult.ResponseBody;
+                callContext.IsStreaming = streamResult.IsStreaming;
+                callContext.IsStreamInterrupted = streamResult.IsStreamInterrupted;
+                callContext.InputTokens = streamResult.InputTokens;
+                callContext.CachedTokens = streamResult.CachedTokens;
+                callContext.OutputTokens = streamResult.OutputTokens;
+                callContext.FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs;
+                callContext.StreamDurationMs = streamResult.StreamDurationMs;
+                callContext.TotalDurationMs = streamResult.TotalDurationMs;
+                callContext.HasStartedStreaming = streamResult.HasStartedStreaming;
+                callContext.RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex;
+                callContext.IsFinalResult = streamResult.Success;
+                callContext.FallbackTriggered = !streamResult.Success;
+                await _proxyCallRecorder.RecordUsageAsync(callContext, CancellationToken.None);
 
                 if (streamResult.Success)
                 {
-                    await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None);
+                    await _proxyCallRecorder.RecordConversationAsync(callContext, CancellationToken.None);
                     SafeSucceedRoute(route.RouteId);
                     return new EmptyResult();
                 }
 
-                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
-                {
-                    Status = "fail",
-                    StatusCode = streamResult.StatusCode,
-                    ErrorMessage = streamResult.ErrorMessage ?? string.Empty,
-                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(streamResult.ResponseBody),
-                    ResponseContentType = "text/event-stream",
-                    IsStreaming = true,
-                    InputTokens = streamResult.InputTokens,
-                    CachedTokens = streamResult.CachedTokens,
-                    OutputTokens = streamResult.OutputTokens,
-                    TotalDurationMs = streamResult.TotalDurationMs
-                });
+                _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
 
                 SafeBlockRoute(route.RouteId);
@@ -344,38 +340,30 @@ public sealed class AnthropicProxyController : ControllerBase
 
             SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
 
-            await SafeLogUsageAsync(new UsageLogEntry
-            {
-                RequestId = requestId,
-                AccessKeyId = accessKey.Id,
-                ProtocolType = "Anthropic",
-                ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType),
-                RequestModel = modelName,
-                AttemptedModel = route.UpstreamModelName,
-                TargetSiteId = route.SiteId,
-                Status = result.Success ? "success" : "fail",
-                Source = requestSource,
-                RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
-                AttemptIndex = attemptIndex,
-                IsFinalResult = result.Success,
-                FallbackTriggered = !result.Success,
-                ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty),
-                InputTokens = result.InputTokens,
-                CachedTokens = result.CachedTokens,
-                OutputTokens = result.OutputTokens,
-                IsStreaming = result.IsStreaming,
-                IsStreamInterrupted = result.IsStreamInterrupted,
-                FirstTokenLatencyMs = result.FirstTokenLatencyMs,
-                StreamDurationMs = result.StreamDurationMs,
-                TotalDurationMs = result.TotalDurationMs,
-                ReasoningEffort = reasoningEffort
-            }, cancellationToken);
+            // 将非流式结果写入统一上下文后，一次性派发到各存储
+            callContext.Success = result.Success;
+            callContext.StatusCode = result.StatusCode;
+            callContext.ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty);
+            callContext.ResponseBody = result.ResponseBody;
+            callContext.IsStreaming = result.IsStreaming;
+            callContext.IsStreamInterrupted = result.IsStreamInterrupted;
+            callContext.InputTokens = result.InputTokens;
+            callContext.CachedTokens = result.CachedTokens;
+            callContext.OutputTokens = result.OutputTokens;
+            callContext.FirstTokenLatencyMs = result.FirstTokenLatencyMs;
+            callContext.StreamDurationMs = result.StreamDurationMs;
+            callContext.TotalDurationMs = result.TotalDurationMs;
+            callContext.HasStartedStreaming = result.HasStartedStreaming;
+            callContext.RetryCount = result.Success ? attemptIndex - 1 : attemptIndex;
+            callContext.IsFinalResult = result.Success;
+            callContext.FallbackTriggered = !result.Success;
+            await _proxyCallRecorder.RecordUsageAsync(callContext, cancellationToken);
 
             if (result.Success)
             {
                 // 成功时清除该路由的连续失败计数
                 SafeSucceedRoute(route.RouteId);
-                await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, result.ResponseBody, modelName, false, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, result.TotalDurationMs)), cancellationToken);
+                await _proxyCallRecorder.RecordConversationAsync(callContext, cancellationToken);
                 if (result.IsStreaming &&
                     string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
                     HttpContext.Response.HasStarted)
@@ -397,36 +385,19 @@ public sealed class AnthropicProxyController : ControllerBase
                 {
                     responseBody = ProxyProtocolBridge.EnsureAnthropicStreamClosed(responseBody, modelName, result.InputTokens, result.CachedTokens, result.OutputTokens);
                 }
-                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
-                {
-                    Status = "success",
-                    StatusCode = result.StatusCode,
-                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(responseBody),
-                    ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json",
-                    IsStreaming = result.IsStreaming,
-                    InputTokens = result.InputTokens,
-                    CachedTokens = result.CachedTokens,
-                    OutputTokens = result.OutputTokens,
-                    TotalDurationMs = result.TotalDurationMs
-                });
+
+                // 将适配后的响应体和内容类型写入上下文，供开发者追踪使用
+                callContext.AdaptedResponseBody = responseBody;
+                callContext.ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
+                _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
+
                 // 流式响应以 SSE 格式返回，使用 text/event-stream 内容类型
                 var contentType = result.IsStreaming ? "text/event-stream" : "application/json";
                 return Content(responseBody, contentType);
             }
 
-            SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
-            {
-                Status = "fail",
-                StatusCode = result.StatusCode,
-                ErrorMessage = result.ErrorMessage ?? string.Empty,
-                ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
-                ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json",
-                IsStreaming = result.IsStreaming,
-                InputTokens = result.InputTokens,
-                CachedTokens = result.CachedTokens,
-                OutputTokens = result.OutputTokens,
-                TotalDurationMs = result.TotalDurationMs
-            });
+            callContext.ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
+            _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
 
             // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
@@ -446,6 +417,7 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private async Task<StreamForwardOutcome> ForwardAnthropicStreamPassthroughAsync(
         ProxyForwardRequest forwardRequest,
+        ProxyCallContext callContext,
         Guid? traceId,
         Guid traceAttemptId,
         CancellationToken cancellationToken)
@@ -559,18 +531,16 @@ public sealed class AnthropicProxyController : ControllerBase
 
         if (result.Success && startedWriting)
         {
-            SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
-            {
-                Status = "success",
-                StatusCode = result.StatusCode,
-                ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
-                ResponseContentType = "text/event-stream",
-                IsStreaming = true,
-                InputTokens = result.InputTokens,
-                CachedTokens = result.CachedTokens,
-                OutputTokens = result.OutputTokens,
-                TotalDurationMs = result.TotalDurationMs
-            });
+            callContext.Success = true;
+            callContext.StatusCode = result.StatusCode;
+            callContext.ResponseBody = result.ResponseBody;
+            callContext.ResponseContentType = "text/event-stream";
+            callContext.IsStreaming = true;
+            callContext.InputTokens = result.InputTokens;
+            callContext.CachedTokens = result.CachedTokens;
+            callContext.OutputTokens = result.OutputTokens;
+            callContext.TotalDurationMs = result.TotalDurationMs;
+            _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
         }
 
         return new StreamForwardOutcome
@@ -586,6 +556,7 @@ public sealed class AnthropicProxyController : ControllerBase
     private async Task<StreamForwardOutcome> ForwardOpenAiStreamAsAnthropicAsync(
         ProxyForwardRequest forwardRequest,
         string modelName,
+        ProxyCallContext callContext,
         Guid? traceId,
         Guid traceAttemptId,
         CancellationToken cancellationToken)
@@ -760,18 +731,16 @@ public sealed class AnthropicProxyController : ControllerBase
 
             if (startedWriting)
             {
-                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
-                {
-                    Status = "success",
-                    StatusCode = result.StatusCode,
-                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
-                    ResponseContentType = "text/event-stream",
-                    IsStreaming = true,
-                    InputTokens = result.InputTokens,
-                    CachedTokens = result.CachedTokens,
-                    OutputTokens = result.OutputTokens,
-                    TotalDurationMs = result.TotalDurationMs
-                });
+                callContext.Success = true;
+                callContext.StatusCode = result.StatusCode;
+                callContext.ResponseBody = result.ResponseBody;
+                callContext.ResponseContentType = "text/event-stream";
+                callContext.IsStreaming = true;
+                callContext.InputTokens = result.InputTokens;
+                callContext.CachedTokens = result.CachedTokens;
+                callContext.OutputTokens = result.OutputTokens;
+                callContext.TotalDurationMs = result.TotalDurationMs;
+                _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
             }
 
             return new StreamForwardOutcome
@@ -1011,107 +980,6 @@ public sealed class AnthropicProxyController : ControllerBase
     }
 
     /// <summary>
-    /// 在开发者追踪开启时创建一次请求级追踪记录。
-    /// </summary>
-    private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
-    {
-        if (!runtimeSettings.DeveloperFeaturesEnabled)
-        {
-            return null;
-        }
-
-        return _traceStore.AddRequest(new DeveloperInvocationTraceRequest
-        {
-            RequestId = Guid.NewGuid(),
-            Source = requestSource,
-            UserAgent = Request.Headers.UserAgent.ToString(),
-            ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
-            ProtocolType = protocolType,
-            RequestPath = Request.Path,
-            RequestModel = modelName,
-            RequestBody = DeveloperInvocationTraceStore.FormatBody(requestBody),
-            RequestHeaders = DeveloperInvocationTraceStore.CaptureHeaders(Request.Headers)
-        });
-    }
-
-    /// <summary>
-    /// 安全地创建开发者追踪，避免追踪失败影响正常代理。
-    /// </summary>
-    private Guid? TryCreateDeveloperTraceSafely(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
-    {
-        try
-        {
-            return TryCreateDeveloperTrace(runtimeSettings, requestSource, protocolType, modelName, requestBody);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "创建开发者调用追踪失败，但请求继续转发。Protocol={Protocol}, RequestModel={RequestModel}",
-                protocolType,
-                modelName);
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// 为当前追踪追加一次路由尝试记录。
-    /// </summary>
-    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
-    {
-        if (!traceId.HasValue)
-        {
-            return Guid.Empty;
-        }
-
-        return _traceStore.AddAttempt(traceId.Value, new DeveloperInvocationAttempt
-        {
-            AttemptedModel = route.UpstreamModelName,
-            UpstreamProtocolType = actualProtocolType,
-            ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType),
-            TargetSiteId = route.SiteId,
-            TargetSiteName = route.SiteName
-        });
-    }
-
-    /// <summary>
-    /// 安全地记录一次路由尝试，避免追踪异常中断主流程。
-    /// </summary>
-    private Guid AddDeveloperTraceAttemptSafely(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
-    {
-        try
-        {
-            return AddDeveloperTraceAttempt(traceId, route, actualProtocolType);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "创建开发者调用追踪尝试失败，但请求继续转发。RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
-                route.ExternalModelName,
-                route.UpstreamModelName);
-            return Guid.Empty;
-        }
-    }
-
-    /// <summary>
-    /// 安全地写入用量日志，记录失败时不影响响应返回。
-    /// </summary>
-    private async Task SafeLogUsageAsync(UsageLogEntry entry, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _usageLogService.LogAsync(entry, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "记录使用日志失败，但请求继续返回。Protocol={Protocol}, RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
-                entry.ProtocolType,
-                entry.RequestModel,
-                entry.AttemptedModel);
-        }
-    }
-
-    /// <summary>
     /// 安全地读取路由熔断状态。
     /// </summary>
     private bool IsRouteBlockedSafely(Guid routeId)
@@ -1196,24 +1064,6 @@ public sealed class AnthropicProxyController : ControllerBase
     }
 
     /// <summary>
-    /// 安全地补全一次开发者追踪尝试记录。
-    /// </summary>
-    private void SafeCompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)
-    {
-        try
-        {
-            CompleteDeveloperTraceAttempt(traceId, traceAttemptId, result);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "完成开发者调用追踪失败，但请求继续返回。TraceId={TraceId}, AttemptId={AttemptId}",
-                traceId,
-                traceAttemptId);
-        }
-    }
-
-    /// <summary>
     /// 安全地记录失败的代理请求明细。
     /// </summary>
     private void SafeLogFailedProxyAttempt(
@@ -1267,19 +1117,6 @@ public sealed class AnthropicProxyController : ControllerBase
         catch
         {
         }
-    }
-
-    /// <summary>
-    /// 将一次路由尝试的结果写回开发者追踪。
-    /// </summary>
-    private void CompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)
-    {
-        if (!traceId.HasValue || traceAttemptId == Guid.Empty)
-        {
-            return;
-        }
-
-        _traceStore.CompleteAttempt(traceId.Value, traceAttemptId, result);
     }
 
     /// <summary>
@@ -1488,88 +1325,4 @@ public sealed class AnthropicProxyController : ControllerBase
     }
 
     /// <summary>
-    /// 安全地写入结构化对话记录，失败时不影响主链路。
-    /// 有会话标识的工具（claude-code / codex / open-code）按会话分组，
-    /// 无会话标识的普通代理请求合并到同一个分组。
-    /// </summary>
-    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, DateTimeOffset requestedAt, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var headers = CaptureRequestHeaders();
-            var sourceTool = _conversationExtractionService.ResolveSourceTool(
-                headers.TryGetValue("X-AITool-Source", out var explicitSource) ? explicitSource : string.Empty,
-                Request.Headers.UserAgent.ToString());
-
-            var sessionId = _conversationExtractionService.ExtractSessionId(headers);
-
-            var userInput = _conversationExtractionService.ExtractUserInputText(requestBody, protocolType, Request.Path);
-            var toolResultOutput = _conversationExtractionService.ExtractToolResultOutput(requestBody, protocolType, Request.Path);
-            var assistantOutputMarkdown = JoinConversationMarkdown(toolResultOutput, _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path));
-            if (string.IsNullOrWhiteSpace(userInput) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
-            {
-                return;
-            }
-
-            // 有 sessionId 的按 sourceTool:sessionId 分组，无 sessionId 的合并到 sourceTool 这一组。
-            var groupKey = !string.IsNullOrWhiteSpace(sessionId)
-                ? $"{sourceTool}:{sessionId}"
-                : sourceTool;
-
-            await _conversationLogService.LogAsync(new ConversationTurnEntry
-            {
-                RequestId = requestId,
-                CreatedAt = DateTimeOffset.UtcNow,
-                UserCreatedAt = requestedAt,
-                SourceTool = sourceTool,
-                SessionId = sessionId,
-                ConversationGroupKey = groupKey,
-                AccessKeyId = accessKeyId,
-                RequestModel = requestModel,
-                ProtocolType = protocolType,
-                RequestPath = Request.Path,
-                Source = requestSource,
-                UserInputText = userInput,
-                AssistantOutputMarkdown = assistantOutputMarkdown,
-                InputTokens = inputTokens,
-                CachedTokens = cachedTokens,
-                OutputTokens = outputTokens,
-                IsStreaming = isStreaming,
-                Status = status,
-                MetadataJson = _conversationExtractionService.BuildMetadataJson(
-                    Request.Headers.UserAgent.ToString(),
-                    headers.TryGetValue("x-app", out var xApp) ? xApp : string.Empty,
-                    sessionId)
-            }, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "记录结构化对话失败，但请求继续返回。Protocol={Protocol}, RequestModel={RequestModel}",
-                protocolType,
-                requestModel);
-        }
-    }
-
-    /// <summary>
-    /// 合并工具结果和模型回复，避免展示时内容粘连。
-    /// </summary>
-    private static string JoinConversationMarkdown(params string[] values)
-    {
-        return string.Join("\n\n", values.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()));
-    }
-
-    /// <summary>
-    /// 复制当前请求头为普通字典，避免跨层依赖 ASP.NET Core 类型。
-    /// </summary>
-    private Dictionary<string, string> CaptureRequestHeaders()
-    {
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var header in Request.Headers)
-        {
-            headers[header.Key] = header.Value.ToString();
-        }
-
-        return headers;
-    }
 }

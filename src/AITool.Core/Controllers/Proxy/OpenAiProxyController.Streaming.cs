@@ -2,14 +2,11 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
-using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Conversations;
+using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
-using AITool.Infrastructure.Proxy;
 
 namespace AITool.Core.Controllers.Proxy;
 

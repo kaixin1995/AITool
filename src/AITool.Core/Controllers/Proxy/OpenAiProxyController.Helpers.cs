@@ -2,11 +2,8 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
-using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
@@ -682,88 +679,6 @@ public sealed partial class OpenAiProxyController
     }
 
     /// <summary>
-    /// 在开发者追踪开启时创建一次请求级追踪记录。
-    /// </summary>
-    private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
-    {
-        if (!runtimeSettings.DeveloperFeaturesEnabled)
-        {
-            return null;
-        }
-
-        return _traceStore.AddRequest(new DeveloperInvocationTraceRequest
-        {
-            RequestId = Guid.NewGuid(),
-            Source = requestSource,
-            UserAgent = Request.Headers.UserAgent.ToString(),
-            ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
-            ProtocolType = protocolType,
-            RequestPath = Request.Path,
-            RequestModel = modelName,
-            RequestBody = DeveloperInvocationTraceStore.FormatBody(requestBody),
-            RequestHeaders = DeveloperInvocationTraceStore.CaptureHeaders(Request.Headers)
-        });
-    }
-
-    /// <summary>
-    /// 安全地创建开发者追踪，避免追踪失败影响正常代理。
-    /// </summary>
-    private Guid? TryCreateDeveloperTraceSafely(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
-    {
-        try
-        {
-            return TryCreateDeveloperTrace(runtimeSettings, requestSource, protocolType, modelName, requestBody);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "创建开发者调用追踪失败，但请求继续转发。Protocol={Protocol}, RequestModel={RequestModel}",
-                protocolType,
-                modelName);
-            return null;
-        }
-    }
-
-    /// <summary>
-    /// 为当前追踪追加一次路由尝试记录。
-    /// </summary>
-    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
-    {
-        if (!traceId.HasValue)
-        {
-            return Guid.Empty;
-        }
-
-        return _traceStore.AddAttempt(traceId.Value, new DeveloperInvocationAttempt
-        {
-            AttemptedModel = route.UpstreamModelName,
-            UpstreamProtocolType = actualProtocolType,
-            ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
-            TargetSiteId = route.SiteId,
-            TargetSiteName = route.SiteName
-        });
-    }
-
-    /// <summary>
-    /// 安全地记录一次路由尝试，避免追踪异常中断主流程。
-    /// </summary>
-    private Guid AddDeveloperTraceAttemptSafely(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
-    {
-        try
-        {
-            return AddDeveloperTraceAttempt(traceId, route, actualProtocolType);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "创建开发者调用追踪尝试失败，但请求继续转发。RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
-                route.ExternalModelName,
-                route.UpstreamModelName);
-            return Guid.Empty;
-        }
-    }
-
-    /// <summary>
     /// 根据客户端协议和上游协议判断当前是直连还是兼容转发。
     /// </summary>
     private static string ResolveForwardingMode(string clientProtocolType, string upstreamProtocolType)
@@ -837,111 +752,6 @@ public sealed partial class OpenAiProxyController
 
         value = rawValue;
         return true;
-    }
-
-    /// <summary>
-    /// 安全地写入用量日志，记录失败时不影响响应返回。
-    /// </summary>
-    private async Task SafeLogUsageAsync(UsageLogEntry entry, CancellationToken cancellationToken)
-    {
-        try
-        {
-            await _usageLogService.LogAsync(entry, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "记录使用日志失败，但请求继续返回。Protocol={Protocol}, RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
-                entry.ProtocolType,
-                entry.RequestModel,
-                entry.AttemptedModel);
-        }
-    }
-
-    /// <summary>
-    /// 安全地写入结构化对话记录，失败时不影响主链路。
-    /// 有会话标识的工具（claude-code / codex / open-code）按会话分组，
-    /// 无会话标识的普通代理请求合并到同一个分组。
-    /// </summary>
-    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, DateTimeOffset requestedAt, CancellationToken cancellationToken)
-    {
-        try
-        {
-            var headers = CaptureRequestHeaders();
-            var sourceTool = _conversationExtractionService.ResolveSourceTool(
-                headers.TryGetValue("X-AITool-Source", out var explicitSource) ? explicitSource : string.Empty,
-                Request.Headers.UserAgent.ToString());
-
-            var sessionId = _conversationExtractionService.ExtractSessionId(headers);
-
-            var userInput = _conversationExtractionService.ExtractUserInputText(requestBody, protocolType, Request.Path);
-            var toolResultOutput = _conversationExtractionService.ExtractToolResultOutput(requestBody, protocolType, Request.Path);
-            var assistantOutputMarkdown = JoinConversationMarkdown(toolResultOutput, _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path));
-            if (string.IsNullOrWhiteSpace(userInput) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
-            {
-                return;
-            }
-
-            // 有 sessionId 的按 sourceTool:sessionId 分组，无 sessionId 的合并到 sourceTool 这一组。
-            var groupKey = !string.IsNullOrWhiteSpace(sessionId)
-                ? $"{sourceTool}:{sessionId}"
-                : sourceTool;
-
-            await _conversationLogService.LogAsync(new ConversationTurnEntry
-            {
-                RequestId = requestId,
-                CreatedAt = DateTimeOffset.UtcNow,
-                UserCreatedAt = requestedAt,
-                SourceTool = sourceTool,
-                SessionId = sessionId,
-                ConversationGroupKey = groupKey,
-                AccessKeyId = accessKeyId,
-                RequestModel = requestModel,
-                ProtocolType = protocolType,
-                RequestPath = Request.Path,
-                Source = requestSource,
-                UserInputText = userInput,
-                AssistantOutputMarkdown = assistantOutputMarkdown,
-                InputTokens = inputTokens,
-                CachedTokens = cachedTokens,
-                OutputTokens = outputTokens,
-                IsStreaming = isStreaming,
-                Status = status,
-                MetadataJson = _conversationExtractionService.BuildMetadataJson(
-                    Request.Headers.UserAgent.ToString(),
-                    headers.TryGetValue("x-app", out var xApp) ? xApp : string.Empty,
-                    sessionId)
-            }, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "记录结构化对话失败，但请求继续返回。Protocol={Protocol}, RequestModel={RequestModel}",
-                protocolType,
-                requestModel);
-        }
-    }
-
-    /// <summary>
-    /// 合并工具结果和模型回复，避免展示时内容粘连。
-    /// </summary>
-    private static string JoinConversationMarkdown(params string[] values)
-    {
-        return string.Join("\n\n", values.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()));
-    }
-
-    /// <summary>
-    /// 复制当前请求头为普通字典，避免跨层依赖 ASP.NET Core 类型。
-    /// </summary>
-    private Dictionary<string, string> CaptureRequestHeaders()
-    {
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var header in Request.Headers)
-        {
-            headers[header.Key] = header.Value.ToString();
-        }
-
-        return headers;
     }
 
     /// <summary>
@@ -1029,24 +839,6 @@ public sealed partial class OpenAiProxyController
     }
 
     /// <summary>
-    /// 安全地补全一次开发者追踪尝试记录。
-    /// </summary>
-    private void SafeCompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)
-    {
-        try
-        {
-            CompleteDeveloperTraceAttempt(traceId, traceAttemptId, result);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "完成开发者调用追踪失败，但请求继续返回。TraceId={TraceId}, AttemptId={AttemptId}",
-                traceId,
-                traceAttemptId);
-        }
-    }
-
-    /// <summary>
     /// 安全地记录失败的代理请求明细。
     /// </summary>
     private void SafeLogFailedProxyAttempt(
@@ -1100,19 +892,6 @@ public sealed partial class OpenAiProxyController
         catch
         {
         }
-    }
-
-    /// <summary>
-    /// 将一次路由尝试的结果写回开发者追踪。
-    /// </summary>
-    private void CompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)
-    {
-        if (!traceId.HasValue || traceAttemptId == Guid.Empty)
-        {
-            return;
-        }
-
-        _traceStore.CompleteAttempt(traceId.Value, traceAttemptId, result);
     }
 
     /// <summary>

@@ -2,10 +2,9 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
-using AITool.Application.UsageLogs;
+using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 
@@ -308,9 +307,9 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private readonly RouteCircuitStateStore _circuitStore;
     /// <summary>
-    /// 用量日志服务。
+    /// 代理调用统一记录服务，收口 UsageLog、ConversationLog 等多套写入逻辑。
     /// </summary>
-    private readonly IUsageLogService _usageLogService;
+    private readonly IProxyCallRecorder _proxyCallRecorder;
     /// <summary>
     /// 后台查询元数据服务，统一承载模型、运行时设置和路由目标的只读查询。
     /// </summary>
@@ -323,10 +322,6 @@ public sealed class ChatApiController : ControllerBase
     /// 模型并发限制器。
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
-    /// <summary>
-    /// 结构化对话写入服务。
-    /// </summary>
-    private readonly IConversationLogService _conversationLogService;
 
     /// <summary>
     /// 创建调试对话控制器。
@@ -334,19 +329,17 @@ public sealed class ChatApiController : ControllerBase
     public ChatApiController(
         IProxyForwardService forwardService,
         RouteCircuitStateStore circuitStore,
-        IUsageLogService usageLogService,
+        IProxyCallRecorder proxyCallRecorder,
         AdminQueryMetadataService adminQueryMetadataService,
         IHttpClientFactory httpClientFactory,
-        ModelConcurrencyLimiter concurrencyLimiter,
-        IConversationLogService conversationLogService)
+        ModelConcurrencyLimiter concurrencyLimiter)
     {
         _forwardService = forwardService;
         _circuitStore = circuitStore;
-        _usageLogService = usageLogService;
+        _proxyCallRecorder = proxyCallRecorder;
         _adminQueryMetadataService = adminQueryMetadataService;
         _httpClientFactory = httpClientFactory;
         _concurrencyLimiter = concurrencyLimiter;
-        _conversationLogService = conversationLogService;
     }
 
     /// <summary>
@@ -473,38 +466,51 @@ public sealed class ChatApiController : ControllerBase
 
                 attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success, requestBody, forwardResult.ResponseBody ?? ""));
 
-                await _usageLogService.LogAsync(new UsageLogEntry
+                // 通过统一记录服务写入用量日志
+                var usageContext = new ProxyCallContext
                 {
                     RequestId = requestId,
                     ProtocolType = route.ProtocolType,
-                    ForwardingMode = "direct",
+                    Source = "chat",
                     RequestModel = model.ModelName,
+                    ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+                    IsStreaming = false,
+                    RequestBody = requestBody,
+                    RequestPath = "/api/admin/chat",
+                    RequestedAt = DateTimeOffset.UtcNow,
+                    RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                    {
+                        ["X-AITool-Source"] = "chat"
+                    },
+                    // 尝试级字段
                     AttemptedModel = route.UpstreamModelName,
                     TargetSiteId = route.SiteId,
-                    Status = forwardResult.Success ? "success" : "fail",
-                    Source = "chat",
+                    ForwardingMode = "direct",
+                    Success = forwardResult.Success,
+                    ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
                     RetryCount = forwardResult.Success ? attemptIndex - 1 : attemptIndex,
                     AttemptIndex = attemptIndex,
                     IsFinalResult = forwardResult.Success,
                     FallbackTriggered = !forwardResult.Success,
-                    ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
                     InputTokens = forwardResult.InputTokens,
                     CachedTokens = forwardResult.CachedTokens,
                     OutputTokens = forwardResult.OutputTokens,
-                    IsStreaming = false,
                     FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
                     StreamDurationMs = forwardResult.StreamDurationMs,
-                    TotalDurationMs = forwardResult.TotalDurationMs,
-                    ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
-                    RequestedAt = DateTimeOffset.UtcNow
-                }, cancellationToken);
+                    TotalDurationMs = forwardResult.TotalDurationMs
+                };
+                await _proxyCallRecorder.RecordUsageAsync(usageContext, cancellationToken);
 
                 if (forwardResult.Success)
                 {
                     sw.Stop();
                     _circuitStore.Succeed(route.RouteId);
                     var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, route.ProtocolType);
-                    await SafeLogChatConversationAsync(requestId, model.ModelName, route.ProtocolType, request.Message, payload.Content, forwardResult.InputTokens, forwardResult.CachedTokens, forwardResult.OutputTokens, false, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, forwardResult.TotalDurationMs)), cancellationToken);
+                    // 标记成功并填充预提取内容，让统一记录服务直接使用
+                    usageContext.Success = true;
+                    usageContext.PreExtractedUserInputText = request.Message;
+                    usageContext.PreExtractedAssistantOutput = payload.Content;
+                    await _proxyCallRecorder.RecordConversationAsync(usageContext, cancellationToken);
                     return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
                 }
 
@@ -642,30 +648,40 @@ public sealed class ChatApiController : ControllerBase
                 streamResult.ResponseBody);
             attempts.Add(attemptResult);
 
-            await _usageLogService.LogAsync(new UsageLogEntry
+            // 通过统一记录服务写入用量日志
+            var streamUsageContext = new ProxyCallContext
             {
                 RequestId = requestId,
                 ProtocolType = route.ProtocolType,
+                Source = "chat",
                 RequestModel = model.ModelName,
+                ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+                IsStreaming = true,
+                RequestBody = streamResult.RequestBody ?? string.Empty,
+                RequestPath = "/api/admin/chat",
+                RequestedAt = DateTimeOffset.UtcNow,
+                RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["X-AITool-Source"] = "chat"
+                },
+                // 尝试级字段
                 AttemptedModel = route.UpstreamModelName,
                 TargetSiteId = route.SiteId,
-                Status = streamResult.Success ? "success" : "fail",
-                Source = "chat",
+                ForwardingMode = "direct",
+                Success = streamResult.Success,
+                ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
                 RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
                 IsFinalResult = streamResult.Success,
                 FallbackTriggered = !streamResult.Success,
-                ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
                 InputTokens = streamResult.InputTokens,
                 CachedTokens = streamResult.CachedTokens,
                 OutputTokens = streamResult.OutputTokens,
-                IsStreaming = true,
                 FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
                 StreamDurationMs = 0,
-                TotalDurationMs = streamResult.TotalDurationMs,
-                ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
-                RequestedAt = DateTimeOffset.UtcNow
-            }, cancellationToken);
+                TotalDurationMs = streamResult.TotalDurationMs
+            };
+            await _proxyCallRecorder.RecordUsageAsync(streamUsageContext, cancellationToken);
 
             if (streamResult.Success)
             {
@@ -686,7 +702,11 @@ public sealed class ChatApiController : ControllerBase
                     TotalDurationMs = streamResult.TotalDurationMs,
                     Attempts = attempts
                 };
-                await SafeLogChatConversationAsync(requestId, model.ModelName, route.ProtocolType, request.Message, streamResult.Content, streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, true, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), cancellationToken);
+                // 标记成功并填充预提取内容，让统一记录服务直接使用
+                streamUsageContext.Success = true;
+                streamUsageContext.PreExtractedUserInputText = request.Message;
+                streamUsageContext.PreExtractedAssistantOutput = streamResult.Content;
+                await _proxyCallRecorder.RecordConversationAsync(streamUsageContext, cancellationToken);
                 await WriteSseEventAsync("meta", finalResult, cancellationToken);
                 await WriteSseEventAsync("done", new { requestId }, cancellationToken);
                 _circuitStore.Succeed(route.RouteId);
@@ -826,31 +846,40 @@ public sealed class ChatApiController : ControllerBase
 
         sw.Stop();
 
-        await _usageLogService.LogAsync(new UsageLogEntry
+        // 通过统一记录服务写入用量日志
+        var singleUsageContext = new ProxyCallContext
         {
             RequestId = requestId,
             ProtocolType = mapping.ProtocolType,
-            ForwardingMode = "direct",
+            Source = "chat",
             RequestModel = model.ModelName,
+            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+            IsStreaming = false,
+            RequestBody = requestBody,
+            RequestPath = "/api/admin/chat",
+            RequestedAt = DateTimeOffset.UtcNow,
+            RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["X-AITool-Source"] = "chat"
+            },
+            // 尝试级字段
             AttemptedModel = mapping.SiteModelName,
             TargetSiteId = mapping.SiteId,
-            Status = forwardResult.Success ? "success" : "fail",
-            Source = "chat",
+            ForwardingMode = "direct",
+            Success = forwardResult.Success,
+            ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
             RetryCount = 0,
             AttemptIndex = 1,
             IsFinalResult = true,
             FallbackTriggered = false,
-            ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
             InputTokens = forwardResult.InputTokens,
             CachedTokens = forwardResult.CachedTokens,
             OutputTokens = forwardResult.OutputTokens,
-            IsStreaming = false,
             FirstTokenLatencyMs = forwardResult.FirstTokenLatencyMs,
             StreamDurationMs = forwardResult.StreamDurationMs,
-            TotalDurationMs = forwardResult.TotalDurationMs,
-            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
-            RequestedAt = DateTimeOffset.UtcNow
-        }, cancellationToken);
+            TotalDurationMs = forwardResult.TotalDurationMs
+        };
+        await _proxyCallRecorder.RecordUsageAsync(singleUsageContext, cancellationToken);
 
         var attempts = new List<ChatAttemptResult>
         {
@@ -872,7 +901,11 @@ public sealed class ChatApiController : ControllerBase
         }
 
         var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, mapping.ProtocolType);
-        await SafeLogChatConversationAsync(requestId, model.ModelName, mapping.ProtocolType, request.Message, payload.Content, forwardResult.InputTokens, forwardResult.CachedTokens, forwardResult.OutputTokens, false, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, forwardResult.TotalDurationMs)), cancellationToken);
+        // 标记成功并填充预提取内容，让统一记录服务直接使用
+        singleUsageContext.Success = true;
+        singleUsageContext.PreExtractedUserInputText = request.Message;
+        singleUsageContext.PreExtractedAssistantOutput = payload.Content;
+        await _proxyCallRecorder.RecordConversationAsync(singleUsageContext, cancellationToken);
         return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
     }
 
@@ -941,31 +974,40 @@ public sealed class ChatApiController : ControllerBase
             streamResult.ResponseBody);
         var attempts = new List<ChatAttemptResult> { attemptResult };
 
-        await _usageLogService.LogAsync(new UsageLogEntry
+        // 通过统一记录服务写入用量日志
+        var singleStreamUsageContext = new ProxyCallContext
         {
             RequestId = requestId,
             ProtocolType = mapping.ProtocolType,
-            ForwardingMode = "direct",
+            Source = "chat",
             RequestModel = model.ModelName,
+            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
+            IsStreaming = true,
+            RequestBody = streamResult.RequestBody ?? string.Empty,
+            RequestPath = "/api/admin/chat",
+            RequestedAt = DateTimeOffset.UtcNow,
+            RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["X-AITool-Source"] = "chat"
+            },
+            // 尝试级字段
             AttemptedModel = mapping.SiteModelName,
             TargetSiteId = mapping.SiteId,
-            Status = streamResult.Success ? "success" : "fail",
-            Source = "chat",
+            ForwardingMode = "direct",
+            Success = streamResult.Success,
+            ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
             RetryCount = 0,
             AttemptIndex = 1,
             IsFinalResult = true,
             FallbackTriggered = false,
-            ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
             InputTokens = streamResult.InputTokens,
             CachedTokens = streamResult.CachedTokens,
             OutputTokens = streamResult.OutputTokens,
-            IsStreaming = true,
             FirstTokenLatencyMs = streamResult.FirstTokenLatencyMs,
             StreamDurationMs = 0,
-            TotalDurationMs = streamResult.TotalDurationMs,
-            ReasoningEffort = request.EnableReasoning ? request.ReasoningEffort : string.Empty,
-            RequestedAt = DateTimeOffset.UtcNow
-        }, cancellationToken);
+            TotalDurationMs = streamResult.TotalDurationMs
+        };
+        await _proxyCallRecorder.RecordUsageAsync(singleStreamUsageContext, cancellationToken);
 
         if (!streamResult.Success)
         {
@@ -973,7 +1015,11 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        await SafeLogChatConversationAsync(requestId, model.ModelName, mapping.ProtocolType, request.Message, streamResult.Content, streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, true, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), cancellationToken);
+        // 标记成功并填充预提取内容，让统一记录服务直接使用
+        singleStreamUsageContext.Success = true;
+        singleStreamUsageContext.PreExtractedUserInputText = request.Message;
+        singleStreamUsageContext.PreExtractedAssistantOutput = streamResult.Content;
+        await _proxyCallRecorder.RecordConversationAsync(singleStreamUsageContext, cancellationToken);
 
         var finalResult = new ChatSendResult
         {
@@ -1729,47 +1775,4 @@ public sealed class ChatApiController : ControllerBase
         }
     }
 
-    /// <summary>
-    /// 将对话测试的请求与响应写入结构化对话记录。
-    /// 对话测试没有会话概念，所有记录归入同一个分组，便于在对话记录页面集中查看。
-    /// 写入失败时静默吞掉异常，不阻断对话测试的正常返回。
-    /// </summary>
-    private async Task SafeLogChatConversationAsync(Guid requestId, string requestModel, string protocolType, string userInputText, string assistantOutputMarkdown, int inputTokens, int cachedTokens, int outputTokens, bool isStreaming, DateTimeOffset requestedAt, CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(userInputText) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
-            {
-                return;
-            }
-
-            // 对话测试没有多轮会话的概念，全部归到同一个 groupKey 下。
-            await _conversationLogService.LogAsync(new ConversationTurnEntry
-            {
-                RequestId = requestId,
-                CreatedAt = DateTimeOffset.UtcNow,
-                UserCreatedAt = requestedAt,
-                SourceTool = "chat",
-                SessionId = string.Empty,
-                ConversationGroupKey = "chat",
-                AccessKeyId = Guid.Empty,
-                RequestModel = requestModel,
-                ProtocolType = protocolType,
-                RequestPath = "/api/admin/chat",
-                Source = "chat",
-                UserInputText = userInputText,
-                AssistantOutputMarkdown = assistantOutputMarkdown,
-                InputTokens = inputTokens,
-                CachedTokens = cachedTokens,
-                OutputTokens = outputTokens,
-                IsStreaming = isStreaming,
-                Status = "success",
-                MetadataJson = "{}"
-            }, cancellationToken);
-        }
-        catch
-        {
-            // 写入失败不影响对话测试主流程
-        }
-    }
 }
