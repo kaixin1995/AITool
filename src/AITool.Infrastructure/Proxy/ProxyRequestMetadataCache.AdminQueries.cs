@@ -17,6 +17,39 @@ public sealed partial class ProxyRequestMetadataCache
     /// </summary>
     public async Task<IReadOnlyList<CachedChatModel>> GetChatModelsAsync(CancellationToken cancellationToken)
     {
+        if (_configProvider is not null)
+        {
+            return await _memoryCache.GetOrCreateAsync(
+                    ChatModelsCacheKey,
+                    entry =>
+                    {
+                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        var snapshot = _configProvider.GetCurrent();
+                        if (snapshot is null)
+                        {
+                            return Task.FromResult<IReadOnlyList<CachedChatModel>>([]);
+                        }
+
+                        var models = (
+                                from model in snapshot.Models
+                                join mapping in snapshot.SiteModelMappings on model.Id equals mapping.ModelLibraryItemId
+                                join site in snapshot.Sites on mapping.SiteId equals site.Id
+                                where model.IsEnabled && mapping.IsEnabled && site.IsEnabled
+                                group site by new { model.Id, model.DisplayName } into grouped
+                                orderby grouped.Key.DisplayName
+                                select new CachedChatModel
+                                {
+                                    ModelId = grouped.Key.Id,
+                                    DisplayName = grouped.Key.DisplayName,
+                                    AvailableSiteCount = grouped.Count()
+                                })
+                            .ToList();
+
+                        return Task.FromResult<IReadOnlyList<CachedChatModel>>(models);
+                    })
+                ?? [];
+        }
+
         return await _memoryCache.GetOrCreateAsync(
                 ChatModelsCacheKey,
                 async entry =>
@@ -51,6 +84,45 @@ public sealed partial class ProxyRequestMetadataCache
     /// </summary>
     public async Task<IReadOnlyList<CachedChatTarget>> GetChatTargetsAsync(CancellationToken cancellationToken)
     {
+        if (_configProvider is not null)
+        {
+            return await _memoryCache.GetOrCreateAsync(
+                    ChatTargetsCacheKey,
+                    entry =>
+                    {
+                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        var snapshot = _configProvider.GetCurrent();
+                        if (snapshot is null)
+                        {
+                            return Task.FromResult<IReadOnlyList<CachedChatTarget>>([]);
+                        }
+
+                        var targets = (
+                                from mapping in snapshot.SiteModelMappings
+                                join site in snapshot.Sites on mapping.SiteId equals site.Id
+                                join model in snapshot.Models on mapping.ModelLibraryItemId equals model.Id
+                                where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
+                                orderby model.DisplayName, site.Name, mapping.RemoteModelName
+                                select new CachedChatTarget
+                                {
+                                    MappingId = mapping.Id,
+                                    ModelId = model.Id,
+                                    ModelDisplayName = model.DisplayName,
+                                    SiteId = site.Id,
+                                    SiteName = site.Name,
+                                    ProtocolType = site.ProtocolType,
+                                    BaseUrl = site.BaseUrl,
+                                    EndpointPathMode = site.EndpointPathMode,
+                                    ApiKey = site.ApiKey,
+                                    SiteModelName = mapping.RemoteModelName
+                                })
+                            .ToList();
+
+                        return Task.FromResult<IReadOnlyList<CachedChatTarget>>(targets);
+                    })
+                ?? [];
+        }
+
         return await _memoryCache.GetOrCreateAsync(
                 ChatTargetsCacheKey,
                 async entry =>
