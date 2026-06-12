@@ -101,6 +101,7 @@ public sealed class IndexModel : PageModel
     /// <summary>
     /// 处理页面首次加载请求。
     /// 检查开发者功能开关后，从 Core 获取初始调用追踪摘要和模拟器元数据。
+    /// 当 Core 不可用时降级到 Admin 本地数据源。
     /// </summary>
     public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
     {
@@ -112,14 +113,25 @@ public sealed class IndexModel : PageModel
 
         ActiveTab = "invocations";
 
-        // 优先从 Admin 本地统一源读取调用追踪和模拟器元数据，避免页面直接依赖 Core developer 查询端点
+        // 优先从 Core 获取实时调用追踪数据；Core 不可用时降级到 Admin 本地 AdminDeveloperTraceStore。
         try
         {
-            var listResult = BuildListResponse(1);
-            InitialTotalCount = listResult.TotalCount;
-            InitialFailedCount = listResult.FailedCount;
-            InitialPendingCount = listResult.PendingCount;
+            var coreList = await _coreClient.GetDeveloperInvocationsAsync(1, PageSize, cancellationToken);
+            InitialTotalCount = coreList.TotalCount;
+            InitialFailedCount = coreList.FailedCount;
+            InitialPendingCount = coreList.PendingCount;
+        }
+        catch (Exception)
+        {
+            // Core 不可用，降级到本地存储
+            var localResult = BuildLocalListResponse(1);
+            InitialTotalCount = localResult.TotalCount;
+            InitialFailedCount = localResult.FailedCount;
+            InitialPendingCount = localResult.PendingCount;
+        }
 
+        try
+        {
             DefaultAccessKey = await _adminQueryMetadataService.GetDeveloperDefaultAccessKeyAsync(cancellationToken);
             Models = (await _adminQueryMetadataService.GetDeveloperDebugModelsAsync(cancellationToken))
                 .Select(item => new CoreDeveloperModelItem
@@ -154,6 +166,7 @@ public sealed class IndexModel : PageModel
 
     /// <summary>
     /// 返回调用记录列表，供前端 JavaScript 通过 AJAX 调用。
+    /// 优先从 Core 获取实时数据；Core 不可用时降级到 Admin 本地 AdminDeveloperTraceStore。
     /// </summary>
     public async Task<IActionResult> OnGetListAsync(int pageNumber = 1, CancellationToken cancellationToken = default)
     {
@@ -165,17 +178,20 @@ public sealed class IndexModel : PageModel
 
         try
         {
-            var result = BuildListResponse(pageNumber);
+            var result = await _coreClient.GetDeveloperInvocationsAsync(pageNumber, PageSize, cancellationToken);
             return new JsonResult(result);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return StatusCode(503, new { message = ex.GetBaseException().Message });
+            // Core 不可用，降级到本地存储
+            var localResult = BuildLocalListResponse(pageNumber);
+            return new JsonResult(localResult);
         }
     }
 
     /// <summary>
     /// 返回单条调用记录详情，供前端 JavaScript 展开卡片时 AJAX 加载。
+    /// 优先从 Core 获取完整详情；Core 不可用时降级到 Admin 本地 AdminDeveloperTraceStore。
     /// </summary>
     public async Task<IActionResult> OnGetDetailAsync(Guid traceId, CancellationToken cancellationToken = default)
     {
@@ -187,22 +203,30 @@ public sealed class IndexModel : PageModel
 
         try
         {
+            var result = await _coreClient.GetDeveloperInvocationDetailAsync(traceId, cancellationToken);
+            if (result is null)
+            {
+                return NotFound(new { message = $"跟踪记录 {traceId} 不存在或已过期" });
+            }
+
+            return new JsonResult(result);
+        }
+        catch (Exception)
+        {
+            // Core 不可用，降级到本地存储
             var traceEvent = _traceStore.Get(traceId);
             if (traceEvent is null)
             {
                 return NotFound(new { message = $"跟踪记录 {traceId} 不存在或已过期" });
             }
 
-            return new JsonResult(BuildDetailResponse(traceEvent));
-        }
-        catch (Exception ex)
-        {
-            return StatusCode(503, new { message = ex.GetBaseException().Message });
+            return new JsonResult(BuildLocalDetailResponse(traceEvent));
         }
     }
 
     /// <summary>
     /// 返回当前模型并发状态快照，供并发检测页签的自动刷新使用。
+    /// 从 Core 获取实时并发数据（活跃调用数、排队数等）。
     /// </summary>
     public async Task<IActionResult> OnGetConcurrencyAsync(CancellationToken cancellationToken = default)
     {
@@ -214,16 +238,18 @@ public sealed class IndexModel : PageModel
 
         try
         {
-            var result = BuildConcurrencyResponse(cancellationToken);
-            return new JsonResult(await result);
+            var result = await _coreClient.GetDeveloperConcurrencyAsync(cancellationToken);
+            return new JsonResult(result);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            return StatusCode(503, new { message = ex.GetBaseException().Message });
+            // Core 不可用，降级到本地静态配置
+            var localResult = await BuildLocalConcurrencyResponse(cancellationToken);
+            return new JsonResult(localResult);
         }
     }
 
-    private CoreDeveloperInvocationListResponse BuildListResponse(int pageNumber)
+    private CoreDeveloperInvocationListResponse BuildLocalListResponse(int pageNumber)
     {
         pageNumber = Math.Max(1, pageNumber);
         var allEntries = _traceStore.List();
@@ -275,7 +301,7 @@ public sealed class IndexModel : PageModel
         };
     }
 
-    private static CoreDeveloperInvocationDetail BuildDetailResponse(CoreDeveloperTraceEvent traceEvent)
+    private static CoreDeveloperInvocationDetail BuildLocalDetailResponse(CoreDeveloperTraceEvent traceEvent)
     {
         return new CoreDeveloperInvocationDetail
         {
@@ -313,7 +339,7 @@ public sealed class IndexModel : PageModel
         };
     }
 
-    private async Task<CoreDeveloperConcurrencyResponse> BuildConcurrencyResponse(CancellationToken cancellationToken)
+    private async Task<CoreDeveloperConcurrencyResponse> BuildLocalConcurrencyResponse(CancellationToken cancellationToken)
     {
         var limits = await _adminQueryMetadataService.GetModelConcurrencyLimitsAsync(cancellationToken);
         var items = limits.Select(kvp => new CoreDeveloperConcurrencyItem
