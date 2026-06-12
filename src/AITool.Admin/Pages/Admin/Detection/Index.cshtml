@@ -106,7 +106,12 @@
                 btn.textContent = '检测中...';
 
                 fetch('/api/admin/detection/probe/' + mappingId, { method: 'POST' })
-                    .then(function(r) { return r.json(); })
+                    .then(function(r) {
+                        if (!r.ok) {
+                            throw new Error('HTTP ' + r.status);
+                        }
+                        return r.json();
+                    })
                     .then(function(data) {
                         updateRow(btn.closest('tr'), data);
                         btn.disabled = false;
@@ -129,7 +134,12 @@
                 btn.textContent = '检测中...';
 
                 fetch('/api/admin/detection/probe-model/' + modelId, { method: 'POST' })
-                    .then(function(r) { return r.json(); })
+                    .then(function(r) {
+                        if (!r.ok) {
+                            throw new Error('HTTP ' + r.status);
+                        }
+                        return r.json();
+                    })
                     .then(function(data) {
                         pollProbeProgress(data.taskId, btn, '检测该模型');
                     })
@@ -148,7 +158,12 @@
             btn.textContent = '检测中...';
 
             fetch('/api/admin/detection/probe-all', { method: 'POST' })
-                .then(function(r) { return r.json(); })
+                .then(function(r) {
+                    if (!r.ok) {
+                        throw new Error('HTTP ' + r.status);
+                    }
+                    return r.json();
+                })
                 .then(function(data) {
                     pollProbeProgress(data.taskId, btn, '全部检测');
                 })
@@ -174,7 +189,12 @@
 
         function poll() {
             fetch('/api/admin/detection/progress/' + taskId)
-                .then(function(r) { return r.json(); })
+                .then(function(r) {
+                    if (!r.ok) {
+                        throw new Error('HTTP ' + r.status);
+                    }
+                    return r.json();
+                })
                 .then(function(data) {
                     alertText.textContent = '正在检测... (' + data.completed + '/' + data.total + ')';
                     /* 只更新本轮新增的结果，避免重复刷新已更新的行 */
@@ -198,8 +218,13 @@
                         setTimeout(poll, 1000);
                     }
                 })
-                .catch(function() {
-                    setTimeout(poll, 2000);
+                .catch(function(err) {
+                    alert.className = 'alert alert-danger';
+                    alertText.textContent = '检测进度获取失败：' + err.message;
+                    if (triggerBtn) {
+                        triggerBtn.disabled = false;
+                        triggerBtn.textContent = btnText || '全部检测';
+                    }
                 });
         }
         poll();

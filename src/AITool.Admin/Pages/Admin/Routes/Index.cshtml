@@ -202,7 +202,7 @@
         gap: 12px;
         padding: 14px 16px;
         border-bottom: 1px solid var(--border-color, #e9ecef);
-        cursor: grab;
+        cursor: default;
         user-select: none;
         transition: background 0.15s;
     }
@@ -221,6 +221,7 @@
         font-size: 18px;
         cursor: grab;
         flex-shrink: 0;
+        touch-action: none;
     }
 
     .priority-num {
@@ -695,9 +696,16 @@
         var draggedItem = null;
 
         list.ondragstart = function(e) {
-            draggedItem = e.target.closest('.route-item');
+            var handle = e.target.closest('.drag-handle');
+            if (!handle) {
+                e.preventDefault();
+                return;
+            }
+
+            draggedItem = handle.closest('.route-item');
             if (draggedItem) {
                 e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', draggedItem.getAttribute('data-index') || '');
                 setTimeout(function() { draggedItem.classList.add('dragging'); }, 0);
             }
         };

@@ -973,10 +973,6 @@
             chips.push(renderMetricChip('已回退', 'danger'));
         }
 
-        if (!!readValue(item, ['isFinalResult'])) {
-            chips.push(renderMetricChip('最终', 'total'));
-        }
-
         return chips.join('');
     }
 
@@ -1126,13 +1122,12 @@
         var isInterrupted = !!readValue(item, ['isStreamInterrupted']);
         var firstLabel = isStreaming ? formatDuration(firstMs) : '-';
         var streamClass = 'usage-log-chip usage-log-chip-stream' + (isInterrupted ? ' usage-log-chip-stream-interrupted' : '');
-        var streamIcon = isStreaming ? '🌊' : '📄';
         var streamText = isStreaming ? '流' : '非流';
         return '' +
             '<div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">' +
                 '<span class="usage-log-chip usage-log-chip-total">' + escHtml(formatDuration(totalMs)) + '</span>' +
                 '<span class="usage-log-chip usage-log-chip-first">' + escHtml(firstLabel) + '</span>' +
-                '<span class="' + streamClass + '">' + escHtml(streamIcon) + ' ' + escHtml(streamText) + '</span>' +
+                '<span class="' + streamClass + '">' + escHtml(streamText) + '</span>' +
             '</div>';
     }
 
