@@ -42,6 +42,7 @@ public sealed class AdminCacheInvalidationService
     /// 运行时设置服务，用于读取当前系统设置。
     /// </summary>
     private readonly ISystemRuntimeSettingsService _runtimeSettingsService;
+    private readonly CoreSyncStatusStore _syncStatusStore;
 
     /// <summary>
     /// 日志记录器。
@@ -71,11 +72,13 @@ public sealed class AdminCacheInvalidationService
         CoreAdminClient coreClient,
         AppDbContext dbContext,
         ISystemRuntimeSettingsService runtimeSettingsService,
+        CoreSyncStatusStore syncStatusStore,
         ILogger<AdminCacheInvalidationService> logger)
     {
         _coreClient = coreClient;
         _dbContext = dbContext;
         _runtimeSettingsService = runtimeSettingsService;
+        _syncStatusStore = syncStatusStore;
         _logger = logger;
     }
 
@@ -139,6 +142,7 @@ public sealed class AdminCacheInvalidationService
     {
         try
         {
+            var attemptedAt = DateTimeOffset.UtcNow;
             var version = Interlocked.Increment(ref _configVersion);
             var patch = await BuildPatchAsync(categories, version, cancellationToken);
 
@@ -149,6 +153,7 @@ public sealed class AdminCacheInvalidationService
                 _logger.LogDebug(
                     "Admin→Core 增量同步完成。Version={Version}, Categories=[{Categories}], Applied={Applied}",
                     result.ConfigVersion, string.Join(", ", categories), result.Applied);
+                _syncStatusStore.MarkSuccess(attemptedAt, $"增量同步成功（版本 {result.ConfigVersion}）");
             }
             catch (HttpRequestException ex) when (IsCoreNotInitialized(ex))
             {
@@ -161,6 +166,7 @@ public sealed class AdminCacheInvalidationService
         {
             // 同步失败不影响 Admin 写操作本身，只记录警告日志。
             // Core 侧有定时轮询机制兜底，最终会拉到最新数据。
+            _syncStatusStore.MarkFailure(DateTimeOffset.UtcNow, "增量同步失败", ex.GetBaseException().Message);
             _logger.LogWarning(ex, "Admin→Core 配置同步失败，将在下次写入时重试");
         }
     }
@@ -322,6 +328,7 @@ public sealed class AdminCacheInvalidationService
                 "跳过 Admin→Core 全量同步回退：当前数据库缺少必要配置。Sites={SiteCount}, AccessKeys={AccessKeyCount}。",
                 siteCount,
                 accessKeyCount);
+            _syncStatusStore.MarkFailure(DateTimeOffset.UtcNow, "全量同步已跳过", "缺少 Sites 或 AccessKeys");
             return;
         }
 
@@ -342,6 +349,7 @@ public sealed class AdminCacheInvalidationService
         _logger.LogDebug(
             "Admin→Core 全量同步回退完成。Version={Version}, Applied={Applied}",
             result.ConfigVersion, result.Applied);
+        _syncStatusStore.MarkSuccess(DateTimeOffset.UtcNow, $"全量同步成功（版本 {result.ConfigVersion}）");
     }
 
     /// <summary>

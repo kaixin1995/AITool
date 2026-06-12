@@ -24,6 +24,7 @@ public sealed class CoreConfigSyncHostedService : IHostedService
 {
     private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<CoreConfigSyncHostedService> _logger;
+    private readonly CoreSyncStatusStore _syncStatusStore;
 
     // 启动后首次同步前的等待时间，给 Core 宿主一点启动时间
     private static readonly TimeSpan InitialDelay = TimeSpan.FromSeconds(2);
@@ -39,10 +40,12 @@ public sealed class CoreConfigSyncHostedService : IHostedService
     /// </summary>
     public CoreConfigSyncHostedService(
         IServiceProvider serviceProvider,
-        ILogger<CoreConfigSyncHostedService> logger)
+        ILogger<CoreConfigSyncHostedService> logger,
+        CoreSyncStatusStore syncStatusStore)
     {
         _serviceProvider = serviceProvider;
         _logger = logger;
+        _syncStatusStore = syncStatusStore;
     }
 
     /// <summary>
@@ -101,7 +104,8 @@ public sealed class CoreConfigSyncHostedService : IHostedService
                     return;
                 }
 
-                var configVersion = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var attemptedAt = DateTimeOffset.UtcNow;
+                var configVersion = attemptedAt.ToUnixTimeMilliseconds();
                 var snapshot = await settingsService.BuildCoreRuntimeConfigSnapshotAsync(configVersion, cancellationToken);
 
                 // 向 Core 下发全量同步
@@ -112,6 +116,7 @@ public sealed class CoreConfigSyncHostedService : IHostedService
                     _logger.LogInformation(
                         "Core 宿主已持有相同配置（版本 {ConfigVersion}），跳过同步。",
                         result.ConfigVersion);
+                    _syncStatusStore.MarkSuccess(attemptedAt, $"启动同步已忽略（版本 {result.ConfigVersion}）");
                 }
                 else
                 {
@@ -119,12 +124,17 @@ public sealed class CoreConfigSyncHostedService : IHostedService
                         "配置同步成功。Core 已应用版本 {ConfigVersion}，哈希 {ConfigHash}。",
                         result.ConfigVersion,
                         result.ConfigHash);
+                    _syncStatusStore.MarkSuccess(attemptedAt, $"启动同步成功（版本 {result.ConfigVersion}）");
                 }
 
                 return;
             }
             catch (Exception ex)
             {
+                _syncStatusStore.MarkFailure(
+                    DateTimeOffset.UtcNow,
+                    $"启动同步失败（第 {attempt}/{MaxRetries} 次）",
+                    ex.GetBaseException().Message);
                 _logger.LogWarning(
                     ex,
                     "向 Core 宿主同步配置失败（第 {Attempt}/{MaxRetries} 次尝试）。" +

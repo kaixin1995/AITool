@@ -56,6 +56,17 @@
             <div class="mt-2 text-secondary" style="font-size:12px; word-break:break-all;">@Model.CoreBaseUrl</div>
         </div>
     </div>
+    <div class="col-xl-4 col-lg-6 col-md-6 col-sm-12">
+        <div class="stat-card" style="cursor:default; text-decoration:none;">
+            <div class="stat-card-icon warning">🔄</div>
+            <div class="stat-card-value" style="font-size:16px;">@Model.CoreSyncStatusText</div>
+            <div class="stat-card-label">最近同步状态</div>
+            @if (!string.IsNullOrWhiteSpace(Model.CoreSyncDetailText))
+            {
+                <div class="mt-2 text-secondary" style="font-size:12px; word-break:break-all;">@Model.CoreSyncDetailText</div>
+            }
+        </div>
+    </div>
 </div>
 
 <div class="quick-actions">
