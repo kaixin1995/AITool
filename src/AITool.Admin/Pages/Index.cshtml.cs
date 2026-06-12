@@ -4,7 +4,6 @@ using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Data.Sqlite;
 
 namespace AITool.Admin.Pages;
 
@@ -56,7 +55,6 @@ public class IndexModel : PageModel
     public int EnabledTaskCount { get; set; }
 
     public string CoreBaseUrl { get; private set; } = string.Empty;
-    public string DatabasePath { get; private set; } = string.Empty;
     public bool CoreConnected { get; private set; }
     public bool CoreReady { get; private set; }
     public string CoreStatusText { get; private set; } = "未连接";
@@ -75,7 +73,6 @@ public class IndexModel : PageModel
         EnabledTaskCount = await _dbContext.DetectionTasks.CountAsync(t => t.IsEnabled, cancellationToken);
 
         CoreBaseUrl = GetCoreBaseUrl();
-        DatabasePath = GetDatabasePath();
         await LoadCoreStatusAsync(cancellationToken);
         LoadCoreSyncStatus();
     }
@@ -89,20 +86,6 @@ public class IndexModel : PageModel
         }
 
         return "http://127.0.0.1:5029";
-    }
-
-    private string GetDatabasePath()
-    {
-        var connection = _dbContext.Database.GetDbConnection();
-        if (connection is SqliteConnection sqliteConnection)
-        {
-            var builder = new SqliteConnectionStringBuilder(sqliteConnection.ConnectionString);
-            return string.IsNullOrWhiteSpace(builder.DataSource)
-                ? "(未解析到 DataSource)"
-                : Path.GetFullPath(builder.DataSource);
-        }
-
-        return connection.DataSource ?? "(未知数据源)";
     }
 
     private async Task LoadCoreStatusAsync(CancellationToken cancellationToken)
