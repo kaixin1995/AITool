@@ -709,9 +709,11 @@
 
             draggedItem.classList.remove('dragging');
             draggedItem = null;
-            syncItemsFromDOM();
+            var changed = syncItemsFromDOM();
             renderRouteList();
-            persistCurrentQueue('顺序已更新');
+            if (changed) {
+                persistCurrentQueue('顺序已更新');
+            }
         };
 
         list.ondragover = function(e) {
@@ -741,7 +743,13 @@
                 reordered.push(_currentItems[index]);
             }
         });
+
+        var changed = reordered.length === _currentItems.length && reordered.some(function(item, index) {
+            return item !== _currentItems[index];
+        });
+
         _currentItems = reordered;
+        return changed;
     }
 
     function removeItem(index) {

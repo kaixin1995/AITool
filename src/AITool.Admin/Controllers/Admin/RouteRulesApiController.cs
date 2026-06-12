@@ -233,6 +233,13 @@ public sealed class RouteRulesApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(modelName))
             return Ok(new List<object>());
 
+        var siteRows = await _dbContext.Sites
+            .AsNoTracking()
+            .Select(s => new { s.Id, s.Name, s.IsEnabled })
+            .ToListAsync(cancellationToken);
+        var sites = siteRows.ToDictionary(s => s.Id, s => s.Name);
+        var siteEnabledMap = siteRows.ToDictionary(s => s.Id, s => s.IsEnabled);
+
         var rules = await _dbContext.ProxyRouteRules
             .AsNoTracking()
             .Where(x => x.ExternalModelName == modelName)
@@ -253,7 +260,24 @@ public sealed class RouteRulesApiController : ControllerBase
             })
             .ToListAsync(cancellationToken);
 
-        return Ok(rules);
+        var result = rules.Select(r => new
+        {
+            r.Id,
+            r.ExternalModelName,
+            r.UpstreamModelName,
+            r.SiteId,
+            siteName = sites.TryGetValue(r.SiteId, out var siteName) ? siteName : "(已删除站点)",
+            siteEnabled = siteEnabledMap.TryGetValue(r.SiteId, out var enabled) && enabled,
+            r.SiteModelName,
+            r.Priority,
+            r.ModelPriority,
+            r.InstancePriority,
+            r.IsEnabled,
+            r.availabilityMode,
+            r.timeRangesJson
+        }).ToList();
+
+        return Ok(result);
     }
 
     /// <summary>
