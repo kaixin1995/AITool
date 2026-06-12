@@ -132,8 +132,8 @@ public sealed class IndexModel : PageModel
                     CanUseAnthropic = item.CanUseAnthropic
                 })
                 .ToList();
-            DefaultOpenAiModel = Models.FirstOrDefault(x => x.SupportsOpenAi)?.ModelName ?? string.Empty;
-            DefaultAnthropicModel = Models.FirstOrDefault(x => x.SupportsAnthropic)?.ModelName ?? string.Empty;
+            DefaultOpenAiModel = Models.FirstOrDefault(x => x.SupportsOpenAi || x.CanUseOpenAi)?.ModelName ?? string.Empty;
+            DefaultAnthropicModel = Models.FirstOrDefault(x => x.SupportsAnthropic || x.CanUseAnthropic)?.ModelName ?? string.Empty;
 
             if (string.IsNullOrWhiteSpace(DefaultAccessKey))
             {
