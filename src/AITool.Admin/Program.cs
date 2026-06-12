@@ -86,6 +86,12 @@ builder.Services.AddScoped<CoreEventPullService>();
 
 // Admin 侧缓存失效门面，通过 CoreAdminClient 向 Core 下发全量配置快照以刷新运行时缓存。
 builder.Services.AddSingleton<CoreSyncStatusStore>();
+builder.Services.AddSingleton<ProxyRequestMetadataCache>(sp =>
+{
+    var memoryCache = sp.GetRequiredService<Microsoft.Extensions.Caching.Memory.IMemoryCache>();
+    var scopeFactory = sp.GetRequiredService<IServiceScopeFactory>();
+    return new ProxyRequestMetadataCache(memoryCache, scopeFactory);
+});
 builder.Services.AddSingleton<AdminQueryMetadataService>();
 builder.Services.AddScoped<AdminCacheInvalidationService>();
 
