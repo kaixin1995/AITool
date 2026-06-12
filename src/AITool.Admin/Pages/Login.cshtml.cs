@@ -41,7 +41,7 @@ public sealed class LoginModel : PageModel
     /// <summary>
     /// 登录后的返回地址。
     /// </summary>
-    public string ReturnUrl { get; private set; } = "/";
+    public string ReturnUrl { get; private set; } = "/Admin/UsageLogs";
 
     /// <summary>
     /// 是否为首次设置模式。
@@ -150,6 +150,6 @@ public sealed class LoginModel : PageModel
     {
         return !string.IsNullOrWhiteSpace(returnUrl) && Url.IsLocalUrl(returnUrl)
             ? returnUrl
-            : "/";
+            : "/Admin/UsageLogs";
     }
 }

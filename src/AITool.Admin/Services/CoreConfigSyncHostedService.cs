@@ -1,5 +1,7 @@
 using AITool.Application.Operations;
 using AITool.Infrastructure.CoreRuntime;
+using AITool.Infrastructure.Persistence;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -86,8 +88,19 @@ public sealed class CoreConfigSyncHostedService : IHostedService
                 using var scope = _serviceProvider.CreateScope();
                 var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
                 var coreClient = scope.ServiceProvider.GetRequiredService<CoreAdminClient>();
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                var siteCount = await dbContext.Sites.AsNoTracking().CountAsync(cancellationToken);
+                var accessKeyCount = await dbContext.ProxyAccessKeys.AsNoTracking().CountAsync(cancellationToken);
 
-                // 从数据库构建完整配置快照
+                if (siteCount == 0 || accessKeyCount == 0)
+                {
+                    _logger.LogInformation(
+                        "跳过启动时 Core 配置同步：当前数据库缺少必要配置。Sites={SiteCount}, AccessKeys={AccessKeyCount}。",
+                        siteCount,
+                        accessKeyCount);
+                    return;
+                }
+
                 var configVersion = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
                 var snapshot = await settingsService.BuildCoreRuntimeConfigSnapshotAsync(configVersion, cancellationToken);
 
