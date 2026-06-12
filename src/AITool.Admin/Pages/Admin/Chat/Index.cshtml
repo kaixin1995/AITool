@@ -637,6 +637,10 @@
 </style>
 
 <script>
+    window.chatApiBaseUrl = '@Model.CoreBaseUrl';
+</script>
+
+<script>
     // 对话测试页面的全局状态与核心交互逻辑。
     // 注意：页面 JavaScript 中调用的 /api/admin/chat/* 端点由 Core 宿主的
     // ChatApiController 提供（依赖代理转发等运行时组件），因此当前使用相对路径。
@@ -696,7 +700,7 @@
         var targetSelect = document.getElementById('targetSelect');
         targetSelect.innerHTML = '<option value="">-- 加载中... --</option>';
 
-        fetch('/api/admin/chat/targets')
+        fetch(window.chatApiBaseUrl + '/api/admin/chat/targets')
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 chatTargets = data || [];
@@ -794,7 +798,7 @@
         document.getElementById('chatMessages').appendChild(thinking);
         scrollToBottom();
 
-        fetch('/api/admin/chat/send', {
+        fetch(window.chatApiBaseUrl + '/api/admin/chat/send', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ modelId: modelId, mappingId: mappingId, message: message, enableReasoning: enableReasoning, enableStreaming: false, reasoningEffort: reasoningEffort })
@@ -839,7 +843,7 @@
         };
 
         try {
-            var response = await fetch('/api/admin/chat/send-stream', {
+            var response = await fetch(window.chatApiBaseUrl + '/api/admin/chat/send-stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
                 body: JSON.stringify({ modelId: modelId, mappingId: mappingId, message: message, enableReasoning: enableReasoning, enableStreaming: true, reasoningEffort: reasoningEffort }),

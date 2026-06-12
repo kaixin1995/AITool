@@ -1,4 +1,5 @@
 using AITool.Application.Operations;
+using AITool.Infrastructure.CoreRuntime;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace AITool.Admin.Pages.Admin.Chat;
@@ -15,10 +16,14 @@ namespace AITool.Admin.Pages.Admin.Chat;
 public class IndexModel : PageModel
 {
     private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
+    private readonly CoreAdminClient _coreClient;
 
-    public IndexModel(ISystemRuntimeSettingsService systemRuntimeSettingsService)
+    public IndexModel(
+        ISystemRuntimeSettingsService systemRuntimeSettingsService,
+        CoreAdminClient coreClient)
     {
         _systemRuntimeSettingsService = systemRuntimeSettingsService;
+        _coreClient = coreClient;
     }
 
     /// <summary>
@@ -27,11 +32,28 @@ public class IndexModel : PageModel
     public bool ConversationLogEnabled { get; private set; }
 
     /// <summary>
+    /// Core 宿主基址，供页面 JavaScript 调用 Core 上的 Chat API。
+    /// </summary>
+    public string CoreBaseUrl { get; private set; } = string.Empty;
+
+    /// <summary>
     /// 处理页面首次访问，读取对话记录开关状态。
     /// </summary>
     public async Task OnGetAsync()
     {
         var settings = await _systemRuntimeSettingsService.GetOrCreateAsync();
         ConversationLogEnabled = settings.ConversationLogEnabled;
+        CoreBaseUrl = GetCoreBaseUrl();
+    }
+
+    private string GetCoreBaseUrl()
+    {
+        var baseAddress = _coreClient.BaseAddress;
+        if (baseAddress is not null)
+        {
+            return baseAddress.ToString().TrimEnd('/').Replace("://0.0.0.0:", "://127.0.0.1:");
+        }
+
+        return "http://127.0.0.1:5029";
     }
 }
