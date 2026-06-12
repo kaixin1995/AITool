@@ -1,8 +1,10 @@
 using AITool.Application.CoreRuntime;
 using AITool.Application.Operations;
 using AITool.Infrastructure.CoreRuntime;
+using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
+using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Pages.Admin.Developer.Invocations;
 
@@ -22,21 +24,20 @@ public sealed class IndexModel : PageModel
     /// 系统运行时设置服务，用于检查开发者功能开关。
     /// </summary>
     private readonly ISystemRuntimeSettingsService _runtimeSettingsService;
-
-    /// <summary>
-    /// Core 客户端，用于代理查询 Core 宿主的开发者运行时数据。
-    /// </summary>
     private readonly CoreAdminClient _coreClient;
+    private readonly AppDbContext _dbContext;
 
     /// <summary>
     /// 初始化开发者工具页面模型。
     /// </summary>
     public IndexModel(
         ISystemRuntimeSettingsService runtimeSettingsService,
-        CoreAdminClient coreClient)
+        CoreAdminClient coreClient,
+        AppDbContext dbContext)
     {
         _runtimeSettingsService = runtimeSettingsService;
         _coreClient = coreClient;
+        _dbContext = dbContext;
     }
 
     /// <summary>
@@ -122,10 +123,16 @@ public sealed class IndexModel : PageModel
             DefaultOpenAiModel = metadata.DefaultOpenAiModel;
             DefaultAnthropicModel = metadata.DefaultAnthropicModel;
             Models = metadata.Models;
+
+            if (string.IsNullOrWhiteSpace(DefaultAccessKey))
+            {
+                DefaultAccessKey = await GetDefaultAccessKeyFromAdminAsync(cancellationToken);
+            }
         }
         catch (Exception ex)
         {
             LoadErrorMessage = ex.GetBaseException().Message;
+            DefaultAccessKey = await GetDefaultAccessKeyFromAdminAsync(cancellationToken);
         }
 
         // 从 CoreAdminClient 的 BaseAddress 推导默认请求地址
@@ -145,8 +152,15 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        var result = await _coreClient.GetDeveloperInvocationsAsync(pageNumber, PageSize, cancellationToken);
-        return new JsonResult(result);
+        try
+        {
+            var result = await _coreClient.GetDeveloperInvocationsAsync(pageNumber, PageSize, cancellationToken);
+            return new JsonResult(result);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(503, new { message = ex.GetBaseException().Message });
+        }
     }
 
     /// <summary>
@@ -160,8 +174,15 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        var result = await _coreClient.GetDeveloperInvocationDetailAsync(traceId, cancellationToken);
-        return new JsonResult(result);
+        try
+        {
+            var result = await _coreClient.GetDeveloperInvocationDetailAsync(traceId, cancellationToken);
+            return new JsonResult(result);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(503, new { message = ex.GetBaseException().Message });
+        }
     }
 
     /// <summary>
@@ -175,8 +196,25 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        var result = await _coreClient.GetDeveloperConcurrencyAsync(cancellationToken);
-        return new JsonResult(result);
+        try
+        {
+            var result = await _coreClient.GetDeveloperConcurrencyAsync(cancellationToken);
+            return new JsonResult(result);
+        }
+        catch (Exception ex)
+        {
+            return StatusCode(503, new { message = ex.GetBaseException().Message });
+        }
+    }
+
+    private async Task<string> GetDefaultAccessKeyFromAdminAsync(CancellationToken cancellationToken)
+    {
+        return await _dbContext.ProxyAccessKeys
+            .AsNoTracking()
+            .Where(x => x.IsEnabled && !string.IsNullOrWhiteSpace(x.PlainKey))
+            .OrderBy(x => x.KeyName)
+            .Select(x => x.PlainKey)
+            .FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
     }
 
     /// <summary>
