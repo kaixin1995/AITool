@@ -139,7 +139,6 @@ app.UseAdminAuthentication();
 
 // 映射健康检查端点，作为集成测试的验证入口。
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
-app.MapGet("/", () => Results.Redirect("/Admin/Analytics"));
 
 // 启用 Hangfire 仪表盘，仅限本地访问。
 app.UseHangfireDashboard("/hangfire");
