@@ -58,9 +58,9 @@
                 </select>
             </div>
             <div class="col-sm-6 col-lg-2">
-                <label class="form-label" for="accessKeyFilter">AccessKey</label>
+                <label class="form-label" for="accessKeyFilter">访问密钥</label>
                 <select id="accessKeyFilter" class="form-select">
-                    <option value="">全部 AccessKey</option>
+                    <option value="">全部访问密钥</option>
                     @foreach (var key in Model.AccessKeyFilters)
                     {
                         <option value="@key.Id">@key.KeyName</option>
@@ -142,7 +142,6 @@
                 <th>来源</th>
                 <th>模型</th>
                 <th>目标站点</th>
-                <th>AccessKey</th>
                 <th>状态</th>
                 <th>用时/首字</th>
                 <th>输入</th>
@@ -154,7 +153,7 @@
         </thead>
         <tbody id="usageLogsTableBody">
             <tr>
-                <td colspan="12">
+                <td colspan="11">
                     <div class="table-empty">
                         <div class="table-empty-text">加载中...</div>
                     </div>
@@ -734,7 +733,7 @@
     function renderUsageLogRows(items) {
         var tbody = document.getElementById('usageLogsTableBody');
         if (!items.length) {
-            tbody.innerHTML = '<tr><td colspan="12"><div class="table-empty"><div class="table-empty-icon">📋</div><div class="table-empty-text">暂无调用日志</div></div></td></tr>';
+            tbody.innerHTML = '<tr><td colspan="11"><div class="table-empty"><div class="table-empty-icon">📋</div><div class="table-empty-text">暂无调用日志</div></div></td></tr>';
             return;
         }
 
@@ -749,7 +748,6 @@
                 '<td>' + renderSourceBadge(source) + '</td>' +
                 '<td class="usage-log-model-cell">' + renderModelCell(item) + '</td>' +
                 '<td>' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</td>' +
-                '<td>' + escHtml(readValue(item, ['accessKeyName']) || '-') + '</td>' +
                 '<td>' + renderStatusBadge(status, item) + '</td>' +
                 '<td>' + renderLatencyBadges(item) + '</td>' +
                 '<td>' + escHtml(formatNumber(readValue(item, ['inputTokens']) || 0)) + '</td>' +
@@ -893,6 +891,7 @@
                         renderSummaryItem('思考等级', reasoningEffort || '-') +
                         renderSummaryItem('请求模型', readValue(data, ['requestModel']) || routeEntry || '-') +
                         renderSummaryItem('首个站点', readValue(firstAttempt, ['siteName', 'targetSiteName']) || '-') +
+                        renderSummaryItem('访问密钥', readValue(data, ['accessKeyName']) || '-') +
                     '</div>' +
                 '</div>' +
             '</div>';
