@@ -1,4 +1,4 @@
-using AITool.Application.Operations;
+using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
@@ -10,16 +10,16 @@ namespace AITool.Admin.Pages.Admin.Conversations;
 /// </summary>
 public sealed class IndexModel : PageModel
 {
-    private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
+    private readonly AdminQueryMetadataService _adminQueryMetadataService;
 
-    public IndexModel(ISystemRuntimeSettingsService systemRuntimeSettingsService)
+    public IndexModel(AdminQueryMetadataService adminQueryMetadataService)
     {
-        _systemRuntimeSettingsService = systemRuntimeSettingsService;
+        _adminQueryMetadataService = adminQueryMetadataService;
     }
 
-    public async Task<IActionResult> OnGetAsync()
+    public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
     {
-        var settings = await _systemRuntimeSettingsService.GetOrCreateAsync();
+        var settings = await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken);
         if (!settings.ConversationLogEnabled)
         {
             return NotFound();

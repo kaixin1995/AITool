@@ -1,5 +1,4 @@
 using AITool.Application.CoreRuntime;
-using AITool.Application.Operations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
@@ -21,10 +20,6 @@ public sealed class IndexModel : PageModel
     /// </summary>
     public const int PageSize = 20;
 
-    /// <summary>
-    /// 系统运行时设置服务，用于检查开发者功能开关。
-    /// </summary>
-    private readonly ISystemRuntimeSettingsService _runtimeSettingsService;
     private readonly CoreAdminClient _coreClient;
     private readonly AppDbContext _dbContext;
     private readonly AdminDeveloperTraceStore _traceStore;
@@ -34,13 +29,11 @@ public sealed class IndexModel : PageModel
     /// 初始化开发者工具页面模型。
     /// </summary>
     public IndexModel(
-        ISystemRuntimeSettingsService runtimeSettingsService,
         CoreAdminClient coreClient,
         AppDbContext dbContext,
         AdminDeveloperTraceStore traceStore,
         AdminQueryMetadataService adminQueryMetadataService)
     {
-        _runtimeSettingsService = runtimeSettingsService;
         _coreClient = coreClient;
         _dbContext = dbContext;
         _traceStore = traceStore;
@@ -104,8 +97,7 @@ public sealed class IndexModel : PageModel
     /// </summary>
     public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
     {
-        var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
-        if (!settings.DeveloperFeaturesEnabled)
+        if (!(await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken)).DeveloperFeaturesEnabled)
         {
             return NotFound();
         }
@@ -158,8 +150,7 @@ public sealed class IndexModel : PageModel
     /// </summary>
     public async Task<IActionResult> OnGetListAsync(int pageNumber = 1, CancellationToken cancellationToken = default)
     {
-        var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
-        if (!settings.DeveloperFeaturesEnabled)
+        if (!(await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken)).DeveloperFeaturesEnabled)
         {
             return NotFound();
         }
@@ -174,8 +165,7 @@ public sealed class IndexModel : PageModel
     /// </summary>
     public async Task<IActionResult> OnGetDetailAsync(Guid traceId, CancellationToken cancellationToken = default)
     {
-        var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
-        if (!settings.DeveloperFeaturesEnabled)
+        if (!(await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken)).DeveloperFeaturesEnabled)
         {
             return NotFound();
         }
@@ -195,8 +185,7 @@ public sealed class IndexModel : PageModel
     /// </summary>
     public async Task<IActionResult> OnGetConcurrencyAsync(CancellationToken cancellationToken = default)
     {
-        var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
-        if (!settings.DeveloperFeaturesEnabled)
+        if (!(await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken)).DeveloperFeaturesEnabled)
         {
             return NotFound();
         }

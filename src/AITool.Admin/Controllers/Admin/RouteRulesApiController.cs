@@ -2,6 +2,7 @@ using System.Text.Json;
 using AITool.Admin.Services;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -106,16 +107,22 @@ public sealed class RouteRulesApiController : ControllerBase
     /// 后台缓存失效服务。
     /// </summary>
     private readonly AdminCacheInvalidationService _cacheInvalidation;
+    /// <summary>
+    /// 后台查询元数据服务。
+    /// </summary>
+    private readonly AdminQueryMetadataService _adminQueryMetadataService;
 
     /// <summary>
     /// 创建路由规则控制器。
     /// </summary>
     public RouteRulesApiController(
         AppDbContext dbContext,
-        AdminCacheInvalidationService cacheInvalidation)
+        AdminCacheInvalidationService cacheInvalidation,
+        AdminQueryMetadataService adminQueryMetadataService)
     {
         _dbContext = dbContext;
         _cacheInvalidation = cacheInvalidation;
+        _adminQueryMetadataService = adminQueryMetadataService;
     }
 
     /// <summary>
@@ -125,34 +132,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpGet("entries")]
     public async Task<IActionResult> GetEntries(CancellationToken cancellationToken)
     {
-        // 从 ProxyRouteRules 中按 ExternalModelName 分组统计候选数
-        var candidateCounts = await _dbContext.ProxyRouteRules
-            .AsNoTracking()
-            .GroupBy(x => x.ExternalModelName)
-            .Select(g => new { EntryName = g.Key, CandidateCount = g.Count() })
-            .ToListAsync(cancellationToken);
-
-        // 从 ProxyRouteEntries 中获取已注册的主入口名称
-        var storedEntries = await _dbContext.ProxyRouteEntries
-            .AsNoTracking()
-            .OrderBy(x => x.EntryName)
-            .Select(x => x.EntryName)
-            .ToListAsync(cancellationToken);
-
-        var countsByName = candidateCounts.ToDictionary(x => x.EntryName, x => x.CandidateCount, StringComparer.Ordinal);
-
-        // 合并两个来源并去重，保持与 Core 宿主中 ProxyRequestMetadataCache.GetRouteEntriesAsync 相同的合并逻辑
-        var result = storedEntries
-            .Concat(candidateCounts.Select(x => x.EntryName))
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(x => x, StringComparer.Ordinal)
-            .Select(entryName => new
-            {
-                entryName,
-                candidateCount = countsByName.GetValueOrDefault(entryName, 0)
-            })
-            .ToList();
-
+        var result = await _adminQueryMetadataService.GetRouteEntriesAsync(cancellationToken);
         return Ok(result);
     }
 
@@ -230,53 +210,7 @@ public sealed class RouteRulesApiController : ControllerBase
         [FromQuery] string modelName,
         CancellationToken cancellationToken)
     {
-        if (string.IsNullOrWhiteSpace(modelName))
-            return Ok(new List<object>());
-
-        var siteRows = await _dbContext.Sites
-            .AsNoTracking()
-            .Select(s => new { s.Id, s.Name, s.IsEnabled })
-            .ToListAsync(cancellationToken);
-        var sites = siteRows.ToDictionary(s => s.Id, s => s.Name);
-        var siteEnabledMap = siteRows.ToDictionary(s => s.Id, s => s.IsEnabled);
-
-        var rules = await _dbContext.ProxyRouteRules
-            .AsNoTracking()
-            .Where(x => x.ExternalModelName == modelName)
-            .OrderBy(x => x.Priority)
-            .Select(x => new
-            {
-                x.Id,
-                x.ExternalModelName,
-                x.UpstreamModelName,
-                x.SiteId,
-                x.SiteModelName,
-                x.Priority,
-                x.ModelPriority,
-                x.InstancePriority,
-                x.IsEnabled,
-                availabilityMode = NormalizeAvailabilityMode(x.AvailabilityMode),
-                timeRangesJson = NormalizeTimeRangesJson(x.AvailabilityMode, x.TimeRangesJson)
-            })
-            .ToListAsync(cancellationToken);
-
-        var result = rules.Select(r => new
-        {
-            r.Id,
-            r.ExternalModelName,
-            r.UpstreamModelName,
-            r.SiteId,
-            siteName = sites.TryGetValue(r.SiteId, out var siteName) ? siteName : "(已删除站点)",
-            siteEnabled = siteEnabledMap.TryGetValue(r.SiteId, out var enabled) && enabled,
-            r.SiteModelName,
-            r.Priority,
-            r.ModelPriority,
-            r.InstancePriority,
-            r.IsEnabled,
-            r.availabilityMode,
-            r.timeRangesJson
-        }).ToList();
-
+        var result = await _adminQueryMetadataService.GetRouteRulesAsync(modelName, cancellationToken);
         return Ok(result);
     }
 
@@ -383,22 +317,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpGet("site-instances")]
     public async Task<IActionResult> GetSiteInstances(CancellationToken cancellationToken)
     {
-        var result = await (
-                from mapping in _dbContext.SiteModelMappings.AsNoTracking()
-                join site in _dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
-                join model in _dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
-                where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
-                orderby site.Name, mapping.RemoteModelName
-                select new
-                {
-                    siteId = site.Id,
-                    siteName = site.Name,
-                    siteModelName = mapping.RemoteModelName,
-                    protocolType = site.ProtocolType,
-                    siteEnabled = site.IsEnabled
-                })
-            .ToListAsync(cancellationToken);
-
+        var result = await _adminQueryMetadataService.GetRouteSiteInstancesAsync(cancellationToken);
         return Ok(result);
     }
 

@@ -1,6 +1,6 @@
 using AITool.Application.Conversations;
-using AITool.Application.Operations;
 using AITool.Infrastructure.Conversations;
+using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Admin.Controllers.Admin;
@@ -15,16 +15,16 @@ public sealed class ConversationsApiController : ControllerBase
 {
     private readonly IConversationLogStore _conversationLogStore;
     private readonly ConversationExtractionService _conversationExtractionService;
-    private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
+    private readonly AdminQueryMetadataService _adminQueryMetadataService;
 
     public ConversationsApiController(
         IConversationLogStore conversationLogStore,
         ConversationExtractionService conversationExtractionService,
-        ISystemRuntimeSettingsService systemRuntimeSettingsService)
+        AdminQueryMetadataService adminQueryMetadataService)
     {
         _conversationLogStore = conversationLogStore;
         _conversationExtractionService = conversationExtractionService;
-        _systemRuntimeSettingsService = systemRuntimeSettingsService;
+        _adminQueryMetadataService = adminQueryMetadataService;
     }
 
     /// <summary>
@@ -280,7 +280,7 @@ public sealed class ConversationsApiController : ControllerBase
     /// </summary>
     private async Task<bool> IsConversationLogEnabledAsync(CancellationToken cancellationToken)
     {
-        var settings = await _systemRuntimeSettingsService.GetOrCreateAsync(cancellationToken);
+        var settings = await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken);
         return settings.ConversationLogEnabled;
     }
 

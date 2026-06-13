@@ -1,5 +1,6 @@
 using AITool.Application.Operations;
 using AITool.Infrastructure.CoreRuntime;
+using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 
 namespace AITool.Admin.Pages.Admin.Chat;
@@ -16,13 +17,16 @@ namespace AITool.Admin.Pages.Admin.Chat;
 public class IndexModel : PageModel
 {
     private readonly ISystemRuntimeSettingsService _systemRuntimeSettingsService;
+    private readonly AdminQueryMetadataService _adminQueryMetadataService;
     private readonly CoreAdminClient _coreClient;
 
     public IndexModel(
         ISystemRuntimeSettingsService systemRuntimeSettingsService,
+        AdminQueryMetadataService adminQueryMetadataService,
         CoreAdminClient coreClient)
     {
         _systemRuntimeSettingsService = systemRuntimeSettingsService;
+        _adminQueryMetadataService = adminQueryMetadataService;
         _coreClient = coreClient;
     }
 
@@ -39,9 +43,9 @@ public class IndexModel : PageModel
     /// <summary>
     /// 处理页面首次访问，读取对话记录开关状态。
     /// </summary>
-    public async Task OnGetAsync()
+    public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        var settings = await _systemRuntimeSettingsService.GetOrCreateAsync();
+        var settings = await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken);
         ConversationLogEnabled = settings.ConversationLogEnabled;
         CoreBaseUrl = GetCoreBaseUrl();
     }
