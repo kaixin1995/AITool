@@ -104,11 +104,21 @@ public sealed class IndexModel : PageModel
 
         ActiveTab = "invocations";
 
-        // 从 AdminDeveloperTraceStore 读取调用追踪摘要数据
-        var (totalCount, failedCount, pendingCount) = _traceStore.GetSummary();
-        InitialTotalCount = totalCount;
-        InitialFailedCount = failedCount;
-        InitialPendingCount = pendingCount;
+        // 优先从 Core 获取实时调用追踪数据；Core 不可用时降级到 Admin 本地。
+        try
+        {
+            var coreList = await _coreClient.GetDeveloperInvocationsAsync(1, PageSize, cancellationToken);
+            InitialTotalCount = coreList.TotalCount;
+            InitialFailedCount = coreList.FailedCount;
+            InitialPendingCount = coreList.PendingCount;
+        }
+        catch
+        {
+            var (totalCount, failedCount, pendingCount) = _traceStore.GetSummary();
+            InitialTotalCount = totalCount;
+            InitialFailedCount = failedCount;
+            InitialPendingCount = pendingCount;
+        }
 
         try
         {
@@ -145,53 +155,63 @@ public sealed class IndexModel : PageModel
     }
 
     /// <summary>
-    /// 返回调用记录列表，供前端 JavaScript 通过 AJAX 调用。
-    /// 直接从 AdminDeveloperTraceStore 读取数据。
+    /// 返回调用记录列表。优先从 Core 获取实时数据，Core 不可用时降级到 Admin 本地。
     /// </summary>
     public async Task<IActionResult> OnGetListAsync(int pageNumber = 1, CancellationToken cancellationToken = default)
     {
         if (!(await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken)).DeveloperFeaturesEnabled)
-        {
             return NotFound();
-        }
 
-        var localResult = BuildLocalListResponse(pageNumber);
-        return new JsonResult(localResult);
+        try
+        {
+            var result = await _coreClient.GetDeveloperInvocationsAsync(pageNumber, PageSize, cancellationToken);
+            return new JsonResult(result);
+        }
+        catch
+        {
+            return new JsonResult(BuildLocalListResponse(pageNumber));
+        }
     }
 
     /// <summary>
-    /// 返回单条调用记录详情，供前端 JavaScript 展开卡片时 AJAX 加载。
-    /// 直接从 AdminDeveloperTraceStore 读取完整详情。
+    /// 返回单条调用记录详情。优先从 Core 获取完整详情，Core 不可用时降级到 Admin 本地。
     /// </summary>
     public async Task<IActionResult> OnGetDetailAsync(Guid traceId, CancellationToken cancellationToken = default)
     {
         if (!(await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken)).DeveloperFeaturesEnabled)
-        {
             return NotFound();
-        }
 
-        var traceEvent = _traceStore.Get(traceId);
-        if (traceEvent is null)
+        try
         {
-            return NotFound(new { message = $"跟踪记录 {traceId} 不存在或已过期" });
+            var result = await _coreClient.GetDeveloperInvocationDetailAsync(traceId, cancellationToken);
+            if (result is null) return NotFound(new { message = $"跟踪记录 {traceId} 不存在或已过期" });
+            return new JsonResult(result);
         }
-
-        return new JsonResult(BuildLocalDetailResponse(traceEvent));
+        catch
+        {
+            var traceEvent = _traceStore.Get(traceId);
+            if (traceEvent is null) return NotFound(new { message = $"跟踪记录 {traceId} 不存在或已过期" });
+            return new JsonResult(BuildLocalDetailResponse(traceEvent));
+        }
     }
 
     /// <summary>
-    /// 返回当前模型并发状态快照，供并发检测页签的自动刷新使用。
-    /// 从 Admin 本地配置读取并发限制，活跃计数和排队计数为 0（Admin 侧无法观测 Core 运行时并发状态）。
+    /// 返回当前模型并发状态快照。从 Core 获取实时并发数据（活跃调用数、排队数等）。
     /// </summary>
     public async Task<IActionResult> OnGetConcurrencyAsync(CancellationToken cancellationToken = default)
     {
         if (!(await _adminQueryMetadataService.GetRuntimeSettingsAsync(cancellationToken)).DeveloperFeaturesEnabled)
-        {
             return NotFound();
-        }
 
-        var localResult = await BuildLocalConcurrencyResponse(cancellationToken);
-        return new JsonResult(localResult);
+        try
+        {
+            var result = await _coreClient.GetDeveloperConcurrencyAsync(cancellationToken);
+            return new JsonResult(result);
+        }
+        catch
+        {
+            return new JsonResult(await BuildLocalConcurrencyResponse(cancellationToken));
+        }
     }
 
     private CoreDeveloperInvocationListResponse BuildLocalListResponse(int pageNumber)

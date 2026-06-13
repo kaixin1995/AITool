@@ -14,32 +14,56 @@ namespace AITool.Core.Controllers.Core;
 [Route("api/core/developer")]
 public sealed class CoreDeveloperQueryController : ControllerBase
 {
-    /// <summary>
-    /// 模型并发只读查询服务。
-    /// </summary>
     private readonly ModelConcurrencyQueryService _concurrencyQuery;
-
-    /// <summary>
-    /// 后台查询元数据服务，提供默认密钥、模型列表等信息。
-    /// </summary>
     private readonly AdminQueryMetadataService _metadataService;
+    private readonly DeveloperInvocationTraceStore _traceStore;
 
-    /// <summary>
-    /// 初始化开发者查询控制器。
-    /// </summary>
     public CoreDeveloperQueryController(
         ModelConcurrencyQueryService concurrencyQuery,
-        AdminQueryMetadataService metadataService)
+        AdminQueryMetadataService metadataService,
+        DeveloperInvocationTraceStore traceStore)
     {
         _concurrencyQuery = concurrencyQuery;
         _metadataService = metadataService;
+        _traceStore = traceStore;
     }
 
-    /// <summary>
-    /// 查询当前模型并发状态快照。
-    /// 返回最近 6 小时内出现过的模型并发记录，包括活跃数、排队数和配置上限。
-    /// </summary>
-    /// <param name="cancellationToken">请求取消令牌。</param>
+    [HttpGet("invocations/list")]
+    public async Task<IActionResult> ListInvocations(
+        [FromQuery] int pageNumber = 1,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+            return NotFound(new { message = "开发者功能未启用" });
+
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var allEntries = _traceStore.List();
+        var totalCount = allEntries.Count;
+        var failedCount = allEntries.Count(e => e.Status is "failed" or "error");
+        var pendingCount = allEntries.Count(e => e.Status is "pending" or "running");
+        var totalPages = (int)Math.Ceiling((double)totalCount / pageSize);
+        var paged = allEntries.Skip((pageNumber - 1) * pageSize).Take(pageSize).Select(ToSummary).ToList();
+
+        return Ok(new CoreDeveloperInvocationListResponse
+        {
+            TotalCount = totalCount, FailedCount = failedCount, PendingCount = pendingCount,
+            PageNumber = pageNumber, PageSize = pageSize, TotalPages = totalPages, Entries = paged
+        });
+    }
+
+    [HttpGet("invocations/detail")]
+    public async Task<IActionResult> DetailInvocation(
+        [FromQuery] Guid traceId, CancellationToken cancellationToken = default)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+            return NotFound(new { message = "开发者功能未启用" });
+
+        var entry = _traceStore.Get(traceId);
+        if (entry is null) return NotFound(new { message = $"跟踪记录 {traceId} 不存在或已过期" });
+        return Ok(ToDetail(entry));
+    }
+
     [HttpGet("concurrency")]
     public async Task<IActionResult> Concurrency(CancellationToken cancellationToken = default)
     {
@@ -138,4 +162,73 @@ public sealed class CoreDeveloperQueryController : ControllerBase
         return runtimeSettings.DeveloperFeaturesEnabled;
     }
 
+    private static CoreDeveloperInvocationSummary ToSummary(DeveloperInvocationTraceEntry entry)
+    {
+        var attempts = entry.Attempts;
+        return new CoreDeveloperInvocationSummary
+        {
+            TraceId = entry.TraceId, CreatedAt = entry.CreatedAt,
+            CreatedAtText = entry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+            Source = entry.Source, ProtocolType = entry.ProtocolType, RequestPath = entry.RequestPath,
+            RequestModel = entry.RequestModel, SummarySite = entry.TargetSiteName ?? "",
+            SummaryAttemptedModel = entry.AttemptedModel ?? "",
+            Status = entry.Status, StatusText = GetStatusText(entry.Status),
+            StatusClass = GetStatusClass(entry.Status), StatusCode = entry.StatusCode,
+            TotalDurationMs = entry.TotalDurationMs,
+            FailedAttemptCount = attempts.Count(a => a.Status is "failed" or "error"),
+            PendingAttemptCount = attempts.Count(a => a.Status is "pending" or "running"),
+            SuccessAttemptCount = attempts.Count(a => a.Status == "success")
+        };
+    }
+
+    private static CoreDeveloperInvocationDetail ToDetail(DeveloperInvocationTraceEntry entry)
+    {
+        return new CoreDeveloperInvocationDetail
+        {
+            TraceId = entry.TraceId, RequestId = entry.RequestId,
+            CreatedAt = entry.CreatedAt, CreatedAtText = entry.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+            UpdatedAt = entry.UpdatedAt, UpdatedAtText = entry.UpdatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+            Source = entry.Source, UserAgent = entry.UserAgent, ClientIp = entry.ClientIp,
+            ProtocolType = entry.ProtocolType, UpstreamProtocolType = entry.UpstreamProtocolType,
+            RequestPath = entry.RequestPath, RequestModel = entry.RequestModel,
+            AttemptedModel = entry.AttemptedModel, TargetSiteId = entry.TargetSiteId,
+            TargetSiteName = entry.TargetSiteName, SummarySite = entry.TargetSiteName,
+            SummaryAttemptedModel = entry.AttemptedModel,
+            RequestBody = entry.RequestBody, RequestHeaders = entry.RequestHeaders,
+            Status = entry.Status, StatusText = GetStatusText(entry.Status),
+            StatusClass = GetStatusClass(entry.Status), StatusCode = entry.StatusCode,
+            TotalDurationMs = entry.TotalDurationMs,
+            InputTokens = entry.InputTokens, CachedTokens = entry.CachedTokens,
+            OutputTokens = entry.OutputTokens, IsStreaming = entry.IsStreaming,
+            ErrorMessage = entry.ErrorMessage,
+            FailedAttemptCount = entry.Attempts.Count(a => a.Status is "failed" or "error"),
+            PendingAttemptCount = entry.Attempts.Count(a => a.Status is "pending" or "running"),
+            SuccessAttemptCount = entry.Attempts.Count(a => a.Status == "success"),
+            Attempts = entry.Attempts.Select(a => new CoreDeveloperInvocationAttempt
+            {
+                AttemptId = a.AttemptId, CreatedAt = a.CreatedAt,
+                CreatedAtText = a.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+                UpstreamProtocolType = a.UpstreamProtocolType, ForwardingMode = a.ForwardingMode,
+                AttemptedModel = a.AttemptedModel, TargetSiteName = a.TargetSiteName,
+                SummarySite = a.TargetSiteName, SummaryAttemptedModel = a.AttemptedModel,
+                Status = a.Status, StatusText = GetStatusText(a.Status),
+                StatusClass = GetStatusClass(a.Status), StatusCode = a.StatusCode,
+                TotalDurationMs = a.TotalDurationMs, InputTokens = a.InputTokens,
+                CachedTokens = a.CachedTokens, OutputTokens = a.OutputTokens,
+                ErrorMessage = a.ErrorMessage, ResponseBody = a.ResponseBody
+            }).ToList()
+        };
+    }
+
+    private static string GetStatusText(string status) => status switch
+    {
+        "success" => "成功", "fail" or "error" => "异常",
+        "pending" or "running" => "等待中", _ => status
+    };
+
+    private static string GetStatusClass(string status) => status switch
+    {
+        "success" => "success", "fail" or "error" => "danger",
+        "pending" or "running" => "warning", _ => "secondary"
+    };
 }

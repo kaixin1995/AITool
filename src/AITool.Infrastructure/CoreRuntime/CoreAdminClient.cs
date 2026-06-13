@@ -103,6 +103,23 @@ public sealed class CoreAdminClient
         return (await response.Content.ReadFromJsonAsync<CoreDeveloperMetadataResponse>(cancellationToken))!;
     }
 
+    public async Task<CoreDeveloperInvocationListResponse> GetDeveloperInvocationsAsync(
+        int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+    {
+        var response = await _httpClient.GetAsync(
+            $"api/core/developer/invocations/list?pageNumber={pageNumber}&pageSize={pageSize}", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return (await response.Content.ReadFromJsonAsync<CoreDeveloperInvocationListResponse>(cancellationToken))!;
+    }
+
+    public async Task<CoreDeveloperInvocationDetail> GetDeveloperInvocationDetailAsync(
+        Guid traceId, CancellationToken cancellationToken = default)
+    {
+        var response = await _httpClient.GetAsync(
+            $"api/core/developer/invocations/detail?traceId={traceId}", cancellationToken);
+        response.EnsureSuccessStatusCode();
+        return (await response.Content.ReadFromJsonAsync<CoreDeveloperInvocationDetail>(cancellationToken))!;
+    }
 }
 
 /// <summary>
