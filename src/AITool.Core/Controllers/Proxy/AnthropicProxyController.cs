@@ -175,10 +175,9 @@ public sealed class AnthropicProxyController : ControllerBase
             RequestHeaders = DeveloperInvocationTraceStore.CaptureHeaders(Request.Headers)
         };
 
-        // 通过统一记录服务创建开发者追踪（仅在开发者功能启用时生效）
-        var traceId = runtimeSettings.DeveloperFeaturesEnabled
-            ? _proxyCallRecorder.BeginTrace(callContext)
-            : null;
+        // 始终创建调用追踪记录，用于事件发布（UsageLog 等依赖 trace 完成时触发）。
+        // DeveloperFeaturesEnabled 仅控制 Invocations 页面是否可见，不影响数据采集和推送。
+        var traceId = _proxyCallRecorder.BeginTrace(callContext);
 
         // 获取已经和站点信息合并后的候选路由，优先尝试支持 Anthropic 原协议的站点。
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("Anthropic", modelName, cancellationToken);
