@@ -83,13 +83,15 @@ public sealed class AdminCacheInvalidationService
         AppDbContext dbContext,
         ISystemRuntimeSettingsService runtimeSettingsService,
         CoreSyncStatusStore syncStatusStore,
-        ILogger<AdminCacheInvalidationService> logger)
+        ILogger<AdminCacheInvalidationService> logger,
+        ProxyRequestMetadataCache metadataCache)
     {
         _coreClient = coreClient;
         _dbContext = dbContext;
         _runtimeSettingsService = runtimeSettingsService;
         _syncStatusStore = syncStatusStore;
         _logger = logger;
+        _metadataCache = metadataCache;
     }
 
     /// <summary>
@@ -98,49 +100,37 @@ public sealed class AdminCacheInvalidationService
     public async Task InvalidateAccessKeysAsync(CancellationToken cancellationToken = default)
     {
         await SyncToCoreAsync(["AccessKeys"], cancellationToken);
+        _metadataCache.InvalidateAccessKeys(); // Admin 本地缓存同步失效
     }
 
-    /// <summary>
-    /// 失效运行时设置缓存。
-    /// </summary>
     public async Task InvalidateRuntimeSettingsAsync(CancellationToken cancellationToken = default)
     {
         await SyncToCoreAsync(["RuntimeSettings"], cancellationToken);
+        _metadataCache.InvalidateRuntimeSettings(); // Admin 本地缓存同步失效
     }
 
-    /// <summary>
-    /// 失效模型相关缓存。
-    /// 模型变更会影响已启用模型列表和兜底映射。
-    /// </summary>
     public async Task InvalidateModelMetadataAsync(CancellationToken cancellationToken = default)
     {
         await SyncToCoreAsync(["Models", "SiteModelMappings"], cancellationToken);
+        _metadataCache.InvalidateModelMetadata(); // Admin 本地缓存同步失效
     }
 
-    /// <summary>
-    /// 失效路由相关缓存。
-    /// 路由变更涉及站点、路由规则和路由主入口。
-    /// </summary>
     public async Task InvalidateRouteTargetsAsync(CancellationToken cancellationToken = default)
     {
         await SyncToCoreAsync(["Sites", "RouteRules", "RouteEntries"], cancellationToken);
+        _metadataCache.InvalidateRouteTargets(); // Admin 本地缓存同步失效
     }
 
-    /// <summary>
-    /// 失效后台路由配置元数据缓存。
-    /// 此方法在 Core 双宿主架构下等同于路由全量同步。
-    /// </summary>
     public async Task InvalidateAdminRouteMetadataAsync(CancellationToken cancellationToken = default)
     {
         await SyncToCoreAsync(["Sites", "RouteRules", "RouteEntries"], cancellationToken);
+        _metadataCache.InvalidateRouteTargets(); // Admin 本地缓存同步失效
     }
 
-    /// <summary>
-    /// 失效运行时路由缓存。
-    /// </summary>
     public async Task InvalidateRuntimeRouteTargetsAsync(CancellationToken cancellationToken = default)
     {
         await SyncToCoreAsync(["Sites", "RouteRules", "RouteEntries"], cancellationToken);
+        _metadataCache.InvalidateRouteTargets(); // Admin 本地缓存同步失效
     }
 
     /// <summary>
