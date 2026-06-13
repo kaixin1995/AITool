@@ -2,7 +2,7 @@
 
 ## 项目简介
 
-AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发多个 AI 服务站点的请求。它提供一个管理后台来管理站点、模型、路由规则、访问密钥，并通过 OpenAI/Anthropic 兼容协议对外提供代理服务，支持按优先级自动故障转移。
+AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发多个 AI 服务站点的请求。它提供管理后台来管理站点、模型、路由规则、访问密钥，并通过 OpenAI/Anthropic 兼容协议对外提供代理服务，支持按优先级自动故障转移。
 
 核心能力：
 - 多站点管理（注册 OpenAI/Anthropic 兼容的 AI 服务站点）
@@ -19,8 +19,9 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 - 使用日志（Token 级别的用量追踪，含重试次数、缓存命中、流式延迟等）
 - 对话记录（结构化记录用户输入与 AI 输出，按会话分组浏览）
 - 统计分析（用量趋势、模型分布、缓存命中率等可视化仪表盘）
-- 开发者追踪（内存储存环形缓冲区，调试代理请求全链路）
+- 开发者追踪（内存环形缓冲区，调试代理请求全链路）
 - OpenAI Responses API 代理（支持 HTTP 和 WebSocket 两种模式）
+- **Core-Admin 双宿主部署**（Admin 管理面 + Core 代理面独立进程，生产可分离部署）
 
 ---
 
@@ -30,9 +31,9 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 |------|------|
 | 运行时 | .NET 8.0 (ASP.NET Core) |
 | 数据库 | SQLite (EF Core, EnsureCreated 模式，无 Migration) |
-| 任务调度 | Hangfire (内存存储) |
 | 前端 | Razor Pages + Bootstrap 5.3.3 + 原生 CSS |
 | 交互方式 | 管理页面全部使用 AJAX（fetch API），无整页刷新 |
+| 日志 | NLog |
 | 测试 | xUnit + FluentAssertions + 隔离 SQLite 数据库 |
 
 ---
@@ -42,24 +43,94 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 ```
 AI-Tool/
 ├── src/
-│   ├── AITool.Domain/           # 领域实体（纯 POCO，零依赖，sealed 类）
-│   ├── AITool.Application/      # 应用层接口和 DTO（纯接口定义，不含实现）
-│   ├── AITool.Infrastructure/   # 基础设施实现（EF Core、HttpClient、Hangfire）
-│   └── AITool.Web/              # Web 入口（控制器 + Razor Pages + Program.cs）
+│   ├── AITool.Domain/            # 领域实体（纯 POCO，零依赖，sealed 类）
+│   ├── AITool.Application/       # 应用层接口和 DTO（纯接口定义，不含实现）
+│   ├── AITool.Infrastructure/    # 基础设施实现（EF Core、HttpClient、代理运行时）
+│   ├── AITool.Admin/             # Admin 宿主（Razor Pages + 管理 API、DB 读写、配置下发）
+│   └── AITool.Core/              # Core 宿主（代理端点 + 运行时查询 API、内存状态持有）
 ├── tests/
-│   ├── AITool.ApplicationTests/ # 单元测试
-│   └── AITool.IntegrationTests/ # 集成测试
+│   ├── AITool.ApplicationTests/         # 单元测试
+│   ├── AITool.Admin.IntegrationTests/   # Admin 集成测试
+│   └── AITool.Core.IntegrationTests/    # Core 集成测试
 ├── tools/
 │   └── ProtocolSyncCheck/       # 协议同步校验工具
 └── AITool.slnx                  # 解决方案文件
 ```
 
-**依赖关系：** `Domain` ← `Application` ← `Infrastructure` ← `Web`
+**依赖关系：** `Domain` ← `Application` ← `Infrastructure` ← `Admin` / `Core`
 
 - `Domain`：纯 POCO 实体，零外部依赖，所有类为 `sealed`
 - `Application`：仅引用 `Domain`，定义接口和 DTO，不含任何实现
-- `Infrastructure`：引用 `Application` 和 `Domain`，实现所有接口
-- `Web`：引用所有项目，作为宿主入口
+- `Infrastructure`：引用 `Application` 和 `Domain`，实现所有接口，含 Core-Admin 事件总线
+- `Admin`：引用所有项目，管理后台宿主（端口 5030），持有 SQLite 数据库
+- `Core`：引用 Infrastructure，代理运行时宿主（端口 5029），不直接访问数据库
+
+---
+
+## Core-Admin 双宿主架构
+
+### 架构概览
+
+```
+┌─ Admin 宿主机 (端口 5030) ───────────────────────────────────────────┐
+│                                                                       │
+│  Razor Pages + 管理 API 控制器                                        │
+│  SQLite 数据库 (aitool.db) — 唯一写入口                               │
+│  配置下发: CoreConfigSyncHostedService (全量) + AdminCacheInvalidationService (增量) │
+│  事件拉取: CoreEventPullHostedService → CoreEventPullService         │
+│                                                                       │
+└───────────────────────────────────────────────────────────────────────┘
+          │ 全量/增量同步 (HTTP POST)          │ 事件拉取 (HTTP GET replay)
+          ▼                                    ▼
+┌─ Core 宿主机 (端口 5029) ───────────────────────────────────────────┐
+│                                                                       │
+│  代理端点: /v1/chat/completions, /v1/messages, /v1/responses ...     │
+│  运行时查询: /api/core/developer/*, /api/core/runtime/*              │
+│  配置接收: /api/core/config/full-sync, /api/core/config/patch-sync   │
+│  事件发布: CoreAdminEventBus → CoreEventSpoolStore (磁盘 JSONL)      │
+│                                                                       │
+│  内存状态持有:                                                        │
+│    CoreRuntimeConfigProvider  (配置快照，完整路由/站点/密钥数据)      │
+│    DeveloperInvocationTraceStore (调用追踪，100条/6小时)             │
+│    ModelConcurrencyLimiter     (并发控制)                             │
+│    RouteCircuitStateStore      (熔断状态)                             │
+│                                                                       │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+### 配置同步体系
+
+Admin 是配置的**唯一写入源**（SQLite），Core 通过以下机制保持内存状态同步：
+
+| 同步方式 | 触发时机 | 传输内容 | 说明 |
+|----------|----------|----------|------|
+| **全量同步** (full-sync) | Admin 启动时 | 完整 `CoreRuntimeConfigSnapshot` | Core 无配置时必要；启动后 2s 延迟 + 最多 5 次指数退避重试 |
+| **增量同步** (patch-sync) | 每次管理操作后 | `ConfigPatchPayload`（只含变更类别） | 站点/路由/密钥/设置变更后立即推送 |
+
+**版本号机制**：使用 Unix 时间戳毫秒作为配置版本号，保证跨 Admin 重启单调递增。Core 端仅接受 `patch.ConfigVersion > current.ConfigVersion` 的增量同步。
+
+**兜底机制**：
+- Core 首次启动时从本地 `last-good-config.json` 文件恢复配置（可脱离 Admin 独立运行）
+- Core 拒绝增量同步（返回 400）时，Admin 自动回退到全量同步
+
+### 事件同步体系（UsageLog、ConversationLog、DeveloperTrace）
+
+Core 端代理请求产生的日志数据通过**事件总线 + 磁盘 Spool + 断线重放**机制同步到 Admin：
+
+```
+Core: ProxyCallRecorder → CoreUsageLogEventPublisher → CoreAdminEventBus (内存 Channel)
+                                                        │
+                                                        ▼
+                                CoreEventSpoolStore.AppendAsync() → 磁盘 JSONL 文件
+                                                        │
+Admin: CoreEventPullService.PullAndProcessAsync() ← SSE + 10s 轮询
+          │                     │
+          ├── ReplayAsync(afterSeq) → 拉取增量事件
+          ├── AdminUsageLogEventIngestor → 写入 Admin SQLite (幂等去重)
+          └── AckAsync(maxSeq) → Core 清理磁盘旧事件
+```
+
+**断线保护**：Admin 离线期间，Core 持续将事件写入磁盘 JSONL 文件（按日轮转，最多保留 30 天或 60 个文件）。Admin 恢复后，从 `ack.meta` 记录的序号开始重放，不会丢失数据。
 
 ---
 
@@ -89,291 +160,51 @@ AI-Tool/
 #### Site — AI 服务站点
 
 ```csharp
-// 命名空间：AITool.Domain.Sites
 sealed class Site
 {
     Guid Id;                    // 主键
-    string Name;                // 站点名称（必填，最长200）
-    string BaseUrl;             // 站点根地址（必填，最长500）
-    string EndpointPathMode;    // 接口路径模式，默认 "standard-root"（必填，最长50）
-    string ApiKey;              // 站点访问密钥（必填，最长500）
-    string ProtocolType;        // 协议类型，默认 "OpenAI"（必填，最长50）
-    bool SupportsOpenAi;        // 是否支持 OpenAI 协议
+    string Name;                // 站点名称
+    string BaseUrl;             // 站点根地址
+    string EndpointPathMode;    // 接口路径模式: "standard-root" / "versioned-base"
+    string ApiKey;              // 站点访问密钥
+    string ProtocolType;        // 协议类型: "OpenAI" / "Anthropic"
+    bool SupportsOpenAi;        // 是否支持 OpenAI 协议 (影响跨协议桥接)
     bool SupportsAnthropic;     // 是否支持 Anthropic 协议
     bool IsEnabled = true;      // 是否启用
-    DateTimeOffset CreatedAt;   // 创建时间，默认 UtcNow
+    DateTimeOffset CreatedAt;   // 创建时间
 }
 ```
-
-`ProtocolType` 区分 `"OpenAI"` 和 `"Anthropic"` 两种协议，影响请求转发时的目标路径和认证方式。`SupportsOpenAi` / `SupportsAnthropic` 标记该站点实际支持的协议类型，用于跨协议桥接时的兼容性判断。
-
-`EndpointPathMode` 控制接口路径拼接方式：
-- `"standard-root"`：站点根地址不含版本路径，系统自动拼接 `/v1/` 前缀
-- `"versioned-base"`：站点根地址已包含版本路径，系统直接追加接口路径
-
-#### ModelLibraryItem — 统一模型库
-
-```csharp
-// 命名空间：AITool.Domain.Models
-sealed class ModelLibraryItem
-{
-    Guid Id;                        // 主键
-    string ModelName;               // 统一模型名称（唯一索引，必填，最长200）
-    string DisplayName;             // 页面显示名称（最长200）
-    bool IsEnabled = true;          // 是否启用
-    DateTimeOffset CreatedAt;       // 创建时间，默认 UtcNow
-}
-```
-
-`ModelName` 有唯一索引，不同站点的同名模型归一到同一条 `ModelLibraryItem` 记录。导入模型时通过字典查找避免重复创建。
-
-#### SiteModelMapping — 站点模型映射
-
-```csharp
-// 命名空间：AITool.Domain.SiteCatalog
-sealed class SiteModelMapping
-{
-    Guid Id;                        // 主键
-    Guid SiteId;                    // 站点ID（FK → Site）
-    Guid ModelLibraryItemId;        // 模型库ID（FK → ModelLibraryItem）
-    string RemoteModelName;         // 站点上的原始模型名（必填，最长200）
-    string LastStatus = "unknown";  // 最后拉取/检测状态（必填，最长50）
-    bool IsEnabled = true;          // 该站点上的模型是否启用
-    int MaxConcurrency;             // 最大并发数，0 表示不限制
-}
-// 复合唯一索引：(SiteId, RemoteModelName)
-```
-
-`RemoteModelName` 是该模型在远程站点上的实际名称，可能与统一模型名不同。例如统一模型名 `gpt-4o`，某站点上可能叫 `gpt-4o-2024-08-06`。
-
-`MaxConcurrency` 控制该站点上此模型的最大并发请求数。当多个路由入口指向同一站点的同一模型时，并发总数不会超过此值。0 表示不限制。
-
-#### ProxyRouteEntry — 代理路由入口
-
-```csharp
-// 命名空间：AITool.Domain.Proxy
-sealed class ProxyRouteEntry
-{
-    Guid Id;                        // 主键
-    string EntryName;               // 入口名称（对外暴露的模型名，唯一索引）
-    DateTimeOffset CreatedAt;       // 创建时间，默认 UtcNow
-}
-```
-
-`ProxyRouteEntry` 是路由规则的逻辑入口，一个入口下可挂载多条 `ProxyRouteRule`（不同站点、不同模型实例），通过拖拽排序管理优先级。
-
-#### ProxyRouteRule — 代理路由规则
-
-```csharp
-// 命名空间：AITool.Domain.Proxy
-sealed class ProxyRouteRule
-{
-    Guid Id;                        // 主键
-    string ExternalModelName;       // 对外暴露的模型名（索引，必填，最长200）
-    string UpstreamModelName;       // 上游模型名（用于日志标记）
-    Guid SiteId;                    // 目标站点ID（FK → Site）
-    string SiteModelName;           // 站点上的模型名（必填，最长200）
-    int Priority;                   // 总优先级（数值越小优先级越高）
-    int ModelPriority;              // 模型级优先级
-    int InstancePriority;           // 实例级优先级
-    bool IsEnabled = true;          // 是否启用
-}
-// 索引：ExternalModelName（用于快速查找该模型的所有路由）
-```
-
-`ExternalModelName` 对应 `ModelLibraryItem.ModelName`。路由按 `ModelPriority`、`InstancePriority`、`Priority` 三级排序，保存路由规则时按列表顺序设置优先级（0 最高）。
-
-#### ProxyAccessKey — 访问密钥
-
-```csharp
-// 命名空间：AITool.Domain.Proxy
-sealed class ProxyAccessKey
-{
-    Guid Id;                        // 主键
-    string KeyName;                 // 密钥名称（必填，最长200）
-    string PlainKey;                // 原始密钥（仅创建时存储，用于展示一次）
-    string AccessKeyHash;           // SHA256 哈希值，只存哈希不存原文（必填，最长500）
-    string MaskedValue;             // 脱敏显示值，如 "sk-***abc"（必填，最长100）
-    bool IsEnabled = true;          // 是否启用
-}
-```
-
-密钥验证流程：客户端传入原始密钥 → SHA256 哈希 → 与数据库中的 `AccessKeyHash` 比对。
 
 #### ProxyUsageLog — 使用日志
 
 ```csharp
-// 命名空间：AITool.Domain.Proxy
 sealed class ProxyUsageLog
 {
-    Guid Id;                        // 主键
-    Guid RequestId;                 // 请求唯一标识（用于关联同一次请求的多条日志）
-    Guid AccessKeyId;               // 访问密钥ID（FK → ProxyAccessKey）
-    string ProtocolType;            // 协议类型 "OpenAI" 或 "Anthropic"（必填，最长50）
-    string? ForwardingMode;         // 调用模式（直接透传 / 兼容中转）
-    string RequestModel;            // 请求的模型名（必填，最长200）
-    string AttemptedModel;          // 实际尝试的上游模型名（必填，最长200）
-    Guid TargetSiteId;              // 命中的目标站点ID
-    string Status;                  // 状态 "success" 或 "fail"（必填，最长50）
-    string Source = "proxy";        // 来源 "proxy"、"chat" 或 "detection-task"
-    int RetryCount;                 // 尝试了几个路由（重试次数）
-    int AttemptIndex;               // 当前尝试的序号（从 0 开始）
-    bool IsFinalResult;             // 是否为最终结果（成功或最后一次失败）
-    bool FallbackTriggered;         // 是否触发了故障转移
-    string ErrorMessage;            // 失败时的错误信息（必填，默认空字符串）
-    int InputTokens;                // 输入 Token 数
-    int CachedTokens;               // 缓存命中的 Token 数（Prompt Cache）
-    int OutputTokens;               // 输出 Token 数
-    int TotalTokens;                // 总 Token 数（= InputTokens + CachedTokens + OutputTokens）
-    bool IsStreaming;               // 是否为流式请求
-    bool IsStreamInterrupted;       // 流式请求是否被中断
-    int FirstTokenLatencyMs;        // 首 Token 延迟（毫秒）
-    int StreamDurationMs;           // 流式传输总时长（毫秒）
-    int TotalDurationMs;            // 请求总耗时（毫秒）
-    string ReasoningEffort;         // 推理力度参数（如 "low"、"high"，必填，默认空字符串）
-    DateTimeOffset RequestedAt;     // 请求时间，默认 UtcNow
+    Guid Id;                    // 主键
+    Guid RequestId;             // 请求唯一标识（关联同次请求的多条日志）
+    Guid AccessKeyId;           // 访问密钥ID
+    string ProtocolType;        // 协议类型
+    string RequestModel;        // 请求的模型名
+    string AttemptedModel;      // 实际尝试的上游模型名
+    Guid TargetSiteId;          // 命中的目标站点ID
+    string Status;              // "success" / "fail"
+    string Source = "proxy";    // "proxy" / "chat" / "detection-task"
+    int RetryCount;             // 重试次数
+    int AttemptIndex;           // 尝试序号
+    bool IsFinalResult;         // 是否为最终结果
+    bool FallbackTriggered;     // 是否触发故障转移
+    string ErrorMessage;        // 错误信息
+    int InputTokens;            // 输入 Token 数
+    int CachedTokens;           // 缓存命中 Token 数
+    int OutputTokens;           // 输出 Token 数
+    bool IsStreaming;           // 是否为流式请求
+    bool IsStreamInterrupted;   // 流式是否被中断
+    int FirstTokenLatencyMs;    // 首 Token 延迟（毫秒）
+    int StreamDurationMs;       // 流式传输总时长（毫秒）
+    int TotalDurationMs;        // 请求总耗时（毫秒）
+    string ReasoningEffort;     // 推理力度参数
+    DateTimeOffset RequestedAt; // 请求时间
 }
-// 索引：RequestedAt（用于日志按时间查询和清理）
-```
-
-代理请求会为每次尝试记录一条日志（`AttemptIndex` 标识序号），最终成功或全部失败的那条标记 `IsFinalResult = true`。`FallbackTriggered` 标记是否因前次失败而触发了备用路由。
-
-`Source` 字段区分来源：`"proxy"` 代理请求、`"chat"` 对话测试、`"detection-task"` 模型检测任务。
-
-#### ConversationTurnLog — 对话记录
-
-```csharp
-// 命名空间：AITool.Domain.Proxy
-sealed class ConversationTurnLog
-{
-    Guid Id;                        // 主键
-    Guid RequestId;                 // 对应的请求链路标识
-    DateTimeOffset CreatedAt;       // 创建时间，默认 UtcNow
-    DateTimeOffset? UserCreatedAt;  // 用户发起请求的时间
-    string SourceTool;              // 工具来源，如 "claude-code"、"codex"、"proxy"
-    string SessionId;               // 会话标识
-    string ConversationGroupKey;    // 会话分组键
-    Guid AccessKeyId;               // 平台访问密钥标识
-    string RequestModel;            // 请求入口模型名
-    string ProtocolType;            // 协议类型
-    string RequestPath;             // 请求路径
-    string Source;                  // 调用来源入口
-    string UserInputText;           // 用户输入文本（GZip 压缩存储）
-    string AssistantOutputMarkdown; // AI 输出的 Markdown 文本（GZip 压缩存储）
-    int InputTokens;                // 输入 Token 数
-    int CachedTokens;               // 缓存 Token 数
-    int OutputTokens;               // 输出 Token 数
-    bool IsStreaming;               // 是否为流式响应
-    string Status;                  // 状态
-    string MetadataJson;            // 附加元数据 JSON
-}
-// 索引：CreatedAt、RequestId、ConversationGroupKey、(SourceTool, SessionId, CreatedAt)
-```
-
-对话记录通过 `ConversationLogBatchWriter` 后台批量写入，文本字段（`UserInputText`、`AssistantOutputMarkdown`）使用 GZip 压缩存储以节省空间。
-
-`SourceTool` 通过解析请求头自动检测，支持识别 `claude-code`、`codex`、`open-code` 等工具。
-
-#### SystemRuntimeSettings — 系统运行时配置
-
-```csharp
-// 命名空间：AITool.Domain.Operations
-sealed class SystemRuntimeSettings
-{
-    int Id = 1;                         // 固定为 1（单例）
-    int ProxyRequestTimeoutSeconds;     // 代理请求超时（秒）
-    int ProxyRetryCount;                // 代理请求重试次数
-    int DetectionRequestTimeoutSeconds; // 检测请求超时（秒）
-    int DetectionRetryCount;            // 检测请求重试次数
-    int DetectionConcurrency;           // 检测并发数
-    int CircuitBreakerFailureThreshold; // 熔断失败阈值
-    int CircuitBreakerRecoveryMinutes;  // 熔断恢复时间（分钟）
-    int UsageLogRetentionDays;          // 使用日志保留天数
-    bool UsageLogAutoCleanupEnabled;    // 是否启用使用日志自动清理
-    bool DeveloperFeaturesEnabled;      // 是否启用开发者调试功能
-    int ConcurrencyMode;                // 并发打满策略：0=跳到下一顺位，1=排队等待
-    int ConcurrencyQueueTimeoutSeconds; // 排队等待超时（秒），默认 120
-    DateTimeOffset? LastUsageLogPrunedAt;  // 上次清理时间
-    int LastUsageLogPrunedCount;           // 上次清理数量
-}
-```
-
-系统运行时配置通过管理后台 `/Admin/System/Settings` 页面维护，修改后即时生效（通过缓存失效机制）。
-
-`ConcurrencyMode` 控制当站点+模型的并发打满时的行为：
-- `0 (SkipOnFull)`：跳过当前站点，尝试下一个优先级的路由
-- `1 (WaitForSlot)`：排队等待直到有位置释放或超时（超时后顺延到下一个路由）
-
-#### ModelHealthMonitor — 模型健康监控配置
-
-```csharp
-// 命名空间：AITool.Domain.Models
-sealed class ModelHealthMonitor
-{
-    Guid Id;                            // 主键
-    Guid ModelLibraryItemId;            // 模型库ID（唯一索引，FK → ModelLibraryItem）
-    DateTimeOffset CreatedAt;           // 创建时间，默认 UtcNow
-}
-```
-
-标记哪些模型需要在健康监控页面展示。
-
-#### DetectionTask — 定时检测任务
-
-```csharp
-// 命名空间：AITool.Domain.Detection
-sealed class DetectionTask
-{
-    Guid Id;                            // 主键
-    string Name;                        // 任务名称（必填，最长200）
-    string CronExpression;              // Cron 表达式（必填，最长100）
-    bool IsEnabled = true;              // 是否启用
-    Guid? ModelLibraryItemId;           // 指定模型ID，null 表示检测全部模型
-}
-```
-
-`ModelLibraryItemId` 为 null 时，该任务会检测所有站点模型映射。
-
-#### DetectionTaskExecution — 检测任务执行记录
-
-```csharp
-// 命名空间：AITool.Domain.Detection
-sealed class DetectionTaskExecution
-{
-    Guid Id;                            // 主键
-    Guid DetectionTaskId;               // 检测任务ID（FK → DetectionTask）
-    string Status;                      // "running" / "completed" / "failed"（必填，最长50）
-    DateTimeOffset StartedAt;           // 开始时间，默认 UtcNow
-    DateTimeOffset? FinishedAt;         // 结束时间
-    string? Summary;                    // 执行结果摘要（最长2000）
-}
-// 索引：StartedAt
-```
-
-### 实体关系图
-
-```
-Site ──1:N──> SiteModelMapping <──N:1── ModelLibraryItem
-                  │
-                  │ (检测探针通过 ProxyUsageLog 记录)
-                  ↓
-              ProxyUsageLog (Source="detection-task")
-
-ModelLibraryItem ──1:1──> ModelHealthMonitor (唯一索引)
-
-ProxyRouteEntry ──1:N──> ProxyRouteRule ──N:1──> Site (SiteId)
-  (EntryName = ExternalModelName)
-
-ProxyAccessKey ──1:N──> ProxyUsageLog <──N:1── Site
-                            (AccessKeyId, TargetSiteId)
-
-ProxyAccessKey ──1:N──> ConversationTurnLog (AccessKeyId)
-
-SystemRuntimeSettings (单例 Id=1)
-
-DetectionTask ──1:N──> DetectionTaskExecution
-     │
-     └──0:1──> ModelLibraryItem (可选，null=全部模型)
 ```
 
 ---
@@ -382,214 +213,48 @@ DetectionTask ──1:N──> DetectionTaskExecution
 
 定义接口和 DTO，不含实现。仅引用 `Domain` 项目。
 
-| 文件 | 说明 |
-|------|------|
-| **Proxy/** | |
-| `IProxyForwardService.cs` | 代理转发接口（含流式）+ `ProxyForwardRequest`/`ProxyForwardResult` DTO |
-| `ProxyForwardingOptions.cs` | 代理转发配置（超时、重试次数） |
-| **Routing/** | |
-| `IRouteSelectionService.cs` | 路由选择接口 + `RouteSelectionResult` DTO |
-| **UsageLogs/** | |
-| `IUsageLogService.cs` | 使用日志接口 + `UsageLogEntry` DTO |
-| **Conversations/** | |
-| `IConversationLogService.cs` | 对话日志接口 + `ConversationTurnEntry` DTO |
-| **SiteCatalog/** | |
-| `ISiteCatalogClient.cs` | 站点模型目录拉取接口 |
-| **Detection/** | |
-| `IModelProbeService.cs` | 模型探测接口 + `ModelProbeResult` DTO |
-| `RunDetectionCommand.cs` | 执行检测命令 DTO + `RunDetectionResult` |
-| **Operations/** | |
-| `ISystemRuntimeSettingsService.cs` | 系统运行时配置接口 + `UpdateSystemRuntimeSettingsRequest`/`ClearUsageLogsRequest` DTO |
-| **Common/** | |
-| `ILogRetentionService.cs` | 日志清理接口 + `LogPruneResult` DTO |
-| **Sites/** | |
-| `CreateSiteCommand.cs` | 创建站点 DTO |
-| `SiteEndpointPathResolver.cs` | 站点接口路径解析工具（静态类） |
-| **Models/** | |
-| `CreateModelLibraryItemCommand.cs` | 创建模型 DTO |
+#### 核心接口
 
-#### 核心接口和 DTO 详细定义
+| 接口 | 文件 | 说明 |
+|------|------|------|
+| `IProxyForwardService` | `Proxy/IProxyForwardService.cs` | 代理转发（含流式） |
+| `IProxyCallRecorder` | `Proxy/IProxyCallRecorder.cs` | 统一记录服务（Trace + UsageLog + ConversationLog） |
+| `IUsageLogService` | `UsageLogs/IUsageLogService.cs` | 使用日志写入 |
+| `IConversationLogService` | `Conversations/IConversationLogService.cs` | 对话日志写入 |
+| `ISystemRuntimeSettingsService` | `Operations/ISystemRuntimeSettingsService.cs` | 系统运行时配置 |
+| `ICoreRuntimeConfigProvider` | `CoreRuntime/ICoreRuntimeConfigProvider.cs` | Core 运行时配置快照接口 |
 
-**IProxyForwardService** — 代理转发
+#### IProxyCallRecorder — 统一记录服务
+
+这是代理管道中**唯一的记录入口**，收拢了三种日志的写入：
 
 ```csharp
-interface IProxyForwardService
+interface IProxyCallRecorder
 {
-    Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken ct = default);
-    Task<ProxyForwardResult> ForwardStreamingAsync(
-        ProxyForwardRequest request,
-        Func<string, CancellationToken, Task> onSseDataAsync,
-        CancellationToken ct = default);
-}
-
-sealed class ProxyForwardRequest
-{
-    string TargetBaseUrl;         // 目标站点根地址
-    string EndpointPathMode;      // 接口路径模式 ("standard-root" / "versioned-base")
-    string TargetApiKey;          // 目标站点 API 密钥
-    string ProtocolType;          // "OpenAI" 或 "Anthropic"
-    string TargetModelName;       // 目标站点上的模型名称
-    string RequestBody;           // 原始请求体（JSON 字符串）
-    string? PreparedRequestBody;  // 协议转换后的请求体（跨协议桥接时使用）
-    bool EnableStreaming;         // 是否启用流式转发
-    int RequestTimeoutSeconds;    // 请求超时时间（秒）
-    int RetryCount;               // 重试次数
-    string? TargetPath;           // 自定义目标路径（覆盖默认路径）
-    Dictionary<string, string> ForwardHeaders;  // 需要转发的额外请求头
-}
-
-sealed class ProxyForwardResult
-{
-    bool Success;                 // 是否成功
-    int StatusCode;               // HTTP 状态码
-    string ResponseBody;          // 响应体内容
-    int InputTokens;              // 输入 Token 数
-    int CachedTokens;             // 缓存命中 Token 数
-    int OutputTokens;             // 输出 Token 数
-    bool IsStreaming;             // 是否为流式响应
-    bool HasStartedStreaming;     // 是否已开始流式传输
-    bool IsStreamInterrupted;     // 流式传输是否被中断
-    int? FirstTokenLatencyMs;     // 首 Token 延迟（毫秒）
-    int? StreamDurationMs;        // 流式传输总时长（毫秒）
-    int? TotalDurationMs;         // 请求总耗时（毫秒）
-    string? ErrorMessage;         // 错误信息
+    Guid? BeginTrace(ProxyCallContext context);                          // 创建开发者追踪
+    Guid BeginTraceAttempt(Guid? traceId, ProxyCallContext context);     // 追加路由尝试
+    void CompleteTraceAttempt(Guid? traceId, Guid attemptId, ProxyCallContext context); // 完成路由尝试
+    void CancelTrace(Guid? traceId, string reason);                      // 客户端断连时取消追踪
+    Task RecordUsageAsync(ProxyCallContext context, CancellationToken ct);       // 写入用量日志
+    Task RecordConversationAsync(ProxyCallContext context, CancellationToken ct); // 写入对话日志
 }
 ```
 
-**IRouteSelectionService** — 路由选择
+#### CoreRuntimeConfigSnapshot — Core 配置快照 DTO
 
 ```csharp
-interface IRouteSelectionService
+sealed class CoreRuntimeConfigSnapshot
 {
-    // 选择优先级最高的单条路由
-    Task<RouteSelectionResult> SelectRouteAsync(string externalModelName, CancellationToken ct = default);
-    // 选择路由，跳过指定站点（熔断场景）
-    Task<RouteSelectionResult> SelectRouteAsync(string externalModelName, HashSet<Guid> excludedSiteIds, CancellationToken ct = default);
-    // 获取所有启用的路由，按优先级升序（用于失败重试）
-    Task<List<RouteSelectionResult>> SelectAllRoutesAsync(string externalModelName, CancellationToken ct = default);
-}
-
-sealed class RouteSelectionResult
-{
-    ProxyRouteRule? Route;    // 匹配到的路由规则
-    bool Found => Route is not null;
-}
-```
-
-**IUsageLogService** — 使用日志
-
-```csharp
-interface IUsageLogService
-{
-    Task LogAsync(UsageLogEntry entry, CancellationToken ct = default);
-}
-
-sealed class UsageLogEntry
-{
-    string RequestId;             // 请求唯一标识
-    Guid AccessKeyId;             // 访问密钥ID
-    string ProtocolType;          // "OpenAI" 或 "Anthropic"
-    string ForwardingMode;        // 调用模式（透传 / 兼容中转）
-    string RequestModel;          // 请求的模型名
-    string AttemptedModel;        // 实际尝试的上游模型名
-    Guid TargetSiteId;            // 目标站点ID
-    string Status;                // "success" 或 "fail"
-    string Source = "proxy";      // "proxy"、"chat" 或 "detection-task"
-    int RetryCount;               // 尝试的路由数量
-    int AttemptIndex;             // 当前尝试序号
-    bool IsFinalResult;           // 是否为最终结果
-    bool FallbackTriggered;       // 是否触发了故障转移
-    string ErrorMessage;          // 错误信息
-    int InputTokens;              // 输入 Token 数
-    int CachedTokens;             // 缓存命中 Token 数
-    int OutputTokens;             // 输出 Token 数
-    bool IsStreaming;              // 是否为流式请求
-    bool IsStreamInterrupted;     // 流式是否被中断
-    int FirstTokenLatencyMs;      // 首 Token 延迟
-    int StreamDurationMs;         // 流式传输时长
-    int TotalDurationMs;          // 请求总耗时
-    string ReasoningEffort;       // 推理力度参数
-}
-```
-
-**IConversationLogService** — 对话日志
-
-```csharp
-interface IConversationLogService
-{
-    Task LogAsync(ConversationTurnEntry entry, CancellationToken ct = default);
-}
-
-sealed class ConversationTurnEntry
-{
-    Guid RequestId;               // 请求链路标识
-    DateTimeOffset? UserCreatedAt; // 用户发起请求时间
-    string SourceTool;            // 工具来源（如 "claude-code"）
-    string SessionId;             // 会话标识
-    string ConversationGroupKey;  // 会话分组键
-    Guid AccessKeyId;             // 访问密钥ID
-    string RequestModel;          // 请求模型名
-    string ProtocolType;          // 协议类型
-    string RequestPath;           // 请求路径
-    string Source;                // 调用来源入口
-    string UserInputText;         // 用户输入文本
-    string AssistantOutputMarkdown; // AI 输出 Markdown
-    int InputTokens;              // 输入 Token 数
-    int CachedTokens;             // 缓存 Token 数
-    int OutputTokens;             // 输出 Token 数
-    bool IsStreaming;             // 是否为流式响应
-    string Status;                // 状态
-    string MetadataJson;          // 附加元数据 JSON
-}
-```
-
-**ISiteCatalogClient** — 站点模型目录拉取
-
-```csharp
-interface ISiteCatalogClient
-{
-    Task<IReadOnlyList<string>> GetModelsAsync(Site site, CancellationToken ct);
-}
-```
-
-**IModelProbeService** — 模型探测
-
-```csharp
-interface IModelProbeService
-{
-    Task<ModelProbeResult> ProbeAsync(Site site, ModelLibraryItem model, CancellationToken ct);
-}
-
-sealed class ModelProbeResult
-{
-    bool Success;             // 探测是否成功
-    int DurationMs;           // 探测耗时（毫秒）
-    string? ErrorMessage;     // 失败时的错误信息
-}
-```
-
-**ISystemRuntimeSettingsService** — 系统运行时配置
-
-```csharp
-interface ISystemRuntimeSettingsService
-{
-    Task<SystemRuntimeSettings> GetOrCreateAsync(CancellationToken ct = default);
-    Task UpdateAsync(SystemRuntimeSettings settings, CancellationToken ct = default);
-    Task<int> ClearUsageLogsAsync(ClearUsageLogsRequest request, CancellationToken ct = default);
-}
-```
-
-**SiteEndpointPathResolver** — 站点接口路径解析
-
-```csharp
-static class SiteEndpointPathResolver
-{
-    // 规范化路径模式，无效值回退为 "standard-root"
-    static string NormalizeMode(string mode);
-    // 解析接口路径，根据 EndpointPathMode 决定是否添加 /v1/ 前缀
-    static string ResolvePath(string baseUrl, string endpoint, string mode);
-    // 构建完整 URL
-    static string BuildUrl(string baseUrl, string endpoint, string mode);
+    long ConfigVersion;                              // 单调递增版本号（Unix 时间戳毫秒）
+    string ConfigHash;                               // SHA256 哈希，用于去重
+    DateTimeOffset GeneratedAt;                      // 生成时间
+    List<CoreRuntimeSite> Sites;                     // 站点列表（含 ApiKey、协议、启停状态）
+    List<CoreRuntimeModel> Models;                   // 模型列表
+    List<CoreRuntimeSiteModelMapping> SiteModelMappings;  // 站点模型映射
+    List<CoreRuntimeRouteEntry> RouteEntries;         // 路由入口
+    List<CoreRuntimeRouteRule> RouteRules;            // 路由规则（已按优先级排序）
+    List<CoreRuntimeAccessKey> AccessKeys;            // 访问密钥（含明文密钥 + 哈希）
+    CoreRuntimeSettings RuntimeSettings;              // 运行时设置（含 DeveloperFeaturesEnabled）
 }
 ```
 
@@ -597,7 +262,7 @@ static class SiteEndpointPathResolver
 
 ### AITool.Infrastructure — 基础设施层
 
-所有接口的实现，包含数据库访问、HTTP 请求、调度等。
+所有接口的实现，包含数据库访问、HTTP 请求、代理运行时核心。
 
 #### 数据库 — AppDbContext
 
@@ -619,70 +284,94 @@ sealed class AppDbContext : DbContext
 }
 ```
 
-EF Core 配置要点：
-- 所有实体使用 `Guid` 主键
-- `ModelLibraryItem.ModelName` — 唯一索引
-- `SiteModelMapping` — `(SiteId, RemoteModelName)` 复合唯一索引
-- `ModelHealthMonitor.ModelLibraryItemId` — 唯一索引
-- `ProxyRouteEntry.EntryName` — 唯一索引
-- `ProxyRouteRule.ExternalModelName` — 普通索引
-- `DetectionTaskExecution.StartedAt` — 索引
-- `ProxyUsageLog.RequestedAt` — 索引
-- `ConversationTurnLog` — CreatedAt、RequestId、ConversationGroupKey 索引 + `(SourceTool, SessionId, CreatedAt)` 复合索引
-- `ProxyAccessKey` — `(AccessKeyHash, IsEnabled)` 复合索引
-- 字符串字段均有 `HasMaxLength` 约束
-- **无导航属性**，关系通过 ID 手动 Join 或字典查找
-
-#### ProxyForwardService — 代理转发服务
+#### ProxyCallRecorder — 统一记录服务实现
 
 ```csharp
-sealed class ProxyForwardService : IProxyForwardService  // HttpClient Typed 实例
+sealed class ProxyCallRecorder : IProxyCallRecorder
 ```
 
-核心流程：
-1. 根据 `ProtocolType` 和 `EndpointPathMode` 通过 `SiteEndpointPathResolver` 拼接目标 URL（支持 `TargetPath` 覆盖）：
-   - OpenAI: `{BaseUrl}/v1/chat/completions`
-   - Anthropic: `{BaseUrl}/v1/messages`
-2. 使用 `PreparedRequestBody`（跨协议桥接时已转换）或替换请求体中的 `model` 字段
-3. 设置认证头和额外转发头（`ForwardHeaders`）：
-   - OpenAI: `Authorization: Bearer {ApiKey}`
-   - Anthropic: `x-api-key: {ApiKey}` + `anthropic-version: 2023-06-01`
-4. **非流式**：发送 HTTP POST 请求，读取响应，提取 Token 用量
-5. **流式**（`ForwardStreamingAsync`）：逐行读取 SSE 事件流，通过回调 `onSseDataAsync` 实时传递给控制器，同时追踪首 Token 延迟和流式传输时长
-6. 调用 `ExtractUsageFromElement()` 从响应 JSON 提取 Token 用量，支持三种格式：
-   - OpenAI Chat Completions: `usage.prompt_tokens` + `usage.completion_tokens` + `prompt_tokens_details.cached_tokens`
-   - OpenAI Responses API: `usage.input_tokens` + `usage.output_tokens` + `input_tokens_details.cached_tokens`
-   - Anthropic: `usage.input_tokens` + `usage.output_tokens` + `cache_read_input_tokens` + `cache_creation_input_tokens`
-7. 返回 `ProxyForwardResult`（含状态码、响应体、Token 用量、流式指标）
-8. 流式中断检测：流式请求开始但未收到 `[DONE]`（OpenAI）或 `message_stop`（Anthropic）时标记为中断
+将 `ProxyCallContext` 派发到三个存储：
+1. `DeveloperInvocationTraceStore`（开发者追踪，Core 内存）
+2. `IUsageLogService`（使用日志）
+3. `IConversationLogService`（对话日志）
 
-#### RouteSelectionService — 路由选择服务
+所有方法内部均捕获异常，确保记录失败不影响代理主链路。
+
+#### DeveloperInvocationTraceStore — 开发者调用追踪存储
 
 ```csharp
-sealed class RouteSelectionService : IRouteSelectionService  // Scoped
+sealed class DeveloperInvocationTraceStore  // Singleton，Core 内存，LinkedList
 ```
 
-查询 `ProxyRouteRules` 表，按 `ModelPriority`、`InstancePriority`、`Priority` 升序排列。支持排除指定站点 ID 集合（熔断场景）。
+- 最多保留 **100 条** 最近代理请求的详细记录
+- **6 小时** 过期自动清理
+- 生命周期：`BeginTrace` → `BeginTraceAttempt` → `CompleteTraceAttempt`
+- 客户端断连时：`CancelPending(traceId, reason)` 强制标记为 error
+- 追踪完成时触发 `OnTraceCompleted` 事件 → `CoreDeveloperTraceEventPublisher` → 事件总线 → Admin 副本
 
-#### RouteCircuitStateStore — 熔断状态存储
+#### ProxyRequestMetadataCache — 代理元数据缓存
 
 ```csharp
-sealed class RouteCircuitStateStore  // Singleton，纯内存状态
-{
-    void Block(Guid routeId);         // 记录一次失败，达阈值触发熔断
-    void Succeed(Guid routeId);       // 成功时清除连续失败计数
-    bool IsBlocked(Guid routeId);     // 判断是否在熔断窗口内
-    void UpdateOptions(int failThreshold, int recoveryMinutes);  // 动态更新熔断参数
-}
+sealed class ProxyRequestMetadataCache  // Singleton，基于 IMemoryCache，5 秒 TTL
 ```
 
-实现原理：
-- `_failCounts: ConcurrentDictionary<Guid, int>` — 每个路由的连续失败次数
-- `_blockedSites: ConcurrentDictionary<Guid, DateTimeOffset>` — 被熔断的路由及其解除时间
-- `Block()`: 递增失败计数，达阈值时记录解除时间
-- `Succeed()`: 清除该路由的失败计数
-- `IsBlocked()`: 检查是否在屏蔽窗口内，已超时则自动清除
-- 熔断参数（阈值、恢复时间）可通过 `SystemRuntimeSettings` 动态配置，线程安全
+**双宿主自适应**：
+- **Core 宿主**：从 `ICoreRuntimeConfigProvider` 的快照读取（内存，不查 DB）
+- **Admin 宿主**：从 `AppDbContext` 查询数据库
+
+核心方法：
+- `GetRuntimeSettingsAsync()` — 获取运行时设置（含 `DeveloperFeaturesEnabled`）
+- `GetRouteTargetsForModelAsync()` — 获取指定模型的候选路由列表（已排序，含站点合并信息）
+- `ValidateAccessKeyAsync()` — 验证访问密钥
+- `GetChatModelsAsync()` / `GetChatTargetsAsync()` — 对话测试页查询
+
+#### CoreRuntimeConfigProvider — Core 配置快照持有器
+
+```csharp
+sealed class CoreRuntimeConfigProvider : ICoreRuntimeConfigProvider  // Singleton
+```
+
+- `GetCurrent()` → `Volatile.Read(ref _current)` 读取快照
+- `SetCurrent(snapshot)` → `Interlocked.Exchange` 原子替换 + 异步持久化到 `last-good-config.json`
+- `TryLoadFromFileAsync()` → Core 启动时恢复上次配置
+
+#### CoreAdminEventBus — Core 事件总线
+
+```csharp
+sealed class CoreAdminEventBus  // Singleton，基于 Bounded Channel<CoreAdminEventEnvelope>
+```
+
+- 容量 **10000**，`DropOldest` 溢出策略
+- 支持 SSE 订阅机制通知 Admin 新事件到达
+
+#### CoreEventSpoolStore — 事件磁盘缓冲
+
+```csharp
+sealed class CoreEventSpoolStore  // Singleton
+```
+
+- JSONL 文件：`{RootPath}/events-{yyyyMMdd}.jsonl`，按日轮转
+- `AppendAsync()` — 追加事件到磁盘
+- `ListAfterAsync(afterSeq)` — 查询某序号后的所有事件（供 replay）
+- `TrimAckedAsync(ackedId)` — 清理已被 Admin 确认的旧事件
+- `PruneExpiredFilesAsync()` — 安全阀：超过 **30 天** 或 **60 个文件** 自动删除
+
+#### CoreEventSpoolBackgroundService — 事件排空后台服务
+
+```csharp
+sealed class CoreEventSpoolBackgroundService : BackgroundService
+```
+
+持续从 `CoreAdminEventBus` 的 Channel 中读取事件，写入 `CoreEventSpoolStore` 的磁盘 JSONL 文件。
+
+#### CoreEventSequenceProvider — 事件序号管理
+
+```csharp
+sealed class CoreEventSequenceProvider  // Singleton
+```
+
+- 维护 `sequence.meta` 文件，每次 `Next()` 调用递增并立即写盘（write-through）
+- Core 重启后从 meta 文件或 JSONL 文件恢复序号
 
 #### ProxyUsageLogBatchWriter — 使用日志批量写入器
 
@@ -690,364 +379,201 @@ sealed class RouteCircuitStateStore  // Singleton，纯内存状态
 sealed class ProxyUsageLogBatchWriter : BackgroundService  // Singleton
 ```
 
-- 使用 `Channel<UsageLogEntry>` 有界通道（容量 4096，`DropWrite` 溢出策略）接收日志
-- 批量聚合：每 800ms 或累积 100 条触发一次批量写入
-- 写入时计算 `TotalTokens = InputTokens + CachedTokens + OutputTokens`
-- 避免代理热路径上的 SQLite 写入竞争
-- 测试模式下直接同步写入（绕过通道）
+- `Channel<UsageLogEntry>` 容量 4096，`DropWrite` 溢出
+- 每 800ms 或累积 100 条批量写入 SQLite
+- **Core 宿主**：自动检测 AppDbContext 未注册 → **跳过写 DB**（靠事件同步到 Admin）
+- **Admin/统一宿主**：直接写 SQLite
 
-#### ConversationLogBatchWriter — 对话日志批量写入器
-
-```csharp
-sealed class ConversationLogBatchWriter : BackgroundService  // Singleton
-```
-
-- 使用 `Channel<ConversationTurnEntry>` 有界通道（容量 4096，`DropWrite` 溢出策略）接收对话记录
-- 批量聚合：每 800ms 或累积 100 条触发一次批量写入
-- 文本字段（`UserInputText`、`AssistantOutputMarkdown`）写入前使用 GZip 压缩
-- 512 字节以下的短文本不压缩，直接存储
-- 压缩后的文本以 `"gzip:"` 前缀 + Base64 编码存储
-- 测试模式下直接同步写入
-
-#### ConversationExtractionService — 对话内容提取服务
+#### RouteCircuitStateStore — 熔断状态存储
 
 ```csharp
-sealed class ConversationExtractionService  // 纯逻辑服务，无状态
+sealed class RouteCircuitStateStore  // Singleton，纯内存状态
 ```
 
-从原始代理请求/响应中提取结构化对话数据：
-- **来源工具检测**：解析 User-Agent 或请求头识别 `claude-code`、`codex`、`open-code` 或通用 `proxy`
-- **会话 ID 提取**：从 `X-Claude-Code-Session-Id`、`Session-Id`、`x-session-affinity` 等头提取
-- **用户输入提取**：解析 OpenAI Chat Completions、OpenAI Responses API、Anthropic 三种格式的请求体，找到最后一条用户消息，过滤工具调用结果和系统注入
-- **AI 输出提取**：处理 JSON 响应和 SSE 流式响应，跳过 thinking/reasoning 块，构建工具调用摘要（含 diff 格式的代码变更）
-- **文本规范化**：剥离 `<system-reminder>` 等系统注入内容
+- `Block(routeId)` — 递增失败计数，达阈值触发熔断
+- `Succeed(routeId)` — 成功时清除连续失败计数
+- `IsBlocked(routeId)` — 检查是否在熔断窗口内
+- `UpdateOptions(recoveryMinutes, threshold)` — 动态更新熔断参数
 
-#### GzipTextCompression — GZip 文本压缩工具
+#### ModelConcurrencyLimiter — 并发控制器
 
 ```csharp
-static class GzipTextCompression
-{
-    // 压缩文本，短文本不压缩直接返回
-    static string Compress(string text);
-    // 解压文本，自动检测是否压缩（gzip: 前缀）
-    static string Decompress(string text);
-}
+sealed class ModelConcurrencyLimiter  // Singleton
 ```
 
-#### UsageLogService — 使用日志服务
+- 按站点+模型维度维护 `SemaphoreSlim`
+- `SkipOnFull` 模式：并发已满 → 返回 false，调用方尝试下一路由
+- `WaitForSlot` 模式：排队等待直到释放或超时
+- `MaxConcurrency = 0` 时跳过并发控制
+
+#### ProxyProtocolBridge — 跨协议桥接
 
 ```csharp
-sealed class UsageLogService : IUsageLogService  // Scoped
+static class ProxyProtocolBridge  // 纯静态方法，无状态
 ```
 
-将 `UsageLogEntry` 入队到 `ProxyUsageLogBatchWriter` 的通道中，由后台服务批量写入数据库。
-
-#### ConversationLogService — 对话日志服务
-
-```csharp
-sealed class ConversationLogService : IConversationLogService  // Scoped
-```
-
-将 `ConversationTurnEntry` 入队到 `ConversationLogBatchWriter` 的通道中，由后台服务批量写入数据库。入队失败（通道满）时记录警告日志。
-
-#### SystemRuntimeSettingsService — 系统运行时配置服务
-
-```csharp
-sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService  // Scoped
-```
-
-- `GetOrCreateAsync()`: 读取配置，不存在时自动创建默认值
-- `UpdateAsync()`: 更新配置（含边界校验，所有数值字段有下限保护）
-- `ClearUsageLogsAsync()`: 按来源和时间范围清空使用日志
-
-#### OpenAiSiteCatalogClient — 站点模型目录拉取
-
-```csharp
-sealed class OpenAiSiteCatalogClient : ISiteCatalogClient  // HttpClient Typed 实例
-```
-
-实现：向站点发送 `GET /v1/models`（根据 `EndpointPathMode` 构建完整 URL），Header 带 `Authorization: Bearer {ApiKey}`，解析 OpenAI 格式的 `{ data: [{ id: "model-name" }] }` 响应，返回模型名称列表。
-
-#### OpenAiModelProbeService — 模型探测服务
-
-```csharp
-sealed class OpenAiModelProbeService : IModelProbeService  // HttpClient Typed 实例
-```
-
-实现：向站点发送最小化请求 `POST /v1/chat/completions`，请求体 `{ model: "...", messages: [{role:"user",content:"hi"}], max_tokens: 1 }`，测量响应耗时。成功返回 `Success=true`，失败时解析错误响应体中的 `error.message` 字段。
-
-#### ModelHealthRequestService — 模型健康请求服务
-
-```csharp
-sealed class ModelHealthRequestService  // HttpClient Typed 实例
-```
-
-发送真实对话请求（随机数学题目）到上游站点，验证模型可用性。结果记录到 `SiteModelMapping.LastStatus` 和 `ProxyUsageLog`（Source="detection-task"）。
-
-#### LogRetentionService — 日志清理服务
-
-```csharp
-sealed class LogRetentionService : ILogRetentionService  // Scoped
-```
-
-删除超过配置保留天数的 `ProxyUsageLog` 和 `ConversationTurnLog` 记录。保留天数由 `SystemRuntimeSettings.UsageLogRetentionDays` 控制，注入 `Func<DateTimeOffset>` 便于测试。
-
-#### HangfireDetectionScheduler — 定时检测调度器
-
-```csharp
-sealed class HangfireDetectionScheduler  // Singleton
-```
-
-- `ScheduleAllAsync()`: 启动时将所有启用的 `DetectionTask` 注册为 Hangfire RecurringJob，JobId 格式为 `detection-{task.Id}`
-- `ExecuteDetectionTaskAsync()`: 执行单次检测任务
-  1. 创建 `DetectionTaskExecution` 记录（状态 "running"）
-  2. 查询所有站点模型映射（如果任务指定了模型则过滤）
-  3. 按 `DetectionConcurrency` 分批并发调用 `ModelHealthRequestService.ProbeMappingAsync()` 探测
-  4. 更新映射的 `LastStatus`
-  5. 更新执行记录状态为 "completed"，记录摘要
+OpenAI 和 Anthropic 协议之间的双向转换引擎，支持请求体、非流式响应、流式 SSE 事件的实时转换。
 
 ---
 
-## 核心业务流程
+## 调用日志 (UsageLog) 数据流
 
-### 1. 代理请求流程（含故障转移、并发控制和跨协议桥接）
-
-```
-客户端请求 → POST /v1/chat/completions (或 /v1/messages、/v1/responses 等)
-  ↓
-读取请求体，解析 model 字段
-  ↓
-验证访问密钥（通过 ProxyRequestMetadataCache 缓存，5秒 TTL）
-  ├─ OpenAI: 从 Authorization: Bearer {token} 提取
-  ├─ Anthropic: 从 x-api-key Header 提取
-  └─ SHA256 哈希 → 与 ProxyAccessKey.AccessKeyHash 比对
-  ↓
-从缓存获取该模型的所有候选路由（GetRouteTargetsForModelAsync）
-  ↓
-收集被熔断的路由 ID 集合（IsBlocked）
-  ↓
-遍历路由列表:
-  ├─ 跳过被熔断的路由
-  ├─ 查找目标站点 Site
-  ├─ 跳过禁用的站点
-  ├─ 并发控制（ModelConcurrencyLimiter）
-  │   ├─ SkipOnFull 模式：并发已满 → 跳到下一个路由
-  │   └─ WaitForSlot 模式：排队等待直到释放或超时
-  ├─ 判断协议兼容性（ResolveProtocolForClient）
-  │   ├─ 站点协议与客户端协议一致 → 直接转发
-  │   └─ 不一致 → 通过 ProxyProtocolBridge 进行跨协议转换
-  │       ├─ OpenAI → Anthropic: 转换请求体格式、认证头
-  │       └─ Anthropic → OpenAI: 转换请求体格式、认证头
-  ├─ 判断是否流式请求：
-  │   ├─ 非流式 → ForwardAsync()，响应体协议转换后返回
-  │   └─ 流式 → ForwardStreamingAsync()，实时 SSE 事件协议转换
-  │       ├─ OpenAI SSE → Anthropic SSE（或反向）
-  │       └─ 追踪首 Token 延迟、流式传输时长
-  ├─ 成功 → 记录日志(含 AttemptIndex、延迟指标) → circuitStore.Succeed() → 返回响应
-  │        → 记录对话日志（ConversationTurnEntry）
-  └─ 失败 → circuitStore.Block() → 释放并发槽位 → 尝试下一个路由
-  ↓
-全部失败 → 记录失败日志(Status="fail", IsFinalResult=true) → 返回 502 错误
-```
-
-**OpenAI 和 Anthropic 控制器的区别：**
-- 认证方式不同（Bearer Token vs x-api-key）
-- 转发时 `ProtocolType` 不同（影响目标 URL 和认证头设置）
-- Anthropic 控制器转发 `anthropic-version`、`anthropic-beta` 等协议头
-- 流式 SSE 格式不同（OpenAI `data: {...}` vs Anthropic `event: xxx\ndata: {...}`）
-- 控制器内部逻辑结构一致，通过 `ProxyProtocolBridge` 统一处理协议差异
-
-**OpenAI 代理控制器支持的端点：**
-- `/v1/chat/completions` — Chat Completions（主要代理端点）
-- `/v1/completions` — Legacy Completions 代理
-- `/v1/embeddings` — Embeddings 代理（仅 OpenAI 上游）
-- `/v1/models` — 模型列表（自动检测 OpenAI/Anthropic 格式）
-- `/v1/models/{modelId}` — 模型详情
-- `/v1/responses` — Responses API（支持 HTTP 和 WebSocket 两种模式）
-- `/v1/responses/compact` — Responses Compact 代理
-
-**跨协议桥接（ProxyProtocolBridge）：**
-- `PrepareRequestBody()`: 根据客户端和目标协议转换请求体（模型名、消息格式、参数映射）
-- `AdaptResponseBodyForClient()`: 将非流式响应从目标协议转换回客户端协议格式
-- `ConvertOpenAiStreamChunkToAnthropic()` / `ConvertAnthropicStreamChunkToOpenAi()`: 实时流式 SSE 事件转换
-- 站点需标记 `SupportsOpenAi` / `SupportsAnthropic` 来声明协议兼容性
-
-**熔断机制：**
-- 每次 `Block()` 调用递增连续失败计数
-- 连续失败达阈值（默认 5 次，可通过系统设置配置）后触发熔断，屏蔽可配置时间（默认 2 分钟）
-- 成功一次即清除连续失败计数（`Succeed()`）
-- 熔断状态存储在内存中（Singleton），重启后丢失
-- 被熔断的路由在代理请求循环中被跳过，不消耗请求
-
-**并发控制机制：**
-- `ModelConcurrencyLimiter` 按站点+模型维度维护信号量
-- `SiteModelMapping.MaxConcurrency` 控制最大并发数（0 = 不限制）
-- 两种策略通过 `SystemRuntimeSettings.ConcurrencyMode` 配置：
-  - `SkipOnFull (0)`：并发已满时跳过当前站点，尝试下一个优先级路由
-  - `WaitForSlot (1)`：排队等待直到有槽位释放或超时（超时后顺延到下一个路由）
-
-### 2. 路由规则管理流程
+### 写入路径
 
 ```
-选择入口 → 调用 GET /api/admin/route-rules/entries 获取路由入口列表
-  ↓
-创建/管理入口 → POST /api/admin/route-rules/entries
-  ↓
-选择模型 → 调用 GET /api/admin/route-rules/discover-sites?modelName=xxx
-  ↓
-查找该模型关联的所有启用的 SiteModelMapping
-  ↓
-返回站点实例列表（SiteId、SiteName、RemoteModelName、SiteEnabled）
-  ↓
-前端展示站点列表，拖拽排序设置优先级
-  ↓
-保存（POST /api/admin/route-rules/save）：
-  ├─ 删除该模型的所有旧规则
-  └─ 按列表顺序创建新规则（Priority = 列表索引，0 最高）
+代理请求完成
+  │
+  ▼
+ProxyCallRecorder.RecordUsageAsync(ProxyCallContext)
+  │
+  ▼
+IUsageLogService.LogAsync(UsageLogEntry)
+  │
+  ▼
+UsageLogService (双写)
+  ├──► ProxyUsageLogBatchWriter.EnqueueAsync()  [后台 Channel 批量写入]
+  │      └─► Core 宿主: 跳过 (无 AppDbContext)，靠事件同步
+  │      └─► Admin 宿主: 直接 INSERT ProxyUsageLogs 表
+  │
+  └──► CoreUsageLogEventPublisher.PublishAsync()
+         └─► CoreAdminEventBus (内存 Channel)
+              └─► CoreEventSpoolBackgroundService → CoreEventSpoolStore (磁盘 JSONL)
+                   └─► Admin: CoreEventPullService 定时 Pull
+                        └─► AdminUsageLogEventIngestor → 幂等写入 Admin SQLite
 ```
 
-`ExternalModelName` 对应 `ModelLibraryItem.ModelName`，客户端请求时使用这个名字。`SiteModelName` 通常取自 `SiteModelMapping.RemoteModelName`。
-
-### 3. 模型检测流程
+### 读取路径
 
 ```
-触发检测（手动 POST /api/admin/detection/probe/{mappingId} 或定时任务）
-  ↓
-查找该模型的所有启用的 SiteModelMapping
-  ↓
-按 DetectionConcurrency 并发探测每个站点上的模型
-  ├─ 发送随机数学题（如 "42 + 17 = ?"）
-  ├─ 测量响应耗时
-  └─ 更新 SiteModelMapping.LastStatus，记录 ProxyUsageLog (Source="detection-task")
-  ↓
-前端轮询增量进度（GET /api/admin/detection/progress/{taskId}）
-  ├─ 只返回新结果（基于 LastReportedCount）
-  └─ 避免重复刷新已完成的结果
+浏览器 → AJAX → GET /api/admin/usage-logs/list?...
+  │
+  ▼
+UsageLogsApiController (Admin)
+  │
+  ▼
+AppDbContext.ProxyUsageLogs (直接查 SQLite)
+  │
+  ▼
+返回 JSON → 前端渲染
 ```
 
-### 4. 对话测试流程
+**关键特性**：读路径不经过 Core，直接查 Admin 本地 DB。写路径通过事件总线保证 Core 端的数据最终到达 Admin 数据库。
+
+---
+
+## 开发者调试追踪 (Invocations) 数据流
+
+### 写入路径
 
 ```
-选择模型 → 发送消息
-  ↓
-查找 ModelLibraryItem → 获取 ModelName
-  ↓
-从缓存获取路由列表
-  ↓
-有路由规则时：
-  ├─ 加载所有启用的站点 ID 到内存
-  ├─ 过滤出被熔断的站点（内存中调用 IsBlocked，避免 LINQ 翻译错误）
-  ├─ 按优先级逐个尝试转发（同代理流程，支持流式和非流式）
-  ├─ Chat 测试不触发熔断（不调用 circuitStore.Block()）
-  └─ 全部失败返回错误
-  ↓
-无路由规则时 → 回退到 SiteModelMapping 直接查询（SendFallback）
-  ↓
-返回 AI 回复
-  ├─ OpenAI: 解析 choices[0].message.content
-  └─ Anthropic: 解析 content[0].text
+代理请求 (OpenAiProxyController / AnthropicProxyController)
+  │
+  ▼
+ProxyCallRecorder.BeginTrace(callContext)
+  │  → DeveloperInvocationTraceStore.AddRequest()
+  │     [Core 进程内存，LinkedList，最多 100 条，6 小时过期]
+  │
+  ▼
+ProxyCallRecorder.BeginTraceAttempt(traceId, callContext)
+  │  → DeveloperInvocationTraceStore.AddAttempt()
+  │
+  ▼
+ProxyCallRecorder.CompleteTraceAttempt(traceId, attemptId, callContext)
+  │  → DeveloperInvocationTraceStore.CompleteAttempt()
+  │  → 触 OnTraceCompleted 事件
+  │     └─► CoreDeveloperTraceEventPublisher → CoreEventBus
+  │          └─► Admin CoreEventPullService → AdminDeveloperTraceEventIngestor
+  │               └─► AdminDeveloperTraceStore (摘要副本)
+  │
+  ▼ [客户端断连]
+ProxyCallRecorder.CancelTrace(traceId, "客户端已断开连接")
+  │  → DeveloperInvocationTraceStore.CancelPending()
+  │  → 状态从 pending → error
 ```
 
-**Chat 与代理的关键区别：**
-- Chat **不触发熔断**（不调用 `circuitStore.Block()`），每次请求独立尝试所有站点
-- Chat 日志 `Source = "chat"`，代理日志 `Source = "proxy"`
-- Chat 不需要访问密钥认证（管理后台直接使用）
-- Chat 没有路由规则时自动回退到 SiteModelMapping 查询
-- Chat 支持流式调试（`POST /api/admin/chat/send-stream`）
-
-### 5. 模型导入流程
+### 读取路径
 
 ```
-选择站点 → GET /api/admin/site-catalog/fetch-models/{siteId}
-  ↓
-调用上游 GET /v1/models 获取远程模型列表
-  ↓
-对比已有 SiteModelMapping（按 RemoteModelName）
-  ↓
-前端展示模型列表，标记已导入/未导入
-  ↓
-用户勾选模型 → POST /api/admin/site-catalog/import-selected
-  ↓
-预加载已有模型库到字典（避免多站点同名模型的 UNIQUE 冲突）
-  ↓
-逐个处理：
-  ├─ 选中且模型库不存在 → 创建 ModelLibraryItem + SiteModelMapping
-  ├─ 选中且模型库已存在 → 复用 ModelLibraryItem，创建 SiteModelMapping
-  ├─ 选中且映射已存在 → 确保启用
-  └─ 未选中且映射已存在 → 禁用映射
+Admin Index.cshtml.cs OnGetAsync()
+  │
+  ▼
+CoreAdminClient.GetDeveloperInvocationsAsync(1, 20)
+  │
+  ▼
+GET http://127.0.0.1:5029/api/core/developer/invocations/list?pageNumber=1&pageSize=20
+  │
+  ▼
+CoreDeveloperQueryController.ListInvocations()
+  │  → 检查 IsDeveloperEnabledAsync() (DeveloperFeaturesEnabled)
+  │  → DeveloperInvocationTraceQueryService.List()
+  │  → DeveloperInvocationTraceStore.List() [直接读 Core 内存]
+  │
+  ▼
+返回实时 JSON { totalCount, failedCount, pendingCount, entries... }
+
+前端 AJAX:
+  ?handler=List&pageNumber=N      → 翻页
+  ?handler=Detail&traceId=xxx     → 展开卡片详情
+
+降级 (Core 不可用时):
+  → BuildLocalListResponse() → AdminDeveloperTraceStore.List() [事件同步来的副本]
 ```
 
-### 6. 一键拉取全部模型流程
-
-```
-POST /api/admin/site-catalog/fetch-all-models
-  ↓
-创建 FetchAllProgress 对象（ConcurrentDictionary 存储）
-  ↓
-后台 Task.Run 并发拉取所有启用站点
-  ↓
-前端轮询 GET /api/admin/site-catalog/fetch-all-progress/{taskId}
-  ↓
-全部完成后前端展示合并结果
-  ↓
-用户勾选并导入（复用 import-selected 端点）
-```
+**关键特性**：主路径实时读 Core 内存，降级路径读 Admin 内的事件同步副本。
 
 ---
 
 ## API 端点汇总
 
-### 代理端点（面向客户端）
+### 代理端点（Core 宿主，端口 5029）
 
 | 方法 | 路由 | 认证方式 | 说明 |
 |------|------|----------|------|
-| POST | `/v1/chat/completions` | `Authorization: Bearer {key}` | OpenAI Chat Completions 代理（支持流式和非流式） |
+| POST | `/v1/chat/completions` | `Authorization: Bearer {key}` | OpenAI Chat Completions 代理 |
 | POST | `/v1/completions` | `Authorization: Bearer {key}` | OpenAI Legacy Completions 代理 |
-| POST | `/v1/embeddings` | `Authorization: Bearer {key}` | OpenAI Embeddings 代理（仅 OpenAI 上游） |
-| POST | `/v1/responses` | `Authorization: Bearer {key}` | OpenAI Responses API 代理（HTTP + WebSocket） |
+| POST | `/v1/embeddings` | `Authorization: Bearer {key}` | OpenAI Embeddings 代理 |
+| POST | `/v1/responses` | `Authorization: Bearer {key}` | Responses API 代理 (HTTP + WebSocket) |
 | POST | `/v1/responses/compact` | `Authorization: Bearer {key}` | Responses Compact 代理 |
-| GET | `/v1/responses` | `Authorization: Bearer {key}` | Responses WebSocket 代理 |
-| GET | `/v1/models` | `Authorization: Bearer {key}` | OpenAI/Anthropic 兼容模型列表 |
+| GET | `/v1/models` | `Authorization: Bearer {key}` | 模型列表 |
 | GET | `/v1/models/{modelId}` | `Authorization: Bearer {key}` | 模型详情 |
-| POST | `/v1/messages` | `x-api-key: {key}` | Anthropic Messages 代理（支持流式和非流式） |
+| POST | `/v1/messages` | `x-api-key: {key}` | Anthropic Messages 代理 |
 | POST | `/v1/messages/count_tokens` | `x-api-key: {key}` | Anthropic Token 计数估算 |
 | GET | `/health` | 无 | 健康检查 |
 
-### 管理 API（面向管理后台）
+### Core 运行时查询端点（Core 宿主）
+
+| 方法 | 路由 | 说明 |
+|------|------|------|
+| GET | `/api/core/health` | Core 健康检查 |
+| GET | `/api/core/ready` | Core 就绪检查（配置快照已加载） |
+| GET | `/api/core/runtime/status` | Core 运行时状态（版本、事件积压等） |
+| GET | `/api/core/developer/invocations/list` | 分页查询调用追踪列表 |
+| GET | `/api/core/developer/invocations/detail` | 单条追踪详情 |
+| GET | `/api/core/developer/concurrency` | 模型并发状态快照 |
+| GET | `/api/core/developer/metadata` | 客户端模拟器元数据 |
+| GET | `/debug/runtime?key=xxx` | **Core 内存调试页**（受密钥保护的自包含 HTML） |
+
+### Core 配置与事件端点（Core 宿主）
+
+| 方法 | 路由 | 说明 |
+|------|------|------|
+| POST | `/api/core/config/full-sync` | 接收全量配置快照 |
+| POST | `/api/core/config/patch-sync` | 接收增量配置补丁 |
+| POST | `/api/core/config/handshake` | 配置握手 |
+| GET | `/api/core/events/replay?afterSequenceId=N` | 事件重放 |
+| GET | `/api/core/events/stream` | 事件 SSE 推送 |
+| POST | `/api/core/events/ack` | 事件确认（清理磁盘） |
+
+### 管理 API（Admin 宿主，端口 5030）
 
 #### 访问密钥 `api/admin/access-keys`
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
 | GET | `/` | 获取密钥列表 |
-| POST | `/create` | 创建密钥（生成 `sk-` + 32位十六进制字符串，SHA256 哈希存储） |
+| POST | `/create` | 创建密钥 |
 | POST | `/toggle/{keyId}` | 切换启用/禁用 |
 | POST | `/delete/{keyId}` | 删除密钥 |
-
-#### 站点模型目录 `api/admin/site-catalog`
-
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| GET | `/fetch-models/{siteId}` | 拉取单个站点的模型列表 |
-| POST | `/fetch-all-models` | 一键拉取全部站点模型（异步） |
-| GET | `/fetch-all-progress/{taskId}` | 获取批量拉取进度 |
-| POST | `/import-selected` | 导入用户勾选的模型 |
-
-#### 模型检测 `api/admin/detection`
-
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| POST | `/probe/{mappingId}` | 探测单个站点模型映射 |
-| POST | `/probe-model/{modelId}` | 探测模型的所有映射（异步） |
-| POST | `/probe-all` | 探测全部映射（异步） |
-| GET | `/progress/{taskId}` | 获取探测进度（增量） |
-
-#### 模型管理 `api/admin/models`
-
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| POST | `/clear-all` | 清空所有模型及关联数据 |
-| PUT | `/mappings/{mappingId}/concurrency` | 更新站点模型映射的最大并发数 |
 
 #### 路由规则 `api/admin/route-rules`
 
@@ -1056,9 +582,6 @@ POST /api/admin/site-catalog/fetch-all-models
 | GET | `/entries` | 获取路由入口列表 |
 | POST | `/entries` | 创建路由入口 |
 | POST | `/entries/delete` | 删除路由入口 |
-| GET | `/site-instances` | 获取站点实例列表 |
-| GET | `/models` | 获取有映射的模型列表（用于下拉选择） |
-| GET | `/discover-sites?modelName=xxx` | 自动发现拥有该模型的站点 |
 | GET | `/list?modelName=xxx` | 获取模型的路由规则（按优先级排序） |
 | POST | `/save` | 保存路由规则（删除旧的，按新顺序创建） |
 | POST | `/toggle/{ruleId}` | 切换规则启用/禁用 |
@@ -1068,351 +591,165 @@ POST /api/admin/site-catalog/fetch-all-models
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| GET | `/models` | 获取可对话的模型列表（含可用站点数） |
-| GET | `/targets` | 获取所有站点模型目标 |
-| GET | `/models/{modelId}/targets` | 获取指定模型的站点目标列表 |
-| POST | `/send` | 发送对话消息（非流式，支持路由规则 + 失败重试） |
-| POST | `/send-stream` | 发送对话消息（SSE 流式，支持路由规则 + 失败重试） |
-
-#### 对话记录 `api/admin/conversations`
-
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| GET | `/sessions` | 查询对话会话列表（支持时间范围、模型、来源筛选） |
-| DELETE | `/sessions` | 删除指定会话分组的所有对话记录 |
-| GET | `/turns` | 获取指定会话分组的对话轮次详情 |
+| GET | `/models` | 获取可对话的模型列表 |
+| GET | `/targets` | 获取站点模型目标列表 |
+| GET | `/models/{modelId}/targets` | 获取指定模型的目标列表 |
+| POST | `/send` | 发送对话消息（非流式） |
+| POST | `/send-stream` | 发送对话消息（SSE 流式） |
 
 #### 使用日志 `api/admin/usage-logs`
 
 | 方法 | 端点 | 说明 |
 |------|------|------|
-| GET | `/list` | 分页查询使用日志（支持时间范围、站点、来源筛选） |
-| GET | `/request-detail/{requestId}` | 获取单次请求的详细日志（含所有尝试） |
-| GET | `/summary` | 获取使用日志统计摘要 |
+| GET | `/list` | 分页查询使用日志 |
+| GET | `/summary` | 使用日志统计摘要 |
+| GET | `/request-detail/{requestId}` | 单次请求详细日志（含所有尝试） |
 
-#### 统计分析 `api/admin/analytics`
+#### 其他管理端点
 
-| 方法 | 端点 | 说明 |
-|------|------|------|
-| GET | `/options` | 获取筛选器选项（站点列表、模型列表） |
-| GET | `/dashboard` | 获取统计分析数据（趋势、分布、缓存命中率等，后台异步查询） |
+| 路径 | 说明 |
+|------|------|
+| `api/admin/site-catalog/*` | 站点模型目录拉取与导入 |
+| `api/admin/detection/*` | 模型检测 |
+| `api/admin/models/*` | 模型管理 |
+| `api/admin/conversations/*` | 对话记录查询 |
+| `api/admin/analytics/*` | 统计分析 |
+| `api/admin/route-fallback/*` | 路由回退事件 |
 
 ---
 
 ## 管理后台页面
 
-所有页面在 `src/AITool.Web/Pages/` 下，使用共享侧边栏布局（`Shared/_Layout.cshtml`）。
+所有页面在 `src/AITool.Admin/Pages/Admin/` 下。
 
-### 布局结构
-
-- **侧边栏**：固定左侧 260px，移动端 `< 992px` 折叠为抽屉
-- **顶部栏**：显示页面标题 + 版本号，含移动端菜单按钮
-- **导航分区**：概览 / 资源管理 / 代理配置 / 监控运维 / 开发调试
-- **当前页高亮**：JS 自动匹配路径并添加 `.active` 类
-
-### 页面清单
-
-| 页面路径 | 功能 | 交互方式 | 说明 |
-|----------|------|----------|------|
-| `/` (Index) | 仪表盘首页 | AJAX | 展示站点数、模型数、映射数、路由规则数、密钥数、检测任务数等统计卡片 |
-| `/Login` | 管理员登录 | 表单 POST | MD5 密码验证（可选，未设置密码时跳过） |
-| `/Admin/Chat` | 对话测试 | AJAX + SSE | 全屏页面，支持流式和非流式对话 |
-| `/Admin/ClientSimulator` | 客户端模拟器 | AJAX | 模拟 OpenAI/Anthropic 客户端请求 |
-| `/Admin/Sites` | 站点管理 | AJAX | 列表 + 创建/编辑/删除/导入/导出 |
-| `/Admin/Sites/Create` | 创建站点 | 表单 POST | |
-| `/Admin/Sites/Edit` | 编辑站点 | 表单 POST | |
-| `/Admin/Sites/Import` | 导入模型 | AJAX | 单站点拉取 + 勾选导入 |
-| `/Admin/Sites/Export` | 导出数据 | 服务端渲染 | |
-| `/Admin/Models` | 模型库 | AJAX | 模型列表 + 创建/编辑/删除，含厂商图标和映射状态 |
-| `/Admin/Models/Create` | 创建模型 | 表单 POST | |
-| `/Admin/Models/Edit` | 编辑模型 | 表单 POST | 含站点映射管理、健康监控配置 |
-| `/Admin/Routes` | 路由规则管理 | AJAX | 模型选择→自动发现站点→拖拽排序→保存 |
-| `/Admin/AccessKeys` | 访问密钥管理 | AJAX | 创建/切换/删除密钥 |
-| `/Admin/Detection` | 模型检测 | AJAX + 轮询 | 手动触发检测 + 增量进度 |
-| `/Admin/DetectionTasks` | 检测任务（定时） | AJAX | Cron 定时任务管理 |
-| `/Admin/ModelHealth` | 模型健康监控 | AJAX | 可用率时间线图表 |
-| `/Admin/Conversations` | 对话记录 | AJAX | 按会话浏览用户输入和 AI 输出 |
-| `/Admin/UsageLogs` | 调用日志 | AJAX | 来源、目标站点、状态、重试次数、延迟指标列 |
-| `/Admin/Analytics` | 统计分析 | AJAX | 用量趋势、模型分布、缓存命中率等可视化 |
-| `/Admin/System/Settings` | 系统设置 | AJAX | 超时、重试、熔断、并发控制、日志清理、开发者功能等配置 |
-| `/Admin/Developer/Invocations` | 调试追踪 | AJAX | 查看近期代理请求的全链路详情 |
-
-### 侧边栏导航分区
-
-```
-概览
-  ├── 仪表盘 (/)
-  └── 对话测试 (/Admin/Chat)
-
-资源管理
-  ├── 站点管理 (/Admin/Sites)
-  └── 模型库 (/Admin/Models)
-
-代理配置
-  ├── 路由规则 (/Admin/Routes)
-  └── 访问密钥 (/Admin/AccessKeys)
-
-监控运维
-  ├── 模型检测 (/Admin/Detection)
-  ├── 检测任务 (/Admin/DetectionTasks)
-  ├── 模型健康 (/Admin/ModelHealth)
-  ├── 对话记录 (/Admin/Conversations)
-  ├── 使用日志 (/Admin/UsageLogs)
-  └── 统计分析 (/Admin/Analytics)
-
-开发调试
-  ├── 系统设置 (/Admin/System/Settings)
-  ├── 调试追踪 (/Admin/Developer/Invocations)
-  └── 客户端模拟器 (/Admin/ClientSimulator)
-```
+| 页面路径 | 功能 | 说明 |
+|----------|------|------|
+| `/Admin/Chat` | 对话测试 | 流式/非流式对话，支持路由选择 + 故障转移 |
+| `/Admin/Sites` | 站点管理 | 创建/编辑/删除/导入/导出 |
+| `/Admin/Models` | 模型库 | 模型列表 + 创建/编辑/删除，含映射状态 |
+| `/Admin/Routes` | 路由规则管理 | 模型入口 → 候选实例队列 → 拖拽排序 → 保存 |
+| `/Admin/AccessKeys` | 访问密钥管理 | 创建/切换/删除密钥 |
+| `/Admin/Detection` | 模型检测 | 手动/定时检测，增量进度 |
+| `/Admin/DetectionTasks` | 检测任务管理 | Cron 定时任务配置 |
+| `/Admin/ModelHealth` | 模型健康监控 | 可用率时间线图表 |
+| `/Admin/Conversations` | 对话记录 | 按会话浏览用户输入和 AI 输出 |
+| `/Admin/UsageLogs` | 使用日志 | Token 级别用量追踪 |
+| `/Admin/Analytics` | 统计分析 | 趋势、分布、缓存命中率等可视化 |
+| `/Admin/System/Settings` | 系统设置 | 超时、重试、熔断、并发、日志保留、开发者功能 |
+| `/Admin/Developer/Invocations` | 调试追踪 | 代理请求全链路详情（调用调试/客户端模拟/并发检测三栏） |
 
 ---
 
-## Web 层核心服务
+## 代理请求流程
 
-### ProxyRequestMetadataCache — 代理元数据缓存
-
-```csharp
-sealed class ProxyRequestMetadataCache  // Singleton，基于 IMemoryCache
+```
+客户端请求 → POST /v1/chat/completions (或 /v1/messages 等)
+  ↓
+读取请求体，解析 model 字段
+  ↓
+验证访问密钥 (ProxyRequestMetadataCache → SHA256 哈希比对)
+  ↓
+从缓存获取该模型的路由列表 (GetRouteTargetsForModelAsync)
+  ↓
+遍历路由 (按 ModelPriority → InstancePriority → Priority 排序):
+  ├─ 跳过被熔断的路由 (RouteCircuitStateStore.IsBlocked)
+  ├─ 跳过禁用的站点
+  ├─ 并发控制 (ModelConcurrencyLimiter.AcquireAsync)
+  │   ├─ SkipOnFull → 跳到下一路由
+  │   └─ WaitForSlot → 排队等待
+  ├─ 协议兼容性判断 → 必要时跨协议桥接 (ProxyProtocolBridge)
+  ├─ 转发: ForwardAsync (非流式) 或 ForwardStreamingAsync (流式)
+  ├─ success → RecordUsage → RecordConversation → CompleteTrace → 返回
+  └─ fail → Block(route) → 尝试下一路由
+  ↓
+全部失败 → 返回 502 error
 ```
 
-- 缓存访问密钥、运行时设置、路由目标、模型列表等，TTL 约 5 秒
-- 核心方法：
-  - `ValidateAccessKeyAsync()`: 验证访问密钥（缓存命中时无需查询数据库）
-  - `GetRuntimeSettingsAsync()`: 获取系统运行时配置
-  - `GetRouteTargetsForModelAsync()`: 获取指定模型的候选路由列表
-  - `GetEnabledModelNamesAsync()`: 获取所有启用的模型名
-  - `GetChatModelsAsync()`: 获取可用于对话测试的模型列表
-  - `GetFallbackTargetAsync()`: 获取回退目标（无路由规则时使用）
-- 失效方法：`InvalidateAccessKeys()`、`InvalidateRuntimeSettings()`、`InvalidateRouteTargets()` 等
-- 管理后台修改配置后调用失效方法，确保 5 秒内代理路径读取到最新配置
-
-### ModelConcurrencyLimiter — 并发控制器
-
-```csharp
-sealed class ModelConcurrencyLimiter  // Singleton
-```
-
-- 按站点+模型维度维护 `SemaphoreSlim`，控制最大并发请求数
-- 两种策略：
-  - `SkipOnFull`：并发已满时立即返回 false，调用方尝试下一个路由
-  - `WaitForSlot`：排队等待直到有槽位释放或超时
-- 槽位释放通过 `Release()` 方法，确保并发计数准确
-- `MaxConcurrency = 0` 时跳过并发控制（不限制）
-
-### ProxyProtocolBridge — 跨协议桥接
-
-```csharp
-static class ProxyProtocolBridge  // 纯静态方法，无状态
-```
-
-OpenAI 和 Anthropic 协议之间的双向转换引擎，核心方法：
-- `PrepareRequestBody()`: 转换请求体（消息格式、参数映射、模型名替换）
-- `AdaptResponseBodyForClient()`: 转换非流式响应（Token 用量、内容格式）
-- `BuildAnthropicStreamStart()` / `ConvertOpenAiStreamChunkToAnthropic()`: OpenAI → Anthropic 流式 SSE 转换
-- `ConvertAnthropicStreamChunkToOpenAi()`: Anthropic → OpenAI 流式 SSE 转换
-- `CompleteAnthropicStream()` / `EnsureAnthropicStreamClosed()`: 优雅关闭流式传输
-- 支持 OpenAI Responses API 格式的特殊处理
-
-### DeveloperInvocationTraceStore — 开发者调试追踪
-
-```csharp
-sealed class DeveloperInvocationTraceStore  // Singleton，内存环形缓冲区
-```
-
-- 最多保留 100 条最近代理请求的详细记录（6 小时过期自动清理）
-- 每条记录包含：请求头、请求体、响应体、每次尝试的详情、耗时、协议信息
-- 通过 `/Admin/Developer/Invocations` 页面查看
-- 需在系统设置中启用 `DeveloperFeaturesEnabled`
-
-### AnalyticsBackgroundQueryExecutor — 统计分析后台查询
-
-```csharp
-sealed class AnalyticsBackgroundQueryExecutor : BackgroundService  // Singleton
-```
-
-- 限制统计分析查询为单消费者队列（最多 4 个并发查询）
-- 结果缓存 20 秒，避免重复查询
-- 版本化缓存键，确保参数变化时刷新
-
-### ModelVendorCatalogService — 厂商模型目录
-
-```csharp
-sealed class ModelVendorCatalogService  // Singleton
-```
-
-- 从 `model-vendor-catalog.json` 配置文件加载厂商和模型匹配规则
-- 支持通配符、正则表达式、精确匹配三种模式
-- 提供厂商名称、图标（SVG）、样式等元数据
-
-### AdminAuthService — 管理员认证
-
-```csharp
-sealed class AdminAuthService  // Scoped
-```
-
-- MD5 密码管理，存储在 `appsettings.json`
-- 方法：`HasPasswordConfigured()`、`VerifyPassword()`、`SetPasswordAsync()`
+**Chat 对话测试与代理的关键区别**：
+- Chat **不触发熔断**（不调用 `circuitStore.Block()`）
+- Chat **不写入 Invocations 追踪**（与 master 行为一致）
+- Chat 日志 `Source = "chat"`，代理日志 `Source = "proxy"`
 
 ---
 
-## 依赖注入配置
+## Core 运行时内存调试页
 
-在 `Program.cs` 中注册：
+用于开发/测试时实时查看 Core 内存状态的受保护页面。
 
-| 注册 | 生命周期 | 说明 |
-|------|----------|------|
-| `AppDbContext` | Scoped | SQLite EF Core 上下文 |
-| `ISiteCatalogClient` → `OpenAiSiteCatalogClient` | HttpClient Typed | 拉取上游站点模型列表 |
-| `IModelProbeService` → `OpenAiModelProbeService` | HttpClient Typed | 模型可用性探测 |
-| `ModelHealthRequestService` | HttpClient Typed | 模型健康检测 |
-| `IRouteSelectionService` → `RouteSelectionService` | Scoped | 路由规则查询 |
-| `IProxyForwardService` → `ProxyForwardService` | HttpClient Typed | 请求转发（含流式） |
-| `IUsageLogService` → `UsageLogService` | Scoped | 使用日志入队 |
-| `IConversationLogService` → `ConversationLogService` | Scoped | 对话日志入队 |
-| `ISystemRuntimeSettingsService` → `SystemRuntimeSettingsService` | Scoped | 系统运行时配置 |
-| `ProxyUsageLogBatchWriter` | Singleton (BackgroundService) | 使用日志批量写入 |
-| `ConversationLogBatchWriter` | Singleton (BackgroundService) | 对话日志批量写入 |
-| `RouteCircuitStateStore` | Singleton | 熔断状态（内存） |
-| `ModelConcurrencyLimiter` | Singleton | 并发控制（按站点+模型信号量） |
-| `ProxyRequestMetadataCache` | Singleton | 代理元数据缓存 |
-| `DeveloperInvocationTraceStore` | Singleton | 开发者调试追踪 |
-| `AnalyticsBackgroundQueryExecutor` | Singleton (BackgroundService) | 统计分析后台查询 |
-| `ModelVendorCatalogService` | Singleton | 厂商模型目录 |
-| `ConversationExtractionService` | Singleton | 对话内容提取 |
-| `AdminAuthService` | Scoped | 管理员认证 |
-| `ILogRetentionService` → `LogRetentionService` | Scoped | 日志清理 |
-| `HangfireDetectionScheduler` | Singleton | 定时任务调度 |
+**访问方式**：`http://127.0.0.1:5029/debug/runtime?key=aitool-debug`
 
-HttpClient Typed 实例由 `AddHttpClient<TInterface, TImpl>()` 注册，自动管理 `HttpClient` 生命周期。
+**安全保护**：密钥 SHA256 哈希校验（在 `appsettings.json` 的 `Debug:KeyHash` 配置）
+
+**页面内容**：
+- **路由规则 Tab** — 按代理选路优先级排序的完整路由表
+- **站点 Tab** — 站点名称、协议、BaseUrl、ApiKey（脱敏 `sk-a***yz`）、启停状态
+- **当前并发 Tab** — 模型、站点、活跃数（红色高亮）、上限、排队数
+
+**数据来源**：`CoreRuntimeConfigProvider.GetCurrent()` + `ModelConcurrencyLimiter.ListRecent()` — 纯 Core 内存实时数据。
 
 ---
 
-## 启动流程（Program.cs）
+## 启动流程
+
+### Admin (端口 5030)
 
 ```
-1. 构建 WebApplication
-   ├─ AddRazorPages()           — 注册 Razor Pages
-   ├─ AddControllers()          — 注册 API 控制器
-   ├─ AddDbContext<AppDbContext>() — SQLite 连接（数据库文件在运行目录下 aitool.db）
-   ├─ AddHttpClient<T,T>()      — 注册 Typed HttpClient 服务
-   ├─ AddScoped<T,T>()          — 注册 Scoped 服务
-   ├─ AddSingleton<T>()         — 注册 Singleton 服务（含 BackgroundService）
-   ├─ AddMemoryCache()          — 注册内存缓存
-   └─ AddHangfire()             — 内存存储 + Dashboard + Server
-
-2. 启动初始化（using scope）
-   ├─ db.Database.EnsureCreated()  — 自动创建数据库
-   ├─ 手动 Schema 补丁            — 兼容旧数据库（添加缺失列、索引，删除废弃列）
-   │   ├─ ConversationTurnLogs 表创建（如不存在）
-   │   ├─ 添加缺失的列（IsEnabled、MaxConcurrency、UserCreatedAt 等）
-   │   └─ 删除废弃列（AssistantOutputPlainText）
-   └─ ScheduleAllAsync()           — 注册所有启用的检测任务到 Hangfire
-
-3. 中间件配置
-   ├─ UseExceptionHandler()     — 自定义异常处理（JSON 错误响应 + 请求体日志）
-   ├─ UseStaticFiles()          — 启用静态文件服务
-   ├─ UseWebSockets()           — 启用 WebSocket（Responses API 使用）
-   ├─ UseAuthentication()       — Cookie 认证
-   ├─ UseAuthorization()        — 授权中间件
-   ├─ 管理员认证中间件          — 检查登录状态（未设置密码时跳过）
-   ├─ UseHangfireDashboard()    — Hangfire 仪表盘（/hangfire）
-   ├─ RecurringJob             — 日志清理（每日 03:00 UTC）
-   ├─ MapGet("/health")         — 健康检查端点
-   ├─ MapRazorPages()           — 映射 Razor Pages 路由
-   └─ MapControllers()          — 映射 API 控制器路由
-
-4. app.Run()
+1. 配置: AddCommonInfrastructure + AddAdminInfrastructure
+2. DB 自动创建: EnsureCreated() + Schema 补丁
+3. 启动 CoreConfigSyncHostedService: 延迟 2s → 构建全量快照 → 下发到 Core (最多 5 次重试)
+4. 启动 CoreEventPullHostedService: 订阅 Core SSE 事件流
+5. MapRazorPages() + MapControllers()
 ```
 
-数据库连接字符串优先从 `Configuration.GetConnectionString("DefaultConnection")` 读取，为空时默认 `Data Source={运行目录}/aitool.db`。
+### Core (端口 5029)
+
+```
+1. 配置: AddCommonInfrastructure + AddProxyRuntimeInfrastructure
+2. 尝试恢复本地配置: TryLoadFromFileAsync() → last-good-config.json
+3. 订阅事件: DeveloperInvocationTraceStore.OnTraceCompleted → fire-and-forget 发布
+4. 订阅事件: RouteCircuitStateStore.OnCircuitOpened → fire-and-forget 发布
+5. MapControllers() → 代理端点 + 管理查询端点 + 配置接收端点
+```
 
 ---
 
 ## 数据库
 
 - **引擎：** SQLite
-- **文件位置：** Web 应用运行目录下的 `aitool.db`
+- **文件位置：** Admin 运行目录下的 `aitool.db`
 - **初始化方式：** `EnsureCreated()`（不用 Migration，改实体后需删库重建或手动加列）
-- **日志保留：** 使用日志和对话记录的保留天数由 `SystemRuntimeSettings.UsageLogRetentionDays` 配置，自动清理由 `UsageLogAutoCleanupEnabled` 控制
-
-**重要约束：**
-- `ModelLibraryItem.ModelName` 有唯一索引，不同站点的同名模型归一到同一条记录
-- `SiteModelMapping` 有 `(SiteId, RemoteModelName)` 复合唯一索引
-- `ModelHealthMonitor.ModelLibraryItemId` 有唯一索引
-- `ProxyRouteEntry.EntryName` 有唯一索引
-- `ProxyAccessKey` 有 `(AccessKeyHash, IsEnabled)` 复合索引
-- 实体之间没有 EF Core 导航属性，关系通过手动查询解析（ID 字典查找）
-- LINQ 查询限制：不能在 `Where()` 中直接调用 C# 方法（如 `IsBlocked()`），需要先 `ToListAsync()` 加载到内存再过滤
-
-**数据库补丁机制：**
-启动时通过一系列 `ALTER TABLE` 语句检查并添加缺失的列和索引，包括 `IsEnabled`、`MaxConcurrency`、`UserCreatedAt` 等字段。同时删除已废弃的列（如 `AssistantOutputPlainText`）。这是为了兼容旧数据库的平滑升级。
+- **Core 不连接数据库：** Core 从 Admin 的配置快照读取，不直接访问 SQLite
 
 ---
 
-## 前端 UI 规范
+## 测试
 
-- **CSS 框架：** Bootstrap 5.3.3
-- **自定义主题：** `wwwroot/css/theme.css`，使用 CSS 变量
-- **主色调：** `#6C9EFF`（柔和蓝）
-- **字体：** 系统字体栈，支持中文（PingFang SC / Microsoft YaHei）
-- **侧边栏：** 固定左侧 260px，可折叠为 72px 图标模式，移动端 `< 992px` 折叠为抽屉
-- **交互模式：** 管理操作均使用 AJAX（fetch API），状态提示用 `alert` 组件
-- **无外部 JS 库：** 拖拽排序使用 HTML5 原生 Drag and Drop API
-- **CDN 依赖：** Bootstrap 5.3.3 CSS + JS Bundle（通过 jsdelivr CDN 加载）
+### 测试策略
 
----
+- **单元测试**（`AITool.ApplicationTests`）：隔离的 SQLite 内存数据库
+- **集成测试**（`AITool.Admin.IntegrationTests` + `AITool.Core.IntegrationTests`）：`WebApplicationFactory<Program>` 构建完整测试宿主，独立临时 SQLite
 
-## 定时任务
+### Core 集成测试
 
-通过 Hangfire 管理（内存存储，重启后丢失）：
+| 文件 | 说明 |
+|------|------|
+| `Proxy/AnthropicProxyControllerTests.cs` | Anthropic 代理端到端测试 |
+| `Proxy/OpenAiCrossProtocolProxyTests.cs` | OpenAI 入口跨协议桥接测试 |
+| `Proxy/ProxyFallbackFlowTests.cs` | 代理故障转移流程测试 |
+| `Proxy/ProxyResilienceTests.cs` | 代理韧性测试（超时、重试） |
+| `Proxy/ResponsesProxyTests.cs` | Responses API 代理测试 |
+| `Proxy/ModelConcurrencyLimiterTests.cs` | 并发控制器测试 |
+| `Chat/ChatApiTests.cs` | 对话测试 API 测试 |
 
-| 任务 ID | 执行时间 | 说明 |
-|----------|----------|------|
-| `log-retention-prune` | 每日 03:00 UTC | 清理超过保留天数的使用日志和对话记录 |
-| `detection-{taskId}` | 按各任务的 Cron 表达式 | 执行定时模型检测 |
+### Admin 集成测试
 
-Hangfire Dashboard：`/hangfire`（需管理员登录）
-
----
-
-## 关键设计决策
-
-1. **不用 Migration：** 使用 `EnsureCreated()` 自动建库，适合开发阶段快速迭代。改实体后通过启动时的 Schema 补丁机制添加新列，保持与旧数据库的兼容性。
-2. **无导航属性：** 实体间通过 ID 关联，查询时手动 Join 或字典查找，避免 EF Core 复杂查询翻译问题（SQLite 对 DateTimeOffset 等类型支持有限）。
-3. **内存熔断：** `RouteCircuitStateStore` 是 Singleton，重启后状态丢失。采用渐进式熔断：连续失败达阈值才触发，避免单次失败就屏蔽站点。阈值和恢复时间可通过系统设置动态配置。
-4. **增量进度报告：** 检测进度使用 `LastReportedCount` 追踪，每次轮询只返回新增结果，避免重复刷新。
-5. **模型名去重：** 导入模型时预加载字典，避免多站点同名模型的 UNIQUE 约束冲突。后续同名模型复用已有 `ModelLibraryItem`。
-6. **Chat 不触发熔断：** 对话测试页每次请求都是独立的，不影响代理链路的熔断状态。
-7. **每次尝试记录日志：** 代理请求为每次路由尝试记录一条日志（`AttemptIndex` 标识序号），最终结果标记 `IsFinalResult = true`，便于追踪完整的故障转移链路。
-8. **路由规则删除重建：** 保存路由规则时先删除旧的再按新顺序创建，而不是更新，简化逻辑。
-9. **批量日志写入：** `ProxyUsageLogBatchWriter` 和 `ConversationLogBatchWriter` 使用后台通道批量写入，避免代理热路径上的 SQLite 写入竞争。
-10. **元数据缓存：** `ProxyRequestMetadataCache` 提供 5 秒 TTL 的内存缓存层，保持代理路径高性能，同时允许管理后台修改即时传播。
-11. **跨协议桥接：** `ProxyProtocolBridge` 纯静态无状态设计，支持 OpenAI ↔ Anthropic 双向转换（请求体、响应体、流式 SSE），使网关能透明连接不同协议的后端。
-12. **后台统计查询：** `AnalyticsBackgroundQueryExecutor` 限制昂贵的聚合查询为单消费者队列，防止数据库过载。
-13. **并发控制：** `ModelConcurrencyLimiter` 按站点+模型维度限制并发，支持跳过和排队两种策略，配合路由优先级实现优雅降级。
-14. **对话内容提取：** `ConversationExtractionService` 纯逻辑服务，从原始 HTTP 请求/响应中提取结构化对话数据，支持三种协议格式和多种工具来源识别。
-15. **GZip 文本压缩：** 对话记录的长文本字段使用 GZip 压缩存储（512字节以下不压缩），显著降低 SQLite 存储占用。
-
----
-
-## 常见 LINQ 陷阱
-
-本项目使用 SQLite + EF Core，有以下已知限制：
-
-1. **不能在 `Where()` 中调用 C# 方法：**
-   ```csharp
-   // 错误：SQLite 无法翻译 IsBlocked() 方法
-   _dbContext.Sites.Where(s => _circuitStore.IsBlocked(s.Id))
-
-   // 正确：先加载到内存，再过滤
-   var siteIds = await _dbContext.Sites.Select(s => s.Id).ToListAsync();
-   var blockedIds = new HashSet<Guid>(siteIds.Where(id => _circuitStore.IsBlocked(id)));
-   ```
-
-2. **`DateTimeOffset` 比较有限：** 部分 `DateTimeOffset` 运算无法翻译，需要先 `ToListAsync()` 加载到内存再过滤。
-
-3. **`Contains` 与 `HashSet`：** 使用 `List.Contains()` 而非 `HashSet.Contains()`，前者能被 EF Core 翻译为 SQL `IN` 子句。
+| 文件 | 说明 |
+|------|------|
+| `UsageLogs/UsageLogsApiTests.cs` | 使用日志 API 测试 |
+| `Conversations/ConversationPageTests.cs` | 对话记录页面测试 |
+| `Developer/DeveloperInvocationsPageTests.cs` | 开发者调试追踪页面测试 |
+| `ClientSimulator/ClientSimulatorPageTests.cs` | 客户端模拟器页面测试 |
+| `System/SystemSettingsPageTests.cs` | 系统设置页面测试 |
 
 ---
 
@@ -1425,105 +762,31 @@ dotnet restore
 # 编译
 dotnet build
 
-# 运行（默认 http://0.0.0.0:5029）
-cd src/AITool.Web
+# 启动 Admin (端口 5030) — 管理后台
+cd src/AITool.Admin
+dotnet run
+
+# 启动 Core (端口 5029) — 代理端 + 运行时查询 API
+cd src/AITool.Core
 dotnet run
 ```
 
-首次运行自动创建 SQLite 数据库。访问管理后台即可开始配置站点和模型。
+首次运行自动创建 SQLite 数据库。访问 `http://127.0.0.1:5030` 进入管理后台。
 
 ---
 
-## 测试
+## 关键设计决策
 
-### 测试策略
-
-- **单元测试**（`AITool.ApplicationTests`）：使用隔离的 SQLite 内存数据库测试业务逻辑
-- **集成测试**（`AITool.IntegrationTests`）：使用 `WebApplicationFactory<Program>` 构建完整测试宿主，每个测试类使用独立的临时 SQLite 数据库文件
-
-### 测试覆盖
-
-**ApplicationTests（单元测试）：**
-
-| 文件 | 说明 |
-|------|------|
-| `Operations/SystemRuntimeSettingsServiceTests.cs` | 系统配置服务测试 |
-| `Operations/SystemRuntimeSettingsServiceSqliteTests.cs` | 系统配置 SQLite 持久化测试 |
-| `Retention/LogRetentionServiceTests.cs` | 日志清理服务测试 |
-| `Proxy/RouteCircuitStateStoreTests.cs` | 熔断状态存储测试 |
-| `Proxy/UsageLogServiceTests.cs` | 使用日志服务测试 |
-| `Proxy/ProxyForwardServiceResponseTests.cs` | 代理转发响应解析测试 |
-| `Routing/RouteSelectionServiceTests.cs` | 路由选择服务测试 |
-| `Detection/DetectionTests.cs` | 模型检测逻辑测试 |
-| `Conversations/ConversationExtractionServiceTests.cs` | 对话内容提取测试 |
-| `Conversations/GzipTextCompressionTests.cs` | GZip 文本压缩测试 |
-| `Sites/SiteEndpointPathResolverTests.cs` | 站点路径解析测试 |
-
-**IntegrationTests（集成测试）：**
-
-| 文件 | 说明 |
-|------|------|
-| `Proxy/AnthropicProxyControllerTests.cs` | Anthropic 代理端到端测试 |
-| `Proxy/OpenAiCrossProtocolProxyTests.cs` | OpenAI 入口跨协议桥接测试 |
-| `Proxy/ProxyFallbackFlowTests.cs` | 代理故障转移流程测试 |
-| `Proxy/ProxyResilienceTests.cs` | 代理韧性测试（超时、重试） |
-| `Proxy/ProxyMetadataCacheTests.cs` | 代理元数据缓存测试 |
-| `Proxy/ResponsesProxyTests.cs` | Responses API 代理测试 |
-| `Proxy/ModelConcurrencyLimiterTests.cs` | 并发控制器测试 |
-| `Auth/AdminAuthTests.cs` | 管理员认证测试 |
-| `Analytics/AnalyticsPageTests.cs` | 统计分析页面测试 |
-| `Chat/ChatApiTests.cs` | 对话测试 API 测试 |
-| `Health/HealthEndpointTests.cs` | 健康检查端点测试 |
-| `Models/ModelEditCacheTests.cs` | 模型编辑缓存测试 |
-| `Models/ModelEditPageTests.cs` | 模型编辑页面测试 |
-| `Sites/SiteBulkDeleteTests.cs` | 站点批量删除测试 |
-| `Sites/SitePagesTests.cs` | 站点页面测试 |
-| `System/SystemSettingsCacheTests.cs` | 系统设置缓存测试 |
-| `System/SystemSettingsPageTests.cs` | 系统设置页面测试 |
-| `UsageLogs/UsageLogsApiTests.cs` | 使用日志 API 测试 |
-| `Conversations/ConversationLoggingE2ETests.cs` | 对话日志端到端测试 |
-| `Conversations/ConversationPageTests.cs` | 对话记录页面测试 |
-| `Developer/DeveloperInvocationsPageTests.cs` | 开发者调试追踪页面测试 |
-| `ClientSimulator/ClientSimulatorPageTests.cs` | 客户端模拟器页面测试 |
-
----
-
-## 典型使用场景
-
-### 场景：配置一个 OpenAI 代理
-
-1. **创建站点**：在站点管理页添加一个 OpenAI 兼容站点（填入名称、Base URL、API Key）
-2. **导入模型**：点击导入，拉取该站点支持的模型列表，勾选需要的模型
-3. **配置路由**：在路由规则页选择模型，自动发现拥有该模型的站点，拖拽设置优先级
-4. **创建访问密钥**：在访问密钥页创建一个对外使用的 API Key
-5. **对外代理**：客户端使用 `POST http://your-host/v1/chat/completions`，Header 带 `Authorization: Bearer {your-key}`，Body 中 `model` 填统一模型名
-
-### 场景：多站点故障转移
-
-1. 添加多个提供相同模型的站点（如 OpenAI、Azure OpenAI、本地 Ollama）
-2. 在路由规则页为同一模型配置多个站点优先级
-3. 代理请求时自动按优先级尝试，首个失败自动切换下一个
-4. 连续失败达阈值的站点被临时屏蔽（熔断）
-5. 在使用日志中查看每次请求的重试次数和故障转移详情
-
-### 场景：跨协议混合使用
-
-1. 注册一个 Anthropic 站点（如 Claude API）和一个 OpenAI 站点（如 GPT API）
-2. 为同一个外部模型名配置两个站点的路由规则
-3. OpenAI 客户端请求时，如果命中 Anthropic 站点，网关自动桥接协议转换
-4. 流式请求也支持实时 SSE 事件格式转换（OpenAI SSE ↔ Anthropic SSE）
-
-### 场景：定时检测模型可用性
-
-1. 在检测任务页创建定时任务，设置 Cron 表达式
-2. 系统按计划自动探测所有映射的可用性
-3. 在模型健康页查看可用率趋势
-4. 在使用日志中查看检测任务的详细探测记录（Source="detection-task"）
-
-### 场景：用量分析和监控
-
-1. 在使用日志页查看详细的调用记录（含延迟指标、缓存命中、流式状态）
-2. 在对话记录页按会话浏览用户与 AI 的对话内容
-3. 在统计分析页查看用量趋势、模型分布、缓存命中率
-4. 在系统设置页调整超时、重试、熔断、并发控制、日志保留等参数
-5. 开启开发者调试功能，追踪代理请求的全链路详情
+1. **双宿主分离**：Admin 管理面 + Core 代理面独立进程。Admin 持有 DB 作为配置的唯一写入源，Core 通过配置快照全量/增量同步获取配置，不连接 DB。
+2. **配置快照**：`CoreRuntimeConfigSnapshot` 是 Admin→Core 配置传递的唯一载体，包含路由规则（已按优先级预排序）、站点（含 ApiKey）、密钥、运行时设置。Core 从内存读取，不经 DB。
+3. **事件总线 + 磁盘 Spool**：使用日志、对话记录、开发者追踪事件通过 Core 事件总线 → 磁盘 JSONL 文件 → Admin 定时拉取 + 幂等写入的模式，保证 Admin 离线时数据不丢失（最多 30 天磁盘缓冲）。
+4. **不用 Migration**：使用 `EnsureCreated()` 自动建库 + Schema 补丁机制添加新列，适合快速迭代。
+5. **无导航属性**：实体间通过 ID 关联，避免 EF Core 复杂查询翻译问题（SQLite 对 DateTimeOffset 等类型支持有限）。
+6. **内存熔断**：`RouteCircuitStateStore` 是 Singleton，重启后状态丢失。渐进式熔断：连续失败达阈值才触发。
+7. **路由规则删除重建**：保存路由规则时先删除旧的后按新顺序创建，保证优先级精确。
+8. **每次尝试记录日志**：代理请求为每次路由尝试记录一条日志，最终结果标记 `IsFinalResult = true`。
+9. **批量日志写入**：`ProxyUsageLogBatchWriter` 使用后台 Channel 批量写入 SQLite，避免代理热路径上的 I/O 竞争。
+10. **元数据缓存 5 秒 TTL**：平衡高性能和管理后台修改即时生效。
+11. **跨协议桥接纯静态无状态**：`ProxyProtocolBridge` 支持 OpenAI ↔ Anthropic 双向 SSE 流式转换。
+12. **开发者追踪客户端断连保护**：`CancelTrace` 强制将 pending trace 标记为 error，避免 Invocations 页面出现永久等待的僵尸记录。
+13. **调试页受密钥保护**：`/debug/runtime` 通过 SHA256 验证访问密钥，不依赖 Admin 认证体系，安全独立。
