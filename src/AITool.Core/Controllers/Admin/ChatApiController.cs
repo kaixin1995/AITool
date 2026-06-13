@@ -426,22 +426,6 @@ public sealed class ChatApiController : ControllerBase
             var attemptIndex = 0;
             var attempts = new List<ChatAttemptResult>();
 
-            // 开发者调用追踪：与 OpenAiProxyController 保持一致的追踪生命周期。
-            var traceContext = new ProxyCallContext
-            {
-                RequestId = requestId,
-                Source = "chat",
-                ProtocolType = allRoutes.Count > 0 ? allRoutes[0].ProtocolType : string.Empty,
-                RequestModel = model.ModelName,
-                RequestPath = "/api/admin/chat",
-                RequestedAt = DateTimeOffset.UtcNow,
-                RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-                {
-                    ["X-AITool-Source"] = "chat"
-                }
-            };
-            var traceId = _proxyCallRecorder.BeginTrace(traceContext);
-
             foreach (var route in allRoutes)
             {
                 if (_circuitStore.IsBlocked(route.RouteId))
@@ -461,13 +445,6 @@ public sealed class ChatApiController : ControllerBase
                 {
                     continue;
                 }
-
-                traceContext.AttemptIndex = attemptIndex;
-                traceContext.AttemptedModel = route.UpstreamModelName;
-                traceContext.TargetSiteId = route.SiteId;
-                traceContext.TargetSiteName = route.SiteName;
-                traceContext.ForwardingMode = "direct";
-                var traceAttemptId = _proxyCallRecorder.BeginTraceAttempt(traceId, traceContext);
 
                 var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
@@ -523,7 +500,6 @@ public sealed class ChatApiController : ControllerBase
                     TotalDurationMs = forwardResult.TotalDurationMs
                 };
                 await _proxyCallRecorder.RecordUsageAsync(usageContext, cancellationToken);
-                _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, usageContext);
 
                 if (forwardResult.Success)
                 {
@@ -616,22 +592,6 @@ public sealed class ChatApiController : ControllerBase
         var attemptIndex = 0;
         var attempts = new List<ChatAttemptResult>();
 
-        // 开发者调用追踪
-        var streamTraceContext = new ProxyCallContext
-        {
-            RequestId = requestId,
-            Source = "chat",
-            ProtocolType = allRoutes.Count > 0 ? allRoutes[0].ProtocolType : string.Empty,
-            RequestModel = model.ModelName,
-            RequestPath = "/api/admin/chat",
-            RequestedAt = DateTimeOffset.UtcNow,
-            RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["X-AITool-Source"] = "chat"
-            }
-        };
-        var streamTraceId = _proxyCallRecorder.BeginTrace(streamTraceContext);
-
         foreach (var route in allRoutes)
         {
             if (_circuitStore.IsBlocked(route.RouteId))
@@ -651,13 +611,6 @@ public sealed class ChatApiController : ControllerBase
             {
                 continue;
             }
-
-            streamTraceContext.AttemptIndex = attemptIndex;
-            streamTraceContext.AttemptedModel = route.UpstreamModelName;
-            streamTraceContext.TargetSiteId = route.SiteId;
-            streamTraceContext.TargetSiteName = route.SiteName;
-            streamTraceContext.ForwardingMode = "direct";
-            var streamTraceAttemptId = _proxyCallRecorder.BeginTraceAttempt(streamTraceId, streamTraceContext);
 
             var streamResult = await ForwardStreamAsync(
                 route.ProtocolType,
@@ -729,7 +682,6 @@ public sealed class ChatApiController : ControllerBase
                 TotalDurationMs = streamResult.TotalDurationMs
             };
             await _proxyCallRecorder.RecordUsageAsync(streamUsageContext, cancellationToken);
-            _proxyCallRecorder.CompleteTraceAttempt(streamTraceId, streamTraceAttemptId, streamUsageContext);
 
             if (streamResult.Success)
             {
@@ -852,22 +804,6 @@ public sealed class ChatApiController : ControllerBase
         var sw = Stopwatch.StartNew();
         var requestId = Guid.NewGuid();
 
-        // 开发者调用追踪
-        var singleTraceContext = new ProxyCallContext
-        {
-            RequestId = requestId,
-            Source = "chat",
-            ProtocolType = mapping.ProtocolType,
-            RequestModel = model.ModelName,
-            RequestPath = "/api/admin/chat",
-            RequestedAt = DateTimeOffset.UtcNow,
-            RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["X-AITool-Source"] = "chat"
-            }
-        };
-        var singleTraceId = _proxyCallRecorder.BeginTrace(singleTraceContext);
-
         // 直发到指定站点模型时也要进入统一并发统计，避免聊天页与开发者并发检测口径不一致。
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
@@ -889,13 +825,6 @@ public sealed class ChatApiController : ControllerBase
                 IsStreaming = false
             });
         }
-
-        singleTraceContext.AttemptIndex = 1;
-        singleTraceContext.AttemptedModel = mapping.SiteModelName;
-        singleTraceContext.TargetSiteId = mapping.SiteId;
-        singleTraceContext.TargetSiteName = mapping.SiteName;
-        singleTraceContext.ForwardingMode = "direct";
-        var singleTraceAttemptId = _proxyCallRecorder.BeginTraceAttempt(singleTraceId, singleTraceContext);
 
         var requestBody = BuildChatRequestBody(mapping.ProtocolType, mapping.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
@@ -951,7 +880,6 @@ public sealed class ChatApiController : ControllerBase
             TotalDurationMs = forwardResult.TotalDurationMs
         };
         await _proxyCallRecorder.RecordUsageAsync(singleUsageContext, cancellationToken);
-        _proxyCallRecorder.CompleteTraceAttempt(singleTraceId, singleTraceAttemptId, singleUsageContext);
 
         var attempts = new List<ChatAttemptResult>
         {
@@ -995,22 +923,6 @@ public sealed class ChatApiController : ControllerBase
     {
         var requestId = Guid.NewGuid();
 
-        // 开发者调用追踪
-        var singleStreamTraceContext = new ProxyCallContext
-        {
-            RequestId = requestId,
-            Source = "chat",
-            ProtocolType = mapping.ProtocolType,
-            RequestModel = model.ModelName,
-            RequestPath = "/api/admin/chat",
-            RequestedAt = DateTimeOffset.UtcNow,
-            RequestHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["X-AITool-Source"] = "chat"
-            }
-        };
-        var singleStreamTraceId = _proxyCallRecorder.BeginTrace(singleStreamTraceContext);
-
         // 直发到指定站点模型时也要进入统一并发统计，避免聊天页与开发者并发检测口径不一致。
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
@@ -1025,13 +937,6 @@ public sealed class ChatApiController : ControllerBase
             await WriteSseEventAsync("error", new { message = "该模型当前无可用并发槽位" }, cancellationToken);
             return;
         }
-
-        singleStreamTraceContext.AttemptIndex = 1;
-        singleStreamTraceContext.AttemptedModel = mapping.SiteModelName;
-        singleStreamTraceContext.TargetSiteId = mapping.SiteId;
-        singleStreamTraceContext.TargetSiteName = mapping.SiteName;
-        singleStreamTraceContext.ForwardingMode = "direct";
-        var singleStreamTraceAttemptId = _proxyCallRecorder.BeginTraceAttempt(singleStreamTraceId, singleStreamTraceContext);
 
         var streamResult = await ForwardStreamAsync(
             mapping.ProtocolType,
@@ -1103,7 +1008,6 @@ public sealed class ChatApiController : ControllerBase
             TotalDurationMs = streamResult.TotalDurationMs
         };
         await _proxyCallRecorder.RecordUsageAsync(singleStreamUsageContext, cancellationToken);
-        _proxyCallRecorder.CompleteTraceAttempt(singleStreamTraceId, singleStreamTraceAttemptId, singleStreamUsageContext);
 
         if (!streamResult.Success)
         {
