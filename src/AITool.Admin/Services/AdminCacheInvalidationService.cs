@@ -49,6 +49,7 @@ public sealed class AdminCacheInvalidationService
     /// 日志记录器。
     /// </summary>
     private readonly ILogger<AdminCacheInvalidationService> _logger;
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
     /// <summary>
     /// 配置版本号，使用 Unix 时间戳毫秒保证跨 Admin 重启单调递增。
