@@ -51,7 +51,9 @@ public sealed class ProxyCallRecorder : IProxyCallRecorder
                 RequestPath = context.RequestPath,
                 RequestModel = context.RequestModel,
                 RequestBody = DeveloperInvocationTraceStore.FormatBody(context.RequestBody),
-                RequestHeaders = context.RequestHeaders
+                RequestHeaders = context.RequestHeaders,
+                AccessKeyId = context.AccessKeyId,
+                ReasoningEffort = context.ReasoningEffort
             });
         }
         catch (Exception ex)
@@ -119,7 +121,13 @@ public sealed class ProxyCallRecorder : IProxyCallRecorder
                 InputTokens = context.InputTokens,
                 CachedTokens = context.CachedTokens,
                 OutputTokens = context.OutputTokens,
-                TotalDurationMs = context.TotalDurationMs
+                TotalDurationMs = context.TotalDurationMs,
+                FirstTokenLatencyMs = context.FirstTokenLatencyMs,
+                StreamDurationMs = context.StreamDurationMs,
+                IsStreamInterrupted = context.IsStreamInterrupted,
+                RetryCount = context.RetryCount,
+                IsFinalResult = context.IsFinalResult,
+                FallbackTriggered = context.FallbackTriggered
             });
         }
         catch (Exception ex)

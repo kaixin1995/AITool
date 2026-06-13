@@ -96,7 +96,6 @@ public static class ProxyRuntimeInfrastructureExtensions
 
         // 注册使用日志事件发布器和批处理写入器。
         // 宿主发布事件到总线，后台写入器批量持久化到数据库。
-        services.AddSingleton<CoreUsageLogEventPublisher>();
         services.AddSingleton<CoreConversationEventPublisher>();
         services.AddSingleton<CoreConfigAppliedEventPublisher>();
         services.AddSingleton<ProxyUsageLogBatchWriter>();

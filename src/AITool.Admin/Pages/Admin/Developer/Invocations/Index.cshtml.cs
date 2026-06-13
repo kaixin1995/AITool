@@ -11,8 +11,8 @@ namespace AITool.Admin.Pages.Admin.Developer.Invocations;
 
 /// <summary>
 /// 开发者工具页面模型。
-/// Admin 侧通过 CoreAdminClient 将所有开发者数据查询（调用追踪、并发检测、客户端模拟器元数据）
-/// 代理到 Core 宿主的 /api/core/developer/* 端点，自身不直接访问 Core 运行时内存单例。
+/// 调用追踪数据直接从 AdminDeveloperTraceStore 读取（实时来自 Core 发布的 unified-proxy-event），
+/// 不通过 CoreAdminClient 反向代理到 Core。
 /// </summary>
 public sealed class IndexModel : PageModel
 {
@@ -100,8 +100,7 @@ public sealed class IndexModel : PageModel
 
     /// <summary>
     /// 处理页面首次加载请求。
-    /// 检查开发者功能开关后，从 Core 获取初始调用追踪摘要和模拟器元数据。
-    /// 当 Core 不可用时降级到 Admin 本地数据源。
+    /// 检查开发者功能开关后，从 AdminDeveloperTraceStore 获取初始调用追踪摘要。
     /// </summary>
     public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
     {
@@ -113,22 +112,11 @@ public sealed class IndexModel : PageModel
 
         ActiveTab = "invocations";
 
-        // 优先从 Core 获取实时调用追踪数据；Core 不可用时降级到 Admin 本地 AdminDeveloperTraceStore。
-        try
-        {
-            var coreList = await _coreClient.GetDeveloperInvocationsAsync(1, PageSize, cancellationToken);
-            InitialTotalCount = coreList.TotalCount;
-            InitialFailedCount = coreList.FailedCount;
-            InitialPendingCount = coreList.PendingCount;
-        }
-        catch (Exception)
-        {
-            // Core 不可用，降级到本地存储
-            var localResult = BuildLocalListResponse(1);
-            InitialTotalCount = localResult.TotalCount;
-            InitialFailedCount = localResult.FailedCount;
-            InitialPendingCount = localResult.PendingCount;
-        }
+        // 从 AdminDeveloperTraceStore 读取调用追踪摘要数据
+        var (totalCount, failedCount, pendingCount) = _traceStore.GetSummary();
+        InitialTotalCount = totalCount;
+        InitialFailedCount = failedCount;
+        InitialPendingCount = pendingCount;
 
         try
         {
@@ -166,7 +154,7 @@ public sealed class IndexModel : PageModel
 
     /// <summary>
     /// 返回调用记录列表，供前端 JavaScript 通过 AJAX 调用。
-    /// 优先从 Core 获取实时数据；Core 不可用时降级到 Admin 本地 AdminDeveloperTraceStore。
+    /// 直接从 AdminDeveloperTraceStore 读取数据。
     /// </summary>
     public async Task<IActionResult> OnGetListAsync(int pageNumber = 1, CancellationToken cancellationToken = default)
     {
@@ -176,22 +164,13 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        try
-        {
-            var result = await _coreClient.GetDeveloperInvocationsAsync(pageNumber, PageSize, cancellationToken);
-            return new JsonResult(result);
-        }
-        catch (Exception)
-        {
-            // Core 不可用，降级到本地存储
-            var localResult = BuildLocalListResponse(pageNumber);
-            return new JsonResult(localResult);
-        }
+        var localResult = BuildLocalListResponse(pageNumber);
+        return new JsonResult(localResult);
     }
 
     /// <summary>
     /// 返回单条调用记录详情，供前端 JavaScript 展开卡片时 AJAX 加载。
-    /// 优先从 Core 获取完整详情；Core 不可用时降级到 Admin 本地 AdminDeveloperTraceStore。
+    /// 直接从 AdminDeveloperTraceStore 读取完整详情。
     /// </summary>
     public async Task<IActionResult> OnGetDetailAsync(Guid traceId, CancellationToken cancellationToken = default)
     {
@@ -201,32 +180,18 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        try
+        var traceEvent = _traceStore.Get(traceId);
+        if (traceEvent is null)
         {
-            var result = await _coreClient.GetDeveloperInvocationDetailAsync(traceId, cancellationToken);
-            if (result is null)
-            {
-                return NotFound(new { message = $"跟踪记录 {traceId} 不存在或已过期" });
-            }
-
-            return new JsonResult(result);
+            return NotFound(new { message = $"跟踪记录 {traceId} 不存在或已过期" });
         }
-        catch (Exception)
-        {
-            // Core 不可用，降级到本地存储
-            var traceEvent = _traceStore.Get(traceId);
-            if (traceEvent is null)
-            {
-                return NotFound(new { message = $"跟踪记录 {traceId} 不存在或已过期" });
-            }
 
-            return new JsonResult(BuildLocalDetailResponse(traceEvent));
-        }
+        return new JsonResult(BuildLocalDetailResponse(traceEvent));
     }
 
     /// <summary>
     /// 返回当前模型并发状态快照，供并发检测页签的自动刷新使用。
-    /// 从 Core 获取实时并发数据（活跃调用数、排队数等）。
+    /// 从 Admin 本地配置读取并发限制，活跃计数和排队计数为 0（Admin 侧无法观测 Core 运行时并发状态）。
     /// </summary>
     public async Task<IActionResult> OnGetConcurrencyAsync(CancellationToken cancellationToken = default)
     {
@@ -236,17 +201,8 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        try
-        {
-            var result = await _coreClient.GetDeveloperConcurrencyAsync(cancellationToken);
-            return new JsonResult(result);
-        }
-        catch (Exception)
-        {
-            // Core 不可用，降级到本地静态配置
-            var localResult = await BuildLocalConcurrencyResponse(cancellationToken);
-            return new JsonResult(localResult);
-        }
+        var localResult = await BuildLocalConcurrencyResponse(cancellationToken);
+        return new JsonResult(localResult);
     }
 
     private CoreDeveloperInvocationListResponse BuildLocalListResponse(int pageNumber)
@@ -277,7 +233,7 @@ public sealed class IndexModel : PageModel
         };
     }
 
-    private static CoreDeveloperInvocationSummary ToSummary(CoreDeveloperTraceEvent traceEvent)
+    private static CoreDeveloperInvocationSummary ToSummary(CoreUnifiedProxyEvent traceEvent)
     {
         return new CoreDeveloperInvocationSummary
         {
@@ -286,22 +242,22 @@ public sealed class IndexModel : PageModel
             CreatedAtText = traceEvent.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
             Source = traceEvent.Source,
             ProtocolType = traceEvent.ProtocolType,
-            RequestPath = string.Empty,
+            RequestPath = traceEvent.RequestPath,
             RequestModel = traceEvent.RequestModel,
             SummarySite = traceEvent.TargetSiteName,
             SummaryAttemptedModel = traceEvent.AttemptedModel,
             Status = traceEvent.Status,
             StatusText = traceEvent.Status,
             StatusClass = traceEvent.Status,
-            StatusCode = 0,
+            StatusCode = traceEvent.StatusCode,
             TotalDurationMs = traceEvent.TotalDurationMs,
-            FailedAttemptCount = string.Equals(traceEvent.Status, "error", StringComparison.OrdinalIgnoreCase) ? 1 : 0,
-            PendingAttemptCount = string.Equals(traceEvent.Status, "pending", StringComparison.OrdinalIgnoreCase) ? 1 : 0,
-            SuccessAttemptCount = string.Equals(traceEvent.Status, "success", StringComparison.OrdinalIgnoreCase) ? 1 : 0
+            FailedAttemptCount = traceEvent.Attempts.Count(a => string.Equals(a.Status, "error", StringComparison.OrdinalIgnoreCase)),
+            PendingAttemptCount = traceEvent.Attempts.Count(a => string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)),
+            SuccessAttemptCount = traceEvent.Attempts.Count(a => string.Equals(a.Status, "success", StringComparison.OrdinalIgnoreCase))
         };
     }
 
-    private static CoreDeveloperInvocationDetail BuildLocalDetailResponse(CoreDeveloperTraceEvent traceEvent)
+    private static CoreDeveloperInvocationDetail BuildLocalDetailResponse(CoreUnifiedProxyEvent traceEvent)
     {
         return new CoreDeveloperInvocationDetail
         {
@@ -312,30 +268,61 @@ public sealed class IndexModel : PageModel
             UpdatedAt = traceEvent.FinishedAt,
             UpdatedAtText = traceEvent.FinishedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
             Source = traceEvent.Source,
-            UserAgent = string.Empty,
-            ClientIp = string.Empty,
+            UserAgent = traceEvent.UserAgent,
+            ClientIp = traceEvent.ClientIp,
             ProtocolType = traceEvent.ProtocolType,
             UpstreamProtocolType = traceEvent.ProtocolType,
-            RequestPath = string.Empty,
+            RequestPath = traceEvent.RequestPath,
             RequestModel = traceEvent.RequestModel,
             AttemptedModel = traceEvent.AttemptedModel,
             TargetSiteId = traceEvent.TargetSiteId,
             TargetSiteName = traceEvent.TargetSiteName,
             SummarySite = traceEvent.TargetSiteName,
             SummaryAttemptedModel = traceEvent.AttemptedModel,
-            RequestBody = traceEvent.RequestPreview,
-            RequestHeaders = [],
+            RequestBody = traceEvent.RequestBody,
+            RequestHeaders = traceEvent.RequestHeaders,
             Status = traceEvent.Status,
             StatusText = traceEvent.Status,
             StatusClass = traceEvent.Status,
-            StatusCode = 0,
+            StatusCode = traceEvent.StatusCode,
             TotalDurationMs = traceEvent.TotalDurationMs,
             InputTokens = traceEvent.InputTokens,
             CachedTokens = traceEvent.CachedTokens,
             OutputTokens = traceEvent.OutputTokens,
             IsStreaming = traceEvent.IsStreaming,
             ErrorMessage = traceEvent.ErrorMessage,
-            Attempts = []
+            ResponseBody = traceEvent.ResponseBody,
+            ResponseContentType = traceEvent.ResponseContentType,
+            FailedAttemptCount = traceEvent.Attempts.Count(a => string.Equals(a.Status, "error", StringComparison.OrdinalIgnoreCase)),
+            PendingAttemptCount = traceEvent.Attempts.Count(a => string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase)),
+            SuccessAttemptCount = traceEvent.Attempts.Count(a => string.Equals(a.Status, "success", StringComparison.OrdinalIgnoreCase)),
+            Attempts = traceEvent.Attempts.Select(a => new CoreDeveloperInvocationAttempt
+            {
+                AttemptId = a.AttemptId,
+                CreatedAt = a.StartedAt,
+                CreatedAtText = a.StartedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+                UpdatedAt = a.FinishedAt,
+                UpdatedAtText = a.FinishedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+                AttemptedModel = a.AttemptedModel,
+                UpstreamProtocolType = a.UpstreamProtocolType,
+                ForwardingMode = a.ForwardingMode,
+                TargetSiteId = a.TargetSiteId,
+                TargetSiteName = a.TargetSiteName,
+                SummarySite = a.TargetSiteName,
+                SummaryAttemptedModel = a.AttemptedModel,
+                Status = a.Status,
+                StatusText = a.Status,
+                StatusClass = a.Status,
+                StatusCode = a.StatusCode,
+                ErrorMessage = a.ErrorMessage,
+                ResponseBody = a.ResponseBody,
+                ResponseContentType = a.ResponseContentType,
+                IsStreaming = a.IsStreaming,
+                InputTokens = a.InputTokens,
+                CachedTokens = a.CachedTokens,
+                OutputTokens = a.OutputTokens,
+                TotalDurationMs = a.TotalDurationMs
+            }).ToList()
         };
     }
 

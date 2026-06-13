@@ -11,7 +11,7 @@ namespace AITool.Infrastructure.CoreRuntime;
 /// <para>
 /// 与 Core 侧的 <c>DeveloperInvocationTraceStore</c> 类似，但存储粒度不同：
 /// Core 侧保存完整的追踪记录（含请求体、响应体、请求头等），
-/// Admin 侧只保存事件摘要（CoreDeveloperTraceEvent），适合跨宿主传输的轻量级数据。
+/// Admin 侧保存完整统一代理事件（CoreUnifiedProxyEvent），包含请求体、响应体和所有尝试明细。
 /// </para>
 /// <para>
 /// 数据特性：最多保留 100 条，6 小时过期，线程安全。
@@ -37,18 +37,18 @@ public sealed class AdminDeveloperTraceStore
     /// <summary>
     /// 按完成时间倒序排列的追踪记录列表（最新在前）。
     /// </summary>
-    private readonly LinkedList<CoreDeveloperTraceEvent> _entries = [];
+    private readonly LinkedList<CoreUnifiedProxyEvent> _entries = [];
 
     /// <summary>
     /// 以 TraceId 为主键的节点索引，用于去重和按 ID 查询。
     /// </summary>
-    private readonly Dictionary<Guid, LinkedListNode<CoreDeveloperTraceEvent>> _nodes = [];
+    private readonly Dictionary<Guid, LinkedListNode<CoreUnifiedProxyEvent>> _nodes = [];
 
     /// <summary>
-    /// 添加或更新一条开发者追踪事件。
+    /// 添加或更新一条统一代理事件。
     /// 如果相同 TraceId 已存在，则用新数据替换旧数据（支持事件重放场景）。
     /// </summary>
-    public void Upsert(CoreDeveloperTraceEvent traceEvent)
+    public void Upsert(CoreUnifiedProxyEvent traceEvent)
     {
         ArgumentNullException.ThrowIfNull(traceEvent);
 
@@ -71,7 +71,7 @@ public sealed class AdminDeveloperTraceStore
     /// <summary>
     /// 批量添加开发者追踪事件，自动按 TraceId 去重。
     /// </summary>
-    public void UpsertRange(IEnumerable<CoreDeveloperTraceEvent> events)
+    public void UpsertRange(IEnumerable<CoreUnifiedProxyEvent> events)
     {
         foreach (var evt in events)
         {
@@ -83,24 +83,24 @@ public sealed class AdminDeveloperTraceStore
     /// 获取所有追踪记录的快照（按完成时间倒序）。
     /// 返回的是深拷贝列表，调用方可以安全地在任意线程使用。
     /// </summary>
-    public IReadOnlyList<CoreDeveloperTraceEvent> List()
+    public IReadOnlyList<CoreUnifiedProxyEvent> List()
     {
         lock (_gate)
         {
             PurgeExpiredUnsafe();
-            return _entries.ToList();
+            return _entries.Select(Clone).ToList();
         }
     }
 
     /// <summary>
-    /// 按 TraceId 获取单条追踪记录。
+    /// 按 TraceId 获取单条追踪记录，返回深拷贝。
     /// </summary>
-    public CoreDeveloperTraceEvent? Get(Guid traceId)
+    public CoreUnifiedProxyEvent? Get(Guid traceId)
     {
         lock (_gate)
         {
             PurgeExpiredUnsafe();
-            return _nodes.TryGetValue(traceId, out var node) ? node.Value : null;
+            return _nodes.TryGetValue(traceId, out var node) ? Clone(node.Value) : null;
         }
     }
 
@@ -164,5 +164,83 @@ public sealed class AdminDeveloperTraceStore
             _nodes.Remove(last.Value.TraceId);
             _entries.RemoveLast();
         }
+    }
+
+    /// <summary>
+    /// 深拷贝一个 <see cref="CoreUnifiedProxyEvent"/>，包括所有尝试明细。
+    /// </summary>
+    private static CoreUnifiedProxyEvent Clone(CoreUnifiedProxyEvent source)
+    {
+        return new CoreUnifiedProxyEvent
+        {
+            // ─── 来自 CoreUsageLogEvent ───
+            RequestId = source.RequestId,
+            AccessKeyId = source.AccessKeyId,
+            ProtocolType = source.ProtocolType,
+            ForwardingMode = source.ForwardingMode,
+            RequestModel = source.RequestModel,
+            AttemptedModel = source.AttemptedModel,
+            TargetSiteId = source.TargetSiteId,
+            Status = source.Status,
+            Source = source.Source,
+            RetryCount = source.RetryCount,
+            AttemptIndex = source.AttemptIndex,
+            IsFinalResult = source.IsFinalResult,
+            FallbackTriggered = source.FallbackTriggered,
+            ErrorMessage = source.ErrorMessage,
+            InputTokens = source.InputTokens,
+            CachedTokens = source.CachedTokens,
+            OutputTokens = source.OutputTokens,
+            IsStreaming = source.IsStreaming,
+            IsStreamInterrupted = source.IsStreamInterrupted,
+            FirstTokenLatencyMs = source.FirstTokenLatencyMs,
+            StreamDurationMs = source.StreamDurationMs,
+            TotalDurationMs = source.TotalDurationMs,
+            ReasoningEffort = source.ReasoningEffort,
+            RequestedAt = source.RequestedAt,
+
+            // ─── 来自 CoreDeveloperTraceEvent ───
+            TraceId = source.TraceId,
+            TargetSiteName = source.TargetSiteName,
+            StartedAt = source.StartedAt,
+            FinishedAt = source.FinishedAt,
+
+            // ─── 完整请求/响应数据 ───
+            RequestBody = source.RequestBody,
+            ResponseBody = source.ResponseBody,
+            RequestHeaders = new Dictionary<string, string>(source.RequestHeaders),
+            ClientIp = source.ClientIp,
+            UserAgent = source.UserAgent,
+            RequestPath = source.RequestPath,
+            StatusCode = source.StatusCode,
+            ResponseContentType = source.ResponseContentType,
+
+            // ─── 深拷贝尝试明细 ───
+            Attempts = source.Attempts.Select(a => new CoreUnifiedAttemptDetail
+            {
+                AttemptId = a.AttemptId,
+                AttemptIndex = a.AttemptIndex,
+                AttemptedModel = a.AttemptedModel,
+                UpstreamProtocolType = a.UpstreamProtocolType,
+                ForwardingMode = a.ForwardingMode,
+                TargetSiteId = a.TargetSiteId,
+                TargetSiteName = a.TargetSiteName,
+                Status = a.Status,
+                StatusCode = a.StatusCode,
+                ErrorMessage = a.ErrorMessage,
+                ResponseBody = a.ResponseBody,
+                ResponseContentType = a.ResponseContentType,
+                IsStreaming = a.IsStreaming,
+                IsStreamInterrupted = a.IsStreamInterrupted,
+                InputTokens = a.InputTokens,
+                CachedTokens = a.CachedTokens,
+                OutputTokens = a.OutputTokens,
+                TotalDurationMs = a.TotalDurationMs,
+                FirstTokenLatencyMs = a.FirstTokenLatencyMs,
+                StreamDurationMs = a.StreamDurationMs,
+                StartedAt = a.StartedAt,
+                FinishedAt = a.FinishedAt
+            }).ToList()
+        };
     }
 }

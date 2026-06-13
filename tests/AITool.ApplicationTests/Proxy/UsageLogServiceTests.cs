@@ -1,6 +1,4 @@
 using AITool.Application.UsageLogs;
-using AITool.ApplicationTests.CoreRuntime;
-using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
@@ -34,11 +32,6 @@ public sealed class UsageLogServiceTests : IDisposable
     private readonly UsageLogService _service;
 
     /// <summary>
-    /// Core 事件总线，用于读取 UsageLog 旁路发布出来的事件。
-    /// </summary>
-    private readonly CoreAdminEventBus _eventBus;
-
-    /// <summary>
     /// 初始化独立的测试容器和数据库，避免不同用例之间共享状态。
     /// </summary>
     public UsageLogServiceTests()
@@ -49,14 +42,11 @@ public sealed class UsageLogServiceTests : IDisposable
         _serviceProvider = services.BuildServiceProvider();
         _dbContext = _serviceProvider.GetRequiredService<AppDbContext>();
 
-        _eventBus = new CoreAdminEventBus();
-        var sequenceProvider = TestCoreEventSequenceProvider.Create();
-        var eventPublisher = new CoreUsageLogEventPublisher(sequenceProvider, _eventBus);
         var batchWriter = new ProxyUsageLogBatchWriter(
             _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<ProxyUsageLogBatchWriter>.Instance,
             new TestHostEnvironment());
-        _service = new UsageLogService(batchWriter, eventPublisher);
+        _service = new UsageLogService(batchWriter);
     }
 
     /// <summary>
@@ -93,9 +83,6 @@ public sealed class UsageLogServiceTests : IDisposable
         log.IsStreaming.Should().BeTrue();
         log.FirstTokenLatencyMs.Should().Be(5400);
         log.TotalDurationMs.Should().Be(8000);
-
-        var envelope = await _eventBus.Reader.ReadAsync();
-        envelope.EventType.Should().Be("usage-log");
     }
 
     /// <summary>

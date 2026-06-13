@@ -68,11 +68,8 @@ builder.Services.AddProxyRuntimeInfrastructure(
 // 注册并发控制查询服务（Core 独有，用于管理端点查询当前并发状态）。
 builder.Services.AddSingleton<ModelConcurrencyQueryService>();
 
-// 注册开发者调用追踪查询服务（Core 独有，用于管理端点查询追踪记录）。
-builder.Services.AddSingleton<DeveloperInvocationTraceQueryService>();
-
-// 注册开发者追踪事件发布器，当追踪完成时将摘要发布到 Core 事件总线（Core 独有）。
-builder.Services.AddSingleton<CoreDeveloperTraceEventPublisher>();
+// 注册统一代理事件发布器，当追踪完成、熔断触发、路由回退时发布事件到 Core 事件总线（Core 独有）。
+builder.Services.AddSingleton<CoreUnifiedProxyEventPublisher>();
 
 // 注册路由回退事件发布器，当代理请求在路由间回退时发布 route-fallback 事件（Core 独有）。
 builder.Services.AddSingleton<CoreRouteFallbackEventPublisher>();
@@ -88,8 +85,8 @@ var app = builder.Build();
 // 使用 fire-and-forget 模式，发布失败不影响代理主流程。
 {
     var traceStore = app.Services.GetRequiredService<DeveloperInvocationTraceStore>();
-    var tracePublisher = app.Services.GetRequiredService<CoreDeveloperTraceEventPublisher>();
-    var tracePublishLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CoreDeveloperTraceEventPublish");
+    var tracePublisher = app.Services.GetRequiredService<CoreUnifiedProxyEventPublisher>();
+    var tracePublishLogger = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("CoreUnifiedProxyEventPublish");
     traceStore.OnTraceCompleted += entry =>
     {
         // fire-and-forget：追踪事件发布是辅助链路，不应阻塞代理主流程

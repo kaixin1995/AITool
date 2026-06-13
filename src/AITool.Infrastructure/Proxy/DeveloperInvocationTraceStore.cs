@@ -60,6 +60,8 @@ public sealed class DeveloperInvocationTraceStore
             RequestModel = request.RequestModel,
             RequestBody = request.RequestBody,
             RequestHeaders = request.RequestHeaders,
+            AccessKeyId = request.AccessKeyId,
+            ReasoningEffort = request.ReasoningEffort,
             Status = "pending"
         };
 
@@ -142,6 +144,9 @@ public sealed class DeveloperInvocationTraceStore
             attempt.CachedTokens = result.CachedTokens;
             attempt.OutputTokens = result.OutputTokens;
             attempt.TotalDurationMs = result.TotalDurationMs;
+            attempt.FirstTokenLatencyMs = result.FirstTokenLatencyMs;
+            attempt.StreamDurationMs = result.StreamDurationMs;
+            attempt.IsStreamInterrupted = result.IsStreamInterrupted;
             attempt.UpdatedAt = DateTimeOffset.UtcNow;
 
             node.Value.AttemptedModel = attempt.AttemptedModel;
@@ -158,6 +163,12 @@ public sealed class DeveloperInvocationTraceStore
             node.Value.CachedTokens = result.CachedTokens;
             node.Value.OutputTokens = result.OutputTokens;
             node.Value.TotalDurationMs = result.TotalDurationMs;
+            node.Value.FirstTokenLatencyMs = result.FirstTokenLatencyMs;
+            node.Value.StreamDurationMs = result.StreamDurationMs;
+            node.Value.IsStreamInterrupted = result.IsStreamInterrupted;
+            node.Value.RetryCount = result.RetryCount;
+            node.Value.IsFinalResult = result.IsFinalResult;
+            node.Value.FallbackTriggered = result.FallbackTriggered;
             node.Value.UpdatedAt = DateTimeOffset.UtcNow;
 
             // 状态从 pending 变为最终状态时，克隆一份给事件订阅者
@@ -310,6 +321,14 @@ public sealed class DeveloperInvocationTraceStore
             CachedTokens = entry.CachedTokens,
             OutputTokens = entry.OutputTokens,
             TotalDurationMs = entry.TotalDurationMs,
+            AccessKeyId = entry.AccessKeyId,
+            ReasoningEffort = entry.ReasoningEffort,
+            FirstTokenLatencyMs = entry.FirstTokenLatencyMs,
+            StreamDurationMs = entry.StreamDurationMs,
+            IsStreamInterrupted = entry.IsStreamInterrupted,
+            RetryCount = entry.RetryCount,
+            IsFinalResult = entry.IsFinalResult,
+            FallbackTriggered = entry.FallbackTriggered,
             Attempts = entry.Attempts.Select(CloneAttempt).ToList()
         };
     }
@@ -338,7 +357,10 @@ public sealed class DeveloperInvocationTraceStore
             InputTokens = attempt.InputTokens,
             CachedTokens = attempt.CachedTokens,
             OutputTokens = attempt.OutputTokens,
-            TotalDurationMs = attempt.TotalDurationMs
+            TotalDurationMs = attempt.TotalDurationMs,
+            FirstTokenLatencyMs = attempt.FirstTokenLatencyMs,
+            StreamDurationMs = attempt.StreamDurationMs,
+            IsStreamInterrupted = attempt.IsStreamInterrupted
         };
     }
 
@@ -415,6 +437,14 @@ public sealed class DeveloperInvocationTraceRequest
     /// 请求头。
     /// </summary>
     public Dictionary<string, string> RequestHeaders { get; set; } = [];
+    /// <summary>
+    /// 访问密钥标识，用于关联使用日志。
+    /// </summary>
+    public Guid AccessKeyId { get; set; }
+    /// <summary>
+    /// 推理深度参数。
+    /// </summary>
+    public string ReasoningEffort { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -489,6 +519,30 @@ public sealed class DeveloperInvocationResult
     /// 总耗时（毫秒）。
     /// </summary>
     public int TotalDurationMs { get; set; }
+    /// <summary>
+    /// 首 Token 延迟（毫秒）。
+    /// </summary>
+    public int FirstTokenLatencyMs { get; set; }
+    /// <summary>
+    /// 流式响应持续时长（毫秒）。
+    /// </summary>
+    public int StreamDurationMs { get; set; }
+    /// <summary>
+    /// 流式传输是否被中断。
+    /// </summary>
+    public bool IsStreamInterrupted { get; set; }
+    /// <summary>
+    /// 重试次数。
+    /// </summary>
+    public int RetryCount { get; set; }
+    /// <summary>
+    /// 是否为最终结果。
+    /// </summary>
+    public bool IsFinalResult { get; set; }
+    /// <summary>
+    /// 是否触发了降级。
+    /// </summary>
+    public bool FallbackTriggered { get; set; }
 }
 
 /// <summary>
@@ -561,6 +615,14 @@ public sealed class DeveloperInvocationTraceEntry
     /// </summary>
     public Dictionary<string, string> RequestHeaders { get; set; } = [];
     /// <summary>
+    /// 访问密钥标识，用于关联使用日志。
+    /// </summary>
+    public Guid AccessKeyId { get; set; }
+    /// <summary>
+    /// 推理深度参数。
+    /// </summary>
+    public string ReasoningEffort { get; set; } = string.Empty;
+    /// <summary>
     /// 状态。
     /// </summary>
     public string Status { get; set; } = string.Empty;
@@ -600,6 +662,30 @@ public sealed class DeveloperInvocationTraceEntry
     /// 总耗时（毫秒）。
     /// </summary>
     public int TotalDurationMs { get; set; }
+    /// <summary>
+    /// 首 Token 延迟（毫秒）。
+    /// </summary>
+    public int FirstTokenLatencyMs { get; set; }
+    /// <summary>
+    /// 流式响应持续时长（毫秒）。
+    /// </summary>
+    public int StreamDurationMs { get; set; }
+    /// <summary>
+    /// 流式传输是否被中断。
+    /// </summary>
+    public bool IsStreamInterrupted { get; set; }
+    /// <summary>
+    /// 重试次数。
+    /// </summary>
+    public int RetryCount { get; set; }
+    /// <summary>
+    /// 是否为最终结果。
+    /// </summary>
+    public bool IsFinalResult { get; set; }
+    /// <summary>
+    /// 是否触发了降级。
+    /// </summary>
+    public bool FallbackTriggered { get; set; }
     /// <summary>
     /// 尝试记录列表。
     /// </summary>
@@ -683,4 +769,16 @@ public sealed class DeveloperInvocationTraceAttempt
     /// 总耗时（毫秒）。
     /// </summary>
     public int TotalDurationMs { get; set; }
+    /// <summary>
+    /// 首 Token 延迟（毫秒）。
+    /// </summary>
+    public int FirstTokenLatencyMs { get; set; }
+    /// <summary>
+    /// 流式响应持续时长（毫秒）。
+    /// </summary>
+    public int StreamDurationMs { get; set; }
+    /// <summary>
+    /// 流式传输是否被中断。
+    /// </summary>
+    public bool IsStreamInterrupted { get; set; }
 }

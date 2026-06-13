@@ -40,17 +40,14 @@ builder.Services.AddAdminInfrastructure(connectionString);
 // 管理后台认证服务，用于 Login 页面密码验证和 AdminAuthenticationMiddleware。
 builder.Services.AddSingleton<AdminAuthService>();
 
-// Admin 侧 UsageLog 事件消费器，将 Core 代理产生的使用日志事件写入 Admin 数据库。
-builder.Services.AddScoped<AdminUsageLogEventIngestor>();
-
 // Admin 侧 ConversationTurn 事件消费器，将 Core 代理产生的对话记录事件写入 Admin 本地 JSONL 存储。
 builder.Services.AddScoped<AdminConversationTurnEventIngestor>();
 
 // Admin 侧开发者追踪内存存储，缓存从 Core 拉取的 developer-trace 事件摘要。
 // Singleton 生命周期：内存数据跨请求保持，6 小时过期自动清理，最多 100 条。
 builder.Services.AddSingleton<AdminDeveloperTraceStore>();
-// Admin 侧 DeveloperTrace 事件消费器，将 Core 代理产生的追踪事件写入内存存储。
-builder.Services.AddScoped<AdminDeveloperTraceEventIngestor>();
+// Admin 侧 UnifiedProxy 事件消费器，统一消费 Core 代理产生的 UsageLog 和 DeveloperTrace 事件。
+builder.Services.AddScoped<AdminUnifiedProxyEventIngestor>();
 
 // Admin 侧路由回退事件内存存储，缓存从 Core 拉取的 route-fallback 事件。
 // Singleton 生命周期：内存数据跨请求保持，6 小时过期自动清理，最多 200 条。

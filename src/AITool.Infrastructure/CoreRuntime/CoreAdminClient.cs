@@ -78,32 +78,6 @@ public sealed class CoreAdminClient
     }
 
     /// <summary>
-    /// 分页查询开发者调用追踪列表。
-    /// </summary>
-    public async Task<CoreDeveloperInvocationListResponse> GetDeveloperInvocationsAsync(
-        int pageNumber, int pageSize, CancellationToken cancellationToken = default)
-    {
-        var response = await _httpClient.GetAsync(
-            $"api/core/developer/invocations/list?pageNumber={pageNumber}&pageSize={pageSize}",
-            cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync<CoreDeveloperInvocationListResponse>(cancellationToken))!;
-    }
-
-    /// <summary>
-    /// 查询单条开发者调用追踪详情。
-    /// </summary>
-    public async Task<CoreDeveloperInvocationDetail> GetDeveloperInvocationDetailAsync(
-        Guid traceId, CancellationToken cancellationToken = default)
-    {
-        var response = await _httpClient.GetAsync(
-            $"api/core/developer/invocations/detail?traceId={traceId}",
-            cancellationToken);
-        response.EnsureSuccessStatusCode();
-        return (await response.Content.ReadFromJsonAsync<CoreDeveloperInvocationDetail>(cancellationToken))!;
-    }
-
-    /// <summary>
     /// 查询当前模型并发状态快照。
     /// </summary>
     public async Task<CoreDeveloperConcurrencyResponse> GetDeveloperConcurrencyAsync(

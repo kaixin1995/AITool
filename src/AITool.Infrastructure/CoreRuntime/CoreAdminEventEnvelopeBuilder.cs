@@ -88,4 +88,19 @@ public static class CoreAdminEventEnvelopeBuilder
             PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
         };
     }
+
+    /// <summary>
+    /// 构造一条统一代理请求事件信封。
+    /// </summary>
+    public static CoreAdminEventEnvelope CreateUnifiedProxyEnvelope(long sequenceId, CoreUnifiedProxyEvent payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return new CoreAdminEventEnvelope
+        {
+            SequenceId = sequenceId,
+            EventType = "proxy-request",
+            OccurredAt = payload.FinishedAt,
+            PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
+        };
+    }
 }

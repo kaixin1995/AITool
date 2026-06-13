@@ -28,9 +28,8 @@ namespace AITool.Admin.Services;
 public sealed class CoreEventPullService
 {
     private readonly CoreAdminClient _coreClient;
-    private readonly AdminUsageLogEventIngestor _usageLogIngestor;
+    private readonly AdminUnifiedProxyEventIngestor _unifiedIngestor;
     private readonly AdminConversationTurnEventIngestor _conversationTurnIngestor;
-    private readonly AdminDeveloperTraceEventIngestor _developerTraceIngestor;
     private readonly AdminRouteFallbackEventIngestor _routeFallbackIngestor;
     private readonly AdminConfigAppliedEventIngestor _configAppliedIngestor;
     private readonly AdminCircuitBreakerEventIngestor _circuitBreakerIngestor;
@@ -53,9 +52,8 @@ public sealed class CoreEventPullService
     /// </summary>
     public CoreEventPullService(
         CoreAdminClient coreClient,
-        AdminUsageLogEventIngestor usageLogIngestor,
+        AdminUnifiedProxyEventIngestor unifiedIngestor,
         AdminConversationTurnEventIngestor conversationTurnIngestor,
-        AdminDeveloperTraceEventIngestor developerTraceIngestor,
         AdminRouteFallbackEventIngestor routeFallbackIngestor,
         AdminConfigAppliedEventIngestor configAppliedIngestor,
         AdminCircuitBreakerEventIngestor circuitBreakerIngestor,
@@ -64,9 +62,8 @@ public sealed class CoreEventPullService
         string? adminInstanceId = null)
     {
         _coreClient = coreClient;
-        _usageLogIngestor = usageLogIngestor;
+        _unifiedIngestor = unifiedIngestor;
         _conversationTurnIngestor = conversationTurnIngestor;
-        _developerTraceIngestor = developerTraceIngestor;
         _routeFallbackIngestor = routeFallbackIngestor;
         _configAppliedIngestor = configAppliedIngestor;
         _circuitBreakerIngestor = circuitBreakerIngestor;
@@ -109,9 +106,8 @@ public sealed class CoreEventPullService
             _ackedSequenceId);
 
         // 按事件类型分别消费入库
-        var usageLogMax = await _usageLogIngestor.IngestUsageLogEventsAsync(envelopes, cancellationToken);
+        var unifiedMax = await _unifiedIngestor.IngestUnifiedProxyEventsAsync(envelopes, cancellationToken);
         var conversationTurnMax = await _conversationTurnIngestor.IngestConversationTurnEventsAsync(envelopes, cancellationToken);
-        var developerTraceMax = await _developerTraceIngestor.IngestDeveloperTraceEventsAsync(envelopes, cancellationToken);
         var routeFallbackMax = await _routeFallbackIngestor.IngestRouteFallbackEventsAsync(envelopes, cancellationToken);
         var configAppliedMax = await _configAppliedIngestor.IngestConfigAppliedEventsAsync(envelopes, cancellationToken);
         var circuitBreakerMax = await _circuitBreakerIngestor.IngestCircuitBreakerEventsAsync(envelopes, cancellationToken);

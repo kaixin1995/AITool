@@ -532,3 +532,199 @@ public sealed class CoreCircuitBreakerEvent
     /// </summary>
     public DateTimeOffset OccurredAt { get; set; } = DateTimeOffset.UtcNow;
 }
+
+/// <summary>
+/// 统一代理请求事件负载。
+/// 合并了 UsageLog 和 DeveloperTrace 的全部字段，并包含完整的请求/响应体和所有尝试明细。
+/// </summary>
+public sealed class CoreUnifiedProxyEvent
+{
+    // ──────────── 来自 CoreUsageLogEvent ────────────
+
+    /// <summary>请求链路标识。</summary>
+    public Guid RequestId { get; set; }
+
+    /// <summary>访问密钥标识。</summary>
+    public Guid AccessKeyId { get; set; }
+
+    /// <summary>协议类型。</summary>
+    public string ProtocolType { get; set; } = string.Empty;
+
+    /// <summary>转发模式。</summary>
+    public string ForwardingMode { get; set; } = string.Empty;
+
+    /// <summary>请求模型名。</summary>
+    public string RequestModel { get; set; } = string.Empty;
+
+    /// <summary>实际尝试模型名。</summary>
+    public string AttemptedModel { get; set; } = string.Empty;
+
+    /// <summary>目标站点标识。</summary>
+    public Guid? TargetSiteId { get; set; }
+
+    /// <summary>状态。</summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>来源。</summary>
+    public string Source { get; set; } = string.Empty;
+
+    /// <summary>重试次数。</summary>
+    public int RetryCount { get; set; }
+
+    /// <summary>尝试序号。</summary>
+    public int AttemptIndex { get; set; }
+
+    /// <summary>是否最终结果。</summary>
+    public bool IsFinalResult { get; set; }
+
+    /// <summary>是否触发回退。</summary>
+    public bool FallbackTriggered { get; set; }
+
+    /// <summary>错误信息。</summary>
+    public string ErrorMessage { get; set; } = string.Empty;
+
+    /// <summary>输入 Token。</summary>
+    public int InputTokens { get; set; }
+
+    /// <summary>缓存 Token。</summary>
+    public int CachedTokens { get; set; }
+
+    /// <summary>输出 Token。</summary>
+    public int OutputTokens { get; set; }
+
+    /// <summary>是否流式。</summary>
+    public bool IsStreaming { get; set; }
+
+    /// <summary>是否流式中断。</summary>
+    public bool IsStreamInterrupted { get; set; }
+
+    /// <summary>首 Token 延迟。</summary>
+    public int FirstTokenLatencyMs { get; set; }
+
+    /// <summary>流式耗时。</summary>
+    public int StreamDurationMs { get; set; }
+
+    /// <summary>总耗时。</summary>
+    public int TotalDurationMs { get; set; }
+
+    /// <summary>思考强度。</summary>
+    public string ReasoningEffort { get; set; } = string.Empty;
+
+    /// <summary>请求开始时间。</summary>
+    public DateTimeOffset RequestedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    // ──────────── 来自 CoreDeveloperTraceEvent ────────────
+
+    /// <summary>跟踪标识。</summary>
+    public Guid TraceId { get; set; }
+
+    /// <summary>目标站点名称。</summary>
+    public string TargetSiteName { get; set; } = string.Empty;
+
+    /// <summary>调用开始时间。</summary>
+    public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>调用结束时间。</summary>
+    public DateTimeOffset FinishedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    // ──────────── 完整请求/响应数据（非截断版） ────────────
+
+    /// <summary>完整请求体。</summary>
+    public string RequestBody { get; set; } = string.Empty;
+
+    /// <summary>完整响应体。</summary>
+    public string ResponseBody { get; set; } = string.Empty;
+
+    /// <summary>请求头字典。</summary>
+    public Dictionary<string, string> RequestHeaders { get; set; } = [];
+
+    /// <summary>客户端 IP。</summary>
+    public string ClientIp { get; set; } = string.Empty;
+
+    /// <summary>User-Agent。</summary>
+    public string UserAgent { get; set; } = string.Empty;
+
+    /// <summary>请求路径。</summary>
+    public string RequestPath { get; set; } = string.Empty;
+
+    /// <summary>HTTP 状态码。</summary>
+    public int StatusCode { get; set; }
+
+    /// <summary>响应 Content-Type。</summary>
+    public string ResponseContentType { get; set; } = string.Empty;
+
+    /// <summary>所有尝试明细列表。</summary>
+    public List<CoreUnifiedAttemptDetail> Attempts { get; set; } = [];
+}
+
+/// <summary>
+/// 统一代理请求中单次尝试的明细。
+/// </summary>
+public sealed class CoreUnifiedAttemptDetail
+{
+    /// <summary>尝试标识。</summary>
+    public Guid AttemptId { get; set; }
+
+    /// <summary>尝试序号（从 0 开始）。</summary>
+    public int AttemptIndex { get; set; }
+
+    /// <summary>本次尝试实际调用的模型名。</summary>
+    public string AttemptedModel { get; set; } = string.Empty;
+
+    /// <summary>上游协议类型。</summary>
+    public string UpstreamProtocolType { get; set; } = string.Empty;
+
+    /// <summary>转发模式。</summary>
+    public string ForwardingMode { get; set; } = string.Empty;
+
+    /// <summary>目标站点标识。</summary>
+    public Guid TargetSiteId { get; set; }
+
+    /// <summary>目标站点名称。</summary>
+    public string TargetSiteName { get; set; } = string.Empty;
+
+    /// <summary>状态（success / error 等）。</summary>
+    public string Status { get; set; } = string.Empty;
+
+    /// <summary>HTTP 状态码。</summary>
+    public int StatusCode { get; set; }
+
+    /// <summary>错误信息。</summary>
+    public string ErrorMessage { get; set; } = string.Empty;
+
+    /// <summary>本次尝试的完整响应体。</summary>
+    public string ResponseBody { get; set; } = string.Empty;
+
+    /// <summary>响应 Content-Type。</summary>
+    public string ResponseContentType { get; set; } = string.Empty;
+
+    /// <summary>是否流式调用。</summary>
+    public bool IsStreaming { get; set; }
+
+    /// <summary>是否流式中断。</summary>
+    public bool IsStreamInterrupted { get; set; }
+
+    /// <summary>输入 Token。</summary>
+    public int InputTokens { get; set; }
+
+    /// <summary>缓存 Token。</summary>
+    public int CachedTokens { get; set; }
+
+    /// <summary>输出 Token。</summary>
+    public int OutputTokens { get; set; }
+
+    /// <summary>总耗时（毫秒）。</summary>
+    public int TotalDurationMs { get; set; }
+
+    /// <summary>首 Token 延迟（毫秒）。</summary>
+    public int FirstTokenLatencyMs { get; set; }
+
+    /// <summary>流式耗时（毫秒）。</summary>
+    public int StreamDurationMs { get; set; }
+
+    /// <summary>本次尝试开始时间。</summary>
+    public DateTimeOffset StartedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>本次尝试结束时间。</summary>
+    public DateTimeOffset FinishedAt { get; set; } = DateTimeOffset.UtcNow;
+}
