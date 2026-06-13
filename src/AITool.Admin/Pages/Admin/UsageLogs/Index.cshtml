@@ -907,22 +907,7 @@
         return '' +
             '<div class="usage-log-model-primary">' +
                 '<code>' + escHtml(finalModel) + '</code>' +
-                renderAttemptFlags(item) +
             '</div>';
-    }
-
-    function renderAttemptFlags(item) {
-        var chips = [];
-        var retryCount = Number(readValue(item, ['retryCount']) || 0);
-        if (retryCount > 0) {
-            chips.push(renderMetricChip('重试 ' + formatNumber(retryCount), 'warning'));
-        }
-
-        if (!!readValue(item, ['fallbackTriggered'])) {
-            chips.push(renderMetricChip('已回退', 'danger'));
-        }
-
-        return chips.join('');
     }
 
     function renderMetricChip(label, style) {
