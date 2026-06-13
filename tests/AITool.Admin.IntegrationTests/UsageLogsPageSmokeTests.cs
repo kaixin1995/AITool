@@ -42,7 +42,7 @@ public sealed class UsageLogsPageSmokeTests
 
         response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK, html);
         html.Should().Contain("usage-log-model-secondary");
-        html.Should().Contain("usage-log-detail-summary-grid");
+        html.Should().Contain("访问密钥");
         html.Should().Contain("usage-log-chip-danger");
         html.Should().Contain("usage-log-chip-warning");
     }

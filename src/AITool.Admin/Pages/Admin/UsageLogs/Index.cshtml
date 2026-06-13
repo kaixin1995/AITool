@@ -343,57 +343,11 @@
         word-break: break-all;
     }
 
-    .usage-log-detail-summary-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-        gap: 12px;
-    }
-
-    .usage-log-detail-summary-item {
-        min-width: 0;
-    }
-
-    .usage-log-detail-summary-label {
-        color: #64748b;
-        font-size: 12px;
-        margin-bottom: 4px;
-    }
-
-    .usage-log-detail-summary-value {
-        color: #0f172a;
-        font-size: 14px;
-        font-weight: 600;
-        word-break: break-word;
-    }
-
     .usage-log-attempt-metrics {
         display: flex;
         flex-wrap: wrap;
         gap: 8px;
         margin-top: 12px;
-    }
-
-    .usage-log-attempt-meta {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-        gap: 8px 12px;
-        margin-top: 12px;
-    }
-
-    .usage-log-attempt-meta-item {
-        min-width: 0;
-    }
-
-    .usage-log-attempt-meta-label {
-        color: #64748b;
-        font-size: 12px;
-        margin-bottom: 2px;
-    }
-
-    .usage-log-attempt-meta-value {
-        color: #0f172a;
-        font-size: 13px;
-        word-break: break-word;
     }
 
     .usage-log-detail-error {
@@ -880,19 +834,14 @@
             return;
         }
 
-        var firstAttempt = attempts[0] || {};
         var summaryHtml = '' +
             '<div class="card">' +
                 '<div class="card-body">' +
-                    '<div class="usage-log-detail-summary-grid">' +
-                        renderSummaryItem('路由入口', routeEntry || '-') +
-                        renderSummaryItem('请求协议', formatProtocolType(protocolType)) +
-                        renderSummaryItem('调用方式', formatForwardingMode(forwardingMode)) +
-                        renderSummaryItem('思考等级', reasoningEffort || '-') +
-                        renderSummaryItem('请求模型', readValue(data, ['requestModel']) || routeEntry || '-') +
-                        renderSummaryItem('首个站点', readValue(firstAttempt, ['siteName', 'targetSiteName']) || '-') +
-                        renderSummaryItem('访问密钥', readValue(data, ['accessKeyName']) || '-') +
-                    '</div>' +
+                    '<div class="small text-secondary mb-1">路由入口：' + escHtml(routeEntry || '-') + '</div>' +
+                    '<div class="small text-secondary mb-1">请求协议：' + escHtml(formatProtocolType(protocolType)) + '</div>' +
+                    '<div class="small text-secondary mb-1">调用方式：' + escHtml(formatForwardingMode(forwardingMode)) + '</div>' +
+                    '<div class="small text-secondary mb-1">思考等级：' + escHtml(reasoningEffort || '-') + '</div>' +
+                    '<div class="small text-secondary">访问密钥：' + escHtml(readValue(data, ['accessKeyName']) || '-') + '</div>' +
                 '</div>' +
             '</div>';
 
@@ -900,10 +849,6 @@
             var status = readValue(item, ['status']) || '-';
             var attemptedModel = readValue(item, ['attemptedModel', 'requestModel']) || '-';
             var errorMessage = readValue(item, ['errorMessage']) || '';
-            var siteModelName = readValue(item, ['siteModelName']) || '';
-            var retryCount = Number(readValue(item, ['retryCount']) || 0);
-            var fallbackTriggered = !!readValue(item, ['fallbackTriggered']);
-            var isFinalResult = !!readValue(item, ['isFinalResult']);
             return '' +
                 '<div class="card">' +
                     '<div class="card-body">' +
@@ -911,28 +856,13 @@
                             '<div>' +
                                 '<div class="fw-semibold">第 ' + (index + 1) + ' 次尝试</div>' +
                                 '<div class="small text-secondary">模型：' + escHtml(attemptedModel) + '</div>' +
-                                (siteModelName ? '<div class="small text-secondary">站点模型：' + escHtml(siteModelName) + '</div>' : '') +
                             '</div>' +
                             renderStatusBadge(status, item) +
                         '</div>' +
-                        '<div class="usage-log-attempt-meta">' +
-                            renderAttemptMetaItem('站点', readValue(item, ['siteName', 'targetSiteName']) || '-') +
-                            renderAttemptMetaItem('时间', formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) +
-                            renderAttemptMetaItem('调用方式', formatForwardingMode(readValue(item, ['forwardingMode']) || forwardingMode)) +
-                            renderAttemptMetaItem('思考等级', readValue(item, ['reasoningEffort']) || reasoningEffort || '-') +
-                            renderAttemptMetaItem('回退触发', fallbackTriggered ? '是' : '否') +
-                            renderAttemptMetaItem('最终结果', isFinalResult ? '是' : '否') +
-                            (retryCount > 0 ? renderAttemptMetaItem('重试次数', formatNumber(retryCount)) : '') +
-                        '</div>' +
-                        '<div class="usage-log-attempt-metrics">' +
-                            renderMetricChip('输入 ' + formatNumber(readValue(item, ['inputTokens']) || 0), 'total') +
-                            renderMetricChip('缓存 ' + formatNumber(readValue(item, ['cachedTokens']) || 0), 'first') +
-                            renderMetricChip('输出 ' + formatNumber(readValue(item, ['outputTokens']) || 0), 'stream') +
-                            renderMetricChip('总计 ' + formatNumber(readValue(item, ['totalTokens']) || 0), 'warning') +
-                            renderMetricChip('总耗时 ' + formatDuration(readValue(item, ['totalDurationMs']) || 0), 'total') +
-                            renderMetricChip('首字 ' + formatDuration(readValue(item, ['firstTokenLatencyMs']) || 0), 'first') +
-                        '</div>' +
-                        (errorMessage ? '<div class="usage-log-detail-error">' + escHtml(errorMessage) + '</div>' : '<div class="usage-log-detail-success-note">当前尝试没有错误信息</div>') +
+                        '<div class="small text-secondary mb-1">站点：' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</div>' +
+                        '<div class="small text-secondary mb-1">时间：' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</div>' +
+                        '<div class="small text-secondary mb-1">Tokens：' + escHtml(formatNumber(readValue(item, ['totalTokens']) || 0)) + '</div>' +
+                        '<div class="small text-secondary">错误：' + escHtml(errorMessage || '-') + '</div>' +
                     '</div>' +
                 '</div>';
         }).join('');
@@ -993,22 +923,6 @@
         }
 
         return chips.join('');
-    }
-
-    function renderSummaryItem(label, value) {
-        return '' +
-            '<div class="usage-log-detail-summary-item">' +
-                '<div class="usage-log-detail-summary-label">' + escHtml(label) + '</div>' +
-                '<div class="usage-log-detail-summary-value">' + escHtml(value) + '</div>' +
-            '</div>';
-    }
-
-    function renderAttemptMetaItem(label, value) {
-        return '' +
-            '<div class="usage-log-attempt-meta-item">' +
-                '<div class="usage-log-attempt-meta-label">' + escHtml(label) + '</div>' +
-                '<div class="usage-log-attempt-meta-value">' + escHtml(value) + '</div>' +
-            '</div>';
     }
 
     function renderMetricChip(label, style) {
