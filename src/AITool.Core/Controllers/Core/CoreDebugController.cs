@@ -218,7 +218,7 @@ var S=" + safeSites + @";
 var C=" + safeConcurrency + @";
 
 (function(){
-var E=document.getElementById,I=document.querySelectorAll;
+var E=document.getElementById.bind(document),I=document.querySelectorAll.bind(document);
 
 function es(s){var d=document.createElement('span');d.textContent=s||'';return d.innerHTML}
 
