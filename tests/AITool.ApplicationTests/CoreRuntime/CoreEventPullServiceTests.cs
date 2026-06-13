@@ -33,10 +33,9 @@ public sealed class CoreEventPullServiceTests : IDisposable
         _dbContext = new AppDbContext(options);
 
         var traceStore = new AdminDeveloperTraceStore();
-        var extractionService = new ConversationExtractionService();
         _conversationStore = new StubConversationLogStore();
         _unifiedIngestor = new AdminUnifiedProxyEventIngestor(
-            _dbContext, traceStore, extractionService, _conversationStore,
+            _dbContext, traceStore,
             LoggerStub.Create<AdminUnifiedProxyEventIngestor>());
 
         _conversationTurnIngestor = new AdminConversationTurnEventIngestor(
