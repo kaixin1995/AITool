@@ -113,20 +113,31 @@ Admin 是配置的**唯一写入源**（SQLite），Core 通过以下机制保�
 - Core 首次启动时从本地 `last-good-config.json` 文件恢复配置（可脱离 Admin 独立运行）
 - Core 拒绝增量同步（返回 400）时，Admin 自动回退到全量同步
 
-### 事件同步体系（UsageLog、ConversationLog、DeveloperTrace）
+### 事件同步体系
 
-Core 端代理请求产生的日志数据通过**事件总线 + 磁盘 Spool + 断线重放**机制同步到 Admin：
+Core 端代理请求产生的日志数据通过 **唯一事件 + 磁盘 Spool + 断线重放** 机制同步到 Admin。
+
+每次代理请求完成时（`OnTraceCompleted`），Core 发布**一份** `"proxy-request"` 统一事件，
+包含该请求的完整画像：UsageLog 字段、调用追踪详情、完整 Request/Response Bodies、所有 Attempt 链。
+Admin 收到后展开到三个落地点：
 
 ```
-Core: ProxyCallRecorder → CoreUsageLogEventPublisher → CoreAdminEventBus (内存 Channel)
-                                                        │
-                                                        ▼
-                                CoreEventSpoolStore.AppendAsync() → 磁盘 JSONL 文件
-                                                        │
+Core: DeveloperInvocationTraceStore (累积器) → OnTraceCompleted
+        │
+        ▼
+      CoreUnifiedProxyEventPublisher → 一条 "proxy-request" 事件
+        │
+        ▼
+      CoreAdminEventBus (内存 Channel) → CoreEventSpoolStore (磁盘 JSONL)
+        │
+        ▼
 Admin: CoreEventPullService.PullAndProcessAsync() ← SSE + 10s 轮询
-          │                     │
-          ├── ReplayAsync(afterSeq) → 拉取增量事件
-          ├── AdminUsageLogEventIngestor → 写入 Admin SQLite (幂等去重)
+          │
+          ├── AdminUnifiedProxyEventIngestor (单一 Ingestor 替代旧三份)
+          │     ├── DB Sink: event.Attempts 展开为 N 条 ProxyUsageLog 行
+          │     ├── Memory Sink: event 存入 AdminDeveloperTraceStore (Invocations 数据源)
+          │     └── Conversation Sink: 提取对话内容写 ConversationTurnLog
+          │
           └── AckAsync(maxSeq) → Core 清理磁盘旧事件
 ```
 
@@ -471,7 +482,7 @@ AppDbContext.ProxyUsageLogs (直接查 SQLite)
   ▼
 ProxyCallRecorder.BeginTrace(callContext)
   │  → DeveloperInvocationTraceStore.AddRequest()
-  │     [Core 进程内存，LinkedList，最多 100 条，6 小时过期]
+  │     [Core 进程内存，LinkedList，仅作请求生命周期累积器，不对外查询]
   │
   ▼
 ProxyCallRecorder.BeginTraceAttempt(traceId, callContext)
@@ -481,14 +492,15 @@ ProxyCallRecorder.BeginTraceAttempt(traceId, callContext)
 ProxyCallRecorder.CompleteTraceAttempt(traceId, attemptId, callContext)
   │  → DeveloperInvocationTraceStore.CompleteAttempt()
   │  → 触 OnTraceCompleted 事件
-  │     └─► CoreDeveloperTraceEventPublisher → CoreEventBus
-  │          └─► Admin CoreEventPullService → AdminDeveloperTraceEventIngestor
-  │               └─► AdminDeveloperTraceStore (摘要副本)
+  │     └─► CoreUnifiedProxyEventPublisher → "proxy-request" 统一事件
+  │          └─► CoreEventBus → Spool → Admin Pull
+  │               └─► AdminUnifiedProxyEventIngestor
+  │                    → AdminDeveloperTraceStore (存 CoreUnifiedProxyEvent)
   │
   ▼ [客户端断连]
 ProxyCallRecorder.CancelTrace(traceId, "客户端已断开连接")
   │  → DeveloperInvocationTraceStore.CancelPending()
-  │  → 状态从 pending → error
+  │  → 触 OnTraceCompleted → 统一事件 Status="error"
 ```
 
 ### 读取路径
@@ -497,29 +509,17 @@ ProxyCallRecorder.CancelTrace(traceId, "客户端已断开连接")
 Admin Index.cshtml.cs OnGetAsync()
   │
   ▼
-CoreAdminClient.GetDeveloperInvocationsAsync(1, 20)
+AdminDeveloperTraceStore.List()  [直接读 Admin 本地内存，100条/6小时]
   │
   ▼
-GET http://127.0.0.1:5029/api/core/developer/invocations/list?pageNumber=1&pageSize=20
-  │
-  ▼
-CoreDeveloperQueryController.ListInvocations()
-  │  → 检查 IsDeveloperEnabledAsync() (DeveloperFeaturesEnabled)
-  │  → DeveloperInvocationTraceQueryService.List()
-  │  → DeveloperInvocationTraceStore.List() [直接读 Core 内存]
-  │
-  ▼
-返回实时 JSON { totalCount, failedCount, pendingCount, entries... }
+ToSummary / BuildLocalDetailResponse → JSON 返回前端
 
 前端 AJAX:
   ?handler=List&pageNumber=N      → 翻页
-  ?handler=Detail&traceId=xxx     → 展开卡片详情
-
-降级 (Core 不可用时):
-  → BuildLocalListResponse() → AdminDeveloperTraceStore.List() [事件同步来的副本]
+  ?handler=Detail&traceId=xxx     → 展开卡片详情（完整 headers、bodies、attempts）
 ```
 
-**关键特性**：主路径实时读 Core 内存，降级路径读 Admin 内的事件同步副本。
+**关键特性**：Invocations 数据不再从 Core API 查询，直接从 Admin 本地 `AdminDeveloperTraceStore` 读取。Core 的 `DeveloperInvocationTraceStore` 仅作为请求生命周期累积器，完成时通过统一事件推送到 Admin。
 
 ---
 
