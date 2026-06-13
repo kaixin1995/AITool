@@ -46,7 +46,7 @@ public sealed class CoreAdminClientTests
         var replay = await client.ReplayAsync(0);
         replay.Should().HaveCount(2);
         replay[0].EventType.Should().Be("config-applied");
-        replay[1].EventType.Should().Be("usage-log");
+        replay[1].EventType.Should().Be("proxy-request");
 
         var ackResult = await client.AckAsync(new CoreAdminAckRequest
         {

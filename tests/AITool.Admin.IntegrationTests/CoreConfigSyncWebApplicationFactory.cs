@@ -86,34 +86,54 @@ internal sealed class CoreConfigSyncWebApplicationFactory : WebApplicationFactor
     internal async Task PublishUsageLogEventAsync()
     {
         await using var scope = Services.CreateAsyncScope();
-        var service = scope.ServiceProvider.GetRequiredService<IUsageLogService>();
-        await service.LogAsync(new UsageLogEntry
-        {
-            RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
-            AccessKeyId = Guid.Parse("66666666-6666-6666-6666-666666666666"),
-            ProtocolType = "OpenAI",
-            ForwardingMode = "direct",
-            RequestModel = "chat-prod",
-            AttemptedModel = "gpt-5.4",
-            TargetSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
-            Status = "success",
-            Source = "proxy",
-            RetryCount = 0,
-            AttemptIndex = 1,
-            IsFinalResult = true,
-            FallbackTriggered = false,
-            ErrorMessage = string.Empty,
-            InputTokens = 10,
-            CachedTokens = 2,
-            OutputTokens = 6,
-            IsStreaming = false,
-            IsStreamInterrupted = false,
-            FirstTokenLatencyMs = 30,
-            StreamDurationMs = 0,
-            TotalDurationMs = 80,
-            ReasoningEffort = string.Empty,
-            RequestedAt = new DateTimeOffset(2026, 6, 10, 10, 0, 0, TimeSpan.Zero)
-        });
+        // UsageLog 事件已改为统一 "proxy-request" 事件发布。
+        // 直接通过事件总线发布一条用于 replay 验证。
+        var sequenceProvider = scope.ServiceProvider.GetRequiredService<CoreEventSequenceProvider>();
+        var eventBus = scope.ServiceProvider.GetRequiredService<CoreAdminEventBus>();
+        var envelope = CoreAdminEventEnvelopeBuilder.CreateUnifiedProxyEnvelope(
+            sequenceProvider.Next(),
+            new CoreUnifiedProxyEvent
+            {
+                TraceId = Guid.NewGuid(),
+                RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+                AccessKeyId = Guid.Parse("66666666-6666-6666-6666-666666666666"),
+                ProtocolType = "OpenAI",
+                ForwardingMode = "direct",
+                RequestModel = "chat-prod",
+                AttemptedModel = "gpt-5.4",
+                TargetSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                TargetSiteName = "test-site",
+                Status = "success",
+                Source = "proxy",
+                InputTokens = 10,
+                CachedTokens = 2,
+                OutputTokens = 6,
+                IsStreaming = false,
+                TotalDurationMs = 80,
+                RequestedAt = new DateTimeOffset(2026, 6, 10, 10, 0, 0, TimeSpan.Zero),
+                FinishedAt = new DateTimeOffset(2026, 6, 10, 10, 0, 1, TimeSpan.Zero),
+                Attempts =
+                [
+                    new CoreUnifiedAttemptDetail
+                    {
+                        AttemptId = Guid.NewGuid(),
+                        AttemptIndex = 0,
+                        AttemptedModel = "gpt-5.4",
+                        TargetSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
+                        TargetSiteName = "test-site",
+                        Status = "success",
+                        InputTokens = 10,
+                        CachedTokens = 2,
+                        OutputTokens = 6,
+                        IsStreaming = false,
+                        TotalDurationMs = 80,
+                        StartedAt = new DateTimeOffset(2026, 6, 10, 10, 0, 0, TimeSpan.Zero),
+                        FinishedAt = new DateTimeOffset(2026, 6, 10, 10, 0, 1, TimeSpan.Zero)
+                    }
+                ]
+            });
+        await eventBus.PublishAsync(envelope);
+        await Task.Delay(150); // 等待 Spool 后台服务落盘
     }
 
     private async Task SeedAsync()
