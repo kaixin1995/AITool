@@ -58,6 +58,12 @@
                 </select>
             </div>
             <div class="col-xl-2 col-md-4">
+                <label class="form-label" for="accessKeyFilter">访问密钥</label>
+                <select id="accessKeyFilter" class="form-select">
+                    <option value="" selected>全部访问密钥</option>
+                </select>
+            </div>
+            <div class="col-xl-2 col-md-4">
                 <div class="analytics-filter-meta" id="filterSummary">正在准备筛选条件</div>
             </div>
         </div>
@@ -417,6 +423,7 @@
             const modelNameInputEl = document.getElementById('modelNameInput');
             const modelNameOptionsEl = document.getElementById('modelNameOptions');
             const siteIdEl = document.getElementById('siteId');
+            const accessKeyFilterEl = document.getElementById('accessKeyFilter');
             const startTimeEl = document.getElementById('startTime');
             const endTimeEl = document.getElementById('endTime');
             const applyCustomRangeBtn = document.getElementById('applyCustomRangeBtn');
@@ -441,6 +448,9 @@
                 params.set('modelName', modelNameEl.value);
                 if (siteIdEl.value) {
                     params.set('siteId', siteIdEl.value);
+                }
+                if (accessKeyFilterEl.value) {
+                    params.set('accessKeyId', accessKeyFilterEl.value);
                 }
                 if (rangeTypeEl.value === 'custom') {
                     if (startTimeEl.value) {
@@ -476,9 +486,9 @@
                 }
             }
 
-            function fillOptions(selectEl, items, formatter, includeAllLabel) {
+            function fillOptions(selectEl, items, formatter, includeAllLabel, defaultLabel) {
                 const currentValue = selectEl.value;
-                selectEl.innerHTML = includeAllLabel ? `<option value="all">${includeAllLabel}</option>` : '<option value="">全部站点</option>';
+                selectEl.innerHTML = includeAllLabel ? `<option value="all">${includeAllLabel}</option>` : `<option value="">${defaultLabel || '全部站点'}</option>`;
                 items.forEach(item => {
                     const option = document.createElement('option');
                     option.value = formatter(item).value;
@@ -521,6 +531,7 @@
                 const data = await response.json();
                 fillModelOptions(data.models || []);
                 fillOptions(siteIdEl, data.sites || [], item => ({ value: item.siteId, label: item.siteName }), null);
+                fillOptions(accessKeyFilterEl, data.accessKeys || [], item => ({ value: item.accessKeyId, label: item.accessKeyLabel || item.name || item.accessKeyId }), null, '全部访问密钥');
                 syncModelNameValue();
             }
 
@@ -1120,7 +1131,7 @@
                     }
                     await loadDashboard(false);
                 });
-                [bucketTypeEl, protocolTypeEl, siteIdEl].forEach(el => {
+                [bucketTypeEl, protocolTypeEl, siteIdEl, accessKeyFilterEl].forEach(el => {
                     el.addEventListener('change', async () => {
                         await loadDashboard(false);
                     });

@@ -54,6 +54,11 @@ public sealed class AdminUsageLogListQueryDto
     /// 模型关键字。
     /// </summary>
     public string ModelKeyword { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 访问密钥标识筛选。
+    /// </summary>
+    public Guid? AccessKeyId { get; set; }
 }
 
 /// <summary>
@@ -206,6 +211,11 @@ public sealed class AdminUsageLogListItemDto
     /// 请求时间。
     /// </summary>
     public DateTimeOffset RequestedAt { get; set; }
+
+    /// <summary>
+    /// 访问密钥名称。
+    /// </summary>
+    public string AccessKeyName { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -422,6 +432,9 @@ public sealed class UsageLogsApiController : ControllerBase
         var routeRules = await _dbContext.ProxyRouteRules
             .AsNoTracking()
             .ToListAsync(cancellationToken);
+        var accessKeyNames = await _dbContext.ProxyAccessKeys
+            .AsNoTracking()
+            .ToDictionaryAsync(x => x.Id, x => x.KeyName, cancellationToken);
         var (rangeStart, rangeEnd) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
 
@@ -431,6 +444,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 .ToListAsync(cancellationToken))
             .Where(x => x.RequestedAt >= rangeStart && x.RequestedAt < rangeEnd)
             .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+            .Where(x => !query.AccessKeyId.HasValue || x.AccessKeyId == query.AccessKeyId.Value)
             .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
             .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
             .Where(x => IsModelMatched(x, query.ModelKeyword))
@@ -467,7 +481,8 @@ public sealed class UsageLogsApiController : ControllerBase
                 FirstTokenLatencyMs = x.FirstTokenLatencyMs,
                 StreamDurationMs = x.StreamDurationMs,
                 TotalDurationMs = x.TotalDurationMs,
-                RequestedAt = x.RequestedAt
+                RequestedAt = x.RequestedAt,
+                AccessKeyName = accessKeyNames.TryGetValue(x.AccessKeyId, out var keyName) ? keyName : "-"
             })
             .ToList();
 
@@ -495,6 +510,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 .ToListAsync(cancellationToken))
             .Where(x => x.RequestedAt >= rangeStart && x.RequestedAt < rangeEnd)
             .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+            .Where(x => !query.AccessKeyId.HasValue || x.AccessKeyId == query.AccessKeyId.Value)
             .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
             .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
             .Where(x => IsModelMatched(x, query.ModelKeyword))

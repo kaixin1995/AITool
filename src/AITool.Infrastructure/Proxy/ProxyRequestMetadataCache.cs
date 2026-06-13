@@ -300,7 +300,7 @@ public sealed partial class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateRuntimeSettings()
     {
-        Refill(RuntimeSettingsCacheKey, _ => GetRuntimeSettingsAsync(CancellationToken.None));
+        _memoryCache.Remove(RuntimeSettingsCacheKey);
     }
 
     /// <summary>

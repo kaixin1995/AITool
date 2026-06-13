@@ -23,7 +23,7 @@ public sealed partial class ProxyRequestMetadataCache
                     ChatModelsCacheKey,
                     entry =>
                     {
-                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        entry.Priority = CacheItemPriority.NeverRemove;
                         var snapshot = _configProvider.GetCurrent();
                         if (snapshot is null)
                         {
@@ -54,7 +54,7 @@ public sealed partial class ProxyRequestMetadataCache
                 ChatModelsCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -90,7 +90,7 @@ public sealed partial class ProxyRequestMetadataCache
                     ChatTargetsCacheKey,
                     entry =>
                     {
-                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        entry.Priority = CacheItemPriority.NeverRemove;
                         var snapshot = _configProvider.GetCurrent();
                         if (snapshot is null)
                         {
@@ -127,7 +127,7 @@ public sealed partial class ProxyRequestMetadataCache
                 ChatTargetsCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -178,7 +178,7 @@ public sealed partial class ProxyRequestMetadataCache
                     ModelConcurrencyLimitsCacheKey,
                     entry =>
                     {
-                        entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                        entry.Priority = CacheItemPriority.NeverRemove;
                         var snapshot = _configProvider.GetCurrent();
                         if (snapshot?.SiteModelMappings is null)
                         {
@@ -205,7 +205,7 @@ public sealed partial class ProxyRequestMetadataCache
                 ModelConcurrencyLimitsCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -240,7 +240,7 @@ public sealed partial class ProxyRequestMetadataCache
                 EnabledSiteNamesCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -268,7 +268,7 @@ public sealed partial class ProxyRequestMetadataCache
                 RouteEntriesCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -308,7 +308,7 @@ public sealed partial class ProxyRequestMetadataCache
                 RouteSiteInstancesCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -339,7 +339,7 @@ public sealed partial class ProxyRequestMetadataCache
                 RouteModelsCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -410,7 +410,7 @@ public sealed partial class ProxyRequestMetadataCache
                 RouteDiscoveredSitesCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -477,7 +477,7 @@ public sealed partial class ProxyRequestMetadataCache
                 RouteRulesByEntryCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -544,7 +544,7 @@ public sealed partial class ProxyRequestMetadataCache
                 DeveloperDefaultAccessKeyCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -567,7 +567,7 @@ public sealed partial class ProxyRequestMetadataCache
                 DeveloperDebugModelsCacheKey,
                 async entry =>
                 {
-                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+                    entry.Priority = CacheItemPriority.NeverRemove;
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();

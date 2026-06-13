@@ -37,6 +37,10 @@ public sealed class AnalyticsQueryDto
     /// 站点标识。
     /// </summary>
     public Guid? SiteId { get; set; }
+    /// <summary>
+    /// 访问密钥标识。
+    /// </summary>
+    public Guid? AccessKeyId { get; set; }
 }
 
 /// <summary>
@@ -52,6 +56,10 @@ public sealed class AnalyticsFilterOptionsDto
     /// 模型筛选项。
     /// </summary>
     public List<AnalyticsModelOptionDto> Models { get; set; } = [];
+    /// <summary>
+    /// 访问密钥筛选项。
+    /// </summary>
+    public List<AnalyticsAccessKeyOptionDto> AccessKeys { get; set; } = [];
 }
 
 /// <summary>
@@ -78,6 +86,21 @@ public sealed class AnalyticsModelOptionDto
     /// 模型名称。
     /// </summary>
     public string ModelName { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 访问密钥筛选下拉项，用于统计页的访问密钥选择器。
+/// </summary>
+public sealed class AnalyticsAccessKeyOptionDto
+{
+    /// <summary>
+    /// 访问密钥标识。
+    /// </summary>
+    public Guid AccessKeyId { get; set; }
+    /// <summary>
+    /// 访问密钥名称。
+    /// </summary>
+    public string KeyName { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -160,6 +183,10 @@ public sealed class AnalyticsAppliedFilterDto
     /// 站点标识。
     /// </summary>
     public Guid? SiteId { get; set; }
+    /// <summary>
+    /// 访问密钥标识。
+    /// </summary>
+    public Guid? AccessKeyId { get; set; }
 }
 
 /// <summary>
@@ -440,10 +467,21 @@ public sealed class AnalyticsApiController : ControllerBase
             })
             .ToListAsync(cancellationToken);
 
+        var accessKeys = await _dbContext.ProxyAccessKeys
+            .AsNoTracking()
+            .OrderBy(x => x.KeyName)
+            .Select(x => new AnalyticsAccessKeyOptionDto
+            {
+                AccessKeyId = x.Id,
+                KeyName = x.KeyName
+            })
+            .ToListAsync(cancellationToken);
+
         return Ok(new AnalyticsFilterOptionsDto
         {
             Sites = sites,
-            Models = models
+            Models = models,
+            AccessKeys = accessKeys
         });
     }
 
@@ -509,6 +547,7 @@ public sealed class AnalyticsApiController : ControllerBase
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
             .Where(x => string.Equals(query.ProtocolType, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.ProtocolType, query.ProtocolType, StringComparison.OrdinalIgnoreCase))
             .Where(x => string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.AttemptedModel, query.ModelName, StringComparison.OrdinalIgnoreCase))
+            .Where(x => !query.AccessKeyId.HasValue || x.AccessKeyId == query.AccessKeyId.Value)
             .ToList();
 
         // 对"全部"范围，用筛选后数据的实际时间边界替代 DateTimeOffset.MinValue，
@@ -550,7 +589,8 @@ public sealed class AnalyticsApiController : ControllerBase
                 BucketType = bucketType,
                 ProtocolType = string.IsNullOrWhiteSpace(query.ProtocolType) ? "all" : query.ProtocolType,
                 ModelName = string.IsNullOrWhiteSpace(query.ModelName) ? "all" : query.ModelName,
-                SiteId = query.SiteId
+                SiteId = query.SiteId,
+                AccessKeyId = query.AccessKeyId
             },
             Summary = BuildSummary(finalLogs, fallbackRequestIds),
             RequestTrend = BuildRequestTrend(finalLogs, startTime, endTime, bucketType),

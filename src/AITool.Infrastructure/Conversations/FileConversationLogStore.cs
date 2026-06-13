@@ -74,9 +74,9 @@ public sealed class FileConversationLogStore : IConversationLogStore
             EnsureRootDirectory();
             var filePaths = ResolveCandidateFilePaths(query.StartTime, query.EndTime);
             // 从最新文件开始倒序读取，只需要最近记录时避免加载全部文件。
-            Array.Reverse(filePaths);
+            var sortedPaths = filePaths.OrderByDescending(x => x).ToList();
             var results = new List<ConversationTurnLog>(Math.Min(MaxQueryResults, 512));
-            foreach (var filePath in filePaths)
+            foreach (var filePath in sortedPaths)
             {
                 if (results.Count >= MaxQueryResults)
                 {
