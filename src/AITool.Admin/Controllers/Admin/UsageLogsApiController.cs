@@ -368,6 +368,11 @@ public sealed class AdminUsageLogRequestDetailDto
     /// 所有尝试明细。
     /// </summary>
     public List<AdminUsageLogAttemptDto> Attempts { get; set; } = [];
+
+    /// <summary>
+    /// 访问密钥名称。
+    /// </summary>
+    public string AccessKeyName { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -542,6 +547,9 @@ public sealed class UsageLogsApiController : ControllerBase
         var sites = await _dbContext.Sites
             .AsNoTracking()
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+        var accessKeys = await _dbContext.ProxyAccessKeys
+            .AsNoTracking()
+            .ToDictionaryAsync(x => x.Id, x => x.KeyName, cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules
             .AsNoTracking()
             .ToListAsync(cancellationToken);
@@ -568,6 +576,7 @@ public sealed class UsageLogsApiController : ControllerBase
             ProtocolType = orderedLogs[0].ProtocolType,
             ForwardingMode = orderedLogs.Select(x => x.ForwardingMode).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty,
             ReasoningEffort = orderedLogs.Select(x => x.ReasoningEffort).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty,
+            AccessKeyName = accessKeys.TryGetValue(orderedLogs[0].AccessKeyId, out var keyName) ? keyName : "-",
             Attempts = orderedLogs.Select(x => new AdminUsageLogAttemptDto
             {
                 Id = x.Id,
