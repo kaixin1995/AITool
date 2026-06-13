@@ -50,9 +50,19 @@ public sealed class AdminCacheInvalidationService
     private readonly ILogger<AdminCacheInvalidationService> _logger;
 
     /// <summary>
-    /// 配置版本号，每次同步递增。单进程内递增即可满足唯一性。
+    /// 配置版本号，使用 Unix 时间戳毫秒保证跨 Admin 重启单调递增。
+    /// Core 端的 full-sync（启动时）和 patch-sync（运行时）都必须使用同一版本号体系，
+    /// 否则 Core 会因为 patch 版本号小于 full-sync 版本号而一律忽略。
     /// </summary>
-    private long _configVersion;
+    private long ConfigVersion()
+    {
+        // 以当前时间戳为基础版本号，同时用原子递增避免同一毫秒内多次 sync 的版本冲突。
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var version = Interlocked.Increment(ref _versionCounter);
+        return Math.Max(version, now);
+    }
+
+    private long _versionCounter = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
 
     /// <summary>
     /// 自上次同步以来累积的变更类别集合。
@@ -143,7 +153,7 @@ public sealed class AdminCacheInvalidationService
         try
         {
             var attemptedAt = DateTimeOffset.UtcNow;
-            var version = Interlocked.Increment(ref _configVersion);
+            var version = ConfigVersion();
             var patch = await BuildPatchAsync(categories, version, cancellationToken);
 
             try
