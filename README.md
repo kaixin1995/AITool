@@ -318,13 +318,15 @@ sealed class DeveloperInvocationTraceStore  // Singleton，Core 内存，LinkedL
 - **6 小时** 过期自动清理
 - 生命周期：`BeginTrace` → `BeginTraceAttempt` → `CompleteTraceAttempt`
 - 客户端断连时：`CancelPending(traceId, reason)` 强制标记为 error
-- 追踪完成时触发 `OnTraceCompleted` 事件 → `CoreDeveloperTraceEventPublisher` → 事件总线 → Admin 副本
+- 追踪完成时触发 `OnTraceCompleted` → `CoreUnifiedProxyEventPublisher` → 统一 "proxy-request" 事件 → Admin 副本
 
 #### ProxyRequestMetadataCache — 代理元数据缓存
 
 ```csharp
-sealed class ProxyRequestMetadataCache  // Singleton，基于 IMemoryCache，5 秒 TTL
+sealed class ProxyRequestMetadataCache  // Singleton，基于 IMemoryCache，NeverRemove 永不过期
 ```
+
+缓存策略：所有配置数据（密钥、运行时设置、路由、模型等）永不过期，仅在 Admin 数据变更时通过 `Invalidate*` 方法清除对应 key，下次查询从 DB/快照重建。代理热路径零 DB 查询。
 
 **双宿主自适应**：
 - **Core 宿主**：从 `ICoreRuntimeConfigProvider` 的快照读取（内存，不查 DB）
@@ -441,16 +443,16 @@ ProxyCallRecorder.RecordUsageAsync(ProxyCallContext)
 IUsageLogService.LogAsync(UsageLogEntry)
   │
   ▼
-UsageLogService (双写)
-  ├──► ProxyUsageLogBatchWriter.EnqueueAsync()  [后台 Channel 批量写入]
-  │      └─► Core 宿主: 跳过 (无 AppDbContext)，靠事件同步
-  │      └─► Admin 宿主: 直接 INSERT ProxyUsageLogs 表
-  │
-  └──► CoreUsageLogEventPublisher.PublishAsync()
-         └─► CoreAdminEventBus (内存 Channel)
-              └─► CoreEventSpoolBackgroundService → CoreEventSpoolStore (磁盘 JSONL)
-                   └─► Admin: CoreEventPullService 定时 Pull
-                        └─► AdminUsageLogEventIngestor → 幂等写入 Admin SQLite
+UsageLogService (单写)
+  └──► ProxyUsageLogBatchWriter.EnqueueAsync()  [后台 Channel 批量写入]
+         └─► Core 宿主: 跳过 (无 AppDbContext)，靠统一事件同步
+         └─► Admin 宿主: 直接 INSERT ProxyUsageLogs 表
+
+统一事件 (OnTraceCompleted 触发):
+  CoreUnifiedProxyEventPublisher → CoreAdminEventBus (内存 Channel)
+     └─► CoreEventSpoolStore (磁盘 JSONL)
+          └─► Admin: CoreEventPullService 定时 Pull
+               └─► AdminUnifiedProxyEventIngestor → 展开 attempts 写 DB + 写内存 Store
 ```
 
 ### 读取路径
@@ -786,7 +788,9 @@ dotnet run
 7. **路由规则删除重建**：保存路由规则时先删除旧的后按新顺序创建，保证优先级精确。
 8. **每次尝试记录日志**：代理请求为每次路由尝试记录一条日志，最终结果标记 `IsFinalResult = true`。
 9. **批量日志写入**：`ProxyUsageLogBatchWriter` 使用后台 Channel 批量写入 SQLite，避免代理热路径上的 I/O 竞争。
-10. **元数据缓存 5 秒 TTL**：平衡高性能和管理后台修改即时生效。
+10. **元数据缓存永不过期**：`ProxyRequestMetadataCache` 的访问密钥、运行时设置、路由目标、模型列表等配置数据使用 `NeverRemove` 优先级，永不自动过期。仅在 Admin 修改数据后主动清除对应 key，下一次查询从 DB/快照重建并永久缓存。高频代理热路径永远不查 DB。平衡了极致性能和数据一致性。
 11. **跨协议桥接纯静态无状态**：`ProxyProtocolBridge` 支持 OpenAI ↔ Anthropic 双向 SSE 流式转换。
 12. **开发者追踪客户端断连保护**：`CancelTrace` 强制将 pending trace 标记为 error，避免 Invocations 页面出现永久等待的僵尸记录。
 13. **调试页受密钥保护**：`/debug/runtime` 通过 SHA256 验证访问密钥，不依赖 Admin 认证体系，安全独立。
+14. **DeveloperFeaturesEnabled 仅控制 UI 可见性**：代理控制器始终创建调用追踪（不再受此开关门控），确保 UsageLog 数据通过统一事件正常推送。DeveloperFeaturesEnabled 只控制 Invocations 页面 404 和侧边栏入口隐藏。
+15. **ConversationLog 内存保护**：`FileConversationLogStore.QueryAsync` 最多返回 1000 条，从最新文件倒序流式过滤，避免全量加载 JSONL 文件导致内存线性增长。`ConversationLogService` 复用 `ProxyRequestMetadataCache` 读取开关，不再每次创建 DB scope。
