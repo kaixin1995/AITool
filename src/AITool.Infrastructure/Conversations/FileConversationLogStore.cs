@@ -61,6 +61,9 @@ public sealed class FileConversationLogStore : IConversationLogStore
     /// <summary>
     /// 按时间范围与筛选条件读取本地对话记录。
     /// </summary>
+    // 单次查询最大返回记录数，防止全量加载 JSONL 文件导致内存暴涨。
+    private const int MaxQueryResults = 1000;
+
     public async Task<IReadOnlyList<ConversationTurnLog>> QueryAsync(ConversationLogQuery query, CancellationToken cancellationToken = default)
     {
         await EnsureLegacyDatabaseImportedAsync(cancellationToken);
@@ -70,19 +73,59 @@ public sealed class FileConversationLogStore : IConversationLogStore
         {
             EnsureRootDirectory();
             var filePaths = ResolveCandidateFilePaths(query.StartTime, query.EndTime);
-            var logs = await ReadRecordsFromFilesUnlockedAsync(filePaths, cancellationToken);
-            return logs
-                .Where(x => x.CreatedAt >= query.StartTime && x.CreatedAt < query.EndTime)
-                .Where(x => string.IsNullOrWhiteSpace(query.SourceTool)
-                    || string.Equals(x.SourceTool, query.SourceTool, StringComparison.OrdinalIgnoreCase))
-                .Where(x => string.IsNullOrWhiteSpace(query.RequestModel)
-                    || string.Equals(x.RequestModel, query.RequestModel, StringComparison.Ordinal))
-                .Where(x => string.IsNullOrWhiteSpace(query.SessionKeyword)
-                    || x.SessionId.Contains(query.SessionKeyword, StringComparison.OrdinalIgnoreCase))
-                .Where(x => string.IsNullOrWhiteSpace(query.GroupKey)
-                    || string.Equals(x.ConversationGroupKey, query.GroupKey, StringComparison.Ordinal))
-                .OrderBy(x => x.CreatedAt)
-                .ToList();
+            // 从最新文件开始倒序读取，只需要最近记录时避免加载全部文件。
+            Array.Reverse(filePaths);
+            var results = new List<ConversationTurnLog>(Math.Min(MaxQueryResults, 512));
+            foreach (var filePath in filePaths)
+            {
+                if (results.Count >= MaxQueryResults)
+                {
+                    break;
+                }
+
+                var records = await ReadRecordsFromFileUnlockedAsync(filePath, cancellationToken);
+                // 文件内按 CreatedAt 倒序（文件按日分片，内部无序），先排序
+                foreach (var r in records.OrderByDescending(x => x.CreatedAt))
+                {
+                    if (results.Count >= MaxQueryResults)
+                    {
+                        break;
+                    }
+
+                    if (r.CreatedAt < query.StartTime || r.CreatedAt >= query.EndTime)
+                    {
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(query.SourceTool)
+                        && !string.Equals(r.SourceTool, query.SourceTool, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(query.RequestModel)
+                        && !string.Equals(r.RequestModel, query.RequestModel, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(query.SessionKeyword)
+                        && !r.SessionId.Contains(query.SessionKeyword, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(query.GroupKey)
+                        && !string.Equals(r.ConversationGroupKey, query.GroupKey, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    results.Add(r);
+                }
+            }
+
+            return results;
         }
         finally
         {

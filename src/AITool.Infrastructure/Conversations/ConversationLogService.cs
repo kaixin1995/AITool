@@ -23,6 +23,13 @@ public sealed class ConversationLogService : IConversationLogService
     /// </summary>
     private readonly bool _databaseAvailable;
 
+    // ConversationLogEnabled 缓存，避免每次 LogAsync 调用都创建新 scope 查询数据库。
+    // 5 秒 TTL，与 ProxyRequestMetadataCache 的 CacheDuration 一致。
+    private static readonly TimeSpan EnabledCacheTtl = TimeSpan.FromSeconds(5);
+    private volatile bool _cachedEnabled = true;
+    private DateTimeOffset _cachedEnabledAt = DateTimeOffset.MinValue;
+    private readonly object _cacheGate = new();
+
     /// <summary>
     /// 初始化结构化对话记录服务。
     /// </summary>
@@ -69,6 +76,16 @@ public sealed class ConversationLogService : IConversationLogService
     /// </summary>
     private async Task<bool> IsConversationLogEnabledAsync(CancellationToken cancellationToken)
     {
+        // 内存缓存，5 秒 TTL。避免每次 LogAsync 调用都创建新的 DI scope + DB 查询。
+        lock (_cacheGate)
+        {
+            if (DateTimeOffset.UtcNow - _cachedEnabledAt < EnabledCacheTtl)
+            {
+                return _cachedEnabled;
+            }
+        }
+
+        bool enabled;
         if (_databaseAvailable)
         {
             using var scope = _scopeFactory.CreateScope();
@@ -76,19 +93,29 @@ public sealed class ConversationLogService : IConversationLogService
             var settings = await dbContext.SystemRuntimeSettings
                 .AsNoTracking()
                 .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken);
-            return settings is null || settings.ConversationLogEnabled;
+            enabled = settings is null || settings.ConversationLogEnabled;
         }
-
-        // Core 宿主没有数据库，从配置快照读取。
-        using var coreScope = _scopeFactory.CreateScope();
-        var configProvider = coreScope.ServiceProvider.GetService<ICoreRuntimeConfigProvider>();
-        if (configProvider is null)
+        else
         {
-            // 没有配置快照提供器时默认启用。
-            return true;
+            using var coreScope = _scopeFactory.CreateScope();
+            var configProvider = coreScope.ServiceProvider.GetService<ICoreRuntimeConfigProvider>();
+            if (configProvider is null)
+            {
+                enabled = true;
+            }
+            else
+            {
+                var snapshot = configProvider.GetCurrent();
+                enabled = snapshot?.RuntimeSettings is null || snapshot.RuntimeSettings.ConversationLogEnabled;
+            }
         }
 
-        var snapshot = configProvider.GetCurrent();
-        return snapshot?.RuntimeSettings is null || snapshot.RuntimeSettings.ConversationLogEnabled;
+        lock (_cacheGate)
+        {
+            _cachedEnabled = enabled;
+            _cachedEnabledAt = DateTimeOffset.UtcNow;
+        }
+
+        return enabled;
     }
 }
