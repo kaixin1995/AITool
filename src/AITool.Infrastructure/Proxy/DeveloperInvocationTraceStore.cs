@@ -175,6 +175,54 @@ public sealed class DeveloperInvocationTraceStore
     }
 
     /// <summary>
+    /// 客户端断开时强制将 pending 状态的追踪记录标记为 error。
+    /// 仅在记录仍处于 pending 状态时生效，已完成的记录不会被覆盖。
+    /// </summary>
+    /// <param name="traceId">要取消的追踪标识。</param>
+    /// <param name="reason">取消原因，写入 ErrorMessage 字段。</param>
+    public void CancelPending(Guid traceId, string reason)
+    {
+        DeveloperInvocationTraceEntry? completedEntry = null;
+
+        lock (_gate)
+        {
+            PurgeExpiredUnsafe();
+            if (!_nodes.TryGetValue(traceId, out var node))
+            {
+                return;
+            }
+
+            // 仅 pending 状态的记录才收尾，防止覆盖已完成的正常状态
+            if (!string.Equals(node.Value.Status, "pending", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            // 将所有 pending 的 attempt 也标记为 error
+            foreach (var attempt in node.Value.Attempts)
+            {
+                if (string.Equals(attempt.Status, "pending", StringComparison.OrdinalIgnoreCase))
+                {
+                    attempt.Status = "error";
+                    attempt.ErrorMessage = reason;
+                    attempt.UpdatedAt = DateTimeOffset.UtcNow;
+                }
+            }
+
+            node.Value.Status = "error";
+            node.Value.ErrorMessage = reason;
+            node.Value.UpdatedAt = DateTimeOffset.UtcNow;
+
+            completedEntry = Clone(node.Value);
+        }
+
+        if (completedEntry is not null)
+        {
+            OnTraceCompleted?.Invoke(completedEntry);
+        }
+    }
+
+    /// <summary>
     /// 返回当前调用记录列表。
     /// </summary>
     public IReadOnlyList<DeveloperInvocationTraceEntry> List()

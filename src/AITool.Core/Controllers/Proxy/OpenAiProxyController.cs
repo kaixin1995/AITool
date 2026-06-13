@@ -546,6 +546,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
         // 记录上一轮失败的路由信息，在回退到下一条路由时发布 route-fallback 事件
         (Guid RouteId, Guid SiteId, string SiteModelName, string? ErrorMessage)? lastFailedRoute = null;
 
+        try
+        {
         foreach (var route in allRoutes)
         {
             if (IsRouteBlockedSafely(route.RouteId))
@@ -727,6 +729,14 @@ public sealed partial class OpenAiProxyController : ControllerBase
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
         return StatusCode(statusCode,
             new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+        }
+        catch (OperationCanceledException)
+        {
+            // 客户端断开连接时，将尚未完成的追踪记录标记为 error，
+            // 避免 Invocations 页出现永久 pending 的僵尸记录。
+            _proxyCallRecorder.CancelTrace(traceId, "客户端已断开连接");
+            throw;
+        }
     }
 
 }

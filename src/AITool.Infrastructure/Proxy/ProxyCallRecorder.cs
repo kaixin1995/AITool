@@ -132,6 +132,27 @@ public sealed class ProxyCallRecorder : IProxyCallRecorder
     }
 
     /// <inheritdoc />
+    public void CancelTrace(Guid? traceId, string reason)
+    {
+        if (!traceId.HasValue)
+        {
+            return;
+        }
+
+        try
+        {
+            _traceStore.CancelPending(traceId.Value, reason);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "取消开发者调用追踪失败，忽略。TraceId={TraceId}, Reason={Reason}",
+                traceId,
+                reason);
+        }
+    }
+
+    /// <inheritdoc />
     public async Task RecordUsageAsync(ProxyCallContext context, CancellationToken cancellationToken = default)
     {
         try

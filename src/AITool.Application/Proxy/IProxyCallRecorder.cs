@@ -26,6 +26,12 @@ public interface IProxyCallRecorder
     void CompleteTraceAttempt(Guid? traceId, Guid traceAttemptId, ProxyCallContext context);
 
     /// <summary>
+    /// 客户端断开时强制取消一条 pending 追踪记录。
+    /// 仅在追踪记录仍处于 pending 状态时生效。
+    /// </summary>
+    void CancelTrace(Guid? traceId, string reason);
+
+    /// <summary>
     /// 写入用量日志（ProxyUsageLog），记录一次路由尝试的完整统计信息。
     /// </summary>
     Task RecordUsageAsync(ProxyCallContext context, CancellationToken cancellationToken = default);

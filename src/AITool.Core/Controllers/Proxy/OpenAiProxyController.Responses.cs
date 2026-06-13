@@ -155,6 +155,8 @@ public sealed partial class OpenAiProxyController
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
+        try
+        {
         foreach (var route in allRoutes)
         {
             if (IsRouteBlockedSafely(route.RouteId))
@@ -347,6 +349,12 @@ public sealed partial class OpenAiProxyController
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
         return StatusCode(statusCode,
             new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+        }
+        catch (OperationCanceledException)
+        {
+            _proxyCallRecorder.CancelTrace(traceId, "客户端已断开连接");
+            throw;
+        }
     }
 
     /// <summary>
@@ -409,6 +417,8 @@ public sealed partial class OpenAiProxyController
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
+        try
+        {
         foreach (var route in allRoutes)
         {
             if (IsRouteBlockedSafely(route.RouteId))
@@ -520,6 +530,12 @@ public sealed partial class OpenAiProxyController
             await WriteResponsesWebSocketErrorAsync(webSocket, lastResult?.StatusCode > 0 ? lastResult.StatusCode : StatusCodes.Status502BadGateway, lastResult?.ErrorMessage ?? "All upstream routes failed", cancellationToken);
         }
         return false;
+        }
+        catch (OperationCanceledException)
+        {
+            _proxyCallRecorder.CancelTrace(traceId, "客户端已断开连接");
+            throw;
+        }
     }
 
 }

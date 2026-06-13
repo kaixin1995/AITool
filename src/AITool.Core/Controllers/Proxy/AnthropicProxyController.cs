@@ -196,6 +196,8 @@ public sealed class AnthropicProxyController : ControllerBase
         // 记录上一条失败路由信息，在下一条候选路由开始时发布回退事件
         (Guid RouteId, Guid SiteId, string SiteModelName, string? ErrorMessage)? lastFailedRoute = null;
 
+        try
+        {
         foreach (var route in allRoutes)
         {
             // 跳过已被熔断器屏蔽的路由
@@ -410,6 +412,12 @@ public sealed class AnthropicProxyController : ControllerBase
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
         return StatusCode(statusCode,
             new { error = new { type = "api_error", message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+        }
+        catch (OperationCanceledException)
+        {
+            _proxyCallRecorder.CancelTrace(traceId, "客户端已断开连接");
+            throw;
+        }
     }
 
     /// <summary>
