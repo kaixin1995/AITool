@@ -5,6 +5,7 @@ using AITool.Application.CoreRuntime;
 using AITool.Application.Operations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Services;
