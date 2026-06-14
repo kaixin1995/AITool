@@ -1,5 +1,50 @@
 
 
+## 阶段记录 — 2026-06-14 修复 Detection 页面点击无响应（Admin 宿主缺失检测服务链注册）
+
+### 动机
+用户反馈 /Admin/Detection 页面点击「检测」「检测该模型」「全部检测」按钮均无响应，定时检测（Hangfire）也长期静默失效。经排查发现是 Admin 宿主从未注册检测所需的服务链。
+
+### 根因
+Detection 检测的调用链：
+```
+DetectionApiController.Probe*()
+  → GetRequiredService<ModelHealthRequestService>()   // 未注册
+     → 依赖 IProxyForwardService                       // 未注册（仅在 AddProxyRuntimeInfrastructure 注册，Core 独有）
+     → 依赖 IUsageLogService                           // 未注册（同上）
+        → 抛 InvalidOperationException → 全局异常处理器返回 500
+```
+
+架构拆分时，代理主链路（`IProxyForwardService`、`IUsageLogService`、`ProxyUsageLogBatchWriter`）被归入 `AddProxyRuntimeInfrastructure`，仅由 Core 调用。但 `ModelHealthRequestService`（留在 Infrastructure）依赖这些服务，且其消费方（`DetectionApiController`、`HangfireDetectionScheduler`）运行在 Admin 宿主——**注册方与消费方落在不同宿主**，导致 DI 容器解析时缺服务。页面按钮的 500 被 fetch catch 后弹 alert，但批量/单条探测的进度轮询会卡死，表现即为"点击无响应"。Hangfire 定时检测同样命中此 bug，但异常被调度器吞掉，用户无感知。
+
+### 变更内容
+- 修改 `src/AITool.Infrastructure/DependencyInjection/AdminInfrastructureExtensions.cs`
+  - `AddAdminInfrastructure` 末尾补注册四个服务：
+    - `AddHttpClient<IProxyForwardService, ProxyForwardService>()`
+    - `ProxyUsageLogBatchWriter`（Singleton）+ HostedService
+    - `IUsageLogService` → `UsageLogService`
+    - `ModelHealthRequestService`（Scoped）
+  - 新增 `Application.Proxy`、`Application.UsageLogs`、`Infrastructure.Health`、`Infrastructure.Proxy` 四个 using
+
+### 可行性依据
+- `ProxyForwardService` 是无状态 HttpClient 转发器，构造函数仅依赖 `HttpClient` + `ILogger`，不依赖 Core 运行时配置快照、并发限制、熔断状态，可在 Admin 独立工作。
+- `ProxyUsageLogBatchWriter` 构造时自行探测 `AppDbContext` 是否注册（Admin 已注册数据库），自动走正常刷盘路径，探测日志正确写入 Admin 本地 SQLite。
+- `AddAdminInfrastructure` 仅由 Admin 调用，与 Core 的 `AddProxyRuntimeInfrastructure` 互斥（Web 宿主已删除），不存在重复注册。
+
+### 影响范围
+- 修复 Detection 页面单条/按模型/全部探测三个按钮（`/api/admin/detection/probe*`）。
+- 修复 `HangfireDetectionScheduler` 定时检测任务（此前异常被吞，现已可正常执行）。
+- 仅影响 Admin 宿主，不涉及 Core / 代理主链路。
+
+### 测试验证
+- `AITool.Admin` 编译：0 错误
+- `AITool.Core` 编译：0 错误（确认未受影响）
+
+### 当前状态
+- Detection 点击无响应根因已修复
+- 建议重启 Admin 宿主后实际点一次「全部检测」做端到端验证
+
+
 ## 阶段记录 — 2026-06-12 后端内存风险优化（EventBus 有界化 + LogRetention 免全表加载）
 
 ### 动机

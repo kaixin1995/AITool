@@ -1,9 +1,13 @@
 using AITool.Application.Operations;
+using AITool.Application.Proxy;
 using AITool.Application.SiteCatalog;
+using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Hosting;
+using AITool.Infrastructure.Health;
 using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Scheduling;
 using Hangfire;
 using Microsoft.AspNetCore.Authentication.Cookies;
@@ -86,6 +90,17 @@ public static class AdminInfrastructureExtensions
             .UseInMemoryStorage());
         services.AddHangfireServer();
         services.AddSingleton<HangfireDetectionScheduler>();
+
+        // 注册模型检测所需的转发与日志写入链路。
+        // ProxyForwardService 是无状态 HttpClient 转发器（不依赖 Core 运行时配置快照、并发、熔断），
+        // 可在管理后台宿主独立工作。UsageLog 通过批量写入器直接落库到 Admin 本地 SQLite。
+        // 这同时修复了 Detection 页面点击无响应的问题：此前 ModelHealthRequestService 及其依赖均未注册，
+        // GetRequiredService 抛出异常导致 /api/admin/detection/probe/* 全部返回 500。
+        services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
+        services.AddSingleton<ProxyUsageLogBatchWriter>();
+        services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
+        services.AddSingleton<IUsageLogService, UsageLogService>();
+        services.AddScoped<ModelHealthRequestService>();
 
         return services;
     }
