@@ -135,8 +135,8 @@ Admin: CoreEventPullService.PullAndProcessAsync() ← SSE + 10s 轮询
           │
           ├── AdminUnifiedProxyEventIngestor (单一 Ingestor 替代旧三份)
           │     ├── DB Sink: event.Attempts 展开为 N 条 ProxyUsageLog 行
-          │     ├── Memory Sink: event 存入 AdminDeveloperTraceStore (Invocations 数据源)
-          │     └── Conversation Sink: 提取对话内容写 ConversationTurnLog
+          │     └── Memory Sink: event 存入 AdminDeveloperTraceStore (Invocations 数据源)
+          │     注：对话记录由独立的 AdminConversationTurnEventIngestor 处理，不走 unified 事件
           │
           └── AckAsync(maxSeq) → Core 清理磁盘旧事件
 ```
@@ -508,20 +508,27 @@ ProxyCallRecorder.CancelTrace(traceId, "客户端已断开连接")
 ### 读取路径
 
 ```
-Admin Index.cshtml.cs OnGetAsync()
+Admin Index.cshtml.cs OnGetAsync / OnGetList / OnGetDetail / OnGetConcurrency
+  │
+  ▼ (主路径)
+CoreAdminClient.GetDeveloperInvocations*Async()  → Core API 实时查询
+  │   GET /api/core/developer/invocations/list
+  │   GET /api/core/developer/invocations/detail
+  │   GET /api/core/developer/concurrency
+  │
+  ▼ (Core 不可用 / 异常时降级)
+AdminDeveloperTraceStore.List() / Get()  [Admin 本地内存，100条/6小时]
+  │   BuildLocalListResponse / BuildLocalDetailResponse / BuildLocalConcurrencyResponse
   │
   ▼
-AdminDeveloperTraceStore.List()  [直接读 Admin 本地内存，100条/6小时]
-  │
-  ▼
-ToSummary / BuildLocalDetailResponse → JSON 返回前端
+ToSummary → JSON 返回前端
 
 前端 AJAX:
   ?handler=List&pageNumber=N      → 翻页
   ?handler=Detail&traceId=xxx     → 展开卡片详情（完整 headers、bodies、attempts）
 ```
 
-**关键特性**：Invocations 数据不再从 Core API 查询，直接从 Admin 本地 `AdminDeveloperTraceStore` 读取。Core 的 `DeveloperInvocationTraceStore` 仅作为请求生命周期累积器，完成时通过统一事件推送到 Admin。
+**关键特性**：Invocations 数据**以 Core API 实时查询为主路径**（请求完成立即可见，无需等事件推送），Core 不可达时降级到 Admin 本地 `AdminDeveloperTraceStore`（由统一事件 `proxy-request` 推送累积，100条/6小时）。Core 的 `DeveloperInvocationTraceStore` 仅作为请求生命周期累积器，完成时通过统一事件推送到 Admin 作为降级数据源。
 
 ---
 

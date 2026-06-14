@@ -10,8 +10,8 @@ namespace AITool.Admin.Pages.Admin.Developer.Invocations;
 
 /// <summary>
 /// 开发者工具页面模型。
-/// 调用追踪数据直接从 AdminDeveloperTraceStore 读取（实时来自 Core 发布的 unified-proxy-event），
-/// 不通过 CoreAdminClient 反向代理到 Core。
+/// 调用追踪数据以 Core API 实时查询为主路径（请求完成立即可见），
+/// Core 不可达时降级到 AdminDeveloperTraceStore 本地内存读取（由统一 proxy-request 事件累积）。
 /// </summary>
 public sealed class IndexModel : PageModel
 {

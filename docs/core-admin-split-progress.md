@@ -45,6 +45,176 @@ DetectionApiController.Probe*()
 - 建议重启 Admin 宿主后实际点一次「全部检测」做端到端验证
 
 
+## 阶段记录 — 2026-06-13 统一代理请求事件架构（UsageLog + Invocation Trace 合并为单一 proxy-request 事件）
+
+### 动机
+此前每次代理请求完成后，Core 端会发布**两份**独立事件：`usage-log`（由 `CoreUsageLogEventPublisher` 在 `UsageLogService` 写 DB 后旁路发布）和 `developer-trace`（由 `CoreDeveloperTraceEventPublisher` 在 `OnTraceCompleted` 触发，请求/响应体被截断到 512 字符）。两份事件描述同一次请求却走两条链路、两套载体、两个 Admin 消费器，存在重复存储、字段截断、入库不一致等问题。本轮将两者合并为单一统一事件。
+
+### 变更内容
+
+**新事件类型与载体（Application 层）：**
+- 修改 `src/AITool.Application/CoreRuntime/CoreAdminEventModels.cs`
+  - 新增 `CoreUnifiedProxyEvent` + `CoreUnifiedAttemptDetail`：含完整 Attempts 列表，RequestBody/ResponseBody/Headers **不再截断**
+
+**新发布器（Core 层）：**
+- 新增 `src/AITool.Core/Services/CoreUnifiedProxyEventPublisher.cs`
+  - 通过 `CoreAdminEventEnvelopeBuilder.CreateUnifiedProxyEnvelope` 构造信封
+  - 仅在 trace 完成（非 pending）时发布 `EventType="proxy-request"` 事件
+- 删除旧发布器 `CoreUsageLogEventPublisher`、`CoreDeveloperTraceEventPublisher`
+- 删除 `UsageLogService` 的旁路发布逻辑
+
+**新消费器（Infrastructure 层）：**
+- 新增 `src/AITool.Infrastructure/CoreRuntime/AdminUnifiedProxyEventIngestor.cs`
+  - 按 TraceId 去重后写两个 Sink：
+    - DB Sink：展开 Attempts 为 N 条 `ProxyUsageLog` 行（按 RequestId+AttemptIndex 幂等）
+    - Memory Sink：写 `AdminDeveloperTraceStore`（Invocations 降级数据源）
+- 删除旧消费器 `AdminUsageLogEventIngestor`、`AdminDeveloperTraceEventIngestor`
+- `CoreEventPullService.PullAndProcessAsync` 用单一 `_unifiedIngestor.IngestUnifiedProxyEventsAsync` 替代两个旧 Ingestor
+
+### 数据流变化
+每次请求事件数 **2 → 1**。统一前 UsageLog 靠 `UsageLogService` 旁路发布、Invocation Trace 靠 `OnTraceCompleted`；统一后两条链路收口到 `OnTraceCompleted` 一个触发点。
+
+### 相关修复提交（统一架构引入的回归）
+
+**b3a645e — AdminUnifiedProxyEventIngestor 依赖 IConversationLogService 未注册**
+- 问题：原 Ingestor 含 `WriteConversationSinkAsync`，依赖 `IConversationLogService` + `ConversationExtractionService`，但该接口未在 Admin DI 注册，启动即崩溃
+- 修复：移除整个 `WriteConversationSinkAsync` 及依赖；对话记录改由独立的 `AdminConversationTurnEventIngestor` 处理（不走 unified 事件）
+
+**dd41658 — DeveloperFeaturesEnabled=off 导致 UsageLog 事件停止推送**
+- 问题：统一后 UsageLog 依赖 trace 完成触发；但 4 个代理控制器的 `BeginTrace` 被 `DeveloperFeaturesEnabled` 门控，关闭后 `traceId=null` → 事件不发 → UsageLog 断流
+- 修复：去掉 `OpenAiProxyController` / `OpenAiProxyController.Responses` / `AnthropicProxyController` 4 处对 `BeginTrace` 的门控，始终建追踪；开关仅控制 Invocations 页面可见性
+
+**cfd34e6 — 客户端断开时 pending trace 僵尸记录**
+- 问题：客户端断开抛 `OperationCanceledException` 未走 `CompleteTraceAttempt`，trace 永久 pending → 统一事件不发布 → Invocations 出现僵尸记录
+- 修复：新增 `IProxyCallRecorder.CancelTrace` → `ProxyCallRecorder.CancelTrace` → `DeveloperInvocationTraceStore.CancelPending`（pending 强制标 error 并触发 `OnTraceCompleted`）；4 个代理处理器在路由循环外加 `catch (OperationCanceledException)` 调用 `CancelTrace`
+
+**9d31366 — CoreAdminClientTests 适配**
+- 测试工厂 `PublishUsageLogEventAsync` 仍调用已删除的旧发布器；改为直接用 `CreateUnifiedProxyEnvelope` 构造 `proxy-request` 事件，断言 `EventType` 由 `"usage-log"` 改为 `"proxy-request"`
+
+### 影响范围
+- Core 代理请求生命周期事件链路全面重构
+- Admin 侧事件消费从双 Ingestor 收口为单一 Ingestor
+- UsageLog 写入路径改为依赖 trace 完成（而非旁路发布）
+
+### 当前状态
+- 统一事件架构已稳定，附带 4 个回归 bug 全部修复
+- README 事件同步章节已同步此架构
+
+
+## 阶段记录 — 2026-06-13 元数据缓存改 NeverRemove + 修复 Admin 缓存永久不更新的系统性 bug
+
+### 动机
+代理热路径（每次请求）需要读取访问密钥、运行时设置、路由目标、模型列表等配置数据。此前 `ProxyRequestMetadataCache` 所有条目使用 5 秒 TTL（`AbsoluteExpirationRelativeToNow`），导致每 5 秒重复 DB 查询。但配置数据在 Admin 修改前不变，TTL 纯属浪费。改为 NeverRemove 后却暴露了一个长期潜伏的系统性 bug：Admin 本地缓存永远不更新。
+
+### 变更内容
+
+**缓存策略改 NeverRemove（1a270f0）：**
+- 修改 `src/AITool.Infrastructure/Proxy/ProxyRequestMetadataCache.cs`
+  - 删除 `CacheDuration`（5 秒）常量
+  - 所有缓存条目改为 `entry.Priority = CacheItemPriority.NeverRemove`
+  - 新失效机制：`InvalidateRuntimeSettings()` 从 `_memoryCache.Remove(...)` 改为 `Refill(key, ...)`，即数据变更时触发重建，下次查询从 DB/快照重建并永久缓存
+
+**Admin 缓存永久不更新 bug 根因与修复（81a99f7 + 70c28d1 + e099a61）：**
+- 根因：`src/AITool.Admin/Services/AdminCacheInvalidationService.cs` 原本只调用 `SyncToCoreAsync(...)` 把配置推送到 Core，**从未清除 Admin 本地的 `ProxyRequestMetadataCache`**
+  - 改 NeverRemove 前：靠 5 秒 TTL 自动过期兜底，所以 Admin 改了配置后最多 5 秒本地生效
+  - 改 NeverRemove 后：Admin 本地缓存条目永久不更新 → System Settings、Sites、Models、Routes、AccessKeys **所有 Admin 管理操作在本地缓存中均不生效，直到进程重启**
+- 修复：构造函数注入 `ProxyRequestMetadataCache`（新增 `_metadataCache` 字段）；6 个 `Invalidate*` 方法在 `SyncToCoreAsync` 之后调用对应的 `_metadataCache.InvalidateXxx()` 同步清除 Admin 本地缓存
+- 补丁链：`81a99f7` 漏了 using 和字段声明 → `70c28d1` 补 `using AITool.Infrastructure.Proxy;` → `e099a61` 补 `private readonly ProxyRequestMetadataCache _metadataCache;` 字段
+
+**Admin 热路径切换到缓存读取（2ccdf1a）：**
+- 5 个 Admin 文件从直接 DB 查询切换为走 `AdminQueryMetadataService`（底层 `ProxyRequestMetadataCache.AdminQueries`）：
+  - `Invocations/Index.cshtml.cs`、`Chat/Index.cshtml.cs`、`Conversations/Index.cshtml.cs`、`ConversationsApiController.cs`、`RouteRulesApiController.cs`
+
+**ConversationLog 内存暴涨修复（dad34ff + 6817fef）：**
+- 根因 1：`ConversationLogService.IsConversationLogEnabledAsync` 每次调用新建 DI scope + `AppDbContext` + 查 `SystemRuntimeSettings`，在代理热路径（每请求一次）产生海量分配
+  - 修复：`dad34ff` 先加 5 秒 TTL 缓存；`6817fef` 进一步简化，直接复用 `ProxyRequestMetadataCache.GetRuntimeSettingsAsync()` 读取开关，删除手写缓存和 `AppDbContext` 依赖（减约 60 行）
+- 根因 2：`FileConversationLogStore.QueryAsync` 一次性加载全部 JSONL 文件所有记录再内存过滤；每条含 `UserInputText` + `AssistantOutputMarkdown`（GZip 解压后数十 KB），31 天累计可达百 MB
+  - 修复：改为流式过滤，从最新文件倒序读取，**最多返回 1000 条，达到上限立即停止**，不再全量加载
+
+### 影响范围
+- 代理热路径 DB 查询大幅减少（高频路径永不查 DB）
+- 修复 Admin 所有管理操作的本地缓存生效问题（此前重启前不生效）
+- 修复 Chat 页 conversationLogPane 内存随对话累积线性增长的问题
+
+### 教训
+NeverRemove 是性能优化，但前提是**配套的主动失效机制必须覆盖所有数据变更入口**。`AdminCacheInvalidationService` 这个 bug 在 5 秒 TTL 时代被掩盖了——TTL 既是性能负担也是正确性兜底。改 NeverRemove 必须同步审计所有失效路径。
+
+
+## 阶段记录 — 2026-06-13 修复 Admin→Core 配置同步体系两个关键 bug
+
+### 动机
+双宿主架构下，Admin 是配置唯一写入源，Core 通过全量同步（full-sync）和增量同步（patch-sync）保持内存状态。本轮修复了导致增量同步静默失效、以及并发上限不同步的两个关键 bug。
+
+### bug 1：版本号漂移导致所有 patch 被 Core 静默忽略（bfe8549）
+
+**根因：** `AdminCacheInvalidationService`（增量同步）与 `CoreConfigSyncHostedService`（启动全量同步）使用了两套不同的 `ConfigVersion` 体系：
+- 全量同步：Unix 时间戳毫秒（如 `1781273139122`）
+- 增量同步：从 0 开始自增的 `_configVersion` 计数器
+
+**静默忽略链路：** Admin 启动时全量同步把 Core 当前版本号拉到时间戳级别；之后增量 patch 的版本号（1, 2, 3…）远小于 Core 当前值。Core 侧 `PatchSync` 判定 `patch.ConfigVersion > current.ConfigVersion` 失败 → 所有增量 patch（站点启停、路由增删）被静默丢弃。表现为：Admin 改配置后 Core 不生效，必须重启 Admin 触发全量同步。
+
+**修复：** `src/AITool.Admin/Services/AdminCacheInvalidationService.cs` 中 `_configVersion` 字段改为 `ConfigVersion()` 方法，返回 `Math.Max(Interlocked.Increment(_versionCounter), DateTimeOffset.UtcNow.ToUnixTimeMilliseconds())`；计数器初值也设为当前时间戳。版本号始终 ≥ 当前时间戳，跨重启单调递增，与 full-sync 同一体系。
+
+### bug 2：UpdateConcurrency 未同步 SiteModelMappings 到 Core（3b4b6ef）
+
+**根因：** `src/AITool.Admin/Controllers/Admin/ModelsApiController.cs` 的 `UpdateConcurrency` 方法保存 `mapping.MaxConcurrency` 后只调了 `InvalidateRouteTargetsAsync`（只同步 Sites/Routes 类别），未调 `InvalidateModelMetadataAsync`（同步 SiteModelMappings 类别，其中含 MaxConcurrency）。Core 因此收不到并发上限变更，代理路由继续用旧限制。
+
+**修复：** 改调 `InvalidateModelMetadataAsync`；并移除注入的 `AdminConcurrencyControlService`（死代码，空实现的 `UpdateLimit`）和构造函数参数。提交声明已全量审计，全 Admin 层仅此一处同步缺口。
+
+### 影响范围
+- 修复增量同步静默失效问题，Admin 配置变更（除重启外）现在可靠同步到 Core
+- 修复模型并发上限变更不生效问题
+
+### 教训
+版本号作为单调同步依据，必须全局统一生成规则。两套版本号体系并存时，数值较大的一方会永久压制较小方，且因为是"静默判定失败"而非报错，问题极难察觉。
+
+
+## 阶段记录 — 2026-06-12~13 Developer/Invocations 数据源定稿 + Core 运行时内存调试页
+
+### 动机
+Invocations（开发者调用追踪）页面的数据源在双宿主拆分过程中反复横跳，最终定稿为「Core API 为主 + Admin 本地降级」。同期新增了 Core 运行时内存调试页，用于直接观察 Core 内存态配置。
+
+### Invocations 数据源演变（3dfc7c3 → 53b5898 → 15d6b58）
+
+涉及文件：`src/AITool.Admin/Pages/Admin/Developer/Invocations/Index.cshtml.cs`、`src/AITool.Infrastructure/CoreRuntime/CoreAdminClient.cs`、`src/AITool.Core/Controllers/Core/CoreDeveloperQueryController.cs`
+
+**演变路径：**
+- Core API（原始）→ 本地 Admin 源（`3dfc7c3`）→ Core API 优先 + 本地降级（`53b5898`）→ 纯本地（中间态）→ **Core API 优先 + 本地降级（`15d6b58` 最终定稿）**
+
+**反复横跳原因：**
+- 本地 `AdminDeveloperTraceStore` 缺关键字段（Attempts、Headers、StatusCode、实时 active/queue 数，并发数据原本硬编码 `ActiveCount=0`/`QueueCount=0`）
+- Core API 在请求完成时立即可见，无需等事件推送（事件推送有 SSE + 10s 轮询延迟）
+
+**最终架构（15d6b58）：**
+- `OnGetListAsync` / `OnGetDetailAsync` / `OnGetConcurrencyAsync` 均先调 `CoreAdminClient`：
+  - `GET /api/core/developer/invocations/list`
+  - `GET /api/core/developer/invocations/detail`
+  - `GET /api/core/developer/concurrency`
+- Core 不可达 / 异常时降级到本地 `BuildLocalListResponse` / `BuildLocalDetailResponse` / `BuildLocalConcurrencyResponse`
+- `15d6b58` 同时恢复了 `CoreDeveloperQueryController` 的 List/Detail 端点和 `CoreAdminClient` 的对应方法（此前纯本地阶段被移除）
+
+### Core 运行时内存调试页（d3249da + 24e5d45 + d64ec13 + 480f534）
+
+**新增 `/debug/runtime` 页面（d3249da）：**
+- 位置：`src/AITool.Core/Controllers/Core/CoreDebugController.cs`，路由 `[Route("debug")]`
+- 端点：`GET /debug/runtime?key=xxx`，密钥经 SHA256 与 `appsettings.json` 的 `Debug:KeyHash` 比对（不依赖 Admin 认证体系，安全独立）
+- 展示三栏 Tab：路由规则（按优先级 = 代理选路顺序）、站点（协议/BaseUrl，ApiKey 脱敏）、当前并发（active/queue/max，活跃>0 红色高亮）
+- 头部显示 ConfigVersion、ConfigHash、快照时间
+- 数据来源：`ICoreRuntimeConfigProvider.GetCurrent()` + `ModelConcurrencyQueryService.ListRecent`
+
+**重写刷新机制（24e5d45）：**
+- 初版（d3249da）刷新按钮 fetch 整页 HTML，前端用 `DOMParser` 解析 HTML，再 `querySelector('#routesData')` 提取内嵌 `<script type="application/json">` 后 `JSON.parse`，脆弱易碎
+- 重写后新增独立纯 JSON 端点 `GET /debug/runtime-data?key=xxx`，刷新按钮直接 `fetch('/debug/runtime-data')` 拿 JSON 重渲染，不再解析 HTML；首屏数据仍内嵌 HTML 零额外请求
+- 附带两个 JS bug 修复：`d64ec13`（document.getElementById 别名丢失 this 绑定）、`480f534`（JS 转义错误）
+
+### 影响范围
+- Invocations 页面数据源架构定稿，README 与代码注释已同步修正
+- 新增运维友好的 Core 内存态可视化能力（/debug/runtime）
+
+### 教训
+跨宿主数据源选择没有银弹：Core API 实时但增加跨进程依赖，本地缓存可靠但有延迟。最终选择「主路径取实时性 + 降级保可用性」是双宿主架构下读路径的通用模式。
+
+
 ## 阶段记录 — 2026-06-12 后端内存风险优化（EventBus 有界化 + LogRetention 免全表加载）
 
 ### 动机
