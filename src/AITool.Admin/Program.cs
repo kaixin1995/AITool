@@ -26,11 +26,27 @@ builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 var serverPort = builder.Configuration.GetValue<int?>("AdminServer:Port") ?? builder.Configuration.GetValue<int?>("Server:Port") ?? 5030;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
 
+// 配置 Kestrel 连接与请求体限制，确保代理大请求体（长对话、base64 图片）和可预测的并发行为。
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxConcurrentConnections = 500;
+    options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(130);
+    // 代理请求体可能很大（含图片、长上下文），不限制请求体大小。
+    options.Limits.MaxRequestBodySize = null;
+});
+
 // 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器、对话日志存储。
 var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
     ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
     : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
 builder.Services.AddCommonInfrastructure(conversationLogRootPath);
+
+// 启用响应压缩，压缩 API JSON 响应（Analytics/UsageLogs/Invocations 列表）和静态资源。
+// EnableForHttps=true 确保内网 HTTPS 部署也压缩。
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+});
 
 // 注册 Web + Admin 共享的管理后台基础设施：Razor Pages、认证、数据库、Hangfire。
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
@@ -137,7 +153,18 @@ Console.WriteLine($"AI Tool Admin 已启动：http://127.0.0.1:{serverPort}");
 // 全局异常处理：捕获未处理异常并记录详细日志，返回统一 JSON 错误响应。
 app.UseGlobalExceptionHandler(app.Environment);
 
-app.UseStaticFiles();
+// 响应压缩必须在其他产生响应的中间件（静态文件、MVC）之前注册。
+app.UseResponseCompression();
+
+// 静态文件配置 Cache-Control 头，让浏览器缓存 CSS/JS/图片，重复访问零往返。
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        // 静态文件带文件指纹（版本号）时缓存 1 天；无指纹时浏览器仍会条件请求。
+        ctx.Context.Response.Headers["Cache-Control"] = "public, max-age=86400";
+    }
+});
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseAdminAuthentication();

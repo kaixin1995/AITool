@@ -24,6 +24,15 @@ builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 var serverPort = builder.Configuration.GetValue<int?>("CoreServer:Port") ?? builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
 
+// 配置 Kestrel 连接与请求体限制，确保代理大请求体（长对话、base64 图片）和可预测的并发行为。
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxConcurrentConnections = 1000;
+    options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(130);
+    // 代理请求体可能很大（含图片、长上下文），不限制请求体大小。
+    options.Limits.MaxRequestBodySize = null;
+});
+
 // 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器、对话日志存储。
 var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
     ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")

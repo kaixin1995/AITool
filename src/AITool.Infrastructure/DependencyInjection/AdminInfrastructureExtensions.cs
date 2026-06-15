@@ -74,8 +74,13 @@ public static class AdminInfrastructureExtensions
         services.AddAuthorization();
 
         // 注册 EF Core SQLite 数据库上下文。
+        // SqlitePragmaInterceptor 在每次连接打开时设置 cache_size/busy_timeout（连接级），
+        // WAL/synchronous 等持久 PRAGMA 由 AdminStartupInitializer 在启动时执行一次。
         services.AddDbContext<AppDbContext>(options =>
-            options.UseSqlite(connectionString));
+        {
+            options.UseSqlite(connectionString);
+            options.AddInterceptors(new SqlitePragmaInterceptor());
+        });
 
         // 注册系统运行时设置服务，管理持久化的超时、重试和日志保留配置。
         services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();

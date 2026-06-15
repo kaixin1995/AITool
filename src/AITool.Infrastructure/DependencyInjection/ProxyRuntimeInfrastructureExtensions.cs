@@ -62,7 +62,14 @@ public static class ProxyRuntimeInfrastructureExtensions
         services.Configure<ProxyForwardingOptions>(proxyForwardingConfigSection);
 
         // 注册代理主入口实体配置。
-        services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
+        // 配置 SocketsHttpHandler 连接池：提高每服务器并发连接上限，定期回收空闲连接刷新 DNS。
+        services.AddHttpClient<IProxyForwardService, ProxyForwardService>()
+            .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+            {
+                MaxConnectionsPerServer = 200,
+                PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+                PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30)
+            });
 
         // 注册代理请求元数据缓存，缓存路由、密钥、并发限制等运行时数据。
         // Core 宿主的缓存数据来源是 Admin 下发的配置快照，而非直接查询数据库。
