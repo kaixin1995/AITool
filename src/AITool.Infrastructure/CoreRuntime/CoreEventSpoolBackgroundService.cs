@@ -86,9 +86,11 @@ public sealed class CoreEventSpoolBackgroundService : BackgroundService
                 // 按最新序号通知 SSE 端点，Admin 可以立即拉取。
                 _eventBus.NotifyNewEvents(lastSequenceId);
 
-                // 检查是否需要执行 spool 清理（基于本批条数）。
-                for (var i = 0; i < batch.Count; i++)
+                // 检查是否需要执行 spool 清理：整批只检查一次（按本批条数累加计数），
+                // 避免大批量事件密集时连续触发数十次剪枝扫描导致磁盘 IO 风暴。
+                if (batch.Count > 0)
                 {
+                    AddEventsSinceLastPrune(batch.Count);
                     if (ShouldPrune())
                     {
                         await PruneWithLoggingAsync(stoppingToken);
@@ -108,14 +110,22 @@ public sealed class CoreEventSpoolBackgroundService : BackgroundService
     }
 
     /// <summary>
-    /// 判断是否应该执行 spool 文件清理检查。
+    /// 累加自上次清理以来写入的事件数量（按批次累加）。
+    /// </summary>
+    private void AddEventsSinceLastPrune(int count)
+    {
+        // _eventsSinceLastPrune 仅在 ExecuteAsync 单一消费者线程内读写，无需原子操作。
+        _eventsSinceLastPrune += count;
+    }
+
+    /// <summary>
+    /// 判断是否应该执行 spool 文件清理检查（不再自增计数，由 AddEventsSinceLastPrune 预先累加）。
     /// 满足以下任一条件时触发：
     /// - 自上次清理以来写入了超过 PruneCheckInterval 条事件
     /// - 距离上次清理已超过 MaxPruneInterval
     /// </summary>
     private bool ShouldPrune()
     {
-        _eventsSinceLastPrune++;
         if (_eventsSinceLastPrune >= PruneCheckInterval)
         {
             return true;
