@@ -27,8 +27,12 @@ public sealed class CoreEventSequenceProviderPersistenceTests
     }
 
     /// <summary>
-    /// 连续递增后，meta 文件应记录最新序号。
-    /// 新的 provider 实例从同一目录构造时，应从 meta 文件恢复并继续递增。
+    /// 连续递增后，序号应能持久化并恢复。
+    /// 新的 provider 实例从同一目录构造时，应从持久化数据恢复并继续递增。
+    /// <para>
+    /// 注意：生产实现采用定时批量落盘策略，<see cref="CoreEventSequenceProvider.Next"/>
+    /// 不立即写盘。测试在 Dispose 时强制 flush，模拟进程正常退出场景。
+    /// </para>
     /// </summary>
     [Fact]
     public void Next_restores_from_meta_file_on_restart()
@@ -44,7 +48,10 @@ public sealed class CoreEventSequenceProviderPersistenceTests
         }
         provider1.Current.Should().Be(5);
 
-        // 验证 meta 文件已写入
+        // 模拟进程正常退出：Dispose 触发最后一次强制落盘。
+        provider1.Dispose();
+
+        // 验证 meta 文件已写入最新序号
         var metaPath = Path.Combine(tempRoot, "sequence.meta");
         File.Exists(metaPath).Should().BeTrue();
         File.ReadAllText(metaPath).Trim().Should().Be("5");

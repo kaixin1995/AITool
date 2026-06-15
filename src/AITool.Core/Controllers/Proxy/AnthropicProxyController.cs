@@ -460,7 +460,10 @@ public sealed class AnthropicProxyController : ControllerBase
 
             chunkBuilder.Append('\n');
             var chunk = chunkBuilder.ToString();
-            responseBuilder.Append(chunk);
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+            {
+                responseBuilder.Append(chunk);
+            }
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
             startedWriting = true;
@@ -588,7 +591,10 @@ public sealed class AnthropicProxyController : ControllerBase
                 return;
             }
 
-            responseBuilder.Append(chunk);
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+            {
+                responseBuilder.Append(chunk);
+            }
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
             startedWriting = true;

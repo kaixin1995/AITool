@@ -86,6 +86,17 @@ public static class DatabaseSchemaMigrator
                 command.CommandText = "ALTER TABLE ProxyRouteRules ADD COLUMN TimeRangesJson TEXT NOT NULL DEFAULT ''";
                 await command.ExecuteNonQueryAsync();
             }
+
+            // 为旧库补齐 Admin 查询热路径所需的索引（CREATE INDEX IF NOT EXISTS 幂等）。
+            // 这些索引对 UsageLogs/Analytics/Detection/ModelHealth 的筛选查询至关重要。
+            await using var indexCommand = connection.CreateCommand();
+            indexCommand.CommandText = @"
+CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_RequestedAt_Status ON ProxyUsageLogs (RequestedAt, Status);
+CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_TargetSiteId ON ProxyUsageLogs (TargetSiteId);
+CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_AccessKeyId ON ProxyUsageLogs (AccessKeyId);
+CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_AttemptedModel ON ProxyUsageLogs (AttemptedModel);
+";
+            await indexCommand.ExecuteNonQueryAsync();
         }
         finally
         {

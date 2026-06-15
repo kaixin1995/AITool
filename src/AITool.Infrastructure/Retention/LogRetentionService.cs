@@ -48,7 +48,10 @@ public sealed class LogRetentionService : ILogRetentionService
     /// <para>
     /// 优化策略：先查出满足条件记录的 Id 列表，再按 Id 定位并删除，
     /// 避免将整行数据（含 UserInputText、AssistantOutputMarkdown 等大文本字段）全部加载到内存。
-    /// 原实现使用 ToListAsync 加载整张表后再用 LINQ 过滤，数据量大时会造成显著的内存压力。
+    /// <para>
+    /// 注意：SQLite EF Core 不支持 DateTimeOffset 表达式翻译，因此 ExecuteDeleteAsync 在此不可用
+    /// （其 Where 子句同样无法翻译 RequestedAt/CreatedAt 比较），保留基于 Id 的 RemoveRange 路径。
+    /// </para>
     /// </para>
     /// </summary>
     public async Task<LogPruneResult> PruneAsync(CancellationToken cancellationToken = default)
@@ -68,12 +71,13 @@ public sealed class LogRetentionService : ILogRetentionService
         var conversationCutoff = now.AddDays(-ConversationLogStoragePolicy.RetentionDays);
 
         // 先查出过期对话记录的 Id，再按 Id 加载实体后删除。
-        // 虽然 EF Core 对 DateTimeOffset 的 Where 条件在 InMemory 模式下可以直接过滤，
-        // 但分两步可以确保第二步只加载需要删除的行（而非整张表）。
-        var oldConversationIds = await _dbContext.ConversationTurnLogs
+        // SQLite 不支持 DateTimeOffset 翻译，时间过滤在客户端完成（先全表加载 Id 再内存过滤开销可控）。
+        var oldConversationIds = (await _dbContext.ConversationTurnLogs
+                .Select(l => new { l.Id, l.CreatedAt })
+                .ToListAsync(cancellationToken))
             .Where(l => l.CreatedAt < conversationCutoff)
             .Select(l => l.Id)
-            .ToListAsync(cancellationToken);
+            .ToList();
 
         if (oldConversationIds.Count > 0)
         {
@@ -98,11 +102,13 @@ public sealed class LogRetentionService : ILogRetentionService
 
         var usageCutoff = now.AddDays(-settings.UsageLogRetentionDays);
 
-        // 同理，先查 Id 再按 Id 定位删除，避免加载整张 ProxyUsageLogs 表
-        var oldUsageIds = await _dbContext.ProxyUsageLogs
+        // 同理，先查 Id 再按 Id 定位删除，避免加载整张 ProxyUsageLogs 表的大文本字段。
+        var oldUsageIds = (await _dbContext.ProxyUsageLogs
+                .Select(l => new { l.Id, l.RequestedAt })
+                .ToListAsync(cancellationToken))
             .Where(l => l.RequestedAt < usageCutoff)
             .Select(l => l.Id)
-            .ToListAsync(cancellationToken);
+            .ToList();
 
         var deletedUsageCount = 0;
         if (oldUsageIds.Count > 0)

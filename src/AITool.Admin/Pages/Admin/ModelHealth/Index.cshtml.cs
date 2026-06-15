@@ -278,6 +278,7 @@ public class IndexModel : PageModel
         var monitoredModelIds = monitors.Select(m => m.ModelLibraryItemId).Distinct().ToList();
 
         var models = await _dbContext.ModelLibraryItems
+            .AsNoTracking()
             .Where(m => monitoredModelIds.Contains(m.Id))
             .ToDictionaryAsync(m => m.Id, m => m, cancellationToken);
         var orphanMonitors = monitors
@@ -309,6 +310,7 @@ public class IndexModel : PageModel
 
         /* 构建可选模型列表（排除已监控的） */
         AvailableModels = await _dbContext.ModelLibraryItems
+            .AsNoTracking()
             .Where(m => !monitoredModelIds.Contains(m.Id))
             .OrderBy(m => m.DisplayName)
             .Select(m => new ModelSelectItem
@@ -322,23 +324,27 @@ public class IndexModel : PageModel
         if (monitoredModelIds.Count > 0)
         {
             var mappings = await _dbContext.SiteModelMappings
+                .AsNoTracking()
                 .Where(m => monitoredModelIds.Contains(m.ModelLibraryItemId) && m.IsEnabled)
                 .ToListAsync(cancellationToken);
 
             var siteIds = mappings.Select(m => m.SiteId).Distinct().ToList();
             var sites = await _dbContext.Sites
+                .AsNoTracking()
                 .Where(s => siteIds.Contains(s.Id) && s.IsEnabled)
                 .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
             var recentCutoff = ResolveRecentCutoff(Range);
-            // 先全量加载到内存，再按最近时间窗口过滤，避免 SQLite 无法翻译 DateTimeOffset 比较。
-            var allLogs = await _dbContext.ProxyUsageLogs
-                .ToListAsync(cancellationToken);
-            allLogs = allLogs
+            // SQLite EF Core 不支持 DateTimeOffset 的 WHERE 翻译，时间过滤在客户端完成。
+            // 先加载全量再按时间窗口过滤；模型名匹配同样在内存做（基于每模型动态构建的名称集合）。
+            var allLogs = (await _dbContext.ProxyUsageLogs
+                    .AsNoTracking()
+                    .ToListAsync(cancellationToken))
                 .Where(x => x.RequestedAt >= recentCutoff)
                 .ToList();
 
             var routeRules = await _dbContext.ProxyRouteRules
+                .AsNoTracking()
                 .Where(x => x.IsEnabled)
                 .ToListAsync(cancellationToken);
 

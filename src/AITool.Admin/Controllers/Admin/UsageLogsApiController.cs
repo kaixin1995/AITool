@@ -443,22 +443,22 @@ public sealed class UsageLogsApiController : ControllerBase
         var (rangeStart, rangeEnd) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
 
-        // 当前仍使用 SQLite，先整体取回再做 DateTimeOffset 相关过滤和排序，避免数据库端翻译失败。
-        var filtered = (await _dbContext.ProxyUsageLogs
+        // SQLite EF Core 不支持 DateTimeOffset 表达式的 WHERE/ORDER BY 翻译，
+        // 因此时间过滤、排序、分页在客户端完成。其余筛选（站点/密钥/来源/状态/模型）下推到 DB 收窄范围。
+        var queryable = BuildFilteredQuery(query);
+
+        // 先在 DB 端应用非时间筛选并物化，再在客户端做时间过滤。
+        var filtered = (await queryable
                 .AsNoTracking()
                 .ToListAsync(cancellationToken))
             .Where(x => x.RequestedAt >= rangeStart && x.RequestedAt < rangeEnd)
-            .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
-            .Where(x => !query.AccessKeyId.HasValue || x.AccessKeyId == query.AccessKeyId.Value)
-            .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
-            .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
-            .Where(x => IsModelMatched(x, query.ModelKeyword))
             .OrderByDescending(x => x.RequestedAt)
             .ToList();
 
         var totalCount = filtered.Count;
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
         var page = totalPages == 0 ? 1 : Math.Min(Math.Max(1, query.Page), totalPages);
+
         var items = filtered
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
@@ -502,6 +502,48 @@ public sealed class UsageLogsApiController : ControllerBase
     }
 
     /// <summary>
+    /// 构建已应用非时间筛选条件的 UsageLog 查询（IQueryable，尚未执行）。
+    /// 时间筛选（RequestedAt）由调用方在物化后客户端完成，因为 SQLite EF Core 不支持 DateTimeOffset 翻译。
+    /// </summary>
+    private IQueryable<AITool.Domain.Proxy.ProxyUsageLog> BuildFilteredQuery(
+        AdminUsageLogListQueryDto query)
+    {
+        IQueryable<AITool.Domain.Proxy.ProxyUsageLog> q = _dbContext.ProxyUsageLogs;
+
+        if (query.SiteId.HasValue)
+        {
+            q = q.Where(x => x.TargetSiteId == query.SiteId.Value);
+        }
+        if (query.AccessKeyId.HasValue)
+        {
+            q = q.Where(x => x.AccessKeyId == query.AccessKeyId.Value);
+        }
+        if (!string.IsNullOrWhiteSpace(query.Source))
+        {
+            // SQLite 默认大小写不敏感，EF.Functions.Like 翻译为 SQL LIKE。
+            q = q.Where(x => EF.Functions.Like(x.Source, query.Source));
+        }
+        if (!string.IsNullOrWhiteSpace(query.Status))
+        {
+            q = q.Where(x => EF.Functions.Like(x.Status, query.Status));
+        }
+        if (!string.IsNullOrWhiteSpace(query.ModelKeyword))
+        {
+            // 对齐原 IsModelMatched：匹配 RequestModel 或 AttemptedModel（包含关键字）。
+            var pattern = $"%{EscapeLikePattern(query.ModelKeyword)}%";
+            q = q.Where(x => EF.Functions.Like(x.RequestModel, pattern)
+                          || EF.Functions.Like(x.AttemptedModel, pattern));
+        }
+        return q;
+    }
+
+    /// <summary>
+    /// 转义 LIKE 模式中的特殊字符（%、_、\），保持"包含"语义。
+    /// </summary>
+    private static string EscapeLikePattern(string keyword) =>
+        keyword.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_");
+
+    /// <summary>
     /// 获取调用日志汇总信息。
     /// </summary>
     [HttpGet("summary")]
@@ -510,15 +552,11 @@ public sealed class UsageLogsApiController : ControllerBase
         var (rangeStart, rangeEnd) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
 
         // 汇总与列表共用同一套筛选逻辑，避免页面筛选条件和摘要卡片统计口径不一致。
-        var filtered = (await _dbContext.ProxyUsageLogs
+        // SQLite 不支持 DateTimeOffset 翻译，时间过滤在客户端完成，聚合也随之在客户端。
+        var filtered = (await BuildFilteredQuery(query)
                 .AsNoTracking()
                 .ToListAsync(cancellationToken))
             .Where(x => x.RequestedAt >= rangeStart && x.RequestedAt < rangeEnd)
-            .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
-            .Where(x => !query.AccessKeyId.HasValue || x.AccessKeyId == query.AccessKeyId.Value)
-            .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
-            .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
-            .Where(x => IsModelMatched(x, query.ModelKeyword))
             .ToList();
 
         var totalRequests = filtered.Count;
@@ -528,13 +566,16 @@ public sealed class UsageLogsApiController : ControllerBase
             ? 0d
             : Math.Round(successRequests * 100d / totalRequests, 2, MidpointRounding.AwayFromZero);
 
+        var totalTokens = filtered.Sum(x => x.TotalTokens);
+        var maxDurationMs = totalRequests == 0 ? 0 : filtered.Max(x => x.TotalDurationMs);
+
         return Ok(new AdminUsageLogSummaryDto
         {
             TotalRequests = totalRequests,
             FailedRequests = failedRequests,
             SuccessRate = successRate,
-            TotalTokens = filtered.Sum(x => x.TotalTokens),
-            MaxDurationMs = filtered.Count == 0 ? 0 : filtered.Max(x => x.TotalDurationMs)
+            TotalTokens = totalTokens,
+            MaxDurationMs = maxDurationMs
         });
     }
 
@@ -630,30 +671,6 @@ public sealed class UsageLogsApiController : ControllerBase
             "all" => (DateTimeOffset.MinValue, DateTimeOffset.MaxValue),
             _ => (new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset), now)
         };
-    }
-
-    /// <summary>
-    /// 判断模型名称是否命中关键字。
-    /// </summary>
-    private static bool IsModelMatched(AITool.Domain.Proxy.ProxyUsageLog log, string? modelKeyword)
-    {
-        if (string.IsNullOrWhiteSpace(modelKeyword))
-        {
-            return true;
-        }
-
-        var keyword = modelKeyword.Trim();
-        return ContainsIgnoreCase(log.RequestModel, keyword)
-            || ContainsIgnoreCase(log.AttemptedModel, keyword);
-    }
-
-    /// <summary>
-    /// 以大小写不敏感方式判断文本是否包含关键字。
-    /// </summary>
-    private static bool ContainsIgnoreCase(string? source, string keyword)
-    {
-        return !string.IsNullOrWhiteSpace(source)
-            && source.Contains(keyword, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>

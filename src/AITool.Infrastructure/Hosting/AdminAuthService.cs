@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AITool.Application.Common;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 
@@ -76,7 +77,7 @@ public sealed class AdminAuthService
         authNode[nameof(AdminAuthOptions.PasswordHash)] = ComputeMd5(password);
         rootNode[AdminAuthOptions.SectionName] = authNode;
 
-        var json = rootNode.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        var json = rootNode.ToJsonString(JsonSerializerPresets.WriteIndented);
         await File.WriteAllTextAsync(_appSettingsPath, json, Encoding.UTF8, cancellationToken);
 
         if (_configuration is IConfigurationRoot configurationRoot)

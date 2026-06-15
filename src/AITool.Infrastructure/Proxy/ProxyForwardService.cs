@@ -320,7 +320,12 @@ public sealed class ProxyForwardService : IProxyForwardService
                 var line = await reader.ReadLineAsync(cancellationToken);
                 if (line == null) break;
 
-                sb.AppendLine(line);
+                // 仅累积诊断副本，达到上限后停止追加（转发本身不受影响）。
+                // 完整响应已实时转发给客户端，这里只用于失败/中断日志。
+                if (sb.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+                {
+                    sb.AppendLine(line);
+                }
 
                 if (onSseDataAsync is not null)
                 {

@@ -107,21 +107,35 @@ public class IndexModel : PageModel
     /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        var allLogs = await _dbContext.ProxyUsageLogs
-            .Where(x => x.IsFinalResult)
-            .ToListAsync(cancellationToken);
-        var latestLogs = allLogs
+        // 只查询展示所需的字段并下推 IsFinalResult 筛选，避免全字段全表加载。
+        // 每组 (TargetSiteId, RequestModel) 取最新一条仍需在内存做（SQLite 窗口函数支持有限），
+        // 但投影后单行体积大幅缩小（不含 ErrorMessage 等大文本字段）。
+        var latestLogs = (await _dbContext.ProxyUsageLogs
+                .AsNoTracking()
+                .Where(x => x.IsFinalResult)
+                .Select(d => new LatestFinalLog
+                {
+                    TargetSiteId = d.TargetSiteId,
+                    RequestModel = d.RequestModel,
+                    Status = d.Status,
+                    RequestedAt = d.RequestedAt,
+                    TotalDurationMs = d.TotalDurationMs
+                })
+                .ToListAsync(cancellationToken))
             .GroupBy(d => (d.TargetSiteId, d.RequestModel))
             .ToDictionary(
                 g => g.Key,
                 g => g.OrderByDescending(d => d.RequestedAt).First());
 
         var models = await _dbContext.ModelLibraryItems
+            .AsNoTracking()
             .ToDictionaryAsync(m => m.Id, m => m, cancellationToken);
         var sites = await _dbContext.Sites
+            .AsNoTracking()
             .Where(s => s.IsEnabled)
             .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
         var mappings = await _dbContext.SiteModelMappings
+            .AsNoTracking()
             .Where(m => m.IsEnabled)
             .ToListAsync(cancellationToken);
 
@@ -164,4 +178,16 @@ public class IndexModel : PageModel
             .OrderBy(m => m.DisplayName)
             .ToList();
     }
+}
+
+/// <summary>
+/// 检测页加载时的最终结果日志投影（仅展示所需字段）。
+/// </summary>
+internal sealed class LatestFinalLog
+{
+    public Guid TargetSiteId { get; set; }
+    public string RequestModel { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public DateTimeOffset RequestedAt { get; set; }
+    public int TotalDurationMs { get; set; }
 }

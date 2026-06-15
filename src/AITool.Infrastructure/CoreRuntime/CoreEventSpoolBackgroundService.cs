@@ -52,25 +52,50 @@ public sealed class CoreEventSpoolBackgroundService : BackgroundService
     }
 
     /// <summary>
-    /// 持续监听事件总线，把事件按顺序追加到本地 spool 文件中。
+    /// 批量写入的最大事件数。达到即立即 flush，避免延迟过高。
+    /// </summary>
+    private const int BatchSize = 64;
+
+    /// <summary>
+    /// 持续监听事件总线，把事件按顺序批量追加到本地 spool 文件中。
+    /// 读取一条后继续非阻塞读取更多事件，积累成批后单次文件写入，
+    /// 减少 FileStream 打开/关闭开销。序号顺序由 Channel 单读者保证。
     /// 每写入一定数量的事件或超过一定时间后，触发 spool 文件清理检查。
     /// </summary>
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        var batch = new List<CoreAdminEventEnvelope>(BatchSize);
+        long lastSequenceId = 0;
+
         try
         {
             await foreach (var envelope in _eventBus.Reader.ReadAllAsync(stoppingToken))
             {
-                await _spoolStore.AppendAsync(envelope, stoppingToken);
+                batch.Add(envelope);
+                lastSequenceId = envelope.SequenceId;
 
-                // 通知 SSE 端点有新事件已写入 spool，Admin 可以立即拉取
-                _eventBus.NotifyNewEvents(envelope.SequenceId);
-
-                // 检查是否需要执行 spool 清理
-                if (ShouldPrune())
+                // 非阻塞地继续读取更多已就绪事件，积累成批。
+                while (batch.Count < BatchSize && _eventBus.Reader.TryRead(out var more))
                 {
-                    await PruneWithLoggingAsync(stoppingToken);
+                    batch.Add(more);
+                    lastSequenceId = more.SequenceId;
                 }
+
+                // 批量写入（单次文件打开）。
+                await _spoolStore.AppendBatchAsync(batch, stoppingToken);
+                // 按最新序号通知 SSE 端点，Admin 可以立即拉取。
+                _eventBus.NotifyNewEvents(lastSequenceId);
+
+                // 检查是否需要执行 spool 清理（基于本批条数）。
+                for (var i = 0; i < batch.Count; i++)
+                {
+                    if (ShouldPrune())
+                    {
+                        await PruneWithLoggingAsync(stoppingToken);
+                    }
+                }
+
+                batch.Clear();
             }
         }
         catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)

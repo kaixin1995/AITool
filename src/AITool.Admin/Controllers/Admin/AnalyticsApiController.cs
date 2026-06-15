@@ -449,6 +449,7 @@ public sealed class AnalyticsApiController : ControllerBase
     public async Task<ActionResult<AnalyticsFilterOptionsDto>> GetOptions(CancellationToken cancellationToken)
     {
         var sites = await _dbContext.Sites
+            .AsNoTracking()
             .OrderBy(x => x.Name)
             .Select(x => new AnalyticsSiteOptionDto
             {
@@ -504,37 +505,6 @@ public sealed class AnalyticsApiController : ControllerBase
         AnalyticsQueryDto query,
         CancellationToken cancellationToken)
     {
-        var allLogs = await dbContext.ProxyUsageLogs
-            .AsNoTracking()
-            .Select(x => new AITool.Domain.Proxy.ProxyUsageLog
-            {
-                Id = x.Id,
-                RequestId = x.RequestId,
-                AccessKeyId = x.AccessKeyId,
-                ProtocolType = x.ProtocolType,
-                RequestModel = x.RequestModel,
-                AttemptedModel = x.AttemptedModel,
-                TargetSiteId = x.TargetSiteId,
-                Status = x.Status,
-                Source = x.Source,
-                RetryCount = x.RetryCount,
-                AttemptIndex = x.AttemptIndex,
-                IsFinalResult = x.IsFinalResult,
-                FallbackTriggered = x.FallbackTriggered,
-                ErrorMessage = x.ErrorMessage,
-                InputTokens = x.InputTokens,
-                CachedTokens = x.CachedTokens,
-                OutputTokens = x.OutputTokens,
-                TotalTokens = x.TotalTokens,
-                IsStreaming = x.IsStreaming,
-                IsStreamInterrupted = x.IsStreamInterrupted,
-                FirstTokenLatencyMs = x.FirstTokenLatencyMs,
-                StreamDurationMs = x.StreamDurationMs,
-                TotalDurationMs = x.TotalDurationMs,
-                RequestedAt = x.RequestedAt
-            })
-            .ToListAsync(cancellationToken);
-
         var siteNames = await dbContext.Sites
             .AsNoTracking()
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
@@ -542,12 +512,33 @@ public sealed class AnalyticsApiController : ControllerBase
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
 
-        // 先按时间和基础筛选收窄范围，再在内存里做聚合，兼容 SQLite 对 DateTimeOffset 的限制。
-        var baseLogs = allLogs
-            .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
-            .Where(x => string.Equals(query.ProtocolType, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.ProtocolType, query.ProtocolType, StringComparison.OrdinalIgnoreCase))
-            .Where(x => string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.AttemptedModel, query.ModelName, StringComparison.OrdinalIgnoreCase))
-            .Where(x => !query.AccessKeyId.HasValue || x.AccessKeyId == query.AccessKeyId.Value)
+        // SQLite EF Core 不支持 DateTimeOffset 表达式的 WHERE 翻译，
+        // 因此时间过滤在客户端完成，其余筛选（协议/模型/密钥/站点）下推到 DB 收窄范围。
+        var baseQuery = dbContext.ProxyUsageLogs
+            .AsNoTracking();
+
+        if (!string.Equals(query.ProtocolType, "all", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(query.ProtocolType))
+        {
+            baseQuery = baseQuery.Where(x => EF.Functions.Like(x.ProtocolType, query.ProtocolType));
+        }
+        if (!string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(query.ModelName))
+        {
+            baseQuery = baseQuery.Where(x => EF.Functions.Like(x.AttemptedModel, query.ModelName));
+        }
+        if (query.AccessKeyId.HasValue)
+        {
+            baseQuery = baseQuery.Where(x => x.AccessKeyId == query.AccessKeyId.Value);
+        }
+        if (query.SiteId.HasValue)
+        {
+            // 站点筛选按"命中过该站点的尝试"统计，避免回退成功后把失败站点整条请求吞掉。
+            baseQuery = baseQuery.Where(x => x.TargetSiteId == query.SiteId.Value);
+        }
+
+        var baseLogs = (await baseQuery.ToListAsync(cancellationToken))
+            .Where(x => x.RequestedAt < endTime)
             .ToList();
 
         // 对"全部"范围，用筛选后数据的实际时间边界替代 DateTimeOffset.MinValue，
@@ -559,11 +550,12 @@ public sealed class AnalyticsApiController : ControllerBase
                 : StartOfDay(DateTimeOffset.Now);
             bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
         }
+        else
+        {
+            baseLogs = baseLogs.Where(x => x.RequestedAt >= startTime).ToList();
+        }
 
-        // 站点筛选按"命中过该站点的尝试"统计，避免回退成功后把失败站点整条请求吞掉。
-        var scopedLogs = query.SiteId.HasValue
-            ? baseLogs.Where(x => x.TargetSiteId == query.SiteId.Value).ToList()
-            : baseLogs;
+        var scopedLogs = baseLogs;
 
         var finalLogs = scopedLogs
             .GroupBy(x => x.RequestId)

@@ -59,7 +59,10 @@ public sealed partial class OpenAiProxyController
                         completedOutputJson = outputJson;
                         receivedDoneEvent = true;
                     }
-                    responseBuilder.AppendLine(payload);
+                    if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+                    {
+                        responseBuilder.AppendLine(payload);
+                    }
                     await SendWebSocketJsonPayloadAsync(webSocket, payload, token);
                     startedWriting = true;
                 }
@@ -181,7 +184,10 @@ public sealed partial class OpenAiProxyController
                     completedOutputJson = outputJson;
                 }
 
-                responseBuilder.AppendLine(wsPayload);
+                if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+                {
+                    responseBuilder.AppendLine(wsPayload);
+                }
                 await SendWebSocketJsonPayloadAsync(webSocket, wsPayload, token);
                 startedWriting = true;
             }
@@ -289,7 +295,10 @@ public sealed partial class OpenAiProxyController
             var responsesChunk = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
             if (!string.IsNullOrEmpty(responsesChunk))
             {
-                responseBuilder.Append(responsesChunk);
+                if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+                {
+                    responseBuilder.Append(responsesChunk);
+                }
                 await Response.WriteAsync(responsesChunk, token);
                 await Response.Body.FlushAsync(token);
                 startedWriting = true;
@@ -456,7 +465,10 @@ public sealed partial class OpenAiProxyController
                 chunk = sseBlockConverter(chunk);
             }
 
-            responseBuilder.Append(chunk);
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+            {
+                responseBuilder.Append(chunk);
+            }
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
             startedWriting = true;
@@ -642,7 +654,10 @@ public sealed partial class OpenAiProxyController
                 return;
             }
 
-            responseBuilder.Append(chunk);
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+            {
+                responseBuilder.Append(chunk);
+            }
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
             startedWriting = true;
@@ -774,7 +789,10 @@ public sealed partial class OpenAiProxyController
                 chunk = sseBlockConverter(chunk);
             }
 
-            responseBuilder.Append(chunk);
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+            {
+                responseBuilder.Append(chunk);
+            }
             await Response.WriteAsync(chunk, token);
             await Response.Body.FlushAsync(token);
             startedWriting = true;

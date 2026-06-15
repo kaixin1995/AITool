@@ -43,7 +43,8 @@ public static class GzipTextCompression
             gzip.Write(rawBytes);
         }
 
-        return CompressedPrefix + Convert.ToBase64String(output.ToArray());
+        // 用 GetBuffer + AsSpan 避免.ToArray() 的二次缓冲拷贝，减少大对话体落库时的内存峰值。
+        return CompressedPrefix + Convert.ToBase64String(output.GetBuffer().AsSpan(0, (int)output.Length));
     }
 
     /// <summary>

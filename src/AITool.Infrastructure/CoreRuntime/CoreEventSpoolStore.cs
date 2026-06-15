@@ -38,6 +38,24 @@ public sealed class CoreEventSpoolStore
     public async Task AppendAsync(CoreAdminEventEnvelope envelope, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(envelope);
+        await AppendBatchAsync([envelope], cancellationToken);
+    }
+
+    /// <summary>
+    /// 批量追加多条事件到当前 spool 文件（单次文件打开，减少 IO 句柄开销）。
+    /// <para>
+    /// 事件密集产生时，逐条写入会频繁打开/关闭 FileStream，限制消费吞吐。
+    /// 批量写入复用同一次文件打开，把 N 条事件合并写入。
+    /// 序号顺序由 Channel 单读者保证，ack 语义不变。
+    /// </para>
+    /// </summary>
+    public async Task AppendBatchAsync(IReadOnlyList<CoreAdminEventEnvelope> envelopes, CancellationToken cancellationToken = default)
+    {
+        if (envelopes.Count == 0)
+        {
+            return;
+        }
+
         await _fileLock.WaitAsync(cancellationToken);
         try
         {
@@ -45,7 +63,11 @@ public sealed class CoreEventSpoolStore
             var filePath = ResolveCurrentFilePath();
             await using var stream = new FileStream(filePath, FileMode.Append, FileAccess.Write, FileShare.Read);
             await using var writer = new StreamWriter(stream, new UTF8Encoding(false));
-            await writer.WriteLineAsync(JsonSerializer.Serialize(envelope, SerializerOptions));
+            // 按入参顺序逐行写入，保持 Channel 单读者给出的序号顺序。
+            foreach (var envelope in envelopes)
+            {
+                await writer.WriteLineAsync(JsonSerializer.Serialize(envelope, SerializerOptions));
+            }
         }
         finally
         {

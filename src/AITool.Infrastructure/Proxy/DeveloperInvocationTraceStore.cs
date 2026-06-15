@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Application.Common;
 using Microsoft.AspNetCore.Http;
 
 namespace AITool.Infrastructure.Proxy;
@@ -22,6 +23,11 @@ public sealed class DeveloperInvocationTraceStore
     /// </summary>
     private static readonly TimeSpan EntryRetention = TimeSpan.FromHours(6);
     /// <summary>
+    /// 过期清理检查的最小间隔。锁内每次操作都无条件调用 PurgeExpiredUnsafe 会放大锁竞争，
+    /// 节流为每 PurgeThrottleInterval 最多执行一次清理，过期项最多多存活这段时间，功能不变。
+    /// </summary>
+    private static readonly TimeSpan PurgeThrottleInterval = TimeSpan.FromSeconds(30);
+    /// <summary>
     /// 并发访问锁对象。
     /// </summary>
     private readonly object _gate = new();
@@ -33,6 +39,10 @@ public sealed class DeveloperInvocationTraceStore
     /// 调用跟踪节点索引。
     /// </summary>
     private readonly Dictionary<Guid, LinkedListNode<DeveloperInvocationTraceEntry>> _nodes = [];
+    /// <summary>
+    /// 上次执行过期清理的时间（UTC），用于节流。
+    /// </summary>
+    private DateTimeOffset _lastPurgeTime = DateTimeOffset.UtcNow;
 
     /// <summary>
     /// 当追踪记录状态从 pending 变为最终状态时触发。
@@ -67,7 +77,7 @@ public sealed class DeveloperInvocationTraceStore
 
         lock (_gate)
         {
-            PurgeExpiredUnsafe();
+            MaybePurgeExpiredUnsafe();
             var node = _entries.AddFirst(entry);
             _nodes[entry.TraceId] = node;
             TrimUnsafe();
@@ -82,7 +92,7 @@ public sealed class DeveloperInvocationTraceStore
     {
         lock (_gate)
         {
-            PurgeExpiredUnsafe();
+            MaybePurgeExpiredUnsafe();
             if (!_nodes.TryGetValue(traceId, out var node))
             {
                 return Guid.Empty;
@@ -120,7 +130,7 @@ public sealed class DeveloperInvocationTraceStore
 
         lock (_gate)
         {
-            PurgeExpiredUnsafe();
+            MaybePurgeExpiredUnsafe();
             if (!_nodes.TryGetValue(traceId, out var node))
             {
                 return;
@@ -197,7 +207,7 @@ public sealed class DeveloperInvocationTraceStore
 
         lock (_gate)
         {
-            PurgeExpiredUnsafe();
+            MaybePurgeExpiredUnsafe();
             if (!_nodes.TryGetValue(traceId, out var node))
             {
                 return;
@@ -240,7 +250,7 @@ public sealed class DeveloperInvocationTraceStore
     {
         lock (_gate)
         {
-            PurgeExpiredUnsafe();
+            MaybePurgeExpiredUnsafe();
             return _entries.Select(Clone).ToList();
         }
     }
@@ -252,15 +262,31 @@ public sealed class DeveloperInvocationTraceStore
     {
         lock (_gate)
         {
-            PurgeExpiredUnsafe();
+            MaybePurgeExpiredUnsafe();
             return _nodes.TryGetValue(traceId, out var node) ? Clone(node.Value) : null;
         }
     }
 
     /// <summary>
-    /// 清理过期记录。
+    /// 清理过期记录（带节流）。
+    /// 仅在距上次清理超过 <see cref="PurgeThrottleInterval"/> 时才真正执行，
+    /// 避免每次锁内操作都做 O(过期数) 扫描放大锁竞争。必须在持锁状态下调用。
     /// </summary>
-    private void PurgeExpiredUnsafe()
+    private void MaybePurgeExpiredUnsafe()
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (now - _lastPurgeTime < PurgeThrottleInterval)
+        {
+            return;
+        }
+        _lastPurgeTime = now;
+        PurgeExpiredUnsafeCore();
+    }
+
+    /// <summary>
+    /// 清理过期记录的实际实现（无节流）。
+    /// </summary>
+    private void PurgeExpiredUnsafeCore()
     {
         var expireBefore = DateTimeOffset.UtcNow - EntryRetention;
         while (_entries.Last is { } last && last.Value.CreatedAt < expireBefore)
@@ -387,7 +413,7 @@ public sealed class DeveloperInvocationTraceStore
         try
         {
             using var document = JsonDocument.Parse(body);
-            return JsonSerializer.Serialize(document, new JsonSerializerOptions { WriteIndented = true });
+            return JsonSerializer.Serialize(document, JsonSerializerPresets.WriteIndented);
         }
         catch
         {

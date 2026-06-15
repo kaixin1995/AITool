@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AITool.Application.Common;
 using AITool.Application.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
@@ -946,12 +947,12 @@ public sealed partial class ProxyRequestMetadataCache
 
         try
         {
-            var ranges = JsonSerializer.Deserialize<List<CachedRouteTimeRange>>(timeRangesJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+            var ranges = JsonSerializer.Deserialize<List<CachedRouteTimeRange>>(timeRangesJson, JsonSerializerPresets.CaseInsensitive) ?? [];
             ranges = ranges
                 .Where(x => IsValidTimeText(x.Start) && IsValidTimeText(x.End))
                 .Select(x => new CachedRouteTimeRange { Start = x.Start.Trim(), End = x.End.Trim() })
                 .ToList();
-            return ranges.Count == 0 ? string.Empty : JsonSerializer.Serialize(ranges, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase });
+            return ranges.Count == 0 ? string.Empty : JsonSerializer.Serialize(ranges, JsonSerializerPresets.CamelCase);
         }
         catch (JsonException)
         {
@@ -1206,7 +1207,7 @@ public sealed class CachedProxyRouteTarget
             return true;
         }
 
-        var ranges = JsonSerializer.Deserialize<List<CachedRouteTimeRange>>(timeRangesJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+        var ranges = JsonSerializer.Deserialize<List<CachedRouteTimeRange>>(timeRangesJson, JsonSerializerPresets.CaseInsensitive) ?? [];
         var matched = ranges.Any(x => IsTimeInRange(currentTime, TimeOnly.ParseExact(x.Start, "HH:mm"), TimeOnly.ParseExact(x.End, "HH:mm")));
         return mode == "AvailableOnly" ? matched : !matched;
     }

@@ -183,6 +183,15 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.IsStreamInterrupted).IsRequired();
             entity.HasIndex(e => e.RequestedAt);
             entity.HasIndex(e => e.RequestId);
+            // 以下复合/单列索引服务于 Admin 查询热路径（UsageLogs/Analytics/Detection/ModelHealth）。
+            // 时间 + 状态：UsageLogs 状态筛选、Analytics 成功/失败统计。
+            entity.HasIndex(e => new { e.RequestedAt, e.Status });
+            // 站点筛选（UsageLogs/Analytics/ModelHealth 按 TargetSiteId 过滤）。
+            entity.HasIndex(e => e.TargetSiteId);
+            // 访问密钥筛选（UsageLogs/Analytics 按 AccessKeyId 过滤）。
+            entity.HasIndex(e => e.AccessKeyId);
+            // 上游模型名筛选（UsageLogs 模型关键字、Analytics 模型分布）。
+            entity.HasIndex(e => e.AttemptedModel);
         });
 
         // 结构化对话记录实体配置
