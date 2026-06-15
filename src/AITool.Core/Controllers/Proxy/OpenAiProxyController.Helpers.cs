@@ -25,7 +25,9 @@ public sealed partial class OpenAiProxyController
     private static async Task<string?> ReceiveWebSocketTextMessageAsync(WebSocket webSocket, CancellationToken cancellationToken)
     {
         var buffer = new byte[16 * 1024];
-        var builder = new StringBuilder();
+        // 用 MemoryStream 累积所有帧的字节，待 EndOfMessage 后一次性解码，
+        // 避免多字节 UTF-8 字符跨帧时按固定边界解码产生替换符（U+FFFD）导致 JSON 损坏。
+        using var messageBuffer = new MemoryStream();
         while (webSocket.State == WebSocketState.Open)
         {
             var result = await webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), cancellationToken);
@@ -34,10 +36,10 @@ public sealed partial class OpenAiProxyController
                 return null;
             }
 
-            builder.Append(Encoding.UTF8.GetString(buffer, 0, result.Count));
+            messageBuffer.Write(buffer, 0, result.Count);
             if (result.EndOfMessage)
             {
-                return builder.ToString();
+                return Encoding.UTF8.GetString(messageBuffer.GetBuffer(), 0, (int)messageBuffer.Length);
             }
         }
 

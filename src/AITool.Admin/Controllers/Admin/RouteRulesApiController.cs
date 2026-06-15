@@ -227,6 +227,29 @@ public sealed class RouteRulesApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(entryName))
             return BadRequest(new { message = "模型名称不能为空" });
 
+        // 校验每条规则引用的 SiteId 都存在且非空，避免写入孤儿规则（路由运行时会静默忽略）。
+        if (request.Rules.Count > 0)
+        {
+            var ruleSiteIds = request.Rules
+                .Where(r => r.SiteId != Guid.Empty)
+                .Select(r => r.SiteId)
+                .Distinct()
+                .ToHashSet();
+            if (ruleSiteIds.Count > 0)
+            {
+                var existingSiteIds = await _dbContext.Sites
+                    .AsNoTracking()
+                    .Where(s => ruleSiteIds.Contains(s.Id))
+                    .Select(s => s.Id)
+                    .ToListAsync(cancellationToken);
+                var missingSiteIds = ruleSiteIds.Except(existingSiteIds).ToList();
+                if (missingSiteIds.Count > 0)
+                {
+                    return BadRequest(new { message = $"以下站点不存在，无法保存规则：{string.Join(", ", missingSiteIds)}" });
+                }
+            }
+        }
+
         // 确保主入口存在
         var existingEntry = await _dbContext.ProxyRouteEntries
             .FirstOrDefaultAsync(x => x.EntryName == entryName, cancellationToken);

@@ -552,12 +552,14 @@ public sealed partial class OpenAiProxyController : ControllerBase
             if (IsRouteBlockedSafely(route.RouteId))
                 continue;
 
-            attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
             if (routeEligibility is not null && !routeEligibility(route, actualProtocolType))
             {
                 continue;
             }
+
+            // attemptIndex 仅在路由真正会被尝试时自增，避免被熔断/eligibility 跳过的路由计入重试次数。
+            attemptIndex++;
 
             // 如果前一条路由失败且当前有可用的候选路由，发布回退事件
             if (lastFailedRoute is not null)

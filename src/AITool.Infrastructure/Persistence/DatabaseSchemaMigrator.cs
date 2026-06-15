@@ -89,14 +89,27 @@ public static class DatabaseSchemaMigrator
 
             // 为旧库补齐 Admin 查询热路径所需的索引（CREATE INDEX IF NOT EXISTS 幂等）。
             // 这些索引对 UsageLogs/Analytics/Detection/ModelHealth 的筛选查询至关重要。
-            await using var indexCommand = connection.CreateCommand();
-            indexCommand.CommandText = @"
-CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_RequestedAt_Status ON ProxyUsageLogs (RequestedAt, Status);
-CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_TargetSiteId ON ProxyUsageLogs (TargetSiteId);
-CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_AccessKeyId ON ProxyUsageLogs (AccessKeyId);
-CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_AttemptedModel ON ProxyUsageLogs (AttemptedModel);
-";
-            await indexCommand.ExecuteNonQueryAsync();
+            // 每条索引单独执行并独立 try-catch，避免某条失败导致其余索引全部跳过。
+            var indexStatements = new[]
+            {
+                "CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_RequestedAt_Status ON ProxyUsageLogs (RequestedAt, Status)",
+                "CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_TargetSiteId ON ProxyUsageLogs (TargetSiteId)",
+                "CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_AccessKeyId ON ProxyUsageLogs (AccessKeyId)",
+                "CREATE INDEX IF NOT EXISTS IX_ProxyUsageLogs_AttemptedModel ON ProxyUsageLogs (AttemptedModel)"
+            };
+            foreach (var statement in indexStatements)
+            {
+                try
+                {
+                    await using var indexCommand = connection.CreateCommand();
+                    indexCommand.CommandText = statement;
+                    await indexCommand.ExecuteNonQueryAsync();
+                }
+                catch
+                {
+                    // 单条索引创建失败不阻塞后续索引或其它列补丁；IF NOT EXISTS 通常已保证幂等。
+                }
+            }
         }
         finally
         {

@@ -272,6 +272,16 @@ public sealed class ModelConcurrencyLimiter
             }
         }
 
+        // 同步清理 _states 中完全空闲（无活跃、无排队）的组合，避免站点/模型组合
+        // 数量动态变化时 _states 无限增长导致内存泄漏。
+        foreach (var pair in _states)
+        {
+            if (pair.Value.ActiveCount <= 0 && pair.Value.Waiters.Count == 0)
+            {
+                _states.TryRemove(pair.Key, out _);
+            }
+        }
+
         return _activeEntries.Values
             .Where(x => x.ActiveCount > 0 || x.LastSeenAt >= cutoff)
             .Select(EnrichWithStateInfo)

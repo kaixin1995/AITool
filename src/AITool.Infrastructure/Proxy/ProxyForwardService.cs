@@ -55,7 +55,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             try
             {
                 using var httpRequest = BuildRequestMessage(request, requestBody);
-                var response = await _httpClient.SendAsync(
+                using var response = await _httpClient.SendAsync(
                     httpRequest,
                     HttpCompletionOption.ResponseHeadersRead,
                     timeoutCts.Token);
@@ -202,7 +202,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             try
             {
                 using var httpRequest = BuildRequestMessage(request, requestBody);
-                var response = await _httpClient.SendAsync(
+                using var response = await _httpClient.SendAsync(
                     httpRequest,
                     HttpCompletionOption.ResponseHeadersRead,
                     timeoutCts.Token);

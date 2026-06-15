@@ -57,7 +57,11 @@ public sealed class AdminAuthService
             return false;
         }
 
-        return string.Equals(passwordHash, ComputeMd5(password), StringComparison.OrdinalIgnoreCase);
+        // 使用恒定时间比较，避免通过响应耗时推断哈希前缀的 timing 侧信道攻击。
+        // 统一小写后再转字节比较（ComputeMd5 输出小写）。
+        var expected = Encoding.UTF8.GetBytes(passwordHash.ToLowerInvariant());
+        var actual = Encoding.UTF8.GetBytes(ComputeMd5(password));
+        return CryptographicOperations.FixedTimeEquals(expected, actual);
     }
 
     /// <summary>

@@ -383,8 +383,8 @@ public sealed class AdminCacheInvalidationService
     /// </summary>
     private static bool IsCoreNotInitialized(HttpRequestException ex)
     {
-        // Core 未初始化时 patch-sync 返回 400，
-        // HttpClient 会抛出 HttpRequestException 且 StatusCode == BadRequest
-        return ex.Message.Contains("400");
+        // Core 未初始化时 patch-sync 返回 400，HttpClient 抛 HttpRequestException 且 StatusCode == BadRequest。
+        // 用 StatusCode 精确判断，避免字符串匹配 "400" 误命中端口号或其他含 400 的错误信息。
+        return ex.StatusCode == System.Net.HttpStatusCode.BadRequest;
     }
 }

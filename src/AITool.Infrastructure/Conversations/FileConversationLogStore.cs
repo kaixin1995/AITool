@@ -12,7 +12,7 @@ namespace AITool.Infrastructure.Conversations;
 /// <summary>
 /// 基于本地 JSONL 文件的对话记录存储。
 /// </summary>
-public sealed class FileConversationLogStore : IConversationLogStore
+public sealed class FileConversationLogStore : IConversationLogStore, IDisposable
 {
     private const string FileExtension = ".jsonl";
     private const string LegacyImportMarkerFileName = ".legacy-db-imported";
@@ -483,5 +483,13 @@ public sealed class FileConversationLogStore : IConversationLogStore
         }
 
         Directory.CreateDirectory(_options.RootPath);
+    }
+
+    /// <summary>
+    /// 释放文件存储持有的信号量资源。
+    /// </summary>
+    public void Dispose()
+    {
+        _storageLock.Dispose();
     }
 }

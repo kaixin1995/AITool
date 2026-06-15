@@ -7,6 +7,38 @@
 
 ---
 
+## 实施记录（2026-06-15 修复）
+
+以下 bug 已全部修复并通过测试验证（ApplicationTests 190 / Core 集成 143 / Admin 集成 54，共 387 全绿，0 失败）。
+
+| # | 优先级 | bug | 修复方式 |
+|---|--------|-----|---------|
+| 回归 | — | CoreEventSpoolBackgroundService 剪枝循环 | 整批只检查一次 + AddEventsSinceLastPrune |
+| 1 | 🔴 | DetectionApiController._progressStore 内存泄漏 | ProbeModel/ProbeAll 发起时懒清理已完成任务 |
+| 2 | 🔴 | ProxyForwardService HttpResponseMessage 无 using | 两处 SendAsync 改 using var |
+| 3 | 🔴 | RouteCircuitStateStore 熔断参数可见性 | _blockDuration 改 long ticks + Volatile.Read/Write |
+| 4 | 🔴 | ProxyUsageLogBatchWriter 停止无 Drain | 仿 ConversationLogBatchWriter 加 DrainRemainingEntriesAsync |
+| 5 | 🔴 | RouteRulesApiController SiteId 校验 | SaveRules 前校验所有 SiteId 存在 |
+| 6 | 🟠 | AdminCacheInvalidationService 状态码判断 | 改用 ex.StatusCode == HttpStatusCode.BadRequest |
+| 7 | 🟠 | Anthropic 流式中断熔断 | HasStartedStreaming 时不触发 SafeBlockRoute |
+| 8 | 🟠 | AttemptIndex 被跳过路由错自增 | attemptIndex++ 移到 eligibility 检查后 |
+| 9 | 🟠 | SchemaMigrator 多语句 DDL | 拆为逐条执行 + 独立 try-catch |
+| 10 | 🟠 | AdminAuthService 非恒定比较 | 改用 CryptographicOperations.FixedTimeEquals |
+| 11 | 🟠 | ModelConcurrencyLimiter._states 内存泄漏 | ListRecent 中清理空闲 state |
+| 14 | 🟡 | FileConversationLogStore 未 Dispose | 实现 IDisposable |
+| 15 | 🟡 | WebSocket UTF-8 跨帧解码损坏 | 改用 MemoryStream 累积后整体解码 |
+
+### 保留待后续处理（影响小或改动面大/风险高）
+
+| # | 优先级 | bug | 保留原因 |
+|---|--------|-----|---------|
+| 12 | 🟡 | RouteCircuitStateStore.Block 与 IsBlocked 竞态 | 影响仅监控误报，修复需重构互斥逻辑，回归风险高 |
+| 13 | 🟡 | ConfigVersion 快速重启场景 | 概率低，修复需统一版本号生成入口，涉及全量/增量两条链路 |
+| 16 | 🟡 | CoreAdminEventBus DropOldest 丢事件无补救 | 极端积压才触发，修复需引入 dead-letter 机制 |
+| 17 | 🟡 | CoreEventPullService ack 推进含失败事件 | 需改 ingestor 返回值契约，改动面较大 |
+
+---
+
 ## 已在本轮修复
 
 ### ✅ CoreEventSpoolBackgroundService 剪枝循环（本次修复，我引入的回归）

@@ -321,7 +321,12 @@ public sealed class AnthropicProxyController : ControllerBase
                 _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
 
-                SafeBlockRoute(route.RouteId);
+                // 仅当未开始流式写入时才熔断该路由；若已开始写入（客户端已收到部分内容甚至终止事件），
+                // 视为部分成功，不触发熔断，避免健康路由因上游偶发流中断被错误拉黑。
+                if (!streamResult.HasStartedStreaming)
+                {
+                    SafeBlockRoute(route.RouteId);
+                }
                 lastResult = streamResult;
                 lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, streamResult.ErrorMessage);
                 if (!streamOutcome.CanFallback)
