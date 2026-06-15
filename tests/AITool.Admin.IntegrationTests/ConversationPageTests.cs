@@ -127,7 +127,12 @@ public sealed class ConversationPageTests
     }
 
     /// <summary>
-    /// 验证按周查询对话轮次能同时返回今天和昨天的记录。
+    /// 验证用自定义范围（覆盖多天）查询对话轮次能同时返回今天和昨天的记录。
+    /// <para>
+    /// 注意：原测试用 rangeType=week，但当测试运行日是周一时，本周一即为今天，
+    /// 昨天属于上周会被排除，导致测试不稳定。改为显式 custom 范围（覆盖昨天 00:00 到明天 00:00），
+    /// 避免对当前是星期几的依赖。
+    /// </para>
     /// </summary>
     [Fact]
     public async Task Get_turns_by_week_returns_both_today_and_yesterday_records()
@@ -135,11 +140,15 @@ public sealed class ConversationPageTests
         await using var factory = new ConversationPageWebApplicationFactory();
         using var client = factory.CreateClient();
 
-        var response = await client.GetAsync("/api/admin/conversations/turns?rangeType=week&groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
+        // 显式指定覆盖昨天到今天的范围，不依赖今天是星期几。
+        var today = DateTimeOffset.Now;
+        var start = today.AddDays(-1).Date;
+        var end = today.Date.AddDays(1);
+        var response = await client.GetAsync($"/api/admin/conversations/turns?rangeType=custom&startTime={Uri.EscapeDataString(start.ToString("O"))}&endTime={Uri.EscapeDataString(end.ToString("O"))}&groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
         var body = await response.Content.ReadAsStringAsync();
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
-        // 按周查询应该包含昨天的历史消息
+        // 自定义范围应该包含昨天的历史消息
         body.Should().Contain("昨天的历史消息");
     }
 

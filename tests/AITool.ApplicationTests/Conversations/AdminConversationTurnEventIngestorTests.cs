@@ -71,8 +71,8 @@ public sealed class AdminConversationTurnEventIngestorTests
         var result = await _ingestor.IngestConversationTurnEventsAsync(envelopes);
 
         result.Should().Be(5);
-        _store.WrittenLogs.Should().ContainSingle();
-        var log = _store.WrittenLogs[0];
+        _store.WrittenTurnLogs.Should().ContainSingle();
+        var log = _store.WrittenTurnLogs[0];
         log.RequestId.Should().Be(payload.RequestId);
         log.SessionId.Should().Be(payload.SessionId);
         log.SourceTool.Should().Be(payload.SourceTool);
@@ -105,7 +105,7 @@ public sealed class AdminConversationTurnEventIngestorTests
         // 返回的最大序号应为 3（全部 conversation-turn 事件中的最大值）
         result.Should().Be(3);
         // 去重后只写入 1 条
-        _store.WrittenLogs.Should().ContainSingle();
+        _store.WrittenTurnLogs.Should().ContainSingle();
     }
 
     /// <summary>
@@ -128,7 +128,7 @@ public sealed class AdminConversationTurnEventIngestorTests
         var result = await _ingestor.IngestConversationTurnEventsAsync(envelopes);
 
         result.Should().Be(20);
-        _store.WrittenLogs.Should().HaveCount(2);
+        _store.WrittenTurnLogs.Should().HaveCount(2);
     }
 
     /// <summary>
@@ -153,8 +153,8 @@ public sealed class AdminConversationTurnEventIngestorTests
         // 最大序号应包含有效事件（第一条有效，序号为 1；第二条解析失败不计入 parsedEvents）
         result.Should().Be(1);
         // 只有第一条被成功写入
-        _store.WrittenLogs.Should().ContainSingle();
-        _store.WrittenLogs[0].RequestId.Should().Be(validPayload.RequestId);
+        _store.WrittenTurnLogs.Should().ContainSingle();
+        _store.WrittenTurnLogs[0].RequestId.Should().Be(validPayload.RequestId);
     }
 
     /// <summary>
@@ -176,7 +176,7 @@ public sealed class AdminConversationTurnEventIngestorTests
         var result = await _ingestor.IngestConversationTurnEventsAsync(envelopes);
 
         result.Should().Be(101);
-        _store.WrittenLogs.Should().ContainSingle();
+        _store.WrittenTurnLogs.Should().ContainSingle();
     }
 
     /// <summary>
