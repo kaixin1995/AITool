@@ -1,3 +1,4 @@
+using AITool.Admin.Services;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -511,51 +512,48 @@ public sealed class AnalyticsApiController : ControllerBase
 
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
+        var isAllRange = string.Equals(query.RangeType, "all", StringComparison.OrdinalIgnoreCase);
 
-        // SQLite EF Core 不支持 DateTimeOffset 表达式的 WHERE 翻译，
-        // 因此时间过滤在客户端完成，其余筛选（协议/模型/密钥/站点）下推到 DB 收窄范围。
-        var baseQuery = dbContext.ProxyUsageLogs
-            .AsNoTracking();
+        // 用 Dapper 手写 SQL，时间过滤 + 非时间筛选全部下推到 DB，避免全表加载到内存。
+        var (dapperRows, actualStartTime) = await UsageLogSqlQueries.QueryForAnalyticsAsync(
+            dbContext.Database.GetDbConnection(),
+            startTime, endTime,
+            query.ProtocolType, query.ModelName, query.AccessKeyId, query.SiteId, isAllRange);
 
-        if (!string.Equals(query.ProtocolType, "all", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(query.ProtocolType))
+        // 对 all 范围，用 Dapper 返回的实际起始时间重新解析桶类型。
+        if (isAllRange)
         {
-            baseQuery = baseQuery.Where(x => EF.Functions.Like(x.ProtocolType, query.ProtocolType));
-        }
-        if (!string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(query.ModelName))
-        {
-            baseQuery = baseQuery.Where(x => EF.Functions.Like(x.AttemptedModel, query.ModelName));
-        }
-        if (query.AccessKeyId.HasValue)
-        {
-            baseQuery = baseQuery.Where(x => x.AccessKeyId == query.AccessKeyId.Value);
-        }
-        if (query.SiteId.HasValue)
-        {
-            // 站点筛选按"命中过该站点的尝试"统计，避免回退成功后把失败站点整条请求吞掉。
-            baseQuery = baseQuery.Where(x => x.TargetSiteId == query.SiteId.Value);
-        }
-
-        var baseLogs = (await baseQuery.ToListAsync(cancellationToken))
-            .Where(x => x.RequestedAt < endTime)
-            .ToList();
-
-        // 对"全部"范围，用筛选后数据的实际时间边界替代 DateTimeOffset.MinValue，
-        // 避免从公元元年开始生成海量空桶导致内存溢出。
-        if (string.Equals(query.RangeType, "all", StringComparison.OrdinalIgnoreCase))
-        {
-            startTime = baseLogs.Count > 0
-                ? StartOfDay(baseLogs.Min(x => x.RequestedAt))
-                : StartOfDay(DateTimeOffset.Now);
+            startTime = actualStartTime;
             bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
         }
-        else
-        {
-            baseLogs = baseLogs.Where(x => x.RequestedAt >= startTime).ToList();
-        }
 
-        var scopedLogs = baseLogs;
+        // 转换为 ProxyUsageLog 供现有内存聚合逻辑使用（保持后续 Build*Trend/Distribution 不变）。
+        var scopedLogs = dapperRows.Select(r => new AITool.Domain.Proxy.ProxyUsageLog
+        {
+            Id = r.Id,
+            RequestId = r.RequestId,
+            AccessKeyId = r.AccessKeyId,
+            ProtocolType = r.ProtocolType,
+            RequestModel = r.RequestModel,
+            AttemptedModel = r.AttemptedModel,
+            TargetSiteId = r.TargetSiteId,
+            Status = r.Status,
+            Source = r.Source,
+            RetryCount = r.RetryCount,
+            AttemptIndex = r.AttemptIndex,
+            IsFinalResult = r.IsFinalResult != 0,
+            FallbackTriggered = r.FallbackTriggered != 0,
+            InputTokens = r.InputTokens,
+            CachedTokens = r.CachedTokens,
+            OutputTokens = r.OutputTokens,
+            TotalTokens = r.TotalTokens,
+            IsStreaming = r.IsStreaming != 0,
+            IsStreamInterrupted = r.IsStreamInterrupted != 0,
+            FirstTokenLatencyMs = r.FirstTokenLatencyMs,
+            StreamDurationMs = r.StreamDurationMs,
+            TotalDurationMs = r.TotalDurationMs,
+            RequestedAt = new DateTimeOffset(r.RequestedAtDateTime, TimeSpan.Zero)
+        }).ToList();
 
         var finalLogs = scopedLogs
             .GroupBy(x => x.RequestId)

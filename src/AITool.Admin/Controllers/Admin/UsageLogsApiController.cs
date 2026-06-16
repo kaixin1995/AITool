@@ -1,3 +1,4 @@
+using AITool.Admin.Services;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -443,25 +444,29 @@ public sealed class UsageLogsApiController : ControllerBase
         var (rangeStart, rangeEnd) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
 
-        // SQLite EF Core 不支持 DateTimeOffset 表达式的 WHERE/ORDER BY 翻译，
-        // 因此时间过滤、排序、分页在客户端完成。其余筛选（站点/密钥/来源/状态/模型）下推到 DB 收窄范围。
-        var queryable = BuildFilteredQuery(query);
+        // 用 Dapper 手写 SQL，时间过滤/排序/分页全部在 SQLite 引擎端完成（datetime() 函数解析 TEXT 列），
+        // 避免全表加载到内存后客户端过滤（EF Core 的 Sqlite provider 不支持 DateTimeOffset 翻译）。
+        var (rows, totalCount) = await UsageLogSqlQueries.QueryListAsync(
+            _dbContext.Database.GetDbConnection(),
+            rangeStart, rangeEnd,
+            query.SiteId, query.AccessKeyId, query.Source, query.Status, query.ModelKeyword,
+            Math.Max(1, query.Page), pageSize);
 
-        // 先在 DB 端应用非时间筛选并物化，再在客户端做时间过滤。
-        var filtered = (await queryable
-                .AsNoTracking()
-                .ToListAsync(cancellationToken))
-            .Where(x => x.RequestedAt >= rangeStart && x.RequestedAt < rangeEnd)
-            .OrderByDescending(x => x.RequestedAt)
-            .ToList();
-
-        var totalCount = filtered.Count;
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
         var page = totalPages == 0 ? 1 : Math.Min(Math.Max(1, query.Page), totalPages);
 
-        var items = filtered
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
+        // 若请求页超出范围（Dapper 返回空但 totalCount>0），回退到第 1 页重新查询。
+        if (totalCount > 0 && rows.Count == 0 && page > 1)
+        {
+            (rows, _) = await UsageLogSqlQueries.QueryListAsync(
+                _dbContext.Database.GetDbConnection(),
+                rangeStart, rangeEnd,
+                query.SiteId, query.AccessKeyId, query.Source, query.Status, query.ModelKeyword,
+                1, pageSize);
+            page = 1;
+        }
+
+        var items = rows
             .Select(x => new AdminUsageLogListItemDto
             {
                 Id = x.Id,
@@ -475,18 +480,18 @@ public sealed class UsageLogsApiController : ControllerBase
                 Source = x.Source,
                 RetryCount = x.RetryCount,
                 AttemptIndex = x.AttemptIndex,
-                IsFinalResult = x.IsFinalResult,
-                FallbackTriggered = x.FallbackTriggered,
+                IsFinalResult = x.IsFinalResult != 0,
+                FallbackTriggered = x.FallbackTriggered != 0,
                 InputTokens = x.InputTokens,
                 CachedTokens = x.CachedTokens,
                 OutputTokens = x.OutputTokens,
                 TotalTokens = x.TotalTokens,
-                IsStreaming = x.IsStreaming,
-                IsStreamInterrupted = x.IsStreamInterrupted,
+                IsStreaming = x.IsStreaming != 0,
+                IsStreamInterrupted = x.IsStreamInterrupted != 0,
                 FirstTokenLatencyMs = x.FirstTokenLatencyMs,
                 StreamDurationMs = x.StreamDurationMs,
                 TotalDurationMs = x.TotalDurationMs,
-                RequestedAt = x.RequestedAt,
+                RequestedAt = new DateTimeOffset(x.RequestedAtDateTime, TimeSpan.Zero),
                 AccessKeyName = accessKeyNames.TryGetValue(x.AccessKeyId, out var keyName) ? keyName : "-"
             })
             .ToList();
@@ -502,48 +507,6 @@ public sealed class UsageLogsApiController : ControllerBase
     }
 
     /// <summary>
-    /// 构建已应用非时间筛选条件的 UsageLog 查询（IQueryable，尚未执行）。
-    /// 时间筛选（RequestedAt）由调用方在物化后客户端完成，因为 SQLite EF Core 不支持 DateTimeOffset 翻译。
-    /// </summary>
-    private IQueryable<AITool.Domain.Proxy.ProxyUsageLog> BuildFilteredQuery(
-        AdminUsageLogListQueryDto query)
-    {
-        IQueryable<AITool.Domain.Proxy.ProxyUsageLog> q = _dbContext.ProxyUsageLogs;
-
-        if (query.SiteId.HasValue)
-        {
-            q = q.Where(x => x.TargetSiteId == query.SiteId.Value);
-        }
-        if (query.AccessKeyId.HasValue)
-        {
-            q = q.Where(x => x.AccessKeyId == query.AccessKeyId.Value);
-        }
-        if (!string.IsNullOrWhiteSpace(query.Source))
-        {
-            // SQLite 默认大小写不敏感，EF.Functions.Like 翻译为 SQL LIKE。
-            q = q.Where(x => EF.Functions.Like(x.Source, query.Source));
-        }
-        if (!string.IsNullOrWhiteSpace(query.Status))
-        {
-            q = q.Where(x => EF.Functions.Like(x.Status, query.Status));
-        }
-        if (!string.IsNullOrWhiteSpace(query.ModelKeyword))
-        {
-            // 对齐原 IsModelMatched：匹配 RequestModel 或 AttemptedModel（包含关键字）。
-            var pattern = $"%{EscapeLikePattern(query.ModelKeyword)}%";
-            q = q.Where(x => EF.Functions.Like(x.RequestModel, pattern)
-                          || EF.Functions.Like(x.AttemptedModel, pattern));
-        }
-        return q;
-    }
-
-    /// <summary>
-    /// 转义 LIKE 模式中的特殊字符（%、_、\），保持"包含"语义。
-    /// </summary>
-    private static string EscapeLikePattern(string keyword) =>
-        keyword.Replace(@"\", @"\\").Replace("%", @"\%").Replace("_", @"\_");
-
-    /// <summary>
     /// 获取调用日志汇总信息。
     /// </summary>
     [HttpGet("summary")]
@@ -551,23 +514,21 @@ public sealed class UsageLogsApiController : ControllerBase
     {
         var (rangeStart, rangeEnd) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
 
-        // 汇总与列表共用同一套筛选逻辑，避免页面筛选条件和摘要卡片统计口径不一致。
-        // SQLite 不支持 DateTimeOffset 翻译，时间过滤在客户端完成，聚合也随之在客户端。
-        var filtered = (await BuildFilteredQuery(query)
-                .AsNoTracking()
-                .ToListAsync(cancellationToken))
-            .Where(x => x.RequestedAt >= rangeStart && x.RequestedAt < rangeEnd)
-            .ToList();
+        // 用 Dapper 手写 SQL 聚合，避免全表加载到内存后客户端聚合。
+        var row = await UsageLogSqlQueries.QuerySummaryAsync(
+            _dbContext.Database.GetDbConnection(),
+            rangeStart, rangeEnd,
+            query.SiteId, query.AccessKeyId, query.Source, query.Status, query.ModelKeyword);
 
-        var totalRequests = filtered.Count;
-        var failedRequests = filtered.Count(x => string.Equals(x.Status, "fail", StringComparison.OrdinalIgnoreCase));
-        var successRequests = filtered.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase));
+        var totalRequests = (int)row.TotalRequests;
+        var failedRequests = (int)(row.FailedRequests ?? 0);
+        var successRequests = (int)(row.SuccessRequests ?? 0);
         var successRate = totalRequests == 0
             ? 0d
             : Math.Round(successRequests * 100d / totalRequests, 2, MidpointRounding.AwayFromZero);
 
-        var totalTokens = filtered.Sum(x => x.TotalTokens);
-        var maxDurationMs = totalRequests == 0 ? 0 : filtered.Max(x => x.TotalDurationMs);
+        var totalTokens = (int)(row.TotalTokens ?? 0);
+        var maxDurationMs = (int)(row.MaxDurationMs ?? 0);
 
         return Ok(new AdminUsageLogSummaryDto
         {

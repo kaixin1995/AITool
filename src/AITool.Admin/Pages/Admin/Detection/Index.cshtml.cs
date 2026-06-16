@@ -1,3 +1,4 @@
+using AITool.Admin.Services;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -107,25 +108,13 @@ public class IndexModel : PageModel
     /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        // 只查询展示所需的字段并下推 IsFinalResult 筛选，避免全字段全表加载。
-        // 每组 (TargetSiteId, RequestModel) 取最新一条仍需在内存做（SQLite 窗口函数支持有限），
-        // 但投影后单行体积大幅缩小（不含 ErrorMessage 等大文本字段）。
-        var latestLogs = (await _dbContext.ProxyUsageLogs
-                .AsNoTracking()
-                .Where(x => x.IsFinalResult)
-                .Select(d => new LatestFinalLog
-                {
-                    TargetSiteId = d.TargetSiteId,
-                    RequestModel = d.RequestModel,
-                    Status = d.Status,
-                    RequestedAt = d.RequestedAt,
-                    TotalDurationMs = d.TotalDurationMs
-                })
-                .ToListAsync(cancellationToken))
-            .GroupBy(d => (d.TargetSiteId, d.RequestModel))
+        // 用 Dapper 窗口函数（ROW_NUMBER）在 DB 端取每组最新一条，避免全表加载后内存分组。
+        var latestRows = await UsageLogSqlQueries.QueryLatestFinalLogsAsync(
+            _dbContext.Database.GetDbConnection());
+        var latestLogs = latestRows
             .ToDictionary(
-                g => g.Key,
-                g => g.OrderByDescending(d => d.RequestedAt).First());
+                d => (d.TargetSiteId, d.RequestModel),
+                d => d);
 
         var models = await _dbContext.ModelLibraryItems
             .AsNoTracking()
@@ -160,7 +149,7 @@ public class IndexModel : PageModel
                             SiteName = site.Name,
                             RemoteModelName = m.RemoteModelName,
                             LastStatus = log?.Status ?? m.LastStatus,
-                            LastCheckedAt = log?.RequestedAt,
+                            LastCheckedAt = log is not null ? new DateTimeOffset(log.RequestedAtDateTime, TimeSpan.Zero) : null,
                             LastDurationMs = log?.TotalDurationMs
                         };
                     }).OrderBy(s => s.SiteName).ToList()

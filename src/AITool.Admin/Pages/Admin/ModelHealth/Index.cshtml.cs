@@ -1,3 +1,4 @@
+using AITool.Admin.Services;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
@@ -335,13 +336,35 @@ public class IndexModel : PageModel
                 .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
             var recentCutoff = ResolveRecentCutoff(Range);
-            // SQLite EF Core 不支持 DateTimeOffset 的 WHERE 翻译，时间过滤在客户端完成。
-            // 先加载全量再按时间窗口过滤；模型名匹配同样在内存做（基于每模型动态构建的名称集合）。
-            var allLogs = (await _dbContext.ProxyUsageLogs
-                    .AsNoTracking()
-                    .ToListAsync(cancellationToken))
-                .Where(x => x.RequestedAt >= recentCutoff)
-                .ToList();
+            // 用 Dapper 手写 SQL，时间过滤下推到 DB，避免全表加载到内存后客户端过滤。
+            var recentRows = await UsageLogSqlQueries.QueryRecentForModelHealthAsync(
+                _dbContext.Database.GetDbConnection(), recentCutoff);
+            var allLogs = recentRows.Select(r => new ProxyUsageLog
+            {
+                Id = r.Id,
+                RequestId = r.RequestId,
+                AccessKeyId = r.AccessKeyId,
+                ProtocolType = r.ProtocolType,
+                RequestModel = r.RequestModel,
+                AttemptedModel = r.AttemptedModel,
+                TargetSiteId = r.TargetSiteId,
+                Status = r.Status,
+                Source = r.Source,
+                RetryCount = r.RetryCount,
+                AttemptIndex = r.AttemptIndex,
+                IsFinalResult = r.IsFinalResult != 0,
+                FallbackTriggered = r.FallbackTriggered != 0,
+                InputTokens = r.InputTokens,
+                CachedTokens = r.CachedTokens,
+                OutputTokens = r.OutputTokens,
+                TotalTokens = r.TotalTokens,
+                IsStreaming = r.IsStreaming != 0,
+                IsStreamInterrupted = r.IsStreamInterrupted != 0,
+                FirstTokenLatencyMs = r.FirstTokenLatencyMs,
+                StreamDurationMs = r.StreamDurationMs,
+                TotalDurationMs = r.TotalDurationMs,
+                RequestedAt = new DateTimeOffset(r.RequestedAtDateTime, TimeSpan.Zero)
+            }).ToList();
 
             var routeRules = await _dbContext.ProxyRouteRules
                 .AsNoTracking()
