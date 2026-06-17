@@ -15,28 +15,28 @@ namespace AITool.Infrastructure.Proxy;
 public sealed class ProxyForwardService : IProxyForwardService
 {
     /// <summary>
-    /// 用于发送代理请求的 HTTP 客户端
+    /// 用于发送代理请求的 HTTP 客户�?
     /// </summary>
     private readonly HttpClient _httpClient;
     /// <summary>
-    /// 日志记录器，用于记录转发超时和异常
+    /// 日志记录器，用于记录转发超时和异�?
     /// </summary>
     private readonly ILogger<ProxyForwardService> _logger;
 
     /// <summary>
-    /// 注入 HTTP 客户端和日志记录器
+    /// 注入 HTTP 客户端和日志记录�?
     /// </summary>
     public ProxyForwardService(HttpClient httpClient, ILogger<ProxyForwardService> logger)
     {
-        // 真实超时统一交给每次请求的 CancellationToken 控制，避免 HttpClient 默认 100 秒提前截断。
+        // 真实超时统一交给每次请求�?CancellationToken 控制，避�?HttpClient 默认 100 秒提前截断�?
         httpClient.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
         _httpClient = httpClient;
         _logger = logger;
     }
 
     /// <summary>
-    /// 将请求转发到目标站点并解析响应中的 Token 用量。
-    /// 上游异常仍可按单路由重试；若调用方的取消令牌已触发，则直接结束，不再继续重试。
+    /// 将请求转发到目标站点并解析响应中�?Token 用量�?
+    /// 上游异常仍可按单路由重试；若调用方的取消令牌已触发，则直接结束，不再继续重试�?
     /// </summary>
     public async Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
@@ -55,7 +55,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             try
             {
                 using var httpRequest = BuildRequestMessage(request, requestBody);
-                var response = await _httpClient.SendAsync(
+                using var response = await _httpClient.SendAsync(
                     httpRequest,
                     HttpCompletionOption.ResponseHeadersRead,
                     timeoutCts.Token);
@@ -123,7 +123,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
-                // 客户端已经主动取消当前请求，此时继续内部重试或让上层回退后续路由都没有意义。
+                // 客户端已经主动取消当前请求，此时继续内部重试或让上层回退后续路由都没有意义�?
                 stopwatch.Stop();
                 return new ProxyForwardResult
                 {
@@ -181,7 +181,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 直接把上游 SSE 数据块逐段交给调用方，供控制器做实时协议转换与下游刷新。
+    /// 直接把上�?SSE 数据块逐段交给调用方，供控制器做实时协议转换与下游刷新�?
     /// </summary>
     public async Task<ProxyForwardResult> ForwardStreamingAsync(
         ProxyForwardRequest request,
@@ -202,7 +202,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             try
             {
                 using var httpRequest = BuildRequestMessage(request, requestBody);
-                var response = await _httpClient.SendAsync(
+                using var response = await _httpClient.SendAsync(
                     httpRequest,
                     HttpCompletionOption.ResponseHeadersRead,
                     timeoutCts.Token);
@@ -231,7 +231,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
-                // 客户端已经主动取消当前请求，此时继续内部重试或让上层回退后续路由都没有意义。
+                // 客户端已经主动取消当前请求，此时继续内部重试或让上层回退后续路由都没有意义�?
                 stopwatch.Stop();
                 return new ProxyForwardResult
                 {
@@ -290,7 +290,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 逐行读取 SSE 流，追踪首字延迟并提取 Token 用量。
+    /// 逐行读取 SSE 流，追踪首字延迟并提�?Token 用量�?
     /// </summary>
     private async Task<ProxyForwardResult> ProcessStreamingResponseAsync(
         HttpResponseMessage response,
@@ -320,7 +320,10 @@ public sealed class ProxyForwardService : IProxyForwardService
                 var line = await reader.ReadLineAsync(cancellationToken);
                 if (line == null) break;
 
-                sb.AppendLine(line);
+                if (sb.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
+                {
+                    sb.AppendLine(line);
+                }
 
                 if (onSseDataAsync is not null)
                 {
@@ -340,14 +343,14 @@ public sealed class ProxyForwardService : IProxyForwardService
                     continue;
                 }
 
-                // 首次收到有效内容时记录首字延迟
+                // 首次收到有效内容时记录首字延�?
                 if (!hasFirstContent)
                 {
                     hasFirstContent = true;
                     firstTokenLatencyMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
                 }
 
-                // 从 SSE 数据块中提取 usage 和 token 信息
+                // �?SSE 数据块中提取 usage �?token 信息
                 try
                 {
                     using var doc = JsonDocument.Parse(jsonText);
@@ -368,7 +371,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                         if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
                     }
 
-                    // Anthropic message_start 事件中的 usage 嵌套在 message 里
+                    // Anthropic message_start 事件中的 usage 嵌套�?message �?
                     if (request.ProtocolType == "Anthropic"
                         && root.TryGetProperty("message", out var message)
                         && message.TryGetProperty("usage", out var msgUsage))
@@ -380,7 +383,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 }
                 catch
                 {
-                    // 非 JSON 的 data 行忽略
+                    // �?JSON �?data 行忽�?
                 }
             }
         }
@@ -458,7 +461,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 构建发送到上游的 HTTP 请求对象
+    /// 构建发送到上游�?HTTP 请求对象
     /// </summary>
     private static HttpRequestMessage BuildRequestMessage(ProxyForwardRequest request, string requestBody)
     {
@@ -474,7 +477,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
         };
 
-        // 根据协议类型设置认证头
+        // 根据协议类型设置认证�?
         if (request.ProtocolType == "Anthropic")
         {
             httpRequest.Headers.Add("x-api-key", request.TargetApiKey);
@@ -503,7 +506,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 替换请求体中的模型名称为目标站点的模型名称
+    /// 替换请求体中的模型名称为目标站点的模型名�?
     /// </summary>
     private static string ModifyRequestBody(string requestBody, string targetModelName)
     {
@@ -532,7 +535,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 判断原始请求是否为流式模式
+    /// 判断原始请求是否为流式模�?
     /// </summary>
     private static bool IsStreamingRequest(string requestBody)
     {
@@ -564,7 +567,7 @@ public sealed class ProxyForwardService : IProxyForwardService
             using var doc = JsonDocument.Parse(responseBody);
             var root = doc.RootElement;
 
-            // error 属性存在且非 null 时才视为错误（Responses 格式中 error 为 null 是正常情况）
+            // error 属性存在且�?null 时才视为错误（Responses 格式�?error �?null 是正常情况）
             if (root.TryGetProperty("error", out var error) && error.ValueKind != JsonValueKind.Null)
             {
                 return false;
@@ -577,7 +580,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                     && content.GetArrayLength() > 0;
             }
 
-            // Chat Completions 格式：检查 choices 数组
+            // Chat Completions 格式：检�?choices 数组
             if (root.TryGetProperty("choices", out var choices)
                 && choices.ValueKind == JsonValueKind.Array
                 && choices.GetArrayLength() > 0)
@@ -585,7 +588,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 return true;
             }
 
-            // Responses 格式：检查 output 数组
+            // Responses 格式：检�?output 数组
             if (root.TryGetProperty("output", out var output)
                 && output.ValueKind == JsonValueKind.Array
                 && output.GetArrayLength() > 0)
@@ -602,7 +605,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 为非流式失败结果构造更明确的错误信息
+    /// 为非流式失败结果构造更明确的错误信�?
     /// </summary>
     internal static string BuildFailureMessage(string responseBody, string protocolType)
     {
@@ -634,7 +637,7 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 从响应体中提取 Token 用量信息（非流式响应）
+    /// 从响应体中提�?Token 用量信息（非流式响应�?
     /// </summary>
     private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageMetrics(string responseBody, string protocolType)
     {
@@ -652,14 +655,14 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
         catch
         {
-            // 解析失败时返回零值
+            // 解析失败时返回零�?
         }
 
         return (0, 0, 0);
     }
 
     /// <summary>
-    /// 从 usage JSON 元素中提取 Token 用量
+    /// �?usage JSON 元素中提�?Token 用量
     /// </summary>
     private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
     {
@@ -685,7 +688,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 ? promptTokens.GetInt32()
                 : 0;
 
-        // OpenAI Chat Completions 与 Responses 的缓存字段结构不同，这里统一兼容两种格式。
+        // OpenAI Chat Completions �?Responses 的缓存字段结构不同，这里统一兼容两种格式�?
         var inputDetails = usage.TryGetProperty("input_tokens_details", out var itd)
             ? itd
             : usage.TryGetProperty("prompt_tokens_details", out var ptd)

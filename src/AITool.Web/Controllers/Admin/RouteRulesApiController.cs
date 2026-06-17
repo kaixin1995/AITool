@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Application.Common;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
@@ -546,14 +547,14 @@ public sealed class RouteRulesApiController : ControllerBase
 
         try
         {
-            var ranges = JsonSerializer.Deserialize<List<RouteTimeRange>>(timeRangesJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true }) ?? [];
+            var ranges = JsonSerializer.Deserialize<List<RouteTimeRange>>(timeRangesJson, JsonSerializerPresets.CaseInsensitive) ?? [];
             ranges = ranges
                 .Where(x => IsValidTimeText(x.Start) && IsValidTimeText(x.End))
                 .Select(x => new RouteTimeRange { Start = x.Start.Trim(), End = x.End.Trim() })
                 .ToList();
             return ranges.Count == 0
                 ? ("AllDay", string.Empty)
-                : (normalizedMode, JsonSerializer.Serialize(ranges, new JsonSerializerOptions { PropertyNamingPolicy = JsonNamingPolicy.CamelCase }));
+                : (normalizedMode, JsonSerializer.Serialize(ranges, JsonSerializerPresets.CamelCase));
         }
         catch (JsonException)
         {

@@ -183,6 +183,10 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.IsStreamInterrupted).IsRequired();
             entity.HasIndex(e => e.RequestedAt);
             entity.HasIndex(e => e.RequestId);
+            entity.HasIndex(e => new { e.RequestedAt, e.Status });
+            entity.HasIndex(e => e.TargetSiteId);
+            entity.HasIndex(e => e.AccessKeyId);
+            entity.HasIndex(e => e.AttemptedModel);
         });
 
         // 结构化对话记录实体配置

@@ -124,6 +124,32 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
                 _logger.LogError(ex, "后台批量写入代理日志失败");
             }
         }
+
+        // 服务优雅停止时尽量把队列里剩余的记录落盘，降低数据丢失窗口。
+        await DrainRemainingEntriesAsync();
+    }
+
+    /// <summary>
+    /// 服务优雅停止时尽量把队列里剩余的记录落盘，降低数据丢失窗口。
+    /// </summary>
+    private async Task DrainRemainingEntriesAsync()
+    {
+        var buffer = new List<UsageLogEntry>(MaxBatchSize);
+        try
+        {
+            while (_channel.Reader.TryRead(out var entry))
+            {
+                buffer.Add(entry);
+                if (buffer.Count < MaxBatchSize) continue;
+                await FlushBatchAsync(buffer, CancellationToken.None);
+                buffer.Clear();
+            }
+            if (buffer.Count > 0) await FlushBatchAsync(buffer, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "停止时排空代理日志队列失败，部分日志可能丢失");
+        }
     }
 
     /// <summary>

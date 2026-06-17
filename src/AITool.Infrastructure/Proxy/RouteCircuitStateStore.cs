@@ -12,7 +12,7 @@ public sealed class RouteCircuitStateStore
     /// <summary>
     /// 触发熔断后路由被屏蔽的持续时间
     /// </summary>
-    private TimeSpan _blockDuration;
+    private long _blockDurationTicks;
     /// <summary>
     /// 连续失败达到该次数时触发熔断
     /// </summary>
@@ -31,7 +31,7 @@ public sealed class RouteCircuitStateStore
     /// </summary>
     public RouteCircuitStateStore(TimeSpan? blockDuration = null, int failThreshold = 5)
     {
-        _blockDuration = blockDuration ?? TimeSpan.FromMinutes(2);
+        _blockDurationTicks = (blockDuration ?? TimeSpan.FromMinutes(2)).Ticks;
         _failThreshold = failThreshold;
     }
 
@@ -42,8 +42,8 @@ public sealed class RouteCircuitStateStore
     {
         lock (_syncRoot)
         {
-            _blockDuration = blockDuration;
-            _failThreshold = failThreshold;
+            Volatile.Write(ref _blockDurationTicks, blockDuration.Ticks);
+            Volatile.Write(ref _failThreshold, failThreshold);
         }
     }
 
@@ -56,8 +56,8 @@ public sealed class RouteCircuitStateStore
         if (IsBlocked(routeId)) return;
 
         var count = _failCounts.AddOrUpdate(routeId, 1, (_, current) => current + 1);
-        var failThreshold = _failThreshold;
-        var blockDuration = _blockDuration;
+        var failThreshold = Volatile.Read(ref _failThreshold);
+        var blockDuration = TimeSpan.FromTicks(Volatile.Read(ref _blockDurationTicks));
 
         if (count >= failThreshold)
         {

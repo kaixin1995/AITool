@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Application.Common;
 using Microsoft.AspNetCore.Http;
 
 namespace AITool.Web.Services;
@@ -288,7 +289,7 @@ public sealed class DeveloperInvocationTraceStore
         try
         {
             using var document = JsonDocument.Parse(body);
-            return JsonSerializer.Serialize(document, new JsonSerializerOptions { WriteIndented = true });
+            return JsonSerializer.Serialize(document, JsonSerializerPresets.WriteIndented);
         }
         catch
         {

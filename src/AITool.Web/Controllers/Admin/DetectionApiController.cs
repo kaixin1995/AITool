@@ -124,6 +124,7 @@ public sealed class DetectionApiController : ControllerBase
     [HttpPost("probe-model/{modelId}")]
     public IActionResult ProbeModel(Guid modelId)
     {
+        PurgeCompletedProgress();
         var taskId = Guid.NewGuid().ToString("N")[..8];
 
         using var scope = _scopeFactory.CreateScope();
@@ -195,6 +196,7 @@ public sealed class DetectionApiController : ControllerBase
     [HttpPost("probe-all")]
     public IActionResult ProbeAll()
     {
+        PurgeCompletedProgress();
         var taskId = Guid.NewGuid().ToString("N")[..8];
 
         using var scope = _scopeFactory.CreateScope();
@@ -281,5 +283,19 @@ public sealed class DetectionApiController : ControllerBase
             progress.IsCompleted,
             NewResults = newResults
         });
+    }
+
+    /// <summary>
+    /// 懒清理已完成的探测任务，避免 _progressStore 静态字典无限增长导致内存泄漏。
+    /// </summary>
+    private static void PurgeCompletedProgress()
+    {
+        foreach (var pair in _progressStore)
+        {
+            if (pair.Value.IsCompleted)
+            {
+                _progressStore.TryRemove(pair.Key, out _);
+            }
+        }
     }
 }

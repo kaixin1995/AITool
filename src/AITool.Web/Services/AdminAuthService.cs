@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AITool.Application.Common;
 using Microsoft.Extensions.Configuration;
 
 namespace AITool.Web.Services;
@@ -50,7 +51,9 @@ public sealed class AdminAuthService
             return false;
         }
 
-        return string.Equals(passwordHash, ComputeMd5(password), StringComparison.OrdinalIgnoreCase);
+        var expected = Encoding.UTF8.GetBytes(passwordHash.ToLowerInvariant());
+            var actual = Encoding.UTF8.GetBytes(ComputeMd5(password));
+            return CryptographicOperations.FixedTimeEquals(expected, actual);
     }
 
     /// <summary>
@@ -70,7 +73,7 @@ public sealed class AdminAuthService
         authNode[nameof(AdminAuthOptions.PasswordHash)] = ComputeMd5(password);
         rootNode[AdminAuthOptions.SectionName] = authNode;
 
-        var json = rootNode.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        var json = rootNode.ToJsonString(JsonSerializerPresets.WriteIndented);
         await File.WriteAllTextAsync(_appSettingsPath, json, Encoding.UTF8, cancellationToken);
 
         if (_configuration is IConfigurationRoot configurationRoot)

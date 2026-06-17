@@ -1,4 +1,5 @@
 using System.Data.Common;
+using System.Net.Http;
 using AITool.Application.Common;
 using AITool.Application.Operations;
 using AITool.Application.Proxy;
@@ -17,6 +18,7 @@ using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting;
 using NLog;
 using NLog.Web;
 
@@ -34,6 +36,20 @@ builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 
 var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
+
+// 配置 Kestrel 连接与请求体限制，确保代理大请求体（长对话、base64 图片）和可预测的并发行为。
+builder.WebHost.ConfigureKestrel(options =>
+{
+    options.Limits.MaxConcurrentConnections = 500;
+    options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(130);
+    options.Limits.MaxRequestBodySize = null;
+});
+
+// 启用响应压缩，压缩 API JSON 响应和静态资源。
+builder.Services.AddResponseCompression(options =>
+{
+    options.EnableForHttps = true;
+});
 
 // 注册 Razor Pages，作为管理后台的页面框架。
 builder.Services.AddRazorPages();
@@ -79,8 +95,12 @@ builder.Services.AddSingleton<AdminAuthService>();
 // 数据库文件放在软件根目录下。
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
+// 注册 EF Core SQLite 数据库上下文，附带 PRAGMA 拦截器（cache_size/busy_timeout 连接级）。
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlite(connectionString));
+{
+    options.UseSqlite(connectionString);
+    options.AddInterceptors(new SqlitePragmaInterceptor());
+});
 
 // 注册代理转发配置，统一控制单路由超时和失败重试策略。
 builder.Services.Configure<ProxyForwardingOptions>(
@@ -89,8 +109,14 @@ builder.Services.Configure<ProxyForwardingOptions>(
 // 注册站点目录客户端，用于拉取远程站点模型列表。
 builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 
-// 注册代理主入口实体配置。
-builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
+// 注册代理主入口实体配置，配置 SocketsHttpHandler 连接池提高并发能力。
+builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>()
+    .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
+    {
+        MaxConnectionsPerServer = 200,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(2),
+        PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30)
+    });
 builder.Services.AddScoped<ModelHealthRequestService>();
 
 // 注册使用日志服务，记录每次代理调用的 Token 用量。
@@ -141,6 +167,15 @@ using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
     db.Database.EnsureCreated();
+
+    // 启用 WAL 模式 + synchronous=NORMAL，并发读写吞吐提升 3-10 倍（持久属性，执行一次即可）。
+    try
+    {
+        await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
+        await db.Database.ExecuteSqlRawAsync("PRAGMA synchronous=NORMAL;");
+    }
+    catch { }
+
     await EnsureProxyUsageLogSchemaAsync(db);
     await EnsureConversationLogSchemaAsync(db);
 
@@ -153,6 +188,21 @@ using (var scope = app.Services.CreateScope())
     {
         var logger = scope.ServiceProvider.GetRequiredService<ILogger<Program>>();
         logger.LogWarning(ex, "启动时注册检测任务失败，将在下次启动时重试");
+    }
+
+    // 预热代理热路径缓存（运行时设置），避免首个代理请求触发 DB 往返。测试环境跳过。
+    var env = scope.ServiceProvider.GetService<IHostEnvironment>();
+    if (env is null || !env.IsEnvironment("Testing"))
+    {
+        try
+        {
+            var cache = scope.ServiceProvider.GetService<ProxyRequestMetadataCache>();
+            if (cache is not null)
+            {
+                await cache.GetRuntimeSettingsAsync(default);
+            }
+        }
+        catch { }
     }
 
     var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
@@ -208,7 +258,14 @@ if (!app.Environment.IsEnvironment("Testing"))
     });
 }
 
-app.UseStaticFiles();
+app.UseResponseCompression();
+app.UseStaticFiles(new StaticFileOptions
+{
+    OnPrepareResponse = ctx =>
+    {
+        ctx.Context.Response.Headers["Cache-Control"] = "public, max-age=86400";
+    }
+});
 app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();

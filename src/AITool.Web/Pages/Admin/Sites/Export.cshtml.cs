@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Application.Common;
 using AITool.Application.Sites;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -64,10 +65,7 @@ public class ExportModel : PageModel
             supportsAnthropic = s.SupportsAnthropic
         });
 
-        JsonData = JsonSerializer.Serialize(exportData, new JsonSerializerOptions
-        {
-            WriteIndented = false
-        });
+        JsonData = JsonSerializer.Serialize(exportData, JsonSerializerPresets.Compact);
     }
 }
 

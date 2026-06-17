@@ -1,5 +1,6 @@
 @model IReadOnlyList<AITool.Web.Services.DeveloperInvocationTraceEntry>
 @using global::System.Text.Json
+@using AITool.Application.Common
 
 @if (Model.Count == 0)
 {
@@ -83,7 +84,7 @@ else
                         </div>
                         <div class="col-xl-8">
                             <div class="trace-section-title">请求头</div>
-                            <pre class="trace-pre trace-code-panel">@JsonSerializer.Serialize(entry.RequestHeaders, new JsonSerializerOptions { WriteIndented = true })</pre>
+                            <pre class="trace-pre trace-code-panel">@JsonSerializer.Serialize(entry.RequestHeaders, JsonSerializerPresets.WriteIndented)</pre>
                         </div>
                     </div>
 

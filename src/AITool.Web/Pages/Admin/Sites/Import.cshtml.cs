@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Application.Common;
 using AITool.Application.Sites;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
@@ -101,10 +102,7 @@ public class ImportModel : PageModel
                 return Page();
             }
 
-            var items = JsonSerializer.Deserialize<List<ImportSiteItem>>(jsonData, new JsonSerializerOptions
-            {
-                PropertyNameCaseInsensitive = true
-            });
+            var items = JsonSerializer.Deserialize<List<ImportSiteItem>>(jsonData, JsonSerializerPresets.CaseInsensitive);
 
             if (items is null || items.Count == 0)
             {
