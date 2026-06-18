@@ -34,6 +34,10 @@ public sealed class UsageLogListQueryDto
     /// </summary>
     public Guid? SiteId { get; set; }
     /// <summary>
+    /// 访问密钥标识。
+    /// </summary>
+    public Guid? AccessKeyId { get; set; }
+    /// <summary>
     /// 来源标识。
     /// </summary>
     public string Source { get; set; } = string.Empty;
@@ -115,6 +119,10 @@ public sealed class UsageLogListItemDto
     /// 站点名称。
     /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 访问密钥名称。
+    /// </summary>
+    public string AccessKeyName { get; set; } = string.Empty;
     /// <summary>
     /// 重试次数。
     /// </summary>
@@ -202,6 +210,10 @@ public sealed class UsageLogAttemptDto
     /// 站点名称。
     /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 访问密钥名称。
+    /// </summary>
+    public string AccessKeyName { get; set; } = string.Empty;
     /// <summary>
     /// 请求状态。
     /// </summary>
@@ -355,6 +367,8 @@ public sealed class UsageLogsApiController : ControllerBase
         var sites = await _dbContext.Sites
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+        var accessKeyNames = await _dbContext.ProxyAccessKeys
+            .ToDictionaryAsync(x => x.Id, x => x.KeyName, cancellationToken);
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
 
@@ -363,6 +377,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 .ToListAsync(cancellationToken))
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
             .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+            .Where(x => !query.AccessKeyId.HasValue || x.AccessKeyId == query.AccessKeyId.Value)
             .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
             .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
             .Where(x => IsModelMatched(x, query.ModelKeyword))
@@ -386,6 +401,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 Status = x.Status,
                 Source = x.Source,
                 SiteName = sites.TryGetValue(x.TargetSiteId, out var siteName) ? siteName : "-",
+                AccessKeyName = accessKeyNames.TryGetValue(x.AccessKeyId, out var keyName) ? keyName : "-",
                 RetryCount = x.RetryCount,
                 AttemptIndex = x.AttemptIndex,
                 IsFinalResult = x.IsFinalResult,
@@ -422,6 +438,8 @@ public sealed class UsageLogsApiController : ControllerBase
         var sites = await _dbContext.Sites
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+        var accessKeyNames = await _dbContext.ProxyAccessKeys
+            .ToDictionaryAsync(x => x.Id, x => x.KeyName, cancellationToken);
         var logs = await _dbContext.ProxyUsageLogs
             .Where(x => x.RequestId == requestId)
             .ToListAsync(cancellationToken);
@@ -453,6 +471,7 @@ public sealed class UsageLogsApiController : ControllerBase
                     ForwardingMode = x.ForwardingMode ?? string.Empty,
                     SiteModelName = ResolveSiteModelName(routeRules, x.TargetSiteId, x.AttemptedModel),
                     SiteName = sites.TryGetValue(x.TargetSiteId, out var siteName) ? siteName : "-",
+                    AccessKeyName = accessKeyNames.TryGetValue(x.AccessKeyId, out var keyName) ? keyName : "-",
                     Status = x.Status,
                     IsFinalResult = x.IsFinalResult,
                     FallbackTriggered = x.FallbackTriggered,
@@ -489,6 +508,7 @@ public sealed class UsageLogsApiController : ControllerBase
             var logs = (await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken))
                 .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
                 .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
+                .Where(x => !query.AccessKeyId.HasValue || x.AccessKeyId == query.AccessKeyId.Value)
                 .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
                 .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
                 .Where(x => IsModelMatched(x, query.ModelKeyword))

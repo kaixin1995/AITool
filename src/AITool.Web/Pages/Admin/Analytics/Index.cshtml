@@ -58,6 +58,12 @@
                 </select>
             </div>
             <div class="col-xl-2 col-md-4">
+                <label class="form-label" for="accessKeyId">访问密钥</label>
+                <select id="accessKeyId" class="form-select">
+                    <option value="" selected>全部访问密钥</option>
+                </select>
+            </div>
+            <div class="col-xl-2 col-md-4">
                 <div class="analytics-filter-meta" id="filterSummary">正在准备筛选条件</div>
             </div>
         </div>
@@ -442,6 +448,10 @@
                 if (siteIdEl.value) {
                     params.set('siteId', siteIdEl.value);
                 }
+                const accessKeyIdEl = document.getElementById('accessKeyId');
+                if (accessKeyIdEl && accessKeyIdEl.value) {
+                    params.set('accessKeyId', accessKeyIdEl.value);
+                }
                 if (rangeTypeEl.value === 'custom') {
                     if (startTimeEl.value) {
                         params.set('startTime', startTimeEl.value);
@@ -521,6 +531,10 @@
                 const data = await response.json();
                 fillModelOptions(data.models || []);
                 fillOptions(siteIdEl, data.sites || [], item => ({ value: item.siteId, label: item.siteName }), null);
+                const accessKeyEl = document.getElementById('accessKeyId');
+                fillOptions(accessKeyEl, data.accessKeys || [], item => ({ value: item.accessKeyId, label: item.accessKeyLabel }), null);
+                // fillOptions 默认首项文本是"全部站点"，修正为"全部访问密钥"。
+                if (accessKeyEl.options[0]) { accessKeyEl.options[0].textContent = '全部访问密钥'; }
                 syncModelNameValue();
             }
 
@@ -1120,7 +1134,8 @@
                     }
                     await loadDashboard(false);
                 });
-                [bucketTypeEl, protocolTypeEl, siteIdEl].forEach(el => {
+                [bucketTypeEl, protocolTypeEl, siteIdEl, document.getElementById('accessKeyId')].forEach(el => {
+                    if (!el) return;
                     el.addEventListener('change', async () => {
                         await loadDashboard(false);
                     });

@@ -58,6 +58,16 @@
                 </select>
             </div>
             <div class="col-sm-6 col-lg-2">
+                <label class="form-label" for="accessKeyFilterSelect">访问密钥</label>
+                <select id="accessKeyFilterSelect" class="form-select">
+                    <option value="">全部访问密钥</option>
+                    @foreach (var key in Model.AccessKeyFilters)
+                    {
+                        <option value="@key.Id">@key.Name</option>
+                    }
+                </select>
+            </div>
+            <div class="col-sm-6 col-lg-2">
                 <label class="form-label" for="sourceFilterSelect">来源筛选</label>
                 <select id="sourceFilterSelect" class="form-select">
                     <option value="">全部来源</option>
@@ -132,6 +142,7 @@
                 <th>来源</th>
                 <th>模型</th>
                 <th>目标站点</th>
+                <th>访问密钥</th>
                 <th>状态</th>
                 <th>用时/首字</th>
                 <th>输入</th>
@@ -143,7 +154,7 @@
         </thead>
         <tbody id="usageLogsTableBody">
             <tr>
-                <td colspan="11">
+                <td colspan="12">
                     <div class="table-empty">
                         <div class="table-empty-text">加载中...</div>
                     </div>
@@ -394,6 +405,9 @@
         document.getElementById('siteFilterSelect').addEventListener('change', function() {
             loadUsageLogsPage(1);
         });
+        document.getElementById('accessKeyFilterSelect').addEventListener('change', function() {
+            loadUsageLogsPage(1);
+        });
         document.getElementById('sourceFilterSelect').addEventListener('change', function() {
             loadUsageLogsPage(1);
         });
@@ -546,6 +560,11 @@
             query.set('siteId', siteId);
         }
 
+        var accessKeyId = document.getElementById('accessKeyFilterSelect').value;
+        if (accessKeyId) {
+            query.set('accessKeyId', accessKeyId);
+        }
+
         var source = document.getElementById('sourceFilterSelect').value;
         if (source) {
             query.set('source', source);
@@ -613,6 +632,7 @@
                 '<td>' + renderSourceBadge(source) + '</td>' +
                 '<td><code>' + escHtml(readValue(item, ['attemptedModel', 'requestModel']) || '-') + '</code></td>' +
                 '<td>' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</td>' +
+                '<td>' + escHtml(readValue(item, ['accessKeyName']) || '-') + '</td>' +
                 '<td>' + renderStatusBadge(status, item) + '</td>' +
                 '<td>' + renderLatencyBadges(item) + '</td>' +
                 '<td>' + escHtml(formatNumber(readValue(item, ['inputTokens']) || 0)) + '</td>' +
