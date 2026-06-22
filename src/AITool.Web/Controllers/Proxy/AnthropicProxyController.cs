@@ -172,6 +172,17 @@ public sealed class AnthropicProxyController : ControllerBase
         // 获取已经和站点信息合并后的候选路由，优先尝试支持 Anthropic 原协议的站点。
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("Anthropic", modelName, cancellationToken);
 
+        // AccessKey 路由限定：AllowedRouteNames 为空=允许全部，非空=只允许配置的路由入口。
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
+        if (allowedRoutes is not null && allRoutes.Count > 0)
+        {
+            allRoutes = allRoutes.Where(r => allowedRoutes.Contains(r.ExternalModelName)).ToList();
+            if (allRoutes.Count == 0)
+            {
+                return StatusCode(403, new { error = new { type = "permission_error", message = $"当前访问密钥无权访问路由: {modelName}" } });
+            }
+        }
+
         if (allRoutes.Count == 0)
         {
             return NotFound(new { error = new { type = "not_found_error", message = $"No available route for model: {modelName}" } });

@@ -481,6 +481,14 @@ static async Task EnsureProxyUsageLogSchemaAsync(AppDbContext dbContext)
             command.CommandText = "ALTER TABLE ProxyRouteRules ADD COLUMN TimeRangesJson TEXT NOT NULL DEFAULT ''";
             await command.ExecuteNonQueryAsync();
         }
+
+        // ProxyAccessKeys 表补充 AllowedRouteNames 列（AccessKey 路由限定功能）
+        if (!await ColumnExistsAsync(connection, "ProxyAccessKeys", "AllowedRouteNames"))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = "ALTER TABLE ProxyAccessKeys ADD COLUMN AllowedRouteNames TEXT NOT NULL DEFAULT ''";
+            await command.ExecuteNonQueryAsync();
+        }
     }
     finally
     {

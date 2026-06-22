@@ -122,6 +122,18 @@ public sealed partial class OpenAiProxyController
         var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, "Responses", modelName, requestBody);
 
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
+
+        // AccessKey 路由限定（同 ProcessOpenAiLikeRequestAsync）。
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
+        if (allowedRoutes is not null && allRoutes.Count > 0)
+        {
+            allRoutes = allRoutes.Where(r => allowedRoutes.Contains(r.ExternalModelName)).ToList();
+            if (allRoutes.Count == 0)
+            {
+                return StatusCode(403, new { error = new { message = $"当前访问密钥无权访问路由: {modelName}" } });
+            }
+        }
+
         if (allRoutes.Count == 0)
         {
             return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
@@ -405,6 +417,20 @@ public sealed partial class OpenAiProxyController
 
         var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, "ResponsesWebSocket", modelName, rawRequestBody);
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
+
+        // AccessKey 路由限定（同 HTTP 入口）。WebSocket 方法接收的是 accessKeyId，需要从缓存查 accessKey 对象。
+        var wsAccessKey = await _metadataCache.GetAccessKeyByIdAsync(accessKeyId, cancellationToken);
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(wsAccessKey);
+        if (allowedRoutes is not null && allRoutes.Count > 0)
+        {
+            allRoutes = allRoutes.Where(r => allowedRoutes.Contains(r.ExternalModelName)).ToList();
+            if (allRoutes.Count == 0)
+            {
+                await WriteResponsesWebSocketErrorAsync(webSocket, StatusCodes.Status403Forbidden, $"当前访问密钥无权访问路由: {modelName}", cancellationToken);
+                return false;
+            }
+        }
+
         if (allRoutes.Count == 0)
         {
             await WriteResponsesWebSocketErrorAsync(webSocket, StatusCodes.Status404NotFound, $"No available route for model: {modelName}", cancellationToken);

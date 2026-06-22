@@ -1,3 +1,4 @@
+using System.Text.Json;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.EntityFrameworkCore;
@@ -28,6 +29,29 @@ public class AccessKeyViewModel
     /// 密钥是否处于启用状态。
     /// </summary>
     public bool IsEnabled { get; set; }
+
+    /// <summary>
+    /// 允许访问的路由入口名称列表。空列表=允许全部路由。
+    /// </summary>
+    public List<string> AllowedRouteNames { get; set; } = [];
+
+    /// <summary>
+    /// 允许路由的展示文本（逗号分隔，空=全部）。
+    /// </summary>
+    public string AllowedRouteNamesText => AllowedRouteNames.Count == 0
+        ? "全部"
+        : string.Join(", ", AllowedRouteNames);
+}
+
+/// <summary>
+/// 路由入口选项，用于前端多选下拉框。
+/// </summary>
+public class RouteEntryOption
+{
+    /// <summary>
+    /// 路由入口名称。
+    /// </summary>
+    public string EntryName { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -54,19 +78,51 @@ public class IndexModel : PageModel
     public List<AccessKeyViewModel> Keys { get; set; } = [];
 
     /// <summary>
-    /// 读取密钥列表并按名称排序。
+    /// 可选的路由入口列表，用于创建/编辑密钥时的多选下拉框。
+    /// </summary>
+    public List<RouteEntryOption> RouteEntries { get; set; } = [];
+
+    /// <summary>
+    /// 读取密钥列表和路由入口列表并按名称排序。
     /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        Keys = await _dbContext.ProxyAccessKeys
+        var rawKeys = await _dbContext.ProxyAccessKeys
             .OrderBy(k => k.KeyName)
-            .Select(k => new AccessKeyViewModel
-            {
-                KeyId = k.Id,
-                KeyName = k.KeyName,
-                PlainKey = k.PlainKey,
-                IsEnabled = k.IsEnabled
-            })
             .ToListAsync(cancellationToken);
+
+        Keys = rawKeys.Select(k => new AccessKeyViewModel
+        {
+            KeyId = k.Id,
+            KeyName = k.KeyName,
+            PlainKey = k.PlainKey,
+            IsEnabled = k.IsEnabled,
+            AllowedRouteNames = DeserializeRouteNames(k.AllowedRouteNames)
+        }).ToList();
+
+        RouteEntries = await _dbContext.ProxyRouteEntries
+            .OrderBy(e => e.EntryName)
+            .Select(e => new RouteEntryOption { EntryName = e.EntryName })
+            .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 将存储的 JSON 字符串反序列化为路由名称列表。
+    /// </summary>
+    private static List<string> DeserializeRouteNames(string? stored)
+    {
+        if (string.IsNullOrWhiteSpace(stored))
+        {
+            return [];
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<List<string>>(stored) ?? [];
+        }
+        catch
+        {
+            return [];
+        }
     }
 }

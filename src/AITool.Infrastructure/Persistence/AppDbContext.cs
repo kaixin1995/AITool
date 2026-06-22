@@ -166,6 +166,7 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.PlainKey).IsRequired().HasMaxLength(500);
             entity.Property(e => e.AccessKeyHash).IsRequired().HasMaxLength(500);
             entity.Property(e => e.MaskedValue).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.AllowedRouteNames).IsRequired().HasDefaultValue(string.Empty);
             entity.HasIndex(e => new { e.AccessKeyHash, e.IsEnabled });
         });
 

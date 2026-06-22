@@ -521,6 +521,18 @@ public sealed partial class OpenAiProxyController : ControllerBase
         var traceId = TryCreateDeveloperTraceSafely(runtimeSettings, requestSource, routeLabel, modelName, requestBody);
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
 
+        // AccessKey 路由限定：AllowedRouteNames 为空=允许全部，非空=只允许配置的路由入口。
+        // 过滤发生在并发获取之前，不影响原有模型并发限制。
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
+        if (allowedRoutes is not null && allRoutes.Count > 0)
+        {
+            allRoutes = allRoutes.Where(r => allowedRoutes.Contains(r.ExternalModelName)).ToList();
+            if (allRoutes.Count == 0)
+            {
+                return StatusCode(403, new { error = new { message = $"当前访问密钥无权访问路由: {modelName}" } });
+            }
+        }
+
         if (allRoutes.Count == 0)
         {
             return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });

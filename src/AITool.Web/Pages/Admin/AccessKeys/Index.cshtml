@@ -8,7 +8,7 @@
 <div class="page-header">
     <div>
         <h2 class="page-title">访问密钥管理</h2>
-        <p class="page-subtitle">管理用于访问代理服务的密钥</p>
+        <p class="page-subtitle">管理用于访问代理服务的密钥，可限定每个密钥只能访问指定路由</p>
     </div>
 </div>
 
@@ -34,6 +34,15 @@
             <input type="text" id="inputKeyName" class="form-control" placeholder="输入密钥名称" />
         </div>
         <div class="col-auto">
+            <label class="form-label">允许路由（留空=全部）</label>
+            <select id="inputAllowedRoutes" class="form-select" multiple size="4" style="min-width:240px;">
+                @foreach (var entry in Model.RouteEntries)
+                {
+                    <option value="@entry.EntryName">@entry.EntryName</option>
+                }
+            </select>
+        </div>
+        <div class="col-auto">
             <button type="button" id="btnCreate" class="btn btn-primary" onclick="createKey()">创建密钥</button>
         </div>
     </div>
@@ -46,6 +55,7 @@
             <tr>
                 <th>密钥名称</th>
                 <th>密钥值</th>
+                <th>允许路由</th>
                 <th>状态</th>
                 <th>操作</th>
             </tr>
@@ -54,7 +64,7 @@
             @if (!Model.Keys.Any())
             {
                 <tr id="emptyRow">
-                    <td colspan="4">
+                    <td colspan="5">
                         <div class="table-empty">
                             <div class="table-empty-icon">🔑</div>
                             <div class="table-empty-text">暂无密钥，请在上方创建</div>
@@ -64,7 +74,7 @@
             }
             @foreach (var item in Model.Keys)
             {
-                <tr data-key-id="@item.KeyId">
+                <tr data-key-id="@item.KeyId" data-allowed-routes='@Json.Serialize(item.AllowedRouteNames)'>
                     <td><strong>@item.KeyName</strong></td>
                     <td>
                         @if (string.IsNullOrEmpty(item.PlainKey))
@@ -76,6 +86,11 @@
                             <code class="plain-value">@item.PlainKey</code>
                         }
                     </td>
+                    <td class="allowed-routes-cell">
+                        <span class="badge bg-@(item.AllowedRouteNames.Count == 0 ? "secondary" : "info")">
+                            @(item.AllowedRouteNamesText)
+                        </span>
+                    </td>
                     <td>
                         <span class="badge bg-@(item.IsEnabled ? "success" : "secondary")">
                             @(item.IsEnabled ? "启用" : "禁用")
@@ -85,6 +100,10 @@
                         <button type="button" class="btn btn-sm btn-outline-primary btn-copy"
                                 data-plain-key="@item.PlainKey" onclick="copyKey(this)" title="复制真实密钥" @(string.IsNullOrEmpty(item.PlainKey) ? "disabled" : null)>
                             复制
+                        </button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary"
+                                onclick="editRoutes('@item.KeyId', this)" title="编辑允许路由">
+                            路由
                         </button>
                         <button type="button" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")"
                                 onclick="toggleKey('@item.KeyId', this)">
@@ -101,7 +120,35 @@
     </table>
 </div>
 
+<!-- 编辑路由 Modal -->
+<div class="modal fade" id="editRoutesModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">编辑允许路由</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted mb-2">勾选该密钥允许访问的路由入口。不勾选任何项=允许全部路由（包括后续新增的）。</p>
+                <select id="editAllowedRoutes" class="form-select" multiple size="8" style="min-height:240px;">
+                    @foreach (var entry in Model.RouteEntries)
+                    {
+                        <option value="@entry.EntryName">@entry.EntryName</option>
+                    }
+                </select>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="btnSaveRoutes" onclick="saveRoutes()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
+    // 当前正在编辑路由的密钥 ID
+    var editingKeyId = null;
+
     // 显示操作提示
     function showStatus(msg, success) {
         var alert = document.getElementById('statusAlert');
@@ -117,6 +164,10 @@
         var name = nameInput.value.trim();
         if (!name) { showStatus('请输入密钥名称', false); return; }
 
+        // 收集多选路由
+        var routeSelect = document.getElementById('inputAllowedRoutes');
+        var allowedRoutes = Array.from(routeSelect.selectedOptions).map(function(o) { return o.value; });
+
         var btn = document.getElementById('btnCreate');
         btn.disabled = true;
         btn.textContent = '创建中...';
@@ -124,13 +175,15 @@
         fetch('/api/admin/access-keys/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ keyName: name })
+            body: JSON.stringify({ keyName: name, allowedRouteNames: allowedRoutes })
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
             btn.disabled = false;
             btn.textContent = '创建密钥';
             nameInput.value = '';
+            // 重置多选
+            Array.from(routeSelect.options).forEach(function(o) { o.selected = false; });
 
             if (data.message) { showStatus(data.message, false); return; }
 
@@ -138,30 +191,71 @@
             document.getElementById('plainKeyBox').style.display = '';
             document.getElementById('plainKeyValue').textContent = data.plainKey;
 
-            // 移除空行提示
-            var emptyRow = document.getElementById('emptyRow');
-            if (emptyRow) emptyRow.remove();
-
-            // 在表格中插入新行
-            var tbody = document.getElementById('keyTableBody');
-            var tr = document.createElement('tr');
-            tr.setAttribute('data-key-id', data.keyId);
-            tr.innerHTML = '<td><strong>' + escapeHtml(data.keyName) + '</strong></td>'
-                + '<td><code class="plain-value">' + escapeHtml(data.plainKey) + '</code></td>'
-                + '<td><span class="badge bg-success">启用</span></td>'
-                + '<td>'
-                + '<button type="button" class="btn btn-sm btn-outline-primary btn-copy" data-plain-key="' + escapeHtml(data.plainKey) + '" onclick="copyKey(this)" title="复制真实密钥">复制</button> '
-                + '<button type="button" class="btn btn-sm btn-outline-warning" onclick="toggleKey(\'' + data.keyId + '\', this)">禁用</button> '
-                + '<button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteKey(\'' + data.keyId + '\', this)">删除</button>'
-                + '</td>';
-            tbody.appendChild(tr);
-
-            showStatus('密钥创建成功', true);
+            // 刷新页面以获取最新列表（含路由列）
+            showStatus('密钥创建成功，正在刷新...', true);
+            setTimeout(function() { location.reload(); }, 800);
         })
         .catch(function(err) {
             btn.disabled = false;
             btn.textContent = '创建密钥';
             showStatus('创建失败：' + err.message, false);
+        });
+    }
+
+    // 编辑允许路由（打开 modal）
+    function editRoutes(keyId, btn) {
+        editingKeyId = keyId;
+        var row = btn.closest('tr');
+        var allowedAttr = row.getAttribute('data-allowed-routes');
+        var currentRoutes = [];
+        try { currentRoutes = JSON.parse(allowedAttr || '[]'); } catch(e) {}
+
+        var select = document.getElementById('editAllowedRoutes');
+        Array.from(select.options).forEach(function(o) {
+            o.selected = currentRoutes.indexOf(o.value) >= 0;
+        });
+
+        // 用 Bootstrap 5 Modal API 显示
+        var modal = new bootstrap.Modal(document.getElementById('editRoutesModal'));
+        modal.show();
+    }
+
+    // 保存路由权限
+    function saveRoutes() {
+        if (!editingKeyId) return;
+
+        var select = document.getElementById('editAllowedRoutes');
+        var allowedRoutes = Array.from(select.selectedOptions).map(function(o) { return o.value; });
+
+        var btn = document.getElementById('btnSaveRoutes');
+        btn.disabled = true;
+        btn.textContent = '保存中...';
+
+        fetch('/api/admin/access-keys/update-routes/' + editingKeyId, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ allowedRouteNames: allowedRoutes })
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            btn.disabled = false;
+            btn.textContent = '保存';
+
+            if (data.message) { showStatus(data.message, false); return; }
+
+            // 关闭 modal
+            var modalEl = document.getElementById('editRoutesModal');
+            var modal = bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+
+            // 刷新页面以更新表格
+            showStatus('路由权限已更新', true);
+            setTimeout(function() { location.reload(); }, 800);
+        })
+        .catch(function(err) {
+            btn.disabled = false;
+            btn.textContent = '保存';
+            showStatus('保存失败：' + err.message, false);
         });
     }
 
@@ -173,7 +267,7 @@
         .then(function(data) {
             if (data.message) { showStatus(data.message, false); btn.disabled = false; return; }
             var row = btn.closest('tr');
-            var badge = row.querySelector('.badge');
+            var badge = row.querySelector('td:nth-child(4) .badge');
             badge.className = 'badge bg-' + (data.isEnabled ? 'success' : 'secondary');
             badge.textContent = data.isEnabled ? '启用' : '禁用';
             btn.className = 'btn btn-sm btn-outline-' + (data.isEnabled ? 'warning' : 'success');
@@ -212,7 +306,6 @@
 
     // 通用复制函数，兼容 HTTP 环境
     function copyText(text) {
-        // 优先使用 Clipboard API
         if (navigator.clipboard && window.isSecureContext) {
             navigator.clipboard.writeText(text).then(function() {
                 showStatus('已复制到剪贴板', true);
