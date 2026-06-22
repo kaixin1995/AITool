@@ -177,7 +177,6 @@ using (var scope = app.Services.CreateScope())
     catch { }
 
     await EnsureProxyUsageLogSchemaAsync(db);
-    await EnsureConversationLogSchemaAsync(db);
 
     var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
     try
@@ -516,80 +515,6 @@ static async Task<bool> ColumnExistsAsync(DbConnection connection, string tableN
     }
 
     return false;
-}
-
-/// <summary>
-/// 为历史数据库补齐结构化对话记录表，避免旧库缺少新功能所需表结构。
-/// </summary>
-static async Task EnsureConversationLogSchemaAsync(AppDbContext dbContext)
-{
-    var connection = dbContext.Database.GetDbConnection();
-    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
-    if (shouldCloseConnection)
-    {
-        await connection.OpenAsync();
-    }
-
-    try
-    {
-        await using var command = connection.CreateCommand();
-        command.CommandText = @"
-CREATE TABLE IF NOT EXISTS ConversationTurnLogs (
-    Id TEXT NOT NULL PRIMARY KEY,
-    RequestId TEXT NOT NULL,
-    CreatedAt TEXT NOT NULL,
-    UserCreatedAt TEXT NULL,
-    SourceTool TEXT NOT NULL,
-    SessionId TEXT NOT NULL,
-    ConversationGroupKey TEXT NOT NULL,
-    AccessKeyId TEXT NOT NULL,
-    RequestModel TEXT NOT NULL,
-    ProtocolType TEXT NOT NULL,
-    RequestPath TEXT NOT NULL,
-    Source TEXT NOT NULL,
-    UserInputText TEXT NOT NULL,
-    AssistantOutputMarkdown TEXT NOT NULL,
-    InputTokens INTEGER NOT NULL,
-    CachedTokens INTEGER NOT NULL,
-    OutputTokens INTEGER NOT NULL,
-    IsStreaming INTEGER NOT NULL,
-    Status TEXT NOT NULL,
-    MetadataJson TEXT NOT NULL,
-    ConversationTitle TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_CreatedAt ON ConversationTurnLogs (CreatedAt);
-CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_RequestId ON ConversationTurnLogs (RequestId);
-CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_ConversationGroupKey ON ConversationTurnLogs (ConversationGroupKey);
-CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_SourceTool_SessionId_CreatedAt ON ConversationTurnLogs (SourceTool, SessionId, CreatedAt);
-";
-        await command.ExecuteNonQueryAsync();
-
-        // 旧表可能包含已废弃的 AssistantOutputPlainText 列，需要移除。
-        if (await ColumnExistsAsync(connection, "ConversationTurnLogs", "AssistantOutputPlainText"))
-        {
-            command.CommandText = "ALTER TABLE ConversationTurnLogs DROP COLUMN AssistantOutputPlainText;";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "UserCreatedAt"))
-        {
-            command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN UserCreatedAt TEXT NULL;";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "ConversationTitle"))
-        {
-            command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN ConversationTitle TEXT NOT NULL DEFAULT '';";
-            await command.ExecuteNonQueryAsync();
-        }
-    }
-    finally
-    {
-        if (shouldCloseConnection)
-        {
-            await connection.CloseAsync();
-        }
-    }
 }
 
 /// <summary>

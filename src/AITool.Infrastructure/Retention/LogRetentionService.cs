@@ -60,13 +60,9 @@ public sealed class LogRetentionService : ILogRetentionService
         }
 
         var now = _utcNowProvider();
-        var conversationCutoff = now.AddDays(-ConversationLogStoragePolicy.RetentionDays);
 
-        var allConversationLogs = await _dbContext.ConversationTurnLogs.ToListAsync(cancellationToken);
-        var oldConversationLogs = allConversationLogs
-            .Where(l => l.CreatedAt < conversationCutoff)
-            .ToList();
-        _dbContext.ConversationTurnLogs.RemoveRange(oldConversationLogs);
+        // 对话记录已迁移到本地 JSONL 文件，DB 表不再写入，无需清理。
+        // 本地文件的过期清理由下一行 PruneExpiredAsync 负责。
         await _conversationLogStore.PruneExpiredAsync(cancellationToken);
 
         if (!settings.UsageLogAutoCleanupEnabled)

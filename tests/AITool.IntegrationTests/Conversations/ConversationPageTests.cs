@@ -121,7 +121,10 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
         var today = DateTimeOffset.Now;
         var yesterday = today.AddDays(-1);
 
-        db.ConversationTurnLogs.AddRange(
+        // 对话记录现在只走本地 JSONL 文件（不再写 DB 表），通过 IConversationLogStore 写入种子数据。
+        var store = scope.ServiceProvider.GetRequiredService<AITool.Application.Conversations.IConversationLogStore>();
+        await store.AppendBatchAsync(
+        [
             new ConversationTurnLog
             {
                 RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
@@ -165,8 +168,7 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
                 IsStreaming = false,
                 Status = "success",
                 MetadataJson = "{}"
-            });
-
-        await db.SaveChangesAsync();
+            }
+        ]);
     }
 }
