@@ -211,6 +211,13 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
         var modelIds = await _metadataCache.GetEnabledModelNamesAsync(cancellationToken);
 
+        // AccessKey 路由限定：只返回该密钥有权访问的路由入口。
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
+        if (allowedRoutes is not null)
+        {
+            modelIds = modelIds.Where(m => allowedRoutes.Contains(m)).ToList();
+        }
+
         if (isAnthropicClient)
         {
             return Ok(new
@@ -281,6 +288,14 @@ public sealed partial class OpenAiProxyController : ControllerBase
         }
 
         var modelIds = await _metadataCache.GetEnabledModelNamesAsync(cancellationToken);
+
+        // AccessKey 路由限定：无权访问的路由等同于不存在。
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
+        if (allowedRoutes is not null)
+        {
+            modelIds = modelIds.Where(m => allowedRoutes.Contains(m)).ToList();
+        }
+
         if (!modelIds.Contains(modelId, StringComparer.Ordinal))
         {
             return NotFound(new { error = new { message = $"The model '{modelId}' does not exist", type = "invalid_request_error", param = "model", code = "model_not_found" } });
