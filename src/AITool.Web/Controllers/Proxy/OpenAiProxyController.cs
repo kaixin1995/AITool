@@ -289,16 +289,17 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
         var modelIds = await _metadataCache.GetEnabledModelNamesAsync(cancellationToken);
 
-        // AccessKey 路由限定：无权访问的路由等同于不存在。
-        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
-        if (allowedRoutes is not null)
-        {
-            modelIds = modelIds.Where(m => allowedRoutes.Contains(m)).ToList();
-        }
-
+        // 模型不存在 → 404
         if (!modelIds.Contains(modelId, StringComparer.Ordinal))
         {
             return NotFound(new { error = new { message = $"The model '{modelId}' does not exist", type = "invalid_request_error", param = "model", code = "model_not_found" } });
+        }
+
+        // AccessKey 路由限定：模型存在但该密钥无权访问 → 403 明确提示权限不足。
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
+        if (allowedRoutes is not null && !allowedRoutes.Contains(modelId))
+        {
+            return StatusCode(403, new { error = new { message = $"当前访问密钥无权访问路由: {modelId}", type = "permission_error", code = "route_forbidden" } });
         }
 
         if (isAnthropicClient)
