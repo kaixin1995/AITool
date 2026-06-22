@@ -289,10 +289,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
         var modelIds = await _metadataCache.GetEnabledModelNamesAsync(cancellationToken);
 
-        // 模型不存在 → 404
+        // 模型不存在 → 403 带明确提示（不暴露存在性，统一返回权限/可用性错误）
         if (!modelIds.Contains(modelId, StringComparer.Ordinal))
         {
-            return NotFound(new { error = new { message = $"The model '{modelId}' does not exist", type = "invalid_request_error", param = "model", code = "model_not_found" } });
+            return StatusCode(403, new { error = new { message = $"模型 '{modelId}' 不存在或未启用，请检查路由配置", type = "invalid_request_error", code = "model_not_found" } });
         }
 
         // AccessKey 路由限定：模型存在但该密钥无权访问 → 403 明确提示权限不足。
@@ -551,7 +551,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
         if (allRoutes.Count == 0)
         {
-            return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
+            return StatusCode(403, new { error = new { message = $"模型 '{modelName}' 没有可用的路由，请检查路由配置或联系管理员", type = "invalid_request_error", code = "no_available_route" } });
         }
 
         ProxyForwardResult? lastResult = null;

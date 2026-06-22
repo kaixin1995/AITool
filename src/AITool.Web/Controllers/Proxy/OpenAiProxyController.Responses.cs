@@ -136,7 +136,7 @@ public sealed partial class OpenAiProxyController
 
         if (allRoutes.Count == 0)
         {
-            return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
+            return StatusCode(403, new { error = new { message = $"模型 '{modelName}' 没有可用的路由，请检查路由配置或联系管理员", type = "invalid_request_error", code = "no_available_route" } });
         }
 
         ProxyForwardResult? lastResult = null;
@@ -433,7 +433,7 @@ public sealed partial class OpenAiProxyController
 
         if (allRoutes.Count == 0)
         {
-            await WriteResponsesWebSocketErrorAsync(webSocket, StatusCodes.Status404NotFound, $"No available route for model: {modelName}", cancellationToken);
+            await WriteResponsesWebSocketErrorAsync(webSocket, StatusCodes.Status403Forbidden, $"模型 '{modelName}' 没有可用的路由，请检查路由配置或联系管理员", cancellationToken);
             return false;
         }
 

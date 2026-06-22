@@ -307,8 +307,8 @@ public sealed class AnthropicProxyControllerTests
         var afterDeleteResponse = await SendMessagesAsync(client);
         var body = await afterDeleteResponse.Content.ReadAsStringAsync();
 
-        afterDeleteResponse.StatusCode.Should().Be(HttpStatusCode.NotFound, body);
-        body.Should().Contain("No available route for model: claude-proxy");
+        afterDeleteResponse.StatusCode.Should().Be(HttpStatusCode.Forbidden, body);
+        body.Should().Contain("没有可用的路由");
     }
 
     /// <summary>

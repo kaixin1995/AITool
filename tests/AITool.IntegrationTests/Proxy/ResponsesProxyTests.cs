@@ -291,7 +291,7 @@ public sealed class ResponsesProxyTests
     /// 无效的模型名应返回 404。
     /// </summary>
     [Fact]
-    public async Task Post_responses_returns_404_when_no_route_matches()
+    public async Task Post_responses_returns_403_when_no_route_matches()
     {
         var fakeForwardService = new ResponsesFakeProxyForwardService();
         await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
@@ -306,7 +306,9 @@ public sealed class ResponsesProxyTests
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
 
         var response = await client.SendAsync(request);
-        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden, body);
+        body.Should().Contain("没有可用的路由");
     }
 
     /// <summary>

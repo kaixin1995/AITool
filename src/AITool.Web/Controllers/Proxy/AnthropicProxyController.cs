@@ -185,7 +185,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
         if (allRoutes.Count == 0)
         {
-            return NotFound(new { error = new { type = "not_found_error", message = $"No available route for model: {modelName}" } });
+            return StatusCode(403, new { error = new { type = "invalid_request_error", message = $"模型 '{modelName}' 没有可用的路由，请检查路由配置或联系管理员", code = "no_available_route" } });
         }
 
         // 按优先级逐个尝试路由，失败则通知熔断器并继续下一个
