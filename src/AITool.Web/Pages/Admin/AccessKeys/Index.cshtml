@@ -128,12 +128,12 @@
                     <button type="button" class="btn btn-sm btn-outline-primary" onclick="selectAllRoutes(true)">全选</button>
                     <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectAllRoutes(false)">清空（=全部路由）</button>
                 </div>
-                <div id="editRouteCheckboxes" class="border rounded p-2" style="max-height:320px;overflow-y:auto;">
+                <div id="editRouteCheckboxes" class="border rounded p-2" style="max-height:360px;overflow-y:auto;column-count:3;column-gap:0.75rem;">
                     @foreach (var entry in Model.RouteEntries)
                     {
-                        <div class="form-check">
+                        <div class="form-check" style="break-inside:avoid;margin-bottom:0.25rem;">
                             <input class="form-check-input route-checkbox" type="checkbox" value="@entry.EntryName" id="route_@entry.EntryName" />
-                            <label class="form-check-label" for="route_@entry.EntryName">@entry.EntryName</label>
+                            <label class="form-check-label text-truncate d-inline-block" for="route_@entry.EntryName" style="max-width:160px;" title="@entry.EntryName">@entry.EntryName</label>
                         </div>
                     }
                 </div>
