@@ -104,7 +104,7 @@ public sealed class AnthropicProxyController : ControllerBase
         var accessKey = await ValidateAccessKeyAsync(cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { type = "authentication_error", message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { type = "authentication_error", message = "访问密钥无效或缺失，请在请求头中携带有效的 x-api-key 或 Authorization Bearer 令牌", code = "invalid_access_key" } });
         }
 
         using var reader = new StreamReader(Request.Body, Encoding.UTF8);
@@ -122,7 +122,7 @@ public sealed class AnthropicProxyController : ControllerBase
         }
         catch
         {
-            return BadRequest(new { error = new { type = "invalid_request_error", message = "Invalid request body" } });
+            return BadRequest(new { error = new { type = "invalid_request_error", message = "请求体格式无效，请检查是否为合法的 JSON", code = "invalid_body" } });
         }
     }
 
@@ -151,14 +151,14 @@ public sealed class AnthropicProxyController : ControllerBase
         }
         catch
         {
-            return BadRequest(new { error = new { type = "invalid_request_error", message = "Invalid request body" } });
+            return BadRequest(new { error = new { type = "invalid_request_error", message = "请求体格式无效，请检查是否为合法的 JSON", code = "invalid_body" } });
         }
 
         // 验证访问密钥
         var accessKey = await ValidateAccessKeyAsync(cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { type = "authentication_error", message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { type = "authentication_error", message = "访问密钥无效或缺失，请在请求头中携带有效的 x-api-key 或 Authorization Bearer 令牌", code = "invalid_access_key" } });
         }
 
         // 优先读取显式来源标记，其次退回到 User-Agent 识别常见客户端工具。

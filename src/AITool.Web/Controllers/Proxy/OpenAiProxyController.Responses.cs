@@ -26,7 +26,7 @@ public sealed partial class OpenAiProxyController
     {
         if (!HttpContext.WebSockets.IsWebSocketRequest)
         {
-            return BadRequest(new { error = new { message = "WebSocket request required" } });
+            return BadRequest(new { error = new { message = "该接口需要 WebSocket 连接，请使用 WebSocket 客户端访问", type = "invalid_request_error", code = "websocket_required" } });
         }
 
         var authHeader = Request.Headers.Authorization.ToString();
@@ -36,7 +36,7 @@ public sealed partial class OpenAiProxyController
         var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { message = "访问密钥无效或缺失，请在请求头中携带有效的 Authorization Bearer 令牌", type = "authentication_error", code = "invalid_access_key" } });
         }
 
         using var webSocket = await HttpContext.WebSockets.AcceptWebSocketAsync();
@@ -54,7 +54,7 @@ public sealed partial class OpenAiProxyController
 
             if (!TryNormalizeResponsesWebSocketRequest(rawRequest, sessionState.LastRequestJson, sessionState.LastResponseOutputJson, out var normalizedRequest, out var errorMessage))
             {
-                await WriteResponsesWebSocketErrorAsync(webSocket, StatusCodes.Status400BadRequest, errorMessage ?? "Invalid websocket request", cancellationToken);
+                await WriteResponsesWebSocketErrorAsync(webSocket, StatusCodes.Status400BadRequest, errorMessage ?? "WebSocket 请求无效，请检查请求格式", cancellationToken);
                 continue;
             }
 
@@ -103,7 +103,7 @@ public sealed partial class OpenAiProxyController
 
         if (string.IsNullOrWhiteSpace(modelName))
         {
-            return BadRequest(new { error = new { message = "Invalid request body: model is required" } });
+            return BadRequest(new { error = new { message = "请求体缺少 model 字段，请指定要调用的模型名称", type = "invalid_request_error", code = "model_required" } });
         }
 
         var authHeader = Request.Headers.Authorization.ToString();
@@ -114,7 +114,7 @@ public sealed partial class OpenAiProxyController
         var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { message = "访问密钥无效或缺失，请在请求头中携带有效的 Authorization Bearer 令牌", type = "authentication_error", code = "invalid_access_key" } });
         }
 
         var requestSource = ResolveRequestSource(Request);
@@ -130,7 +130,7 @@ public sealed partial class OpenAiProxyController
             allRoutes = allRoutes.Where(r => allowedRoutes.Contains(r.ExternalModelName)).ToList();
             if (allRoutes.Count == 0)
             {
-                return StatusCode(403, new { error = new { message = $"当前访问密钥无权访问路由: {modelName}" } });
+                return StatusCode(403, new { error = new { message = $"当前访问密钥无权访问路由: {modelName}", type = "permission_error", code = "route_forbidden" } });
             }
         }
 
@@ -411,7 +411,7 @@ public sealed partial class OpenAiProxyController
         var reasoningEffort = ProxyProtocolBridge.ExtractResponsesReasoningEffort(normalizedRequestBody);
         if (string.IsNullOrWhiteSpace(modelName))
         {
-            await WriteResponsesWebSocketErrorAsync(webSocket, StatusCodes.Status400BadRequest, "Invalid request body: model is required", cancellationToken);
+            await WriteResponsesWebSocketErrorAsync(webSocket, StatusCodes.Status400BadRequest, "请求体缺少 model 字段，请指定要调用的模型名称", cancellationToken);
             return false;
         }
 
