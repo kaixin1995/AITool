@@ -74,7 +74,11 @@ public sealed class ConversationPageTests
         turnsBody.Should().Contain("\\\"action\\\":\\\"update\\\"");
         turnsBody.Should().Contain("```csharp");
 
-        var allTurnsResponse = await client.GetAsync("/api/admin/conversations/turns?rangeType=week&groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
+        // 用 custom 范围显式覆盖昨天到明天，避免 rangeType=week 在周一运行时昨天属上周被排除。
+        var now = DateTimeOffset.Now;
+        var customStart = now.AddDays(-2);
+        var customEnd = now.AddDays(1);
+        var allTurnsResponse = await client.GetAsync($"/api/admin/conversations/turns?rangeType=custom&startTime={Uri.EscapeDataString(customStart.ToString("O"))}&endTime={Uri.EscapeDataString(customEnd.ToString("O"))}&groupKey=claude-code%3A4a101580-d563-4945-aca8-76347b001a20");
         var allTurnsBody = await allTurnsResponse.Content.ReadAsStringAsync();
         allTurnsResponse.StatusCode.Should().Be(HttpStatusCode.OK, allTurnsBody);
         allTurnsBody.Should().Contain("昨天的历史消息");

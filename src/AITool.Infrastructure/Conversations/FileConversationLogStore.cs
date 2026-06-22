@@ -16,6 +16,11 @@ public sealed class FileConversationLogStore : IConversationLogStore
 {
     private const string FileExtension = ".jsonl";
     private const string LegacyImportMarkerFileName = ".legacy-db-imported";
+    /// <summary>
+    /// 单次查询最多返回的记录数。从最新文件倒序读取，达到上限立即停止，
+    /// 避免保留窗口内全部记录（含数十 KB 的对话正文）一次性加载到内存导致内存暴涨。
+    /// </summary>
+    private const int MaxQueryResults = 1000;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim _storageLock = new(1, 1);
     private readonly ConversationLogFileOptions _options;
@@ -60,6 +65,8 @@ public sealed class FileConversationLogStore : IConversationLogStore
 
     /// <summary>
     /// 按时间范围与筛选条件读取本地对话记录。
+    /// 从最新分片文件倒序读取，逐行过滤并收集，达到 <see cref="MaxQueryResults"/> 上限立即停止，
+    /// 避免保留窗口内全部记录（含数十 KB 的对话正文）一次性加载到内存。
     /// </summary>
     public async Task<IReadOnlyList<ConversationTurnLog>> QueryAsync(ConversationLogQuery query, CancellationToken cancellationToken = default)
     {
@@ -69,20 +76,59 @@ public sealed class FileConversationLogStore : IConversationLogStore
         try
         {
             EnsureRootDirectory();
-            var filePaths = ResolveCandidateFilePaths(query.StartTime, query.EndTime);
-            var logs = await ReadRecordsFromFilesUnlockedAsync(filePaths, cancellationToken);
-            return logs
-                .Where(x => x.CreatedAt >= query.StartTime && x.CreatedAt < query.EndTime)
-                .Where(x => string.IsNullOrWhiteSpace(query.SourceTool)
-                    || string.Equals(x.SourceTool, query.SourceTool, StringComparison.OrdinalIgnoreCase))
-                .Where(x => string.IsNullOrWhiteSpace(query.RequestModel)
-                    || string.Equals(x.RequestModel, query.RequestModel, StringComparison.Ordinal))
-                .Where(x => string.IsNullOrWhiteSpace(query.SessionKeyword)
-                    || x.SessionId.Contains(query.SessionKeyword, StringComparison.OrdinalIgnoreCase))
-                .Where(x => string.IsNullOrWhiteSpace(query.GroupKey)
-                    || string.Equals(x.ConversationGroupKey, query.GroupKey, StringComparison.Ordinal))
-                .OrderBy(x => x.CreatedAt)
+            // 候选文件倒序排列（最新优先），达到上限时跳过更旧的文件。
+            var filePaths = ResolveCandidateFilePaths(query.StartTime, query.EndTime)
+                .OrderByDescending(x => x, StringComparer.OrdinalIgnoreCase)
                 .ToList();
+
+            var results = new List<ConversationTurnLog>(Math.Min(MaxQueryResults, 256));
+            foreach (var filePath in filePaths)
+            {
+                if (results.Count >= MaxQueryResults)
+                {
+                    break;
+                }
+
+                var fileRecords = await ReadRecordsFromFileUnlockedAsync(filePath, cancellationToken);
+                foreach (var record in fileRecords)
+                {
+                    if (results.Count >= MaxQueryResults)
+                    {
+                        break;
+                    }
+
+                    if (record.CreatedAt < query.StartTime || record.CreatedAt >= query.EndTime)
+                    {
+                        continue;
+                    }
+                    if (!string.IsNullOrWhiteSpace(query.SourceTool)
+                        && !string.Equals(record.SourceTool, query.SourceTool, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    if (!string.IsNullOrWhiteSpace(query.RequestModel)
+                        && !string.Equals(record.RequestModel, query.RequestModel, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+                    if (!string.IsNullOrWhiteSpace(query.SessionKeyword)
+                        && !record.SessionId.Contains(query.SessionKeyword, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+                    if (!string.IsNullOrWhiteSpace(query.GroupKey)
+                        && !string.Equals(record.ConversationGroupKey, query.GroupKey, StringComparison.Ordinal))
+                    {
+                        continue;
+                    }
+
+                    results.Add(record);
+                }
+            }
+
+            // 返回前按时间升序排列，保持前端展示顺序（最旧在前）。
+            results.Sort((a, b) => a.CreatedAt.CompareTo(b.CreatedAt));
+            return results;
         }
         finally
         {
