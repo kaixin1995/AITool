@@ -34,15 +34,6 @@
             <input type="text" id="inputKeyName" class="form-control" placeholder="输入密钥名称" />
         </div>
         <div class="col-auto">
-            <label class="form-label">允许路由（留空=全部）</label>
-            <select id="inputAllowedRoutes" class="form-select" multiple size="4" style="min-width:240px;">
-                @foreach (var entry in Model.RouteEntries)
-                {
-                    <option value="@entry.EntryName">@entry.EntryName</option>
-                }
-            </select>
-        </div>
-        <div class="col-auto">
             <button type="button" id="btnCreate" class="btn btn-primary" onclick="createKey()">创建密钥</button>
         </div>
     </div>
@@ -74,7 +65,7 @@
             }
             @foreach (var item in Model.Keys)
             {
-                <tr data-key-id="@item.KeyId" data-allowed-routes='@Json.Serialize(item.AllowedRouteNames)'>
+                <tr data-key-id="@item.KeyId">
                     <td><strong>@item.KeyName</strong></td>
                     <td>
                         @if (string.IsNullOrEmpty(item.PlainKey))
@@ -102,7 +93,7 @@
                             复制
                         </button>
                         <button type="button" class="btn btn-sm btn-outline-secondary"
-                                onclick="editRoutes('@item.KeyId', this)" title="编辑允许路由">
+                                onclick="editRoutes('@item.KeyId', '@item.AllowedRouteNamesText', this)" title="编辑允许路由">
                             路由
                         </button>
                         <button type="button" class="btn btn-sm btn-outline-@(item.IsEnabled ? "warning" : "success")"
@@ -122,20 +113,34 @@
 
 <!-- 编辑路由 Modal -->
 <div class="modal fade" id="editRoutesModal" tabindex="-1">
-    <div class="modal-dialog">
+    <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content">
             <div class="modal-header">
                 <h5 class="modal-title">编辑允许路由</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
             <div class="modal-body">
-                <p class="text-muted mb-2">勾选该密钥允许访问的路由入口。不勾选任何项=允许全部路由（包括后续新增的）。</p>
-                <select id="editAllowedRoutes" class="form-select" multiple size="8" style="min-height:240px;">
+                <div class="mb-3">
+                    <span class="badge bg-secondary" id="modalCurrentRoutesLabel">当前: 全部</span>
+                </div>
+                <p class="text-muted small mb-2">勾选该密钥允许访问的路由入口。不勾选任何项 = 允许全部路由（包括后续新增的）。</p>
+                <div class="mb-2 d-flex gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="selectAllRoutes(true)">全选</button>
+                    <button type="button" class="btn btn-sm btn-outline-secondary" onclick="selectAllRoutes(false)">清空（=全部路由）</button>
+                </div>
+                <div id="editRouteCheckboxes" class="border rounded p-2" style="max-height:320px;overflow-y:auto;">
                     @foreach (var entry in Model.RouteEntries)
                     {
-                        <option value="@entry.EntryName">@entry.EntryName</option>
+                        <div class="form-check">
+                            <input class="form-check-input route-checkbox" type="checkbox" value="@entry.EntryName" id="route_@entry.EntryName" />
+                            <label class="form-check-label" for="route_@entry.EntryName">@entry.EntryName</label>
+                        </div>
                     }
-                </select>
+                </div>
+                @if (!Model.RouteEntries.Any())
+                {
+                    <p class="text-muted mt-2">暂无路由入口，请先在路由管理页创建。</p>
+                }
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -158,15 +163,11 @@
         text.textContent = msg;
     }
 
-    // 创建密钥
+    // 创建密钥（默认允许全部路由，不传 allowedRouteNames）
     function createKey() {
         var nameInput = document.getElementById('inputKeyName');
         var name = nameInput.value.trim();
         if (!name) { showStatus('请输入密钥名称', false); return; }
-
-        // 收集多选路由
-        var routeSelect = document.getElementById('inputAllowedRoutes');
-        var allowedRoutes = Array.from(routeSelect.selectedOptions).map(function(o) { return o.value; });
 
         var btn = document.getElementById('btnCreate');
         btn.disabled = true;
@@ -175,15 +176,13 @@
         fetch('/api/admin/access-keys/create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ keyName: name, allowedRouteNames: allowedRoutes })
+            body: JSON.stringify({ keyName: name })
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
             btn.disabled = false;
             btn.textContent = '创建密钥';
             nameInput.value = '';
-            // 重置多选
-            Array.from(routeSelect.options).forEach(function(o) { o.selected = false; });
 
             if (data.message) { showStatus(data.message, false); return; }
 
@@ -203,29 +202,49 @@
     }
 
     // 编辑允许路由（打开 modal）
-    function editRoutes(keyId, btn) {
+    function editRoutes(keyId, currentText, btn) {
         editingKeyId = keyId;
+        document.getElementById('modalCurrentRoutesLabel').textContent = '当前: ' + (currentText || '全部');
+
+        // 从行的 data 属性读取当前已选路由
         var row = btn.closest('tr');
-        var allowedAttr = row.getAttribute('data-allowed-routes');
         var currentRoutes = [];
-        try { currentRoutes = JSON.parse(allowedAttr || '[]'); } catch(e) {}
+        // 从后端渲染的 badge 文本无法精确还原选中项，改为从 API 重新读取
+        fetch('/api/admin/access-keys')
+            .then(function(r) { return r.json(); })
+            .then(function(keys) {
+                var found = keys.find(function(k) { return k.keyId === keyId; });
+                currentRoutes = (found && found.allowedRouteNames) || [];
+                // 勾选当前已允许的路由
+                var checkboxes = document.querySelectorAll('.route-checkbox');
+                checkboxes.forEach(function(cb) {
+                    cb.checked = currentRoutes.indexOf(cb.value) >= 0;
+                });
 
-        var select = document.getElementById('editAllowedRoutes');
-        Array.from(select.options).forEach(function(o) {
-            o.selected = currentRoutes.indexOf(o.value) >= 0;
+                var modal = new bootstrap.Modal(document.getElementById('editRoutesModal'));
+                modal.show();
+            })
+            .catch(function() {
+                var modal = new bootstrap.Modal(document.getElementById('editRoutesModal'));
+                modal.show();
+            });
+    }
+
+    // 全选/清空路由
+    function selectAllRoutes(selectAll) {
+        document.querySelectorAll('.route-checkbox').forEach(function(cb) {
+            cb.checked = selectAll;
         });
-
-        // 用 Bootstrap 5 Modal API 显示
-        var modal = new bootstrap.Modal(document.getElementById('editRoutesModal'));
-        modal.show();
     }
 
     // 保存路由权限
     function saveRoutes() {
         if (!editingKeyId) return;
 
-        var select = document.getElementById('editAllowedRoutes');
-        var allowedRoutes = Array.from(select.selectedOptions).map(function(o) { return o.value; });
+        // 收集勾选的路由（空数组 = 允许全部，这是正确的语义）
+        var selectedRoutes = Array.from(document.querySelectorAll('.route-checkbox:checked')).map(function(cb) {
+            return cb.value;
+        });
 
         var btn = document.getElementById('btnSaveRoutes');
         btn.disabled = true;
@@ -234,7 +253,7 @@
         fetch('/api/admin/access-keys/update-routes/' + editingKeyId, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ allowedRouteNames: allowedRoutes })
+            body: JSON.stringify({ allowedRouteNames: selectedRoutes })
         })
         .then(function(r) { return r.json(); })
         .then(function(data) {
@@ -332,12 +351,5 @@
             showStatus('复制失败，请手动复制', false);
         }
         document.body.removeChild(textarea);
-    }
-
-    // HTML 转义，防止 XSS
-    function escapeHtml(str) {
-        var div = document.createElement('div');
-        div.appendChild(document.createTextNode(str));
-        return div.innerHTML;
     }
 </script>
