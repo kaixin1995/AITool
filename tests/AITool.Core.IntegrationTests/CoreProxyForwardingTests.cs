@@ -232,8 +232,8 @@ public sealed class CoreProxyForwardingTests
         var response = await client.SendAsync(request);
         var body = await response.Content.ReadAsStringAsync();
 
-        response.StatusCode.Should().Be(HttpStatusCode.NotFound, body);
-        body.Should().Contain("No available route for model: nonexistent-model");
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden, body);
+        body.Should().Contain("没有可用的路由");
         fakeForwardService.ForwardCallCount.Should().Be(0);
         fakeForwardService.StreamingCallCount.Should().Be(0);
     }

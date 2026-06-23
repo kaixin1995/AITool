@@ -115,7 +115,8 @@ public static class CoreRuntimeConfigSnapshotBuilder
                     PlainKey = x.PlainKey,
                     AccessKeyHash = x.AccessKeyHash,
                     MaskedValue = x.MaskedValue,
-                    IsEnabled = x.IsEnabled
+                    IsEnabled = x.IsEnabled,
+                    AllowedRouteNames = x.AllowedRouteNames
                 })
                 .ToList(),
             RuntimeSettings = new CoreRuntimeSettings

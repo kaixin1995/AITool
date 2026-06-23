@@ -90,7 +90,7 @@ public sealed class AnthropicProxyController : ControllerBase
         var accessKey = await ValidateAccessKeyAsync(cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { type = "authentication_error", message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { type = "authentication_error", message = "访问密钥无效或缺失，请在请求头中携带有效的 x-api-key 或 Authorization Bearer 令牌", code = "invalid_access_key" } });
         }
 
         using var reader = new StreamReader(Request.Body, Encoding.UTF8);
@@ -108,7 +108,7 @@ public sealed class AnthropicProxyController : ControllerBase
         }
         catch
         {
-            return BadRequest(new { error = new { type = "invalid_request_error", message = "Invalid request body" } });
+            return BadRequest(new { error = new { type = "invalid_request_error", message = "请求体格式无效，请检查是否为合法的 JSON", code = "invalid_body" } });
         }
     }
 
@@ -137,14 +137,14 @@ public sealed class AnthropicProxyController : ControllerBase
         }
         catch
         {
-            return BadRequest(new { error = new { type = "invalid_request_error", message = "Invalid request body" } });
+            return BadRequest(new { error = new { type = "invalid_request_error", message = "请求体格式无效，请检查是否为合法的 JSON", code = "invalid_body" } });
         }
 
         // 验证访问密钥
         var accessKey = await ValidateAccessKeyAsync(cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { type = "authentication_error", message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { type = "authentication_error", message = "访问密钥无效或缺失，请在请求头中携带有效的 x-api-key 或 Authorization Bearer 令牌", code = "invalid_access_key" } });
         }
 
         // 优先读取显式来源标记，其次退回到 User-Agent 识别常见客户端工具。
@@ -182,9 +182,20 @@ public sealed class AnthropicProxyController : ControllerBase
         // 获取已经和站点信息合并后的候选路由，优先尝试支持 Anthropic 原协议的站点。
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("Anthropic", modelName, cancellationToken);
 
+        // AccessKey 路由限定：AllowedRouteNames 为空=允许全部，非空=只允许配置的路由入口。
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
+        if (allowedRoutes is not null && allRoutes.Count > 0)
+        {
+            allRoutes = allRoutes.Where(r => allowedRoutes.Contains(r.ExternalModelName)).ToList();
+            if (allRoutes.Count == 0)
+            {
+                return StatusCode(403, new { error = new { type = "permission_error", message = $"当前访问密钥无权访问路由: {modelName}", code = "route_forbidden" } });
+            }
+        }
+
         if (allRoutes.Count == 0)
         {
-            return NotFound(new { error = new { type = "not_found_error", message = $"No available route for model: {modelName}" } });
+            return StatusCode(403, new { error = new { type = "invalid_request_error", message = $"模型 '{modelName}' 没有可用的路由，请检查路由配置或联系管理员", code = "no_available_route" } });
         }
 
         // 按优先级逐个尝试路由，失败则通知熔断器并继续下一个

@@ -68,25 +68,9 @@ public sealed class LogRetentionService : ILogRetentionService
         }
 
         var now = _utcNowProvider();
-        var conversationCutoff = now.AddDays(-ConversationLogStoragePolicy.RetentionDays);
 
-        // 先查出过期对话记录的 Id，再按 Id 加载实体后删除。
-        // SQLite 不支持 DateTimeOffset 翻译，时间过滤在客户端完成（先全表加载 Id 再内存过滤开销可控）。
-        var oldConversationIds = (await _dbContext.ConversationTurnLogs
-                .Select(l => new { l.Id, l.CreatedAt })
-                .ToListAsync(cancellationToken))
-            .Where(l => l.CreatedAt < conversationCutoff)
-            .Select(l => l.Id)
-            .ToList();
-
-        if (oldConversationIds.Count > 0)
-        {
-            var oldConversationLogs = await _dbContext.ConversationTurnLogs
-                .Where(l => oldConversationIds.Contains(l.Id))
-                .ToListAsync(cancellationToken);
-            _dbContext.ConversationTurnLogs.RemoveRange(oldConversationLogs);
-        }
-
+        // 对话记录已迁移到本地 JSONL 文件，DB 表不再写入，无需清理。
+        // 本地文件的过期清理由下一行 PruneExpiredAsync 负责。
         await _conversationLogStore.PruneExpiredAsync(cancellationToken);
 
         if (!settings.UsageLogAutoCleanupEnabled)

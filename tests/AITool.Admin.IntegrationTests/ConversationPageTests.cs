@@ -215,7 +215,27 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
         var today = DateTimeOffset.Now;
         var yesterday = today.AddDays(-1);
 
-        db.ConversationTurnLogs.AddRange(
+        // 显式插入系统运行时设置，确保 ConversationLogEnabled 为 true
+        db.SystemRuntimeSettings.Add(new AITool.Domain.Operations.SystemRuntimeSettings
+        {
+            Id = 1,
+            ProxyRequestTimeoutSeconds = 9,
+            ProxyRetryCount = 2,
+            DetectionRequestTimeoutSeconds = 60,
+            DetectionRetryCount = 0,
+            DetectionConcurrency = 1,
+            CircuitBreakerFailureThreshold = 5,
+            CircuitBreakerRecoveryMinutes = 2,
+            UsageLogRetentionDays = 7,
+            UsageLogAutoCleanupEnabled = true,
+            ConversationLogEnabled = true
+        });
+        await db.SaveChangesAsync();
+
+        // 对话记录现在只走本地 JSONL 文件（不再写 DB 表），通过 IConversationLogStore 写入种子数据。
+        var store = scope.ServiceProvider.GetRequiredService<AITool.Application.Conversations.IConversationLogStore>();
+        await store.AppendBatchAsync(
+        [
             new ConversationTurnLog
             {
                 RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
@@ -229,7 +249,7 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
                 ProtocolType = "OpenAI",
                 RequestPath = "/v1/messages",
                 Source = "claude-code",
-                UserInputText = "<system-reminder>\nNote: c:\\Users\\kaikai.hao\\Desktop\\AI-Tool\\src\\AITool.Web\\Program.cs was modified\n</system-reminder>\n\n请帮我分析这个报错",
+                UserInputText = "请帮我分析这个报错",
                 AssistantOutputMarkdown = "工具调用: Edit\n{\"file\":\"Foo.cs\",\"action\":\"update\"}\n\n```csharp\nConsole.WriteLine(\"hello\");\n```",
                 InputTokens = 10,
                 CachedTokens = 0,
@@ -259,24 +279,7 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
                 IsStreaming = false,
                 Status = "success",
                 MetadataJson = "{}"
-            });
-
-        // 显式插入系统运行时设置，确保 ConversationLogEnabled 为 true
-        db.SystemRuntimeSettings.Add(new AITool.Domain.Operations.SystemRuntimeSettings
-        {
-            Id = 1,
-            ProxyRequestTimeoutSeconds = 9,
-            ProxyRetryCount = 2,
-            DetectionRequestTimeoutSeconds = 60,
-            DetectionRetryCount = 0,
-            DetectionConcurrency = 1,
-            CircuitBreakerFailureThreshold = 5,
-            CircuitBreakerRecoveryMinutes = 2,
-            UsageLogRetentionDays = 7,
-            UsageLogAutoCleanupEnabled = true,
-            ConversationLogEnabled = true
-        });
-
-        await db.SaveChangesAsync();
+            }
+        ]);
     }
 }

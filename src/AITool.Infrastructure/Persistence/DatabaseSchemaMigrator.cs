@@ -110,84 +110,13 @@ public static class DatabaseSchemaMigrator
                     // 单条索引创建失败不阻塞后续索引或其它列补丁；IF NOT EXISTS 通常已保证幂等。
                 }
             }
-        }
-        finally
-        {
-            if (shouldCloseConnection)
+
+            // ProxyAccessKeys 表补充 AllowedRouteNames 列（AccessKey 路由限定功能）
+            if (!await ColumnExistsAsync(connection, "ProxyAccessKeys", "AllowedRouteNames"))
             {
-                await connection.CloseAsync();
-            }
-        }
-    }
-
-    /// <summary>
-    /// 为历史数据库补齐结构化对话记录表，避免旧库缺少新功能所需表结构。
-    /// <para>
-    /// 创建 ConversationTurnLogs 表及索引（如不存在），并补充后续版本新增的列。
-    /// 旧表可能包含已废弃的 AssistantOutputPlainText 列，检测到后自动移除。
-    /// </para>
-    /// </summary>
-    /// <param name="dbContext">EF Core 数据库上下文。</param>
-    public static async Task EnsureConversationLogSchemaAsync(AppDbContext dbContext)
-    {
-        var connection = dbContext.Database.GetDbConnection();
-        var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
-        if (shouldCloseConnection)
-        {
-            await connection.OpenAsync();
-        }
-
-        try
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = @"
-CREATE TABLE IF NOT EXISTS ConversationTurnLogs (
-    Id TEXT NOT NULL PRIMARY KEY,
-    RequestId TEXT NOT NULL,
-    CreatedAt TEXT NOT NULL,
-    UserCreatedAt TEXT NULL,
-    SourceTool TEXT NOT NULL,
-    SessionId TEXT NOT NULL,
-    ConversationGroupKey TEXT NOT NULL,
-    AccessKeyId TEXT NOT NULL,
-    RequestModel TEXT NOT NULL,
-    ProtocolType TEXT NOT NULL,
-    RequestPath TEXT NOT NULL,
-    Source TEXT NOT NULL,
-    UserInputText TEXT NOT NULL,
-    AssistantOutputMarkdown TEXT NOT NULL,
-    InputTokens INTEGER NOT NULL,
-    CachedTokens INTEGER NOT NULL,
-    OutputTokens INTEGER NOT NULL,
-    IsStreaming INTEGER NOT NULL,
-    Status TEXT NOT NULL,
-    MetadataJson TEXT NOT NULL,
-    ConversationTitle TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_CreatedAt ON ConversationTurnLogs (CreatedAt);
-CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_RequestId ON ConversationTurnLogs (RequestId);
-CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_ConversationGroupKey ON ConversationTurnLogs (ConversationGroupKey);
-CREATE INDEX IF NOT EXISTS IX_ConversationTurnLogs_SourceTool_SessionId_CreatedAt ON ConversationTurnLogs (SourceTool, SessionId, CreatedAt);
-";
-            await command.ExecuteNonQueryAsync();
-
-            // 旧表可能包含已废弃的 AssistantOutputPlainText 列，需要移除。
-            if (await ColumnExistsAsync(connection, "ConversationTurnLogs", "AssistantOutputPlainText"))
-            {
-                command.CommandText = "ALTER TABLE ConversationTurnLogs DROP COLUMN AssistantOutputPlainText;";
-                await command.ExecuteNonQueryAsync();
-            }
-
-            if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "UserCreatedAt"))
-            {
-                command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN UserCreatedAt TEXT NULL;";
-                await command.ExecuteNonQueryAsync();
-            }
-
-            if (!await ColumnExistsAsync(connection, "ConversationTurnLogs", "ConversationTitle"))
-            {
-                command.CommandText = "ALTER TABLE ConversationTurnLogs ADD COLUMN ConversationTitle TEXT NOT NULL DEFAULT '';";
-                await command.ExecuteNonQueryAsync();
+                await using var accessKeyCommand = connection.CreateCommand();
+                accessKeyCommand.CommandText = "ALTER TABLE ProxyAccessKeys ADD COLUMN AllowedRouteNames TEXT NOT NULL DEFAULT ''";
+                await accessKeyCommand.ExecuteNonQueryAsync();
             }
         }
         finally

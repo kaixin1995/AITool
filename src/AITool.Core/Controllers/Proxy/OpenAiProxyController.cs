@@ -192,10 +192,17 @@ public sealed partial class OpenAiProxyController : ControllerBase
         var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { message = "访问密钥无效或缺失，请在请求头中携带有效的 Authorization Bearer 令牌", type = "authentication_error", code = "invalid_access_key" } });
         }
 
         var modelIds = await _metadataCache.GetEnabledModelNamesAsync(cancellationToken);
+
+        // AccessKey 路由限定：只返回该密钥有权访问的路由入口。
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
+        if (allowedRoutes is not null)
+        {
+            modelIds = modelIds.Where(m => allowedRoutes.Contains(m)).ToList();
+        }
 
         if (isAnthropicClient)
         {
@@ -263,13 +270,22 @@ public sealed partial class OpenAiProxyController : ControllerBase
         var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { message = "访问密钥无效或缺失，请在请求头中携带有效的 Authorization Bearer 令牌", type = "authentication_error", code = "invalid_access_key" } });
         }
 
         var modelIds = await _metadataCache.GetEnabledModelNamesAsync(cancellationToken);
+
+        // 模型不存在 → 403 带明确提示（不暴露存在性，统一返回权限/可用性错误）
         if (!modelIds.Contains(modelId, StringComparer.Ordinal))
         {
-            return NotFound(new { error = new { message = $"The model '{modelId}' does not exist", type = "invalid_request_error", param = "model", code = "model_not_found" } });
+            return StatusCode(403, new { error = new { message = $"模型 '{modelId}' 不存在或未启用，请检查路由配置", type = "invalid_request_error", code = "model_not_found" } });
+        }
+
+        // AccessKey 路由限定：模型存在但该密钥无权访问 → 403 明确提示权限不足。
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
+        if (allowedRoutes is not null && !allowedRoutes.Contains(modelId))
+        {
+            return StatusCode(403, new { error = new { message = $"当前访问密钥无权访问路由: {modelId}", type = "permission_error", code = "route_forbidden" } });
         }
 
         if (isAnthropicClient)
@@ -307,12 +323,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
             var root = document.RootElement;
             if (!root.TryGetProperty("model", out var modelElement) || string.IsNullOrWhiteSpace(modelElement.GetString()))
             {
-                return BadRequest(new { error = new { message = "Invalid request body: model is required" } });
+                return BadRequest(new { error = new { message = "请求体缺少 model 字段，请指定要调用的模型名称", type = "invalid_request_error", code = "model_required" } });
             }
         }
         catch
         {
-            return BadRequest(new { error = new { message = "Invalid request body" } });
+            return BadRequest(new { error = new { message = "请求体格式无效，请检查是否为合法的 JSON", type = "invalid_request_error", code = "invalid_body" } });
         }
 
         var chatRequestBody = ProxyProtocolBridge.ConvertCompletionsRequestToChat(requestBody);
@@ -366,7 +382,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         }
         catch
         {
-            return BadRequest(new { error = new { message = "Invalid request body" } });
+            return BadRequest(new { error = new { message = "请求体格式无效，请检查是否为合法的 JSON", type = "invalid_request_error", code = "invalid_body" } });
         }
 
         // 验证访问密钥
@@ -378,7 +394,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { message = "访问密钥无效或缺失，请在请求头中携带有效的 Authorization Bearer 令牌", type = "authentication_error", code = "invalid_access_key" } });
         }
 
         return await ProcessOpenAiLikeRequestAsync(
@@ -419,12 +435,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
             using var document = JsonDocument.Parse(requestBody);
             if (!document.RootElement.TryGetProperty("model", out var modelElement) || string.IsNullOrWhiteSpace(modelElement.GetString()))
             {
-                return BadRequest(new { error = new { message = "Invalid request body: model is required" } });
+                return BadRequest(new { error = new { message = "请求体缺少 model 字段，请指定要调用的模型名称", type = "invalid_request_error", code = "model_required" } });
             }
         }
         catch
         {
-            return BadRequest(new { error = new { message = "Invalid request body" } });
+            return BadRequest(new { error = new { message = "请求体格式无效，请检查是否为合法的 JSON", type = "invalid_request_error", code = "invalid_body" } });
         }
 
         return await ProcessOpenAiLikeRequestAsync(
@@ -488,7 +504,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         }
         catch
         {
-            return BadRequest(new { error = new { message = "Invalid request body" } });
+            return BadRequest(new { error = new { message = "请求体格式无效，请检查是否为合法的 JSON", type = "invalid_request_error", code = "invalid_body" } });
         }
 
         var authHeader = Request.Headers.Authorization.ToString();
@@ -499,7 +515,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         var accessKey = await _metadataCache.ValidateAccessKeyAsync(accessToken, cancellationToken);
         if (accessKey is null)
         {
-            return Unauthorized(new { error = new { message = "Invalid or missing access key" } });
+            return Unauthorized(new { error = new { message = "访问密钥无效或缺失，请在请求头中携带有效的 Authorization Bearer 令牌", type = "authentication_error", code = "invalid_access_key" } });
         }
 
         var requestSource = ResolveRequestSource(Request);
@@ -532,9 +548,20 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
 
+        // AccessKey 路由限定：AllowedRouteNames 为空=允许全部，非空=只允许配置的路由入口。
+        var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(accessKey);
+        if (allowedRoutes is not null && allRoutes.Count > 0)
+        {
+            allRoutes = allRoutes.Where(r => allowedRoutes.Contains(r.ExternalModelName)).ToList();
+            if (allRoutes.Count == 0)
+            {
+                return StatusCode(403, new { error = new { message = $"当前访问密钥无权访问路由: {modelName}", type = "permission_error", code = "route_forbidden" } });
+            }
+        }
+
         if (allRoutes.Count == 0)
         {
-            return NotFound(new { error = new { message = $"No available route for model: {modelName}" } });
+            return StatusCode(403, new { error = new { message = $"模型 '{modelName}' 没有可用的路由，请检查路由配置或联系管理员", type = "invalid_request_error", code = "no_available_route" } });
         }
 
         ProxyForwardResult? lastResult = null;
@@ -625,7 +652,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
             {
                 if (streamingBridgeFactory is null)
                 {
-                    return BadRequest(new { error = new { message = "Streaming is not supported for this endpoint" } });
+                    return BadRequest(new { error = new { message = "当前接口不支持流式输出（stream=true）", type = "invalid_request_error", code = "streaming_not_supported" } });
                 }
 
                 var streamOutcome = await streamingBridgeFactory(this, forwardRequest, modelName, cancellationToken);

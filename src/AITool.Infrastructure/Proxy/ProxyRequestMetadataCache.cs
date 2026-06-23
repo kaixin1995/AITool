@@ -140,6 +140,39 @@ public sealed partial class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 解析 AccessKey 允许访问的路由入口名称集合。
+    /// 返回 null 表示允许全部路由（AllowedRouteNames 为空），非 null 表示只能访问集合中的路由。
+    /// </summary>
+    public static HashSet<string>? GetAllowedRouteNames(CachedProxyAccessKey? accessKey)
+    {
+        if (accessKey is null || string.IsNullOrWhiteSpace(accessKey.AllowedRouteNames))
+        {
+            return null;
+        }
+
+        try
+        {
+            var names = JsonSerializer.Deserialize<List<string>>(accessKey.AllowedRouteNames);
+            return names is null || names.Count == 0
+                ? null
+                : new HashSet<string>(names, StringComparer.Ordinal);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 按密钥 Id 从缓存中查找 AccessKey（用于 WebSocket 等只有 keyId 没有 key 对象的场景）。
+    /// </summary>
+    public async Task<CachedProxyAccessKey?> GetAccessKeyByIdAsync(Guid accessKeyId, CancellationToken cancellationToken)
+    {
+        var accessKeys = await GetAccessKeysAsync(cancellationToken);
+        return accessKeys.Values.FirstOrDefault(k => k.Id == accessKeyId);
+    }
+
+    /// <summary>
     /// 获取运行时设置缓存。
     /// Core 宿主中从配置快照的 RuntimeSettings 读取，Web/Admin 宿主中从数据库查询。
     /// </summary>
@@ -561,7 +594,8 @@ public sealed partial class ProxyRequestMetadataCache
                             .Select(x => new CachedProxyAccessKey
                             {
                                 Id = x.Id,
-                                AccessKeyHash = x.AccessKeyHash
+                                AccessKeyHash = x.AccessKeyHash,
+                                AllowedRouteNames = x.AllowedRouteNames
                             })
                             .ToList();
 
@@ -585,7 +619,8 @@ public sealed partial class ProxyRequestMetadataCache
                         .Select(x => new CachedProxyAccessKey
                         {
                             Id = x.Id,
-                            AccessKeyHash = x.AccessKeyHash
+                            AccessKeyHash = x.AccessKeyHash,
+                            AllowedRouteNames = x.AllowedRouteNames
                         })
                         .ToListAsync(cancellationToken);
 
@@ -1049,6 +1084,10 @@ public sealed class CachedProxyAccessKey
     /// 访问密钥哈希值。
     /// </summary>
     public string AccessKeyHash { get; set; } = string.Empty;
+    /// <summary>
+    /// 允许访问的路由入口名称（JSON 数组）。空串表示允许全部路由。
+    /// </summary>
+    public string AllowedRouteNames { get; set; } = string.Empty;
 }
 
 /// <summary>

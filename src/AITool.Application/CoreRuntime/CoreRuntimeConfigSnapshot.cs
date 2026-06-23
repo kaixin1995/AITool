@@ -285,6 +285,11 @@ public sealed class CoreRuntimeAccessKey
     /// 是否启用。
     /// </summary>
     public bool IsEnabled { get; set; }
+
+    /// <summary>
+    /// 允许访问的路由入口名称（JSON 数组）。空串表示允许全部路由。
+    /// </summary>
+    public string AllowedRouteNames { get; set; } = string.Empty;
 }
 
 /// <summary>

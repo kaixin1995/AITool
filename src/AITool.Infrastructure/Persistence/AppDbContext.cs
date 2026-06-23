@@ -64,11 +64,6 @@ public sealed class AppDbContext : DbContext
     public DbSet<ProxyUsageLog> ProxyUsageLogs => Set<ProxyUsageLog>();
 
     /// <summary>
-    /// 结构化对话记录数据集
-    /// </summary>
-    public DbSet<ConversationTurnLog> ConversationTurnLogs => Set<ConversationTurnLog>();
-
-    /// <summary>
     /// 模型健康监控配置数据集
     /// </summary>
     public DbSet<ModelHealthMonitor> ModelHealthMonitors => Set<ModelHealthMonitor>();
@@ -166,6 +161,7 @@ public sealed class AppDbContext : DbContext
             entity.Property(e => e.PlainKey).IsRequired().HasMaxLength(500);
             entity.Property(e => e.AccessKeyHash).IsRequired().HasMaxLength(500);
             entity.Property(e => e.MaskedValue).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.AllowedRouteNames).IsRequired().HasDefaultValue(string.Empty);
             entity.HasIndex(e => new { e.AccessKeyHash, e.IsEnabled });
         });
 
@@ -192,29 +188,6 @@ public sealed class AppDbContext : DbContext
             entity.HasIndex(e => e.AccessKeyId);
             // 上游模型名筛选（UsageLogs 模型关键字、Analytics 模型分布）。
             entity.HasIndex(e => e.AttemptedModel);
-        });
-
-        // 结构化对话记录实体配置
-        modelBuilder.Entity<ConversationTurnLog>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.SourceTool).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.SessionId).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.ConversationGroupKey).IsRequired().HasMaxLength(260);
-            entity.Property(e => e.RequestModel).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.ProtocolType).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.RequestPath).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.Source).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.UserInputText).IsRequired().HasMaxLength(20000);
-            entity.Property(e => e.AssistantOutputMarkdown).IsRequired().HasMaxLength(50000);
-            entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.MetadataJson).IsRequired().HasMaxLength(20000);
-            entity.Property(e => e.ConversationTitle).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.UserCreatedAt);
-            entity.HasIndex(e => e.CreatedAt);
-            entity.HasIndex(e => e.RequestId);
-            entity.HasIndex(e => e.ConversationGroupKey);
-            entity.HasIndex(e => new { e.SourceTool, e.SessionId, e.CreatedAt });
         });
 
         // 模型健康监控配置实体配置

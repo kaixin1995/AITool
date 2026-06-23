@@ -69,7 +69,7 @@ public sealed partial class OpenAiProxyController
             var root = JsonNode.Parse(rawRequestJson) as JsonObject;
             if (root is null)
             {
-                errorMessage = "Invalid websocket request body";
+                errorMessage = "WebSocket 请求体格式无效，请检查是否为合法的 JSON";
                 return false;
             }
 

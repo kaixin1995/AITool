@@ -2,9 +2,6 @@ using System.Text;
 using System.Text.Json;
 using AITool.Application.Conversations;
 using AITool.Domain.Proxy;
-using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace AITool.Infrastructure.Conversations;
@@ -15,24 +12,19 @@ namespace AITool.Infrastructure.Conversations;
 public sealed class FileConversationLogStore : IConversationLogStore, IDisposable
 {
     private const string FileExtension = ".jsonl";
-    private const string LegacyImportMarkerFileName = ".legacy-db-imported";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim _storageLock = new(1, 1);
     private readonly ConversationLogFileOptions _options;
-    private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<FileConversationLogStore> _logger;
-    private volatile bool _legacyImportChecked;
 
     /// <summary>
     /// 初始化本地文件对话记录存储。
     /// </summary>
     public FileConversationLogStore(
         ConversationLogFileOptions options,
-        IServiceScopeFactory scopeFactory,
         ILogger<FileConversationLogStore> logger)
     {
         _options = options;
-        _scopeFactory = scopeFactory;
         _logger = logger;
     }
 
@@ -66,7 +58,6 @@ public sealed class FileConversationLogStore : IConversationLogStore, IDisposabl
 
     public async Task<IReadOnlyList<ConversationTurnLog>> QueryAsync(ConversationLogQuery query, CancellationToken cancellationToken = default)
     {
-        await EnsureLegacyDatabaseImportedAsync(cancellationToken);
 
         await _storageLock.WaitAsync(cancellationToken);
         try
@@ -143,7 +134,6 @@ public sealed class FileConversationLogStore : IConversationLogStore, IDisposabl
             return 0;
         }
 
-        await EnsureLegacyDatabaseImportedAsync(cancellationToken);
 
         await _storageLock.WaitAsync(cancellationToken);
         try
@@ -189,7 +179,6 @@ public sealed class FileConversationLogStore : IConversationLogStore, IDisposabl
             return 0;
         }
 
-        await EnsureLegacyDatabaseImportedAsync(cancellationToken);
 
         await _storageLock.WaitAsync(cancellationToken);
         try
@@ -267,55 +256,6 @@ public sealed class FileConversationLogStore : IConversationLogStore, IDisposabl
 
                 await RewriteFileUnlockedAsync(filePath, keptRecords, cancellationToken);
             }
-        }
-        finally
-        {
-            _storageLock.Release();
-        }
-    }
-
-    /// <summary>
-    /// 首次切换为本地文件存储时，把数据库里保留窗口内的历史记录导入到本地，避免旧会话立即消失。
-    /// </summary>
-    private async Task EnsureLegacyDatabaseImportedAsync(CancellationToken cancellationToken)
-    {
-        if (_legacyImportChecked)
-        {
-            return;
-        }
-
-        await _storageLock.WaitAsync(cancellationToken);
-        try
-        {
-            if (_legacyImportChecked)
-            {
-                return;
-            }
-
-            EnsureRootDirectory();
-            var markerPath = Path.Combine(_options.RootPath, LegacyImportMarkerFileName);
-            if (File.Exists(markerPath))
-            {
-                _legacyImportChecked = true;
-                return;
-            }
-
-            using var scope = _scopeFactory.CreateScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var cutoff = DateTimeOffset.Now.AddDays(-ConversationLogStoragePolicy.RetentionDays);
-            var legacyLogs = (await dbContext.ConversationTurnLogs
-                    .AsNoTracking()
-                    .ToListAsync(cancellationToken))
-                .Where(x => x.CreatedAt >= cutoff)
-                .OrderBy(x => x.CreatedAt)
-                .ToList();
-            if (legacyLogs.Count > 0)
-            {
-                await AppendBatchUnlockedAsync(legacyLogs, cancellationToken);
-            }
-
-            await File.WriteAllTextAsync(markerPath, DateTimeOffset.UtcNow.ToString("O"), cancellationToken);
-            _legacyImportChecked = true;
         }
         finally
         {

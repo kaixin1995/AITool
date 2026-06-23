@@ -48,7 +48,6 @@ public static class AdminStartupInitializer
         // 补齐历史数据库缺失的列和表。
         // 这些迁移步骤是幂等的：已存在的列不会重复添加。
         await DatabaseSchemaMigrator.EnsureProxyUsageLogSchemaAsync(db);
-        await DatabaseSchemaMigrator.EnsureConversationLogSchemaAsync(db);
 
         // 注册所有已启用的定时检测任务到 Hangfire 调度器。
         // 如果注册失败（如任务配置异常），仅记录警告，不阻止启动。

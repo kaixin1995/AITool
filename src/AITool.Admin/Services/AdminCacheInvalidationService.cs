@@ -290,7 +290,8 @@ public sealed class AdminCacheInvalidationService
                     PlainKey = x.PlainKey,
                     AccessKeyHash = x.AccessKeyHash,
                     MaskedValue = x.MaskedValue,
-                    IsEnabled = x.IsEnabled
+                    IsEnabled = x.IsEnabled,
+                    AllowedRouteNames = x.AllowedRouteNames
                 })
                 .ToList();
         }

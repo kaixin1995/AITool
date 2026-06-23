@@ -34,4 +34,10 @@ public sealed class ProxyAccessKey
     /// 标记该密钥当前是否可用，禁用后不应再通过该密钥访问代理能力。
     /// </summary>
     public bool IsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 允许访问的路由入口名称（对外模型名）的 JSON 数组，如 ["gpt-4","claude-sonnet-4-5"]。
+    /// 空串表示允许全部路由（包括后续新增的），非空表示只能访问列表中的路由入口。
+    /// </summary>
+    public string AllowedRouteNames { get; set; } = string.Empty;
 }
