@@ -159,7 +159,9 @@ public sealed partial class ProxyRequestMetadataCache
         }
         catch
         {
-            return null;
+            // JSON 解析失败时 fail-close（拒绝所有路由），而非 fail-open（允许全部）。
+            // 返回空集合表示"只允许列表中的路由"但列表为空 = 全部拒绝。
+            return new HashSet<string>(StringComparer.Ordinal);
         }
     }
 

@@ -331,12 +331,27 @@ public sealed class UsageLogRow
     public string RequestedAt { get; set; } = string.Empty;
 
     /// <summary>
+    /// <summary>
     /// 解析 RequestedAt 字符串为 DateTime（UTC）。
     /// 用 SpecifyKind 确保 Kind=Utc，避免 new DateTimeOffset(dateTime, Zero) 偏移不匹配。
+    /// 解析失败时回退为 DateTime.MinValue，避免脏数据导致整页 500。
     /// </summary>
-    public DateTime RequestedAtDateTime => DateTime.SpecifyKind(
-        DateTime.Parse(RequestedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
-        DateTimeKind.Utc);
+    public DateTime RequestedAtDateTime
+    {
+        get
+        {
+            try
+            {
+                return DateTime.SpecifyKind(
+                    DateTime.Parse(RequestedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
+                    DateTimeKind.Utc);
+            }
+            catch
+            {
+                return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
+            }
+        }
+    }
 }
 
 /// <summary>
@@ -363,12 +378,27 @@ public sealed class DetectionLatestLogRow
     public int TotalDurationMs { get; set; }
 
     /// <summary>
+    /// <summary>
     /// 解析 RequestedAt 字符串为 DateTime（UTC）。
     /// 用 SpecifyKind 确保 Kind=Utc，避免 new DateTimeOffset(dateTime, Zero) 偏移不匹配。
+    /// 解析失败时回退为 DateTime.MinValue，避免脏数据导致整页 500。
     /// </summary>
-    public DateTime RequestedAtDateTime => DateTime.SpecifyKind(
-        DateTime.Parse(RequestedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
-        DateTimeKind.Utc);
+    public DateTime RequestedAtDateTime
+    {
+        get
+        {
+            try
+            {
+                return DateTime.SpecifyKind(
+                    DateTime.Parse(RequestedAt, null, System.Globalization.DateTimeStyles.RoundtripKind),
+                    DateTimeKind.Utc);
+            }
+            catch
+            {
+                return DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc);
+            }
+        }
+    }
 }
 
 /// <summary>

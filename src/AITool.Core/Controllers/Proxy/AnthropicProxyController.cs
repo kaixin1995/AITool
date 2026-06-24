@@ -426,7 +426,7 @@ public sealed class AnthropicProxyController : ControllerBase
         // 所有路由均失败
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
         return StatusCode(statusCode,
-            new { error = new { type = "api_error", message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+            new { error = new { type = "api_error", message = lastResult?.ErrorMessage ?? "全部上游路由均失败，请检查站点配置或联系管理员" } });
         }
         catch (OperationCanceledException)
         {

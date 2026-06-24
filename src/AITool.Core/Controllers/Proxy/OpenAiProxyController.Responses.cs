@@ -282,7 +282,10 @@ public sealed partial class OpenAiProxyController
                 callContext.ResponseContentType = "text/event-stream";
                 _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
-                SafeBlockRoute(route.RouteId);
+                if (!streamResult.HasStartedStreaming)
+                {
+                    SafeBlockRoute(route.RouteId);
+                }
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
                 {
@@ -353,13 +356,16 @@ public sealed partial class OpenAiProxyController
             callContext.ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
             _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
-            SafeBlockRoute(route.RouteId);
+            if (!result.HasStartedStreaming)
+            {
+                SafeBlockRoute(route.RouteId);
+            }
             lastResult = result;
         }
 
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
         return StatusCode(statusCode,
-            new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+            new { error = new { message = lastResult?.ErrorMessage ?? "全部上游路由均失败，请检查站点配置或联系管理员" } });
         }
         catch (OperationCanceledException)
         {
@@ -418,7 +424,14 @@ public sealed partial class OpenAiProxyController
         var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync("OpenAI", modelName, cancellationToken);
 
         // AccessKey 路由限定。WebSocket 方法接收的是 accessKeyId，需要从缓存查 accessKey 对象。
+        // 如果密钥已被禁用或缓存失效，GetAccessKeyByIdAsync 返回 null，此时按"最小权限"拒绝（fail-close），
+        // 而非默认放行全部路由（避免被禁用密钥的活跃 WebSocket 会话权限被放大）。
         var wsAccessKey = await _metadataCache.GetAccessKeyByIdAsync(accessKeyId, cancellationToken);
+        if (wsAccessKey is null)
+        {
+            await WriteResponsesWebSocketErrorAsync(webSocket, StatusCodes.Status401Unauthorized, "访问密钥无效或已被禁用", cancellationToken);
+            return false;
+        }
         var allowedRoutes = ProxyRequestMetadataCache.GetAllowedRouteNames(wsAccessKey);
         if (allowedRoutes is not null && allRoutes.Count > 0)
         {
@@ -537,13 +550,16 @@ public sealed partial class OpenAiProxyController
             callContext.ResponseContentType = "application/websocket+json";
             _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
-            SafeBlockRoute(route.RouteId);
+            if (!streamResult.HasStartedStreaming)
+            {
+                SafeBlockRoute(route.RouteId);
+            }
             lastResult = streamResult;
             if (!streamOutcome.CanFallback)
             {
                 if (webSocket.State == WebSocketState.Open)
                 {
-                    await WriteResponsesWebSocketErrorAsync(webSocket, streamResult.StatusCode > 0 ? streamResult.StatusCode : StatusCodes.Status502BadGateway, streamResult.ErrorMessage ?? "All upstream routes failed", cancellationToken);
+                    await WriteResponsesWebSocketErrorAsync(webSocket, streamResult.StatusCode > 0 ? streamResult.StatusCode : StatusCodes.Status502BadGateway, streamResult.ErrorMessage ?? "全部上游路由均失败，请检查站点配置或联系管理员", cancellationToken);
                 }
                 return false;
             }
@@ -551,7 +567,7 @@ public sealed partial class OpenAiProxyController
 
         if (webSocket.State == WebSocketState.Open)
         {
-            await WriteResponsesWebSocketErrorAsync(webSocket, lastResult?.StatusCode > 0 ? lastResult.StatusCode : StatusCodes.Status502BadGateway, lastResult?.ErrorMessage ?? "All upstream routes failed", cancellationToken);
+            await WriteResponsesWebSocketErrorAsync(webSocket, lastResult?.StatusCode > 0 ? lastResult.StatusCode : StatusCodes.Status502BadGateway, lastResult?.ErrorMessage ?? "全部上游路由均失败，请检查站点配置或联系管理员", cancellationToken);
         }
         return false;
         }

@@ -350,10 +350,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     result.OutputTokens);
                 return ProxyProtocolBridge.ConvertChatResponseToCompletions(chatBody);
             },
-            streamingBridgeFactory: static (controller, forwardRequest, modelName, _) =>
+            streamingBridgeFactory: static (controller, forwardRequest, modelName, ct) =>
                 string.Equals(forwardRequest.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
-                    ? controller.ForwardAnthropicStreamAsCompletionsAsync(forwardRequest, modelName, CancellationToken.None)
-                    : controller.ForwardOpenAiStreamAsCompletionsAsync(forwardRequest, modelName, CancellationToken.None),
+                    ? controller.ForwardAnthropicStreamAsCompletionsAsync(forwardRequest, modelName, ct)
+                    : controller.ForwardOpenAiStreamAsCompletionsAsync(forwardRequest, modelName, ct),
             cancellationToken: cancellationToken);
     }
 
@@ -412,12 +412,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     result.InputTokens,
                     result.CachedTokens,
                     result.OutputTokens),
-            streamingBridgeFactory: static (controller, forwardRequest, modelName, _) =>
+            streamingBridgeFactory: static (controller, forwardRequest, modelName, ct) =>
                 string.Equals(forwardRequest.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
-                    ? controller.ForwardAnthropicStreamAsOpenAiAsync(forwardRequest, modelName, CancellationToken.None)
+                    ? controller.ForwardAnthropicStreamAsOpenAiAsync(forwardRequest, modelName, ct)
                     : string.Equals(forwardRequest.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                        ? controller.ForwardResponsesStreamAsOpenAiAsync(forwardRequest, modelName, CancellationToken.None)
-                        : controller.ForwardOpenAiStreamPassthroughAsync(forwardRequest, CancellationToken.None),
+                        ? controller.ForwardResponsesStreamAsOpenAiAsync(forwardRequest, modelName, ct)
+                        : controller.ForwardOpenAiStreamPassthroughAsync(forwardRequest, ct),
             cancellationToken: cancellationToken);
     }
 
@@ -693,7 +693,13 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
                 _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
-                SafeBlockRoute(route.RouteId);
+
+                // 仅当未开始流式写入时才熔断该路由；若已开始写入（客户端已收到部分内容甚至终止事件），
+                // 视为部分成功，不触发熔断，避免健康路由因上游偶发流中断被错误拉黑。
+                if (!streamResult.HasStartedStreaming)
+                {
+                    SafeBlockRoute(route.RouteId);
+                }
                 lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, streamResult.ErrorMessage);
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
@@ -756,7 +762,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
         var statusCode = lastResult?.StatusCode > 0 ? lastResult.StatusCode : 502;
         return StatusCode(statusCode,
-            new { error = new { message = lastResult?.ErrorMessage ?? "All upstream routes failed" } });
+            new { error = new { message = lastResult?.ErrorMessage ?? "全部上游路由均失败，请检查站点配置或联系管理员" } });
         }
         catch (OperationCanceledException)
         {
