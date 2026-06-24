@@ -50,7 +50,7 @@ public sealed class ConversationsApiController : ControllerBase
             return BadRequest(new { message = errorMessage });
         }
 
-        var items = await _conversationLogStore.QueryAsync(new ConversationLogQuery
+        var summaries = await _conversationLogStore.QuerySessionSummariesAsync(new ConversationLogQuery
         {
             StartTime = range.Start,
             EndTime = range.End,
@@ -59,38 +59,31 @@ public sealed class ConversationsApiController : ControllerBase
             SessionKeyword = sessionKeyword ?? string.Empty
         }, cancellationToken);
 
-        var sessions = items
-            .GroupBy(x => x.ConversationGroupKey)
-            .Select(group =>
+        var sessions = summaries
+            .Select(summary =>
             {
-                var latest = group.OrderByDescending(x => x.CreatedAt).First();
-                var preview = group
-                    .Select(x => _conversationExtractionService.NormalizeConversationText(GzipTextCompression.Decompress(x.UserInputText)))
-                    .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
-                var totalTokens = group.Sum(x => x.InputTokens + x.CachedTokens + x.OutputTokens);
-                var customTitle = group
-                    .Select(x => x.ConversationTitle)
-                    .FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? string.Empty;
-                var defaultTitle = ResolveSessionTitle(latest.SourceTool, string.Empty, preview, latest.SessionId);
-                var title = ResolveSessionTitle(latest.SourceTool, customTitle, preview, latest.SessionId);
+                // 每个会话只解压一次压缩原文，取标题预览（替代历史实现里对分组内每条都解压再 FirstOrDefault）。
+                var preview = _conversationExtractionService.NormalizeConversationText(
+                    GzipTextCompression.Decompress(summary.FirstUserInputTextCompressed));
+                var defaultTitle = ResolveSessionTitle(summary.SourceTool, string.Empty, preview, summary.SessionId);
+                var title = ResolveSessionTitle(summary.SourceTool, summary.ConversationTitle, preview, summary.SessionId);
                 return new
                 {
-                    GroupKey = group.Key,
-                    SourceTool = latest.SourceTool,
-                    SourceToolText = GetSourceToolText(latest.SourceTool),
-                    SessionIdShort = string.IsNullOrWhiteSpace(latest.SessionId) ? "无会话" : latest.SessionId[..Math.Min(8, latest.SessionId.Length)],
-                    LastActivityAt = latest.CreatedAt,
-                    LastActivityAtText = latest.CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
-                    TurnCount = group.Count(),
-                    TotalTokens = totalTokens,
-                    TotalTokensText = FormatTokenCount(totalTokens),
+                    GroupKey = summary.GroupKey,
+                    SourceTool = summary.SourceTool,
+                    SourceToolText = GetSourceToolText(summary.SourceTool),
+                    SessionIdShort = string.IsNullOrWhiteSpace(summary.SessionId) ? "无会话" : summary.SessionId[..Math.Min(8, summary.SessionId.Length)],
+                    LastActivityAt = summary.LastActivityAt,
+                    LastActivityAtText = summary.LastActivityAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss"),
+                    TurnCount = summary.TurnCount,
+                    TotalTokens = summary.TotalTokens,
+                    TotalTokensText = FormatTokenCount(summary.TotalTokens),
                     Preview = preview.Length > 60 ? preview[..60] : preview,
                     Title = title,
                     DefaultTitle = defaultTitle,
-                    IsCustomTitle = !string.IsNullOrWhiteSpace(customTitle)
+                    IsCustomTitle = !string.IsNullOrWhiteSpace(summary.ConversationTitle)
                 };
             })
-            .OrderByDescending(x => x.LastActivityAt)
             .ToList();
 
         return Ok(new { items = sessions });
@@ -185,8 +178,18 @@ public sealed class ConversationsApiController : ControllerBase
             GroupKey = groupKey
         }, cancellationToken);
 
-        var items = logs
-            .OrderBy(x => x.CreatedAt)
+        // QueryAsync 从最新分片倒序读取、已带 MaxQueryTurns 上限；这里再按展示顺序（升序）收紧单会话上限，
+        // 超出部分提示用户缩小时间范围，避免前端一次性渲染海量轮次导致卡死。
+        var orderedLogs = logs.OrderBy(x => x.CreatedAt).ToList();
+        var truncated = orderedLogs.Count > ConversationLogStoragePolicy.MaxTurnsPerSession;
+        if (truncated)
+        {
+            orderedLogs = orderedLogs
+                .Skip(orderedLogs.Count - ConversationLogStoragePolicy.MaxTurnsPerSession)
+                .ToList();
+        }
+
+        var items = orderedLogs
             .Select(x => new
             {
                 x.Id,
@@ -203,7 +206,7 @@ public sealed class ConversationsApiController : ControllerBase
             })
             .ToList();
 
-        return Ok(new { items });
+        return Ok(new { items, truncated });
     }
 
     /// <summary>

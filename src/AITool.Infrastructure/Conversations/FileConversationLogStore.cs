@@ -12,11 +12,6 @@ namespace AITool.Infrastructure.Conversations;
 public sealed class FileConversationLogStore : IConversationLogStore
 {
     private const string FileExtension = ".jsonl";
-    /// <summary>
-    /// 单次查询最多返回的记录数。从最新文件倒序读取，达到上限立即停止，
-    /// 避免保留窗口内全部记录（含数十 KB 的对话正文）一次性加载到内存导致内存暴涨。
-    /// </summary>
-    private const int MaxQueryResults = 1000;
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly SemaphoreSlim _storageLock = new(1, 1);
     private readonly ConversationLogFileOptions _options;
@@ -57,8 +52,9 @@ public sealed class FileConversationLogStore : IConversationLogStore
 
     /// <summary>
     /// 按时间范围与筛选条件读取本地对话记录。
-    /// 从最新分片文件倒序读取，逐行过滤并收集，达到 <see cref="MaxQueryResults"/> 上限立即停止，
-    /// 避免保留窗口内全部记录（含数十 KB 的对话正文）一次性加载到内存。
+    /// 从最新分片文件倒序读取，<b>过滤与计数在读取行内同步进行</b>，达到
+    /// <see cref="ConversationLogStoragePolicy.MaxQueryTurns"/> 上限立即停止读取后续行与文件，
+    /// 不会把整个文件全量反序列化进内存。
     /// </summary>
     public async Task<IReadOnlyList<ConversationTurnLog>> QueryAsync(ConversationLogQuery query, CancellationToken cancellationToken = default)
     {
@@ -71,54 +67,57 @@ public sealed class FileConversationLogStore : IConversationLogStore
                 .OrderByDescending(x => x, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            var results = new List<ConversationTurnLog>(Math.Min(MaxQueryResults, 256));
+            var results = new List<ConversationTurnLog>(Math.Min(ConversationLogStoragePolicy.MaxQueryTurns, 256));
+            var matcher = new ConversationLogMatcher(query);
             foreach (var filePath in filePaths)
             {
-                if (results.Count >= MaxQueryResults)
+                if (results.Count >= ConversationLogStoragePolicy.MaxQueryTurns)
                 {
                     break;
                 }
 
-                var fileRecords = await ReadRecordsFromFileUnlockedAsync(filePath, cancellationToken);
-                foreach (var record in fileRecords)
+                // 返回 true 表示已达到上限，外层立即停止读后续文件。
+                if (await ReadAndFilterAsync(filePath, matcher, ConversationLogStoragePolicy.MaxQueryTurns, results, cancellationToken))
                 {
-                    if (results.Count >= MaxQueryResults)
-                    {
-                        break;
-                    }
-
-                    if (record.CreatedAt < query.StartTime || record.CreatedAt >= query.EndTime)
-                    {
-                        continue;
-                    }
-                    if (!string.IsNullOrWhiteSpace(query.SourceTool)
-                        && !string.Equals(record.SourceTool, query.SourceTool, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-                    if (!string.IsNullOrWhiteSpace(query.RequestModel)
-                        && !string.Equals(record.RequestModel, query.RequestModel, StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-                    if (!string.IsNullOrWhiteSpace(query.SessionKeyword)
-                        && !record.SessionId.Contains(query.SessionKeyword, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-                    if (!string.IsNullOrWhiteSpace(query.GroupKey)
-                        && !string.Equals(record.ConversationGroupKey, query.GroupKey, StringComparison.Ordinal))
-                    {
-                        continue;
-                    }
-
-                    results.Add(record);
+                    break;
                 }
             }
 
             // 返回前按时间升序排列，保持前端展示顺序（最旧在前）。
             results.Sort((a, b) => a.CreatedAt.CompareTo(b.CreatedAt));
             return results;
+        }
+        finally
+        {
+            _storageLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 按条件流式聚合查询会话摘要（不保留整条记录，避免把全部正文一次性物化进内存）。
+    /// 单次扫描候选文件，逐行更新 <see cref="ConversationSessionSummary"/> 聚合结果。
+    /// </summary>
+    public async Task<IReadOnlyList<ConversationSessionSummary>> QuerySessionSummariesAsync(ConversationLogQuery query, CancellationToken cancellationToken = default)
+    {
+        await _storageLock.WaitAsync(cancellationToken);
+        try
+        {
+            EnsureRootDirectory();
+            var filePaths = ResolveCandidateFilePaths(query.StartTime, query.EndTime)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            var summaries = new Dictionary<string, ConversationSessionSummary>(StringComparer.Ordinal);
+            var matcher = new ConversationLogMatcher(query);
+            foreach (var filePath in filePaths)
+            {
+                await AggregateSessionSummariesAsync(filePath, matcher, summaries, cancellationToken);
+            }
+
+            // 列表按最近活动时间倒序，与历史行为一致。
+            return summaries.Values
+                .OrderByDescending(x => x.LastActivityAt)
+                .ToList();
         }
         finally
         {
@@ -281,21 +280,7 @@ public sealed class FileConversationLogStore : IConversationLogStore
     }
 
     /// <summary>
-    /// 从多个候选分片文件中读取并反序列化记录。
-    /// </summary>
-    private async Task<List<ConversationTurnLog>> ReadRecordsFromFilesUnlockedAsync(IEnumerable<string> filePaths, CancellationToken cancellationToken)
-    {
-        var records = new List<ConversationTurnLog>();
-        foreach (var filePath in filePaths)
-        {
-            records.AddRange(await ReadRecordsFromFileUnlockedAsync(filePath, cancellationToken));
-        }
-
-        return records;
-    }
-
-    /// <summary>
-    /// 逐行读取单个 JSONL 文件，避免一次性把整文件文本读入内存。
+    /// 逐行读取单个 JSONL 文件全量记录（用于删除 / 改名 / 过期清理这类需要完整数据集的场景）。
     /// </summary>
     private async Task<List<ConversationTurnLog>> ReadRecordsFromFileUnlockedAsync(string filePath, CancellationToken cancellationToken)
     {
@@ -331,6 +316,149 @@ public sealed class FileConversationLogStore : IConversationLogStore
         }
 
         return records;
+    }
+
+    /// <summary>
+    /// 流式读取单个 JSONL 文件，逐行反序列化并按 <paramref name="matcher"/> 过滤；
+    /// 命中的记录加入 <paramref name="results"/>，达到 <paramref name="maxResults"/> 上限立即停止读取，
+    /// 不满足过滤条件的记录立即丢弃、绝不保留，避免把整个文件物化进内存。
+    /// </summary>
+    /// <returns>已达到 <paramref name="maxResults"/> 上限返回 true，调用方据此停止读后续文件。</returns>
+    private async Task<bool> ReadAndFilterAsync(
+        string filePath,
+        ConversationLogMatcher matcher,
+        int maxResults,
+        List<ConversationTurnLog> results,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(filePath))
+        {
+            return false;
+        }
+
+        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (!reader.EndOfStream)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            ConversationTurnLog? record;
+            try
+            {
+                record = JsonSerializer.Deserialize<ConversationTurnLog>(line, SerializerOptions);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "解析本地对话记录失败，文件={FilePath}", filePath);
+                continue;
+            }
+
+            if (record is null || !matcher.Matches(record))
+            {
+                // 不命中条件立即丢弃，不进入 results，不占内存。
+                continue;
+            }
+
+            results.Add(record);
+            if (results.Count >= maxResults)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 流式读取单个 JSONL 文件，逐行聚合到 <paramref name="summaries"/>（按 GroupKey 分组）。
+    /// 只更新聚合字段，不保留整条 <see cref="ConversationTurnLog"/>，内存占用与会话数成正比而非记录数。
+    /// </summary>
+    private async Task AggregateSessionSummariesAsync(
+        string filePath,
+        ConversationLogMatcher matcher,
+        Dictionary<string, ConversationSessionSummary> summaries,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(filePath))
+        {
+            return;
+        }
+
+        await using var stream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        while (!reader.EndOfStream)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var line = await reader.ReadLineAsync(cancellationToken);
+            if (string.IsNullOrWhiteSpace(line))
+            {
+                continue;
+            }
+
+            ConversationTurnLog? record;
+            try
+            {
+                record = JsonSerializer.Deserialize<ConversationTurnLog>(line, SerializerOptions);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "解析本地对话记录失败，文件={FilePath}", filePath);
+                continue;
+            }
+
+            if (record is null || !matcher.Matches(record))
+            {
+                continue;
+            }
+
+            AggregateRecord(summaries, record);
+        }
+    }
+
+    /// <summary>
+    /// 把单条记录聚合进会话摘要字典。每会话只保留列表展示所需字段，不物化记录正文。
+    /// </summary>
+    private static void AggregateRecord(Dictionary<string, ConversationSessionSummary> summaries, ConversationTurnLog record)
+    {
+        var groupKey = record.ConversationGroupKey;
+        if (string.IsNullOrWhiteSpace(groupKey))
+        {
+            return;
+        }
+
+        if (!summaries.TryGetValue(groupKey, out var summary))
+        {
+            summary = new ConversationSessionSummary { GroupKey = groupKey };
+            summaries[groupKey] = summary;
+        }
+
+        summary.TurnCount++;
+        summary.TotalTokens += record.InputTokens + record.CachedTokens + record.OutputTokens;
+
+        // 最近一条记录：取 CreatedAt 最大者，并同步其来源 / 会话标识。
+        if (record.CreatedAt > summary.LastActivityAt)
+        {
+            summary.LastActivityAt = record.CreatedAt;
+            summary.SourceTool = record.SourceTool;
+            summary.SessionId = record.SessionId;
+        }
+
+        // 首个非空自定义标题。
+        if (string.IsNullOrEmpty(summary.ConversationTitle) && !string.IsNullOrWhiteSpace(record.ConversationTitle))
+        {
+            summary.ConversationTitle = record.ConversationTitle;
+        }
+
+        // 首条非空用户输入的压缩原文（保留压缩态，由调用方按需解压取标题预览）。
+        if (string.IsNullOrEmpty(summary.FirstUserInputTextCompressed) && !string.IsNullOrWhiteSpace(record.UserInputText))
+        {
+            summary.FirstUserInputTextCompressed = record.UserInputText;
+        }
     }
 
     /// <summary>
@@ -423,5 +551,69 @@ public sealed class FileConversationLogStore : IConversationLogStore
         }
 
         Directory.CreateDirectory(_options.RootPath);
+    }
+}
+
+/// <summary>
+/// 封装对话记录过滤条件，供流式读取逐行判断命中时复用，避免重复解析查询参数。
+/// </summary>
+internal sealed class ConversationLogMatcher
+{
+    private readonly DateTimeOffset _startTime;
+    private readonly DateTimeOffset _endTime;
+    private readonly string _sourceTool;
+    private readonly bool _hasSourceTool;
+    private readonly string _requestModel;
+    private readonly bool _hasRequestModel;
+    private readonly string _sessionKeyword;
+    private readonly bool _hasSessionKeyword;
+    private readonly string _groupKey;
+    private readonly bool _hasGroupKey;
+
+    public ConversationLogMatcher(ConversationLogQuery query)
+    {
+        _startTime = query.StartTime;
+        _endTime = query.EndTime;
+        _sourceTool = query.SourceTool ?? string.Empty;
+        _hasSourceTool = !string.IsNullOrWhiteSpace(_sourceTool);
+        _requestModel = query.RequestModel ?? string.Empty;
+        _hasRequestModel = !string.IsNullOrWhiteSpace(_requestModel);
+        _sessionKeyword = query.SessionKeyword ?? string.Empty;
+        _hasSessionKeyword = !string.IsNullOrWhiteSpace(_sessionKeyword);
+        _groupKey = query.GroupKey ?? string.Empty;
+        _hasGroupKey = !string.IsNullOrWhiteSpace(_groupKey);
+    }
+
+    /// <summary>
+    /// 判断单条记录是否满足全部查询条件。
+    /// </summary>
+    public bool Matches(ConversationTurnLog record)
+    {
+        if (record.CreatedAt < _startTime || record.CreatedAt >= _endTime)
+        {
+            return false;
+        }
+
+        if (_hasSourceTool && !string.Equals(record.SourceTool, _sourceTool, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (_hasRequestModel && !string.Equals(record.RequestModel, _requestModel, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        if (_hasSessionKeyword && !record.SessionId.Contains(_sessionKeyword, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (_hasGroupKey && !string.Equals(record.ConversationGroupKey, _groupKey, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return true;
     }
 }

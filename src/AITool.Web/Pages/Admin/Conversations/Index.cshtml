@@ -375,6 +375,15 @@
         padding: 24px;
     }
 
+    .conversation-turns-truncated {
+        padding: 10px 14px;
+        margin-bottom: 16px;
+        background: #fffbeb;
+        border: 1px solid #fde68a;
+        border-radius: 10px;
+        color: #92400e;
+    }
+
     /* 单轮对话容器 */
     .conversation-turn {
         margin-bottom: 32px;
@@ -858,7 +867,7 @@
         }
     }
 
-    function renderTurns(items, scrollToBottom) {
+    function renderTurns(items, scrollToBottom, truncated) {
         currentRoleFilter = getRoleFilterValue();
         var container = document.getElementById('conversationTurns');
         container.innerHTML = '';
@@ -868,7 +877,23 @@
             return;
         }
 
-        items.forEach(function(item) {
+        // 前端渲染上限保险：即使后端未截断，单次同步 marked + hljs 渲染过多也会卡死页面。
+        var maxRender = 500;
+        var renderItems = items;
+        var locallyTruncated = false;
+        if (items.length > maxRender) {
+            renderItems = items.slice(items.length - maxRender);
+            locallyTruncated = true;
+        }
+
+        if (truncated || locallyTruncated) {
+            var notice = document.createElement('div');
+            notice.className = 'conversation-turns-truncated text-muted small';
+            notice.textContent = '为避免页面卡顿，仅显示最近的对话记录，更早的内容请缩小时间范围或按天查看。';
+            container.appendChild(notice);
+        }
+
+        renderItems.forEach(function(item) {
             var turn = document.createElement('div');
             turn.className = 'conversation-turn';
 
@@ -927,7 +952,7 @@
             var res = await fetch('/api/admin/conversations/turns?groupKey=' + encodeURIComponent(groupKey) + '&' + timeParams.toString());
             var data = await readConversationApiJson(res, '加载会话详情失败');
             lastTurnsPayload = Array.isArray(data.items) ? data.items : [];
-            renderTurns(lastTurnsPayload, scrollToBottom);
+            renderTurns(lastTurnsPayload, scrollToBottom, !!data.truncated);
         } catch (err) {
             lastTurnsPayload = [];
             document.getElementById('conversationTurns').innerHTML = '<div class="conversation-turns-empty text-danger">' + escapeHtml(err.message || '加载会话详情失败') + '</div>';

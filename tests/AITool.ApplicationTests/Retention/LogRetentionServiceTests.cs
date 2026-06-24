@@ -208,6 +208,11 @@ public sealed class LogRetentionServiceTests : IDisposable
             return Task.FromResult<IReadOnlyList<ConversationTurnLog>>([]);
         }
 
+        public Task<IReadOnlyList<ConversationSessionSummary>> QuerySessionSummariesAsync(ConversationLogQuery query, CancellationToken cancellationToken = default)
+        {
+            return Task.FromResult<IReadOnlyList<ConversationSessionSummary>>([]);
+        }
+
         public Task<int> DeleteSessionAsync(string groupKey, CancellationToken cancellationToken = default)
         {
             return Task.FromResult(0);
