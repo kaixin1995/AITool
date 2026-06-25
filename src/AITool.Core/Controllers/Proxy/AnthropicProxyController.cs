@@ -839,6 +839,11 @@ public sealed class AnthropicProxyController : ControllerBase
             return "open-code";
         }
 
+        if (normalizedUserAgent.Contains("zcode"))
+        {
+            return "zcode";
+        }
+
         return "proxy";
     }
 
