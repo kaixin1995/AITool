@@ -76,6 +76,7 @@
                     <option value="claude-code">Claude Code</option>
                     <option value="codex">Codex</option>
                     <option value="open-code">Open Code</option>
+                    <option value="zcode">ZCode</option>
                     <option value="detection-manual">手动检测</option>
                     <option value="detection-task">定时检测</option>
                 </select>
@@ -848,6 +849,10 @@
             case 'open-code':
                 badgeClass = 'warning';
                 label = 'Open Code';
+                break;
+            case 'zcode':
+                badgeClass = 'primary';
+                label = 'ZCode';
                 break;
             case 'detection-manual':
                 badgeClass = 'success';

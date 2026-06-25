@@ -389,6 +389,11 @@ public sealed partial class OpenAiProxyController
             return "open-code";
         }
 
+        if (normalizedUserAgent.Contains("zcode"))
+        {
+            return "zcode";
+        }
+
         return "proxy";
     }
 

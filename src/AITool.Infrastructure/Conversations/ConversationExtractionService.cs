@@ -45,6 +45,11 @@ public sealed class ConversationExtractionService
             return "open-code";
         }
 
+        if (normalizedUserAgent.Contains("zcode"))
+        {
+            return "zcode";
+        }
+
         return "proxy";
     }
 
@@ -81,6 +86,16 @@ public sealed class ConversationExtractionService
         if (headers.TryGetValue("x-session-affinity", out var openCodeSessionId))
         {
             var value = openCodeSessionId.Trim();
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        // ZCode 通过 x-session-id 标识会话
+        if (headers.TryGetValue("x-session-id", out var zcodeSessionId))
+        {
+            var value = zcodeSessionId.Trim();
             if (!string.IsNullOrWhiteSpace(value))
             {
                 return value;

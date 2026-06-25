@@ -308,7 +308,8 @@ public sealed class ConversationsApiController : ControllerBase
 
         if (string.Equals(sourceTool, "codex", StringComparison.OrdinalIgnoreCase)
             || string.Equals(sourceTool, "claude-code", StringComparison.OrdinalIgnoreCase)
-            || string.Equals(sourceTool, "open-code", StringComparison.OrdinalIgnoreCase))
+            || string.Equals(sourceTool, "open-code", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(sourceTool, "zcode", StringComparison.OrdinalIgnoreCase))
         {
             if (!string.IsNullOrWhiteSpace(preview))
             {
@@ -336,6 +337,7 @@ public sealed class ConversationsApiController : ControllerBase
             "claude-code" => "Claude Code",
             "codex" => "Codex",
             "open-code" => "OpenCode",
+            "zcode" => "ZCode",
             _ => sourceTool
         };
     }
