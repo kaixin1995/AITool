@@ -13,7 +13,13 @@ public sealed class ConversationLogBatchWriter : BackgroundService
 {
     private const int MaxBatchSize = 100;
     private static readonly TimeSpan FlushInterval = TimeSpan.FromMilliseconds(800);
-    private readonly Channel<ConversationTurnEntry> _channel = Channel.CreateBounded<ConversationTurnEntry>(new BoundedChannelOptions(4096)
+    /// <summary>
+    /// 写入队列容量。每个 entry 含归一化后的用户输入与 AI 输出（最长约 24KB），
+    /// 容量过大时若落盘跟不上会导致积压内存飙升（曾因 4096 + 无截断 diff 达到数百 MB）。
+    /// 512 配合 800ms/100 条的刷新节奏足以平滑突发流量，DropWrite 保证不阻塞代理主链路。
+    /// </summary>
+    private const int ChannelCapacity = 512;
+    private readonly Channel<ConversationTurnEntry> _channel = Channel.CreateBounded<ConversationTurnEntry>(new BoundedChannelOptions(ChannelCapacity)
     {
         FullMode = BoundedChannelFullMode.DropWrite,
         SingleReader = true,

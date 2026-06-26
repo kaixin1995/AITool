@@ -11,6 +11,11 @@ public sealed class ConversationExtractionService
     private static readonly Regex SystemReminderBlockRegex = new(@"<system-reminder>[\s\S]*?</system-reminder>", RegexOptions.IgnoreCase | RegexOptions.Compiled);
     private static readonly Regex XmlLikeTagRegex = new(@"</?[a-zA-Z][^>]*>", RegexOptions.Compiled);
     private const int MaxToolResultTextLength = 12000;
+    /// <summary>
+    /// 单次工具改动的 diff 行数上限。Edit/Write 工具可能携带整文件内容（数百 KB ~ 数 MB），
+    /// 不截断会导致提取结果整体进入对话记录写入队列并长期驻留，是开启对话记录后内存暴涨的主因之一。
+    /// </summary>
+    private const int MaxToolChangeDiffLines = 200;
 
     /// <summary>
     /// 从请求中解析工具来源。
@@ -732,13 +737,26 @@ public sealed class ConversationExtractionService
         }
 
         var lines = new List<string> { "```diff" };
+        var truncated = false;
         foreach (var line in linesElement.EnumerateArray())
         {
+            if (lines.Count >= MaxToolChangeDiffLines)
+            {
+                truncated = true;
+                break;
+            }
+
             if (line.ValueKind == JsonValueKind.String)
             {
                 lines.Add(line.GetString() ?? string.Empty);
             }
         }
+
+        if (truncated)
+        {
+            lines.Add("...（已截断，仅保留前 " + MaxToolChangeDiffLines + " 行）");
+        }
+
         lines.Add("```");
         return string.Join("\n", lines);
     }
@@ -767,9 +785,31 @@ public sealed class ConversationExtractionService
             return;
         }
 
+        // 整文件内容（Edit/Write）可能数百 KB ~ 数 MB，按行截断避免提取结果整体进入写入队列驻留内存。
+        // lines 已包含 head（如 "工具结果: 代码改动"、"文件: ..."、"```diff"），此处按剩余容量追加。
+        var remaining = MaxToolChangeDiffLines - lines.Count;
+        if (remaining <= 0)
+        {
+            return;
+        }
+
+        var appended = 0;
+        var truncated = false;
         foreach (var line in text.Replace("\r\n", "\n").Split('\n'))
         {
+            if (appended >= remaining)
+            {
+                truncated = true;
+                break;
+            }
+
             lines.Add(prefix + line);
+            appended++;
+        }
+
+        if (truncated)
+        {
+            lines.Add(prefix + "...（已截断，仅保留前 " + MaxToolChangeDiffLines + " 行）");
         }
     }
 
@@ -956,7 +996,13 @@ public sealed class ConversationExtractionService
         }
         else if (ShouldShowToolCallArguments(name))
         {
-            lines.Add(input.GetRawText());
+            // input.GetRawText() 可能携带巨大的参数（如整段脚本/文件），截断避免进入写入队列驻留内存。
+            var rawArguments = input.GetRawText();
+            if (rawArguments.Length > MaxToolResultTextLength)
+            {
+                rawArguments = rawArguments[..MaxToolResultTextLength] + "\n...";
+            }
+            lines.Add(rawArguments);
         }
         return string.Join("\n", lines).Trim();
     }
