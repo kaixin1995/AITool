@@ -75,7 +75,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
     {
         var settings = await GetOrCreateAsync(cancellationToken);
 
-        // 用条件查询先统计待删除数量，再按同样条件删除（SqlSugar 的 DateTimeOffset 比较可下推到数据库）。
+        // 用条件查询先统计待删除数量，再按同样条件删除。
         var query = _dbContext.ProxyUsageLogs
             .WhereIF(!string.IsNullOrWhiteSpace(request.Source), x => x.Source == request.Source);
         if (request.StartTime.HasValue)
@@ -88,12 +88,16 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         }
 
         var deletedCount = await query.CountAsync(cancellationToken);
-        // SqlSugar 按条件删除：Deleteable 不支持 WhereIF 链式，需构造完整条件。
-        Expression<Func<ProxyUsageLog, bool>> predicate = x =>
-            (string.IsNullOrWhiteSpace(request.Source) || x.Source == request.Source)
-            && (!request.StartTime.HasValue || x.RequestedAt >= request.StartTime.Value)
-            && (!request.EndTime.HasValue || x.RequestedAt < request.EndTime.Value);
-        await _dbContext.DeleteAsync(predicate, cancellationToken);
+
+        // SqlSugar 的 Deleteable.Where(复杂表达式) 在 SQLite 下可能静默不生成 DELETE，
+        // 改为先查出待删除的 Id，再用 In 删除，确保删除真正执行。
+        var idsToDelete = await query.Select(x => x.Id).ToListAsync(cancellationToken);
+        if (idsToDelete.Count > 0)
+        {
+            await _dbContext.Client.Deleteable<ProxyUsageLog>()
+                .In(idsToDelete)
+                .ExecuteCommandAsync(cancellationToken);
+        }
 
         settings.LastUsageLogPrunedAt = DateTimeOffset.UtcNow;
         settings.LastUsageLogPrunedCount = deletedCount;

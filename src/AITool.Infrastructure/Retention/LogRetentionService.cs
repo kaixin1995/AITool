@@ -73,9 +73,18 @@ public sealed class LogRetentionService : ILogRetentionService
 
         var usageCutoff = now.AddDays(-settings.UsageLogRetentionDays);
 
-        // SqlSugar 直接在数据库层删除过期日志（DateTimeOffset 比较可下推），避免全表加载到内存。
-        var prunedCount = await _dbContext.DeleteAsync<ProxyUsageLog>(
-            l => l.RequestedAt < usageCutoff, cancellationToken);
+        // SqlSugar 的 Deleteable.Where 在 SQLite 下可能静默不执行，先查 Id 再 In 删除确保执行。
+        var idsToDelete = await _dbContext.ProxyUsageLogs
+            .Where(l => l.RequestedAt < usageCutoff)
+            .Select(l => l.Id)
+            .ToListAsync(cancellationToken);
+        var prunedCount = idsToDelete.Count;
+        if (idsToDelete.Count > 0)
+        {
+            await _dbContext.Client.Deleteable<ProxyUsageLog>()
+                .In(idsToDelete)
+                .ExecuteCommandAsync(cancellationToken);
+        }
 
         settings.LastUsageLogPrunedAt = now;
         settings.LastUsageLogPrunedCount = prunedCount;
