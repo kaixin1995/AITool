@@ -37,6 +37,11 @@ public sealed partial class OpenAiProxyController : ControllerBase
         /// 保存本轮流式响应在 response.completed 中返回的 output 数组，供 Responses WebSocket 会话续传时合并上下文。
         /// </summary>
         public string CompletedOutputJson { get; init; } = "[]";
+        /// <summary>
+        /// 流式转发过程中累积的 AI 正文（text delta），不受诊断副本 64KB 上限约束，
+        /// 用于对话记录完整展示 AI 回复。非流式场景为空。
+        /// </summary>
+        public string AssistantContent { get; init; } = string.Empty;
     }
 
     /// <summary>
@@ -653,7 +658,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
                 if (streamResult.Success)
                 {
-                    await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None);
+                    await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None, streamOutcome.AssistantContent);
                     SafeSucceedRoute(route.RouteId);
                     SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                     {

@@ -13,9 +13,10 @@ public sealed class ConversationExtractionService
     private const int MaxToolResultTextLength = 12000;
     /// <summary>
     /// 单次工具改动的 diff 行数上限。Edit/Write 工具可能携带整文件内容（数百 KB ~ 数 MB），
-    /// 不截断会导致提取结果整体进入对话记录写入队列并长期驻留，是开启对话记录后内存暴涨的主因之一。
+    /// 保留较大上限让用户能看到完整改动，但仍做兜底防止极端超大文件（几 MB）整段进入写入队列驻留内存。
+    /// 工具结果（Read/Bash 输出等）的截断另由 <see cref="MaxToolResultTextLength"/> 控制。
     /// </summary>
-    private const int MaxToolChangeDiffLines = 200;
+    private const int MaxToolChangeDiffLines = 2000;
 
     /// <summary>
     /// 从请求中解析工具来源。
@@ -996,11 +997,13 @@ public sealed class ConversationExtractionService
         }
         else if (ShouldShowToolCallArguments(name))
         {
-            // input.GetRawText() 可能携带巨大的参数（如整段脚本/文件），截断避免进入写入队列驻留内存。
+            // input.GetRawText() 可能携带较大的工具参数（如长脚本），保留宽松上限兜底防极端超大值，
+            // 一般工具参数不会超过该上限，可完整展示。
             var rawArguments = input.GetRawText();
-            if (rawArguments.Length > MaxToolResultTextLength)
+            const int maxArgumentChars = 100000;
+            if (rawArguments.Length > maxArgumentChars)
             {
-                rawArguments = rawArguments[..MaxToolResultTextLength] + "\n...";
+                rawArguments = rawArguments[..maxArgumentChars] + "\n...";
             }
             lines.Add(rawArguments);
         }

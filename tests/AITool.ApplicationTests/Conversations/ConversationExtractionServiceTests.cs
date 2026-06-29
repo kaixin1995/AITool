@@ -464,8 +464,9 @@ data: {"type":"message_stop"}
     {
         // 模拟 Edit 工具携带整文件内容（数百 KB ~ 数 MB），必须被截断，
         // 否则提取结果会整体进入对话记录写入队列导致内存暴涨。
+        // 上限为 2000 行，构造 8000 行确保触发截断。
         // 注意：JSON 字符串值里换行需转义为 \n，这里构造合法 JSON。
-        var hugeLines = string.Join("\\n", Enumerable.Range(0, 5000).Select(i => $"line {i}"));
+        var hugeLines = string.Join("\\n", Enumerable.Range(0, 8000).Select(i => $"line {i}"));
         var responseBody = $$"""
 {
   "content": [
@@ -484,18 +485,18 @@ data: {"type":"message_stop"}
 
         var result = _service.ExtractAssistantOutput(responseBody, "Anthropic", "/v1/messages");
 
-        // 截断标记必须出现，证明没有把 5000 行整体保留。
+        // 截断标记必须出现，证明没有把 8000 行整体保留。
         result.Should().Contain("已截断");
         result.Should().Contain("BigFile.cs");
-        // 结果体积必须远小于原始两份 5000 行（解 JSON 转义后约 140KB），控制在几十 KB 内。
-        result.Length.Should().BeLessThan(20000);
+        // 截断到 2000 行上限（old/new 各一份），体积应远小于 8000 行原始内容（约 450KB）。
+        result.Length.Should().BeLessThan(120000);
     }
 
     [Fact]
     public void ExtractToolResultOutput_truncates_huge_structured_patch_lines()
     {
-        // structuredPatch.lines 可能包含整个文件的所有行，必须截断。
-        var hugeLines = Enumerable.Range(0, 5000).Select(i => $" line {i}");
+        // structuredPatch.lines 可能包含整个文件的所有行，必须截断（上限 2000 行）。
+        var hugeLines = Enumerable.Range(0, 8000).Select(i => $" line {i}");
         var linesJson = string.Join(",", hugeLines.Select(l => $"\"{l}\""));
         var requestBody = $$"""
 {
@@ -517,6 +518,7 @@ data: {"type":"message_stop"}
         var result = _service.ExtractToolResultOutput(requestBody, "OpenAI", "/v1/responses");
 
         result.Should().Contain("已截断");
-        result.Length.Should().BeLessThan(20000);
+        // 截断到 2000 行上限，体积应远小于 8000 行原始内容。
+        result.Length.Should().BeLessThan(120000);
     }
 }

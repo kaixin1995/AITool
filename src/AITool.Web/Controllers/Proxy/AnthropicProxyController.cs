@@ -31,6 +31,11 @@ public sealed class AnthropicProxyController : ControllerBase
         /// 指示当前流是否还允许继续尝试下一条候选路由。
         /// </summary>
         public bool CanFallback { get; init; }
+        /// <summary>
+        /// 流式转发过程中累积的 AI 正文（text delta），不受诊断副本 64KB 上限约束，
+        /// 用于对话记录完整展示 AI 回复。非流式场景为空。
+        /// </summary>
+        public string AssistantContent { get; init; } = string.Empty;
     }
 
     /// <summary>
@@ -294,7 +299,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 if (streamResult.Success)
                 {
-                    await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None);
+                    await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None, streamOutcome.AssistantContent);
                     SafeSucceedRoute(route.RouteId);
                     return new EmptyResult();
                 }
@@ -447,6 +452,7 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         var responseBuilder = new StringBuilder();
+        var contentCapture = new ConversationStreamCapture();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
         var receivedMessageStop = false;
@@ -487,6 +493,8 @@ public sealed class AnthropicProxyController : ControllerBase
                 if (!string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 {
                     UpdateAnthropicUsageFromPayload(eventName, payload, ref inputTokens, ref cachedTokens, ref outputTokens, ref receivedMessageStop);
+                    // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。
+                    contentCapture.AppendAnthropicDelta(eventName, payload);
                 }
             }
 
@@ -564,7 +572,8 @@ public sealed class AnthropicProxyController : ControllerBase
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting,
+            AssistantContent = contentCapture.Build()
         };
     }
 
@@ -588,6 +597,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
         var state = new ProxyProtocolBridge.AnthropicOpenAiStreamState();
         var responseBuilder = new StringBuilder();
+        var contentCapture = new ConversationStreamCapture();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
 
@@ -620,6 +630,9 @@ public sealed class AnthropicProxyController : ControllerBase
                     state.ReceivedDoneEvent = true;
                     return;
                 }
+
+                // 累积原始 Responses 正文，不受 64KB 诊断副本限制。
+                contentCapture.AppendOpenAiResponsesDelta(responsesPayload);
 
                 var openAiSse = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
                     $"event: {responsesEventName}\ndata: {responsesPayload}\n\n",
@@ -695,6 +708,9 @@ public sealed class AnthropicProxyController : ControllerBase
                 }
             }
 
+            // 累积原始 OpenAI Chat 正文，不受 64KB 诊断副本限制。
+            contentCapture.AppendOpenAiChatDelta(jsonText);
+
             if (!startedWriting)
             {
                 await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
@@ -765,7 +781,8 @@ public sealed class AnthropicProxyController : ControllerBase
             return new StreamForwardOutcome
             {
                 Result = result,
-                CanFallback = false
+                CanFallback = false,
+                AssistantContent = contentCapture.Build()
             };
         }
 
@@ -783,14 +800,16 @@ public sealed class AnthropicProxyController : ControllerBase
             return new StreamForwardOutcome
             {
                 Result = result,
-                CanFallback = false
+                CanFallback = false,
+                AssistantContent = contentCapture.Build()
             };
         }
 
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = true
+            CanFallback = true,
+            AssistantContent = contentCapture.Build()
         };
     }
 
@@ -1453,7 +1472,8 @@ public sealed class AnthropicProxyController : ControllerBase
     /// 有会话标识的工具（claude-code / codex / open-code）按会话分组，
     /// 无会话标识的普通代理请求合并到同一个分组。
     /// </summary>
-    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, DateTimeOffset requestedAt, CancellationToken cancellationToken)
+    /// <param name="assistantContent">流式转发时实时累积的 AI 正文（不受 64KB 诊断副本限制）；非流式或为空时回退到从 <paramref name="responseBody"/> 提取。</param>
+    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, DateTimeOffset requestedAt, CancellationToken cancellationToken, string assistantContent = "")
     {
         try
         {
@@ -1466,7 +1486,12 @@ public sealed class AnthropicProxyController : ControllerBase
 
             var userInput = _conversationExtractionService.ExtractUserInputText(requestBody, protocolType, Request.Path);
             var toolResultOutput = _conversationExtractionService.ExtractToolResultOutput(requestBody, protocolType, Request.Path);
-            var assistantOutputMarkdown = JoinConversationMarkdown(toolResultOutput, _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path));
+            // 优先用流式转发时实时累积的 AI 正文（完整捕获，不受 64KB 诊断副本限制）；
+            // 为空时回退到从 responseBody 提取（非流式或兜底场景）。
+            var assistantText = !string.IsNullOrWhiteSpace(assistantContent)
+                ? assistantContent
+                : _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path);
+            var assistantOutputMarkdown = JoinConversationMarkdown(toolResultOutput, assistantText);
             if (string.IsNullOrWhiteSpace(userInput) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
             {
                 return;

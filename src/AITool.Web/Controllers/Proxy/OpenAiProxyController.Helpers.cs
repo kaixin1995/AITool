@@ -867,7 +867,8 @@ public sealed partial class OpenAiProxyController
     /// 有会话标识的工具（claude-code / codex / open-code）按会话分组，
     /// 无会话标识的普通代理请求合并到同一个分组。
     /// </summary>
-    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, DateTimeOffset requestedAt, CancellationToken cancellationToken)
+    /// <param name="assistantContent">流式转发时实时累积的 AI 正文（不受 64KB 诊断副本限制）；非流式或为空时回退到从 <paramref name="responseBody"/> 提取。</param>
+    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, DateTimeOffset requestedAt, CancellationToken cancellationToken, string assistantContent = "")
     {
         try
         {
@@ -880,7 +881,12 @@ public sealed partial class OpenAiProxyController
 
             var userInput = _conversationExtractionService.ExtractUserInputText(requestBody, protocolType, Request.Path);
             var toolResultOutput = _conversationExtractionService.ExtractToolResultOutput(requestBody, protocolType, Request.Path);
-            var assistantOutputMarkdown = JoinConversationMarkdown(toolResultOutput, _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path));
+            // 优先用流式转发时实时累积的 AI 正文（完整捕获，不受 64KB 诊断副本限制）；
+            // 为空时回退到从 responseBody 提取（非流式或兜底场景）。
+            var assistantText = !string.IsNullOrWhiteSpace(assistantContent)
+                ? assistantContent
+                : _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path);
+            var assistantOutputMarkdown = JoinConversationMarkdown(toolResultOutput, assistantText);
             if (string.IsNullOrWhiteSpace(userInput) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
             {
                 return;

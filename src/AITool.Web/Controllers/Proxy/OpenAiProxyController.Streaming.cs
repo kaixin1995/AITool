@@ -31,6 +31,7 @@ public sealed partial class OpenAiProxyController
         CancellationToken cancellationToken)
     {
         var responseBuilder = new StringBuilder();
+        var contentCapture = new ConversationStreamCapture();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
         var completedOutputJson = "[]";
@@ -62,6 +63,7 @@ public sealed partial class OpenAiProxyController
                         completedOutputJson = outputJson;
                         receivedDoneEvent = true;
                     }
+                    contentCapture.AppendOpenAiResponsesDelta(payload);
                     if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.AppendLine(payload); }
                     await SendWebSocketJsonPayloadAsync(webSocket, payload, token);
                     startedWriting = true;
@@ -116,7 +118,8 @@ public sealed partial class OpenAiProxyController
         {
             Result = result,
             CanFallback = !startedWriting,
-            CompletedOutputJson = completedOutputJson
+            CompletedOutputJson = completedOutputJson,
+            AssistantContent = contentCapture.Build()
         };
     }
 
@@ -135,6 +138,7 @@ public sealed partial class OpenAiProxyController
         CancellationToken cancellationToken)
     {
         var responseBuilder = new StringBuilder();
+        var contentCapture = new ConversationStreamCapture();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
         var completedOutputJson = "[]";
@@ -169,6 +173,9 @@ public sealed partial class OpenAiProxyController
             catch
             {
             }
+
+            // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。
+            contentCapture.AppendAnthropicDelta(eventName, payload);
 
             var responsesSse = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
             if (string.IsNullOrEmpty(responsesSse))
@@ -235,7 +242,8 @@ public sealed partial class OpenAiProxyController
         {
             Result = result,
             CanFallback = !startedWriting,
-            CompletedOutputJson = completedOutputJson
+            CompletedOutputJson = completedOutputJson,
+            AssistantContent = contentCapture.Build()
         };
     }
 
@@ -261,6 +269,7 @@ public sealed partial class OpenAiProxyController
 
         // 先走 Anthropic → OpenAI 的流式转换，收集完整响应后转为 Responses 事件
         var responseBuilder = new StringBuilder();
+        var contentCapture = new ConversationStreamCapture();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
         var inputTokens = 0;
@@ -287,6 +296,9 @@ public sealed partial class OpenAiProxyController
             {
                 return;
             }
+
+            // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。
+            contentCapture.AppendAnthropicDelta(eventName, payload);
 
             // 直接把 Anthropic SSE 事件转为 Responses 事件
             var responsesChunk = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
@@ -369,7 +381,8 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting,
+            AssistantContent = contentCapture.Build()
         };
     }
 
@@ -431,6 +444,7 @@ public sealed partial class OpenAiProxyController
         }
 
         var responseBuilder = new StringBuilder();
+        var contentCapture = new ConversationStreamCapture();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
         var receivedDoneEvent = false;
@@ -482,6 +496,11 @@ public sealed partial class OpenAiProxyController
                 else
                 {
                     UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+
+                    // 累积 AI 正文（同时兼容 Chat Completions 的 delta.content 和 Responses 的 delta 文本，
+                    // payload 格式不匹配时对应方法会自动跳过）。
+                    contentCapture.AppendOpenAiChatDelta(payload);
+                    contentCapture.AppendOpenAiResponsesDelta(payload);
 
                     // 兼容 Responses API：上游可能以 response.completed 事件而非 [DONE] 结束流
                     if (!receivedDoneEvent)
@@ -567,7 +586,8 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting,
+            AssistantContent = contentCapture.Build()
         };
     }
 
@@ -631,6 +651,7 @@ public sealed partial class OpenAiProxyController
         }
 
         var responseBuilder = new StringBuilder();
+        var contentCapture = new ConversationStreamCapture();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
         var receivedDoneEvent = false;
@@ -666,6 +687,8 @@ public sealed partial class OpenAiProxyController
             }
 
             UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+            // 累积原始 Responses 正文，不受 64KB 诊断副本限制。
+            contentCapture.AppendOpenAiResponsesDelta(payload);
             var openAiChunk = ProxyProtocolBridge.ConvertResponsesStreamingToChat($"event: {eventName}\ndata: {payload}\n\n", modelName, inputTokens, cachedTokens, outputTokens);
             if (!string.IsNullOrEmpty(openAiChunk))
             {
@@ -733,7 +756,8 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting,
+            AssistantContent = contentCapture.Build()
         };
     }
 
@@ -761,6 +785,7 @@ public sealed partial class OpenAiProxyController
 
         var state = new AnthropicToOpenAiStreamState();
         var responseBuilder = new StringBuilder();
+        var contentCapture = new ConversationStreamCapture();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
 
@@ -819,6 +844,9 @@ public sealed partial class OpenAiProxyController
             {
                 using var document = JsonDocument.Parse(payload);
                 var root = document.RootElement;
+
+                // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。
+                contentCapture.AppendAnthropicDelta(eventName, payload);
 
                 if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
                 {
@@ -1044,7 +1072,8 @@ public sealed partial class OpenAiProxyController
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting
+            CanFallback = !startedWriting,
+            AssistantContent = contentCapture.Build()
         };
     }
 
