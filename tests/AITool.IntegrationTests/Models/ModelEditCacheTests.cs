@@ -5,7 +5,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Web.Pages.Admin.Models;
 using AITool.Web.Services;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -36,7 +35,8 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
     {
         var services = new ServiceCollection();
         services.AddMemoryCache();
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+        services.AddSqlSugar($"Data Source={_databasePath}");
+        SqlSugarSetup.InitializeDatabase(services.BuildServiceProvider().GetRequiredService<SqlSugar.ISqlSugarClient>());
         services.AddSingleton<ProxyRequestMetadataCache>();
         _serviceProvider = services.BuildServiceProvider();
         _memoryCache = _serviceProvider.GetRequiredService<IMemoryCache>();
@@ -53,8 +53,7 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         var modelId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         db.Sites.Add(new Site
         {

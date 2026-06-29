@@ -5,7 +5,6 @@ using AITool.Web.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.Sites;
 
@@ -78,7 +77,7 @@ public class IndexModel : PageModel
     {
         try
         {
-            var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+            var site = await _dbContext.Sites.InSingleAsync(siteId);
             if (site is null) return RedirectToPage();
             site.IsEnabled = !site.IsEnabled;
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -137,7 +136,7 @@ public class IndexModel : PageModel
     {
         try
         {
-            var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+            var site = await _dbContext.Sites.InSingleAsync(siteId);
             if (site is null) return RedirectToPage();
 
             await RemoveSitesAsync([siteId], cancellationToken);

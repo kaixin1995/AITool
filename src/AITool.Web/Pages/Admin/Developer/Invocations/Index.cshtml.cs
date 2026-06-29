@@ -3,7 +3,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Web.Pages.Admin.ClientSimulator;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 using AITool.Web.Services;
 
 namespace AITool.Web.Pages.Admin.Developer.Invocations;

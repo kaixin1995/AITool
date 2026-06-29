@@ -1,7 +1,6 @@
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.Detection;
 

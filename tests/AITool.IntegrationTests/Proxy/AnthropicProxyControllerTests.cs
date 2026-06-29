@@ -10,7 +10,6 @@ using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -780,9 +779,7 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
         });
@@ -804,8 +801,7 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
     {
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var siteId = Guid.Parse("77777777-7777-7777-7777-777777777777");
         var accessKeyRaw = "anthropic-test-key";
@@ -899,9 +895,7 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
         });
@@ -923,8 +917,7 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
     {
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var openAiSiteId = Guid.Parse("71717171-7171-7171-7171-717171717171");
         var anthropicSiteId = Guid.Parse("72727272-7272-7272-7272-727272727272");

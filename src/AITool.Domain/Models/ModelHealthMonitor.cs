@@ -1,13 +1,18 @@
+using SqlSugar;
+
 namespace AITool.Domain.Models;
 
 /// <summary>
 /// 表示一条模型健康监控配置，用于记录哪些模型被纳入定期检测或状态跟踪范围。
 /// </summary>
+[SugarTable("ModelHealthMonitors")]
+[SugarIndex("UX_ModelHealthMonitors_ModelLibraryItemId", nameof(ModelLibraryItemId), OrderByType.Asc, true)]
 public sealed class ModelHealthMonitor
 {
     /// <summary>
     /// 配置唯一标识，用于区分不同的监控记录。
     /// </summary>
+    [SugarColumn(IsPrimaryKey = true, IsIdentity = false, ColumnName = "Id")]
     public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>

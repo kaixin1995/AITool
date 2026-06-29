@@ -1,9 +1,9 @@
 using AITool.Application.Common;
 using AITool.Application.Conversations;
 using AITool.Domain.Operations;
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Retention;
 
@@ -44,19 +44,17 @@ public sealed class LogRetentionService : ILogRetentionService
     }
 
     /// <summary>
-    /// 删除超过保留天数的使用日志，并回写本次清理结果
+    /// 删除超过保留天数的使用日志，并回写本次清理结果。
+    /// SqlSugar 能将 DateTimeOffset 比较下推到 SQLite，无需像 EF 那样全表加载到内存。
     /// </summary>
     public async Task<LogPruneResult> PruneAsync(CancellationToken cancellationToken = default)
     {
         var settings = await _dbContext.SystemRuntimeSettings
-            .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken);
+            .FirstAsync(x => x.Id == 1, cancellationToken);
         if (settings is null)
         {
-            settings = new SystemRuntimeSettings
-            {
-                Id = 1
-            };
-            _dbContext.SystemRuntimeSettings.Add(settings);
+            settings = new SystemRuntimeSettings { Id = 1 };
+            await _dbContext.InsertAsync(settings, cancellationToken);
         }
 
         var now = _utcNowProvider();
@@ -69,31 +67,20 @@ public sealed class LogRetentionService : ILogRetentionService
         {
             settings.LastUsageLogPrunedAt = now;
             settings.LastUsageLogPrunedCount = 0;
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            return new LogPruneResult
-            {
-                UsageLogPrunedCount = 0
-            };
+            await _dbContext.UpdateAsync(settings, cancellationToken);
+            return new LogPruneResult { UsageLogPrunedCount = 0 };
         }
 
         var usageCutoff = now.AddDays(-settings.UsageLogRetentionDays);
 
-        // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
-        var allUsageLogs = await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken);
-        var oldUsageLogs = allUsageLogs
-            .Where(l => l.RequestedAt < usageCutoff)
-            .ToList();
-        _dbContext.ProxyUsageLogs.RemoveRange(oldUsageLogs);
+        // SqlSugar 直接在数据库层删除过期日志（DateTimeOffset 比较可下推），避免全表加载到内存。
+        var prunedCount = await _dbContext.DeleteAsync<ProxyUsageLog>(
+            l => l.RequestedAt < usageCutoff, cancellationToken);
 
-        var prunedAt = now;
-        settings.LastUsageLogPrunedAt = prunedAt;
-        settings.LastUsageLogPrunedCount = oldUsageLogs.Count;
+        settings.LastUsageLogPrunedAt = now;
+        settings.LastUsageLogPrunedCount = prunedCount;
+        await _dbContext.UpdateAsync(settings, cancellationToken);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
-
-        return new LogPruneResult
-        {
-            UsageLogPrunedCount = oldUsageLogs.Count
-        };
+        return new LogPruneResult { UsageLogPrunedCount = prunedCount };
     }
 }

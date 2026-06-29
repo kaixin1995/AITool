@@ -1,6 +1,5 @@
 using AITool.Application.Conversations;
 using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
@@ -83,8 +82,7 @@ public sealed class ConversationLogService : IConversationLogService
             using var scope = _scopeFactory.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var settings = dbContext.SystemRuntimeSettings
-                .AsNoTracking()
-                .FirstOrDefault(x => x.Id == 1);
+                .First(x => x.Id == 1);
             if (settings is not null)
             {
                 enabled = settings.ConversationLogEnabled;

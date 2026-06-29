@@ -1,7 +1,8 @@
+using System.Linq.Expressions;
 using AITool.Application.Operations;
 using AITool.Domain.Operations;
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Operations;
 
@@ -29,15 +30,14 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
     public async Task<SystemRuntimeSettings> GetOrCreateAsync(CancellationToken cancellationToken = default)
     {
         var settings = await _dbContext.SystemRuntimeSettings
-            .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken);
+            .FirstAsync(x => x.Id == 1, cancellationToken);
         if (settings is not null)
         {
             return settings;
         }
 
         settings = new SystemRuntimeSettings();
-        _dbContext.SystemRuntimeSettings.Add(settings);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.InsertAsync(settings, cancellationToken);
         return settings;
     }
 
@@ -63,37 +63,41 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.ConcurrencyMode = Math.Max(0, Math.Min(1, request.ConcurrencyMode));
         settings.ConcurrencyQueueTimeoutSeconds = Math.Max(1, request.ConcurrencyQueueTimeoutSeconds);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(settings, cancellationToken);
         return settings;
     }
 
     /// <summary>
-    /// 按来源和时间范围清理使用日志，并回写本次清理结果
+    /// 按来源和时间范围清理使用日志，并回写本次清理结果。
+    /// SqlSugar 能将 DateTimeOffset 区间比较下推到 SQLite，无需像 EF 那样全表加载到内存。
     /// </summary>
     public async Task<int> ClearUsageLogsAsync(ClearUsageLogsRequest request, CancellationToken cancellationToken = default)
     {
         var settings = await GetOrCreateAsync(cancellationToken);
 
-        // 先加载到内存再按条件过滤，避免 SQLite 无法稳定翻译 DateTimeOffset 区间比较
-        var logs = await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken);
-        var logsToDelete = logs
-            .Where(x => string.IsNullOrWhiteSpace(request.Source) || string.Equals(x.Source, request.Source, StringComparison.OrdinalIgnoreCase))
-            .Where(x => !request.StartTime.HasValue || x.RequestedAt >= request.StartTime.Value)
-            .Where(x => !request.EndTime.HasValue || x.RequestedAt < request.EndTime.Value)
-            .ToList();
-
-        if (logsToDelete.Count == 0)
+        // 用条件查询先统计待删除数量，再按同样条件删除（SqlSugar 的 DateTimeOffset 比较可下推到数据库）。
+        var query = _dbContext.ProxyUsageLogs
+            .WhereIF(!string.IsNullOrWhiteSpace(request.Source), x => x.Source == request.Source);
+        if (request.StartTime.HasValue)
         {
-            settings.LastUsageLogPrunedAt = DateTimeOffset.UtcNow;
-            settings.LastUsageLogPrunedCount = 0;
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            return 0;
+            query = query.Where(x => x.RequestedAt >= request.StartTime.Value);
+        }
+        if (request.EndTime.HasValue)
+        {
+            query = query.Where(x => x.RequestedAt < request.EndTime.Value);
         }
 
-        _dbContext.ProxyUsageLogs.RemoveRange(logsToDelete);
+        var deletedCount = await query.CountAsync(cancellationToken);
+        // SqlSugar 按条件删除：Deleteable 不支持 WhereIF 链式，需构造完整条件。
+        Expression<Func<ProxyUsageLog, bool>> predicate = x =>
+            (string.IsNullOrWhiteSpace(request.Source) || x.Source == request.Source)
+            && (!request.StartTime.HasValue || x.RequestedAt >= request.StartTime.Value)
+            && (!request.EndTime.HasValue || x.RequestedAt < request.EndTime.Value);
+        await _dbContext.DeleteAsync(predicate, cancellationToken);
+
         settings.LastUsageLogPrunedAt = DateTimeOffset.UtcNow;
-        settings.LastUsageLogPrunedCount = logsToDelete.Count;
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        return logsToDelete.Count;
+        settings.LastUsageLogPrunedCount = deletedCount;
+        await _dbContext.UpdateAsync(settings, cancellationToken);
+        return deletedCount;
     }
 }

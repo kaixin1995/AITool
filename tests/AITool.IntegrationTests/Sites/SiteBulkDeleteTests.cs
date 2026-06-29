@@ -5,7 +5,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Web.Pages.Admin.Sites;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.IntegrationTests.Sites;
 
@@ -78,14 +77,16 @@ public sealed class SiteBulkDeleteTests
     /// </summary>
     private static AppDbContext CreateDbContext()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseSqlite($"Data Source={Path.Combine(Path.GetTempPath(), $"aitool-site-bulk-delete-{Guid.NewGuid():N}.db")}")
-            .Options;
-
-        var db = new AppDbContext(options);
-        db.Database.EnsureDeleted();
-        db.Database.EnsureCreated();
-        return db;
+        var dbPath = Path.Combine(Path.GetTempPath(), $"aitool-site-bulk-delete-{Guid.NewGuid():N}.db");
+        var connectionString = $"Data Source={dbPath}";
+        var sqlSugar = new SqlSugar.SqlSugarClient(new SqlSugar.ConnectionConfig
+        {
+            ConnectionString = connectionString,
+            DbType = SqlSugar.DbType.Sqlite,
+            IsAutoCloseConnection = true
+        });
+        SqlSugarSetup.InitializeDatabase(sqlSugar);
+        return new AppDbContext(sqlSugar);
     }
 
     /// <summary>

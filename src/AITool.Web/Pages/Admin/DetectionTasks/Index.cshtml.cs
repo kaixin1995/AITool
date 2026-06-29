@@ -3,7 +3,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Scheduling;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.DetectionTasks;
 
@@ -267,7 +266,7 @@ public class IndexModel : PageModel
     {
         try
         {
-            var task = await _dbContext.DetectionTasks.FindAsync([taskId], cancellationToken);
+            var task = await _dbContext.DetectionTasks.InSingleAsync(taskId);
             if (task is null) return RedirectToPage();
 
             task.IsEnabled = !task.IsEnabled;

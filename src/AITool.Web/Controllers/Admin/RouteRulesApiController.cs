@@ -4,7 +4,6 @@ using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
@@ -315,7 +314,7 @@ public sealed class RouteRulesApiController : ControllerBase
             return BadRequest(new { message = "主入口名称不能为空" });
 
         var entry = await _dbContext.ProxyRouteEntries
-            .FirstOrDefaultAsync(x => x.EntryName == entryName, cancellationToken);
+            .FirstAsync(x => x.EntryName == entryName, cancellationToken);
         var rules = await _dbContext.ProxyRouteRules
             .Where(x => x.ExternalModelName == entryName)
             .ToListAsync(cancellationToken);
@@ -396,7 +395,7 @@ public sealed class RouteRulesApiController : ControllerBase
             return BadRequest(new { message = "模型名称不能为空" });
 
         var existingEntry = await _dbContext.ProxyRouteEntries
-            .FirstOrDefaultAsync(x => x.EntryName == entryName, cancellationToken);
+            .FirstAsync(x => x.EntryName == entryName, cancellationToken);
         if (existingEntry is null)
         {
             _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
@@ -481,7 +480,7 @@ public sealed class RouteRulesApiController : ControllerBase
 
         var siteIds = existingRules.Select(x => x.SiteId).Distinct().ToList();
         var sites = await _dbContext.Sites
-            .AsNoTracking()
+            
             .Where(x => siteIds.Contains(x.Id) && x.IsEnabled)
             .ToDictionaryAsync(x => x.Id, x => x, cancellationToken);
 
@@ -589,7 +588,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpPost("toggle/{ruleId}")]
     public async Task<IActionResult> ToggleRule(Guid ruleId, CancellationToken cancellationToken)
     {
-        var rule = await _dbContext.ProxyRouteRules.FindAsync([ruleId], cancellationToken);
+        var rule = await _dbContext.ProxyRouteRules.InSingleAsync(ruleId);
         if (rule is null)
             return NotFound(new { message = "规则不存在" });
 
@@ -606,7 +605,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpPost("delete/{ruleId}")]
     public async Task<IActionResult> DeleteRule(Guid ruleId, CancellationToken cancellationToken)
     {
-        var rule = await _dbContext.ProxyRouteRules.FindAsync([ruleId], cancellationToken);
+        var rule = await _dbContext.ProxyRouteRules.InSingleAsync(ruleId);
         if (rule is null)
             return NotFound(new { message = "规则不存在" });
 

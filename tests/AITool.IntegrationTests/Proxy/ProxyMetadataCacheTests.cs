@@ -6,7 +6,6 @@ using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -33,7 +32,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
     {
         var services = new ServiceCollection();
         services.AddMemoryCache();
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+        services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddSingleton<ProxyRequestMetadataCache>();
         services.AddSingleton<ModelConcurrencyLimiter>();
         _serviceProvider = services.BuildServiceProvider();
@@ -49,8 +48,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var rawKey = "cache-key";
         db.ProxyAccessKeys.Add(new ProxyAccessKey
@@ -88,8 +86,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
@@ -146,8 +143,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var siteId = Guid.Parse("22222222-2222-2222-2222-222222222222");
         db.Sites.Add(new Site
@@ -196,8 +192,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         db.Sites.Add(new Site
         {
@@ -237,8 +232,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         var limiter = scope.ServiceProvider.GetRequiredService<ModelConcurrencyLimiter>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var firstSiteId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
         var secondSiteId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
@@ -341,8 +335,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var openAiSiteId = Guid.Parse("44444444-4444-4444-4444-444444444444");
         var anthropicSiteId = Guid.Parse("55555555-5555-5555-5555-555555555555");

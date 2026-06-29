@@ -5,7 +5,6 @@ using AITool.Web.Services;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
@@ -117,7 +116,7 @@ public sealed class AccessKeysApiController : ControllerBase
     public async Task<IActionResult> List(CancellationToken cancellationToken)
     {
         var keys = await _dbContext.ProxyAccessKeys
-            .AsNoTracking()
+            
             .OrderBy(k => k.KeyName)
             .ToListAsync(cancellationToken);
 
@@ -179,7 +178,7 @@ public sealed class AccessKeysApiController : ControllerBase
     [HttpPost("toggle/{keyId}")]
     public async Task<IActionResult> Toggle(Guid keyId, CancellationToken cancellationToken)
     {
-        var key = await _dbContext.ProxyAccessKeys.FindAsync([keyId], cancellationToken);
+        var key = await _dbContext.ProxyAccessKeys.InSingleAsync(keyId);
         if (key is null) return NotFound(new { message = "密钥不存在" });
 
         key.IsEnabled = !key.IsEnabled;
@@ -195,7 +194,7 @@ public sealed class AccessKeysApiController : ControllerBase
     [HttpPost("delete/{keyId}")]
     public async Task<IActionResult> Delete(Guid keyId, CancellationToken cancellationToken)
     {
-        var key = await _dbContext.ProxyAccessKeys.FindAsync([keyId], cancellationToken);
+        var key = await _dbContext.ProxyAccessKeys.InSingleAsync(keyId);
         if (key is null) return NotFound(new { message = "密钥不存在" });
 
         _dbContext.ProxyAccessKeys.Remove(key);
@@ -211,7 +210,7 @@ public sealed class AccessKeysApiController : ControllerBase
     [HttpPost("update-routes/{keyId}")]
     public async Task<IActionResult> UpdateRoutes(Guid keyId, [FromBody] UpdateAccessKeyRoutesRequest request, CancellationToken cancellationToken)
     {
-        var key = await _dbContext.ProxyAccessKeys.FindAsync([keyId], cancellationToken);
+        var key = await _dbContext.ProxyAccessKeys.InSingleAsync(keyId);
         if (key is null) return NotFound(new { message = "密钥不存在" });
 
         key.AllowedRouteNames = SerializeRouteNames(request.AllowedRouteNames);

@@ -5,7 +5,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Web.Pages.Admin.Models;
@@ -201,7 +200,7 @@ public class IndexModel : PageModel
     {
         try
         {
-            var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
+            var model = await _dbContext.ModelLibraryItems.InSingleAsync(modelId);
             if (model is null) return RedirectToPage();
             model.IsEnabled = !model.IsEnabled;
             await _dbContext.SaveChangesAsync(cancellationToken);
@@ -229,7 +228,7 @@ public class IndexModel : PageModel
         var isAjaxRequest = IsAjaxRequest();
         try
         {
-            var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
+            var model = await _dbContext.ModelLibraryItems.InSingleAsync(modelId);
             if (model is null)
             {
                 if (isAjaxRequest)
@@ -355,11 +354,12 @@ public class IndexModel : PageModel
             .Select(s => s.Id)
             .ToListAsync(cancellationToken);
 
-        var siteCounts = await _dbContext.SiteModelMappings
+        var siteCounts = (await _dbContext.SiteModelMappings
             .Where(m => m.IsEnabled && enabledSiteIds.Contains(m.SiteId))
+            .ToListAsync(cancellationToken))
             .GroupBy(m => m.ModelLibraryItemId)
             .Select(g => new { ModelId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.ModelId, x => x.Count, cancellationToken);
+            .ToDictionary(x => x.ModelId, x => x.Count);
 
         var models = await _dbContext.ModelLibraryItems
             .OrderBy(x => x.ModelName)

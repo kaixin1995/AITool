@@ -6,7 +6,6 @@ using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
@@ -162,7 +161,7 @@ public sealed class SiteCatalogApiController : ControllerBase
     [HttpGet("fetch-models/{siteId}")]
     public async Task<IActionResult> FetchModels(Guid siteId, CancellationToken cancellationToken)
     {
-        var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+        var site = await _dbContext.Sites.InSingleAsync(siteId);
         if (site is null)
         {
             return NotFound(new { message = "站点不存在" });

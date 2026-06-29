@@ -14,7 +14,6 @@ using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Net.Http.Headers;
@@ -137,11 +136,9 @@ internal sealed class ConversationLoggingWebApplicationFactory : WebApplicationF
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
             services.RemoveAll<IProxyForwardService>();
             services.RemoveAll<IHttpClientFactory>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.AddSingleton<IProxyForwardService, StubConversationProxyForwardService>();
             services.AddSingleton<ConversationLoggingStreamingHttpMessageHandler>();
             services.AddSingleton<IHttpClientFactory, ConversationLoggingFakeHttpClientFactory>();
@@ -187,8 +184,7 @@ internal sealed class ConversationLoggingWebApplicationFactory : WebApplicationF
     {
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         var siteId = Guid.Parse("44444444-4444-4444-4444-444444444444");
 

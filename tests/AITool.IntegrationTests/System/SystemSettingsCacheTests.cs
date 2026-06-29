@@ -6,7 +6,6 @@ using AITool.Infrastructure.Proxy;
 using AITool.Web.Pages.Admin.System;
 using AITool.Web.Services;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -33,7 +32,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
     {
         var services = new ServiceCollection();
         services.AddMemoryCache();
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+        services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
         services.AddSingleton<ProxyRequestMetadataCache>();
         services.AddSingleton<RouteCircuitStateStore>();
@@ -54,8 +53,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         var circuitStore = scope.ServiceProvider.GetRequiredService<RouteCircuitStateStore>();
         var analyticsQueryExecutor = scope.ServiceProvider.GetRequiredService<AnalyticsBackgroundQueryExecutor>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        SqlSugarSetup.InitializeDatabase(db.Client);
 
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {

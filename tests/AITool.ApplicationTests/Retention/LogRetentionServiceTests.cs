@@ -1,10 +1,10 @@
 using AITool.Application.Conversations;
+using AITool.ApplicationTests;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Retention;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.ApplicationTests.Retention;
 
@@ -14,7 +14,7 @@ namespace AITool.ApplicationTests.Retention;
 public sealed class LogRetentionServiceTests : IDisposable
 {
     /// <summary>
-    /// 内存数据库上下文，用于准备测试数据并验证清理结果。
+    /// 临时数据库上下文，用于准备测试数据并验证清理结果。
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
@@ -28,14 +28,18 @@ public sealed class LogRetentionServiceTests : IDisposable
     private readonly LogRetentionService _service;
 
     /// <summary>
-    /// 为每个测试创建独立的内存数据库，避免保留策略互相干扰。
+    /// 数据库清理回调。
+    /// </summary>
+    private readonly Action _disposeDatabase;
+
+    /// <summary>
+    /// 为每个测试创建独立的临时数据库，避免保留策略互相干扰。
     /// </summary>
     public LogRetentionServiceTests()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        _dbContext = new AppDbContext(options);
+        var (dbContext, dispose) = TestDatabaseFactory.Create();
+        _dbContext = dbContext;
+        _disposeDatabase = dispose;
         _service = new LogRetentionService(_dbContext, _conversationLogStore);
     }
 
@@ -94,7 +98,7 @@ public sealed class LogRetentionServiceTests : IDisposable
         var settings = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
 
         result.UsageLogPrunedCount.Should().Be(1);
-        _dbContext.ProxyUsageLogs.Should().ContainSingle();
+        _dbContext.ProxyUsageLogs.ToList().Should().ContainSingle();
         _dbContext.ProxyUsageLogs.Single().RequestedAt.Should().BeAfter(beforePruneAt.AddDays(-3).AddMinutes(-1));
         settings.LastUsageLogPrunedCount.Should().Be(1);
         settings.LastUsageLogPrunedAt.Should().NotBeNull();
@@ -141,7 +145,7 @@ public sealed class LogRetentionServiceTests : IDisposable
         var settings = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
 
         result.UsageLogPrunedCount.Should().Be(0);
-        _dbContext.ProxyUsageLogs.Should().ContainSingle();
+        _dbContext.ProxyUsageLogs.ToList().Should().ContainSingle();
         settings.LastUsageLogPrunedCount.Should().Be(0);
         settings.LastUsageLogPrunedAt.Should().Be(baseTime);
     }
@@ -183,7 +187,7 @@ public sealed class LogRetentionServiceTests : IDisposable
         var settings = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
 
         result.UsageLogPrunedCount.Should().Be(0);
-        _dbContext.ProxyUsageLogs.Should().ContainSingle();
+        _dbContext.ProxyUsageLogs.ToList().Should().ContainSingle();
         settings.LastUsageLogPrunedCount.Should().Be(0);
         settings.LastUsageLogPrunedAt.Should().Be(baseTime);
     }
@@ -191,7 +195,7 @@ public sealed class LogRetentionServiceTests : IDisposable
     /// <summary>
     /// 释放测试使用的数据库上下文。
     /// </summary>
-    public void Dispose() => _dbContext.Dispose();
+    public void Dispose() => _disposeDatabase();
 
     /// <summary>
     /// 保留策略测试不关心对话文件写入，这里提供一个空实现即可。

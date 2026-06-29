@@ -1,7 +1,7 @@
+using AITool.Domain.SiteCatalog;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
@@ -44,16 +44,15 @@ public sealed class ModelsApiController : ControllerBase
     [HttpPost("clear-all")]
     public async Task<IActionResult> ClearAll(CancellationToken cancellationToken)
     {
-        // 按依赖顺序删除：映射 → 监控 → 模型
-        var mappingCount = _dbContext.SiteModelMappings.Count();
-        var monitorCount = _dbContext.ModelHealthMonitors.Count();
-        var modelCount = _dbContext.ModelLibraryItems.Count();
+        // 按依赖顺序删除：映射 → 监控 → 模型（SqlSugar 用 Db.Deleteable<T>() 清空整表）。
+        var mappingCount = await _dbContext.SiteModelMappings.CountAsync(cancellationToken);
+        var monitorCount = await _dbContext.ModelHealthMonitors.CountAsync(cancellationToken);
+        var modelCount = await _dbContext.ModelLibraryItems.CountAsync(cancellationToken);
 
-        _dbContext.SiteModelMappings.RemoveRange(_dbContext.SiteModelMappings);
-        _dbContext.ModelHealthMonitors.RemoveRange(_dbContext.ModelHealthMonitors);
-        _dbContext.ModelLibraryItems.RemoveRange(_dbContext.ModelLibraryItems);
+        await _dbContext.Client.Deleteable<SiteModelMapping>().ExecuteCommandAsync(cancellationToken);
+        await _dbContext.Client.Deleteable<Domain.Models.ModelHealthMonitor>().ExecuteCommandAsync(cancellationToken);
+        await _dbContext.Client.Deleteable<Domain.Models.ModelLibraryItem>().ExecuteCommandAsync(cancellationToken);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         _metadataCache.InvalidateModelMetadata();
         _metadataCache.InvalidateRouteTargets();
 
@@ -74,14 +73,14 @@ public sealed class ModelsApiController : ControllerBase
         [FromBody] UpdateConcurrencyRequest request,
         CancellationToken cancellationToken)
     {
-        var mapping = await _dbContext.SiteModelMappings.FindAsync([mappingId], cancellationToken);
+        var mapping = await _dbContext.SiteModelMappings.InSingleAsync(mappingId);
         if (mapping is null)
         {
             return NotFound(new { message = "站点模型映射不存在" });
         }
 
         mapping.MaxConcurrency = Math.Max(0, request.MaxConcurrency);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(mapping, cancellationToken);
 
         // 配置保存后立即失效缓存，并同步更新运行中的限制器状态，仅影响后续新请求。
         _metadataCache.InvalidateRouteTargets();

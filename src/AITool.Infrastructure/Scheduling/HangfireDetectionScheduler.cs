@@ -2,7 +2,6 @@ using AITool.Domain.Detection;
 using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Persistence;
 using Hangfire;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Infrastructure.Scheduling;
@@ -33,9 +32,7 @@ public sealed class HangfireDetectionScheduler
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-        // 确保数据库已创建，避免表不存在导致查询失败
-        await dbContext.Database.EnsureCreatedAsync(cancellationToken);
-
+        // 数据库建表在启动时由 SqlSugarSetup.InitializeDatabase 完成，这里直接查询。
         var tasks = await dbContext.DetectionTasks
             .Where(t => t.IsEnabled)
             .ToListAsync(cancellationToken);
@@ -58,7 +55,8 @@ public sealed class HangfireDetectionScheduler
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var requestService = scope.ServiceProvider.GetRequiredService<ModelHealthRequestService>();
 
-        var detectionTask = await dbContext.DetectionTasks.FindAsync([detectionTaskId], cancellationToken);
+        var detectionTask = await dbContext.DetectionTasks
+            .FirstAsync(t => t.Id == detectionTaskId, cancellationToken);
         if (detectionTask is null || !detectionTask.IsEnabled) return;
 
         // 创建执行记录
@@ -68,21 +66,15 @@ public sealed class HangfireDetectionScheduler
             Status = "running",
             StartedAt = DateTimeOffset.UtcNow
         };
-        dbContext.DetectionTaskExecutions.Add(execution);
-        await dbContext.SaveChangesAsync(cancellationToken);
-
-        var query = dbContext.SiteModelMappings.AsQueryable();
+        await dbContext.InsertAsync(execution, cancellationToken);
 
         // 如果任务指定了模型，只检测该模型的映射
-        if (detectionTask.ModelLibraryItemId.HasValue)
-        {
-            query = query.Where(m => m.ModelLibraryItemId == detectionTask.ModelLibraryItemId.Value);
-        }
+        var query = dbContext.SiteModelMappings
+            .WhereIF(detectionTask.ModelLibraryItemId.HasValue, m => m.ModelLibraryItemId == detectionTask.ModelLibraryItemId!.Value);
 
         var mappings = await query.ToListAsync(cancellationToken);
         var runtimeSettings = await dbContext.SystemRuntimeSettings
-            .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken)
+            .FirstAsync(x => x.Id == 1, cancellationToken)
             ?? new AITool.Domain.Operations.SystemRuntimeSettings();
         var successCount = 0;
         var failCount = 0;
@@ -97,11 +89,10 @@ public sealed class HangfireDetectionScheduler
             }
         }
 
-        // 更新执行记录
         execution.Status = "completed";
         execution.FinishedAt = DateTimeOffset.UtcNow;
         execution.Summary = $"共检测 {mappings.Count} 个映射，成功 {successCount}，失败 {failCount}";
 
-        await dbContext.SaveChangesAsync(cancellationToken);
+        await dbContext.UpdateAsync(execution, cancellationToken);
     }
 }

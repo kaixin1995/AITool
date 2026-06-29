@@ -1,8 +1,8 @@
 using AITool.Application.Operations;
+using AITool.ApplicationTests;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.ApplicationTests.Operations;
 
@@ -12,7 +12,7 @@ namespace AITool.ApplicationTests.Operations;
 public sealed class SystemRuntimeSettingsServiceTests : IDisposable
 {
     /// <summary>
-    /// 内存数据库上下文，用于准备和校验运行时设置数据。
+    /// 临时数据库上下文，用于准备和校验运行时设置数据。
     /// </summary>
     private readonly AppDbContext _dbContext;
 
@@ -22,14 +22,18 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
     private readonly SystemRuntimeSettingsService _service;
 
     /// <summary>
-    /// 为每个测试构建独立的内存数据库，避免设置数据互相污染。
+    /// 数据库清理回调。
+    /// </summary>
+    private readonly Action _disposeDatabase;
+
+    /// <summary>
+    /// 为每个测试构建独立的临时数据库，避免设置数据互相污染。
     /// </summary>
     public SystemRuntimeSettingsServiceTests()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        _dbContext = new AppDbContext(options);
+        var (dbContext, dispose) = TestDatabaseFactory.Create();
+        _dbContext = dbContext;
+        _disposeDatabase = dispose;
         _service = new SystemRuntimeSettingsService(_dbContext);
     }
 
@@ -93,7 +97,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         settings.UsageLogRetentionDays.Should().Be(7);
         settings.UsageLogAutoCleanupEnabled.Should().BeTrue();
         settings.DeveloperFeaturesEnabled.Should().BeFalse();
-        _dbContext.SystemRuntimeSettings.Should().ContainSingle(x => x.Id == 1);
+        _dbContext.SystemRuntimeSettings.ToList().Should().ContainSingle(x => x.Id == 1);
     }
 
     /// <summary>
@@ -253,9 +257,9 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         });
 
         deletedCount.Should().Be(1);
-        _dbContext.ProxyUsageLogs.Should().HaveCount(2);
-        _dbContext.ProxyUsageLogs.Should().Contain(x => x.Source == "codex" && x.RequestedAt == baseTime.AddHours(-1));
-        _dbContext.ProxyUsageLogs.Should().Contain(x => x.Source == "chat");
+        _dbContext.ProxyUsageLogs.ToList().Should().HaveCount(2);
+        _dbContext.ProxyUsageLogs.ToList().Should().Contain(x => x.Source == "codex" && x.RequestedAt == baseTime.AddHours(-1));
+        _dbContext.ProxyUsageLogs.ToList().Should().Contain(x => x.Source == "chat");
     }
 
     /// <summary>
@@ -301,7 +305,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         var deletedCount = await _service.ClearUsageLogsAsync(new ClearUsageLogsRequest());
 
         deletedCount.Should().Be(2);
-        _dbContext.ProxyUsageLogs.Should().BeEmpty();
+        _dbContext.ProxyUsageLogs.ToList().Should().BeEmpty();
     }
 
     /// <summary>
@@ -309,6 +313,6 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
     /// </summary>
     public void Dispose()
     {
-        _dbContext.Dispose();
+        _disposeDatabase();
     }
 }

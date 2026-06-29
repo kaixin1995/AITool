@@ -1,260 +1,164 @@
+using System.Data;
+using System.Linq.Expressions;
 using AITool.Domain.Detection;
 using AITool.Domain.Models;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
-using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using SqlSugar;
 
 namespace AITool.Infrastructure.Persistence;
 
 /// <summary>
-/// 统一数据库上下文，管理所有实体映射
+/// 基于 SqlSugar 的数据访问入口，替代原 EF Core 的 AppDbContext。
+/// <para>
+/// 内部持有一个 <see cref="SqlSugarScope"/>（线程安全的单例客户端），
+/// 对外暴露与原 DbSet 同名的 <see cref="ISugarQueryable{T}"/> 便捷访问器，
+/// 业务代码从 <c>dbContext.Sites</c> 改为 <c>dbContext.Sites</c>（保持属性名不变），
+/// 底层换成 SqlSugar 的查询/插入/删除能力。
+/// </para>
 /// </summary>
-public sealed class AppDbContext : DbContext
+public sealed class AppDbContext : IDisposable, IAsyncDisposable
+{
+    private readonly ISqlSugarClient _client;
+
+    /// <summary>
+    /// 释放资源。注意：底层 SqlSugarScope 是 DI 管理的单例，这里不真正释放它；
+    /// 此方法仅为兼容原 EF 代码中 dbContext.Dispose()/await using 的调用模式（空操作）。
+    /// </summary>
+    public void Dispose() { }
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    /// <summary>
+    /// 底层 SqlSugar 客户端，供需要高级操作（事务、原生 SQL）的代码使用。
+    /// </summary>
+    public ISqlSugarClient Client => _client;
+
+    // —— 与原 DbSet 同名的便捷查询访问器 ——
+    public ISugarQueryable<Site> Sites => _client.Queryable<Site>();
+    public ISugarQueryable<ModelLibraryItem> ModelLibraryItems => _client.Queryable<ModelLibraryItem>();
+    public ISugarQueryable<SiteModelMapping> SiteModelMappings => _client.Queryable<SiteModelMapping>();
+    public ISugarQueryable<DetectionTask> DetectionTasks => _client.Queryable<DetectionTask>();
+    public ISugarQueryable<DetectionTaskExecution> DetectionTaskExecutions => _client.Queryable<DetectionTaskExecution>();
+    public ISugarQueryable<ProxyRouteEntry> ProxyRouteEntries => _client.Queryable<ProxyRouteEntry>();
+    public ISugarQueryable<ProxyRouteRule> ProxyRouteRules => _client.Queryable<ProxyRouteRule>();
+    public ISugarQueryable<ProxyAccessKey> ProxyAccessKeys => _client.Queryable<ProxyAccessKey>();
+    public ISugarQueryable<ProxyUsageLog> ProxyUsageLogs => _client.Queryable<ProxyUsageLog>();
+    public ISugarQueryable<ModelHealthMonitor> ModelHealthMonitors => _client.Queryable<ModelHealthMonitor>();
+    public ISugarQueryable<SystemRuntimeSettings> SystemRuntimeSettings => _client.Queryable<SystemRuntimeSettings>();
+
+    /// <summary>
+    /// 由 DI 注入的 SqlSugar 客户端构造。
+    /// </summary>
+    public AppDbContext(ISqlSugarClient client)
+    {
+        _client = client;
+    }
+
+    // —— 增删改便捷方法（替代 EF 的 Add/Remove + SaveChanges）——
+    // SqlSugar 的写操作是立即执行的，不需要单独 SaveChanges。提供这些方法让业务层迁移时改动最小。
+
+    /// <summary>插入单条实体（替代 EF Add + SaveChanges）。</summary>
+    public Task<int> InsertAsync<T>(T entity, CancellationToken cancellationToken = default) where T : class, new()
+    {
+        return _client.Insertable(entity).ExecuteCommandAsync(cancellationToken);
+    }
+
+    /// <summary>批量插入（替代 EF AddRange + SaveChanges）。</summary>
+    public Task<int> InsertRangeAsync<T>(IEnumerable<T> entities, CancellationToken cancellationToken = default) where T : class, new()
+    {
+        return _client.Insertable(entities.ToList()).ExecuteCommandAsync(cancellationToken);
+    }
+
+    /// <summary>更新单条实体。</summary>
+    public Task<int> UpdateAsync<T>(T entity, CancellationToken cancellationToken = default) where T : class, new()
+    {
+        return _client.Updateable(entity).ExecuteCommandAsync(cancellationToken);
+    }
+
+    /// <summary>按主键删除单条实体。</summary>
+    public Task<int> DeleteAsync<T>(T entity, CancellationToken cancellationToken = default) where T : class, new()
+    {
+        return _client.Deleteable(entity).ExecuteCommandAsync(cancellationToken);
+    }
+
+    /// <summary>批量删除。</summary>
+    public Task<int> DeleteRangeAsync<T>(IEnumerable<T> entities, CancellationToken cancellationToken = default) where T : class, new()
+    {
+        return _client.Deleteable(entities.ToList()).ExecuteCommandAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// 按条件删除（替代 EF 的 Where + RemoveRange + SaveChanges）。
+    /// SqlSugar 删除查询结果要用 Deleteable.Where(predicate)，不能在 Queryable 上 Delete。
+    /// </summary>
+    public Task<int> DeleteAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) where T : class, new()
+    {
+        return _client.Deleteable<T>().Where(predicate).ExecuteCommandAsync(cancellationToken);
+    }
+}
+
+/// <summary>
+/// SqlSugar 的 DI 注册与初始化扩展。
+/// </summary>
+public static class SqlSugarSetup
 {
     /// <summary>
-    /// 注入数据库上下文配置选项
+    /// 注册 SqlSugarScope（线程安全单例）和 <see cref="AppDbContext"/>（Scoped 适配），
+    /// 并在连接级别保持与原 EF 配置一致的 SQLite PRAGMA（WAL、cache_size、busy_timeout）。
     /// </summary>
-    public AppDbContext(DbContextOptions<AppDbContext> options) : base(options) { }
-
-    /// <summary>
-    /// 站点数据集
-    /// </summary>
-    public DbSet<Site> Sites => Set<Site>();
-
-    /// <summary>
-    /// 模型库数据集
-    /// </summary>
-    public DbSet<ModelLibraryItem> ModelLibraryItems => Set<ModelLibraryItem>();
-
-    /// <summary>
-    /// 站点模型映射数据集
-    /// </summary>
-    public DbSet<SiteModelMapping> SiteModelMappings => Set<SiteModelMapping>();
-
-    /// <summary>
-    /// 定时检测任务数据集
-    /// </summary>
-    public DbSet<DetectionTask> DetectionTasks => Set<DetectionTask>();
-
-    /// <summary>
-    /// 检测任务执行记录数据集
-    /// </summary>
-    public DbSet<DetectionTaskExecution> DetectionTaskExecutions => Set<DetectionTaskExecution>();
-
-    /// <summary>
-    /// 代理主入口数据集
-    /// </summary>
-    public DbSet<ProxyRouteEntry> ProxyRouteEntries => Set<ProxyRouteEntry>();
-
-    /// <summary>
-    /// 代理路由规则数据集
-    /// </summary>
-    public DbSet<ProxyRouteRule> ProxyRouteRules => Set<ProxyRouteRule>();
-
-    /// <summary>
-    /// 平台访问密钥数据集
-    /// </summary>
-    public DbSet<ProxyAccessKey> ProxyAccessKeys => Set<ProxyAccessKey>();
-
-    /// <summary>
-    /// 代理使用日志数据集
-    /// </summary>
-    public DbSet<ProxyUsageLog> ProxyUsageLogs => Set<ProxyUsageLog>();
-
-    /// <summary>
-    /// 模型健康监控配置数据集
-    /// </summary>
-    public DbSet<ModelHealthMonitor> ModelHealthMonitors => Set<ModelHealthMonitor>();
-
-    /// <summary>
-    /// 系统运行时设置数据集
-    /// </summary>
-    public DbSet<SystemRuntimeSettings> SystemRuntimeSettings => Set<SystemRuntimeSettings>();
-
-    /// <summary>
-    /// 配置所有实体的主键、字段约束、索引等数据库映射规则
-    /// </summary>
-    protected override void OnModelCreating(ModelBuilder modelBuilder)
+    public static IServiceCollection AddSqlSugar(this IServiceCollection services, string connectionString)
     {
-        // 站点实体配置
-        modelBuilder.Entity<Site>(entity =>
+        var sqlSugar = new SqlSugarScope(new ConnectionConfig
         {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Name).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.BaseUrl).IsRequired().HasMaxLength(500);
-            entity.Property(e => e.EndpointPathMode).IsRequired().HasMaxLength(50).HasDefaultValue("standard-root");
-            entity.Property(e => e.ApiKey).IsRequired().HasMaxLength(500);
-            entity.Property(e => e.ProtocolType).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.SupportsOpenAi).IsRequired();
-            entity.Property(e => e.SupportsAnthropic).IsRequired();
-        });
-
-        // 模型库实体配置
-        modelBuilder.Entity<ModelLibraryItem>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.ModelName).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.DisplayName).HasMaxLength(200);
-            // 兼容旧库中仍保留的 ModelType 非空列，但不再对外暴露该字段。
-            entity.Property<string>("ModelType").IsRequired().HasMaxLength(50);
-            // 模型名称唯一索引，防止重复模型
-            entity.HasIndex(e => e.ModelName).IsUnique();
-        });
-
-        // 站点模型映射实体配置
-        modelBuilder.Entity<SiteModelMapping>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.RemoteModelName).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.LastStatus).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.MaxConcurrency).IsRequired();
-            entity.Property(e => e.IsEnabled).IsRequired();
-            entity.HasIndex(e => new { e.SiteId, e.RemoteModelName }).IsUnique();
-        });
-
-        // 定时检测任务实体配置
-        modelBuilder.Entity<DetectionTask>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Name).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.CronExpression).IsRequired().HasMaxLength(100);
-            entity.Property(e => e.ModelLibraryItemId);
-        });
-
-        // 检测任务执行记录实体配置
-        modelBuilder.Entity<DetectionTaskExecution>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.Summary).HasMaxLength(2000);
-            entity.HasIndex(e => e.StartedAt);
-        });
-
-        // 代理主入口实体配置
-        modelBuilder.Entity<ProxyRouteEntry>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.EntryName).IsRequired().HasMaxLength(200);
-            entity.HasIndex(e => e.EntryName).IsUnique();
-        });
-
-        // 代理路由规则实体配置
-        modelBuilder.Entity<ProxyRouteRule>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.ExternalModelName).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.UpstreamModelName).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.SiteModelName).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.AvailabilityMode).IsRequired().HasMaxLength(50).HasDefaultValue("AllDay");
-            entity.Property(e => e.TimeRangesJson).IsRequired().HasMaxLength(2000).HasDefaultValue(string.Empty);
-            entity.HasIndex(e => new { e.ExternalModelName, e.Priority });
-            entity.HasIndex(e => new { e.ExternalModelName, e.IsEnabled, e.ModelPriority, e.InstancePriority, e.Priority });
-        });
-
-        // 平台访问密钥实体配置
-        modelBuilder.Entity<ProxyAccessKey>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.KeyName).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.PlainKey).IsRequired().HasMaxLength(500);
-            entity.Property(e => e.AccessKeyHash).IsRequired().HasMaxLength(500);
-            entity.Property(e => e.MaskedValue).IsRequired().HasMaxLength(100);
-            entity.Property(e => e.AllowedRouteNames).IsRequired().HasDefaultValue(string.Empty);
-            entity.HasIndex(e => new { e.AccessKeyHash, e.IsEnabled });
-        });
-
-        // 代理使用日志实体配置
-        modelBuilder.Entity<ProxyUsageLog>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.ProtocolType).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.ForwardingMode).HasMaxLength(50);
-            entity.Property(e => e.RequestModel).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.AttemptedModel).IsRequired().HasMaxLength(200);
-            entity.Property(e => e.Status).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.ReasoningEffort).IsRequired().HasMaxLength(50);
-            entity.Property(e => e.ErrorMessage).IsRequired().HasMaxLength(2000);
-            entity.Property(e => e.IsStreamInterrupted).IsRequired();
-            entity.HasIndex(e => e.RequestedAt);
-            entity.HasIndex(e => e.RequestId);
-            entity.HasIndex(e => new { e.RequestedAt, e.Status });
-            entity.HasIndex(e => e.TargetSiteId);
-            entity.HasIndex(e => e.AccessKeyId);
-            entity.HasIndex(e => e.AttemptedModel);
-        });
-
-        // 模型健康监控配置实体配置
-        modelBuilder.Entity<ModelHealthMonitor>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.HasIndex(e => e.ModelLibraryItemId).IsUnique();
-        });
-
-        // 系统运行时设置实体配置
-        modelBuilder.Entity<SystemRuntimeSettings>(entity =>
-        {
-            entity.HasKey(e => e.Id);
-            entity.Property(e => e.Id).ValueGeneratedNever();
-        });
-
-        base.OnModelCreating(modelBuilder);
-    }
-
-    /// <summary>
-    /// 保存前自动补全旧 ModelType 兼容字段
-    /// </summary>
-    public override int SaveChanges()
-    {
-        ApplyLegacyModelTypeCompatibility();
-        return base.SaveChanges();
-    }
-
-    /// <summary>
-    /// 保存前自动补全旧 ModelType 兼容字段
-    /// </summary>
-    public override int SaveChanges(bool acceptAllChangesOnSuccess)
-    {
-        ApplyLegacyModelTypeCompatibility();
-        return base.SaveChanges(acceptAllChangesOnSuccess);
-    }
-
-    /// <summary>
-    /// 异步保存前自动补全旧 ModelType 兼容字段
-    /// </summary>
-    public override Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
-    {
-        ApplyLegacyModelTypeCompatibility();
-        return base.SaveChangesAsync(cancellationToken);
-    }
-
-    /// <summary>
-    /// 异步保存前自动补全旧 ModelType 兼容字段
-    /// </summary>
-    public override Task<int> SaveChangesAsync(bool acceptAllChangesOnSuccess, CancellationToken cancellationToken = default)
-    {
-        ApplyLegacyModelTypeCompatibility();
-        return base.SaveChangesAsync(acceptAllChangesOnSuccess, cancellationToken);
-    }
-
-    /// <summary>
-    /// 旧数据库还保留 ModelType 非空列时，为新增模型补一个兼容值，避免写库失败。
-    /// </summary>
-    private void ApplyLegacyModelTypeCompatibility()
-    {
-        foreach (var entry in ChangeTracker.Entries<ModelLibraryItem>())
-        {
-            if (entry.State != EntityState.Added)
+            ConnectionString = connectionString,
+            DbType = SqlSugar.DbType.Sqlite,
+            IsAutoCloseConnection = true,
+            MoreSettings = new ConnMoreSettings
             {
-                continue;
+                IsAutoRemoveDataCache = true
             }
+        });
 
-            var modelTypeProperty = entry.Property<string>("ModelType");
-            if (string.IsNullOrWhiteSpace(modelTypeProperty.CurrentValue))
-            {
-                modelTypeProperty.CurrentValue = "chat";
-            }
+        // WAL 模式是持久化的，但首次建库时仍需确保设置一次；在 InitTables 阶段执行。
+        services.AddSingleton<ISqlSugarClient>(sqlSugar);
+        // AppDbContext 作为 Scoped 暴露给业务代码，与原 EF 的 Scoped 生命周期一致。
+        services.AddScoped<AppDbContext>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// 初始化数据库：CodeFirst 建表 + 持久化 PRAGMA（WAL、synchronous）。
+    /// 等价于原 EF 的 EnsureCreated + 启动期 PRAGMA。
+    /// </summary>
+    public static void InitializeDatabase(ISqlSugarClient db)
+    {
+        // 持久化 PRAGMA：WAL 模式与 synchronous=NORMAL 设置一次永久生效。
+        // 连接级 PRAGMA：cache_size、busy_timeout 在每次连接生命周期内生效（SqlSugarScope 单例 + 连接池复用）。
+        try
+        {
+            db.Ado.ExecuteCommand("PRAGMA journal_mode=WAL;");
+            db.Ado.ExecuteCommand("PRAGMA synchronous=NORMAL;");
+            db.Ado.ExecuteCommand("PRAGMA cache_size=-65536;");
+            db.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         }
+        catch { }
+
+        // CodeFirst 建表（表已存在时只增不删，自动补齐缺失列）。
+        db.CodeFirst.InitTables(
+            typeof(Site),
+            typeof(ModelLibraryItem),
+            typeof(SiteModelMapping),
+            typeof(DetectionTask),
+            typeof(DetectionTaskExecution),
+            typeof(ProxyRouteEntry),
+            typeof(ProxyRouteRule),
+            typeof(ProxyAccessKey),
+            typeof(ProxyUsageLog),
+            typeof(ModelHealthMonitor),
+            typeof(SystemRuntimeSettings));
     }
 }

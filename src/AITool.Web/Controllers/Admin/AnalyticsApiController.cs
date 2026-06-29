@@ -1,7 +1,6 @@
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Controllers.Admin;
 
@@ -477,7 +476,7 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var models = await _dbContext.ModelLibraryItems
-            .AsNoTracking()
+            
             .Where(x => x.IsEnabled)
             .OrderBy(x => x.ModelName)
             .Select(x => new AnalyticsModelOptionDto
@@ -487,7 +486,7 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var accessKeys = await _dbContext.ProxyAccessKeys
-            .AsNoTracking()
+            
             .OrderBy(x => x.KeyName)
             .Select(x => new AnalyticsAccessKeyOptionDto
             {
@@ -550,7 +549,7 @@ public sealed class AnalyticsApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         var allLogs = await dbContext.ProxyUsageLogs
-            .AsNoTracking()
+            
             .Select(x => new AITool.Domain.Proxy.ProxyUsageLog
             {
                 Id = x.Id,
@@ -581,7 +580,7 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var siteNames = await dbContext.Sites
-            .AsNoTracking()
+            
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
 
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);

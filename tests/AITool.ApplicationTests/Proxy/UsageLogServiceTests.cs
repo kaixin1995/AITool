@@ -1,9 +1,9 @@
 using AITool.Application.UsageLogs;
+using AITool.ApplicationTests;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
@@ -17,7 +17,7 @@ namespace AITool.ApplicationTests.Proxy;
 public sealed class UsageLogServiceTests : IDisposable
 {
     /// <summary>
-    /// 内存数据库上下文，用于断言日志最终写入结果。
+    /// 临时数据库上下文，用于断言日志最终写入结果。
     /// </summary>
     private readonly AppDbContext _dbContext;
 
@@ -32,23 +32,27 @@ public sealed class UsageLogServiceTests : IDisposable
     private readonly UsageLogService _service;
 
     /// <summary>
+    /// 数据库清理回调。
+    /// </summary>
+    private readonly Action _disposeDatabase;
+
+    /// <summary>
     /// 初始化独立的测试容器和数据库，避免不同用例之间共享状态。
     /// </summary>
     public UsageLogServiceTests()
     {
-        // 单独保留一份选项实例，便于注册到容器中。
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
+        // 用 TestDatabaseFactory 创建临时 SQLite 数据库并初始化表结构。
+        var dbPath = Path.Combine(Path.GetTempPath(), $"aitool-usage-test-{Guid.NewGuid():N}.db");
+        var connectionString = $"Data Source={dbPath}";
 
         // 这里构建最小服务集合，只保留批量写入器运行所必需的依赖。
         var services = new ServiceCollection();
-        services.AddSingleton(options);
-        // 为每个测试提供独立内存库，确保断言只覆盖当前场景的数据。
-        services.AddDbContext<AppDbContext>(dbOptions => dbOptions.UseInMemoryDatabase(Guid.NewGuid().ToString()));
+        services.AddSqlSugar(connectionString);
         _serviceProvider = services.BuildServiceProvider();
         // 直接拿到上下文，后续用来读取落库结果。
         _dbContext = _serviceProvider.GetRequiredService<AppDbContext>();
+        // 确保表已创建。
+        SqlSugarSetup.InitializeDatabase(_serviceProvider.GetRequiredService<SqlSugar.ISqlSugarClient>());
 
         // 使用真实批量写入器，尽量覆盖日志服务与持久化层的协作路径。
         var batchWriter = new ProxyUsageLogBatchWriter(
@@ -56,6 +60,12 @@ public sealed class UsageLogServiceTests : IDisposable
             NullLogger<ProxyUsageLogBatchWriter>.Instance,
             new TestHostEnvironment());
         _service = new UsageLogService(batchWriter);
+
+        _disposeDatabase = () =>
+        {
+            try { _serviceProvider.Dispose(); } catch { }
+            try { File.Delete(dbPath); } catch { }
+        };
     }
 
     /// <summary>
@@ -171,8 +181,7 @@ public sealed class UsageLogServiceTests : IDisposable
     /// </summary>
     public void Dispose()
     {
-        _dbContext.Dispose();
-        _serviceProvider.Dispose();
+        _disposeDatabase();
     }
 
     /// <summary>

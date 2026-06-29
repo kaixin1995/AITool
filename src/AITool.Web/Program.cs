@@ -17,8 +17,8 @@ using Hangfire;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
+using SqlSugar;
 using NLog;
 using NLog.Web;
 
@@ -95,12 +95,8 @@ builder.Services.AddSingleton<AdminAuthService>();
 // 数据库文件放在软件根目录下。
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
-// 注册 EF Core SQLite 数据库上下文，附带 PRAGMA 拦截器（cache_size/busy_timeout 连接级）。
-builder.Services.AddDbContext<AppDbContext>(options =>
-{
-    options.UseSqlite(connectionString);
-    options.AddInterceptors(new SqlitePragmaInterceptor());
-});
+// 注册 SqlSugar 数据访问层（SqlSugarScope 单例 + AppDbContext 适配），连接级 PRAGMA 与原 EF 配置一致。
+builder.Services.AddSqlSugar(connectionString);
 
 // 注册代理转发配置，统一控制单路由超时和失败重试策略。
 builder.Services.Configure<ProxyForwardingOptions>(
@@ -167,18 +163,10 @@ var app = builder.Build();
 
 using (var scope = app.Services.CreateScope())
 {
-    var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    db.Database.EnsureCreated();
-
-    // 启用 WAL 模式 + synchronous=NORMAL，并发读写吞吐提升 3-10 倍（持久属性，执行一次即可）。
-    try
-    {
-        await db.Database.ExecuteSqlRawAsync("PRAGMA journal_mode=WAL;");
-        await db.Database.ExecuteSqlRawAsync("PRAGMA synchronous=NORMAL;");
-    }
-    catch { }
-
-    await EnsureProxyUsageLogSchemaAsync(db);
+    var sqlSugarClient = scope.ServiceProvider.GetRequiredService<ISqlSugarClient>();
+    // CodeFirst 建表 + 补齐历史库缺失列（差量更新，只增不删）+ 持久化 PRAGMA（WAL、synchronous）。
+    // 替代原 EF 的 EnsureCreated + 手写 ALTER TABLE 升级脚本：SqlSugar 的 InitTables 会自动补齐缺失列。
+    SqlSugarSetup.InitializeDatabase(sqlSugarClient);
 
     var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
     try
@@ -411,112 +399,6 @@ static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, Can
     {
         return "<unavailable>";
     }
-}
-
-/// <summary>
-/// 为历史数据库补齐代理日志新增列，避免旧库因 EnsureCreated 不重建而缺字段。
-/// </summary>
-static async Task EnsureProxyUsageLogSchemaAsync(AppDbContext dbContext)
-{
-    var connection = dbContext.Database.GetDbConnection();
-    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
-    if (shouldCloseConnection)
-    {
-        await connection.OpenAsync();
-    }
-
-    try
-    {
-        if (!await ColumnExistsAsync(connection, "ProxyUsageLogs", "ForwardingMode"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE ProxyUsageLogs ADD COLUMN ForwardingMode TEXT NULL";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "SiteModelMappings", "MaxConcurrency"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE SiteModelMappings ADD COLUMN MaxConcurrency INTEGER NOT NULL DEFAULT 0";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "Sites", "EndpointPathMode"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE Sites ADD COLUMN EndpointPathMode TEXT NOT NULL DEFAULT 'standard-root'";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "SystemRuntimeSettings", "ConcurrencyMode"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE SystemRuntimeSettings ADD COLUMN ConcurrencyMode INTEGER NOT NULL DEFAULT 0";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "SystemRuntimeSettings", "ConcurrencyQueueTimeoutSeconds"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE SystemRuntimeSettings ADD COLUMN ConcurrencyQueueTimeoutSeconds INTEGER NOT NULL DEFAULT 120";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "SystemRuntimeSettings", "ConversationLogEnabled"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE SystemRuntimeSettings ADD COLUMN ConversationLogEnabled INTEGER NOT NULL DEFAULT 1";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "ProxyRouteRules", "AvailabilityMode"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE ProxyRouteRules ADD COLUMN AvailabilityMode TEXT NOT NULL DEFAULT 'AllDay'";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        if (!await ColumnExistsAsync(connection, "ProxyRouteRules", "TimeRangesJson"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE ProxyRouteRules ADD COLUMN TimeRangesJson TEXT NOT NULL DEFAULT ''";
-            await command.ExecuteNonQueryAsync();
-        }
-
-        // ProxyAccessKeys 表补充 AllowedRouteNames 列（AccessKey 路由限定功能）
-        if (!await ColumnExistsAsync(connection, "ProxyAccessKeys", "AllowedRouteNames"))
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = "ALTER TABLE ProxyAccessKeys ADD COLUMN AllowedRouteNames TEXT NOT NULL DEFAULT ''";
-            await command.ExecuteNonQueryAsync();
-        }
-    }
-    finally
-    {
-        if (shouldCloseConnection)
-        {
-            await connection.CloseAsync();
-        }
-    }
-}
-
-/// <summary>
-/// 检查指定表是否已经存在目标列。
-/// </summary>
-static async Task<bool> ColumnExistsAsync(DbConnection connection, string tableName, string columnName)
-{
-    await using var command = connection.CreateCommand();
-    command.CommandText = $"PRAGMA table_info({tableName})";
-    await using var reader = await command.ExecuteReaderAsync();
-    while (await reader.ReadAsync())
-    {
-        if (string.Equals(reader[1]?.ToString(), columnName, StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-    }
-
-    return false;
 }
 
 /// <summary>

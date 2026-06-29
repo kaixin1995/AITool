@@ -4,7 +4,6 @@ using AITool.Web.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.Sites;
 
@@ -96,7 +95,7 @@ public class EditModel : PageModel
     /// </summary>
     public async Task<IActionResult> OnGetAsync(Guid id, CancellationToken cancellationToken)
     {
-        var site = await _dbContext.Sites.FindAsync([id], cancellationToken);
+        var site = await _dbContext.Sites.InSingleAsync(id);
         if (site is null) return RedirectToPage("./Index");
 
         Name = site.Name;
@@ -119,7 +118,7 @@ public class EditModel : PageModel
 
         try
         {
-            var site = await _dbContext.Sites.FindAsync([id], cancellationToken);
+            var site = await _dbContext.Sites.InSingleAsync(id);
             if (site is null) return RedirectToPage("./Index");
 
             site.Name = Name;

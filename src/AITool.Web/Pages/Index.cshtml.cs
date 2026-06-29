@@ -1,6 +1,5 @@
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages;
 
@@ -52,10 +51,10 @@ public class IndexModel : PageModel
     /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        EnabledSiteCount = await _dbContext.Sites.CountAsync(s => s.IsEnabled, cancellationToken);
+        EnabledSiteCount = await _dbContext.Sites.Where(s => s.IsEnabled).CountAsync(cancellationToken);
         ModelCount = await _dbContext.ModelLibraryItems.CountAsync(cancellationToken);
         RouteRuleCount = await _dbContext.ProxyRouteRules.CountAsync(cancellationToken);
-        EnabledKeyCount = await _dbContext.ProxyAccessKeys.CountAsync(k => k.IsEnabled, cancellationToken);
-        EnabledTaskCount = await _dbContext.DetectionTasks.CountAsync(t => t.IsEnabled, cancellationToken);
+        EnabledKeyCount = await _dbContext.ProxyAccessKeys.Where(k => k.IsEnabled).CountAsync(cancellationToken);
+        EnabledTaskCount = await _dbContext.DetectionTasks.Where(t => t.IsEnabled).CountAsync(cancellationToken);
     }
 }

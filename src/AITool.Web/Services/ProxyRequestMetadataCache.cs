@@ -5,7 +5,6 @@ using AITool.Application.Common;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Controllers.Admin;
 using AITool.Web.Pages.Admin.ClientSimulator;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace AITool.Web.Services;
@@ -173,8 +172,8 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var settings = await dbContext.SystemRuntimeSettings
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken);
+                        
+                        .FirstAsync(x => x.Id == 1, cancellationToken);
 
                     return settings is null
                         ? new CachedProxyRuntimeSettings()
@@ -265,10 +264,12 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    var models = await (
-                            from model in dbContext.ModelLibraryItems.AsNoTracking()
-                            join mapping in dbContext.SiteModelMappings.AsNoTracking() on model.Id equals mapping.ModelLibraryItemId
-                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
+                    // SqlSugar 不支持 LINQ query syntax 的多表 join + group by，
+                    // 改为先各自读出再在内存连接（结果有 5 秒缓存，非每请求执行，性能可接受）。
+                    var models = (
+                            from model in await dbContext.ModelLibraryItems.ToListAsync(cancellationToken)
+                            join mapping in await dbContext.SiteModelMappings.ToListAsync(cancellationToken) on model.Id equals mapping.ModelLibraryItemId
+                            join site in await dbContext.Sites.ToListAsync(cancellationToken) on mapping.SiteId equals site.Id
                             where model.IsEnabled && mapping.IsEnabled && site.IsEnabled
                             group site by new { model.Id, model.DisplayName } into grouped
                             orderby grouped.Key.DisplayName
@@ -278,7 +279,7 @@ public sealed class ProxyRequestMetadataCache
                                 DisplayName = grouped.Key.DisplayName,
                                 AvailableSiteCount = grouped.Count()
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
 
                     return models;
                 })
@@ -299,10 +300,14 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    return await (
-                            from mapping in dbContext.SiteModelMappings.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
-                            join model in dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
+                    var mappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+                    var sites = await dbContext.Sites.ToListAsync(cancellationToken);
+                    var modelItems = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+
+                    return (
+                            from mapping in mappings
+                            join site in sites on mapping.SiteId equals site.Id
+                            join model in modelItems on mapping.ModelLibraryItemId equals model.Id
                             where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
                             orderby model.DisplayName, site.Name, mapping.RemoteModelName
                             select new CachedChatTarget
@@ -318,7 +323,7 @@ public sealed class ProxyRequestMetadataCache
                                 ApiKey = site.ApiKey,
                                 SiteModelName = mapping.RemoteModelName
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
                 })
             ?? [];
     }
@@ -346,7 +351,7 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var mappings = await dbContext.SiteModelMappings
-                        .AsNoTracking()
+                        
                         .Where(x => x.IsEnabled && x.MaxConcurrency > 0)
                         .Select(x => new
                         {
@@ -381,7 +386,7 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var sites = await dbContext.Sites
-                        .AsNoTracking()
+                        
                         .Where(x => x.IsEnabled)
                         .Select(x => new
                         {
@@ -408,14 +413,13 @@ public sealed class ProxyRequestMetadataCache
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var candidateCounts = await dbContext.ProxyRouteRules
-                        .AsNoTracking()
+                    var candidateCounts = (await dbContext.ProxyRouteRules.ToListAsync(cancellationToken))
                         .GroupBy(x => x.ExternalModelName)
                         .Select(g => new { EntryName = g.Key, CandidateCount = g.Count() })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
 
                     var storedEntries = await dbContext.ProxyRouteEntries
-                        .AsNoTracking()
+                        
                         .OrderBy(x => x.EntryName)
                         .Select(x => x.EntryName)
                         .ToListAsync(cancellationToken);
@@ -448,10 +452,13 @@ public sealed class ProxyRequestMetadataCache
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    return await (
-                            from mapping in dbContext.SiteModelMappings.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
-                            join model in dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
+                    var mappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+                    var sites = await dbContext.Sites.ToListAsync(cancellationToken);
+                    var modelItems = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    return (
+                            from mapping in mappings
+                            join site in sites on mapping.SiteId equals site.Id
+                            join model in modelItems on mapping.ModelLibraryItemId equals model.Id
                             where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
                             orderby site.Name, mapping.RemoteModelName
                             select new SiteInstanceItem
@@ -461,7 +468,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteModelName = mapping.RemoteModelName,
                                 ProtocolType = site.ProtocolType
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
                 })
             ?? [];
     }
@@ -480,7 +487,7 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var enabledMappings = await dbContext.SiteModelMappings
-                        .AsNoTracking()
+                        
                         .Where(m => m.IsEnabled)
                         .Select(m => new
                         {
@@ -498,7 +505,7 @@ public sealed class ProxyRequestMetadataCache
                     }
 
                     var models = await dbContext.ModelLibraryItems
-                        .AsNoTracking()
+                        
                         .Where(m => modelIds.Contains(m.Id) && m.IsEnabled)
                         .OrderBy(m => m.DisplayName)
                         .Select(m => new RouteModelItem
@@ -509,11 +516,11 @@ public sealed class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
 
                     var modelNameById = await dbContext.ModelLibraryItems
-                        .AsNoTracking()
+                        
                         .Where(m => modelIds.Contains(m.Id))
                         .ToDictionaryAsync(m => m.Id, m => m.ModelName, cancellationToken);
                     var routedModels = (await dbContext.ProxyRouteRules
-                        .AsNoTracking()
+                        
                         .Select(r => r.ExternalModelName)
                         .Distinct()
                         .ToListAsync(cancellationToken))
@@ -551,7 +558,7 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var sites = await dbContext.Sites
-                        .AsNoTracking()
+                        
                         .Where(s => s.IsEnabled)
                         .Select(s => new CachedSiteSnapshot
                         {
@@ -560,11 +567,11 @@ public sealed class ProxyRequestMetadataCache
                         })
                         .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
                     var modelNamesById = await dbContext.ModelLibraryItems
-                        .AsNoTracking()
+                        
                         .Where(m => m.IsEnabled)
                         .ToDictionaryAsync(m => m.Id, m => m.ModelName, cancellationToken);
                     var mappings = await dbContext.SiteModelMappings
-                        .AsNoTracking()
+                        
                         .Where(m => m.IsEnabled)
                         .Select(m => new
                         {
@@ -619,13 +626,13 @@ public sealed class ProxyRequestMetadataCache
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     // 查询全部站点（含禁用），以便在管理页面展示真实站点名和启用状态。
                     var siteRows = await dbContext.Sites
-                        .AsNoTracking()
+                        
                         .Select(s => new { s.Id, s.Name, s.IsEnabled })
                         .ToListAsync(cancellationToken);
                     var sites = siteRows.ToDictionary(s => s.Id, s => s.Name);
                     var siteEnabledMap = siteRows.ToDictionary(s => s.Id, s => s.IsEnabled);
                     var rules = await dbContext.ProxyRouteRules
-                        .AsNoTracking()
+                        
                         .OrderBy(r => r.Priority)
                         .Select(r => new
                         {
@@ -685,11 +692,11 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     return await dbContext.ProxyAccessKeys
-                        .AsNoTracking()
+                        
                         .Where(k => k.IsEnabled && !string.IsNullOrWhiteSpace(k.PlainKey))
                         .OrderBy(k => k.KeyName)
                         .Select(k => k.PlainKey)
-                        .FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+                        .FirstAsync(cancellationToken) ?? string.Empty;
                 })
             ?? string.Empty;
     }
@@ -707,9 +714,11 @@ public sealed class ProxyRequestMetadataCache
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    return await (
-                            from rule in dbContext.ProxyRouteRules.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on rule.SiteId equals site.Id
+                    var rules = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+                    var sites = await dbContext.Sites.ToListAsync(cancellationToken);
+                    return (
+                            from rule in rules
+                            join site in sites on rule.SiteId equals site.Id
                             where rule.IsEnabled && site.IsEnabled
                             group site by rule.ExternalModelName into g
                             orderby g.Key
@@ -722,7 +731,7 @@ public sealed class ProxyRequestMetadataCache
                                 CanUseOpenAi = g.Any(),
                                 CanUseAnthropic = g.Any()
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
                 })
             ?? [];
     }
@@ -992,7 +1001,7 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var accessKeys = await dbContext.ProxyAccessKeys
-                        .AsNoTracking()
+                        
                         .Where(x => x.IsEnabled)
                         .Select(x => new CachedProxyAccessKey
                         {
@@ -1021,9 +1030,12 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    return await (
-                            from route in dbContext.ProxyRouteRules.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on route.SiteId equals site.Id
+                    var routes = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+                    var sites = await dbContext.Sites.ToListAsync(cancellationToken);
+
+                    return (
+                            from route in routes
+                            join site in sites on route.SiteId equals site.Id
                             where route.IsEnabled && site.IsEnabled
                             select new CachedProxyRouteTarget
                             {
@@ -1045,7 +1057,7 @@ public sealed class ProxyRequestMetadataCache
                                 AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
                 })
             ?? [];
     }
@@ -1065,7 +1077,7 @@ public sealed class ProxyRequestMetadataCache
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
                     var models = await dbContext.ModelLibraryItems
-                        .AsNoTracking()
+                        
                         .Where(x => x.IsEnabled)
                         .Select(x => new CachedEnabledModel
                         {
@@ -1094,10 +1106,14 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    var rawMappings = await (
-                            from mapping in dbContext.SiteModelMappings.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
-                            join model in dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
+                    var mappingsData = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+                    var sitesData = await dbContext.Sites.ToListAsync(cancellationToken);
+                    var modelsData = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+
+                    var rawMappings = (
+                            from mapping in mappingsData
+                            join site in sitesData on mapping.SiteId equals site.Id
+                            join model in modelsData on mapping.ModelLibraryItemId equals model.Id
                             where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
                             select new
                             {
@@ -1112,7 +1128,7 @@ public sealed class ProxyRequestMetadataCache
                                 site.ApiKey,
                                 SiteModelName = mapping.RemoteModelName
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
 
                     var mappings = rawMappings
                         .GroupBy(x => x.ModelId)

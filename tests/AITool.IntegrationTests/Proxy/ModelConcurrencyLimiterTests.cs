@@ -2,7 +2,6 @@ using AITool.Domain.SiteCatalog;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.IntegrationTests.Proxy;
@@ -39,12 +38,12 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     {
         var services = new ServiceCollection();
         services.AddMemoryCache();
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+        services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddSingleton<ProxyRequestMetadataCache>();
         services.AddSingleton<ModelConcurrencyLimiter>();
         _serviceProvider = services.BuildServiceProvider();
         _dbContext = _serviceProvider.GetRequiredService<AppDbContext>();
-        _dbContext.Database.EnsureCreated();
+        SqlSugarSetup.InitializeDatabase(_serviceProvider.GetRequiredService<SqlSugar.ISqlSugarClient>());
         _limiter = _serviceProvider.GetRequiredService<ModelConcurrencyLimiter>();
     }
 

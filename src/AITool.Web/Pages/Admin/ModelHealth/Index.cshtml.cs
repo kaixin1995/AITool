@@ -3,7 +3,6 @@ using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Web.Pages.Admin.ModelHealth;
 
@@ -578,7 +577,7 @@ public class IndexModel : PageModel
         try
         {
             var monitor = await _dbContext.ModelHealthMonitors
-                .FirstOrDefaultAsync(m => m.ModelLibraryItemId == modelId, cancellationToken);
+                .FirstAsync(m => m.ModelLibraryItemId == modelId, cancellationToken);
             if (monitor is not null)
             {
                 _dbContext.ModelHealthMonitors.Remove(monitor);

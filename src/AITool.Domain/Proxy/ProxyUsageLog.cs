@@ -1,13 +1,23 @@
+using SqlSugar;
+
 namespace AITool.Domain.Proxy;
 
 /// <summary>
 /// 表示一条代理使用日志，用于记录一次请求链路中的调用目标、重试过程、耗时表现和结果状态。
 /// </summary>
+[SugarTable("ProxyUsageLogs")]
+[SugarIndex("IX_ProxyUsageLogs_RequestedAt", nameof(RequestedAt), OrderByType.Asc)]
+[SugarIndex("IX_ProxyUsageLogs_RequestId", nameof(RequestId), OrderByType.Asc)]
+[SugarIndex("IX_ProxyUsageLogs_RequestedAt_Status", nameof(RequestedAt), OrderByType.Asc, nameof(Status), OrderByType.Asc)]
+[SugarIndex("IX_ProxyUsageLogs_TargetSiteId", nameof(TargetSiteId), OrderByType.Asc)]
+[SugarIndex("IX_ProxyUsageLogs_AccessKeyId", nameof(AccessKeyId), OrderByType.Asc)]
+[SugarIndex("IX_ProxyUsageLogs_AttemptedModel", nameof(AttemptedModel), OrderByType.Asc)]
 public sealed class ProxyUsageLog
 {
     /// <summary>
     /// 日志唯一标识，用于区分每一条独立的调用记录。
     /// </summary>
+    [SugarColumn(IsPrimaryKey = true, IsIdentity = false, ColumnName = "Id")]
     public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>
@@ -23,21 +33,25 @@ public sealed class ProxyUsageLog
     /// <summary>
     /// 协议类型，例如 OpenAI 或 Anthropic，用于区分请求采用的协议格式。
     /// </summary>
+    [SugarColumn(Length = 50, IsNullable = false)]
     public string ProtocolType { get; set; } = string.Empty;
 
     /// <summary>
     /// 调用模式，用于记录本次请求是直接透传还是兼容中转。
     /// </summary>
+    [SugarColumn(Length = 50, IsNullable = true)]
     public string? ForwardingMode { get; set; }
 
     /// <summary>
     /// 客户端请求的模型名称，用于保留调用方原始指定的目标模型。
     /// </summary>
+    [SugarColumn(Length = 200, IsNullable = false)]
     public string RequestModel { get; set; } = string.Empty;
 
     /// <summary>
     /// 当前这次尝试实际命中的上游模型名称，用于反映路由或降级后的真实请求目标。
     /// </summary>
+    [SugarColumn(Length = 200, IsNullable = false)]
     public string AttemptedModel { get; set; } = string.Empty;
 
     /// <summary>
@@ -48,6 +62,7 @@ public sealed class ProxyUsageLog
     /// <summary>
     /// 当前请求处理状态，用于描述成功、失败或其他阶段性结果。
     /// </summary>
+    [SugarColumn(Length = 50, IsNullable = false)]
     public string Status { get; set; } = string.Empty;
 
     /// <summary>
@@ -78,6 +93,7 @@ public sealed class ProxyUsageLog
     /// <summary>
     /// 当前尝试的错误信息，用于记录失败原因或异常摘要。
     /// </summary>
+    [SugarColumn(Length = 2000, IsNullable = false)]
     public string ErrorMessage { get; set; } = string.Empty;
 
     /// <summary>
@@ -128,6 +144,7 @@ public sealed class ProxyUsageLog
     /// <summary>
     /// 思考等级，用于记录模型调用时附带的 reasoning effort 等推理强度参数。
     /// </summary>
+    [SugarColumn(Length = 50, IsNullable = false)]
     public string ReasoningEffort { get; set; } = string.Empty;
 
     /// <summary>

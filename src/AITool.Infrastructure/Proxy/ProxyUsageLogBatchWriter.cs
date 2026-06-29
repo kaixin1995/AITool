@@ -193,7 +193,6 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             RequestedAt = entry.RequestedAt
         }).ToList();
 
-        dbContext.ProxyUsageLogs.AddRange(logs);
-        await dbContext.SaveChangesAsync(cancellationToken);
+        await dbContext.InsertRangeAsync(logs, cancellationToken);
     }
 }

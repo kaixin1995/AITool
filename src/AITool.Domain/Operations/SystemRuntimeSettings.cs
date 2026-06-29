@@ -1,13 +1,17 @@
+using SqlSugar;
+
 namespace AITool.Domain.Operations;
 
 /// <summary>
 /// 表示系统运行期使用的一组集中配置，用于统一控制代理请求、检测任务、熔断策略和日志清理行为。
 /// </summary>
+[SugarTable("SystemRuntimeSettings")]
 public sealed class SystemRuntimeSettings
 {
     /// <summary>
     /// 固定主键值，表示这是一张单例配置表，数据库中预期始终只保留一条记录。
     /// </summary>
+    [SugarColumn(IsPrimaryKey = true, IsIdentity = false, ColumnName = "Id")]
     public int Id { get; set; } = 1;
 
     /// <summary>
@@ -82,6 +86,7 @@ public sealed class SystemRuntimeSettings
     /// <summary>
     /// 最近一次执行使用日志清理的时间，用于展示或判断自动清理的运行情况。
     /// </summary>
+    [SugarColumn(IsNullable = true)]
     public DateTimeOffset? LastUsageLogPrunedAt { get; set; }
 
     /// <summary>
