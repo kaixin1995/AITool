@@ -663,6 +663,15 @@
     var pendingDeleteSession = null;
     var pendingRenameSession = null;
 
+    /* —— 对话详情虚拟化（渐进式渲染）状态 —— */
+    // 单批渲染条数。初始只渲染最近一批，滚动到顶部哨兵时再向上加载更早的一批，
+    // 避免一次性把整段历史（含 marked + hljs 同步渲染）全塞进 DOM 导致浏览器卡死。
+    var turnsPageSize = 30;
+    // 当前已渲染到 lastTurnsPayload 的哪个索引（从后往前）。turnsRenderedFrom == items.length 表示全部已渲染。
+    var turnsRenderedFrom = 0;
+    // 虚拟化滚动观察器，监听顶部哨兵；切换会话时重建。
+    var turnsLazyObserver = null;
+
     function syncConversationHash(hash) {
         if (!hash || window.parent !== window) {
             return;
@@ -873,63 +882,152 @@
         var container = document.getElementById('conversationTurns');
         container.innerHTML = '';
 
+        // 切换会话时销毁旧的懒加载观察器，避免回调串到上一个会话。
+        if (turnsLazyObserver) {
+            turnsLazyObserver.disconnect();
+            turnsLazyObserver = null;
+        }
+
         if (!items || items.length === 0) {
             container.innerHTML = '<div class="conversation-turns-empty text-muted">当前会话没有可展示的消息。</div>';
+            turnsRenderedFrom = 0;
             return;
         }
 
-        // 前端渲染上限保险：即使后端未截断，单次同步 marked + hljs 渲染过多也会卡死页面。
-        var maxRender = 500;
-        var renderItems = items;
-        var locallyTruncated = false;
-        if (items.length > maxRender) {
-            renderItems = items.slice(items.length - maxRender);
-            locallyTruncated = true;
-        }
-
-        if (truncated || locallyTruncated) {
+        // 后端若截断过历史，给出提示。
+        if (truncated) {
             var notice = document.createElement('div');
             notice.className = 'conversation-turns-truncated text-muted small';
-            notice.textContent = '为避免页面卡顿，仅显示最近的对话记录，更早的内容请缩小时间范围或按天查看。';
+            notice.textContent = '为避免页面卡顿，仅加载最近的记录，更早的内容请缩小时间范围或按天查看。';
             container.appendChild(notice);
         }
 
-        renderItems.forEach(function(item) {
-            var turn = document.createElement('div');
-            turn.className = 'conversation-turn';
+        // 渐进式渲染：初始只渲染最近一批，顶部留一个哨兵节点，滚动到顶部时按需加载更早的批次。
+        turnsRenderedFrom = items.length;
+        var firstBatchEnd = items.length;
+        var firstBatchStart = Math.max(0, firstBatchEnd - turnsPageSize);
 
-            if (item.userInputText) {
-                var userRow = document.createElement('div');
-                userRow.className = 'conversation-msg conversation-msg-user';
-                userRow.setAttribute('data-role', 'user');
-                userRow.innerHTML = '<div class="conversation-avatar conversation-avatar-user">👤</div>'
-                    + '<div class="conversation-msg-body">'
-                    + '<div class="conversation-msg-meta">' + escapeHtml(item.userCreatedAtText || item.createdAtText || '') + ' · 输入 ' + formatSideTokens(item.inputTokens, item.cachedTokens) + '</div>'
-                    + '<div class="conversation-bubble conversation-bubble-user">' + escapeHtml(item.userInputText) + '</div>'
-                    + '</div>';
-                turn.appendChild(userRow);
-            }
+        // 顶部哨兵：插入到第一条真实消息之前，进入视口时触发加载更早的一批。
+        var sentinel = document.createElement('div');
+        sentinel.id = 'conversationTurnsSentinel';
+        sentinel.className = 'conversation-turns-sentinel';
+        sentinel.style.height = '1px';
+        container.appendChild(sentinel);
 
-            if (item.assistantOutputMarkdown) {
-                var aiRow = document.createElement('div');
-                aiRow.className = 'conversation-msg';
-                aiRow.setAttribute('data-role', 'assistant');
-                aiRow.innerHTML = '<div class="conversation-avatar conversation-avatar-assistant">🤖</div>'
-                    + '<div class="conversation-msg-body">'
-                    + '<div class="conversation-msg-meta">' + escapeHtml(item.createdAtText || '') + ' · ' + escapeHtml(item.requestModel || '') + ' · 输出 ' + formatTokenCount(item.outputTokens || 0) + '</div>'
-                    + '<div class="conversation-bubble conversation-bubble-assistant conversation-markdown">' + renderAssistantContent(item.assistantOutputMarkdown) + '</div>'
-                    + '</div>';
-                turn.appendChild(aiRow);
-            }
+        // 记录首屏渲染前的滚动高度，用于追加更早批次后保持视觉位置不跳动。
+        appendTurnBatch(container, items, firstBatchStart, firstBatchEnd, false);
+        turnsRenderedFrom = firstBatchStart;
 
-            container.appendChild(turn);
-        });
+        // 还有更早的内容未渲染时，启用哨兵观察器；否则隐藏哨兵。
+        if (turnsRenderedFrom > 0) {
+            setupTurnsLazyObserver(container, items);
+        } else {
+            sentinel.style.display = 'none';
+        }
 
         applyRoleFilterToTurns();
 
         if (scrollToBottom) {
             scrollConversationToBottom();
         }
+    }
+
+    /* 追加一批 turn 到容器。insertBefore=true 时插入到哨兵之后（加载更早的历史），
+       否则追加到末尾（首屏渲染）。追加历史时需保持用户当前可见的滚动位置不跳动。 */
+    function appendTurnBatch(container, items, startIndex, endIndex, insertBefore) {
+        if (startIndex >= endIndex) {
+            return;
+        }
+
+        var sentinel = document.getElementById('conversationTurnsSentinel');
+        var anchor = insertBefore && sentinel ? sentinel.nextSibling : null;
+        var prevScrollHeight = container.scrollHeight;
+        var prevScrollTop = container.scrollTop;
+
+        for (var i = startIndex; i < endIndex; i++) {
+            var turn = buildTurnElement(items[i]);
+            if (turn) {
+                if (anchor) {
+                    container.insertBefore(turn, anchor);
+                } else {
+                    container.appendChild(turn);
+                }
+            }
+        }
+
+        // 向上追加历史后，补偿滚动位置：新内容插入到上方会撑高容器，需要把 scrollTop 加上新增高度，
+        // 让用户当前看到的位置不变。
+        if (insertBefore) {
+            var addedHeight = container.scrollHeight - prevScrollHeight;
+            container.scrollTop = prevScrollTop + addedHeight;
+        }
+    }
+
+    /* 构造单条 turn 的 DOM 节点，供首屏和分批加载复用。 */
+    function buildTurnElement(item) {
+        var turn = document.createElement('div');
+        turn.className = 'conversation-turn';
+
+        if (item.userInputText) {
+            var userRow = document.createElement('div');
+            userRow.className = 'conversation-msg conversation-msg-user';
+            userRow.setAttribute('data-role', 'user');
+            userRow.innerHTML = '<div class="conversation-avatar conversation-avatar-user">👤</div>'
+                + '<div class="conversation-msg-body">'
+                + '<div class="conversation-msg-meta">' + escapeHtml(item.userCreatedAtText || item.createdAtText || '') + ' · 输入 ' + formatSideTokens(item.inputTokens, item.cachedTokens) + '</div>'
+                + '<div class="conversation-bubble conversation-bubble-user">' + escapeHtml(item.userInputText) + '</div>'
+                + '</div>';
+            turn.appendChild(userRow);
+        }
+
+        if (item.assistantOutputMarkdown) {
+            var aiRow = document.createElement('div');
+            aiRow.className = 'conversation-msg';
+            aiRow.setAttribute('data-role', 'assistant');
+            aiRow.innerHTML = '<div class="conversation-avatar conversation-avatar-assistant">🤖</div>'
+                + '<div class="conversation-msg-body">'
+                + '<div class="conversation-msg-meta">' + escapeHtml(item.createdAtText || '') + ' · ' + escapeHtml(item.requestModel || '') + ' · 输出 ' + formatTokenCount(item.outputTokens || 0) + '</div>'
+                + '<div class="conversation-bubble conversation-bubble-assistant conversation-markdown">' + renderAssistantContent(item.assistantOutputMarkdown) + '</div>'
+                + '</div>';
+            turn.appendChild(aiRow);
+        }
+
+        return turn;
+    }
+
+    /* 顶部哨兵进入视口时，加载更早的一批历史记录。 */
+    function setupTurnsLazyObserver(container, items) {
+        var sentinel = document.getElementById('conversationTurnsSentinel');
+        if (!sentinel || !('IntersectionObserver' in window)) {
+            return;
+        }
+
+        turnsLazyObserver = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+                if (!entry.isIntersecting) {
+                    return;
+                }
+                if (turnsRenderedFrom <= 0) {
+                    if (turnsLazyObserver) { turnsLazyObserver.disconnect(); }
+                    sentinel.style.display = 'none';
+                    return;
+                }
+
+                var loadEnd = turnsRenderedFrom;
+                var loadStart = Math.max(0, loadEnd - turnsPageSize);
+                appendTurnBatch(container, items, loadStart, loadEnd, true);
+                turnsRenderedFrom = loadStart;
+
+                applyRoleFilterToTurns();
+
+                if (turnsRenderedFrom <= 0) {
+                    if (turnsLazyObserver) { turnsLazyObserver.disconnect(); }
+                    sentinel.style.display = 'none';
+                }
+            });
+        }, { root: container, rootMargin: '200px 0px 0px 0px', threshold: 0 });
+
+        turnsLazyObserver.observe(sentinel);
     }
 
     function applyRoleFilterToTurns() {
@@ -956,6 +1054,8 @@
             renderTurns(lastTurnsPayload, scrollToBottom, !!data.truncated);
         } catch (err) {
             lastTurnsPayload = [];
+            turnsRenderedFrom = 0;
+            if (turnsLazyObserver) { turnsLazyObserver.disconnect(); turnsLazyObserver = null; }
             document.getElementById('conversationTurns').innerHTML = '<div class="conversation-turns-empty text-danger">' + escapeHtml(err.message || '加载会话详情失败') + '</div>';
         }
     }

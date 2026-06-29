@@ -1484,8 +1484,8 @@ public sealed class AnthropicProxyController : ControllerBase
 
             var sessionId = _conversationExtractionService.ExtractSessionId(headers);
 
-            var userInput = _conversationExtractionService.ExtractUserInputText(requestBody, protocolType, Request.Path);
-            var toolResultOutput = _conversationExtractionService.ExtractToolResultOutput(requestBody, protocolType, Request.Path);
+            // 合并为一次 JsonDocument.Parse，避免对几 MB 的 requestBody 解析两次导致两份 LOH 副本。
+            var (userInput, toolResultOutput) = _conversationExtractionService.ExtractRequestConversationFields(requestBody, protocolType, Request.Path);
             // 优先用流式转发时实时累积的 AI 正文（完整捕获，不受 64KB 诊断副本限制）；
             // 为空时回退到从 responseBody 提取（非流式或兜底场景）。
             var assistantText = !string.IsNullOrWhiteSpace(assistantContent)

@@ -268,6 +268,53 @@ public sealed class ConversationExtractionService
     }
 
     /// <summary>
+    /// 从请求体中一次性提取用户输入文本和工具结果输出，只解析一次 JSON。
+    /// <para>
+    /// 替代分别调用 <see cref="ExtractUserInputText"/> 与 <see cref="ExtractToolResultOutput"/>：
+    /// 大请求体（codex/claude-code 的几 MB 历史上下文）每次 JsonDocument.Parse 都会在
+    /// 大对象堆（LOH）上租借一份 byte[] 缓冲，两次解析等于两份几 MB 的 LOH 副本同时存在。
+    /// 合并为一次解析后，每个请求的 LOH 临时副本从两份降到一份，显著降低 LOH 碎片累积。
+    /// </para>
+    /// </summary>
+    public (string UserInput, string ToolResultOutput) ExtractRequestConversationFields(string requestBody, string protocolType, string requestPath)
+    {
+        if (string.IsNullOrWhiteSpace(requestBody))
+        {
+            return (string.Empty, string.Empty);
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(requestBody);
+            var root = doc.RootElement;
+
+            string userInput;
+            if (requestPath.Contains("/v1/responses", StringComparison.OrdinalIgnoreCase))
+            {
+                userInput = NormalizeConversationText(ExtractResponsesInputText(root));
+            }
+            else
+            {
+                if (root.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array)
+                {
+                    userInput = NormalizeConversationText(ExtractLastUserMessage(messages));
+                }
+                else
+                {
+                    userInput = string.Empty;
+                }
+            }
+
+            var toolResultOutput = ExtractToolResultSummary(root);
+            return (userInput, toolResultOutput);
+        }
+        catch
+        {
+            return (string.Empty, string.Empty);
+        }
+    }
+
+    /// <summary>
     /// 生成可搜索的纯文本内容。
     /// </summary>
     public string ToPlainText(string markdown)

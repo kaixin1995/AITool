@@ -521,4 +521,52 @@ data: {"type":"message_stop"}
         // 截断到 2000 行上限，体积应远小于 8000 行原始内容。
         result.Length.Should().BeLessThan(120000);
     }
+
+    [Fact]
+    public void ExtractRequestConversationFields_matches_separate_calls_but_parses_once()
+    {
+        // 验证合并方法（一次 JsonDocument.Parse）的输出与分别调用两次（两次 parse）完全一致，
+        // 确保合并重构不改变行为。请求体含用户消息 + 工具结果，覆盖两条提取路径。
+        var requestBody = """
+{
+  "messages": [
+    { "role": "system", "content": "你是助手" },
+    { "role": "user", "content": "请帮我修复这个 bug" }
+  ],
+  "input": [
+    {
+      "type": "function_call_output",
+      "output": "done",
+      "toolUseResult": {
+        "filePath": "Program.cs",
+        "structuredPatch": [{ "lines": ["- old line", "+ new line"] }]
+      }
+    }
+  ]
+}
+""";
+
+        // 分别调用（旧行为，两次 parse）
+        var separateUserInput = _service.ExtractUserInputText(requestBody, "OpenAI", "/v1/chat/completions");
+        var separateToolResult = _service.ExtractToolResultOutput(requestBody, "OpenAI", "/v1/chat/completions");
+
+        // 合并调用（新行为，一次 parse）
+        var (mergedUserInput, mergedToolResult) = _service.ExtractRequestConversationFields(requestBody, "OpenAI", "/v1/chat/completions");
+
+        mergedUserInput.Should().Be(separateUserInput);
+        mergedToolResult.Should().Be(separateToolResult);
+
+        // 确实提取到了内容（否则空值相等没有意义）。
+        mergedUserInput.Should().Contain("请帮我修复这个 bug");
+        mergedToolResult.Should().Contain("Program.cs");
+        mergedToolResult.Should().Contain("new line");
+    }
+
+    [Fact]
+    public void ExtractRequestConversationFields_returns_empty_for_invalid_json()
+    {
+        var (userInput, toolResult) = _service.ExtractRequestConversationFields("{ 不是合法 JSON", "OpenAI", "/v1/chat/completions");
+        userInput.Should().BeEmpty();
+        toolResult.Should().BeEmpty();
+    }
 }
