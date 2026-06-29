@@ -132,6 +132,8 @@ builder.Services.AddSingleton(new AITool.Infrastructure.Conversations.Conversati
 builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogStore, AITool.Infrastructure.Conversations.FileConversationLogStore>();
 builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>());
+// 定期压缩 LOH，回收大对象碎片，避免代理转发产生的大字符串碎片导致工作集居高不下。
+builder.Services.AddHostedService<MemoryMaintenanceService>();
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
 builder.Services.AddSingleton<ModelConcurrencyLimiter>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();

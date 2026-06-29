@@ -587,7 +587,8 @@ public sealed class AnalyticsApiController : ControllerBase
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
 
-        // 先按时间和基础筛选收窄范围，再在内存里做聚合，兼容 SQLite 对 DateTimeOffset 的限制。
+        // 先按时间和基础筛选收窄范围，再在内存里做聚合：SQLite + EF Core 无法稳定翻译
+        // DateTimeOffset 的区间比较（项目内 SystemRuntimeSettingsService、UsageLogsApiController 均因此采用内存过滤）。
         var baseLogs = allLogs
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
             .Where(x => string.Equals(query.ProtocolType, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.ProtocolType, query.ProtocolType, StringComparison.OrdinalIgnoreCase))
