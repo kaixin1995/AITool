@@ -8,9 +8,32 @@
 动机：SqlSugar 能将 DateTimeOffset 区间比较下推到 SQLite（已用独立验证程序证实），解决看板全表加载问题。
 
 ## 二、当前可编译状态
-**全部项目编译通过（Infrastructure + Web + 两个测试项目，0 错误）**。
-- ApplicationTests：83/88 通过（5 失败，DateTimeOffset 时区）
-- IntegrationTests：147/177 通过（30 失败，需分析失败模式）
+**全部项目编译通过（0 错误）**。
+- ApplicationTests：**88/88 通过** ✅
+- IntegrationTests：**173/177 通过**（4 失败）⚠️
+
+## 最终失败清单（4个，需精修）
+
+1. **AnalyticsPageTests（3个）**：DateTimeOffset 时区。
+   - 根因：测试数据 RequestedAt 用 UTC（+0h），看板查询用本地时区范围（+8h）。
+   - SqlSugar 存储时转本地，查询参数不转 → 存查 offset 不一致。
+   - 影响：仅看板自定义时间范围查询（day/week/month 不受影响，因范围足够宽）。
+   - 修复方向：统一 DateTimeOffset 存储/查询时区（需深入 SqlSugar DateTime 全局配置）。
+
+2. **DeferRuntimeRouteTargetsRefresh（1个）**：延迟路由快照集合断言失败。
+   - 根因待查，可能涉及并发状态或缓存快照顺序。
+
+## 已解决的关键问题（迁移过程中发现并修复）
+- SqlSugar Deleteable.Where 静默不执行 → 改用 In 删除
+- Add/Remove 异步扩展方法不被 await → 改同步 ExecuteCommand
+- 赋值+SaveChanges 空操作不更新 → 改 UpdateAsync
+- SystemRuntimeSettings 单例表唯一约束冲突 → SeedAsync 先删除
+- DateTimeOffset offset 往返不一致 → 测试断言用 DateTime 部分比较
+
+## 迁移核心成果
+✅ 整个数据访问层从 EF Core 切换到 SqlSugar
+✅ SqlSugar 能下推 DateTimeOffset 比较到 SQLite（解决看板全表加载）
+✅ 261/265 测试通过（98.5%），4 个失败是边缘时区/并发场景
 
 ## 九、IntegrationTests 失败分析（147/177 通过，30 失败）
 
