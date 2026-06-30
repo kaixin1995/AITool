@@ -66,7 +66,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
 
         var accessKey = await db.ProxyAccessKeys.SingleAsync();
         accessKey.IsEnabled = false;
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(accessKey);
 
         // 缓存未失效前仍会命中旧快照，这里先确认失效动作确实有意义。
         (await cache.ValidateAccessKeyAsync(rawKey, CancellationToken.None)).Should().NotBeNull();
@@ -118,7 +118,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         settings.CircuitBreakerFailureThreshold = 7;
         settings.CircuitBreakerRecoveryMinutes = 9;
         settings.UsageLogAutoCleanupEnabled = false;
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(settings);
 
         cache.InvalidateRuntimeSettings();
 
@@ -175,7 +175,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
 
         var route = await db.ProxyRouteRules.SingleAsync();
         route.IsEnabled = false;
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(route);
 
         cache.InvalidateRouteTargets();
 
@@ -213,7 +213,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
 
         var site = await db.Sites.SingleAsync();
         site.Name = "New Site Name";
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(site);
 
         cache.InvalidateRouteTargets();
 
@@ -312,7 +312,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         firstRule.ModelPriority = 1;
         secondRule.Priority = 0;
         secondRule.ModelPriority = 0;
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(secondRule);
 
         cache.DeferRuntimeRouteTargetsRefresh("deferred-route-model", activeSnapshot, previousRoutes);
 

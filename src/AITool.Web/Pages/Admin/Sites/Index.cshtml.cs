@@ -80,7 +80,7 @@ public class IndexModel : PageModel
             var site = await _dbContext.Sites.InSingleAsync(siteId);
             if (site is null) return RedirectToPage();
             site.IsEnabled = !site.IsEnabled;
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(site, cancellationToken);
             _metadataCache?.InvalidateRouteTargets();
             StatusMessage = "站点状态已切换";
             StatusSuccess = true;

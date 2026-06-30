@@ -203,7 +203,7 @@ public class IndexModel : PageModel
             var model = await _dbContext.ModelLibraryItems.InSingleAsync(modelId);
             if (model is null) return RedirectToPage();
             model.IsEnabled = !model.IsEnabled;
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(model, cancellationToken);
             _metadataCache?.InvalidateModelMetadata();
             _metadataCache?.InvalidateRouteTargets();
             StatusMessage = "模型状态已切换";

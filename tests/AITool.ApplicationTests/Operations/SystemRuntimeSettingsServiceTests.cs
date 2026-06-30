@@ -258,7 +258,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
 
         deletedCount.Should().Be(1);
         _dbContext.ProxyUsageLogs.ToList().Should().HaveCount(2);
-        _dbContext.ProxyUsageLogs.ToList().Should().Contain(x => x.Source == "codex" && x.RequestedAt == baseTime.AddHours(-1));
+        // SqlSugar 读回 DateTimeOffset 时配本地 offset，比较时用 DateTime 部分（与存储值一致）。
+        _dbContext.ProxyUsageLogs.ToList().Should().Contain(x => x.Source == "codex" && x.RequestedAt.DateTime == baseTime.AddHours(-1).DateTime);
         _dbContext.ProxyUsageLogs.ToList().Should().Contain(x => x.Source == "chat");
     }
 

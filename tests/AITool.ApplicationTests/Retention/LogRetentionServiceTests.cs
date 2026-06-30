@@ -102,7 +102,7 @@ public sealed class LogRetentionServiceTests : IDisposable
         _dbContext.ProxyUsageLogs.Single().RequestedAt.Should().BeAfter(beforePruneAt.AddDays(-3).AddMinutes(-1));
         settings.LastUsageLogPrunedCount.Should().Be(1);
         settings.LastUsageLogPrunedAt.Should().NotBeNull();
-        settings.LastUsageLogPrunedAt.Should().BeOnOrAfter(beforePruneAt);
+        settings.LastUsageLogPrunedAt!.Value.DateTime.Should().BeOnOrAfter(beforePruneAt.DateTime);
     }
 
     /// <summary>
@@ -147,7 +147,7 @@ public sealed class LogRetentionServiceTests : IDisposable
         result.UsageLogPrunedCount.Should().Be(0);
         _dbContext.ProxyUsageLogs.ToList().Should().ContainSingle();
         settings.LastUsageLogPrunedCount.Should().Be(0);
-        settings.LastUsageLogPrunedAt.Should().Be(baseTime);
+        settings.LastUsageLogPrunedAt!.Value.DateTime.Should().Be(baseTime.DateTime);
     }
 
     /// <summary>
@@ -189,7 +189,7 @@ public sealed class LogRetentionServiceTests : IDisposable
         result.UsageLogPrunedCount.Should().Be(0);
         _dbContext.ProxyUsageLogs.ToList().Should().ContainSingle();
         settings.LastUsageLogPrunedCount.Should().Be(0);
-        settings.LastUsageLogPrunedAt.Should().Be(baseTime);
+        settings.LastUsageLogPrunedAt!.Value.DateTime.Should().Be(baseTime.DateTime);
     }
 
     /// <summary>

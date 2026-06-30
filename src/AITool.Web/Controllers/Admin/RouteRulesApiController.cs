@@ -593,7 +593,7 @@ public sealed class RouteRulesApiController : ControllerBase
             return NotFound(new { message = "规则不存在" });
 
         rule.IsEnabled = !rule.IsEnabled;
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(rule, cancellationToken);
         _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "状态已切换", isEnabled = rule.IsEnabled });

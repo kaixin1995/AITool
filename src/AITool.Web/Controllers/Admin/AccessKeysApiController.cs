@@ -182,7 +182,7 @@ public sealed class AccessKeysApiController : ControllerBase
         if (key is null) return NotFound(new { message = "密钥不存在" });
 
         key.IsEnabled = !key.IsEnabled;
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(key, cancellationToken);
         _metadataCache.InvalidateAccessKeys();
 
         return Ok(new { keyId, isEnabled = key.IsEnabled });
@@ -214,7 +214,7 @@ public sealed class AccessKeysApiController : ControllerBase
         if (key is null) return NotFound(new { message = "密钥不存在" });
 
         key.AllowedRouteNames = SerializeRouteNames(request.AllowedRouteNames);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(key, cancellationToken);
         _metadataCache.InvalidateAccessKeys();
 
         return Ok(new { keyId, allowedRouteNames = DeserializeRouteNames(key.AllowedRouteNames) });

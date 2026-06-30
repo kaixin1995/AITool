@@ -270,7 +270,7 @@ public class IndexModel : PageModel
             if (task is null) return RedirectToPage();
 
             task.IsEnabled = !task.IsEnabled;
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(task, cancellationToken);
 
             await _scheduler.ScheduleAllAsync(cancellationToken);
             StatusMessage = "任务状态已切换";

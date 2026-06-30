@@ -120,6 +120,32 @@ public static class SqlSugarSetup
             {
                 IsAutoRemoveDataCache = true
             }
+        },
+        config =>
+        {
+            // SQLite 无原生 DateTimeOffset，SqlSugar 用 TEXT 存储时不保留 offset，
+            // 读回时配本地时区 offset，导致瞬时时刻偏移（写 +0h 读回 +8h）。
+            // 这里在读后把所有 DateTimeOffset 属性规范化回 UTC offset（+0h），保持瞬时时刻正确。
+            config.Aop.DataExecuted = (value, entityInfo) =>
+            {
+                // SqlSugar 读回 DateTimeOffset 时配本地时区 offset，导致瞬时偏移。
+                // 注意：此回调在部分查询路径（如 ToList）下可能不触发，作为尽力而为的补偿。
+                // 确定性补偿在 SqlSugarQueryableExtensions.NormalizeDates（查询后处理）中实现。
+                var entity = entityInfo.Entity;
+                if (entity is null) return;
+                var type = entity.GetType();
+                foreach (var prop in type.GetProperties())
+                {
+                    if (prop.PropertyType == typeof(DateTimeOffset))
+                    {
+                        var current = (DateTimeOffset)prop.GetValue(entity)!;
+                        if (current.Offset != TimeSpan.Zero)
+                        {
+                            prop.SetValue(entity, new DateTimeOffset(current.DateTime, TimeSpan.Zero));
+                        }
+                    }
+                }
+            };
         });
 
         // WAL 模式是持久化的，但首次建库时仍需确保设置一次；在 InitTables 阶段执行。

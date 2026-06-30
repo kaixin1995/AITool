@@ -338,7 +338,7 @@ public sealed class ProxyFallbackFlowTests
             var firstRule = await db.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod" && x.Priority == 0);
             firstRule.AvailabilityMode = "Unavailable";
             firstRule.TimeRangesJson = "[{\"start\":\"00:00\",\"end\":\"23:59\"}]";
-            await db.SaveChangesAsync();
+            await db.UpdateAsync(firstRule);
         }
 
         var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
