@@ -4,19 +4,26 @@
     --primary-hover: #5A8EF5;
     --primary-light: #EEF4FF;
     --primary-50: rgba(108, 158, 255, 0.07);
+    --primary-rgb: 108, 158, 255;
     --success: #34D399;
     --success-light: #ECFDF5;
+    --success-hover: #16A34A;
     --warning: #FBBF24;
     --warning-light: #FFFBEB;
+    --warning-hover: #D97706;
     --danger: #F87171;
     --danger-light: #FEF2F2;
+    --danger-hover: #DC2626;
     --info: #60A5FA;
     --info-light: #EFF6FF;
+    --purple-light: #F0EBFF;
+    --purple: #8B5CF6;
     --bg-page: #F8FAFC;
     --bg-card: #FFFFFF;
     --text-primary: #1E293B;
     --text-secondary: #64748B;
     --text-muted: #94A3B8;
+    --text-on-primary: #FFFFFF;
     --border-color: #E2E8F0;
     --border-light: #F1F5F9;
     --radius: 12px;
@@ -27,6 +34,20 @@
     --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -2px rgba(0, 0, 0, 0.03);
     --sidebar-width: 260px;
     --sidebar-collapsed-width: 72px;
+    --sidebar-bg: #FFFFFF;
+    --sidebar-text: var(--text-secondary);
+    --sidebar-active-bg: var(--primary-light);
+    --sidebar-active-text: var(--primary);
+    --sidebar-hover-bg: rgba(0, 0, 0, 0.03);
+    --sidebar-border: var(--border-color);
+    --sidebar-scrollbar: rgba(0, 0, 0, 0.08);
+    --brand-gradient: linear-gradient(135deg, var(--primary) 0%, #A5B4FC 100%);
+    --focus-glow: rgba(var(--primary-rgb), 0.12);
+    --badge-secondary-bg: #F3F4F6;
+    --alert-success-text: #15803D;
+    --alert-danger-text: #B91C1C;
+    --alert-warning-text: #A16207;
+    --alert-info-text: #1D4ED8;
 }
 
 * {
@@ -49,8 +70,8 @@ body {
 
 .app-sidebar {
     width: var(--sidebar-width);
-    background: #FFFFFF;
-    border-right: 1px solid var(--border-color);
+    background: var(--sidebar-bg);
+    border-right: 1px solid var(--sidebar-border);
     color: var(--text-primary);
     position: fixed;
     top: 0;
@@ -71,7 +92,7 @@ body {
 }
 
 .app-sidebar::-webkit-scrollbar-thumb {
-    background: rgba(0, 0, 0, 0.08);
+    background: var(--sidebar-scrollbar);
     border-radius: 2px;
 }
 
@@ -122,7 +143,7 @@ body {
 .sidebar-brand-icon {
     width: 36px;
     height: 36px;
-    background: linear-gradient(135deg, var(--primary) 0%, #A5B4FC 100%);
+    background: var(--brand-gradient);
     border-radius: 10px;
     display: flex;
     align-items: center;
@@ -169,7 +190,7 @@ body {
     gap: 10px;
     padding: 9px 12px;
     border-radius: var(--radius-sm);
-    color: var(--text-secondary);
+    color: var(--sidebar-text);
     text-decoration: none;
     font-size: 13.5px;
     font-weight: 500;
@@ -178,13 +199,13 @@ body {
 }
 
 .sidebar-link:hover {
-    background: var(--primary-50);
+    background: var(--sidebar-hover-bg);
     color: var(--primary);
 }
 
 .sidebar-link.active {
-    background: var(--primary-light);
-    color: var(--primary);
+    background: var(--sidebar-active-bg);
+    color: var(--sidebar-active-text);
 }
 
 .sidebar-link-icon {
@@ -365,7 +386,7 @@ body {
 .stat-card-icon.warning { background: var(--warning-light); color: var(--warning); }
 .stat-card-icon.danger { background: var(--danger-light); color: var(--danger); }
 .stat-card-icon.info { background: var(--info-light); color: var(--info); }
-.stat-card-icon.purple { background: #F0EBFF; color: #8B5CF6; }
+.stat-card-icon.purple { background: var(--purple-light); color: var(--purple); }
 
 .stat-card-value {
     font-size: 28px;
@@ -480,7 +501,7 @@ body {
 }
 
 .badge.bg-secondary {
-    background: #F3F4F6 !important;
+    background: var(--badge-secondary-bg) !important;
     color: var(--text-secondary) !important;
 }
 
@@ -514,7 +535,7 @@ body {
 .btn-primary:hover {
     background: var(--primary-hover);
     color: #fff;
-    box-shadow: 0 2px 8px rgba(108, 158, 255, 0.3);
+    box-shadow: 0 2px 8px rgba(var(--primary-rgb), 0.3);
 }
 
 .btn-secondary {
@@ -535,7 +556,7 @@ body {
 }
 
 .btn-success:hover {
-    background: #16A34A;
+    background: var(--success-hover);
     box-shadow: 0 2px 8px rgba(34, 197, 94, 0.3);
 }
 
@@ -545,7 +566,7 @@ body {
 }
 
 .btn-warning:hover {
-    background: #D97706;
+    background: var(--warning-hover);
 }
 
 .btn-danger {
@@ -554,7 +575,7 @@ body {
 }
 
 .btn-danger:hover {
-    background: #DC2626;
+    background: var(--danger-hover);
     box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
 }
 
@@ -629,7 +650,7 @@ body {
 .form-control:focus,
 .form-select:focus {
     border-color: var(--primary);
-    box-shadow: 0 0 0 3px rgba(108, 158, 255, 0.12);
+    box-shadow: 0 0 0 3px var(--focus-glow);
     outline: none;
 }
 
@@ -650,7 +671,7 @@ body {
 }
 
 .form-check-input:focus {
-    box-shadow: 0 0 0 3px rgba(108, 158, 255, 0.12);
+    box-shadow: 0 0 0 3px var(--focus-glow);
     border-color: var(--primary);
 }
 
@@ -682,22 +703,22 @@ body {
 
 .alert-success {
     background: var(--success-light);
-    color: #15803D;
+    color: var(--alert-success-text);
 }
 
 .alert-danger {
     background: var(--danger-light);
-    color: #B91C1C;
+    color: var(--alert-danger-text);
 }
 
 .alert-warning {
     background: var(--warning-light);
-    color: #A16207;
+    color: var(--alert-warning-text);
 }
 
 .alert-info {
     background: var(--info-light);
-    color: #1D4ED8;
+    color: var(--alert-info-text);
 }
 
 /* 页面标题 */
@@ -723,7 +744,7 @@ body {
 
 /* 欢迎横幅 */
 .welcome-banner {
-    background: linear-gradient(135deg, var(--primary) 0%, #A5B4FC 100%);
+    background: var(--brand-gradient);
     border-radius: var(--radius);
     padding: 32px;
     color: #fff;
@@ -1019,4 +1040,213 @@ body {
     font-size: 11px;
     color: var(--text-muted);
     margin-top: 4px;
+}
+
+/* ============================================================
+   主题切换器
+   ============================================================ */
+.theme-switcher {
+    display: flex;
+    gap: 4px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--sidebar-border);
+    margin-top: auto;
+}
+
+.theme-btn {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+    padding: 6px 2px;
+    border: none;
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--sidebar-text);
+    font-size: 10px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.theme-btn:hover {
+    background: var(--sidebar-hover-bg);
+}
+
+.theme-btn.active {
+    background: var(--sidebar-active-bg);
+    color: var(--sidebar-active-text);
+}
+
+.theme-btn-icon {
+    font-size: 16px;
+    line-height: 1;
+}
+
+.app-wrapper.sidebar-collapsed .theme-switcher {
+    padding: 8px 4px;
+}
+
+.app-wrapper.sidebar-collapsed .theme-btn {
+    font-size: 0;
+    padding: 6px 0;
+}
+
+.app-wrapper.sidebar-collapsed .theme-btn-icon {
+    font-size: 16px;
+}
+
+/* ============================================================
+   现代主题 — 深色侧边栏 + 紫色主色调 + 大圆角阴影
+   ============================================================ */
+[data-theme="modern"] {
+    --primary: #7C3AED;
+    --primary-hover: #6D28D9;
+    --primary-light: #F3F0FF;
+    --primary-50: rgba(124, 58, 237, 0.07);
+    --primary-rgb: 124, 58, 237;
+    --bg-page: #F8F7FC;
+    --bg-card: #FFFFFF;
+    --text-primary: #1E1538;
+    --text-secondary: #6B5B95;
+    --text-muted: #9CA3B8;
+    --border-color: #E9E4F3;
+    --border-light: #F4F0FA;
+    --radius: 16px;
+    --radius-sm: 10px;
+    --radius-xs: 8px;
+    --shadow-sm: 0 1px 3px rgba(124, 58, 237, 0.04);
+    --shadow: 0 2px 8px rgba(124, 58, 237, 0.06), 0 1px 3px rgba(0, 0, 0, 0.02);
+    --shadow-md: 0 8px 24px rgba(124, 58, 237, 0.10), 0 2px 8px rgba(0, 0, 0, 0.03);
+    --sidebar-bg: #1E1B4B;
+    --sidebar-text: #C4B5FD;
+    --sidebar-active-bg: rgba(124, 58, 237, 0.25);
+    --sidebar-active-text: #DDD6FE;
+    --sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+    --sidebar-border: rgba(255, 255, 255, 0.08);
+    --sidebar-scrollbar: rgba(255, 255, 255, 0.1);
+    --brand-gradient: linear-gradient(135deg, #7C3AED 0%, #C084FC 100%);
+    --focus-glow: rgba(124, 58, 237, 0.15);
+    --badge-secondary-bg: #F3F0FA;
+    --alert-success-text: #15803D;
+    --alert-danger-text: #B91C1C;
+    --alert-warning-text: #A16207;
+    --alert-info-text: #5B21B6;
+}
+
+/* ============================================================
+   简洁主题 — 去阴影去渐变 + 纯黑白灰 + 小圆角
+   ============================================================ */
+[data-theme="minimal"] {
+    --primary: #111827;
+    --primary-hover: #000000;
+    --primary-light: #F3F4F6;
+    --primary-50: rgba(17, 24, 39, 0.04);
+    --primary-rgb: 17, 24, 39;
+    --bg-page: #FFFFFF;
+    --bg-card: #FFFFFF;
+    --text-primary: #111827;
+    --text-secondary: #4B5563;
+    --text-muted: #9CA3AF;
+    --border-color: #E5E7EB;
+    --border-light: #F3F4F6;
+    --radius: 6px;
+    --radius-sm: 4px;
+    --radius-xs: 3px;
+    --shadow-sm: none;
+    --shadow: none;
+    --shadow-md: 0 1px 3px rgba(0, 0, 0, 0.08);
+    --sidebar-bg: #FAFAFA;
+    --sidebar-text: #4B5563;
+    --sidebar-active-bg: #F3F4F6;
+    --sidebar-active-text: #111827;
+    --sidebar-hover-bg: rgba(0, 0, 0, 0.03);
+    --sidebar-border: #E5E7EB;
+    --sidebar-scrollbar: rgba(0, 0, 0, 0.06);
+    --brand-gradient: #111827;
+    --focus-glow: rgba(17, 24, 39, 0.08);
+    --badge-secondary-bg: #F3F4F6;
+    --alert-success-text: #166534;
+    --alert-danger-text: #991B1B;
+    --alert-warning-text: #854D0E;
+    --alert-info-text: #1E40AF;
+}
+
+[data-theme="minimal"] .stat-card:hover,
+[data-theme="minimal"] .card:hover {
+    transform: none;
+}
+
+[data-theme="minimal"] .welcome-banner {
+    background: #111827;
+}
+
+[data-theme="minimal"] .welcome-banner::after {
+    display: none;
+}
+
+/* ============================================================
+   暗夜主题 — 全暗色 + 柔和高对比
+   ============================================================ */
+[data-theme="dark"] {
+    --primary: #818CF8;
+    --primary-hover: #6366F1;
+    --primary-light: rgba(99, 102, 241, 0.15);
+    --primary-50: rgba(129, 140, 248, 0.08);
+    --primary-rgb: 129, 140, 248;
+    --success: #4ADE80;
+    --success-light: rgba(34, 197, 94, 0.12);
+    --success-hover: #22C55E;
+    --warning: #FBBF24;
+    --warning-light: rgba(251, 191, 36, 0.12);
+    --warning-hover: #F59E0B;
+    --danger: #F87171;
+    --danger-light: rgba(239, 68, 68, 0.12);
+    --danger-hover: #EF4444;
+    --info: #60A5FA;
+    --info-light: rgba(96, 165, 250, 0.12);
+    --purple-light: rgba(139, 92, 246, 0.15);
+    --purple: #A78BFA;
+    --bg-page: #0F172A;
+    --bg-card: #1E293B;
+    --text-primary: #F1F5F9;
+    --text-secondary: #94A3B8;
+    --text-muted: #64748B;
+    --text-on-primary: #FFFFFF;
+    --border-color: #334155;
+    --border-light: #1E293B;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+    --sidebar-bg: #0B1120;
+    --sidebar-text: #94A3B8;
+    --sidebar-active-bg: rgba(129, 140, 248, 0.15);
+    --sidebar-active-text: #C7D2FE;
+    --sidebar-hover-bg: rgba(255, 255, 255, 0.04);
+    --sidebar-border: #1E293B;
+    --sidebar-scrollbar: rgba(255, 255, 255, 0.08);
+    --brand-gradient: linear-gradient(135deg, #6366F1 0%, #818CF8 100%);
+    --focus-glow: rgba(129, 140, 248, 0.2);
+    --badge-secondary-bg: #334155;
+    --alert-success-text: #4ADE80;
+    --alert-danger-text: #F87171;
+    --alert-warning-text: #FBBF24;
+    --alert-info-text: #60A5FA;
+}
+
+[data-theme="dark"] .table > thead > tr > th {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="dark"] .table > tbody > tr:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+[data-theme="dark"] .table code {
+    background: rgba(255, 255, 255, 0.05);
+}
+
+[data-theme="dark"] .form-control,
+[data-theme="dark"] .form-select {
+    color-scheme: dark;
 }
