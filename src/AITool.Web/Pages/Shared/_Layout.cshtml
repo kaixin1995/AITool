@@ -34,7 +34,10 @@
                         <div class="sidebar-brand-sub">管理后台</div>
                     </div>
                 </div>
-                <button class="sidebar-collapse-toggle" id="sidebarCollapseToggle" type="button" title="折叠侧边栏">‹</button>
+                <div class="sidebar-brand-actions">
+                    <button class="theme-icon-toggle" id="themeToggleBtn" type="button" title="切换明暗模式">🌙</button>
+                    <button class="sidebar-collapse-toggle" id="sidebarCollapseToggle" type="button" title="折叠侧边栏">‹</button>
+                </div>
             </div>
             <nav class="sidebar-nav">
                 <!-- 概览 -->
@@ -96,13 +99,6 @@
                     </a>
                 </div>
             </nav>
-            <!-- 明暗模式切换 -->
-            <div class="theme-toggle-bar">
-                <button class="theme-toggle-btn" id="themeToggleBtn" type="button" title="切换明暗模式">
-                    <span class="theme-toggle-icon" id="themeToggleIcon">🌙</span>
-                    <span class="theme-toggle-label" id="themeToggleLabel">暗夜模式</span>
-                </button>
-            </div>
         </aside>
 
         <!-- 遮罩层（移动端） -->
@@ -175,21 +171,14 @@
 
             /* 明暗模式切换 */
             var themeToggleBtn = document.getElementById('themeToggleBtn');
-            var themeToggleIcon = document.getElementById('themeToggleIcon');
-            var themeToggleLabel = document.getElementById('themeToggleLabel');
 
             function applyTheme(theme) {
                 document.documentElement.setAttribute('data-theme', theme);
                 document.documentElement.setAttribute('data-bs-theme', theme === 'dark' ? 'dark' : 'light');
                 localStorage.setItem('aitool.theme', theme);
-                if (themeToggleIcon && themeToggleLabel) {
-                    if (theme === 'dark') {
-                        themeToggleIcon.textContent = '☀️';
-                        themeToggleLabel.textContent = '经典模式';
-                    } else {
-                        themeToggleIcon.textContent = '🌙';
-                        themeToggleLabel.textContent = '暗夜模式';
-                    }
+                if (themeToggleBtn) {
+                    themeToggleBtn.textContent = theme === 'dark' ? '☀️' : '🌙';
+                    themeToggleBtn.title = theme === 'dark' ? '切换到经典模式' : '切换到暗夜模式';
                 }
             }
 

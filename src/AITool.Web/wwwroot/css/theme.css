@@ -105,6 +105,13 @@ body {
     border-bottom: 1px solid var(--border-light);
 }
 
+.sidebar-brand-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
 .sidebar-brand-main {
     display: flex;
     align-items: center;
@@ -1043,47 +1050,29 @@ body {
 }
 
 /* ============================================================
-   明暗模式切换按钮
+   明暗模式切换图标（品牌区内）
    ============================================================ */
-.theme-toggle-bar {
-    border-top: 1px solid var(--sidebar-border);
-    padding: 8px 12px;
-    margin-top: auto;
-}
-
-.theme-toggle-btn {
+.theme-icon-toggle {
     display: flex;
     align-items: center;
-    gap: 8px;
-    width: 100%;
-    padding: 8px 12px;
-    border: none;
-    border-radius: var(--radius-sm);
-    background: transparent;
-    color: var(--sidebar-text);
-    font-size: 13px;
-    font-weight: 500;
-    cursor: pointer;
-    transition: all 0.15s ease;
-}
-
-.theme-toggle-btn:hover {
-    background: var(--sidebar-hover-bg);
-    color: var(--primary);
-}
-
-.theme-toggle-icon {
-    font-size: 16px;
-    line-height: 1;
-}
-
-.app-wrapper.sidebar-collapsed .theme-toggle-label {
-    display: none;
-}
-
-.app-wrapper.sidebar-collapsed .theme-toggle-btn {
     justify-content: center;
-    padding: 8px 0;
+    width: 30px;
+    height: 30px;
+    border: 1px solid var(--border-light);
+    border-radius: 999px;
+    background: var(--bg-page);
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: all 0.15s ease;
+    padding: 0;
+}
+
+.theme-icon-toggle:hover {
+    background: var(--primary-light);
+    border-color: var(--primary-light);
+    transform: scale(1.08);
 }
 
 /* ============================================================
