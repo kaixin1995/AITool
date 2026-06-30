@@ -318,6 +318,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         firstRule.ModelPriority = 1;
         secondRule.Priority = 0;
         secondRule.ModelPriority = 0;
+        await db.UpdateAsync(firstRule);
         await db.UpdateAsync(secondRule);
 
         cache.DeferRuntimeRouteTargetsRefresh("deferred-route-model", activeSnapshot, previousRoutes);

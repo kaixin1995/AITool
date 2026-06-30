@@ -579,6 +579,16 @@ public sealed class AnalyticsApiController : ControllerBase
             })
             .ToListAsync(cancellationToken);
 
+        // SqlSugar 读回 DateTimeOffset 时 offset 被配成本地时区（+08:00），但存储的是 UTC 值，
+        // 导致瞬时偏移。这里统一把 RequestedAt 规范化回 UTC offset（+00:00），恢复正确瞬时时刻。
+        foreach (var log in allLogs)
+        {
+            if (log.RequestedAt.Offset != TimeSpan.Zero)
+            {
+                log.RequestedAt = new DateTimeOffset(log.RequestedAt.DateTime, TimeSpan.Zero);
+            }
+        }
+
         var siteNames = await dbContext.Sites
             
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
