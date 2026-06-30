@@ -552,7 +552,7 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     {
         var mapping = await _dbContext.SiteModelMappings.FirstAsync(x => x.SiteId == siteId && x.RemoteModelName == remoteModelName);
         mapping.MaxConcurrency = maxConcurrency;
-        await _dbContext.SaveChangesAsync();
+        await _dbContext.UpdateAsync(mapping);
 
         var metadataCache = _serviceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         metadataCache.InvalidateRouteTargets();
