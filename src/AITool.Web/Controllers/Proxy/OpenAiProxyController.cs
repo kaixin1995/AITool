@@ -594,6 +594,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 route.SiteModelName,
                 enableStreaming);
 
+            // 如果模型配置了强制思考等级，覆盖转发请求体里的思考等级
+            if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
+            {
+                preparedRequestBody = ProxyProtocolBridge.OverrideReasoningEffort(preparedRequestBody, route.OverrideReasoningEffort, actualProtocolType);
+            }
+
             var forwardRequest = new ProxyForwardRequest
             {
                 TargetBaseUrl = route.BaseUrl,

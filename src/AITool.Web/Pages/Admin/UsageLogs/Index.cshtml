@@ -793,6 +793,7 @@
                         '<div class="small text-secondary mb-1">站点：' + escHtml(readValue(item, ['siteName', 'targetSiteName']) || '-') + '</div>' +
                         '<div class="small text-secondary mb-1">时间：' + escHtml(formatDateTime(readValue(item, ['requestedAt', 'createdAt']))) + '</div>' +
                         '<div class="small text-secondary mb-1">Tokens：' + escHtml(formatNumber(readValue(item, ['totalTokens']) || 0)) + '</div>' +
+                        '<div class="small text-secondary mb-1">思考等级：' + escHtml(readValue(item, ['reasoningEffort']) || '-') + '</div>' +
                         '<div class="small text-secondary">错误：' + escHtml(errorMessage || '-') + '</div>' +
                     '</div>' +
                 '</div>';

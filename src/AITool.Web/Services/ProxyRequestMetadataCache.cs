@@ -1032,10 +1032,13 @@ public sealed class ProxyRequestMetadataCache
 
                     var routes = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
                     var sites = await dbContext.Sites.ToListAsync(cancellationToken);
+                    var models = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
 
                     return (
                             from route in routes
                             join site in sites on route.SiteId equals site.Id
+                            join model in models on route.ExternalModelName equals model.ModelName into modelGroup
+                            from model in modelGroup.DefaultIfEmpty()
                             where route.IsEnabled && site.IsEnabled
                             select new CachedProxyRouteTarget
                             {
@@ -1054,6 +1057,7 @@ public sealed class ProxyRequestMetadataCache
                                 ModelPriority = route.ModelPriority,
                                 InstancePriority = route.InstancePriority,
                                 Priority = route.Priority,
+                                OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
                                 AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
                             })
@@ -1472,6 +1476,10 @@ public sealed class CachedProxyRouteTarget
     /// 优先级。
     /// </summary>
     public int Priority { get; set; }
+    /// <summary>
+    /// 强制覆盖的思考等级。空=不干预，非空=强制覆盖转发给上游的思考等级。
+    /// </summary>
+    public string OverrideReasoningEffort { get; set; } = string.Empty;
     /// <summary>
     /// 时间可用性模式，空值兼容为全天可用。
     /// </summary>

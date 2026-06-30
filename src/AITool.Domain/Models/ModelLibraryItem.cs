@@ -34,6 +34,14 @@ public sealed class ModelLibraryItem
     public string ModelType { get; set; } = "chat";
 
     /// <summary>
+    /// 强制覆盖的思考等级。留空表示不干预（透传客户端原始值）；
+    /// 非空时无论客户端传什么，转发给上游时都强制覆盖成这个值。
+    /// 支持标准值（low/medium/high/xhigh/max）和自定义值。
+    /// </summary>
+    [SugarColumn(Length = 50, IsNullable = false)]
+    public string OverrideReasoningEffort { get; set; } = string.Empty;
+
+    /// <summary>
     /// 标记该模型当前是否启用，禁用后不再参与代理路由和检测任务。
     /// </summary>
     [SugarColumn(IsNullable = false)]

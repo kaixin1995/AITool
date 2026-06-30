@@ -107,6 +107,12 @@ public class EditModel : PageModel
     public bool IsEnabled { get; set; }
 
     /// <summary>
+    /// 强制覆盖的思考等级。留空=不干预（透传客户端原始值），非空=强制覆盖。
+    /// </summary>
+    [BindProperty]
+    public string OverrideReasoningEffort { get; set; } = string.Empty;
+
+    /// <summary>
     /// 状态提示。
     /// </summary>
     public string? StatusMessage { get; set; }
@@ -170,6 +176,7 @@ public class EditModel : PageModel
             model.ModelName = ModelName;
             model.DisplayName = DisplayName;
             model.IsEnabled = IsEnabled;
+            model.OverrideReasoningEffort = (OverrideReasoningEffort ?? string.Empty).Trim();
 
             await _dbContext.UpdateAsync(model, cancellationToken);
             _metadataCache?.InvalidateModelMetadata();
@@ -340,6 +347,7 @@ public class EditModel : PageModel
         ModelName = model.ModelName;
         DisplayName = model.DisplayName;
         IsEnabled = model.IsEnabled;
+        OverrideReasoningEffort = model.OverrideReasoningEffort;
         await LoadSiteMappingsAsync(id, cancellationToken);
         await LoadAvailableSitesAsync(id, cancellationToken);
         if (string.IsNullOrWhiteSpace(NewMapping.RemoteModelName))

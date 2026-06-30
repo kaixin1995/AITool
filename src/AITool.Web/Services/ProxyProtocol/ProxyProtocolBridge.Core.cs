@@ -155,6 +155,71 @@ public static partial class ProxyProtocolBridge
     }
 
     /// <summary>
+    /// 强制覆盖请求体中的思考等级。在 PrepareRequestBody（协议转换后）调用，
+    /// 确保无论客户端传什么、经过什么协议转换，最终转发给上游的思考等级都是配置的值。
+    /// </summary>
+    /// <param name="requestBody">PrepareRequestBody 返回的最终请求体 JSON。</param>
+    /// <param name="overrideEffort">强制覆盖的思考等级值（非空）。</param>
+    /// <param name="targetProtocol">上游目标协议类型（OpenAI/Anthropic/Responses）。</param>
+    /// <returns>覆盖后的请求体 JSON。</returns>
+    public static string OverrideReasoningEffort(string requestBody, string overrideEffort, string targetProtocol)
+    {
+        if (string.IsNullOrWhiteSpace(requestBody) || string.IsNullOrWhiteSpace(overrideEffort))
+        {
+            return requestBody;
+        }
+
+        try
+        {
+            var rootNode = JsonNode.Parse(requestBody) as JsonObject;
+            if (rootNode is null)
+            {
+                return requestBody;
+            }
+
+            var normalized = overrideEffort.Trim().ToLowerInvariant();
+
+            if (string.Equals(targetProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase))
+            {
+                // Anthropic 协议：用 thinking.budget_tokens 表达思考强度
+                rootNode["thinking"] = new JsonObject
+                {
+                    ["type"] = "enabled",
+                    ["budget_tokens"] = normalized switch
+                    {
+                        "low" => 1280,
+                        "medium" => 2048,
+                        "high" => 4096,
+                        "xhigh" => 8192,
+                        "max" => 16384,
+                        _ => 4096 // 自定义值按 high 处理
+                    }
+                };
+            }
+            else if (string.Equals(targetProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+            {
+                // Responses 协议：用 reasoning.effort 表达
+                if (rootNode["reasoning"] is not JsonObject)
+                {
+                    rootNode["reasoning"] = new JsonObject();
+                }
+                ((JsonObject)rootNode["reasoning"]!)["effort"] = normalized;
+            }
+            else
+            {
+                // OpenAI 协议：用顶层 reasoning_effort 表达
+                rootNode["reasoning_effort"] = normalized;
+            }
+
+            return rootNode.ToJsonString();
+        }
+        catch
+        {
+            return requestBody;
+        }
+    }
+
+    /// <summary>
     /// 按客户端协议将上游响应内容转换为可直接返回的格式。
     /// </summary>
     public static string AdaptResponseBodyForClient(
