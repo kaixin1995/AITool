@@ -1043,444 +1043,111 @@ body {
 }
 
 /* ============================================================
-   主题切换器（可折叠）
+   明暗模式切换按钮
    ============================================================ */
-.theme-switcher {
+.theme-toggle-bar {
     border-top: 1px solid var(--sidebar-border);
+    padding: 8px 12px;
     margin-top: auto;
-    overflow: hidden;
 }
 
-.theme-switcher-header {
+.theme-toggle-btn {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    padding: 8px 16px;
-    cursor: pointer;
+    gap: 8px;
+    width: 100%;
+    padding: 8px 12px;
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
     color: var(--sidebar-text);
-    font-size: 11px;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    user-select: none;
-    transition: background 0.15s ease;
-}
-
-.theme-switcher-header:hover {
-    background: var(--sidebar-hover-bg);
-}
-
-.theme-switcher-header-text {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.theme-switcher-arrow {
-    font-size: 10px;
-    transition: transform 0.2s ease;
-}
-
-.theme-switcher.collapsed .theme-switcher-arrow {
-    transform: rotate(-90deg);
-}
-
-.theme-switcher-body {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-    padding: 4px 12px 12px;
-    transition: max-height 0.25s ease, opacity 0.2s ease, padding 0.2s ease;
-    max-height: 200px;
-    opacity: 1;
-}
-
-.theme-switcher.collapsed .theme-switcher-body {
-    max-height: 0;
-    opacity: 0;
-    padding-top: 0;
-    padding-bottom: 0;
-}
-
-.theme-btn {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 3px;
-    width: 56px;
-    padding: 8px 2px;
-    border: 2px solid transparent;
-    border-radius: var(--radius-xs);
-    background: var(--sidebar-hover-bg);
-    color: var(--sidebar-text);
-    font-size: 10px;
+    font-size: 13px;
+    font-weight: 500;
     cursor: pointer;
     transition: all 0.15s ease;
 }
 
-.theme-btn:hover {
-    background: var(--sidebar-active-bg);
-    color: var(--sidebar-active-text);
+.theme-toggle-btn:hover {
+    background: var(--sidebar-hover-bg);
+    color: var(--primary);
 }
 
-.theme-btn.active {
-    border-color: var(--primary);
-    background: var(--sidebar-active-bg);
-    color: var(--sidebar-active-text);
-    font-weight: 700;
-}
-
-.theme-btn-icon {
-    font-size: 18px;
+.theme-toggle-icon {
+    font-size: 16px;
     line-height: 1;
 }
 
-/* 折叠态：主题切换器只显示一个图标按钮 */
-.app-wrapper.sidebar-collapsed .theme-switcher-header-text {
+.app-wrapper.sidebar-collapsed .theme-toggle-label {
     display: none;
 }
 
-.app-wrapper.sidebar-collapsed .theme-switcher-header {
+.app-wrapper.sidebar-collapsed .theme-toggle-btn {
     justify-content: center;
     padding: 8px 0;
 }
 
-.app-wrapper.sidebar-collapsed .theme-switcher-body {
-    padding: 4px 8px 8px;
-}
-
-.app-wrapper.sidebar-collapsed .theme-btn {
-    width: 100%;
-    font-size: 0;
-    padding: 8px 0;
-}
-
 /* ============================================================
-   现代主题 — 极光风格：深色渐变侧边栏 + 青绿主色 + 玻璃拟态卡片
+   暗夜模式 — 全暗色 + 柔和高对比
    ============================================================ */
-[data-theme="modern"] {
-    --primary: #06B6D4;
-    --primary-hover: #0891B2;
-    --primary-light: #ECFEFF;
-    --primary-50: rgba(6, 182, 212, 0.08);
-    --primary-rgb: 6, 182, 212;
-    --success: #10B981;
-    --success-light: #ECFDF5;
-    --success-hover: #059669;
-    --warning: #F59E0B;
-    --warning-light: #FFFBEB;
-    --warning-hover: #D97706;
-    --danger: #EF4444;
-    --danger-light: #FEF2F2;
-    --danger-hover: #DC2626;
-    --info: #0EA5E9;
-    --info-light: #F0F9FF;
-    --purple-light: #FAF5FF;
-    --purple: #A855F7;
-    --bg-page: #0F1B2D;
-    --bg-card: #1A2740;
-    --text-primary: #E2E8F0;
+[data-theme="dark"] {
+    --primary: #818CF8;
+    --primary-hover: #6366F1;
+    --primary-light: rgba(99, 102, 241, 0.15);
+    --primary-50: rgba(129, 140, 248, 0.08);
+    --primary-rgb: 129, 140, 248;
+    --success: #4ADE80;
+    --success-light: rgba(34, 197, 94, 0.12);
+    --success-hover: #22C55E;
+    --warning: #FBBF24;
+    --warning-light: rgba(251, 191, 36, 0.12);
+    --warning-hover: #F59E0B;
+    --danger: #F87171;
+    --danger-light: rgba(239, 68, 68, 0.12);
+    --danger-hover: #EF4444;
+    --info: #60A5FA;
+    --info-light: rgba(96, 165, 250, 0.12);
+    --purple-light: rgba(139, 92, 246, 0.15);
+    --purple: #A78BFA;
+    --bg-page: #0F172A;
+    --bg-card: #1E293B;
+    --text-primary: #F1F5F9;
     --text-secondary: #94A3B8;
     --text-muted: #64748B;
     --text-on-primary: #FFFFFF;
-    --border-color: #2D3E5C;
-    --border-light: #233149;
-    --radius: 16px;
-    --radius-sm: 12px;
-    --radius-xs: 8px;
-    --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.3);
-    --shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-    --shadow-md: 0 8px 32px rgba(6, 182, 212, 0.12), 0 4px 12px rgba(0, 0, 0, 0.3);
-    --sidebar-bg: linear-gradient(180deg, #0B1426 0%, #162238 100%);
-    --sidebar-text: #8DB4D5;
-    --sidebar-active-bg: linear-gradient(90deg, rgba(6, 182, 212, 0.2), rgba(6, 182, 212, 0.05));
-    --sidebar-active-text: #67E8F9;
-    --sidebar-hover-bg: rgba(6, 182, 212, 0.08);
-    --sidebar-border: #1E2D45;
-    --sidebar-scrollbar: rgba(6, 182, 212, 0.15);
-    --brand-gradient: linear-gradient(135deg, #06B6D4 0%, #0EA5E9 50%, #6366F1 100%);
-    --focus-glow: rgba(6, 182, 212, 0.25);
-    --badge-secondary-bg: #233149;
-    --alert-success-text: #6EE7B7;
-    --alert-danger-text: #FCA5A5;
-    --alert-warning-text: #FCD34D;
-    --alert-info-text: #7DD3FC;
+    --border-color: #334155;
+    --border-light: #1E293B;
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+    --shadow: 0 2px 4px rgba(0, 0, 0, 0.25);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+    --sidebar-bg: #0B1120;
+    --sidebar-text: #94A3B8;
+    --sidebar-active-bg: rgba(129, 140, 248, 0.15);
+    --sidebar-active-text: #C7D2FE;
+    --sidebar-hover-bg: rgba(255, 255, 255, 0.04);
+    --sidebar-border: #1E293B;
+    --sidebar-scrollbar: rgba(255, 255, 255, 0.08);
+    --brand-gradient: linear-gradient(135deg, #6366F1 0%, #818CF8 100%);
+    --focus-glow: rgba(129, 140, 248, 0.2);
+    --badge-secondary-bg: #334155;
+    --alert-success-text: #4ADE80;
+    --alert-danger-text: #F87171;
+    --alert-warning-text: #FBBF24;
+    --alert-info-text: #60A5FA;
 }
 
-/* 现代主题：卡片玻璃拟态效果 */
-[data-theme="modern"] .card,
-[data-theme="modern"] .stat-card,
-[data-theme="modern"] .table-wrapper,
-[data-theme="modern"] .form-card,
-[data-theme="modern"] .quick-actions,
-[data-theme="modern"] .inline-form,
-[data-theme="modern"] .detection-group,
-[data-theme="modern"] .health-site-card {
-    backdrop-filter: blur(10px);
-    border-color: rgba(255, 255, 255, 0.06);
-}
-
-/* 现代主题：侧边栏背景使用渐变 */
-[data-theme="modern"] .app-sidebar {
-    background: var(--sidebar-bg);
-}
-
-/* 现代主题：品牌图标流光 */
-[data-theme="modern"] .sidebar-brand-icon {
-    background: var(--brand-gradient);
-    box-shadow: 0 0 20px rgba(6, 182, 212, 0.3);
-}
-
-/* 现代主题：欢迎横幅 */
-[data-theme="modern"] .welcome-banner {
-    background: var(--brand-gradient);
-}
-
-/* 现代主题：表格深色适配 */
-[data-theme="modern"] .table > thead > tr > th {
+[data-theme="dark"] .table > thead > tr > th {
     background: rgba(255, 255, 255, 0.03);
 }
 
-[data-theme="modern"] .table > tbody > tr:hover {
-    background: rgba(6, 182, 212, 0.05);
-}
-
-[data-theme="modern"] .table code {
-    background: rgba(6, 182, 212, 0.1);
-}
-
-[data-theme="modern"] .form-control,
-[data-theme="modern"] .form-select {
-    color-scheme: dark;
-}
-
-[data-theme="modern"] .app-topbar {
-    background: rgba(26, 39, 64, 0.8);
-    backdrop-filter: blur(12px);
-}
-
-/* ============================================================
-   简洁主题 — 纸张风格：暖白底 + 墨黑字 + 无圆角 + 细线框 + 衬线标题
-   ============================================================ */
-[data-theme="minimal"] {
-    --primary: #B45309;
-    --primary-hover: #92400E;
-    --primary-light: #FEF3C7;
-    --primary-50: rgba(180, 83, 9, 0.05);
-    --primary-rgb: 180, 83, 9;
-    --success: #15803D;
-    --success-light: #F0FDF4;
-    --success-hover: #166534;
-    --warning: #C2410C;
-    --warning-light: #FFF7ED;
-    --warning-hover: #9A3412;
-    --danger: #991B1B;
-    --danger-light: #FEF2F2;
-    --danger-hover: #7F1D1D;
-    --info: #1E40AF;
-    --info-light: #EFF6FF;
-    --purple-light: #FAF5FF;
-    --purple: #6B21A8;
-    --bg-page: #FAF9F6;
-    --bg-card: #FFFFFF;
-    --text-primary: #1C1917;
-    --text-secondary: #57534E;
-    --text-muted: #A8A29E;
-    --text-on-primary: #FFFFFF;
-    --border-color: #D6D3D1;
-    --border-light: #E7E5E4;
-    --radius: 2px;
-    --radius-sm: 2px;
-    --radius-xs: 0px;
-    --shadow-sm: none;
-    --shadow: none;
-    --shadow-md: none;
-    --sidebar-bg: #FFFFFF;
-    --sidebar-text: #57534E;
-    --sidebar-active-bg: #FEF3C7;
-    --sidebar-active-text: #92400E;
-    --sidebar-hover-bg: #F5F5F4;
-    --sidebar-border: #D6D3D1;
-    --sidebar-scrollbar: rgba(0, 0, 0, 0.06);
-    --brand-gradient: #1C1917;
-    --focus-glow: rgba(180, 83, 9, 0.1);
-    --badge-secondary-bg: #F5F5F4;
-    --alert-success-text: #15803D;
-    --alert-danger-text: #991B1B;
-    --alert-warning-text: #9A3412;
-    --alert-info-text: #1E40AF;
-}
-
-/* 简洁主题：标题用衬线字体 */
-[data-theme="minimal"] .page-title,
-[data-theme="minimal"] .sidebar-brand-text,
-[data-theme="minimal"] .card-header h5,
-[data-theme="minimal"] .card-header h6,
-[data-theme="minimal"] .form-section-title,
-[data-theme="minimal"] .detection-group-title {
-    font-family: Georgia, 'Times New Roman', 'Songti SC', 'STSong', serif;
-}
-
-/* 简洁主题：去掉所有 hover 上浮和阴影 */
-[data-theme="minimal"] .stat-card:hover,
-[data-theme="minimal"] .card:hover {
-    transform: none;
-    box-shadow: none;
-}
-
-[data-theme="minimal"] .stat-card {
-    border-left: 3px solid var(--primary);
-    border-radius: 0;
-}
-
-/* 简洁主题：按钮风格 — 方角 + 实线边框 */
-[data-theme="minimal"] .btn {
-    border-radius: 0;
-    border-width: 1px;
-}
-
-[data-theme="minimal"] .btn-primary {
-    background: var(--primary);
-    border: 1px solid var(--primary);
-}
-
-/* 简洁主题：品牌图标方形 */
-[data-theme="minimal"] .sidebar-brand-icon {
-    background: var(--brand-gradient);
-    border-radius: 0;
-}
-
-/* 简洁主题：欢迎横幅纸张色 */
-[data-theme="minimal"] .welcome-banner {
-    background: #1C1917;
-    border-radius: 0;
-}
-
-[data-theme="minimal"] .welcome-banner::after {
-    display: none;
-}
-
-/* 简洁主题：侧边栏分组用细线分隔 */
-[data-theme="minimal"] .sidebar-section {
-    border-bottom: 1px solid var(--border-light);
-    padding-bottom: 8px;
-}
-
-/* ============================================================
-   暗夜主题 — 霓虹赛博：纯黑底 + 品红/青双色霓虹 + 发光边框
-   ============================================================ */
-[data-theme="dark"] {
-    --primary: #EC4899;
-    --primary-hover: #DB2777;
-    --primary-light: rgba(236, 72, 153, 0.12);
-    --primary-50: rgba(236, 72, 153, 0.06);
-    --primary-rgb: 236, 72, 153;
-    --success: #2DD4BF;
-    --success-light: rgba(45, 212, 191, 0.1);
-    --success-hover: #14B8A6;
-    --warning: #FBBF24;
-    --warning-light: rgba(251, 191, 36, 0.1);
-    --warning-hover: #F59E0B;
-    --danger: #F43F5E;
-    --danger-light: rgba(244, 63, 94, 0.1);
-    --danger-hover: #E11D48;
-    --info: #38BDF8;
-    --info-light: rgba(56, 189, 248, 0.1);
-    --purple-light: rgba(168, 85, 247, 0.12);
-    --purple: #C084FC;
-    --bg-page: #030712;
-    --bg-card: #0F172A;
-    --text-primary: #F9FAFB;
-    --text-secondary: #9CA3AF;
-    --text-muted: #4B5563;
-    --text-on-primary: #FFFFFF;
-    --border-color: #1F2937;
-    --border-light: #111827;
-    --radius: 14px;
-    --radius-sm: 10px;
-    --radius-xs: 6px;
-    --shadow-sm: 0 0 0 1px rgba(236, 72, 153, 0.05);
-    --shadow: 0 0 0 1px rgba(236, 72, 153, 0.08), 0 4px 16px rgba(0, 0, 0, 0.4);
-    --shadow-md: 0 0 20px rgba(236, 72, 153, 0.08), 0 4px 16px rgba(0, 0, 0, 0.4);
-    --sidebar-bg: #030712;
-    --sidebar-text: #6B7280;
-    --sidebar-active-bg: rgba(236, 72, 153, 0.12);
-    --sidebar-active-text: #F472B6;
-    --sidebar-hover-bg: rgba(236, 72, 153, 0.05);
-    --sidebar-border: #111827;
-    --sidebar-scrollbar: rgba(236, 72, 153, 0.1);
-    --brand-gradient: linear-gradient(135deg, #EC4899 0%, #8B5CF6 50%, #06B6D4 100%);
-    --focus-glow: rgba(236, 72, 153, 0.2);
-    --badge-secondary-bg: #1F2937;
-    --alert-success-text: #2DD4BF;
-    --alert-danger-text: #F43F5E;
-    --alert-warning-text: #FBBF24;
-    --alert-info-text: #38BDF8;
-}
-
-/* 暗夜主题：卡片霓虹发光边框 */
-[data-theme="dark"] .card,
-[data-theme="dark"] .stat-card,
-[data-theme="dark"] .table-wrapper,
-[data-theme="dark"] .form-card {
-    border-color: rgba(236, 72, 153, 0.1);
-}
-
-[data-theme="dark"] .card:hover,
-[data-theme="dark"] .stat-card:hover {
-    border-color: rgba(236, 72, 153, 0.3);
-    box-shadow: 0 0 20px rgba(236, 72, 153, 0.06);
-}
-
-/* 暗夜主题：品牌图标霓虹发光 */
-[data-theme="dark"] .sidebar-brand-icon {
-    background: var(--brand-gradient);
-    box-shadow: 0 0 16px rgba(236, 72, 153, 0.3);
-}
-
-/* 暗夜主题：按钮发光 */
-[data-theme="dark"] .btn-primary {
-    box-shadow: 0 0 12px rgba(236, 72, 153, 0.2);
-}
-
-[data-theme="dark"] .btn-primary:hover {
-    box-shadow: 0 0 20px rgba(236, 72, 153, 0.35);
-}
-
-/* 暗夜主题：欢迎横幅渐变 */
-[data-theme="dark"] .welcome-banner {
-    background: var(--brand-gradient);
-}
-
-/* 暗夜主题：侧边栏活跃项发光 */
-[data-theme="dark"] .sidebar-link.active {
-    box-shadow: inset 3px 0 0 var(--primary);
-}
-
-/* 暗夜主题：表格深色适配 */
-[data-theme="dark"] .table > thead > tr > th {
-    background: rgba(255, 255, 255, 0.02);
-}
-
 [data-theme="dark"] .table > tbody > tr:hover {
-    background: rgba(236, 72, 153, 0.04);
+    background: rgba(255, 255, 255, 0.03);
 }
 
 [data-theme="dark"] .table code {
-    background: rgba(236, 72, 153, 0.08);
+    background: rgba(255, 255, 255, 0.05);
 }
 
 [data-theme="dark"] .form-control,
 [data-theme="dark"] .form-select {
     color-scheme: dark;
-    border-color: #1F2937;
-}
-
-[data-theme="dark"] .app-topbar {
-    background: rgba(15, 23, 42, 0.85);
-    backdrop-filter: blur(12px);
-}
-
-[data-theme="dark"] .detection-group-header {
-    background: rgba(255, 255, 255, 0.02);
 }

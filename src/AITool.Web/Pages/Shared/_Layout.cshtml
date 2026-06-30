@@ -15,7 +15,7 @@
         (function() {
             var theme = localStorage.getItem('aitool.theme') || 'classic';
             document.documentElement.setAttribute('data-theme', theme);
-            document.documentElement.setAttribute('data-bs-theme', (theme === 'dark' || theme === 'modern') ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-bs-theme', theme === 'dark' ? 'dark' : 'light');
         })();
     </script>
 </head>
@@ -96,26 +96,12 @@
                     </a>
                 </div>
             </nav>
-            <!-- 主题切换器（可折叠） -->
-            <div class="theme-switcher" id="themeSwitcher">
-                <div class="theme-switcher-header" id="themeSwitcherHeader">
-                    <span class="theme-switcher-header-text">🎨 主题</span>
-                    <span class="theme-switcher-arrow">▼</span>
-                </div>
-                <div class="theme-switcher-body" id="themeSwitcherBody">
-                    <button class="theme-btn" data-theme-value="classic" title="经典主题">
-                        <span class="theme-btn-icon">🏛️</span>经典
-                    </button>
-                    <button class="theme-btn" data-theme-value="modern" title="现代主题">
-                        <span class="theme-btn-icon">🌊</span>现代
-                    </button>
-                    <button class="theme-btn" data-theme-value="minimal" title="简洁主题">
-                        <span class="theme-btn-icon">📜</span>简洁
-                    </button>
-                    <button class="theme-btn" data-theme-value="dark" title="暗夜主题">
-                        <span class="theme-btn-icon">🌃</span>暗夜
-                    </button>
-                </div>
+            <!-- 明暗模式切换 -->
+            <div class="theme-toggle-bar">
+                <button class="theme-toggle-btn" id="themeToggleBtn" type="button" title="切换明暗模式">
+                    <span class="theme-toggle-icon" id="themeToggleIcon">🌙</span>
+                    <span class="theme-toggle-label" id="themeToggleLabel">暗夜模式</span>
+                </button>
             </div>
         </aside>
 
@@ -187,35 +173,33 @@
                 }
             });
 
-            /* 主题切换逻辑 */
-            var themeSwitcher = document.getElementById('themeSwitcher');
-            var themeSwitcherHeader = document.getElementById('themeSwitcherHeader');
+            /* 明暗模式切换 */
+            var themeToggleBtn = document.getElementById('themeToggleBtn');
+            var themeToggleIcon = document.getElementById('themeToggleIcon');
+            var themeToggleLabel = document.getElementById('themeToggleLabel');
 
             function applyTheme(theme) {
                 document.documentElement.setAttribute('data-theme', theme);
-                document.documentElement.setAttribute('data-bs-theme', (theme === 'dark' || theme === 'modern') ? 'dark' : 'light');
+                document.documentElement.setAttribute('data-bs-theme', theme === 'dark' ? 'dark' : 'light');
                 localStorage.setItem('aitool.theme', theme);
-                document.querySelectorAll('.theme-btn').forEach(function(btn) {
-                    btn.classList.toggle('active', btn.getAttribute('data-theme-value') === theme);
-                });
+                if (themeToggleIcon && themeToggleLabel) {
+                    if (theme === 'dark') {
+                        themeToggleIcon.textContent = '☀️';
+                        themeToggleLabel.textContent = '经典模式';
+                    } else {
+                        themeToggleIcon.textContent = '🌙';
+                        themeToggleLabel.textContent = '暗夜模式';
+                    }
+                }
             }
 
             var currentTheme = localStorage.getItem('aitool.theme') || 'classic';
             applyTheme(currentTheme);
 
-            document.querySelectorAll('.theme-btn').forEach(function(btn) {
-                btn.addEventListener('click', function() {
-                    applyTheme(btn.getAttribute('data-theme-value'));
-                });
-            });
-
-            /* 主题切换器折叠/展开 */
-            if (themeSwitcher && themeSwitcherHeader) {
-                var themeCollapsed = localStorage.getItem('aitool.themeCollapsed') === 'true';
-                themeSwitcher.classList.toggle('collapsed', themeCollapsed);
-                themeSwitcherHeader.addEventListener('click', function() {
-                    themeSwitcher.classList.toggle('collapsed');
-                    localStorage.setItem('aitool.themeCollapsed', themeSwitcher.classList.contains('collapsed') ? 'true' : 'false');
+            if (themeToggleBtn) {
+                themeToggleBtn.addEventListener('click', function() {
+                    var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+                    applyTheme(isDark ? 'classic' : 'dark');
                 });
             }
         })();
