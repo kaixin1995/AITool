@@ -705,6 +705,8 @@ internal sealed class DeveloperInvocationsWebApplicationFactory : WebApplication
             IsEnabled = true
         });
 
+        // SystemRuntimeSettings 是单例表（Id=1），启动时可能已被 GetOrCreateAsync 创建，这里先清空再插入避免唯一约束冲突。
+        db.Client.Deleteable<SystemRuntimeSettings>().Where(x => x.Id == 1).ExecuteCommand();
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
             Id = 1,

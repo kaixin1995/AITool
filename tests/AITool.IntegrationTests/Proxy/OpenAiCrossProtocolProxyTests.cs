@@ -357,6 +357,12 @@ internal sealed class OpenAiCrossProtocolWebApplicationFactory : WebApplicationF
             IsEnabled = true
         });
 
+        // 单例表 Id=1 可能已被启动逻辑创建，先删除避免唯一约束冲突。
+
+
+        db.Client.Deleteable<SystemRuntimeSettings>().Where(x => x.Id == 1).ExecuteCommand();
+
+
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
             Id = 1,

@@ -132,30 +132,33 @@ public static class SqlSugarQueryableExtensions
         => await query.Where(predicate).AnyAsync(cancellationToken);
 
     // —— 写操作兼容（立即执行，替代 EF 的 Add/Remove + SaveChanges 两步模式）——
+    // 注意：必须用同步 ExecuteCommand（不是异步），因为原 EF 代码里 dbSet.Add(entity)
+    // 是同步调用且无 await（EF 的 Add 返回 void）。如果用异步 ExecuteCommandAsync
+    // 且调用方不 await，Task 会被丢弃导致写操作不执行。同步执行确保立即落库。
 
-    /// <summary>立即插入单条实体（兼容 EF 的 dbSet.Add）。</summary>
-    public static Task<int> Add<T>(this ISugarQueryable<T> query, T entity) where T : class, new()
-        => query.Context.Insertable(entity).ExecuteCommandAsync();
+    /// <summary>立即插入单条实体（兼容 EF 的 dbSet.Add，同步执行确保落库）。</summary>
+    public static int Add<T>(this ISugarQueryable<T> query, T entity) where T : class, new()
+        => query.Context.Insertable(entity).ExecuteCommand();
 
     /// <summary>立即批量插入（兼容 EF 的 dbSet.AddRange，接受 params 多对象）。</summary>
-    public static Task<int> AddRange<T>(this ISugarQueryable<T> query, params T[] entities) where T : class, new()
-        => query.Context.Insertable(entities.ToList()).ExecuteCommandAsync();
+    public static int AddRange<T>(this ISugarQueryable<T> query, params T[] entities) where T : class, new()
+        => query.Context.Insertable(entities.ToList()).ExecuteCommand();
 
     /// <summary>立即批量插入（兼容 EF 的 dbSet.AddRange，接受 IEnumerable）。</summary>
-    public static Task<int> AddRange<T>(this ISugarQueryable<T> query, IEnumerable<T> entities) where T : class, new()
-        => query.Context.Insertable(entities.ToList()).ExecuteCommandAsync();
+    public static int AddRange<T>(this ISugarQueryable<T> query, IEnumerable<T> entities) where T : class, new()
+        => query.Context.Insertable(entities.ToList()).ExecuteCommand();
 
-    /// <summary>立即删除单条实体（兼容 EF 的 dbSet.Remove）。</summary>
-    public static Task<int> Remove<T>(this ISugarQueryable<T> query, T entity) where T : class, new()
-        => query.Context.Deleteable(entity).ExecuteCommandAsync();
+    /// <summary>立即删除单条实体（兼容 EF 的 dbSet.Remove，同步执行确保落库）。</summary>
+    public static int Remove<T>(this ISugarQueryable<T> query, T entity) where T : class, new()
+        => query.Context.Deleteable(entity).ExecuteCommand();
 
-    /// <summary>立即批量删除指定实体集合（兼容 EF 的 dbSet.RemoveRange(list)）。</summary>
-    public static Task<int> RemoveRange<T>(this ISugarQueryable<T> query, IEnumerable<T> entities) where T : class, new()
-        => query.Context.Deleteable(entities.ToList()).ExecuteCommandAsync();
+    /// <summary>立即批量删除指定实体集合（兼容 EF 的 dbSet.RemoveRange(list)，同步执行）。</summary>
+    public static int RemoveRange<T>(this ISugarQueryable<T> query, IEnumerable<T> entities) where T : class, new()
+        => query.Context.Deleteable(entities.ToList()).ExecuteCommand();
 
-    /// <summary>立即清空整表（兼容 EF 的 dbSet.RemoveRange(dbSet)）。</summary>
-    public static Task<int> RemoveRange<T>(this ISugarQueryable<T> query, ISugarQueryable<T> _) where T : class, new()
-        => query.Context.Deleteable<T>().ExecuteCommandAsync();
+    /// <summary>立即清空整表（兼容 EF 的 dbSet.RemoveRange(dbSet)，同步执行）。</summary>
+    public static int RemoveRange<T>(this ISugarQueryable<T> query, ISugarQueryable<T> _) where T : class, new()
+        => query.Context.Deleteable<T>().ExecuteCommand();
 }
 
 /// <summary>AppDbContext 的 EF 兼容扩展（SaveChangesAsync 空操作）。</summary>
