@@ -15,7 +15,7 @@
         (function() {
             var theme = localStorage.getItem('aitool.theme') || 'classic';
             document.documentElement.setAttribute('data-theme', theme);
-            document.documentElement.setAttribute('data-bs-theme', theme === 'dark' ? 'dark' : 'light');
+            document.documentElement.setAttribute('data-bs-theme', (theme === 'dark' || theme === 'modern') ? 'dark' : 'light');
         })();
     </script>
 </head>
@@ -96,20 +96,26 @@
                     </a>
                 </div>
             </nav>
-            <!-- 主题切换器 -->
+            <!-- 主题切换器（可折叠） -->
             <div class="theme-switcher" id="themeSwitcher">
-                <button class="theme-btn" data-theme-value="classic" title="经典主题">
-                    <span class="theme-btn-icon">🏛️</span>经典
-                </button>
-                <button class="theme-btn" data-theme-value="modern" title="现代主题">
-                    <span class="theme-btn-icon">🎨</span>现代
-                </button>
-                <button class="theme-btn" data-theme-value="minimal" title="简洁主题">
-                    <span class="theme-btn-icon">⚪</span>简洁
-                </button>
-                <button class="theme-btn" data-theme-value="dark" title="暗夜主题">
-                    <span class="theme-btn-icon">🌙</span>暗夜
-                </button>
+                <div class="theme-switcher-header" id="themeSwitcherHeader">
+                    <span class="theme-switcher-header-text">🎨 主题</span>
+                    <span class="theme-switcher-arrow">▼</span>
+                </div>
+                <div class="theme-switcher-body" id="themeSwitcherBody">
+                    <button class="theme-btn" data-theme-value="classic" title="经典主题">
+                        <span class="theme-btn-icon">🏛️</span>经典
+                    </button>
+                    <button class="theme-btn" data-theme-value="modern" title="现代主题">
+                        <span class="theme-btn-icon">🌊</span>现代
+                    </button>
+                    <button class="theme-btn" data-theme-value="minimal" title="简洁主题">
+                        <span class="theme-btn-icon">📜</span>简洁
+                    </button>
+                    <button class="theme-btn" data-theme-value="dark" title="暗夜主题">
+                        <span class="theme-btn-icon">🌃</span>暗夜
+                    </button>
+                </div>
             </div>
         </aside>
 
@@ -182,24 +188,36 @@
             });
 
             /* 主题切换逻辑 */
+            var themeSwitcher = document.getElementById('themeSwitcher');
+            var themeSwitcherHeader = document.getElementById('themeSwitcherHeader');
+
             function applyTheme(theme) {
                 document.documentElement.setAttribute('data-theme', theme);
-                document.documentElement.setAttribute('data-bs-theme', theme === 'dark' ? 'dark' : 'light');
+                document.documentElement.setAttribute('data-bs-theme', (theme === 'dark' || theme === 'modern') ? 'dark' : 'light');
                 localStorage.setItem('aitool.theme', theme);
-                /* 更新切换器高亮 */
                 document.querySelectorAll('.theme-btn').forEach(function(btn) {
                     btn.classList.toggle('active', btn.getAttribute('data-theme-value') === theme);
                 });
             }
-            /* 初始化高亮当前主题 */
+
             var currentTheme = localStorage.getItem('aitool.theme') || 'classic';
             applyTheme(currentTheme);
-            /* 绑定点击 */
+
             document.querySelectorAll('.theme-btn').forEach(function(btn) {
                 btn.addEventListener('click', function() {
                     applyTheme(btn.getAttribute('data-theme-value'));
                 });
             });
+
+            /* 主题切换器折叠/展开 */
+            if (themeSwitcher && themeSwitcherHeader) {
+                var themeCollapsed = localStorage.getItem('aitool.themeCollapsed') === 'true';
+                themeSwitcher.classList.toggle('collapsed', themeCollapsed);
+                themeSwitcherHeader.addEventListener('click', function() {
+                    themeSwitcher.classList.toggle('collapsed');
+                    localStorage.setItem('aitool.themeCollapsed', themeSwitcher.classList.contains('collapsed') ? 'true' : 'false');
+                });
+            }
         })();
     </script>
     @await RenderSectionAsync("Scripts", required: false)
