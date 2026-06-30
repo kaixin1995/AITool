@@ -238,6 +238,7 @@ public class EditModel : PageModel
                 existingMapping.ModelLibraryItemId = id;
                 existingMapping.IsEnabled = NewMapping.IsEnabled;
                 existingMapping.LastStatus = "manual";
+                await _dbContext.UpdateAsync(existingMapping, cancellationToken);
             }
             else
             {

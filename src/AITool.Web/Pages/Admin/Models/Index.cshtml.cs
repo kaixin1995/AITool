@@ -284,6 +284,7 @@ public class IndexModel : PageModel
             {
                 // 删除模型后清空检测任务的模型绑定，避免后台继续出现已删除模型。
                 task.ModelLibraryItemId = null;
+                await _dbContext.UpdateAsync(task, cancellationToken);
             }
             _dbContext.ModelLibraryItems.Remove(model);
 

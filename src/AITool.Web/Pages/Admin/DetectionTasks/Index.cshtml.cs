@@ -176,8 +176,8 @@ public class IndexModel : PageModel
             foreach (var task in tasks.Where(t => orphanTaskIds.Contains(t.Id)))
             {
                 task.ModelLibraryItemId = null;
+                await _dbContext.UpdateAsync(task, cancellationToken);
             }
-            await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
         Tasks = tasks.Select(t =>

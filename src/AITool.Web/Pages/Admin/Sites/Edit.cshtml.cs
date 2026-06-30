@@ -134,7 +134,7 @@ public class EditModel : PageModel
             site.ProtocolType = ResolveSiteProtocolType(SupportsOpenAi, SupportsAnthropic);
             site.IsEnabled = IsEnabled;
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(site, cancellationToken);
             _metadataCache?.InvalidateRouteTargets();
             StatusMessage = "站点已更新";
             StatusSuccess = true;

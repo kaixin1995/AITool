@@ -326,6 +326,7 @@ public sealed class SiteCatalogApiController : ControllerBase
                     else if (!string.IsNullOrWhiteSpace(item.DisplayName) && item.DisplayName != modelItem.DisplayName)
                     {
                         modelItem.DisplayName = item.DisplayName;
+                        await _dbContext.UpdateAsync(modelItem, cancellationToken);
                     }
 
                     if (mapping is null)
@@ -345,6 +346,7 @@ public sealed class SiteCatalogApiController : ControllerBase
                         mapping.ModelLibraryItemId = modelItem.Id;
                         mapping.IsEnabled = true;
                         mapping.LastStatus = "updated";
+                        await _dbContext.UpdateAsync(mapping, cancellationToken);
                     }
 
                     importedCount++;
@@ -353,6 +355,7 @@ public sealed class SiteCatalogApiController : ControllerBase
                 {
                     mapping.IsEnabled = false;
                     mapping.LastStatus = "disabled";
+                    await _dbContext.UpdateAsync(mapping, cancellationToken);
                 }
             }
         }
