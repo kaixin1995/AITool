@@ -74,26 +74,12 @@ public static class SqlSugarQueryableExtensions
         return list;
     }
 
-    /// <summary>FirstAsync(谓词) 包装：规范化 DateTimeOffset offset。</summary>
-    public static async Task<T?> FirstAsync<T>(this ISugarQueryable<T> query, Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) where T : class, new()
-    {
-        var result = await query.FirstAsync(predicate, cancellationToken);
-        return NormalizeSingle(result);
-    }
-
-    /// <summary>FirstAsync 包装：规范化 DateTimeOffset offset。</summary>
-    public static async Task<T?> FirstAsync<T>(this ISugarQueryable<T> query, CancellationToken cancellationToken = default) where T : class, new()
-    {
-        var result = await query.FirstAsync(cancellationToken);
-        return NormalizeSingle(result);
-    }
-
-    /// <summary>InSingleAsync 包装（兼容 EF FindAsync）：规范化 DateTimeOffset offset。</summary>
-    public static async Task<T?> InSingleAsync<T>(this ISugarQueryable<T> query, object pkValue) where T : class, new()
-    {
-        var result = await query.InSingleAsync(pkValue);
-        return NormalizeSingle(result);
-    }
+    // 注意：FirstAsync/InSingleAsync 的包装方法会导致递归（SqlSugar 的这些方法是扩展方法而非实例方法，
+    // 编译时解析到自定义包装而非原生实现）。因此不包装 FirstAsync/InSingleAsync，
+    // 直接使用 SqlSugar 原生扩展方法。DateTimeOffset 规范化仅在 ToListAsync 包装中处理
+    // （ToListAsync 是 SqlSugar 的实例方法，包装方法内部调用不会递归）。
+    // 对于通过 FirstAsync/InSingleAsync 查回的实体，调用方在内存比较 DateTimeOffset 时
+    // 需自行用 DateTime 部分比较（AnalyticsApiController 已在读后统一规范化）。
 
     // —— 其他 EF 兼容扩展（不涉及 DateTimeOffset，纯转发）——
 

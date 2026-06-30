@@ -120,6 +120,24 @@ public static class SqlSugarSetup
             {
                 IsAutoRemoveDataCache = true
             }
+        },
+        config =>
+        {
+            // SqlSugar 存储 DateTimeOffset 时只存时钟值（不带 offset），读取时配本地时区 offset。
+            // 若写入的是 UTC（+00:00），读回配 +08:00 会导致瞬时偏移（时钟值不变但 offset 变了）。
+            // 这里在写入前把所有 DateTimeOffset 转为本地时区，使存储的时钟值与读回的 offset 一致，
+            // 保证往返瞬时正确。查询参数（也是 DateTimeOffset）由 SqlSugar 同样处理，存查一致。
+            config.Aop.DataExecuting = (oldValue, entityInfo) =>
+            {
+                if (entityInfo.OperationType == DataFilterType.InsertByObject
+                    || entityInfo.OperationType == DataFilterType.UpdateByObject)
+                {
+                    if (oldValue is DateTimeOffset dto)
+                    {
+                        entityInfo.SetValue(dto.ToLocalTime());
+                    }
+                }
+            };
         });
 
         // WAL 模式是持久化的，但首次建库时仍需确保设置一次；在 InitTables 阶段执行。
