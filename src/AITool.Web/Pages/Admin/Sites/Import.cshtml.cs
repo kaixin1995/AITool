@@ -131,7 +131,6 @@ public class ImportModel : PageModel
                 created++;
             }
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
             _metadataCache?.InvalidateRouteTargets();
             StatusMessage = $"成功导入 {created} 个站点";
             StatusSuccess = true;

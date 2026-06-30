@@ -252,7 +252,6 @@ public class EditModel : PageModel
                 });
             }
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
             _metadataCache?.InvalidateModelMetadata();
             _metadataCache?.InvalidateRouteTargets();
             StatusMessage = "关联站点已添加";
@@ -304,7 +303,6 @@ public class EditModel : PageModel
                 _dbContext.ProxyRouteRules.RemoveRange(affectedRules);
             }
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
             await CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
 
             _metadataCache?.InvalidateModelMetadata();
@@ -434,6 +432,5 @@ public class EditModel : PageModel
         }
 
         _dbContext.ProxyRouteEntries.RemoveRange(emptyEntries);
-        await _dbContext.SaveChangesAsync(cancellationToken);
     }
 }

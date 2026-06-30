@@ -160,7 +160,6 @@ public sealed class AccessKeysApiController : ControllerBase
             AllowedRouteNames = SerializeRouteNames(request.AllowedRouteNames)
         };
         _dbContext.ProxyAccessKeys.Add(key);
-        await _dbContext.SaveChangesAsync(cancellationToken);
         _metadataCache.InvalidateAccessKeys();
 
         return Ok(new CreateAccessKeyResult
@@ -198,7 +197,6 @@ public sealed class AccessKeysApiController : ControllerBase
         if (key is null) return NotFound(new { message = "密钥不存在" });
 
         _dbContext.ProxyAccessKeys.Remove(key);
-        await _dbContext.SaveChangesAsync(cancellationToken);
         _metadataCache.InvalidateAccessKeys();
 
         return Ok(new { keyId });

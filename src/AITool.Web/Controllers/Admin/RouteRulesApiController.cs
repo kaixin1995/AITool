@@ -295,7 +295,6 @@ public sealed class RouteRulesApiController : ControllerBase
         {
             EntryName = entryName
         });
-        await _dbContext.SaveChangesAsync(cancellationToken);
         _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "创建成功" });
@@ -332,7 +331,6 @@ public sealed class RouteRulesApiController : ControllerBase
             _dbContext.ProxyRouteRules.RemoveRange(rules);
         }
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "删除成功" });
@@ -455,7 +453,6 @@ public sealed class RouteRulesApiController : ControllerBase
 
         var affectedRouteTargets = BuildAffectedRouteTargets(existingRules, request.Rules);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         _metadataCache.InvalidateAdminRouteMetadata();
         var routeRefreshDeferred = _concurrencyLimiter.TryDeferRuntimeRouteTargetsRefresh(entryName, affectedRouteTargets, previousRouteTargets);
         if (!routeRefreshDeferred)
@@ -610,7 +607,6 @@ public sealed class RouteRulesApiController : ControllerBase
             return NotFound(new { message = "规则不存在" });
 
         _dbContext.ProxyRouteRules.Remove(rule);
-        await _dbContext.SaveChangesAsync(cancellationToken);
         _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "规则已删除" });

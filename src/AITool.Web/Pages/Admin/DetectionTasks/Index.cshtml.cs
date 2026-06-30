@@ -242,7 +242,6 @@ public class IndexModel : PageModel
                 ModelLibraryItemId = (modelId.HasValue && modelId.Value != Guid.Empty) ? modelId : null
             };
             _dbContext.DetectionTasks.Add(task);
-            await _dbContext.SaveChangesAsync(cancellationToken);
 
             // 注册到 Hangfire 调度
             await _scheduler.ScheduleAllAsync(cancellationToken);

@@ -286,7 +286,6 @@ public class IndexModel : PageModel
         {
             // 历史删除模型留下的监控配置在这里顺手清掉，避免页面继续出现已删除模型。
             _dbContext.ModelHealthMonitors.RemoveRange(orphanMonitors);
-            await _dbContext.SaveChangesAsync(cancellationToken);
             monitors = monitors
                 .Where(m => models.ContainsKey(m.ModelLibraryItemId))
                 .ToList();
@@ -549,7 +548,6 @@ public class IndexModel : PageModel
                 {
                     ModelLibraryItemId = modelId
                 });
-                await _dbContext.SaveChangesAsync(cancellationToken);
             }
         }
         catch (Exception ex)
@@ -581,7 +579,6 @@ public class IndexModel : PageModel
             if (monitor is not null)
             {
                 _dbContext.ModelHealthMonitors.Remove(monitor);
-                await _dbContext.SaveChangesAsync(cancellationToken);
             }
         }
         catch (Exception ex)

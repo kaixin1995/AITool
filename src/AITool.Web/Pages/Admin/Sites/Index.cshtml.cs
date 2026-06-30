@@ -194,7 +194,6 @@ public class IndexModel : PageModel
         }
 
         _dbContext.Sites.RemoveRange(sites);
-        await _dbContext.SaveChangesAsync(cancellationToken);
         await CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
         return sites.Count;
     }
@@ -235,7 +234,6 @@ public class IndexModel : PageModel
         }
 
         _dbContext.ProxyRouteEntries.RemoveRange(emptyEntries);
-        await _dbContext.SaveChangesAsync(cancellationToken);
     }
 }
 
@@ -302,7 +300,6 @@ public class CreateModel : PageModel
             IsEnabled = Command.IsEnabled
         });
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         _metadataCache?.InvalidateRouteTargets();
         return RedirectToPage("./Index");
     }

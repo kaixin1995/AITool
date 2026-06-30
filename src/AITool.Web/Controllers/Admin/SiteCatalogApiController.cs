@@ -360,7 +360,6 @@ public sealed class SiteCatalogApiController : ControllerBase
             }
         }
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         _metadataCache.InvalidateModelMetadata();
         _metadataCache.InvalidateRouteTargets();
         return Ok(new { importedCount });
