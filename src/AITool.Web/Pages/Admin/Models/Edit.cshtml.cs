@@ -168,9 +168,10 @@ public class EditModel : PageModel
             if (model is null) return RedirectToPage("./Index");
 
             model.ModelName = ModelName;
-            model.DisplayName = DisplayName;            model.IsEnabled = IsEnabled;
+            model.DisplayName = DisplayName;
+            model.IsEnabled = IsEnabled;
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(model, cancellationToken);
             _metadataCache?.InvalidateModelMetadata();
             _metadataCache?.InvalidateRouteTargets();
             StatusMessage = "模型已更新";
