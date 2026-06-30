@@ -1037,7 +1037,7 @@ public sealed class ProxyRequestMetadataCache
                     return (
                             from route in routes
                             join site in sites on route.SiteId equals site.Id
-                            join model in models on route.ExternalModelName equals model.ModelName into modelGroup
+                            join model in models on route.UpstreamModelName equals model.ModelName into modelGroup
                             from model in modelGroup.DefaultIfEmpty()
                             where route.IsEnabled && site.IsEnabled
                             select new CachedProxyRouteTarget
