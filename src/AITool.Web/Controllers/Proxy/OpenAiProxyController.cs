@@ -598,6 +598,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
             {
                 preparedRequestBody = ProxyProtocolBridge.OverrideReasoningEffort(preparedRequestBody, route.OverrideReasoningEffort, actualProtocolType);
+                reasoningEffort = route.OverrideReasoningEffort;
             }
 
             var forwardRequest = new ProxyForwardRequest

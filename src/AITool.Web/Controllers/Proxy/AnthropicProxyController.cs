@@ -231,6 +231,7 @@ public sealed class AnthropicProxyController : ControllerBase
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
             {
                 preparedRequestBody = ProxyProtocolBridge.OverrideReasoningEffort(preparedRequestBody, route.OverrideReasoningEffort, actualProtocolType);
+                reasoningEffort = route.OverrideReasoningEffort;
             }
 
             var effectiveProtocolType = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
