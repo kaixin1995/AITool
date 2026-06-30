@@ -141,19 +141,19 @@ public sealed class UsageLogListItemDto
     /// <summary>
     /// 输入 Token 数。
     /// </summary>
-    public int InputTokens { get; set; }
+    public long InputTokens { get; set; }
     /// <summary>
     /// 缓存 Token 数。
     /// </summary>
-    public int CachedTokens { get; set; }
+    public long CachedTokens { get; set; }
     /// <summary>
     /// 输出 Token 数。
     /// </summary>
-    public int OutputTokens { get; set; }
+    public long OutputTokens { get; set; }
     /// <summary>
     /// Token 总数。
     /// </summary>
-    public int TotalTokens { get; set; }
+    public long TotalTokens { get; set; }
     /// <summary>
     /// 是否流式返回。
     /// </summary>
@@ -232,19 +232,19 @@ public sealed class UsageLogAttemptDto
     /// <summary>
     /// 输入 Token 数。
     /// </summary>
-    public int InputTokens { get; set; }
+    public long InputTokens { get; set; }
     /// <summary>
     /// 缓存 Token 数。
     /// </summary>
-    public int CachedTokens { get; set; }
+    public long CachedTokens { get; set; }
     /// <summary>
     /// 输出 Token 数。
     /// </summary>
-    public int OutputTokens { get; set; }
+    public long OutputTokens { get; set; }
     /// <summary>
     /// Token 总数。
     /// </summary>
-    public int TotalTokens { get; set; }
+    public long TotalTokens { get; set; }
     /// <summary>
     /// 是否流式返回。
     /// </summary>
@@ -330,7 +330,7 @@ public sealed class UsageLogSummaryDto
     /// <summary>
     /// Token 总数。
     /// </summary>
-    public int TotalTokens { get; set; }
+    public long TotalTokens { get; set; }
     /// <summary>
     /// 最大耗时（毫秒）。
     /// </summary>
@@ -520,7 +520,7 @@ public sealed class UsageLogsApiController : ControllerBase
             var successRate = totalRequests == 0
                 ? 0d
                 : Math.Round(successRequests * 100d / totalRequests, 2, MidpointRounding.AwayFromZero);
-            var totalTokens = logs.Sum(x => x.TotalTokens);
+            var totalTokens = logs.Sum(x => (long)x.TotalTokens);
             var maxDurationMs = logs.Count == 0
                 ? 0
                 : logs.Max(x => x.TotalDurationMs);

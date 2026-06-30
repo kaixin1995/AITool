@@ -217,19 +217,19 @@ public sealed class AnalyticsSummaryDto
     /// <summary>
     /// 输入 Token 总数。
     /// </summary>
-    public int TotalInputTokens { get; set; }
+    public long TotalInputTokens { get; set; }
     /// <summary>
     /// 缓存 Token 总数。
     /// </summary>
-    public int TotalCachedTokens { get; set; }
+    public long TotalCachedTokens { get; set; }
     /// <summary>
     /// 输出 Token 总数。
     /// </summary>
-    public int TotalOutputTokens { get; set; }
+    public long TotalOutputTokens { get; set; }
     /// <summary>
     /// Token 总数。
     /// </summary>
-    public int TotalTokens { get; set; }
+    public long TotalTokens { get; set; }
     /// <summary>
     /// 平均总耗时（毫秒）。
     /// </summary>
@@ -298,19 +298,19 @@ public sealed class AnalyticsTokenTrendPointDto
     /// <summary>
     /// 输入 Token 数。
     /// </summary>
-    public int InputTokens { get; set; }
+    public long InputTokens { get; set; }
     /// <summary>
     /// 缓存 Token 数。
     /// </summary>
-    public int CachedTokens { get; set; }
+    public long CachedTokens { get; set; }
     /// <summary>
     /// 输出 Token 数。
     /// </summary>
-    public int OutputTokens { get; set; }
+    public long OutputTokens { get; set; }
     /// <summary>
     /// Token 总数。
     /// </summary>
-    public int TotalTokens { get; set; }
+    public long TotalTokens { get; set; }
 }
 
 /// <summary>
@@ -375,19 +375,19 @@ public sealed class AnalyticsDistributionPointDto
     /// <summary>
     /// Token 总数。
     /// </summary>
-    public int TotalTokens { get; set; }
+    public long TotalTokens { get; set; }
     /// <summary>
     /// 未命中的输入 Token 总数。
     /// </summary>
-    public int InputTokens { get; set; }
+    public long InputTokens { get; set; }
     /// <summary>
     /// 缓存命中的 Token 总数。
     /// </summary>
-    public int CachedTokens { get; set; }
+    public long CachedTokens { get; set; }
     /// <summary>
     /// 输出 Token 总数。
     /// </summary>
-    public int OutputTokens { get; set; }
+    public long OutputTokens { get; set; }
     /// <summary>
     /// 平均总耗时（毫秒）。
     /// </summary>
@@ -406,15 +406,15 @@ public sealed class AnalyticsCacheRatioPointDto
     /// <summary>
     /// 输入 Token 数。
     /// </summary>
-    public int InputTokens { get; set; }
+    public long InputTokens { get; set; }
     /// <summary>
     /// 缓存 Token 数。
     /// </summary>
-    public int CachedTokens { get; set; }
+    public long CachedTokens { get; set; }
     /// <summary>
     /// 输入统计范围总量。
     /// </summary>
-    public int TotalInputScope { get; set; }
+    public long TotalInputScope { get; set; }
     /// <summary>
     /// 缓存命中率。
     /// </summary>
@@ -671,10 +671,10 @@ public sealed class AnalyticsApiController : ControllerBase
             SuccessRate = totalRequests == 0 ? 0 : Math.Round(successRequests * 100d / totalRequests, 2),
             FailureRate = totalRequests == 0 ? 0 : Math.Round(failedRequests * 100d / totalRequests, 2),
             // Analytics 页面上的“输入 / 输出 Tokens”需要与“总 Tokens”口径一致，因此输入侧合并缓存命中量。
-            TotalInputTokens = finalLogs.Sum(x => x.InputTokens + x.CachedTokens),
-            TotalCachedTokens = finalLogs.Sum(x => x.CachedTokens),
-            TotalOutputTokens = finalLogs.Sum(x => x.OutputTokens),
-            TotalTokens = finalLogs.Sum(x => x.TotalTokens),
+            TotalInputTokens = finalLogs.Sum(x => (long)x.InputTokens + (long)x.CachedTokens),
+            TotalCachedTokens = finalLogs.Sum(x => (long)x.CachedTokens),
+            TotalOutputTokens = finalLogs.Sum(x => (long)x.OutputTokens),
+            TotalTokens = finalLogs.Sum(x => (long)x.TotalTokens),
             AverageTotalDurationMs = totalRequests == 0 ? 0 : Math.Round(finalLogs.Average(x => x.TotalDurationMs), 2),
             AverageFirstTokenLatencyMs = totalRequests == 0 ? 0 : Math.Round(finalLogs.Average(x => x.FirstTokenLatencyMs), 2),
             FallbackRequestCount = fallbackRequestIds.Count
@@ -749,10 +749,10 @@ public sealed class AnalyticsApiController : ControllerBase
                 return new AnalyticsTokenTrendPointDto
                 {
                     Label = bucket.Label,
-                    InputTokens = bucketLogs.Sum(x => x.InputTokens),
-                    CachedTokens = bucketLogs.Sum(x => x.CachedTokens),
-                    OutputTokens = bucketLogs.Sum(x => x.OutputTokens),
-                    TotalTokens = bucketLogs.Sum(x => x.TotalTokens)
+                    InputTokens = bucketLogs.Sum(x => (long)x.InputTokens),
+                    CachedTokens = bucketLogs.Sum(x => (long)x.CachedTokens),
+                    OutputTokens = bucketLogs.Sum(x => (long)x.OutputTokens),
+                    TotalTokens = bucketLogs.Sum(x => (long)x.TotalTokens)
                 };
             })
             .ToList();
@@ -828,10 +828,10 @@ public sealed class AnalyticsApiController : ControllerBase
                 RequestCount = g.Count(),
                 SuccessCount = g.Count(x => IsSuccess(x.Status)),
                 FailedCount = g.Count(x => !IsSuccess(x.Status)),
-                TotalTokens = g.Sum(x => x.TotalTokens),
-                InputTokens = g.Sum(x => x.InputTokens),
-                CachedTokens = g.Sum(x => x.CachedTokens),
-                OutputTokens = g.Sum(x => x.OutputTokens),
+                TotalTokens = g.Sum(x => (long)x.TotalTokens),
+                InputTokens = g.Sum(x => (long)x.InputTokens),
+                CachedTokens = g.Sum(x => (long)x.CachedTokens),
+                OutputTokens = g.Sum(x => (long)x.OutputTokens),
                 AverageTotalDurationMs = Math.Round(g.Average(x => x.TotalDurationMs), 2)
             })
             .OrderByDescending(x => x.RequestCount)
@@ -852,10 +852,10 @@ public sealed class AnalyticsApiController : ControllerBase
                 RequestCount = g.Count(),
                 SuccessCount = g.Count(x => IsSuccess(x.Status)),
                 FailedCount = g.Count(x => !IsSuccess(x.Status)),
-                TotalTokens = g.Sum(x => x.TotalTokens),
-                InputTokens = g.Sum(x => x.InputTokens),
-                CachedTokens = g.Sum(x => x.CachedTokens),
-                OutputTokens = g.Sum(x => x.OutputTokens),
+                TotalTokens = g.Sum(x => (long)x.TotalTokens),
+                InputTokens = g.Sum(x => (long)x.InputTokens),
+                CachedTokens = g.Sum(x => (long)x.CachedTokens),
+                OutputTokens = g.Sum(x => (long)x.OutputTokens),
                 AverageTotalDurationMs = Math.Round(g.Average(x => x.TotalDurationMs), 2)
             })
             .OrderByDescending(x => x.RequestCount)
@@ -875,8 +875,8 @@ public sealed class AnalyticsApiController : ControllerBase
             .GroupBy(x => x.AttemptedModel)
             .Select(g =>
             {
-                var inputTokens = g.Sum(x => x.InputTokens);
-                var cachedTokens = g.Sum(x => x.CachedTokens);
+                var inputTokens = g.Sum(x => (long)x.InputTokens);
+                var cachedTokens = g.Sum(x => (long)x.CachedTokens);
                 var totalInputScope = inputTokens + cachedTokens;
                 return new AnalyticsCacheRatioPointDto
                 {
