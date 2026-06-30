@@ -770,6 +770,8 @@ internal sealed class ProxyFallbackWebApplicationFactory : WebApplicationFactory
                 IsEnabled = true
             });
         db.ProxyRouteRules.AddRange(routeRules);
+        // 单例表 Id=1 可能已被启动逻辑创建，先删除避免唯一约束冲突。
+        db.Client.Deleteable<AITool.Domain.Operations.SystemRuntimeSettings>().Where(x => x.Id == 1).ExecuteCommand();
         db.SystemRuntimeSettings.Add(new AITool.Domain.Operations.SystemRuntimeSettings
         {
             Id = 1,
