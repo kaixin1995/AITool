@@ -98,7 +98,7 @@
     .route-panel {
         border: 1px solid var(--border-color, #e9ecef);
         border-radius: 12px;
-        background: var(--card-bg, var(--bg-card));
+        background: var(--bg-card);
         overflow: hidden;
     }
 
@@ -108,7 +108,7 @@
         justify-content: space-between;
         padding: 16px 18px;
         border-bottom: 1px solid var(--border-color, #e9ecef);
-        background: var(--card-bg-alt, #f8f9fa);
+        background: var(--bg-page);
     }
 
     .route-panel-header-stack {
@@ -155,12 +155,12 @@
 
     .entry-item:hover {
         border-color: #b6d4fe;
-        background: #f8fbff;
+        background: var(--bg-page);
     }
 
     .entry-item.active {
         border-color: #0d6efd;
-        background: #e8f0fe;
+        background: var(--primary-50);
     }
 
     .entry-name {
@@ -182,7 +182,7 @@
     .queue-card-header {
         padding: 14px 18px;
         border-bottom: 1px solid var(--border-color, #e9ecef);
-        background: var(--card-bg-alt, #f8f9fa);
+        background: var(--bg-page);
         color: var(--text-secondary, #6c757d);
         font-size: 13px;
     }
@@ -208,12 +208,12 @@
     }
 
     .route-item:hover {
-        background: var(--card-bg-alt, #f8f9fa);
+        background: var(--bg-page);
     }
 
     .route-item.dragging {
         opacity: 0.4;
-        background: #e8f0fe;
+        background: var(--primary-50);
     }
 
     .drag-handle {
@@ -227,7 +227,7 @@
         width: 28px;
         height: 28px;
         border-radius: 50%;
-        background: #e8f0fe;
+        background: var(--primary-50);
         color: #0d6efd;
         display: flex;
         align-items: center;
@@ -260,7 +260,7 @@
         padding: 2px 8px;
         border-radius: 999px;
         border: 1px solid #dbeafe;
-        background: #eff6ff;
+        background: var(--primary-50);
         color: #1d4ed8;
         font-size: 12px;
         line-height: 1.2;
@@ -269,20 +269,20 @@
 
     .route-badge-muted {
         border-color: var(--border-color, #e9ecef);
-        background: #f8f9fa;
+        background: var(--bg-page);
         color: var(--text-secondary, #6c757d);
     }
 
     .route-badge-warning {
         border-color: #fed7aa;
-        background: #fff7ed;
+        background: var(--warning-light);
         color: #c2410c;
     }
 
     /* 站点已禁用标签样式。 */
     .badge-disabled {
         border-color: #d1d5db;
-        background: #f3f4f6;
+        background: var(--bg-page);
         color: #9ca3af;
     }
 
@@ -318,7 +318,7 @@
         padding: 10px 12px;
         border: 1px solid #dbeafe;
         border-radius: 8px;
-        background: #f8fbff;
+        background: var(--bg-page);
         cursor: default;
     }
 
