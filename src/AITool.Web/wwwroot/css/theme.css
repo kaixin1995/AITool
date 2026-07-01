@@ -1140,3 +1140,140 @@ body {
 [data-theme="dark"] .form-select {
     color-scheme: dark;
 }
+
+/* ============================================================
+   暗夜模式：强制覆盖页面内联样式的浅色背景
+   ============================================================ */
+
+/* Chat 页 */
+[data-theme="dark"] .chat-admin-shell,
+[data-theme="dark"] .chat-admin-stage,
+[data-theme="dark"] .chat-admin-main,
+[data-theme="dark"] .chat-admin-side,
+[data-theme="dark"] .chat-card,
+[data-theme="dark"] .chat-card-body,
+[data-theme="dark"] .chat-messages,
+[data-theme="dark"] .chat-input-area,
+[data-theme="dark"] .chat-toolbar,
+[data-theme="dark"] .chat-side-pre,
+[data-theme="dark"] .chat-admin-page,
+[data-theme="dark"] .chat-reasoning-effort,
+[data-theme="dark"] .chat-attempt-card,
+[data-theme="dark"] .chat-attempt-detail-pre {
+    background: var(--bg-card) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] .chat-bubble-ai,
+[data-theme="dark"] .chat-side-pre {
+    background: var(--bg-page) !important;
+    color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] .chat-thinking {
+    color: var(--text-secondary) !important;
+}
+
+/* Conversations 页 */
+[data-theme="dark"] .conversation-log-filter-bar,
+[data-theme="dark"] .conversation-log-sidebar,
+[data-theme="dark"] .conversation-log-main,
+[data-theme="dark"] .conversation-log-title,
+[data-theme="dark"] .conversation-bubble-assistant,
+[data-theme="dark"] .conversation-code-block,
+[data-theme="dark"] .conversation-code-block pre,
+[data-theme="dark"] .conversation-turns-truncated,
+[data-theme="dark"] .conversation-delete-dialog {
+    background: var(--bg-card) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+[data-theme="dark"] .conversation-log-content-empty,
+[data-theme="dark"] .conversation-log-session-list {
+    color: var(--text-secondary) !important;
+}
+
+/* Developer Invocations 页 */
+[data-theme="dark"] .dev-invocation-detail,
+[data-theme="dark"] .dev-invocation-body,
+[data-theme="dark"] .dev-invocation-body pre,
+[data-theme="dark"] .dev-invocation-tab-content,
+[data-theme="dark"] .dev-concurrency-card,
+[data-theme="dark"] .dev-concurrency-slot,
+[data-theme="dark"] .invocation-list-item,
+[data-theme="dark"] .invocation-detail-panel,
+[data-theme="dark"] .invocation-attempt-card,
+[data-theme="dark"] .invocation-request-body,
+[data-theme="dark"] .invocation-response-body {
+    background: var(--bg-card) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+/* Analytics 页 */
+[data-theme="dark"] .analytics-filter-bar,
+[data-theme="dark"] .analytics-chart-card,
+[data-theme="dark"] .analytics-summary-card,
+[data-theme="dark"] .analytics-trend-card,
+[data-theme="dark"] .analytics-distribution-card {
+    background: var(--bg-card) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+/* Models 页 */
+[data-theme="dark"] .model-card,
+[data-theme="dark"] .model-edit-form,
+[data-theme="dark"] .model-mapping-row,
+[data-theme="dark"] .model-concurrency-input {
+    background: var(--bg-card) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+/* Routes 页 */
+[data-theme="dark"] .route-card,
+[data-theme="dark"] .route-entry-card,
+[data-theme="dark"] .route-rule-row {
+    background: var(--bg-card) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+/* UsageLogs 页 */
+[data-theme="dark"] .usage-log-filter-bar,
+[data-theme="dark"] .usage-log-table-wrapper,
+[data-theme="dark"] .request-detail-drawer,
+[data-theme="dark"] .request-detail-body {
+    background: var(--bg-card) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+/* ModelHealth 页 */
+[data-theme="dark"] .health-site-card,
+[data-theme="dark"] .health-detail-panel {
+    background: var(--bg-card) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+/* 通用：所有 pre/code 块暗色化 */
+[data-theme="dark"] pre,
+[data-theme="dark"] .conversation-code-block pre {
+    background: rgba(255, 255, 255, 0.03) !important;
+    color: var(--text-primary) !important;
+}
+
+/* 通用：模态框/抽屉暗色化 */
+[data-theme="dark"] .offcanvas,
+[data-theme="dark"] .offcanvas-body,
+[data-theme="dark"] .modal-content,
+[data-theme="dark"] .modal-body,
+[data-theme="dark"] .modal-header {
+    background: var(--bg-card) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
