@@ -107,68 +107,73 @@ public static partial class ProxyProtocolBridge
         string targetProtocol,
         string requestBody,
         string targetModelName,
-        bool enableStreaming)
+        bool enableStreaming,
+        string? overrideReasoningEffort = null)
     {
+        string result;
+        JsonObject? rootNode = null;
+
         if (string.Equals(clientProtocol, targetProtocol, StringComparison.OrdinalIgnoreCase))
         {
             if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
             {
-                return ReplaceOpenAiModelAndEnsureStreamUsage(requestBody, targetModelName, enableStreaming);
+                result = ReplaceOpenAiModelAndEnsureStreamUsage(requestBody, targetModelName, enableStreaming);
             }
-
-            if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
             {
-                return ReplaceOpenAiModelAndEnsureStreamUsage(requestBody, targetModelName, enableStreaming);
+                result = ReplaceOpenAiModelAndEnsureStreamUsage(requestBody, targetModelName, enableStreaming);
             }
-
-            return ReplaceModelName(requestBody, targetModelName);
+            else
+            {
+                result = ReplaceModelName(requestBody, targetModelName);
+            }
         }
-
-        if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
+        else if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
             && string.Equals(targetProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
         {
-            return ConvertChatRequestToResponses(requestBody, targetModelName, enableStreaming);
+            result = ConvertChatRequestToResponses(requestBody, targetModelName, enableStreaming);
         }
-
-        if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
+        else if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
             && string.Equals(targetProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
         {
-            return ConvertResponsesRequestToChat(requestBody, targetModelName, enableStreaming);
+            result = ConvertResponsesRequestToChat(requestBody, targetModelName, enableStreaming);
         }
-
-        var rootNode = JsonNode.Parse(requestBody) as JsonObject;
-        if (rootNode is null)
+        else
         {
-            return requestBody;
+            rootNode = JsonNode.Parse(requestBody) as JsonObject;
+            if (rootNode is null)
+            {
+                return requestBody;
+            }
+
+            if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(targetProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+            {
+                var openAiRequestBody = BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming);
+                result = ConvertChatRequestToResponses(openAiRequestBody, targetModelName, enableStreaming);
+            }
+            else
+            {
+                result = string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
+                    ? BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming)
+                    : BuildAnthropicRequestFromOpenAi(rootNode, targetModelName, enableStreaming);
+            }
         }
 
-        if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
-            && string.Equals(targetProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+        // 如果需要覆盖思考等级，在最终请求体上直接修改，避免二次 Parse。
+        if (!string.IsNullOrWhiteSpace(overrideReasoningEffort))
         {
-            var openAiRequestBody = BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming);
-            return ConvertChatRequestToResponses(openAiRequestBody, targetModelName, enableStreaming);
+            result = ApplyReasoningEffort(result, overrideReasoningEffort, targetProtocol);
         }
 
-        return string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
-            ? BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming)
-            : BuildAnthropicRequestFromOpenAi(rootNode, targetModelName, enableStreaming);
+        return result;
     }
 
     /// <summary>
-    /// 强制覆盖请求体中的思考等级。在 PrepareRequestBody（协议转换后）调用，
-    /// 确保无论客户端传什么、经过什么协议转换，最终转发给上游的思考等级都是配置的值。
+    /// 在请求体 JSON 上覆盖思考等级。内联到 PrepareRequestBody 中避免二次 Parse。
     /// </summary>
-    /// <param name="requestBody">PrepareRequestBody 返回的最终请求体 JSON。</param>
-    /// <param name="overrideEffort">强制覆盖的思考等级值（非空）。</param>
-    /// <param name="targetProtocol">上游目标协议类型（OpenAI/Anthropic/Responses）。</param>
-    /// <returns>覆盖后的请求体 JSON。</returns>
-    public static string OverrideReasoningEffort(string requestBody, string overrideEffort, string targetProtocol)
+    private static string ApplyReasoningEffort(string requestBody, string overrideEffort, string targetProtocol)
     {
-        if (string.IsNullOrWhiteSpace(requestBody) || string.IsNullOrWhiteSpace(overrideEffort))
-        {
-            return requestBody;
-        }
-
         try
         {
             var rootNode = JsonNode.Parse(requestBody) as JsonObject;
@@ -218,6 +223,12 @@ public static partial class ProxyProtocolBridge
             return requestBody;
         }
     }
+
+    /// <summary>
+    /// 强制覆盖请求体中的思考等级。已内联到 PrepareRequestBody，此方法保留向后兼容。
+    /// </summary>
+    public static string OverrideReasoningEffort(string requestBody, string overrideEffort, string targetProtocol)
+        => ApplyReasoningEffort(requestBody, overrideEffort, targetProtocol);
 
     /// <summary>
     /// 按客户端协议将上游响应内容转换为可直接返回的格式。

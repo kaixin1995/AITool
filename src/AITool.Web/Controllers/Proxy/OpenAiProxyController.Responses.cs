@@ -170,21 +170,20 @@ public sealed partial class OpenAiProxyController
 
             if (isPassthrough)
             {
-                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", "OpenAI", requestBody, route.SiteModelName, enableStreaming);
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", "OpenAI", requestBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort);
             }
             else
             {
                 // Responses → Chat Completions → Anthropic：先转为 Chat Completions，再由协议桥接转为目标格式
                 var chatBody = ProxyProtocolBridge.ConvertResponsesRequestToChat(requestBody, route.SiteModelName, enableStreaming);
-                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", actualProtocolType, chatBody, route.SiteModelName, enableStreaming);
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", actualProtocolType, chatBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort);
             }
 
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
 
-            // 如果模型配置了强制思考等级，覆盖转发请求体里的思考等级
+            // PrepareRequestBody 已内联覆盖思考等级，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
             {
-                preparedRequestBody = ProxyProtocolBridge.OverrideReasoningEffort(preparedRequestBody, route.OverrideReasoningEffort, actualProtocolType);
                 reasoningEffort = route.OverrideReasoningEffort;
             }
 
@@ -468,20 +467,20 @@ public sealed partial class OpenAiProxyController
 
             var isPassthrough = string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase);
             var preparedRequestBody = isPassthrough
-                ? ProxyProtocolBridge.PrepareRequestBody("OpenAI", "OpenAI", normalizedRequestBody, route.SiteModelName, true)
+                ? ProxyProtocolBridge.PrepareRequestBody("OpenAI", "OpenAI", normalizedRequestBody, route.SiteModelName, true, route.OverrideReasoningEffort)
                 : ProxyProtocolBridge.PrepareRequestBody(
                     "OpenAI",
                     actualProtocolType,
                     ProxyProtocolBridge.ConvertResponsesRequestToChat(normalizedRequestBody, route.SiteModelName, true),
                     route.SiteModelName,
-                    true);
+                    true,
+                    route.OverrideReasoningEffort);
 
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
 
-            // 如果模型配置了强制思考等级，覆盖转发请求体里的思考等级
+            // PrepareRequestBody 已内联覆盖思考等级，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
             {
-                preparedRequestBody = ProxyProtocolBridge.OverrideReasoningEffort(preparedRequestBody, route.OverrideReasoningEffort, actualProtocolType);
                 reasoningEffort = route.OverrideReasoningEffort;
             }
 

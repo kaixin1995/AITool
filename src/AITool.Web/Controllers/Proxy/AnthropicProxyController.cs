@@ -225,12 +225,12 @@ public sealed class AnthropicProxyController : ControllerBase
                 actualProtocolType,
                 requestBody,
                 route.SiteModelName,
-                enableStreaming);
+                enableStreaming,
+                route.OverrideReasoningEffort);
 
-            // 如果模型配置了强制思考等级，覆盖转发请求体里的思考等级
+            // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
             {
-                preparedRequestBody = ProxyProtocolBridge.OverrideReasoningEffort(preparedRequestBody, route.OverrideReasoningEffort, actualProtocolType);
                 reasoningEffort = route.OverrideReasoningEffort;
             }
 

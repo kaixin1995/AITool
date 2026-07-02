@@ -42,7 +42,7 @@ builder.WebHost.ConfigureKestrel(options =>
 {
     options.Limits.MaxConcurrentConnections = 500;
     options.Limits.KeepAliveTimeout = TimeSpan.FromSeconds(130);
-    options.Limits.MaxRequestBodySize = null;
+    options.Limits.MaxRequestBodySize = 100 * 1024 * 1024; // 100MB，覆盖多模态 base64 图片同时防止超大请求 OOM
 });
 
 // 启用响应压缩，压缩 API JSON 响应和静态资源。

@@ -548,47 +548,6 @@ public sealed class AnalyticsApiController : ControllerBase
         AnalyticsQueryDto query,
         CancellationToken cancellationToken)
     {
-        var allLogs = await dbContext.ProxyUsageLogs
-            
-            .Select(x => new AITool.Domain.Proxy.ProxyUsageLog
-            {
-                Id = x.Id,
-                RequestId = x.RequestId,
-                AccessKeyId = x.AccessKeyId,
-                ProtocolType = x.ProtocolType,
-                RequestModel = x.RequestModel,
-                AttemptedModel = x.AttemptedModel,
-                TargetSiteId = x.TargetSiteId,
-                Status = x.Status,
-                Source = x.Source,
-                RetryCount = x.RetryCount,
-                AttemptIndex = x.AttemptIndex,
-                IsFinalResult = x.IsFinalResult,
-                FallbackTriggered = x.FallbackTriggered,
-                ErrorMessage = x.ErrorMessage,
-                InputTokens = x.InputTokens,
-                CachedTokens = x.CachedTokens,
-                OutputTokens = x.OutputTokens,
-                TotalTokens = x.TotalTokens,
-                IsStreaming = x.IsStreaming,
-                IsStreamInterrupted = x.IsStreamInterrupted,
-                FirstTokenLatencyMs = x.FirstTokenLatencyMs,
-                StreamDurationMs = x.StreamDurationMs,
-                TotalDurationMs = x.TotalDurationMs,
-                RequestedAt = x.RequestedAt
-            })
-            .ToListAsync(cancellationToken);
-
-        // SqlSugar 读回 DateTimeOffset 时 offset 被配成本地时区（+08:00），但存储的是 UTC 值，
-        // 导致瞬时偏移。这里统一把 RequestedAt 规范化回 UTC offset（+00:00），恢复正确瞬时时刻。
-        foreach (var log in allLogs)
-        {
-            if (log.RequestedAt.Offset != TimeSpan.Zero)
-            {
-                log.RequestedAt = new DateTimeOffset(log.RequestedAt.DateTime, TimeSpan.Zero);
-            }
-        }
-
         var siteNames = await dbContext.Sites
             
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
@@ -596,23 +555,32 @@ public sealed class AnalyticsApiController : ControllerBase
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
 
-        // 先按时间和基础筛选收窄范围，再在内存里做聚合：SQLite + EF Core 无法稳定翻译
-        // DateTimeOffset 的区间比较（项目内 SystemRuntimeSettingsService、UsageLogsApiController 均因此采用内存过滤）。
-        var baseLogs = allLogs
+        // 数据库层过滤：SqlSugar 支持 DateTimeOffset 下推，不再全表加载到内存。
+        var baseQuery = dbContext.ProxyUsageLogs
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
-            .Where(x => string.Equals(query.ProtocolType, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.ProtocolType, query.ProtocolType, StringComparison.OrdinalIgnoreCase))
-            .Where(x => string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase) || string.Equals(x.AttemptedModel, query.ModelName, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+            .WhereIF(!string.Equals(query.ProtocolType, "all", StringComparison.OrdinalIgnoreCase), x => x.ProtocolType == query.ProtocolType)
+            .WhereIF(!string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase), x => x.AttemptedModel == query.ModelName);
 
-        // 站点筛选按”命中过该站点的尝试”统计，避免回退成功后把失败站点整条请求吞掉。
-        var scopedLogs = query.SiteId.HasValue
-            ? baseLogs.Where(x => x.TargetSiteId == query.SiteId.Value).ToList()
-            : baseLogs;
-
-        // 访问密钥筛选：按该密钥发起的尝试统计。
+        var scopedQuery = baseQuery;
+        if (query.SiteId.HasValue)
+        {
+            scopedQuery = scopedQuery.Where(x => x.TargetSiteId == query.SiteId.Value);
+        }
         if (query.AccessKeyId.HasValue)
         {
-            scopedLogs = scopedLogs.Where(x => x.AccessKeyId == query.AccessKeyId.Value).ToList();
+            scopedQuery = scopedQuery.Where(x => x.AccessKeyId == query.AccessKeyId.Value);
+        }
+
+        var scopedLogs = await scopedQuery.ToListAsync(cancellationToken);
+
+        // SqlSugar 读回 DateTimeOffset 时 offset 被配成本地时区（+08:00），但存储的是 UTC 值，
+        // 导致瞬时偏移。这里统一把 RequestedAt 规范化回 UTC offset（+00:00），恢复正确瞬时时刻。
+        foreach (var log in scopedLogs)
+        {
+            if (log.RequestedAt.Offset != TimeSpan.Zero)
+            {
+                log.RequestedAt = new DateTimeOffset(log.RequestedAt.DateTime, TimeSpan.Zero);
+            }
         }
 
         var finalLogs = scopedLogs
