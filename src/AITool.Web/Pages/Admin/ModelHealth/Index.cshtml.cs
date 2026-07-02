@@ -329,12 +329,26 @@ public class IndexModel : PageModel
                 .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
             var recentCutoff = ResolveRecentCutoff(Range);
-            // 先全量加载到内存，再按最近时间窗口过滤，避免 SQLite 无法翻译 DateTimeOffset 比较。
+            // 数据库层过滤：SqlSugar 支持 DateTimeOffset 下推，不再全表加载到内存。
+            // 按时间范围 + 相关模型过滤，大幅减少加载的数据量。
+            var matchedModelNames = monitoredModelIds
+                .Select(id => models.TryGetValue(id, out var m) ? m.ModelName : null)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .ToHashSet(StringComparer.Ordinal);
+            var matchedRemoteNames = mappings.Select(m => m.RemoteModelName).ToHashSet(StringComparer.Ordinal);
+            var matchedUpstreamNames = (await _dbContext.ProxyRouteRules
+                    .Where(x => x.IsEnabled && matchedModelNames.Contains(x.ExternalModelName))
+                    .ToListAsync(cancellationToken))
+                .Select(x => x.UpstreamModelName)
+                .Where(n => !string.IsNullOrWhiteSpace(n))
+                .ToHashSet(StringComparer.Ordinal);
+
             var allLogs = await _dbContext.ProxyUsageLogs
-                .ToListAsync(cancellationToken);
-            allLogs = allLogs
                 .Where(x => x.RequestedAt >= recentCutoff)
-                .ToList();
+                .Where(x => matchedModelNames.Contains(x.RequestModel)
+                    || matchedRemoteNames.Contains(x.AttemptedModel)
+                    || matchedUpstreamNames.Contains(x.AttemptedModel))
+                .ToListAsync(cancellationToken);
 
             var routeRules = await _dbContext.ProxyRouteRules
                 .Where(x => x.IsEnabled)
