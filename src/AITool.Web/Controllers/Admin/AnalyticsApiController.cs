@@ -597,6 +597,22 @@ public sealed class AnalyticsApiController : ControllerBase
             .Select(g => g.Key)
             .ToHashSet();
 
+        // 一次预分桶：把 finalLogs 按 bucket 归类，后续 5 个趋势方法直接用预分桶结果，
+        // 避免每个趋势方法各自遍历 finalLogs 做 Where().ToList()（5 轮全扫 → 1 轮）。
+        var buckets = BuildBuckets(startTime, endTime, bucketType);
+        var bucketedLogs = buckets.ToDictionary(b => b.Label, _ => new List<AITool.Domain.Proxy.ProxyUsageLog>());
+        foreach (var log in finalLogs)
+        {
+            foreach (var b in buckets)
+            {
+                if (log.RequestedAt >= b.Start && log.RequestedAt < b.End)
+                {
+                    bucketedLogs[b.Label].Add(log);
+                    break;
+                }
+            }
+        }
+
         return new AnalyticsDashboardResponseDto
         {
             AppliedFilter = new AnalyticsAppliedFilterDto
@@ -611,11 +627,11 @@ public sealed class AnalyticsApiController : ControllerBase
                 AccessKeyId = query.AccessKeyId
             },
             Summary = BuildSummary(finalLogs, fallbackRequestIds),
-            RequestTrend = BuildRequestTrend(finalLogs, startTime, endTime, bucketType),
-            ResultTrend = BuildResultTrend(finalLogs, startTime, endTime, bucketType),
-            TokenTrend = BuildTokenTrend(finalLogs, startTime, endTime, bucketType),
-            DurationTrend = BuildDurationTrend(finalLogs, startTime, endTime, bucketType),
-            FallbackTrend = BuildFallbackTrend(finalLogs, fallbackRequestIds, startTime, endTime, bucketType),
+            RequestTrend = BuildRequestTrend(buckets, bucketedLogs),
+            ResultTrend = BuildResultTrend(buckets, bucketedLogs),
+            TokenTrend = BuildTokenTrend(buckets, bucketedLogs),
+            DurationTrend = BuildDurationTrend(buckets, bucketedLogs),
+            FallbackTrend = BuildFallbackTrend(buckets, bucketedLogs, fallbackRequestIds),
             SiteDistribution = BuildSiteDistribution(finalLogs, siteNames),
             ModelDistribution = BuildModelDistribution(finalLogs),
             ModelCacheRatioDistribution = BuildModelCacheRatioDistribution(finalLogs)
@@ -653,16 +669,14 @@ public sealed class AnalyticsApiController : ControllerBase
     /// 构建请求趋势。
     /// </summary>
     private static List<AnalyticsTrendPointDto> BuildRequestTrend(
-        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        DateTimeOffset startTime,
-        DateTimeOffset endTime,
-        string bucketType)
+        List<AnalyticsBucket> buckets,
+        Dictionary<string, List<AITool.Domain.Proxy.ProxyUsageLog>> bucketedLogs)
     {
-        return BuildBuckets(startTime, endTime, bucketType)
+        return buckets
             .Select(bucket => new AnalyticsTrendPointDto
             {
                 Label = bucket.Label,
-                RequestCount = finalLogs.Count(x => x.RequestedAt >= bucket.Start && x.RequestedAt < bucket.End)
+                RequestCount = bucketedLogs[bucket.Label].Count
             })
             .ToList();
     }
@@ -671,17 +685,13 @@ public sealed class AnalyticsApiController : ControllerBase
     /// 构建结果趋势。
     /// </summary>
     private static List<AnalyticsResultTrendPointDto> BuildResultTrend(
-        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        DateTimeOffset startTime,
-        DateTimeOffset endTime,
-        string bucketType)
+        List<AnalyticsBucket> buckets,
+        Dictionary<string, List<AITool.Domain.Proxy.ProxyUsageLog>> bucketedLogs)
     {
-        return BuildBuckets(startTime, endTime, bucketType)
+        return buckets
             .Select(bucket =>
             {
-                var bucketLogs = finalLogs
-                    .Where(x => x.RequestedAt >= bucket.Start && x.RequestedAt < bucket.End)
-                    .ToList();
+                var bucketLogs = bucketedLogs[bucket.Label];
                 var total = bucketLogs.Count;
                 var success = bucketLogs.Count(x => IsSuccess(x.Status));
                 var fail = total - success;
@@ -702,17 +712,13 @@ public sealed class AnalyticsApiController : ControllerBase
     /// 构建 Token 趋势。
     /// </summary>
     private static List<AnalyticsTokenTrendPointDto> BuildTokenTrend(
-        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        DateTimeOffset startTime,
-        DateTimeOffset endTime,
-        string bucketType)
+        List<AnalyticsBucket> buckets,
+        Dictionary<string, List<AITool.Domain.Proxy.ProxyUsageLog>> bucketedLogs)
     {
-        return BuildBuckets(startTime, endTime, bucketType)
+        return buckets
             .Select(bucket =>
             {
-                var bucketLogs = finalLogs
-                    .Where(x => x.RequestedAt >= bucket.Start && x.RequestedAt < bucket.End)
-                    .ToList();
+                var bucketLogs = bucketedLogs[bucket.Label];
 
                 return new AnalyticsTokenTrendPointDto
                 {
@@ -730,17 +736,13 @@ public sealed class AnalyticsApiController : ControllerBase
     /// 构建耗时趋势。
     /// </summary>
     private static List<AnalyticsDurationTrendPointDto> BuildDurationTrend(
-        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        DateTimeOffset startTime,
-        DateTimeOffset endTime,
-        string bucketType)
+        List<AnalyticsBucket> buckets,
+        Dictionary<string, List<AITool.Domain.Proxy.ProxyUsageLog>> bucketedLogs)
     {
-        return BuildBuckets(startTime, endTime, bucketType)
+        return buckets
             .Select(bucket =>
             {
-                var bucketLogs = finalLogs
-                    .Where(x => x.RequestedAt >= bucket.Start && x.RequestedAt < bucket.End)
-                    .ToList();
+                var bucketLogs = bucketedLogs[bucket.Label];
 
                 return new AnalyticsDurationTrendPointDto
                 {
@@ -756,18 +758,14 @@ public sealed class AnalyticsApiController : ControllerBase
     /// 构建回退趋势。
     /// </summary>
     private static List<AnalyticsFallbackTrendPointDto> BuildFallbackTrend(
-        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        HashSet<Guid> fallbackRequestIds,
-        DateTimeOffset startTime,
-        DateTimeOffset endTime,
-        string bucketType)
+        List<AnalyticsBucket> buckets,
+        Dictionary<string, List<AITool.Domain.Proxy.ProxyUsageLog>> bucketedLogs,
+        HashSet<Guid> fallbackRequestIds)
     {
-        return BuildBuckets(startTime, endTime, bucketType)
+        return buckets
             .Select(bucket =>
             {
-                var bucketLogs = finalLogs
-                    .Where(x => x.RequestedAt >= bucket.Start && x.RequestedAt < bucket.End)
-                    .ToList();
+                var bucketLogs = bucketedLogs[bucket.Label];
                 var total = bucketLogs.Count;
                 var fallbackCount = bucketLogs.Count(x => fallbackRequestIds.Contains(x.RequestId));
 

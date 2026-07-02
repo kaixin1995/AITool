@@ -136,27 +136,35 @@ public class IndexModel : PageModel
             })
             .ToListAsync(cancellationToken);
 
-        // 加载全部执行记录，客户端分组
-        var allExecutions = await _dbContext.DetectionTaskExecutions.ToListAsync(cancellationToken);
-        var latestExecutions = allExecutions
-            .GroupBy(e => e.DetectionTaskId)
-            .ToDictionary(
-                g => g.Key,
-                g => g.OrderByDescending(e => e.StartedAt).First());
-
-        // 按任务分组取每个任务最近 10 条执行记录
-        var historyByTask = allExecutions
-            .GroupBy(e => e.DetectionTaskId)
-            .ToDictionary(
-                g => g.Key,
-                g => g.OrderByDescending(e => e.StartedAt).Take(10).ToList());
-
-        // 加载模型信息用于显示关联模型名称
+        // 先加载任务列表，拿到需要查询执行记录的 DetectionTaskId 集合
         var tasks = await _dbContext.DetectionTasks
             .OrderByDescending(t => t.IsEnabled)
             .ThenBy(t => t.Name)
             .ToListAsync(cancellationToken);
 
+        var taskIds = tasks.Select(t => t.Id).ToList();
+
+        // 数据库层过滤：只加载这些任务的执行记录，不再全表加载。
+        // 取每个任务最近 10 条执行记录，避免全表物化。
+        var recentExecutions = taskIds.Any()
+            ? await _dbContext.DetectionTaskExecutions
+                .Where(e => taskIds.Contains(e.DetectionTaskId))
+                .ToListAsync(cancellationToken)
+            : new List<Domain.Detection.DetectionTaskExecution>();
+
+        var latestExecutions = recentExecutions
+            .GroupBy(e => e.DetectionTaskId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(e => e.StartedAt).First());
+
+        var historyByTask = recentExecutions
+            .GroupBy(e => e.DetectionTaskId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(e => e.StartedAt).Take(10).ToList());
+
+        // 加载模型信息用于显示关联模型名称（tasks 已在上方加载）
         var modelIds = tasks
             .Where(t => t.ModelLibraryItemId.HasValue)
             .Select(t => t.ModelLibraryItemId!.Value)
