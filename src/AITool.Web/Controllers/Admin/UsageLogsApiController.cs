@@ -371,24 +371,32 @@ public sealed class UsageLogsApiController : ControllerBase
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
 
-        // 先加载到内存再按时间过滤和排序，避免 SQLite 无法翻译 DateTimeOffset 比较与排序
-        var filteredLogs = (await _dbContext.ProxyUsageLogs
-                .ToListAsync(cancellationToken))
+        // 数据库层过滤 + 分页：SqlSugar 支持 DateTimeOffset 下推，不再全表加载到内存。
+        var baseQuery = _dbContext.ProxyUsageLogs
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
-            .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
-            .Where(x => !query.AccessKeyId.HasValue || x.AccessKeyId == query.AccessKeyId.Value)
-            .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
-            .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
-            .Where(x => IsModelMatched(x, query.ModelKeyword))
-            .OrderByDescending(x => x.RequestedAt)
-            .ToList();
+            .WhereIF(query.SiteId.HasValue, x => x.TargetSiteId == query.SiteId!.Value)
+            .WhereIF(query.AccessKeyId.HasValue, x => x.AccessKeyId == query.AccessKeyId!.Value)
+            .WhereIF(!string.IsNullOrWhiteSpace(query.Source), x => x.Source == query.Source!)
+            .WhereIF(!string.IsNullOrWhiteSpace(query.Status), x => x.Status == query.Status!);
 
-        var totalCount = filteredLogs.Count;
+        // ModelKeyword 是模糊匹配（Contains），SqlSugar 对此也能下推。
+        if (!string.IsNullOrWhiteSpace(query.ModelKeyword))
+        {
+            baseQuery = baseQuery.Where(x => x.AttemptedModel.Contains(query.ModelKeyword) || x.RequestModel.Contains(query.ModelKeyword));
+        }
+
+        var totalCount = await baseQuery.CountAsync(cancellationToken);
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
         var page = totalPages == 0 ? 1 : Math.Min(Math.Max(1, query.Page), totalPages);
-        var items = filteredLogs
+
+        // 只加载当前页的数据，不加载全表
+        var pagedLogs = await baseQuery
+            .OrderBy(x => x.RequestedAt, SqlSugar.OrderByType.Desc)
             .Skip((page - 1) * pageSize)
             .Take(pageSize)
+            .ToListAsync(cancellationToken);
+
+        var items = pagedLogs
             .Select(x => new UsageLogListItemDto
             {
                 Id = x.Id,
@@ -503,31 +511,33 @@ public sealed class UsageLogsApiController : ControllerBase
         {
             var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
 
-            // 先加载到内存再按时间过滤，避免 SQLite 无法翻译 DateTimeOffset 比较
-            var logs = (await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken))
+            // 数据库层过滤 + 聚合：不再全表加载到内存。
+            var baseQuery = _dbContext.ProxyUsageLogs
                 .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
-                .Where(x => !query.SiteId.HasValue || x.TargetSiteId == query.SiteId.Value)
-                .Where(x => !query.AccessKeyId.HasValue || x.AccessKeyId == query.AccessKeyId.Value)
-                .Where(x => string.IsNullOrWhiteSpace(query.Source) || string.Equals(x.Source, query.Source, StringComparison.OrdinalIgnoreCase))
-                .Where(x => string.IsNullOrWhiteSpace(query.Status) || string.Equals(x.Status, query.Status, StringComparison.OrdinalIgnoreCase))
-                .Where(x => IsModelMatched(x, query.ModelKeyword))
-                .ToList();
+                .WhereIF(query.SiteId.HasValue, x => x.TargetSiteId == query.SiteId!.Value)
+                .WhereIF(query.AccessKeyId.HasValue, x => x.AccessKeyId == query.AccessKeyId!.Value)
+                .WhereIF(!string.IsNullOrWhiteSpace(query.Source), x => x.Source == query.Source!)
+                .WhereIF(!string.IsNullOrWhiteSpace(query.Status), x => x.Status == query.Status!);
 
-            // 汇总卡片按日志条数统计：失败一次就记一条失败，后续成功也继续各记各的。
-            var totalRequests = logs.Count;
-            var successRequests = logs.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase));
-            var failedRequests = logs.Count(x => string.Equals(x.Status, "fail", StringComparison.OrdinalIgnoreCase));
-            var successRate = totalRequests == 0
+            if (!string.IsNullOrWhiteSpace(query.ModelKeyword))
+            {
+                baseQuery = baseQuery.Where(x => x.AttemptedModel.Contains(query.ModelKeyword) || x.RequestModel.Contains(query.ModelKeyword));
+            }
+
+            var totalCount = await baseQuery.CountAsync(cancellationToken);
+            var successRequests = await baseQuery.CountAsync(x => x.Status == "success", cancellationToken);
+            var failedRequests = await baseQuery.CountAsync(x => x.Status == "fail", cancellationToken);
+            var successRate = totalCount == 0
                 ? 0d
-                : Math.Round(successRequests * 100d / totalRequests, 2, MidpointRounding.AwayFromZero);
-            var totalTokens = logs.Sum(x => (long)x.TotalTokens);
-            var maxDurationMs = logs.Count == 0
+                : Math.Round(successRequests * 100d / totalCount, 2, MidpointRounding.AwayFromZero);
+            var totalTokens = totalCount == 0 ? 0L : await baseQuery.SumAsync(x => x.TotalTokens);
+            var maxDurationMs = totalCount == 0
                 ? 0
-                : logs.Max(x => x.TotalDurationMs);
+                : await baseQuery.MaxAsync(x => x.TotalDurationMs, cancellationToken);
 
             return Ok(new UsageLogSummaryDto
             {
-                TotalRequests = totalRequests,
+                TotalRequests = totalCount,
                 FailedRequests = failedRequests,
                 SuccessRate = successRate,
                 TotalTokens = totalTokens,
@@ -536,7 +546,6 @@ public sealed class UsageLogsApiController : ControllerBase
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            // 请求已取消时直接结束，避免把前端主动中止记成服务异常。
             return new EmptyResult();
         }
     }
