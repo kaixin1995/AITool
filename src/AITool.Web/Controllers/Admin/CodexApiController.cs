@@ -30,6 +30,7 @@ public sealed class CodexApiController : ControllerBase
     private readonly ICodexModelFetcher _modelFetcher;
     private readonly ICodexQuotaService _quotaService;
     private readonly ICodexQuotaCooldownService _cooldownService;
+    private readonly ICodexResetCreditsService _resetCreditsService;
     private readonly CodexInspectionService _inspectionService;
     private readonly ILogger<CodexApiController> _logger;
 
@@ -40,6 +41,7 @@ public sealed class CodexApiController : ControllerBase
         ICodexModelFetcher modelFetcher,
         ICodexQuotaService quotaService,
         ICodexQuotaCooldownService cooldownService,
+        ICodexResetCreditsService resetCreditsService,
         CodexInspectionService inspectionService,
         ILogger<CodexApiController> logger)
     {
@@ -49,6 +51,7 @@ public sealed class CodexApiController : ControllerBase
         _modelFetcher = modelFetcher;
         _quotaService = quotaService;
         _cooldownService = cooldownService;
+        _resetCreditsService = resetCreditsService;
         _inspectionService = inspectionService;
         _logger = logger;
     }
@@ -355,6 +358,36 @@ public sealed class CodexApiController : ControllerBase
         return Ok(_inspectionService.GetLogs());
     }
 
+    // —— Reset Credits ——
+
+    /// <summary>查询账号的手动重置 credits（剩余次数 + 每张过期时间）。</summary>
+    [HttpGet("accounts/{id}/reset-credits")]
+    public async Task<IActionResult> GetResetCredits(Guid id, CancellationToken ct)
+    {
+        var account = await GetAccountAsync(id, ct);
+        if (account == null) return NotFound(new { message = "账号不存在" });
+
+        var info = await _resetCreditsService.QueryResetCreditsAsync(account, ct);
+        return Ok(info);
+    }
+
+    /// <summary>消耗一张 reset credit，执行真实额度重置。</summary>
+    [HttpPost("accounts/{id}/consume-reset-credit")]
+    public async Task<IActionResult> ConsumeResetCredit(Guid id, CancellationToken ct)
+    {
+        var account = await GetAccountAsync(id, ct);
+        if (account == null) return NotFound(new { message = "账号不存在" });
+
+        var redeemRequestId = Guid.NewGuid().ToString();
+        var (success, error) = await _resetCreditsService.ConsumeResetCreditAsync(account, redeemRequestId, ct);
+        if (!success) return BadRequest(new { message = error });
+
+        // 消耗成功后重新刷新额度（让前端能看到重置后的新额度）
+        await _quotaService.QueryAsync(account, forceRefresh: true, ct);
+
+        return Ok(new { message = "手动重置额度成功" });
+    }
+
     // —— 私有 ——
 
     private async Task<CodexAccount?> GetAccountAsync(Guid id, CancellationToken ct)
@@ -368,6 +401,7 @@ public sealed class CodexApiController : ControllerBase
         List<object>? windows = null;
         double? fiveHour = null;
         double? weekly = null;
+        int? resetCreditsAvailableCount = null;
         if (!string.IsNullOrEmpty(a.LastQuotaRawJson))
         {
             try
@@ -380,6 +414,25 @@ public sealed class CodexApiController : ControllerBase
                 }).ToList();
                 fiveHour = parsedWindows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
                 weekly = parsedWindows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;
+
+                // 解析 rate_limit_reset_credits.available_count（如果存在）
+                var json = System.Text.Json.JsonDocument.Parse(a.LastQuotaRawJson);
+                if (json.RootElement.TryGetProperty("rate_limit_reset_credits", out var rlrcEl) ||
+                    json.RootElement.TryGetProperty("rateLimitResetCredits", out rlrcEl))
+                {
+                    if (rlrcEl.TryGetProperty("available_count", out var countEl) ||
+                        rlrcEl.TryGetProperty("availableCount", out countEl))
+                    {
+                        if (countEl.ValueKind == System.Text.Json.JsonValueKind.Number)
+                        {
+                            resetCreditsAvailableCount = countEl.GetInt32();
+                        }
+                        else if (countEl.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            if (int.TryParse(countEl.GetString(), out var c)) resetCreditsAvailableCount = c;
+                        }
+                    }
+                }
             }
             catch { }
         }
@@ -398,6 +451,7 @@ public sealed class CodexApiController : ControllerBase
             windows,
             fiveHourUsedPercent = fiveHour,
             weeklyUsedPercent = weekly,
+            resetCreditsAvailableCount,
             lastQuotaCheckedAt = a.LastQuotaCheckedAt,
             tokenExpiresAt = a.TokenExpiresAt,
             createdAt = a.CreatedAt,

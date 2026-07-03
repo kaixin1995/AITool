@@ -171,6 +171,18 @@
     .codex-inspection-logs .log-line { white-space: pre-wrap; word-break: break-word; }
     .codex-inspection-logs .log-time { color: #9ca3af; margin-right: 8px; }
     .codex-inspection-toolbar .btn { min-height: 34px; }
+
+    /* Reset credits 小字提示 */
+    .codex-reset-credits-hint {
+        display: inline-block;
+        margin-left: 8px;
+        font-size: 11px;
+        color: #6c757d;
+        cursor: pointer;
+        text-decoration: underline dotted;
+        user-select: none;
+    }
+    .codex-reset-credits-hint:hover { color: #0d6efd; }
 </style>
 
 <div class="page-header">
@@ -355,6 +367,32 @@
     </div>
 </div>
 
+<!-- Reset Credits Modal -->
+<div class="modal fade" id="resetCreditsModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">手动重置额度</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="mb-3">当前账号：<strong id="resetCreditsAccountName"></strong></p>
+                <p class="mb-3">剩余可用重置次数：<strong id="resetCreditsAvailableCount">-</strong></p>
+                <div id="resetCreditsListContainer" style="display:none;">
+                    <h6>各次重置过期时间（北京时间 GMT+8）</h6>
+                    <div id="resetCreditsList" style="max-height:240px;overflow-y:auto;"></div>
+                </div>
+                <div id="resetCreditsError" class="alert alert-danger" style="display:none;"></div>
+                <div id="resetCreditsLoading" class="text-center text-secondary">加载中...</div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+                <button type="button" class="btn btn-danger" id="btnExecuteReset" onclick="executeResetCredit()" disabled>执行重置</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 @section Scripts {
 <script>
     let codexAccounts = [];
@@ -404,6 +442,11 @@
         const planBadge = a.planType ? `<span class="codex-plan">${escapeHtml(a.planType)}</span>` : '';
         const statusBadge = renderStatusBadge(a);
 
+        // 手动重置次数小字（可点击）
+        const resetCreditsHint = a.resetCreditsAvailableCount > 0
+            ? `<span class="codex-reset-credits-hint" onclick="openResetCreditsModal('${a.id}', '${escapeHtml(a.displayName)}', event)" title="点击查看详情">剩余 ${a.resetCreditsAvailableCount} 次手动重置</span>`
+            : '';
+
         // 额度窗口区域
         let windowsHtml = '';
         if (a.windows && a.windows.length) {
@@ -422,6 +465,7 @@
             <div class="codex-card-header">
                 <div class="codex-card-header-main">
                     <div class="codex-account-name" title="${escapeHtml(a.displayName)}">${escapeHtml(a.displayName)}</div>
+                    ${resetCreditsHint}
                     <div class="codex-account-email">${escapeHtml(a.email || '')}</div>
                     <div class="codex-badges">
                         ${statusBadge}${planBadge}
@@ -436,7 +480,7 @@
                 </div>
                 <div class="codex-card-actions">
                     <button class="btn btn-sm btn-outline-secondary" onclick="refreshQuota('${a.id}', this)">刷新额度</button>
-                    <button class="btn btn-sm btn-outline-warning" onclick="resetQuota('${a.id}')">重置额度</button>
+                    <button class="btn btn-sm btn-outline-warning" onclick="openResetCreditsModal('${a.id}', '${escapeHtml(a.displayName)}', event)">重置额度</button>
                     <button class="btn btn-sm btn-outline-secondary" onclick="toggleAccount('${a.id}')">${a.isEnabled ? '禁用' : '启用'}</button>
                     <button class="btn btn-sm btn-outline-primary" onclick="openEditModal('${a.id}')">编辑</button>
                     <button class="btn btn-sm btn-outline-info" onclick="pullModels('${a.id}')">拉取模型</button>
@@ -553,13 +597,6 @@
             await loadAccounts();
         } catch (e) { alert('额度查询失败：' + e); }
         finally { btn.disabled = orig; }
-    }
-
-    async function resetQuota(id) {
-        if (!confirm('确认重置该账号额度？\n\n这将清除冷却状态并刷新 token，使账号重新参与转发。\n注意：上游真实额度恢复时间由 OpenAI 决定，重置不会凭空增加额度；若上游额度仍未恢复，可能立即再次触发冷却。')) return;
-        const r = await fetch(`/api/admin/codex/accounts/${id}/reset-quota`, { method: 'POST' });
-        if (!r.ok) { const e = await r.json(); alert(e.message || '重置失败'); return; }
-        await loadAccounts();
     }
 
     async function toggleAccount(id) {
@@ -711,6 +748,93 @@
             await loadInspectionData();
         } catch (e) { alert('巡检失败：' + e); }
         finally { if (btn) btn.disabled = false; }
+    }
+
+    // —— Reset Credits ——
+    let currentResetAccountId = null;
+
+    async function openResetCreditsModal(accountId, accountName, event) {
+        event.stopPropagation();
+        currentResetAccountId = accountId;
+
+        const modal = new bootstrap.Modal(document.getElementById('resetCreditsModal'));
+        document.getElementById('resetCreditsAccountName').textContent = accountName;
+        document.getElementById('resetCreditsAvailableCount').textContent = '-';
+        document.getElementById('resetCreditsList').innerHTML = '';
+        document.getElementById('resetCreditsListContainer').style.display = 'none';
+        document.getElementById('resetCreditsError').style.display = 'none';
+        document.getElementById('resetCreditsLoading').style.display = 'block';
+        document.getElementById('btnExecuteReset').disabled = true;
+
+        modal.show();
+
+        try {
+            const r = await fetch(`/api/admin/codex/accounts/${accountId}/reset-credits`);
+            const data = await r.json();
+            document.getElementById('resetCreditsLoading').style.display = 'none';
+
+            if (!r.ok || !data.success) {
+                document.getElementById('resetCreditsError').textContent = data.error || '加载失败';
+                document.getElementById('resetCreditsError').style.display = 'block';
+                return;
+            }
+
+            document.getElementById('resetCreditsAvailableCount').textContent = data.availableCount || 0;
+            if (data.availableCount > 0) {
+                document.getElementById('btnExecuteReset').disabled = false;
+            }
+
+            if (data.credits && data.credits.length > 0) {
+                document.getElementById('resetCreditsListContainer').style.display = 'block';
+                const listHtml = data.credits.map((c, idx) => {
+                    const granted = c.grantedAt ? formatBeijingTime(c.grantedAt) : '—';
+                    const expires = c.expiresAt ? formatBeijingTime(c.expiresAt) : '—';
+                    return `<div style="padding:8px;border-bottom:1px solid #e7e1d7;font-size:13px;">
+                        <strong>第 ${idx + 1} 次</strong><br>
+                        发放时间：${granted}<br>
+                        过期时间：<span style="color:#c4612f;">${expires}</span>
+                    </div>`;
+                }).join('');
+                document.getElementById('resetCreditsList').innerHTML = listHtml;
+            }
+        } catch (e) {
+            document.getElementById('resetCreditsLoading').style.display = 'none';
+            document.getElementById('resetCreditsError').textContent = '加载异常：' + e.message;
+            document.getElementById('resetCreditsError').style.display = 'block';
+        }
+    }
+
+    async function executeResetCredit() {
+        if (!currentResetAccountId) return;
+        if (!confirm('确认消耗一张手动重置额度，执行真实额度重置？此操作不可撤销。')) return;
+
+        const btn = document.getElementById('btnExecuteReset');
+        btn.disabled = true;
+
+        try {
+            const r = await fetch(`/api/admin/codex/accounts/${currentResetAccountId}/consume-reset-credit`, { method: 'POST' });
+            const data = await r.json();
+            if (!r.ok) {
+                alert(data.message || '执行失败');
+                return;
+            }
+            alert('手动重置额度成功！');
+            bootstrap.Modal.getInstance(document.getElementById('resetCreditsModal')).hide();
+            await loadAccounts();
+        } catch (e) {
+            alert('执行异常：' + e.message);
+        } finally {
+            btn.disabled = false;
+        }
+    }
+
+    function formatBeijingTime(utcStr) {
+        try {
+            const d = new Date(utcStr);
+            return d.toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false });
+        } catch {
+            return utcStr;
+        }
     }
 
     // —— 工具 ——

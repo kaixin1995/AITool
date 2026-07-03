@@ -173,6 +173,11 @@ builder.Services.AddScoped<SiteCascadeDeleter>();
 builder.Services.AddScoped<CodexAccountProvisioner>();
 // Codex 额度被动冷却与重置服务。
 builder.Services.AddScoped<ICodexQuotaCooldownService, CodexQuotaCooldownService>();
+// Codex 手动重置 credits 服务（查询剩余次数/过期时间 + 消耗一张 credit 执行真实重置）。
+builder.Services.AddHttpClient<ICodexResetCreditsService, CodexResetCreditsService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
 // Codex 功能总开关过滤器（控制器级 gating）。
 builder.Services.AddScoped<CodexFeatureToggleAttribute>();
 // Codex 巡检后台服务（周期额度巡检 + 缓存策略 + 自动禁用）。单例，供 API 与后台共用状态。
