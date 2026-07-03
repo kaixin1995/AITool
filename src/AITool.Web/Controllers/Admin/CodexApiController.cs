@@ -328,17 +328,22 @@ public sealed class CodexApiController : ControllerBase
 
     private static object ToSummary(CodexAccount a)
     {
-        // 解析最近额度缓存的剩余额度（若有）
-        decimal? remaining = null;
-        string? quotaUnit = null;
+        // 从最近一次额度查询的原始响应解析窗口（供前端画进度条，无需每次单独刷新）
+        List<object>? windows = null;
+        double? fiveHour = null;
+        double? weekly = null;
         if (!string.IsNullOrEmpty(a.LastQuotaRawJson))
         {
             try
             {
-                using var doc = JsonDocument.Parse(a.LastQuotaRawJson);
-                if (doc.RootElement.TryGetProperty("remaining", out var r) && r.TryGetDecimal(out var d)) remaining = d;
-                if (doc.RootElement.TryGetProperty("unit", out var u) && u.ValueKind == JsonValueKind.String)
-                    quotaUnit = u.GetString();
+                var (planType, parsedWindows) = CodexUsageParser.Parse(a.LastQuotaRawJson);
+                windows = parsedWindows.Select(w => (object)new
+                {
+                    id = w.Id, label = w.Label,
+                    usedPercent = w.UsedPercent, resetLabel = w.ResetLabel,
+                }).ToList();
+                fiveHour = parsedWindows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
+                weekly = parsedWindows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;
             }
             catch { }
         }
@@ -354,8 +359,9 @@ public sealed class CodexApiController : ControllerBase
             isQuotaCooling = a.IsQuotaCooling,
             quotaCoolingUntil = a.QuotaCoolingUntil,
             autoDisableThreshold = a.AutoDisableThreshold,
-            remainingQuota = remaining,
-            quotaUnit,
+            windows,
+            fiveHourUsedPercent = fiveHour,
+            weeklyUsedPercent = weekly,
             lastQuotaCheckedAt = a.LastQuotaCheckedAt,
             tokenExpiresAt = a.TokenExpiresAt,
             createdAt = a.CreatedAt,

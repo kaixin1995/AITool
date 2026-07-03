@@ -4,6 +4,159 @@
     ViewData["Title"] = "Codex 账号";
 }
 
+<style>
+    /* 卡片网格 + 进度条样式，移植自 codex-patrol wwwroot/css/app.css */
+    .codex-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+        gap: 18px;
+        margin-top: 16px;
+    }
+    .codex-card {
+        background: var(--card-bg, rgba(255, 255, 255, 0.96));
+        border: 1px solid var(--border-color, #dce6f3);
+        border-radius: 18px;
+        padding: 18px 18px 16px;
+        box-shadow: 0 16px 36px -30px rgba(59, 91, 135, 0.18);
+        display: flex;
+        flex-direction: column;
+    }
+    .codex-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        margin-bottom: 12px;
+    }
+    .codex-card-header-main { min-width: 0; flex: 1; }
+    .codex-account-name {
+        font-weight: 700;
+        font-size: 15px;
+        line-height: 1.45;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        color: var(--text-color, #1f2a37);
+    }
+    .codex-account-email {
+        font-size: 12px;
+        color: var(--text-secondary, #7a8599);
+        margin-top: 4px;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+    .codex-badges {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-top: 8px;
+    }
+    .codex-plan {
+        flex-shrink: 0;
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 10px;
+        background: #eef2ff;
+        color: #3291ff;
+    }
+    /* 单个额度窗口：label | bar | percent 三列网格，保证多窗口进度条对齐 */
+    .codex-window {
+        display: grid;
+        grid-template-columns: 92px minmax(0, 1fr) 56px;
+        column-gap: 12px;
+        row-gap: 6px;
+        align-items: center;
+        padding: 10px 0 12px;
+        border-bottom: 1px solid #f3f4f6;
+    }
+    .codex-window:last-child { border-bottom: none; }
+    .codex-window-label {
+        min-width: 0;
+        font-size: 13px;
+        color: var(--text-secondary, #7a8599);
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+    .codex-window-bar {
+        min-width: 0;
+        height: 6px;
+        background: #e5e7eb;
+        border-radius: 3px;
+        overflow: hidden;
+    }
+    .codex-window-fill {
+        height: 100%;
+        border-radius: 3px;
+        transition: width 0.3s;
+    }
+    .codex-window-fill.good { background: #67c23a; }
+    .codex-window-fill.warn { background: #e6a23c; }
+    .codex-window-fill.bad { background: #ff6b6b; }
+    .codex-window-percent {
+        font-size: 13px;
+        font-weight: 600;
+        min-width: 56px;
+        text-align: right;
+        color: var(--text-color, #1f2a37);
+    }
+    .codex-window-reset {
+        grid-column: 2 / 4;
+        min-width: 0;
+        font-size: 11px;
+        line-height: 1.5;
+        color: var(--text-secondary, #7a8599);
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+    .codex-card-meta {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 12px;
+        align-items: start;
+        margin-top: 10px;
+        padding-top: 10px;
+        border-top: 1px solid #f3f4f6;
+        font-size: 11px;
+        color: var(--text-secondary, #7a8599);
+    }
+    .codex-source-meta { min-width: 0; display: grid; gap: 4px; }
+    .codex-source-meta span {
+        display: block;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+    }
+    .codex-card-actions {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+        align-items: flex-start;
+    }
+    .codex-card-actions .btn { min-height: 32px; white-space: nowrap; flex-shrink: 0; }
+    .codex-empty {
+        grid-column: 1 / -1;
+        padding: 48px 0;
+        text-align: center;
+        color: var(--text-secondary, #7a8599);
+    }
+    .codex-hint-error { color: #dc2626; font-size: 13px; padding: 8px 0; }
+    /* 暗夜模式适配 */
+    [data-theme="dark"] .codex-card,
+    body.theme-dark .codex-card {
+        background: rgba(40, 44, 52, 0.96);
+        border-color: rgba(255, 255, 255, 0.08);
+    }
+    [data-theme="dark"] .codex-window,
+    body.theme-dark .codex-window { border-bottom-color: rgba(255, 255, 255, 0.06); }
+    [data-theme="dark"] .codex-window-bar,
+    body.theme-dark .codex-window-bar { background: rgba(255, 255, 255, 0.12); }
+</style>
+
 <div class="page-header">
     <div>
         <h2 class="page-title">Codex 账号</h2>
@@ -15,8 +168,8 @@
     </div>
 </div>
 
-<div id="accountsContainer" class="codex-account-list">
-    <div class="table-empty">加载中...</div>
+<div id="accountsContainer" class="codex-grid">
+    <div class="codex-empty">加载中...</div>
 </div>
 
 <!-- OAuth 登录 Modal -->
@@ -101,8 +254,8 @@
                     <input type="text" id="editDisplayName" class="form-control" />
                 </div>
                 <div class="mb-3">
-                    <label class="form-label">自动禁用阈值（剩余额度低于此值自动禁用，留空不启用）</label>
-                    <input type="number" step="any" id="editThreshold" class="form-control" placeholder="例如 10" />
+                    <label class="form-label">自动禁用阈值（任一额度窗口使用百分比达到此值时自动禁用，留空不启用，单位 %，如 95）</label>
+                    <input type="number" step="any" id="editThreshold" class="form-control" placeholder="例如 95" />
                 </div>
             </div>
             <div class="modal-footer">
@@ -123,54 +276,83 @@
     async function loadAccounts() {
         try {
             const r = await fetch('/api/admin/codex/accounts');
-            if (!r.ok) { document.getElementById('accountsContainer').innerHTML = '<div class="table-empty">加载失败</div>'; return; }
+            if (!r.ok) { document.getElementById('accountsContainer').innerHTML = '<div class="codex-empty">加载失败</div>'; return; }
             codexAccounts = await r.json();
             renderAccounts();
         } catch (e) {
-            document.getElementById('accountsContainer').innerHTML = '<div class="table-empty">加载失败：' + escapeHtml(String(e)) + '</div>';
+            document.getElementById('accountsContainer').innerHTML = '<div class="codex-empty">加载失败：' + escapeHtml(String(e)) + '</div>';
         }
     }
 
     function renderAccounts() {
         const container = document.getElementById('accountsContainer');
         if (!codexAccounts.length) {
-            container.innerHTML = '<div class="table-empty">暂无 Codex 账号，点击右上角「新增 OAuth 登录」或「上传凭证」</div>';
+            container.innerHTML = '<div class="codex-empty">暂无 Codex 账号，点击右上角「新增 OAuth 登录」或「上传凭证」</div>';
             return;
         }
         container.innerHTML = codexAccounts.map(renderCard).join('');
     }
 
-    function renderCard(a) {
-        const planBadge = a.planType
-            ? `<span class="badge bg-info">${escapeHtml(a.planType)}</span>` : '';
-        const statusBadge = renderStatusBadge(a);
-        const quotaText = (a.remainingQuota !== null && a.remainingQuota !== undefined)
-            ? `${escapeHtml(String(a.remainingQuota))} ${escapeHtml(a.quotaUnit || '')}`
-            : '—';
-        const lastCheck = a.lastQuotaCheckedAt ? formatTime(a.lastQuotaCheckedAt) : '—';
+    // 渲染单个额度窗口（label | 进度条 | 百分比）
+    function renderWindow(w) {
+        const percent = w.usedPercent ?? 0;
+        const tone = percent >= 100 ? 'bad' : percent >= 80 ? 'warn' : 'good';
+        const label = w.label || '-';
+        const resetLabel = w.resetLabel || '-';
+        const percentText = (w.usedPercent !== null && w.usedPercent !== undefined) ? w.usedPercent.toFixed(1) + '%' : '--';
         return `
-        <div class="codex-account-card" data-id="${a.id}" style="border:1px solid var(--border-color,#dee2e6);border-radius:8px;padding:16px;margin-bottom:12px;">
-            <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2">
-                <div class="d-flex align-items-center gap-2 flex-wrap">
-                    <span style="font-weight:600;font-size:16px;">${escapeHtml(a.displayName)}</span>
-                    ${planBadge}
-                    ${statusBadge}
+        <div class="codex-window">
+            <div class="codex-window-label" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
+            <div class="codex-window-bar">
+                <div class="codex-window-fill ${tone}" style="width:${Math.min(percent, 100)}%"></div>
+            </div>
+            <div class="codex-window-percent">${percentText}</div>
+            <div class="codex-window-reset" title="${escapeHtml(resetLabel)}">${escapeHtml(resetLabel)}</div>
+        </div>`;
+    }
+
+    function renderCard(a) {
+        const planBadge = a.planType ? `<span class="codex-plan">${escapeHtml(a.planType)}</span>` : '';
+        const statusBadge = renderStatusBadge(a);
+
+        // 额度窗口区域
+        let windowsHtml = '';
+        if (a.windows && a.windows.length) {
+            windowsHtml = a.windows.map(renderWindow).join('');
+        } else if (!a.lastQuotaCheckedAt) {
+            windowsHtml = '<div class="codex-window-reset">未刷新额度，点击「刷新额度」获取</div>';
+        } else {
+            windowsHtml = '<div class="codex-window-reset">暂无额度窗口数据</div>';
+        }
+
+        const lastCheck = a.lastQuotaCheckedAt ? '刷新时间：' + formatTime(a.lastQuotaCheckedAt) : '';
+        const tokenExp = a.tokenExpiresAt ? 'token 过期：' + formatTime(a.tokenExpiresAt) : '';
+
+        return `
+        <div class="codex-card" data-id="${a.id}">
+            <div class="codex-card-header">
+                <div class="codex-card-header-main">
+                    <div class="codex-account-name" title="${escapeHtml(a.displayName)}">${escapeHtml(a.displayName)}</div>
+                    <div class="codex-account-email">${escapeHtml(a.email || '')}</div>
+                    <div class="codex-badges">
+                        ${statusBadge}${planBadge}
+                    </div>
                 </div>
-                <div class="text-secondary" style="font-size:12px;">${escapeHtml(a.email || '')}</div>
             </div>
-            <div class="d-flex flex-wrap gap-3 mb-2" style="font-size:13px;">
-                <span>剩余额度：<strong>${quotaText}</strong></span>
-                <span class="text-secondary">上次检查：${lastCheck}</span>
-                <span class="text-secondary">token 过期：${a.tokenExpiresAt ? formatTime(a.tokenExpiresAt) : '—'}</span>
-            </div>
-            <div class="d-flex flex-wrap gap-2">
-                <button class="btn btn-sm btn-outline-secondary" onclick="refreshQuota('${a.id}', this)">刷新额度</button>
-                <button class="btn btn-sm btn-outline-warning" onclick="resetQuota('${a.id}')">重置额度</button>
-                <button class="btn btn-sm btn-outline-secondary" onclick="toggleAccount('${a.id}')">${a.isEnabled ? '禁用' : '启用'}</button>
-                <button class="btn btn-sm btn-outline-primary" onclick="openEditModal('${a.id}')">编辑</button>
-                <button class="btn btn-sm btn-outline-info" onclick="pullModels('${a.id}')">拉取模型</button>
-                <button class="btn btn-sm btn-outline-secondary" onclick="refreshToken('${a.id}')">刷新 Token</button>
-                <button class="btn btn-sm btn-outline-danger" onclick="deleteAccount('${a.id}')">删除</button>
+            <div>${windowsHtml}</div>
+            <div class="codex-card-meta">
+                <div class="codex-source-meta">
+                    <span title="${escapeHtml(lastCheck)}">${escapeHtml(lastCheck)}</span>
+                    <span title="${escapeHtml(tokenExp)}">${escapeHtml(tokenExp)}</span>
+                </div>
+                <div class="codex-card-actions">
+                    <button class="btn btn-sm btn-outline-secondary" onclick="refreshQuota('${a.id}', this)">刷新额度</button>
+                    <button class="btn btn-sm btn-outline-warning" onclick="resetQuota('${a.id}')">重置额度</button>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="toggleAccount('${a.id}')">${a.isEnabled ? '禁用' : '启用'}</button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="openEditModal('${a.id}')">编辑</button>
+                    <button class="btn btn-sm btn-outline-info" onclick="pullModels('${a.id}')">拉取模型</button>
+                    <button class="btn btn-sm btn-outline-danger" onclick="deleteAccount('${a.id}')">删除</button>
+                </div>
             </div>
         </div>`;
     }
@@ -301,13 +483,6 @@
         if (!confirm('确认删除该 Codex 账号？\n\n将同时删除关联的隐藏站点、模型映射和路由规则，不可恢复。')) return;
         const r = await fetch(`/api/admin/codex/accounts/${id}`, { method: 'DELETE' });
         if (!r.ok) { const e = await r.json(); alert(e.message || '删除失败'); return; }
-        await loadAccounts();
-    }
-
-    async function refreshToken(id) {
-        if (!confirm('确认手动刷新该账号的 token？')) return;
-        const r = await fetch(`/api/admin/codex/accounts/${id}/refresh-token`, { method: 'POST' });
-        if (!r.ok) { const e = await r.json(); alert(e.message || '刷新失败'); return; }
         await loadAccounts();
     }
 

@@ -1,22 +1,24 @@
 # T09 — 额度主动查询与自动禁用阈值
 
-> 状态：已完成 ✅（主动查询框架就绪；上游额度端点待实测确认解析）
+> 状态：已完成 ✅（端点已确认：wham/usage，5小时/周窗口百分比进度条）
 > 前置依赖：T01（数据模型）、T02（OAuth，取 token）、T04（Provisioner，禁用模式）
 > 关联总览章节：横切性能原则 P1 / P5 / P8 / P10
 
-## 实施记录
+## 实施记录（已确认上游端点）
 
-- 新建 `src/AITool.Application/Codex/CodexQuotaInfo.cs`、`ICodexQuotaService.cs`。
-- 新建 `src/AITool.Web/Services/CodexQuotaService.cs`（放 Web 层，因依赖 ProxyRequestMetadataCache）：
-  - 30s `IMemoryCache` 结果缓存防抖；forceRefresh 穿透。
-  - `ConcurrentDictionary<Guid, SemaphoreSlim>` single-flight（二次检查缓存）。
-  - 候选端点 `chatgpt.com/backend-api/codex/usage`，带 Bearer/Originator/UA/Chatgpt-Account-Id。
-  - `TryParseQuota` 宽松解析（尝试 remaining/used/total/unit/resets_at 多种字段名，unix/ISO 兼容）。
-  - 持久化 LastQuotaRawJson/LastQuotaCheckedAt；自动禁用判定（剩余<阈值→禁用账号+Site+invalidate）。
-  - 失败降级（Success=false 不影响账号）；缓存失败结果 30s 防风暴。
-- Program.cs 注册 `AddHttpClient<ICodexQuotaService, CodexQuotaService>`（IMemoryCache 已在 line64 注册）。
+- **端点已确认**：`chatgpt.com/backend-api/wham/usage`（参考 codex-patrol 项目）。
+  上游**只返回每个窗口的 `used_percent`（百分比）**，没有 used/limit/remaining 绝对值。
+  窗口分 primary（5小时，limit_window_seconds=18000）和 secondary（周，604800）。
+- **架构差异**：codex-patrol 走 CPA 的 `/api-call` 代理；AITool 自己持有 access_token，**直接请求 wham/usage**，更简单。
+- 新建 `src/AITool.Infrastructure/Codex/CodexUsagePayload.cs`：wham/usage DTO（兼容 snake_case + camelCase）。
+- 新建 `src/AITool.Infrastructure/Codex/CodexUsageParser.cs`：移植自 codex-patrol，按 18000/604800 分类窗口，产出 (id, label, usedPercent, resetLabel) 列表；含 5小时/周/代码审查/附加速额。重置文本格式化（2天3小时后重置）。
+- `CodexQuotaInfo` 改造：增加 `Windows` 列表（`CodexQuotaWindow`{Id,Label,UsedPercent,ResetLabel}）+ FiveHour/Weekly 便捷字段。
+- `CodexQuotaService`：调 wham/usage → CodexUsageParser 解析；自动禁用阈值改为**百分比语义**（任一窗口使用% ≥ 阈值则禁用）。
+- `CodexApiController.ToSummary`：从 LastQuotaRawJson 解析 windows 返回前端（列表即可画进度条，无需单独刷新）。
+- 前端卡片改为 codex-patrol 风格 + 进度条（见 T12）。
 - 编译通过。
-- ⚠️ 待实测：上游额度端点结构与字段名确认后，补全 TryParseQuota 的具体提取。若无可读额度数字，RemainingQuota 留 null，自动禁用阈值不生效（由 T10 被动冷却兜底）。
+
+> 注：自动禁用阈值单位现在是**百分比(0-100)**（如 95 表示任一窗口达 95% 自动禁用），不再是「剩余额度绝对值」。前端编辑提示已更新。
 
 ## 目标
 

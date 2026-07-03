@@ -18,6 +18,15 @@
 - `_Layout.cshtml`：资源管理区加「🤖 Codex 账号」导航（站点管理之后）。
 - 编译通过。
 
+## 二次改造（卡片化 + 额度进度条，参考 codex-patrol 风格）
+
+- 卡片改为 codex-patrol 同款网格布局（`.codex-grid` auto-fill 340px）+ 圆角阴影卡片。
+- 每账号卡片含：名称 + email + 状态/Plan 徽章；**额度窗口区**（每窗口一行：label | 进度条 | 百分比 + 重置文本，三列 CSS grid）；meta 区（刷新时间/token过期 + 操作按钮）。
+- 进度条按使用百分比着色：<80% good(绿)、80-100% warn(橙)、≥100% bad(红)，3 档 tone。
+- 5 小时限额、周限额、代码审查限额、附加速额 都作为独立窗口行渲染（来自后端 windows 数组）。
+- 暗夜模式适配（`[data-theme=dark]` / `body.theme-dark`）。
+- 自动禁用阈值单位改为百分比（0-100）。
+
 ## 目标
 
 新建 `Admin/Codex` Razor 页面，提供 Codex 账号管理面板：顶部按钮组（新增 OAuth 登录 / 上传凭证）、每个账号一个卡片面板（额度/状态/PlanType/操作）、OAuth 弹窗（粘贴回调 URL）、凭证上传弹窗、二次确认（重置/删除）。侧边栏加导航。
