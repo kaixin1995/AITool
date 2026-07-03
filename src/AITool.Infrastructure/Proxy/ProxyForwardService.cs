@@ -690,16 +690,19 @@ public sealed class ProxyForwardService : IProxyForwardService
                 : 0;
 
         // OpenAI Chat Completions 与 Responses 的缓存字段结构不同，这里统一兼容两种格式。
-        var inputDetails = usage.TryGetProperty("input_tokens_details", out var itd)
+        // 部分中间层（如 newapi）的 input_tokens_details 为 null，需要回退到 prompt_tokens_details。
+        var inputDetails = usage.TryGetProperty("input_tokens_details", out var itd) && itd.ValueKind == JsonValueKind.Object
             ? itd
-            : usage.TryGetProperty("prompt_tokens_details", out var ptd)
+            : usage.TryGetProperty("prompt_tokens_details", out var ptd) && ptd.ValueKind == JsonValueKind.Object
                 ? ptd
                 : default;
         var cachedTokens = inputDetails.ValueKind == JsonValueKind.Object && inputDetails.TryGetProperty("cached_tokens", out var ct)
             ? ct.GetInt32()
             : 0;
 
-        var openAiOutputTokens = usage.TryGetProperty("output_tokens", out var outputTokens)
+        // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
+        // 所以 output_tokens=0 时回退到 completion_tokens。
+        var openAiOutputTokens = usage.TryGetProperty("output_tokens", out var outputTokens) && outputTokens.GetInt32() > 0
             ? outputTokens.GetInt32()
             : usage.TryGetProperty("completion_tokens", out var completionTokens)
                 ? completionTokens.GetInt32()
