@@ -65,7 +65,9 @@ public class IndexModel : PageModel
     /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
+        // 过滤掉由 Codex 账号自动创建的托管 Site（ManagedSource 非空），避免污染用户视图。
         Sites = await _dbContext.Sites
+            .Where(x => string.IsNullOrEmpty(x.ManagedSource))
             .OrderBy(x => x.Name)
             .ToListAsync(cancellationToken);
     }
@@ -109,8 +111,9 @@ public class IndexModel : PageModel
 
         try
         {
+            // 仅允许删除用户自建站点（托管 Site 只能经 Codex 账号删除，避免 CodexAccount 成孤儿）
             var sites = await _dbContext.Sites
-                .Where(x => SelectedSiteIds.Contains(x.Id))
+                .Where(x => SelectedSiteIds.Contains(x.Id) && string.IsNullOrEmpty(x.ManagedSource))
                 .ToListAsync(cancellationToken);
             if (sites.Count == 0) return RedirectToPage();
 
@@ -138,6 +141,14 @@ public class IndexModel : PageModel
         {
             var site = await _dbContext.Sites.InSingleAsync(siteId);
             if (site is null) return RedirectToPage();
+            // 托管 Site（如 Codex 自动创建）只能经对应账号删除，禁止从站点页误删
+            if (!string.IsNullOrEmpty(site.ManagedSource))
+            {
+                StatusMessage = $"该站点为 {site.ManagedSource} 托管站点，请到对应账号管理页删除";
+                StatusSuccess = false;
+                await OnGetAsync(cancellationToken);
+                return Page();
+            }
 
             await RemoveSitesAsync([siteId], cancellationToken);
             _metadataCache?.InvalidateRouteTargets();

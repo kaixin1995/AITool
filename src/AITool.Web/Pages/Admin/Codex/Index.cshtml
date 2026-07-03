@@ -1,0 +1,355 @@
+@page
+@model AITool.Web.Pages.Admin.Codex.IndexModel
+@{
+    ViewData["Title"] = "Codex 账号";
+}
+
+<div class="page-header">
+    <div>
+        <h2 class="page-title">Codex 账号</h2>
+        <p class="page-subtitle">管理 Codex OAuth 登录账号、凭证导入、额度与自动禁用</p>
+    </div>
+    <div class="d-flex gap-2">
+        <button type="button" class="btn btn-primary" onclick="openOAuthModal()">＋ 新增 Codex OAuth 登录</button>
+        <button type="button" class="btn btn-outline-primary" onclick="openImportModal()">上传凭证</button>
+    </div>
+</div>
+
+<div id="accountsContainer" class="codex-account-list">
+    <div class="table-empty">加载中...</div>
+</div>
+
+<!-- OAuth 登录 Modal -->
+<div class="modal fade" id="oauthModal" tabindex="-1">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Codex OAuth 登录</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label class="form-label">账号显示名称（可选）</label>
+                    <input type="text" id="oauthDisplayName" class="form-control" placeholder="留空则用邮箱" />
+                </div>
+                <button type="button" class="btn btn-primary mb-3" id="btnStartOAuth" onclick="startOAuth()">开始登录</button>
+
+                <div id="oauthUrlBox" style="display:none;">
+                    <div class="alert alert-info">
+                        <div style="font-weight:600;">操作步骤：</div>
+                        <ol class="mb-0 mt-2" style="font-size:13px;">
+                            <li>点击下方链接，在<span style="font-weight:600;">新标签页</span>中登录 OpenAI 账号。</li>
+                            <li>登录后浏览器会跳转到 <code>http://localhost:1455/...</code>，页面会显示「无法访问」—— 这是<span style="font-weight:600;">正常现象</span>。</li>
+                            <li>复制浏览器地址栏的<span style="font-weight:600;">完整 URL</span>，粘贴到下方输入框。</li>
+                            <li>点击「完成登录」。</li>
+                        </ol>
+                    </div>
+                    <label class="form-label">授权链接</label>
+                    <div class="input-group mb-3">
+                        <input type="text" id="oauthUrl" class="form-control" readonly />
+                        <button type="button" class="btn btn-outline-secondary" onclick="copyOAuthUrl()">复制</button>
+                        <a id="oauthUrlLink" href="#" target="_blank" class="btn btn-outline-primary">打开</a>
+                    </div>
+                    <label class="form-label">粘贴登录后跳转的完整 URL</label>
+                    <textarea id="callbackUrlInput" class="form-control" rows="3" placeholder="http://localhost:1455/auth/callback?code=...&state=..."></textarea>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="btnCompleteOAuth" onclick="completeOAuth()">完成登录</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 上传凭证 Modal -->
+<div class="modal fade" id="importModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">上传 Codex 凭证</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-secondary" style="font-size:13px;">支持 CPA 格式 JSON（type=codex，含 access_token/refresh_token/id_token）。可上传多个文件，或直接粘贴 JSON 文本。</p>
+                <label class="form-label">选择文件（可多选）</label>
+                <input type="file" id="credentialFile" class="form-control mb-3" multiple accept=".json,application/json" />
+
+                <label class="form-label">或粘贴 JSON 文本</label>
+                <textarea id="credentialText" class="form-control" rows="6" placeholder='{"type":"codex","access_token":"...","refresh_token":"...","id_token":"..."}'></textarea>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="submitImport()">导入</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 编辑 Modal -->
+<div class="modal fade" id="editModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">编辑 Codex 账号</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editId" />
+                <div class="mb-3">
+                    <label class="form-label">显示名称</label>
+                    <input type="text" id="editDisplayName" class="form-control" />
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">自动禁用阈值（剩余额度低于此值自动禁用，留空不启用）</label>
+                    <input type="number" step="any" id="editThreshold" class="form-control" placeholder="例如 10" />
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" onclick="submitEdit()">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    let codexAccounts = [];
+    let oauthState = null;
+
+    document.addEventListener('DOMContentLoaded', loadAccounts);
+
+    async function loadAccounts() {
+        try {
+            const r = await fetch('/api/admin/codex/accounts');
+            if (!r.ok) { document.getElementById('accountsContainer').innerHTML = '<div class="table-empty">加载失败</div>'; return; }
+            codexAccounts = await r.json();
+            renderAccounts();
+        } catch (e) {
+            document.getElementById('accountsContainer').innerHTML = '<div class="table-empty">加载失败：' + escapeHtml(String(e)) + '</div>';
+        }
+    }
+
+    function renderAccounts() {
+        const container = document.getElementById('accountsContainer');
+        if (!codexAccounts.length) {
+            container.innerHTML = '<div class="table-empty">暂无 Codex 账号，点击右上角「新增 OAuth 登录」或「上传凭证」</div>';
+            return;
+        }
+        container.innerHTML = codexAccounts.map(renderCard).join('');
+    }
+
+    function renderCard(a) {
+        const planBadge = a.planType
+            ? `<span class="badge bg-info">${escapeHtml(a.planType)}</span>` : '';
+        const statusBadge = renderStatusBadge(a);
+        const quotaText = (a.remainingQuota !== null && a.remainingQuota !== undefined)
+            ? `${escapeHtml(String(a.remainingQuota))} ${escapeHtml(a.quotaUnit || '')}`
+            : '—';
+        const lastCheck = a.lastQuotaCheckedAt ? formatTime(a.lastQuotaCheckedAt) : '—';
+        return `
+        <div class="codex-account-card" data-id="${a.id}" style="border:1px solid var(--border-color,#dee2e6);border-radius:8px;padding:16px;margin-bottom:12px;">
+            <div class="d-flex justify-content-between align-items-start flex-wrap gap-2 mb-2">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
+                    <span style="font-weight:600;font-size:16px;">${escapeHtml(a.displayName)}</span>
+                    ${planBadge}
+                    ${statusBadge}
+                </div>
+                <div class="text-secondary" style="font-size:12px;">${escapeHtml(a.email || '')}</div>
+            </div>
+            <div class="d-flex flex-wrap gap-3 mb-2" style="font-size:13px;">
+                <span>剩余额度：<strong>${quotaText}</strong></span>
+                <span class="text-secondary">上次检查：${lastCheck}</span>
+                <span class="text-secondary">token 过期：${a.tokenExpiresAt ? formatTime(a.tokenExpiresAt) : '—'}</span>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+                <button class="btn btn-sm btn-outline-secondary" onclick="refreshQuota('${a.id}', this)">刷新额度</button>
+                <button class="btn btn-sm btn-outline-warning" onclick="resetQuota('${a.id}')">重置额度</button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="toggleAccount('${a.id}')">${a.isEnabled ? '禁用' : '启用'}</button>
+                <button class="btn btn-sm btn-outline-primary" onclick="openEditModal('${a.id}')">编辑</button>
+                <button class="btn btn-sm btn-outline-info" onclick="pullModels('${a.id}')">拉取模型</button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="refreshToken('${a.id}')">刷新 Token</button>
+                <button class="btn btn-sm btn-outline-danger" onclick="deleteAccount('${a.id}')">删除</button>
+            </div>
+        </div>`;
+    }
+
+    function renderStatusBadge(a) {
+        if (a.isQuotaCooling) {
+            return `<span class="badge bg-warning text-dark">冷却中${a.quotaCoolingUntil ? '·恢复 ' + formatTime(a.quotaCoolingUntil) : ''}</span>`;
+        }
+        if (!a.isEnabled) {
+            return `<span class="badge bg-secondary">已禁用</span>`;
+        }
+        return `<span class="badge bg-success">正常</span>`;
+    }
+
+    // —— OAuth ——
+    function openOAuthModal() {
+        document.getElementById('oauthDisplayName').value = '';
+        document.getElementById('oauthUrlBox').style.display = 'none';
+        document.getElementById('callbackUrlInput').value = '';
+        new bootstrap.Modal(document.getElementById('oauthModal')).show();
+    }
+
+    async function startOAuth() {
+        const btn = document.getElementById('btnStartOAuth');
+        btn.disabled = true;
+        try {
+            const r = await fetch('/api/admin/codex/start-oauth', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({})
+            });
+            const data = await r.json();
+            if (!r.ok) { alert(data.message || '启动失败'); return; }
+            oauthState = data.state;
+            document.getElementById('oauthUrl').value = data.url;
+            document.getElementById('oauthUrlLink').href = data.url;
+            document.getElementById('oauthUrlBox').style.display = 'block';
+        } catch (e) { alert('启动失败：' + e); }
+        finally { btn.disabled = false; }
+    }
+
+    function copyOAuthUrl() {
+        const input = document.getElementById('oauthUrl');
+        input.select();
+        navigator.clipboard.writeText(input.value).then(() => alert('已复制授权链接'));
+    }
+
+    async function completeOAuth() {
+        const callbackUrl = document.getElementById('callbackUrlInput').value.trim();
+        if (!callbackUrl) { alert('请粘贴登录后浏览器跳转到的完整 URL'); return; }
+        const displayName = document.getElementById('oauthDisplayName').value.trim();
+        const btn = document.getElementById('btnCompleteOAuth');
+        btn.disabled = true;
+        try {
+            const r = await fetch('/api/admin/codex/complete-oauth', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ callbackUrl, displayName: displayName || null })
+            });
+            const data = await r.json();
+            if (!r.ok) { alert(data.message || '登录失败'); return; }
+            bootstrap.Modal.getInstance(document.getElementById('oauthModal')).hide();
+            await loadAccounts();
+        } catch (e) { alert('登录失败：' + e); }
+        finally { btn.disabled = false; }
+    }
+
+    // —— 导入 ——
+    function openImportModal() {
+        document.getElementById('credentialFile').value = '';
+        document.getElementById('credentialText').value = '';
+        new bootstrap.Modal(document.getElementById('importModal')).show();
+    }
+
+    async function submitImport() {
+        const fileInput = document.getElementById('credentialFile');
+        const textInput = document.getElementById('credentialText').value.trim();
+        try {
+            if (fileInput.files.length > 0) {
+                const fd = new FormData();
+                for (const f of fileInput.files) fd.append('files', f);
+                return await handleImportResult(await fetch('/api/admin/codex/import-credential', { method: 'POST', body: fd }));
+            }
+            if (textInput) {
+                return await handleImportResult(await fetch('/api/admin/codex/import-credential?name=imported.json', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: textInput
+                }));
+            }
+            alert('请选择文件或粘贴 JSON');
+        } catch (e) { alert('导入失败：' + e); }
+    }
+
+    async function handleImportResult(r) {
+        const data = await r.json();
+        if (r.status === 207 && data.failures && data.failures.length) {
+            const failMsgs = data.failures.map(f => (f.fileName || '(文本)') + ': ' + (f.error || '未知')).join('\n');
+            alert('部分导入失败：\n' + failMsgs);
+        } else if (!r.ok) {
+            alert(data.message || '导入失败'); return;
+        }
+        bootstrap.Modal.getInstance(document.getElementById('importModal')).hide();
+        await loadAccounts();
+    }
+
+    // —— 操作 ——
+    async function refreshQuota(id, btn) {
+        const orig = btn.disabled; btn.disabled = true;
+        try {
+            const r = await fetch(`/api/admin/codex/accounts/${id}/refresh-quota`, { method: 'POST' });
+            if (!r.ok) { const e = await r.json(); alert(e.message || '额度查询失败'); return; }
+            await loadAccounts();
+        } catch (e) { alert('额度查询失败：' + e); }
+        finally { btn.disabled = orig; }
+    }
+
+    async function resetQuota(id) {
+        if (!confirm('确认重置该账号额度？\n\n这将清除冷却状态并刷新 token，使账号重新参与转发。\n注意：上游真实额度恢复时间由 OpenAI 决定，重置不会凭空增加额度；若上游额度仍未恢复，可能立即再次触发冷却。')) return;
+        const r = await fetch(`/api/admin/codex/accounts/${id}/reset-quota`, { method: 'POST' });
+        if (!r.ok) { const e = await r.json(); alert(e.message || '重置失败'); return; }
+        await loadAccounts();
+    }
+
+    async function toggleAccount(id) {
+        const r = await fetch(`/api/admin/codex/accounts/${id}/toggle`, { method: 'POST' });
+        if (!r.ok) { const e = await r.json(); alert(e.message || '操作失败'); return; }
+        await loadAccounts();
+    }
+
+    async function deleteAccount(id) {
+        if (!confirm('确认删除该 Codex 账号？\n\n将同时删除关联的隐藏站点、模型映射和路由规则，不可恢复。')) return;
+        const r = await fetch(`/api/admin/codex/accounts/${id}`, { method: 'DELETE' });
+        if (!r.ok) { const e = await r.json(); alert(e.message || '删除失败'); return; }
+        await loadAccounts();
+    }
+
+    async function refreshToken(id) {
+        if (!confirm('确认手动刷新该账号的 token？')) return;
+        const r = await fetch(`/api/admin/codex/accounts/${id}/refresh-token`, { method: 'POST' });
+        if (!r.ok) { const e = await r.json(); alert(e.message || '刷新失败'); return; }
+        await loadAccounts();
+    }
+
+    async function pullModels(id) {
+        if (!confirm('从上游拉取该账号的模型目录并追加映射？')) return;
+        const r = await fetch(`/api/admin/codex/accounts/${id}/pull-models`, { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok) { alert(data.message || '拉取失败'); return; }
+        alert('已拉取 ' + (data.count || 0) + ' 个模型');
+    }
+
+    // —— 编辑 ——
+    function openEditModal(id) {
+        const a = codexAccounts.find(x => x.id === id);
+        if (!a) return;
+        document.getElementById('editId').value = id;
+        document.getElementById('editDisplayName').value = a.displayName || '';
+        document.getElementById('editThreshold').value = (a.autoDisableThreshold !== null && a.autoDisableThreshold !== undefined) ? a.autoDisableThreshold : '';
+        new bootstrap.Modal(document.getElementById('editModal')).show();
+    }
+
+    async function submitEdit() {
+        const id = document.getElementById('editId').value;
+        const displayName = document.getElementById('editDisplayName').value.trim();
+        const thresholdStr = document.getElementById('editThreshold').value.trim();
+        const threshold = thresholdStr === '' ? null : parseFloat(thresholdStr);
+        const r = await fetch(`/api/admin/codex/accounts/${id}`, {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ displayName: displayName || null, autoDisableThreshold: threshold })
+        });
+        if (!r.ok) { const e = await r.json(); alert(e.message || '保存失败'); return; }
+        bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
+        await loadAccounts();
+    }
+
+    // —— 工具 ——
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+    function formatTime(s) {
+        if (!s) return '—';
+        try { return new Date(s).toLocaleString(); } catch { return s; }
+    }
+</script>
+}

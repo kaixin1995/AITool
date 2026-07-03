@@ -1054,6 +1054,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteModelName = route.SiteModelName,
                                 BaseUrl = site.BaseUrl,
                                 ApiKey = site.ApiKey,
+                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
                                 ModelPriority = route.ModelPriority,
                                 InstancePriority = route.InstancePriority,
                                 Priority = route.Priority,
@@ -1207,6 +1208,30 @@ public sealed class ProxyRequestMetadataCache
         }
 
         return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
+    }
+
+    /// <summary>
+    /// 反序列化 Site.ExtraHeadersJson 为大小写不敏感的请求头字典。
+    /// 空或非法 JSON 返回空字典（容错：坏数据不阻断转发，仅该 Site 不带额外头）。
+    /// 仅在缓存构建期调用（5s 一次），不在每请求路径。
+    /// </summary>
+    private static Dictionary<string, string> TryParseExtraHeaders(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+        try
+        {
+            var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonSerializerPresets.CaseInsensitive);
+            return dict != null
+                ? new Dictionary<string, string>(dict, StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     /// <summary>
@@ -1464,6 +1489,11 @@ public sealed class CachedProxyRouteTarget
     /// 接口密钥。
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;
+    /// <summary>
+    /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头（大小写不敏感）。
+    /// 空字典表示无额外头。Codex 隐藏 Site 用它携带 Originator / Chatgpt-Account-Id / User-Agent。
+    /// </summary>
+    public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>
     /// 模型优先级。
     /// </summary>

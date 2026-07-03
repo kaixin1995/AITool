@@ -1,5 +1,6 @@
 using System.Data;
 using System.Linq.Expressions;
+using AITool.Domain.Codex;
 using AITool.Domain.Detection;
 using AITool.Domain.Models;
 using AITool.Domain.Operations;
@@ -38,6 +39,7 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
 
     // —— 与原 DbSet 同名的便捷查询访问器 ——
     public ISugarQueryable<Site> Sites => _client.Queryable<Site>();
+    public ISugarQueryable<CodexAccount> CodexAccounts => _client.Queryable<CodexAccount>();
     public ISugarQueryable<ModelLibraryItem> ModelLibraryItems => _client.Queryable<ModelLibraryItem>();
     public ISugarQueryable<SiteModelMapping> SiteModelMappings => _client.Queryable<SiteModelMapping>();
     public ISugarQueryable<DetectionTask> DetectionTasks => _client.Queryable<DetectionTask>();
@@ -168,6 +170,7 @@ public static class SqlSugarSetup
         // CodeFirst 建表（表已存在时只增不删，自动补齐缺失列）。
         db.CodeFirst.InitTables(
             typeof(Site),
+            typeof(CodexAccount),
             typeof(ModelLibraryItem),
             typeof(SiteModelMapping),
             typeof(DetectionTask),

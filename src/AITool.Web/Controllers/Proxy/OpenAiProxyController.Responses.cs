@@ -199,6 +199,7 @@ public sealed partial class OpenAiProxyController
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
+                ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
                 TargetPath = isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
             };
 
@@ -496,6 +497,7 @@ public sealed partial class OpenAiProxyController
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
+                ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
                 TargetPath = isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
             };
 

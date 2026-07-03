@@ -1,10 +1,12 @@
 using System.Data.Common;
 using System.Net.Http;
+using AITool.Application.Codex;
 using AITool.Application.Common;
 using AITool.Application.Operations;
 using AITool.Application.Proxy;
 using AITool.Application.SiteCatalog;
 using AITool.Application.UsageLogs;
+using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.OpenAI;
@@ -105,6 +107,27 @@ builder.Services.Configure<ProxyForwardingOptions>(
 // 注册站点目录客户端，用于拉取远程站点模型列表。
 builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 
+// 注册 Codex OAuth 客户端，用于 PKCE 授权、token 交换与刷新（复用连接池）。
+builder.Services.AddHttpClient<ICodexOAuthClient, CodexOAuthClient>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+});
+
+// 注册 Codex 静态模型目录（进程内只读）。
+builder.Services.AddSingleton<ICodexModelCatalog, CodexModelCatalog>();
+
+// 注册 Codex 动态模型拉取客户端（chatgpt.com/backend-api/codex/models）。
+builder.Services.AddHttpClient<ICodexModelFetcher, CodexModelFetcher>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// 注册 Codex 额度主动查询服务（30s 结果缓存防抖 + single-flight）。
+builder.Services.AddHttpClient<ICodexQuotaService, CodexQuotaService>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+});
+
 // 注册代理主入口实体配置，配置 SocketsHttpHandler 连接池提高并发能力。
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>()
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
@@ -130,6 +153,10 @@ builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationLo
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>());
 // 定期压缩 LOH，回收大对象碎片，避免代理转发产生的大字符串碎片导致工作集居高不下。
 builder.Services.AddHostedService<MemoryMaintenanceService>();
+// 周期刷新 Codex 账号 OAuth token，写回隐藏 Site.ApiKey 并失效路由缓存。
+builder.Services.AddHostedService<CodexTokenRefreshService>();
+// 周期恢复冷却到期的 Codex 账号（清除冷却，恢复 Site，若未被手动禁用）。
+builder.Services.AddHostedService<CodexCooldownRecoveryService>();
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
 builder.Services.AddSingleton<ModelConcurrencyLimiter>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
@@ -140,6 +167,12 @@ builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationEx
 builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<ProxyRequestMetadataCache>();
 builder.Services.AddSingleton<ModelVendorCatalogService>();
+
+// 注册 Codex 账号供给相关服务（站点级联删除工具 + 账号工厂）。
+builder.Services.AddScoped<SiteCascadeDeleter>();
+builder.Services.AddScoped<CodexAccountProvisioner>();
+// Codex 额度被动冷却与重置服务。
+builder.Services.AddScoped<ICodexQuotaCooldownService, CodexQuotaCooldownService>();
 
 // 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
