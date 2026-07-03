@@ -130,6 +130,33 @@
                 <input asp-for="Input.ConversationLogEnabled" class="form-check-input" type="checkbox" />
                 <label asp-for="Input.ConversationLogEnabled" class="form-check-label form-label-tip">启用对话记录功能<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="开启后才会显示对话记录界面，并允许代理请求和对话测试继续写入结构化对话记录。关闭后不会再展示对话记录页签，也不会继续落库新的对话记录。">?</span></label>
             </div>
+            <div class="form-check form-switch mt-3">
+                <input asp-for="Input.CodexFeaturesEnabled" class="form-check-input" type="checkbox" />
+                <label asp-for="Input.CodexFeaturesEnabled" class="form-check-label form-label-tip">启用 Codex 功能<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="总开关，控制 Codex OAuth 账号、凭证导入、额度与巡检功能。关闭后会隐藏 Codex 页面入口，并把所有 Codex 托管站点置为禁用（路由/模型/对话测试不再命中 Codex）。重新开启时仅恢复因总开关被禁用的账号，不影响被额度耗尽或手动禁用的账号。">?</span></label>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="card-body">
+            <h5 class="card-title">Codex 巡检</h5>
+            <p class="text-secondary" style="font-size:13px;">仅在 Codex 功能总开关开启时生效。巡检会周期性检查各 Codex 账号额度：被使用过的账号才真实刷新，未使用的用缓存；但超过最大缓存小时数会强制真实刷新一次。</p>
+            <div class="row g-3 mt-1 align-items-end">
+                <div class="col-md-4">
+                    <div class="form-check form-switch mt-1">
+                        <input asp-for="Input.CodexInspectionEnabled" class="form-check-input" type="checkbox" />
+                        <label asp-for="Input.CodexInspectionEnabled" class="form-check-label">启用自动巡检</label>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="Input.CodexInspectionIntervalMinutes" class="form-label">巡检周期（分钟，下限 5）</label>
+                    <input asp-for="Input.CodexInspectionIntervalMinutes" class="form-control" type="number" min="5" />
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="Input.CodexQuotaMaxCacheHours" class="form-label">额度缓存最大小时数</label>
+                    <input asp-for="Input.CodexQuotaMaxCacheHours" class="form-control" type="number" min="1" />
+                </div>
+            </div>
         </div>
     </div>
 

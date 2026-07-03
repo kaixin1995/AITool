@@ -12,9 +12,9 @@ public static class CodexUsageParser
     private const int WeekSeconds = 604_800;
 
     /// <summary>
-    /// 解析后的额度窗口（供前端画进度条）。
+    /// 解析后的额度窗口（供前端画进度条 + 巡检缓存策略判断）。
     /// </summary>
-    public sealed record Window(string Id, string Label, double? UsedPercent, string ResetLabel);
+    public sealed record Window(string Id, string Label, double? UsedPercent, string ResetLabel, DateTimeOffset? ResetAtUtc, double? LimitWindowSeconds);
 
     /// <summary>
     /// 解析 wham/usage 响应体，返回所有额度窗口（5 小时 / 周 / 代码审查 / 额外）。
@@ -105,7 +105,25 @@ public static class CodexUsageParser
     {
         var isLimitReached = limitReached == true || allowed == false;
         var usedPercent = GetUsedPercent(window) ?? (isLimitReached ? 100 : (double?)null);
-        return new Window(id, label, usedPercent, BuildResetLabel(window));
+        return new Window(id, label, usedPercent, BuildResetLabel(window), ResolveResetAtUtc(window), GetSeconds(window));
+    }
+
+    /// <summary>
+    /// 解析窗口的 UTC 重置时间（优先 reset_at 绝对时间戳，其次 now+reset_after_seconds）；无则为 null。
+    /// </summary>
+    private static DateTimeOffset? ResolveResetAtUtc(CodexUsageWindow window)
+    {
+        var resetAt = window.Reset_At ?? window.ResetAt;
+        if (resetAt.HasValue && resetAt.Value > 0 && double.IsFinite(resetAt.Value))
+        {
+            return DateTimeOffset.FromUnixTimeSeconds((long)resetAt.Value);
+        }
+        var resetAfter = window.Reset_After_Seconds ?? window.ResetAfterSeconds;
+        if (resetAfter.HasValue && resetAfter.Value > 0 && double.IsFinite(resetAfter.Value))
+        {
+            return DateTimeOffset.UtcNow.AddSeconds(resetAfter.Value);
+        }
+        return null;
     }
 
     private static double? GetSeconds(CodexUsageWindow window)

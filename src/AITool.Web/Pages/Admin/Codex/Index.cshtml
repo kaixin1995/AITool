@@ -155,21 +155,110 @@
     body.theme-dark .codex-window { border-bottom-color: rgba(255, 255, 255, 0.06); }
     [data-theme="dark"] .codex-window-bar,
     body.theme-dark .codex-window-bar { background: rgba(255, 255, 255, 0.12); }
+
+    /* 巡检运行输出 */
+    .codex-inspection-logs {
+        max-height: 320px;
+        overflow-y: auto;
+        font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.7;
+        color: var(--text-secondary, #7a8599);
+        background: var(--card-bg, rgba(245, 247, 251, 0.6));
+        border-radius: 8px;
+        padding: 10px 12px;
+    }
+    .codex-inspection-logs .log-line { white-space: pre-wrap; word-break: break-word; }
+    .codex-inspection-logs .log-time { color: #9ca3af; margin-right: 8px; }
+    .codex-inspection-toolbar .btn { min-height: 34px; }
 </style>
 
 <div class="page-header">
     <div>
         <h2 class="page-title">Codex 账号</h2>
-        <p class="page-subtitle">管理 Codex OAuth 登录账号、凭证导入、额度与自动禁用</p>
-    </div>
-    <div class="d-flex gap-2">
-        <button type="button" class="btn btn-primary" onclick="openOAuthModal()">＋ 新增 Codex OAuth 登录</button>
-        <button type="button" class="btn btn-outline-primary" onclick="openImportModal()">上传凭证</button>
+        <p class="page-subtitle">管理 Codex OAuth 登录账号、凭证导入、额度、巡检与自动禁用</p>
     </div>
 </div>
 
-<div id="accountsContainer" class="codex-grid">
-    <div class="codex-empty">加载中...</div>
+<!-- Tab 导航 -->
+<ul class="nav nav-tabs mb-3" id="codexTab" role="tablist">
+    <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="quota-tab" data-bs-toggle="tab" data-bs-target="#quota-pane" type="button" role="tab">账号额度</button>
+    </li>
+    <li class="nav-item" role="presentation">
+        <button class="nav-link" id="inspection-tab" data-bs-toggle="tab" data-bs-target="#inspection-pane" type="button" role="tab">巡检</button>
+    </li>
+</ul>
+
+<div class="tab-content">
+    <!-- Tab 1：账号额度 -->
+    <div class="tab-pane fade show active" id="quota-pane" role="tabpanel">
+        <div class="d-flex justify-content-end gap-2 mb-3">
+            <button type="button" class="btn btn-primary" onclick="openOAuthModal()">＋ 新增 Codex OAuth 登录</button>
+            <button type="button" class="btn btn-outline-primary" onclick="openImportModal()">上传凭证</button>
+        </div>
+        <div id="accountsContainer" class="codex-grid">
+            <div class="codex-empty">加载中...</div>
+        </div>
+    </div>
+
+    <!-- Tab 2：巡检 -->
+    <div class="tab-pane fade" id="inspection-pane" role="tabpanel">
+        <div class="codex-inspection-toolbar d-flex flex-wrap gap-2 mb-3">
+            <button type="button" class="btn btn-outline-primary btn-sm" id="btnInspectionRun" onclick="runInspection(false)">手动巡检</button>
+            <button type="button" class="btn btn-outline-warning btn-sm" id="btnInspectionForce" onclick="runInspection(true)">真实巡检</button>
+            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="loadInspectionData()">刷新状态</button>
+        </div>
+
+        <div class="row g-3 mb-3">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-body">
+                        <h6 class="card-title">巡检状态</h6>
+                        <div id="inspectionStatus" class="text-secondary" style="font-size:13px;">加载中...</div>
+                    </div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-body">
+                        <h6 class="card-title">上次巡检结果</h6>
+                        <div id="inspectionSummary" class="text-secondary" style="font-size:13px;">暂无</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-3">
+            <div class="card-body">
+                <h6 class="card-title">账号明细</h6>
+                <div class="table-wrapper">
+                    <table class="table table-sm mb-0">
+                        <thead>
+                            <tr>
+                                <th>账号</th>
+                                <th>动作</th>
+                                <th>5小时</th>
+                                <th>周</th>
+                                <th>缓存</th>
+                                <th>原因</th>
+                            </tr>
+                        </thead>
+                        <tbody id="inspectionAccountsBody">
+                            <tr><td colspan="6" class="text-center text-secondary">暂无数据</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="card">
+            <div class="card-body">
+                <h6 class="card-title">运行输出</h6>
+                <div id="inspectionLogs" class="codex-inspection-logs"></div>
+            </div>
+        </div>
+    </div>
 </div>
 
 <!-- OAuth 登录 Modal -->
@@ -516,6 +605,112 @@
         if (!r.ok) { const e = await r.json(); alert(e.message || '保存失败'); return; }
         bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();
         await loadAccounts();
+    }
+
+    // —— 巡检 ——
+    let inspectionTimer = null;
+
+    // 切到巡检 Tab 时加载；离开时停轮询
+    document.addEventListener('DOMContentLoaded', () => {
+        const inspectionTab = document.getElementById('inspection-tab');
+        if (inspectionTab) {
+            inspectionTab.addEventListener('shown.bs.tab', () => {
+                loadInspectionData();
+                startInspectionPolling();
+            });
+        }
+        const quotaTab = document.getElementById('quota-tab');
+        if (quotaTab) {
+            quotaTab.addEventListener('shown.bs.tab', stopInspectionPolling);
+        }
+    });
+
+    function startInspectionPolling() {
+        stopInspectionPolling();
+        inspectionTimer = setInterval(loadInspectionData, 5000);
+    }
+    function stopInspectionPolling() {
+        if (inspectionTimer) { clearInterval(inspectionTimer); inspectionTimer = null; }
+    }
+
+    async function loadInspectionData() {
+        try {
+            const [status, lastRun, logs] = await Promise.all([
+                fetch('/api/admin/codex/inspection/status').then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch('/api/admin/codex/inspection/last-run').then(r => r.ok ? r.json() : null).catch(() => null),
+                fetch('/api/admin/codex/inspection/logs').then(r => r.ok ? r.json() : null).catch(() => null),
+            ]);
+            renderInspectionStatus(status);
+            renderInspectionSummary(lastRun);
+            renderInspectionAccounts(lastRun);
+            renderInspectionLogs(logs);
+        } catch (e) { /* 静默 */ }
+    }
+
+    function renderInspectionStatus(status) {
+        const el = document.getElementById('inspectionStatus');
+        if (!status) { el.textContent = '加载失败'; return; }
+        const running = status.isRunning ? '<span class="badge bg-primary">运行中</span>' : '<span class="badge bg-secondary">空闲</span>';
+        const next = status.nextScheduledAt ? formatTime(status.nextScheduledAt) : '—';
+        const last = status.lastFinishedAt ? formatTime(status.lastFinishedAt) : '—';
+        el.innerHTML = `${running}<br>下次调度：${next}<br>上次完成：${last}<br><span class="text-secondary" style="font-size:12px;">自动巡检周期/开关在 系统设置 → Codex 巡检 配置</span>`;
+    }
+
+    function renderInspectionSummary(lastRun) {
+        const el = document.getElementById('inspectionSummary');
+        if (!lastRun || !lastRun.startedAt) { el.textContent = '暂无'; return; }
+        const tone = lastRun.autoTriggered ? '自动' : '手动';
+        const force = lastRun.forcedRefresh ? '（强制真实刷新）' : '';
+        el.innerHTML = `${tone}巡检${force}<br>` +
+            `保留 ${lastRun.keepCount ?? 0} · 禁用 ${lastRun.disableCount ?? 0} · 启用 ${lastRun.enableCount ?? 0}<br>` +
+            `缓存命中 ${lastRun.cacheCount ?? 0} · 真实刷新 ${lastRun.realRefreshCount ?? 0}<br>` +
+            `<span class="text-secondary" style="font-size:12px;">开始：${formatTime(lastRun.startedAt)} · 完成：${lastRun.finishedAt ? formatTime(lastRun.finishedAt) : '进行中'}</span>`;
+    }
+
+    function renderInspectionAccounts(lastRun) {
+        const body = document.getElementById('inspectionAccountsBody');
+        if (!lastRun || !lastRun.accounts || !lastRun.accounts.length) {
+            body.innerHTML = '<tr><td colspan="6" class="text-center text-secondary">暂无数据</td></tr>';
+            return;
+        }
+        body.innerHTML = lastRun.accounts.map(a => {
+            const actionBadge = {
+                disable: '<span class="badge bg-danger">禁用</span>',
+                enable: '<span class="badge bg-success">启用</span>',
+                keep: '<span class="badge bg-secondary">保留</span>'
+            }[a.action] || a.action;
+            const fiveHour = (a.fiveHourUsedPercent !== null && a.fiveHourUsedPercent !== undefined) ? a.fiveHourUsedPercent.toFixed(1) + '%' : '—';
+            const weekly = (a.weeklyUsedPercent !== null && a.weeklyUsedPercent !== undefined) ? a.weeklyUsedPercent.toFixed(1) + '%' : '—';
+            const cache = a.fromCache ? '<span class="badge bg-info text-dark">缓存</span>' : '<span class="badge bg-light text-dark border">实时</span>';
+            return `<tr>
+                <td>${escapeHtml(a.displayName)}</td>
+                <td>${actionBadge}</td>
+                <td>${fiveHour}</td>
+                <td>${weekly}</td>
+                <td>${cache}</td>
+                <td style="font-size:12px;max-width:320px;">${escapeHtml(a.reason || '')}</td>
+            </tr>`;
+        }).join('');
+    }
+
+    function renderInspectionLogs(logs) {
+        const el = document.getElementById('inspectionLogs');
+        if (!logs || !logs.length) { el.innerHTML = '<div class="text-secondary">暂无日志</div>'; return; }
+        el.innerHTML = logs.map(l => {
+            return `<div class="log-line"><span class="log-time">[${formatTime(l.at)}]</span>${escapeHtml(l.message)}</div>`;
+        }).join('');
+    }
+
+    async function runInspection(force) {
+        const btnId = force ? 'btnInspectionForce' : 'btnInspectionRun';
+        const btn = document.getElementById(btnId);
+        if (btn) btn.disabled = true;
+        try {
+            const r = await fetch(`/api/admin/codex/inspection/run?force=${force}`, { method: 'POST' });
+            if (!r.ok) { const e = await r.json(); alert(e.message || '巡检失败'); return; }
+            await loadInspectionData();
+        } catch (e) { alert('巡检失败：' + e); }
+        finally { if (btn) btn.disabled = false; }
     }
 
     // —— 工具 ——

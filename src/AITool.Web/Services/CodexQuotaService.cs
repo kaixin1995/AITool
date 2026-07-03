@@ -146,6 +146,8 @@ public sealed class CodexQuotaService : ICodexQuotaService
                 Label = w.Label,
                 UsedPercent = w.UsedPercent,
                 ResetLabel = w.ResetLabel,
+                ResetAtUtc = w.ResetAtUtc,
+                LimitWindowSeconds = w.LimitWindowSeconds,
             }).ToList();
             info.FiveHourUsedPercent = info.Windows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
             info.WeeklyUsedPercent = info.Windows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;

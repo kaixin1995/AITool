@@ -1,5 +1,6 @@
 using System.Linq.Expressions;
 using AITool.Application.Operations;
+using AITool.Domain.Codex;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
@@ -63,7 +64,26 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.ConcurrencyMode = Math.Max(0, Math.Min(1, request.ConcurrencyMode));
         settings.ConcurrencyQueueTimeoutSeconds = Math.Max(1, request.ConcurrencyQueueTimeoutSeconds);
 
+        // Codex 设置：边界保护 + 总开关联动禁用
+        var wasCodexEnabled = settings.CodexFeaturesEnabled;
+        settings.CodexFeaturesEnabled = request.CodexFeaturesEnabled;
+        settings.CodexInspectionEnabled = request.CodexInspectionEnabled;
+        settings.CodexInspectionIntervalMinutes = Math.Max(5, request.CodexInspectionIntervalMinutes);
+        settings.CodexQuotaMaxCacheHours = Math.Max(1, request.CodexQuotaMaxCacheHours);
+
         await _dbContext.UpdateAsync(settings, cancellationToken);
+
+        // 总开关 true→false：禁用所有 Codex 托管 Site + 标记账号为「被总开关禁用」
+        // 总开关 false→true：仅恢复「被总开关禁用」的账号（避免误启用冷却中/手动禁用的账号）
+        if (wasCodexEnabled && !settings.CodexFeaturesEnabled)
+        {
+            await ApplyCodexFeatureToggleOffAsync(cancellationToken);
+        }
+        else if (!wasCodexEnabled && settings.CodexFeaturesEnabled)
+        {
+            await ApplyCodexFeatureToggleOnAsync(cancellationToken);
+        }
+
         return settings;
     }
 
@@ -103,5 +123,79 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.LastUsageLogPrunedCount = deletedCount;
         await _dbContext.UpdateAsync(settings, cancellationToken);
         return deletedCount;
+    }
+
+    /// <summary>
+    /// 总开关关闭：把所有 Codex 托管 Site 置为禁用，并把对应 CodexAccount 标记为「被总开关禁用」
+    /// （记录原启用状态，便于重新开启时仅恢复这些账号）。
+    /// </summary>
+    private async Task ApplyCodexFeatureToggleOffAsync(CancellationToken cancellationToken)
+    {
+        var codexSites = await _dbContext.Sites
+            .Where(s => s.ManagedSource == "Codex")
+            .ToListAsync(cancellationToken);
+        if (codexSites.Count == 0) return;
+
+        var siteIds = codexSites.Select(s => s.Id).ToList();
+        var accounts = await _dbContext.CodexAccounts
+            .Where(a => siteIds.Contains(a.LinkedSiteId))
+            .ToListAsync(cancellationToken);
+
+        foreach (var site in codexSites)
+        {
+            if (site.IsEnabled)
+            {
+                site.IsEnabled = false;
+                await _dbContext.UpdateAsync(site, cancellationToken);
+            }
+        }
+
+        foreach (var account in accounts)
+        {
+            // 记录原启用状态后禁用，便于重新开启时精准恢复
+            account.DisabledByFeatureToggle = account.IsEnabled;
+            if (account.IsEnabled)
+            {
+                account.IsEnabled = false;
+                await _dbContext.UpdateAsync(account, cancellationToken);
+            }
+            else
+            {
+                // 原本就禁用的账号，DisabledByFeatureToggle 仍记录为 false，重开时不恢复
+                await _dbContext.UpdateAsync(account, cancellationToken);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 总开关重新开启：仅恢复因总开关被禁用的账号（DisabledByFeatureToggle==true），避免误启用冷却中/手动禁用的账号。
+    /// </summary>
+    private async Task ApplyCodexFeatureToggleOnAsync(CancellationToken cancellationToken)
+    {
+        var accounts = await _dbContext.CodexAccounts
+            .Where(a => a.DisabledByFeatureToggle)
+            .ToListAsync(cancellationToken);
+        if (accounts.Count == 0) return;
+
+        var siteIds = accounts.Select(a => a.LinkedSiteId).ToList();
+        var sites = await _dbContext.Sites
+            .Where(s => siteIds.Contains(s.Id))
+            .ToListAsync(cancellationToken);
+
+        foreach (var account in accounts)
+        {
+            account.IsEnabled = true;
+            account.DisabledByFeatureToggle = false;
+            await _dbContext.UpdateAsync(account, cancellationToken);
+        }
+
+        foreach (var site in sites)
+        {
+            if (!site.IsEnabled)
+            {
+                site.IsEnabled = true;
+                await _dbContext.UpdateAsync(site, cancellationToken);
+            }
+        }
     }
 }

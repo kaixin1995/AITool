@@ -13,9 +13,11 @@ namespace AITool.Web.Controllers.Admin;
 /// <summary>
 /// Codex 账号管理 API。集中暴露 OAuth 登录、凭证导入、账号列表、额度查询/重置、启用禁用、删除、编辑等。
 /// 路由前缀 /api/admin/codex，自动受 /api/admin/* 鉴权保护。
+/// 受 Codex 功能总开关保护：关闭时全部返回 404。
 /// </summary>
 [ApiController]
 [Route("api/admin/codex")]
+[ServiceFilter(typeof(CodexFeatureToggleAttribute))]
 public sealed class CodexApiController : ControllerBase
 {
     // —— OAuth 会话暂存（state → verifier，TTL 10min）——
@@ -28,6 +30,7 @@ public sealed class CodexApiController : ControllerBase
     private readonly ICodexModelFetcher _modelFetcher;
     private readonly ICodexQuotaService _quotaService;
     private readonly ICodexQuotaCooldownService _cooldownService;
+    private readonly CodexInspectionService _inspectionService;
     private readonly ILogger<CodexApiController> _logger;
 
     public CodexApiController(
@@ -37,6 +40,7 @@ public sealed class CodexApiController : ControllerBase
         ICodexModelFetcher modelFetcher,
         ICodexQuotaService quotaService,
         ICodexQuotaCooldownService cooldownService,
+        CodexInspectionService inspectionService,
         ILogger<CodexApiController> logger)
     {
         _dbContext = dbContext;
@@ -45,6 +49,7 @@ public sealed class CodexApiController : ControllerBase
         _modelFetcher = modelFetcher;
         _quotaService = quotaService;
         _cooldownService = cooldownService;
+        _inspectionService = inspectionService;
         _logger = logger;
     }
 
@@ -317,6 +322,37 @@ public sealed class CodexApiController : ControllerBase
         await _provisioner.UpsertRemoteModelsAsync(account.LinkedSiteId,
             models.Select(m => (m.Slug, m.DisplayName)), ct);
         return Ok(new { count = models.Count });
+    }
+
+    // —— 巡检 ——
+
+    /// <summary>触发一轮巡检。force=true 强制真实刷新全部账号；false 允许命中缓存。</summary>
+    [HttpPost("inspection/run")]
+    public async Task<IActionResult> RunInspection([FromQuery] bool force, CancellationToken ct)
+    {
+        var result = await _inspectionService.RunManualAsync(force, ct);
+        return Ok(result);
+    }
+
+    /// <summary>巡检状态（是否运行中、下次调度时间、上次完成时间）。</summary>
+    [HttpGet("inspection/status")]
+    public IActionResult InspectionStatus()
+    {
+        return Ok(_inspectionService.GetStatus());
+    }
+
+    /// <summary>上次巡检结果（每账号动作/原因/百分比）。</summary>
+    [HttpGet("inspection/last-run")]
+    public IActionResult InspectionLastRun()
+    {
+        return Ok(_inspectionService.GetLastRun());
+    }
+
+    /// <summary>巡检操作日志（最新在前）。</summary>
+    [HttpGet("inspection/logs")]
+    public IActionResult InspectionLogs()
+    {
+        return Ok(_inspectionService.GetLogs());
     }
 
     // —— 私有 ——

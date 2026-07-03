@@ -190,7 +190,11 @@ public sealed class ProxyRequestMetadataCache
                             DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled,
                             ConversationLogEnabled = settings.ConversationLogEnabled,
                             ConcurrencyMode = settings.ConcurrencyMode,
-                            ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds
+                            ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
+                            CodexFeaturesEnabled = settings.CodexFeaturesEnabled,
+                            CodexInspectionEnabled = settings.CodexInspectionEnabled,
+                            CodexInspectionIntervalMinutes = settings.CodexInspectionIntervalMinutes,
+                            CodexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours
                         };
                 })
             ?? new CachedProxyRuntimeSettings();
@@ -1419,6 +1423,22 @@ public sealed class CachedProxyRuntimeSettings
     /// 并发排队等待的最大时间（秒）。
     /// </summary>
     public int ConcurrencyQueueTimeoutSeconds { get; set; } = 120;
+    /// <summary>
+    /// Codex 功能总开关。
+    /// </summary>
+    public bool CodexFeaturesEnabled { get; set; }
+    /// <summary>
+    /// Codex 巡检自动执行开关。
+    /// </summary>
+    public bool CodexInspectionEnabled { get; set; }
+    /// <summary>
+    /// Codex 巡检周期（分钟）。
+    /// </summary>
+    public int CodexInspectionIntervalMinutes { get; set; } = 30;
+    /// <summary>
+    /// Codex 额度缓存最大小时数。
+    /// </summary>
+    public int CodexQuotaMaxCacheHours { get; set; } = 6;
 }
 
 /// <summary>

@@ -71,6 +71,13 @@ public sealed class CodexTokenRefreshService : BackgroundService
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
+        // 尊重 Codex 功能总开关：关闭时跳过本轮
+        var runtime = await cache.GetRuntimeSettingsAsync(ct);
+        if (!runtime.CodexFeaturesEnabled)
+        {
+            return;
+        }
+
         var now = DateTimeOffset.UtcNow;
         var due = await dbContext.CodexAccounts
             .Where(a => a.IsEnabled

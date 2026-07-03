@@ -48,4 +48,10 @@ public sealed class CodexQuotaWindow
 
     /// <summary>重置时间显示文本，如「2天3小时后重置」。</summary>
     public string ResetLabel { get; set; } = "";
+
+    /// <summary>重置时间（UTC），无数据为 null。供巡检缓存策略判断窗口是否过期。</summary>
+    public DateTimeOffset? ResetAtUtc { get; set; }
+
+    /// <summary>窗口时长（秒）。18000=5小时，604800=周。</summary>
+    public double? LimitWindowSeconds { get; set; }
 }

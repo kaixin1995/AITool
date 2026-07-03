@@ -89,6 +89,9 @@ public class SettingsModel : PageModel
         _circuitStore.UpdateOptions(
             TimeSpan.FromMinutes(settings.CircuitBreakerRecoveryMinutes),
             settings.CircuitBreakerFailureThreshold);
+        // Codex 功能总开关联动了托管站点的启用状态，需同步失效路由/模型缓存，使转发链路立即感知
+        _metadataCache.InvalidateRuntimeRouteTargets();
+        _metadataCache.InvalidateModelMetadata();
         return RedirectToPage(new { statusMessage = "设置已保存" });
     }
 
@@ -129,7 +132,11 @@ public class SettingsModel : PageModel
             DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled,
             ConversationLogEnabled = settings.ConversationLogEnabled,
             ConcurrencyMode = settings.ConcurrencyMode,
-            ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds
+            ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
+            CodexFeaturesEnabled = settings.CodexFeaturesEnabled,
+            CodexInspectionEnabled = settings.CodexInspectionEnabled,
+            CodexInspectionIntervalMinutes = settings.CodexInspectionIntervalMinutes,
+            CodexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours
         };
         LastUsageLogPrunedCount = settings.LastUsageLogPrunedCount;
         StatusMessage = Request.Query["statusMessage"];

@@ -92,6 +92,26 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     /// 并发排队等待的最大时间（秒），仅在 WaitForSlot 模式下生效。
     /// </summary>
     public int ConcurrencyQueueTimeoutSeconds { get; set; }
+
+    /// <summary>
+    /// Codex 功能总开关（含 OAuth 账号、凭证导入、巡检）。关闭后隐藏 Codex 页面并禁用所有 Codex 托管站点。
+    /// </summary>
+    public bool CodexFeaturesEnabled { get; set; }
+
+    /// <summary>
+    /// Codex 巡检自动执行开关。
+    /// </summary>
+    public bool CodexInspectionEnabled { get; set; }
+
+    /// <summary>
+    /// Codex 巡检周期（分钟），下限 5。
+    /// </summary>
+    public int CodexInspectionIntervalMinutes { get; set; }
+
+    /// <summary>
+    /// Codex 额度缓存最大小时数，超过则强制真实刷新。
+    /// </summary>
+    public int CodexQuotaMaxCacheHours { get; set; }
 }
 
 /// <summary>
