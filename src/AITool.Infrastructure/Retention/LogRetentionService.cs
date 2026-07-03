@@ -3,7 +3,6 @@ using AITool.Application.Conversations;
 using AITool.Domain.Operations;
 using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Retention;
 
@@ -46,25 +45,21 @@ public sealed class LogRetentionService : ILogRetentionService
     /// <summary>
     /// 删除超过保留天数的使用日志和对话记录，并回写本次清理结果。
     /// <para>
-    /// 优化策略：先查出满足条件记录的 Id 列表，再按 Id 定位并删除，
-    /// 避免将整行数据（含 UserInputText、AssistantOutputMarkdown 等大文本字段）全部加载到内存。
-    /// <para>
-    /// 注意：SQLite EF Core 不支持 DateTimeOffset 表达式翻译，因此 ExecuteDeleteAsync 在此不可用
-    /// （其 Where 子句同样无法翻译 RequestedAt/CreatedAt 比较），保留基于 Id 的 RemoveRange 路径。
-    /// </para>
+    /// SqlSugar 能将 RequestedAt 区间比较下推到 SQLite，因此直接用条件删除，
+    /// 无需像 EF Core 时代那样先查 Id 再按 Id 定位删除。
     /// </para>
     /// </summary>
     public async Task<LogPruneResult> PruneAsync(CancellationToken cancellationToken = default)
     {
         var settings = await _dbContext.SystemRuntimeSettings
-            .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken);
+            .FirstAsync(x => x.Id == 1, cancellationToken);
         if (settings is null)
         {
             settings = new SystemRuntimeSettings
             {
                 Id = 1
             };
-            _dbContext.SystemRuntimeSettings.Add(settings);
+            await _dbContext.InsertAsync(settings, cancellationToken);
         }
 
         var now = _utcNowProvider();
@@ -77,7 +72,7 @@ public sealed class LogRetentionService : ILogRetentionService
         {
             settings.LastUsageLogPrunedAt = now;
             settings.LastUsageLogPrunedCount = 0;
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(settings, cancellationToken);
             return new LogPruneResult
             {
                 UsageLogPrunedCount = 0
@@ -86,28 +81,24 @@ public sealed class LogRetentionService : ILogRetentionService
 
         var usageCutoff = now.AddDays(-settings.UsageLogRetentionDays);
 
-        // 同理，先查 Id 再按 Id 定位删除，避免加载整张 ProxyUsageLogs 表的大文本字段。
-        var oldUsageIds = (await _dbContext.ProxyUsageLogs
-                .Select(l => new { l.Id, l.RequestedAt })
-                .ToListAsync(cancellationToken))
+        // 坑#3：SqlSugar 的 Deleteable.Where(复杂表达式) 在 SQLite 下会生成错误 SQL，
+        // 先按谓词查出待删除 Id，再用 In 删除，确保删除真正执行（与 Count 同一谓词，保证口径一致）。
+        var idsToDelete = await _dbContext.ProxyUsageLogs
             .Where(l => l.RequestedAt < usageCutoff)
             .Select(l => l.Id)
-            .ToList();
-
-        var deletedUsageCount = 0;
-        if (oldUsageIds.Count > 0)
+            .ToListAsync(cancellationToken);
+        var deletedUsageCount = idsToDelete.Count;
+        if (idsToDelete.Count > 0)
         {
-            var oldUsageLogs = await _dbContext.ProxyUsageLogs
-                .Where(l => oldUsageIds.Contains(l.Id))
-                .ToListAsync(cancellationToken);
-            deletedUsageCount = oldUsageLogs.Count;
-            _dbContext.ProxyUsageLogs.RemoveRange(oldUsageLogs);
+            await _dbContext.Client.Deleteable<Domain.Proxy.ProxyUsageLog>()
+                .In(idsToDelete)
+                .ExecuteCommandAsync(cancellationToken);
         }
 
         settings.LastUsageLogPrunedAt = now;
         settings.LastUsageLogPrunedCount = deletedUsageCount;
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(settings, cancellationToken);
 
         return new LogPruneResult
         {

@@ -2,7 +2,6 @@ using AITool.Application.CoreRuntime;
 using AITool.Application.Operations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Operations;
 
@@ -31,15 +30,14 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
     public async Task<Domain.Operations.SystemRuntimeSettings> GetOrCreateAsync(CancellationToken cancellationToken = default)
     {
         var settings = await _dbContext.SystemRuntimeSettings
-            .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken);
+            .FirstAsync(x => x.Id == 1, cancellationToken);
         if (settings is not null)
         {
             return settings;
         }
 
         settings = new Domain.Operations.SystemRuntimeSettings();
-        _dbContext.SystemRuntimeSettings.Add(settings);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.InsertAsync(settings, cancellationToken);
         return settings;
     }
 
@@ -65,7 +63,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.ConcurrencyMode = Math.Max(0, Math.Min(1, request.ConcurrencyMode));
         settings.ConcurrencyQueueTimeoutSeconds = Math.Max(1, request.ConcurrencyQueueTimeoutSeconds);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(settings, cancellationToken);
         return settings;
     }
 
@@ -76,12 +74,12 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
     public async Task<CoreRuntimeConfigSnapshot> BuildCoreRuntimeConfigSnapshotAsync(long configVersion, CancellationToken cancellationToken = default)
     {
         var generatedAt = DateTimeOffset.UtcNow;
-        var sites = await _dbContext.Sites.AsNoTracking().ToListAsync(cancellationToken);
-        var models = await _dbContext.ModelLibraryItems.AsNoTracking().ToListAsync(cancellationToken);
-        var siteModelMappings = await _dbContext.SiteModelMappings.AsNoTracking().ToListAsync(cancellationToken);
-        var routeEntries = await _dbContext.ProxyRouteEntries.AsNoTracking().ToListAsync(cancellationToken);
-        var routeRules = await _dbContext.ProxyRouteRules.AsNoTracking().ToListAsync(cancellationToken);
-        var accessKeys = await _dbContext.ProxyAccessKeys.AsNoTracking().ToListAsync(cancellationToken);
+        var sites = await _dbContext.Sites.ToListAsync(cancellationToken);
+        var models = await _dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+        var siteModelMappings = await _dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+        var routeEntries = await _dbContext.ProxyRouteEntries.ToListAsync(cancellationToken);
+        var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+        var accessKeys = await _dbContext.ProxyAccessKeys.ToListAsync(cancellationToken);
         var runtimeSettings = await GetOrCreateAsync(cancellationToken);
 
         return CoreRuntimeConfigSnapshotBuilder.Build(
@@ -98,31 +96,40 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
 
     /// <summary>
     /// 按来源和时间范围清理使用日志，并回写本次清理结果。
+    /// SqlSugar 能将 DateTimeOffset 区间比较下推到 SQLite，因此无需全表加载到内存。
     /// </summary>
     public async Task<int> ClearUsageLogsAsync(ClearUsageLogsRequest request, CancellationToken cancellationToken = default)
     {
         var settings = await GetOrCreateAsync(cancellationToken);
 
-        // 先加载到内存再按条件过滤，避免 SQLite 无法稳定翻译 DateTimeOffset 区间比较。
-        var logs = await _dbContext.ProxyUsageLogs.ToListAsync(cancellationToken);
-        var logsToDelete = logs
-            .Where(x => string.IsNullOrWhiteSpace(request.Source) || string.Equals(x.Source, request.Source, StringComparison.OrdinalIgnoreCase))
-            .Where(x => !request.StartTime.HasValue || x.RequestedAt >= request.StartTime.Value)
-            .Where(x => !request.EndTime.HasValue || x.RequestedAt < request.EndTime.Value)
-            .ToList();
-
-        if (logsToDelete.Count == 0)
+        // 用条件查询先统计待删除数量：WhereIF 仅在条件成立时追加谓词，
+        // 避免闭包变量（如 source==null）被 SqlSugar 翻译成错误的 IS 子句。
+        var query = _dbContext.ProxyUsageLogs
+            .WhereIF(!string.IsNullOrWhiteSpace(request.Source), x => x.Source == request.Source);
+        if (request.StartTime.HasValue)
         {
-            settings.LastUsageLogPrunedAt = DateTimeOffset.UtcNow;
-            settings.LastUsageLogPrunedCount = 0;
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            return 0;
+            query = query.Where(x => x.RequestedAt >= request.StartTime.Value);
+        }
+        if (request.EndTime.HasValue)
+        {
+            query = query.Where(x => x.RequestedAt < request.EndTime.Value);
         }
 
-        _dbContext.ProxyUsageLogs.RemoveRange(logsToDelete);
+        var deletedCount = await query.CountAsync(cancellationToken);
+
+        // 坑#3：SqlSugar 的 Deleteable.Where(复杂表达式) 在 SQLite 下会生成错误 SQL，
+        // 改为先查出待删除的 Id，再用 In 删除，确保删除真正执行。
+        var idsToDelete = await query.Select(x => x.Id).ToListAsync(cancellationToken);
+        if (idsToDelete.Count > 0)
+        {
+            await _dbContext.Client.Deleteable<Domain.Proxy.ProxyUsageLog>()
+                .In(idsToDelete)
+                .ExecuteCommandAsync(cancellationToken);
+        }
+
         settings.LastUsageLogPrunedAt = DateTimeOffset.UtcNow;
-        settings.LastUsageLogPrunedCount = logsToDelete.Count;
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        return logsToDelete.Count;
+        settings.LastUsageLogPrunedCount = deletedCount;
+        await _dbContext.UpdateAsync(settings, cancellationToken);
+        return deletedCount;
     }
 }

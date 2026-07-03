@@ -4,7 +4,6 @@ using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Pages.Admin.ModelHealth;
 
@@ -279,7 +278,7 @@ public class IndexModel : PageModel
         var monitoredModelIds = monitors.Select(m => m.ModelLibraryItemId).Distinct().ToList();
 
         var models = await _dbContext.ModelLibraryItems
-            .AsNoTracking()
+            
             .Where(m => monitoredModelIds.Contains(m.Id))
             .ToDictionaryAsync(m => m.Id, m => m, cancellationToken);
         var orphanMonitors = monitors
@@ -288,8 +287,7 @@ public class IndexModel : PageModel
         if (orphanMonitors.Count > 0)
         {
             // 历史删除模型留下的监控配置在这里顺手清掉，避免页面继续出现已删除模型。
-            _dbContext.ModelHealthMonitors.RemoveRange(orphanMonitors);
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.DeleteRangeAsync(orphanMonitors, cancellationToken);
             monitors = monitors
                 .Where(m => models.ContainsKey(m.ModelLibraryItemId))
                 .ToList();
@@ -311,7 +309,7 @@ public class IndexModel : PageModel
 
         /* 构建可选模型列表（排除已监控的） */
         AvailableModels = await _dbContext.ModelLibraryItems
-            .AsNoTracking()
+            
             .Where(m => !monitoredModelIds.Contains(m.Id))
             .OrderBy(m => m.DisplayName)
             .Select(m => new ModelSelectItem
@@ -325,20 +323,20 @@ public class IndexModel : PageModel
         if (monitoredModelIds.Count > 0)
         {
             var mappings = await _dbContext.SiteModelMappings
-                .AsNoTracking()
+                
                 .Where(m => monitoredModelIds.Contains(m.ModelLibraryItemId) && m.IsEnabled)
                 .ToListAsync(cancellationToken);
 
             var siteIds = mappings.Select(m => m.SiteId).Distinct().ToList();
             var sites = await _dbContext.Sites
-                .AsNoTracking()
+                
                 .Where(s => siteIds.Contains(s.Id) && s.IsEnabled)
                 .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
 
             var recentCutoff = ResolveRecentCutoff(Range);
-            // 用 Dapper 手写 SQL，时间过滤下推到 DB，避免全表加载到内存后客户端过滤。
+            // 用 SqlSugar Ado 原生 SQL，时间过滤下推到 DB，避免全表加载到内存后客户端过滤。
             var recentRows = await UsageLogSqlQueries.QueryRecentForModelHealthAsync(
-                _dbContext.Database.GetDbConnection(), recentCutoff);
+                _dbContext.Client, recentCutoff);
             var allLogs = recentRows.Select(r => new ProxyUsageLog
             {
                 Id = r.Id,
@@ -367,7 +365,7 @@ public class IndexModel : PageModel
             }).ToList();
 
             var routeRules = await _dbContext.ProxyRouteRules
-                .AsNoTracking()
+                
                 .Where(x => x.IsEnabled)
                 .ToListAsync(cancellationToken);
 
@@ -575,11 +573,10 @@ public class IndexModel : PageModel
                 .AnyAsync(m => m.ModelLibraryItemId == modelId, cancellationToken);
             if (!exists)
             {
-                _dbContext.ModelHealthMonitors.Add(new ModelHealthMonitor
+                await _dbContext.InsertAsync(new ModelHealthMonitor
                 {
                     ModelLibraryItemId = modelId
-                });
-                await _dbContext.SaveChangesAsync(cancellationToken);
+                }, cancellationToken);
             }
         }
         catch (Exception ex)
@@ -607,11 +604,10 @@ public class IndexModel : PageModel
         try
         {
             var monitor = await _dbContext.ModelHealthMonitors
-                .FirstOrDefaultAsync(m => m.ModelLibraryItemId == modelId, cancellationToken);
+                .FirstAsync(m => m.ModelLibraryItemId == modelId, cancellationToken);
             if (monitor is not null)
             {
-                _dbContext.ModelHealthMonitors.Remove(monitor);
-                await _dbContext.SaveChangesAsync(cancellationToken);
+                await _dbContext.DeleteAsync(monitor, cancellationToken);
             }
         }
         catch (Exception ex)

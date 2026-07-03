@@ -4,7 +4,6 @@ using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -120,9 +119,7 @@ internal sealed class ChatPageWebApplicationFactory : WebApplicationFactory<AITo
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
         });
     }
 
@@ -140,10 +137,9 @@ internal sealed class ChatPageWebApplicationFactory : WebApplicationFactory<AITo
     /// </summary>
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
@@ -159,7 +155,5 @@ internal sealed class ChatPageWebApplicationFactory : WebApplicationFactory<AITo
             UsageLogAutoCleanupEnabled = true,
             ConversationLogEnabled = _conversationLogEnabled
         });
-
-        await db.SaveChangesAsync();
     }
 }

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
+using AITool.Core.IntegrationTests;
 using AITool.Application.Proxy;
 using AITool.Application.UsageLogs;
 using AITool.Domain.Operations;
@@ -12,7 +13,6 @@ using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -101,9 +101,7 @@ internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFacto
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
             services.RemoveAll<AITool.Application.UsageLogs.IUsageLogService>();
@@ -135,10 +133,9 @@ internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFacto
     /// </summary>
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         var openAiSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
         var anthropicSiteId = Guid.Parse("22222222-2222-2222-2222-222222222222");
@@ -222,8 +219,6 @@ internal sealed class ProxyResilienceWebApplicationFactory : WebApplicationFacto
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
-
-        await db.SaveChangesAsync();
     }
 }
 

@@ -4,7 +4,6 @@ using AITool.Admin.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Pages.Admin.Sites;
 
@@ -97,7 +96,7 @@ public class EditModel : PageModel
     /// </summary>
     public async Task<IActionResult> OnGetAsync(Guid id, CancellationToken cancellationToken)
     {
-        var site = await _dbContext.Sites.FindAsync([id], cancellationToken);
+        var site = await _dbContext.Sites.InSingleAsync(id);
         if (site is null) return RedirectToPage("./Index");
 
         Name = site.Name;
@@ -120,7 +119,7 @@ public class EditModel : PageModel
 
         try
         {
-            var site = await _dbContext.Sites.FindAsync([id], cancellationToken);
+            var site = await _dbContext.Sites.InSingleAsync(id);
             if (site is null) return RedirectToPage("./Index");
 
             site.Name = Name;
@@ -136,7 +135,7 @@ public class EditModel : PageModel
             site.ProtocolType = ResolveSiteProtocolType(SupportsOpenAi, SupportsAnthropic);
             site.IsEnabled = IsEnabled;
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(site, cancellationToken);
             await _cacheInvalidation.InvalidateRouteTargetsAsync();
             StatusMessage = "站点已更新";
             StatusSuccess = true;

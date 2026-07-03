@@ -1,10 +1,10 @@
+using AITool.Core.IntegrationTests;
 using AITool.Domain.Models;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -41,7 +41,7 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
     {
         var services = new ServiceCollection();
         services.AddMemoryCache();
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+        services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddSingleton<ProxyRequestMetadataCache>();
         _serviceProvider = services.BuildServiceProvider();
         _memoryCache = _serviceProvider.GetRequiredService<IMemoryCache>();
@@ -62,8 +62,7 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         var modelId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(_serviceProvider);
 
         db.Sites.Add(new Site
         {
@@ -89,7 +88,6 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
             LastStatus = "ok",
             IsEnabled = true
         });
-        await db.SaveChangesAsync();
 
         // 预热缓存，确认旧值
         var cachedBeforeEdit = await cache.GetEnabledModelAsync(modelId, CancellationToken.None);
@@ -97,10 +95,10 @@ public sealed class ModelEditCacheTests : IAsyncDisposable
         cachedBeforeEdit!.ModelName.Should().Be("old-model");
 
         // 模拟后台修改模型操作：直接修改数据库并调用失效服务
-        var model = await db.ModelLibraryItems.FindAsync([modelId]);
+        var model = await db.ModelLibraryItems.InSingleAsync(modelId);
         model!.ModelName = "new-model";
         model.DisplayName = "New Model";
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(model);
 
         var cacheInvalidation = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         cacheInvalidation.InvalidateModelMetadata();

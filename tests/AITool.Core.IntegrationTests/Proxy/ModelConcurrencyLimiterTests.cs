@@ -1,8 +1,8 @@
+using AITool.Core.IntegrationTests;
 using AITool.Domain.SiteCatalog;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Core.IntegrationTests.Proxy;
@@ -39,12 +39,12 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     {
         var services = new ServiceCollection();
         services.AddMemoryCache();
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+        services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddSingleton<ProxyRequestMetadataCache>();
         services.AddSingleton<ModelConcurrencyLimiter>();
         _serviceProvider = services.BuildServiceProvider();
+        IntegrationTestDbHelper.InitializeDatabaseAsync(_serviceProvider).GetAwaiter().GetResult();
         _dbContext = _serviceProvider.GetRequiredService<AppDbContext>();
-        _dbContext.Database.EnsureCreated();
         _limiter = _serviceProvider.GetRequiredService<ModelConcurrencyLimiter>();
     }
 
@@ -535,7 +535,7 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     /// </summary>
     private async Task SeedMappingAsync(Guid siteId, string remoteModelName, int maxConcurrency)
     {
-        _dbContext.SiteModelMappings.Add(new SiteModelMapping
+        await _dbContext.InsertAsync(new SiteModelMapping
         {
             Id = Guid.NewGuid(),
             SiteId = siteId,
@@ -543,7 +543,6 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
             IsEnabled = true,
             MaxConcurrency = maxConcurrency
         });
-        await _dbContext.SaveChangesAsync();
     }
 
     /// <summary>
@@ -553,7 +552,7 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     {
         var mapping = await _dbContext.SiteModelMappings.FirstAsync(x => x.SiteId == siteId && x.RemoteModelName == remoteModelName);
         mapping.MaxConcurrency = maxConcurrency;
-        await _dbContext.SaveChangesAsync();
+        await _dbContext.UpdateAsync(mapping);
 
         var metadataCache = _serviceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         metadataCache.InvalidateRouteTargets();

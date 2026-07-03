@@ -5,7 +5,6 @@ using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Controllers.Admin;
 
@@ -156,11 +155,10 @@ public sealed class RouteRulesApiController : ControllerBase
         if (existsInEntries || existsInRules)
             return BadRequest(new { message = "主入口已存在" });
 
-        _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
+        await _dbContext.InsertAsync(new ProxyRouteEntry
         {
             EntryName = entryName
-        });
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken);
         await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
 
         return Ok(new { message = "创建成功" });
@@ -179,7 +177,7 @@ public sealed class RouteRulesApiController : ControllerBase
             return BadRequest(new { message = "主入口名称不能为空" });
 
         var entry = await _dbContext.ProxyRouteEntries
-            .FirstOrDefaultAsync(x => x.EntryName == entryName, cancellationToken);
+            .FirstAsync(x => x.EntryName == entryName, cancellationToken);
         var rules = await _dbContext.ProxyRouteRules
             .Where(x => x.ExternalModelName == entryName)
             .ToListAsync(cancellationToken);
@@ -189,15 +187,14 @@ public sealed class RouteRulesApiController : ControllerBase
 
         if (entry is not null)
         {
-            _dbContext.ProxyRouteEntries.Remove(entry);
+            await _dbContext.DeleteAsync(entry, cancellationToken);
         }
 
         if (rules.Count > 0)
         {
-            _dbContext.ProxyRouteRules.RemoveRange(rules);
+            await _dbContext.DeleteRangeAsync(rules, cancellationToken);
         }
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
 
         return Ok(new { message = "删除成功" });
@@ -238,7 +235,7 @@ public sealed class RouteRulesApiController : ControllerBase
             if (ruleSiteIds.Count > 0)
             {
                 var existingSiteIds = await _dbContext.Sites
-                    .AsNoTracking()
+                    
                     .Where(s => ruleSiteIds.Contains(s.Id))
                     .Select(s => s.Id)
                     .ToListAsync(cancellationToken);
@@ -252,20 +249,23 @@ public sealed class RouteRulesApiController : ControllerBase
 
         // 确保主入口存在
         var existingEntry = await _dbContext.ProxyRouteEntries
-            .FirstOrDefaultAsync(x => x.EntryName == entryName, cancellationToken);
+            .FirstAsync(x => x.EntryName == entryName, cancellationToken);
         if (existingEntry is null)
         {
-            _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
+            await _dbContext.InsertAsync(new ProxyRouteEntry
             {
                 EntryName = entryName
-            });
+            }, cancellationToken);
         }
 
         // 删除该模型的所有旧规则
         var existingRules = await _dbContext.ProxyRouteRules
             .Where(r => r.ExternalModelName == entryName)
             .ToListAsync(cancellationToken);
-        _dbContext.ProxyRouteRules.RemoveRange(existingRules);
+        if (existingRules.Count > 0)
+        {
+            await _dbContext.DeleteRangeAsync(existingRules, cancellationToken);
+        }
 
         // 按列表顺序创建新规则，Priority = 全局顺序，ModelPriority/InstancePriority = 分组顺序
         var upstreamOrder = request.Rules
@@ -294,7 +294,7 @@ public sealed class RouteRulesApiController : ControllerBase
             }
 
             var availability = NormalizeAvailability(entry.AvailabilityMode, entry.TimeRangesJson);
-            _dbContext.ProxyRouteRules.Add(new ProxyRouteRule
+            await _dbContext.InsertAsync(new ProxyRouteRule
             {
                 ExternalModelName = entryName,
                 UpstreamModelName = normalizedUpstreamModelName,
@@ -306,10 +306,8 @@ public sealed class RouteRulesApiController : ControllerBase
                 IsEnabled = true,
                 AvailabilityMode = availability.Mode,
                 TimeRangesJson = availability.TimeRangesJson
-            });
+            }, cancellationToken);
         }
-
-        await _dbContext.SaveChangesAsync(cancellationToken);
 
         // Admin 侧不直接操作运行时并发限制器，直接刷新路由缓存即可
         await _cacheInvalidation.InvalidateAdminRouteMetadataAsync(cancellationToken);
@@ -324,12 +322,12 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpPost("toggle/{ruleId}")]
     public async Task<IActionResult> ToggleRule(Guid ruleId, CancellationToken cancellationToken)
     {
-        var rule = await _dbContext.ProxyRouteRules.FindAsync([ruleId], cancellationToken);
+        var rule = await _dbContext.ProxyRouteRules.InSingleAsync(ruleId);
         if (rule is null)
             return NotFound(new { message = "规则不存在" });
 
         rule.IsEnabled = !rule.IsEnabled;
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(rule, cancellationToken);
         await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
 
         return Ok(new { message = "状态已切换", isEnabled = rule.IsEnabled });
@@ -351,12 +349,11 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpPost("delete/{ruleId}")]
     public async Task<IActionResult> DeleteRule(Guid ruleId, CancellationToken cancellationToken)
     {
-        var rule = await _dbContext.ProxyRouteRules.FindAsync([ruleId], cancellationToken);
+        var rule = await _dbContext.ProxyRouteRules.InSingleAsync(ruleId);
         if (rule is null)
             return NotFound(new { message = "规则不存在" });
 
-        _dbContext.ProxyRouteRules.Remove(rule);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.DeleteAsync(rule, cancellationToken);
         await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
 
         return Ok(new { message = "规则已删除" });

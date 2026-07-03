@@ -3,7 +3,6 @@ using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Infrastructure.Health;
 
@@ -44,7 +43,7 @@ public sealed class ModelHealthRequestService
     public async Task<ModelHealthProbeResult> ProbeMappingAsync(Guid mappingId, string source, CancellationToken cancellationToken)
     {
         var mapping = await _dbContext.SiteModelMappings
-            .FirstOrDefaultAsync(x => x.Id == mappingId, cancellationToken);
+            .FirstAsync(x => x.Id == mappingId, cancellationToken);
         if (mapping is null)
         {
             return new ModelHealthProbeResult
@@ -55,8 +54,8 @@ public sealed class ModelHealthRequestService
             };
         }
 
-        var site = await _dbContext.Sites.FirstOrDefaultAsync(x => x.Id == mapping.SiteId, cancellationToken);
-        var model = await _dbContext.ModelLibraryItems.FirstOrDefaultAsync(x => x.Id == mapping.ModelLibraryItemId, cancellationToken);
+        var site = await _dbContext.Sites.FirstAsync(x => x.Id == mapping.SiteId, cancellationToken);
+        var model = await _dbContext.ModelLibraryItems.FirstAsync(x => x.Id == mapping.ModelLibraryItemId, cancellationToken);
         if (site is null || model is null)
         {
             return new ModelHealthProbeResult
@@ -71,8 +70,7 @@ public sealed class ModelHealthRequestService
 
         var protocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic);
         var runtimeSettings = await _dbContext.SystemRuntimeSettings
-            .AsNoTracking()
-            .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken)
+            .FirstAsync(x => x.Id == 1, cancellationToken)
             ?? new AITool.Domain.Operations.SystemRuntimeSettings();
         var requestBody = BuildProbeRequestBody(protocolType, mapping.RemoteModelName, BuildRandomMathPrompt());
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
@@ -94,7 +92,7 @@ public sealed class ModelHealthRequestService
 
         var status = forwardResult.Success ? "success" : "fail";
         mapping.LastStatus = status;
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(mapping, cancellationToken);
 
         await _usageLogService.LogAsync(new UsageLogEntry
         {

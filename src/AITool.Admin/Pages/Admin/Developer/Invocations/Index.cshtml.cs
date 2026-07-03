@@ -4,7 +4,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Pages.Admin.Developer.Invocations;
 
@@ -356,12 +355,12 @@ public sealed class IndexModel : PageModel
 
     private async Task<string> GetDefaultAccessKeyFromAdminAsync(CancellationToken cancellationToken)
     {
-        return await _dbContext.ProxyAccessKeys
-            .AsNoTracking()
+        var key = await _dbContext.ProxyAccessKeys
+            
             .Where(x => x.IsEnabled && !string.IsNullOrWhiteSpace(x.PlainKey))
             .OrderBy(x => x.KeyName)
-            .Select(x => x.PlainKey)
-            .FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+            .FirstAsync(cancellationToken);
+        return key?.PlainKey ?? string.Empty;
     }
 
     /// <summary>

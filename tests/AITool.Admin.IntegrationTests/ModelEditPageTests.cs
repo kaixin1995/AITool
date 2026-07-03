@@ -3,7 +3,6 @@ using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -137,7 +136,7 @@ public sealed class ModelEditPageTests
 
         await using var scope = factory.Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var mapping = await db.SiteModelMappings.FirstOrDefaultAsync(x => x.SiteId == Guid.Parse("22222222-2222-2222-2222-222222222222") && x.RemoteModelName == "gpt-manual-alpha");
+        var mapping = await db.SiteModelMappings.FirstAsync(x => x.SiteId == Guid.Parse("22222222-2222-2222-2222-222222222222") && x.RemoteModelName == "gpt-manual-alpha");
         mapping.Should().NotBeNull();
         mapping!.ModelLibraryItemId.Should().Be(ModelEditPageWebApplicationFactory.ModelId);
         mapping.LastStatus.Should().Be("manual");
@@ -182,9 +181,7 @@ internal sealed class ModelEditPageWebApplicationFactory : WebApplicationFactory
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
         });
     }
 
@@ -202,10 +199,9 @@ internal sealed class ModelEditPageWebApplicationFactory : WebApplicationFactory
     /// </summary>
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         db.ModelLibraryItems.Add(new AITool.Domain.Models.ModelLibraryItem
         {
@@ -243,7 +239,5 @@ internal sealed class ModelEditPageWebApplicationFactory : WebApplicationFactory
             LastStatus = "imported",
             IsEnabled = true
         });
-
-        await db.SaveChangesAsync();
     }
 }

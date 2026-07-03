@@ -1,7 +1,8 @@
 using AITool.Admin.Services;
+using AITool.Domain.Models;
+using AITool.Domain.SiteCatalog;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Controllers.Admin;
 
@@ -43,11 +44,10 @@ public sealed class ModelsApiController : ControllerBase
         var monitorCount = _dbContext.ModelHealthMonitors.Count();
         var modelCount = _dbContext.ModelLibraryItems.Count();
 
-        _dbContext.SiteModelMappings.RemoveRange(_dbContext.SiteModelMappings);
-        _dbContext.ModelHealthMonitors.RemoveRange(_dbContext.ModelHealthMonitors);
-        _dbContext.ModelLibraryItems.RemoveRange(_dbContext.ModelLibraryItems);
+        await _dbContext.Client.Deleteable<SiteModelMapping>().ExecuteCommandAsync(cancellationToken);
+        await _dbContext.Client.Deleteable<ModelHealthMonitor>().ExecuteCommandAsync(cancellationToken);
+        await _dbContext.Client.Deleteable<ModelLibraryItem>().ExecuteCommandAsync(cancellationToken);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         await _cacheInvalidationService.InvalidateModelMetadataAsync(cancellationToken);
         await _cacheInvalidationService.InvalidateRouteTargetsAsync(cancellationToken);
 
@@ -68,14 +68,14 @@ public sealed class ModelsApiController : ControllerBase
         [FromBody] UpdateConcurrencyRequest request,
         CancellationToken cancellationToken)
     {
-        var mapping = await _dbContext.SiteModelMappings.FindAsync([mappingId], cancellationToken);
+        var mapping = await _dbContext.SiteModelMappings.InSingleAsync(mappingId);
         if (mapping is null)
         {
             return NotFound(new { message = "站点模型映射不存在" });
         }
 
         mapping.MaxConcurrency = Math.Max(0, request.MaxConcurrency);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(mapping, cancellationToken);
 
         // 并发限制属于 SiteModelMappings，同步 ModelMetadata 将 MaxConcurrency 推送到 Core。
         await _cacheInvalidationService.InvalidateModelMetadataAsync(cancellationToken);

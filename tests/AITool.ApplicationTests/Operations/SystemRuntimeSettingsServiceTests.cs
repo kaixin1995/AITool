@@ -2,7 +2,6 @@ using AITool.Application.Operations;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.ApplicationTests.Operations;
 
@@ -17,6 +16,11 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
     private readonly AppDbContext _dbContext;
 
     /// <summary>
+    /// 测试工厂的清理回调，用于释放临时 SQLite 文件。
+    /// </summary>
+    private readonly Action _dispose;
+
+    /// <summary>
     /// 被测服务，负责读取、创建和更新运行时设置。
     /// </summary>
     private readonly SystemRuntimeSettingsService _service;
@@ -26,10 +30,9 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
     /// </summary>
     public SystemRuntimeSettingsServiceTests()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        _dbContext = new AppDbContext(options);
+        var factory = TestDatabaseFactory.Create();
+        _dbContext = factory.DbContext;
+        _dispose = factory.Dispose;
         _service = new SystemRuntimeSettingsService(_dbContext);
     }
 
@@ -64,7 +67,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
     public async Task GetOrCreateAsync_uses_fixed_id_1_record_when_other_rows_exist()
     {
         // 先插入一条非 1 号记录，模拟历史脏数据或异常数据。
-        _dbContext.SystemRuntimeSettings.Add(new AITool.Domain.Operations.SystemRuntimeSettings
+        await _dbContext.InsertAsync(new AITool.Domain.Operations.SystemRuntimeSettings
         {
             Id = 2,
             ProxyRequestTimeoutSeconds = 120,
@@ -78,7 +81,6 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
             UsageLogAutoCleanupEnabled = false,
             DeveloperFeaturesEnabled = true
         });
-        await _dbContext.SaveChangesAsync();
 
         var settings = await _service.GetOrCreateAsync();
 
@@ -93,7 +95,7 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         settings.UsageLogRetentionDays.Should().Be(7);
         settings.UsageLogAutoCleanupEnabled.Should().BeTrue();
         settings.DeveloperFeaturesEnabled.Should().BeFalse();
-        _dbContext.SystemRuntimeSettings.Should().ContainSingle(x => x.Id == 1);
+        _dbContext.SystemRuntimeSettings.ToList().Should().ContainSingle(x => x.Id == 1);
     }
 
     /// <summary>
@@ -200,7 +202,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         // 固定基准时间，便于清晰构造筛选窗口。
         var baseTime = new DateTimeOffset(2026, 05, 07, 12, 00, 00, TimeSpan.Zero);
 
-        _dbContext.ProxyUsageLogs.AddRange(
+        await _dbContext.InsertRangeAsync(new[]
+        {
             new AITool.Domain.Proxy.ProxyUsageLog
             {
                 Id = Guid.NewGuid(),
@@ -242,8 +245,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
                 ErrorMessage = string.Empty,
                 ReasoningEffort = string.Empty,
                 RequestedAt = baseTime.AddHours(-2)
-            });
-        await _dbContext.SaveChangesAsync();
+            }
+        });
 
         var deletedCount = await _service.ClearUsageLogsAsync(new ClearUsageLogsRequest
         {
@@ -253,9 +256,11 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
         });
 
         deletedCount.Should().Be(1);
-        _dbContext.ProxyUsageLogs.Should().HaveCount(2);
-        _dbContext.ProxyUsageLogs.Should().Contain(x => x.Source == "codex" && x.RequestedAt == baseTime.AddHours(-1));
-        _dbContext.ProxyUsageLogs.Should().Contain(x => x.Source == "chat");
+        var remaining = await _dbContext.ProxyUsageLogs.ToListAsync();
+        remaining.Should().HaveCount(2);
+        // SqlSugar 在 SQLite 下读回 DateTimeOffset 时配本地时区 offset，比较瞬时时刻（DateTime 部分）而非精确 offset。
+        remaining.Should().Contain(x => x.Source == "codex" && x.RequestedAt.DateTime == baseTime.AddHours(-1).DateTime);
+        remaining.Should().Contain(x => x.Source == "chat");
     }
 
     /// <summary>
@@ -266,7 +271,8 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
     {
         await _service.GetOrCreateAsync();
 
-        _dbContext.ProxyUsageLogs.AddRange(
+        await _dbContext.InsertRangeAsync(new[]
+        {
             new AITool.Domain.Proxy.ProxyUsageLog
             {
                 Id = Guid.NewGuid(),
@@ -294,14 +300,14 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
                 ErrorMessage = "timeout",
                 ReasoningEffort = string.Empty,
                 RequestedAt = DateTimeOffset.UtcNow.AddHours(-1)
-            });
-        await _dbContext.SaveChangesAsync();
+            }
+        });
 
         // 使用空请求对象，验证服务会走全量删除路径。
         var deletedCount = await _service.ClearUsageLogsAsync(new ClearUsageLogsRequest());
 
         deletedCount.Should().Be(2);
-        _dbContext.ProxyUsageLogs.Should().BeEmpty();
+        (await _dbContext.ProxyUsageLogs.ToListAsync()).Should().BeEmpty();
     }
 
     /// <summary>
@@ -310,5 +316,6 @@ public sealed class SystemRuntimeSettingsServiceTests : IDisposable
     public void Dispose()
     {
         _dbContext.Dispose();
+        _dispose();
     }
 }

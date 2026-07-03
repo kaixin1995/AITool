@@ -4,7 +4,6 @@ using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -105,9 +104,7 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<AIT
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
 
             if (_shouldThrowOnFetchModels)
             {
@@ -131,10 +128,9 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<AIT
     /// </summary>
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         db.Sites.AddRange(
             new AITool.Domain.Sites.Site
@@ -210,8 +206,6 @@ internal sealed class SitePagesWebApplicationFactory : WebApplicationFactory<AIT
                 LastStatus = "unknown",
                 IsEnabled = false
             });
-
-        await db.SaveChangesAsync();
     }
 }
 

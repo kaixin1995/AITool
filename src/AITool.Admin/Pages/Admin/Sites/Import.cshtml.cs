@@ -112,13 +112,13 @@ public class ImportModel : PageModel
                 return Page();
             }
 
-            var created = 0;
+            var newSites = new List<Site>();
             foreach (var item in items)
             {
                 if (string.IsNullOrWhiteSpace(item.Name) || string.IsNullOrWhiteSpace(item.BaseUrl) || string.IsNullOrWhiteSpace(item.ApiKey))
                     continue;
 
-                _dbContext.Sites.Add(new Site
+                newSites.Add(new Site
                 {
                     Name = item.Name,
                     BaseUrl = item.BaseUrl,
@@ -129,11 +129,14 @@ public class ImportModel : PageModel
                     SupportsAnthropic = item.SupportsAnthropic,
                     IsEnabled = true
                 });
-                created++;
             }
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            if (newSites.Count > 0)
+            {
+                await _dbContext.InsertRangeAsync(newSites, cancellationToken);
+            }
             await _cacheInvalidation.InvalidateRouteTargetsAsync();
+            var created = newSites.Count;
             StatusMessage = $"成功导入 {created} 个站点";
             StatusSuccess = true;
         }

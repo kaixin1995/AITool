@@ -2,7 +2,6 @@ using System.Text.Json;
 using AITool.Application.CoreRuntime;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace AITool.Infrastructure.CoreRuntime;
@@ -195,8 +194,7 @@ public sealed class AdminUnifiedProxyEventIngestor
 
         if (newLogs.Count > 0)
         {
-            _dbContext.ProxyUsageLogs.AddRange(newLogs);
-            await _dbContext.SaveChangesAsync(ct);
+            await _dbContext.InsertRangeAsync(newLogs, ct);
         }
     }
 

@@ -2,11 +2,11 @@ using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.FileProviders;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
+using SqlSugar;
 
 namespace AITool.ApplicationTests.Proxy;
 
@@ -20,6 +20,11 @@ public sealed class UsageLogServiceTests : IDisposable
     /// 内存数据库上下文，用于断言日志最终写入结果。
     /// </summary>
     private readonly AppDbContext _dbContext;
+
+    /// <summary>
+    /// 测试工厂的清理回调，用于释放临时 SQLite 文件。
+    /// </summary>
+    private readonly Action _dispose;
 
     /// <summary>
     /// 测试专用依赖注入容器，用来创建批量写入器所需作用域。
@@ -36,11 +41,16 @@ public sealed class UsageLogServiceTests : IDisposable
     /// </summary>
     public UsageLogServiceTests()
     {
+        // TestDatabaseFactory 创建临时 SQLite 文件并注册 SqlSugarScope + AppDbContext。
+        var factory = TestDatabaseFactory.Create();
+        _dbContext = factory.DbContext;
+        _dispose = factory.Dispose;
+
+        // 复用同一份 SqlSugarScope 单例构建容器，使批量写入器作用域内拿到同一个临时库。
         var services = new ServiceCollection();
-        var databaseName = Guid.NewGuid().ToString();
-        services.AddDbContext<AppDbContext>(dbOptions => dbOptions.UseInMemoryDatabase(databaseName));
+        services.AddSingleton<ISqlSugarClient>(_ => factory.DbContext.Client);
+        services.AddScoped<AppDbContext>();
         _serviceProvider = services.BuildServiceProvider();
-        _dbContext = _serviceProvider.GetRequiredService<AppDbContext>();
 
         var batchWriter = new ProxyUsageLogBatchWriter(
             _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
@@ -159,6 +169,7 @@ public sealed class UsageLogServiceTests : IDisposable
     {
         _dbContext.Dispose();
         _serviceProvider.Dispose();
+        _dispose();
     }
 
     /// <summary>

@@ -5,7 +5,6 @@ using AITool.Admin.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Pages.Admin.Sites;
 
@@ -79,10 +78,10 @@ public class IndexModel : PageModel
     {
         try
         {
-            var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+            var site = await _dbContext.Sites.InSingleAsync(siteId);
             if (site is null) return RedirectToPage();
             site.IsEnabled = !site.IsEnabled;
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(site, cancellationToken);
             await _cacheInvalidation.InvalidateRouteTargetsAsync();
             StatusMessage = "站点状态已切换";
             StatusSuccess = true;
@@ -138,7 +137,7 @@ public class IndexModel : PageModel
     {
         try
         {
-            var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+            var site = await _dbContext.Sites.InSingleAsync(siteId);
             if (site is null) return RedirectToPage();
 
             await RemoveSitesAsync([siteId], cancellationToken);
@@ -187,16 +186,15 @@ public class IndexModel : PageModel
 
         if (mappings.Count > 0)
         {
-            _dbContext.SiteModelMappings.RemoveRange(mappings);
+            await _dbContext.DeleteRangeAsync(mappings, cancellationToken);
         }
 
         if (rules.Count > 0)
         {
-            _dbContext.ProxyRouteRules.RemoveRange(rules);
+            await _dbContext.DeleteRangeAsync(rules, cancellationToken);
         }
 
-        _dbContext.Sites.RemoveRange(sites);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.DeleteRangeAsync(sites, cancellationToken);
         await CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
         return sites.Count;
     }
@@ -236,8 +234,7 @@ public class IndexModel : PageModel
             return;
         }
 
-        _dbContext.ProxyRouteEntries.RemoveRange(emptyEntries);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.DeleteRangeAsync(emptyEntries, cancellationToken);
     }
 }
 
@@ -293,7 +290,7 @@ public class CreateModel : PageModel
         if (!ModelState.IsValid) return Page();
 
         // 站点不再由页面选择默认协议，这里仅保留兼容字段的推导值。
-        _dbContext.Sites.Add(new Site
+        await _dbContext.InsertAsync(new Site
         {
             Name = Command.Name,
             BaseUrl = Command.BaseUrl,
@@ -303,9 +300,8 @@ public class CreateModel : PageModel
             SupportsOpenAi = Command.SupportsOpenAi,
             SupportsAnthropic = Command.SupportsAnthropic,
             IsEnabled = Command.IsEnabled
-        });
+        }, cancellationToken);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         await _cacheInvalidation.InvalidateRouteTargetsAsync();
         return RedirectToPage("./Index");
     }

@@ -5,7 +5,6 @@ using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -41,9 +40,7 @@ internal sealed class AdminHostWebApplicationFactory : WebApplicationFactory<AIT
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
         });
     }
 
@@ -55,13 +52,12 @@ internal sealed class AdminHostWebApplicationFactory : WebApplicationFactory<AIT
 
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         var siteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
-        db.Sites.Add(new Site
+        await db.InsertAsync(new Site
         {
             Id = siteId,
             Name = "Admin Host Site",
@@ -73,7 +69,7 @@ internal sealed class AdminHostWebApplicationFactory : WebApplicationFactory<AIT
             IsEnabled = true
         });
 
-        db.ProxyRouteRules.Add(new ProxyRouteRule
+        await db.InsertAsync(new ProxyRouteRule
         {
             Id = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc"),
             SiteId = siteId,
@@ -88,7 +84,8 @@ internal sealed class AdminHostWebApplicationFactory : WebApplicationFactory<AIT
             TimeRangesJson = string.Empty
         });
 
-        db.ProxyUsageLogs.AddRange(
+        await db.InsertRangeAsync(new[]
+        {
             new ProxyUsageLog
             {
                 RequestId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
@@ -172,8 +169,7 @@ internal sealed class AdminHostWebApplicationFactory : WebApplicationFactory<AIT
                 TotalDurationMs = 180,
                 ReasoningEffort = "high",
                 RequestedAt = new DateTimeOffset(2026, 6, 11, 9, 30, 0, TimeSpan.Zero)
-            });
-
-        await db.SaveChangesAsync();
+            }
+        });
     }
 }

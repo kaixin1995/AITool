@@ -8,7 +8,6 @@ using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
 namespace AITool.ApplicationTests.CoreRuntime;
@@ -16,6 +15,7 @@ namespace AITool.ApplicationTests.CoreRuntime;
 public sealed class CoreEventPullServiceTests : IDisposable
 {
     private readonly AppDbContext _dbContext;
+    private readonly Action _dispose;
     private readonly AdminUnifiedProxyEventIngestor _unifiedIngestor;
     private readonly StubConversationLogStore _conversationStore;
     private readonly AdminConversationTurnEventIngestor _conversationTurnIngestor;
@@ -27,10 +27,9 @@ public sealed class CoreEventPullServiceTests : IDisposable
 
     public CoreEventPullServiceTests()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        _dbContext = new AppDbContext(options);
+        var factory = TestDatabaseFactory.Create();
+        _dbContext = factory.DbContext;
+        _dispose = factory.Dispose;
 
         var traceStore = new AdminDeveloperTraceStore();
         _conversationStore = new StubConversationLogStore();
@@ -93,7 +92,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         count.Should().Be(2);
         service.AckedSequenceId.Should().Be(11);
         handler.AckCallCount.Should().Be(1);
-        _dbContext.ProxyUsageLogs.Should().BeEmpty();
+        _dbContext.ProxyUsageLogs.ToList().Should().BeEmpty();
         _conversationStore.WrittenLogs.Should().BeEmpty();
     }
 
@@ -164,6 +163,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
     public void Dispose()
     {
         _dbContext.Dispose();
+        _dispose();
         try
         {
             var dir = Path.GetDirectoryName(_ackMetaPath);

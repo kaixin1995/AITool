@@ -1,5 +1,4 @@
 using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -59,10 +58,15 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    var models = await (
-                            from model in dbContext.ModelLibraryItems.AsNoTracking()
-                            join mapping in dbContext.SiteModelMappings.AsNoTracking() on model.Id equals mapping.ModelLibraryItemId
-                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
+                    // SqlSugar 不支持 LINQ query syntax 的多表 join + group by，
+                    // 改为先各自读出再在内存连接（结果有缓存，非每请求执行，性能可接受）。
+                    var modelRows = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    var mappingRows = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+                    var siteRows = await dbContext.Sites.ToListAsync(cancellationToken);
+                    var models = (
+                            from model in modelRows
+                            join mapping in mappingRows on model.Id equals mapping.ModelLibraryItemId
+                            join site in siteRows on mapping.SiteId equals site.Id
                             where model.IsEnabled && mapping.IsEnabled && site.IsEnabled
                             group site by new { model.Id, model.DisplayName } into grouped
                             orderby grouped.Key.DisplayName
@@ -72,7 +76,7 @@ public sealed partial class ProxyRequestMetadataCache
                                 DisplayName = grouped.Key.DisplayName,
                                 AvailableSiteCount = grouped.Count()
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
 
                     return models;
                 })
@@ -132,10 +136,14 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    return await (
-                            from mapping in dbContext.SiteModelMappings.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
-                            join model in dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
+                    // SqlSugar 不支持 LINQ query syntax 的多表 join，改为先各自读出再在内存连接。
+                    var siteModelMappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+                    var allSites = await dbContext.Sites.ToListAsync(cancellationToken);
+                    var allModels = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    return (
+                            from mapping in siteModelMappings
+                            join site in allSites on mapping.SiteId equals site.Id
+                            join model in allModels on mapping.ModelLibraryItemId equals model.Id
                             where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
                             orderby model.DisplayName, site.Name, mapping.RemoteModelName
                             select new CachedChatTarget
@@ -151,7 +159,7 @@ public sealed partial class ProxyRequestMetadataCache
                                 ApiKey = site.ApiKey,
                                 SiteModelName = mapping.RemoteModelName
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
                 })
             ?? [];
     }
@@ -210,7 +218,7 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var mappings = await dbContext.SiteModelMappings
-                        .AsNoTracking()
+                        
                         .Where(x => x.IsEnabled && x.MaxConcurrency > 0)
                         .Select(x => new
                         {
@@ -245,7 +253,7 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var sites = await dbContext.Sites
-                        .AsNoTracking()
+                        
                         .Where(x => x.IsEnabled)
                         .Select(x => new
                         {
@@ -272,17 +280,18 @@ public sealed partial class ProxyRequestMetadataCache
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var candidateCounts = await dbContext.ProxyRouteRules
-                        .AsNoTracking()
-                        .GroupBy(x => x.ExternalModelName)
+                    // SqlSugar 不支持 EF 风格的 GroupBy+聚合下推，改为先读出再在内存聚合。
+                    var allRules = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+                    var candidateCounts = allRules
+                        .GroupBy(x => x.ExternalModelName, StringComparer.Ordinal)
                         .Select(g => new { EntryName = g.Key, CandidateCount = g.Count() })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
 
-                    var storedEntries = await dbContext.ProxyRouteEntries
-                        .AsNoTracking()
-                        .OrderBy(x => x.EntryName)
+                    var storedEntries = (await dbContext.ProxyRouteEntries
+                            .OrderBy(x => x.EntryName)
+                            .ToListAsync(cancellationToken))
                         .Select(x => x.EntryName)
-                        .ToListAsync(cancellationToken);
+                        .ToList();
 
                     var countsByName = candidateCounts.ToDictionary(x => x.EntryName, x => x.CandidateCount, StringComparer.Ordinal);
                     return storedEntries
@@ -312,10 +321,14 @@ public sealed partial class ProxyRequestMetadataCache
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    return await (
-                            from mapping in dbContext.SiteModelMappings.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
-                            join model in dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
+                    // SqlSugar 不支持 LINQ query syntax 的多表 join，改为先各自读出再在内存连接。
+                    var mappingRows3 = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+                    var siteRows3 = await dbContext.Sites.ToListAsync(cancellationToken);
+                    var modelRows3 = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    return (
+                            from mapping in mappingRows3
+                            join site in siteRows3 on mapping.SiteId equals site.Id
+                            join model in modelRows3 on mapping.ModelLibraryItemId equals model.Id
                             where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
                             orderby site.Name, mapping.RemoteModelName
                             select new SiteInstanceItem
@@ -325,7 +338,7 @@ public sealed partial class ProxyRequestMetadataCache
                                 SiteModelName = mapping.RemoteModelName,
                                 ProtocolType = site.ProtocolType
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
                 })
             ?? [];
     }
@@ -344,7 +357,7 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var enabledMappings = await dbContext.SiteModelMappings
-                        .AsNoTracking()
+                        
                         .Where(m => m.IsEnabled)
                         .Select(m => new
                         {
@@ -362,7 +375,7 @@ public sealed partial class ProxyRequestMetadataCache
                     }
 
                     var models = await dbContext.ModelLibraryItems
-                        .AsNoTracking()
+                        
                         .Where(m => modelIds.Contains(m.Id) && m.IsEnabled)
                         .OrderBy(m => m.DisplayName)
                         .Select(m => new RouteModelItem
@@ -373,11 +386,11 @@ public sealed partial class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
 
                     var modelNameById = await dbContext.ModelLibraryItems
-                        .AsNoTracking()
+                        
                         .Where(m => modelIds.Contains(m.Id))
                         .ToDictionaryAsync(m => m.Id, m => m.ModelName, cancellationToken);
                     var routedModels = (await dbContext.ProxyRouteRules
-                        .AsNoTracking()
+                        
                         .Select(r => r.ExternalModelName)
                         .Distinct()
                         .ToListAsync(cancellationToken))
@@ -415,7 +428,7 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var sites = await dbContext.Sites
-                        .AsNoTracking()
+                        
                         .Where(s => s.IsEnabled)
                         .Select(s => new CachedSiteSnapshot
                         {
@@ -424,11 +437,11 @@ public sealed partial class ProxyRequestMetadataCache
                         })
                         .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
                     var modelNamesById = await dbContext.ModelLibraryItems
-                        .AsNoTracking()
+                        
                         .Where(m => m.IsEnabled)
                         .ToDictionaryAsync(m => m.Id, m => m.ModelName, cancellationToken);
                     var mappings = await dbContext.SiteModelMappings
-                        .AsNoTracking()
+                        
                         .Where(m => m.IsEnabled)
                         .Select(m => new
                         {
@@ -483,13 +496,13 @@ public sealed partial class ProxyRequestMetadataCache
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     // 查询全部站点（含禁用），以便在管理页面展示真实站点名和启用状态。
                     var siteRows = await dbContext.Sites
-                        .AsNoTracking()
+                        
                         .Select(s => new { s.Id, s.Name, s.IsEnabled })
                         .ToListAsync(cancellationToken);
                     var sites = siteRows.ToDictionary(s => s.Id, s => s.Name);
                     var siteEnabledMap = siteRows.ToDictionary(s => s.Id, s => s.IsEnabled);
                     var rules = await dbContext.ProxyRouteRules
-                        .AsNoTracking()
+                        
                         .OrderBy(r => r.Priority)
                         .Select(r => new
                         {
@@ -548,12 +561,11 @@ public sealed partial class ProxyRequestMetadataCache
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    return await dbContext.ProxyAccessKeys
-                        .AsNoTracking()
+                    var defaultKey = await dbContext.ProxyAccessKeys
                         .Where(k => k.IsEnabled && !string.IsNullOrWhiteSpace(k.PlainKey))
                         .OrderBy(k => k.KeyName)
-                        .Select(k => k.PlainKey)
-                        .FirstOrDefaultAsync(cancellationToken) ?? string.Empty;
+                        .FirstAsync(cancellationToken);
+                    return defaultKey?.PlainKey ?? string.Empty;
                 })
             ?? string.Empty;
     }
@@ -571,9 +583,12 @@ public sealed partial class ProxyRequestMetadataCache
 
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    return await (
-                            from rule in dbContext.ProxyRouteRules.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on rule.SiteId equals site.Id
+                    // SqlSugar 不支持 LINQ query syntax 的多表 join + group by，改为先各自读出再在内存连接。
+                    var ruleRows = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+                    var debugSiteRows = await dbContext.Sites.ToListAsync(cancellationToken);
+                    return (
+                            from rule in ruleRows
+                            join site in debugSiteRows on rule.SiteId equals site.Id
                             where rule.IsEnabled && site.IsEnabled
                             group site by rule.ExternalModelName into g
                             orderby g.Key
@@ -586,7 +601,7 @@ public sealed partial class ProxyRequestMetadataCache
                                 CanUseOpenAi = g.Any(),
                                 CanUseAnthropic = g.Any()
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
                 })
             ?? [];
     }

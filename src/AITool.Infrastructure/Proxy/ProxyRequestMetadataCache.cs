@@ -4,7 +4,6 @@ using System.Text.Json;
 using AITool.Application.Common;
 using AITool.Application.CoreRuntime;
 using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -219,8 +218,7 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var settings = await dbContext.SystemRuntimeSettings
-                        .AsNoTracking()
-                        .FirstOrDefaultAsync(x => x.Id == 1, cancellationToken);
+                        .FirstAsync(x => x.Id == 1, cancellationToken);
 
                     return settings is null
                         ? new CachedProxyRuntimeSettings()
@@ -616,7 +614,7 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var accessKeys = await dbContext.ProxyAccessKeys
-                        .AsNoTracking()
+                        
                         .Where(x => x.IsEnabled)
                         .Select(x => new CachedProxyAccessKey
                         {
@@ -695,9 +693,12 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    return await (
-                            from route in dbContext.ProxyRouteRules.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on route.SiteId equals site.Id
+                    // SqlSugar 不支持 LINQ query syntax 的多表 join，改为先各自读出再在内存连接。
+                    var routeRows = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+                    var routeSiteRows = await dbContext.Sites.ToListAsync(cancellationToken);
+                    return (
+                            from route in routeRows
+                            join site in routeSiteRows on route.SiteId equals site.Id
                             where route.IsEnabled && site.IsEnabled
                             select new CachedProxyRouteTarget
                             {
@@ -719,7 +720,7 @@ public sealed partial class ProxyRequestMetadataCache
                                 AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
                 })
             ?? [];
     }
@@ -770,7 +771,7 @@ public sealed partial class ProxyRequestMetadataCache
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
                     var models = await dbContext.ModelLibraryItems
-                        .AsNoTracking()
+                        
                         .Where(x => x.IsEnabled)
                         .Select(x => new CachedEnabledModel
                         {
@@ -865,10 +866,14 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-                    var rawMappings = await (
-                            from mapping in dbContext.SiteModelMappings.AsNoTracking()
-                            join site in dbContext.Sites.AsNoTracking() on mapping.SiteId equals site.Id
-                            join model in dbContext.ModelLibraryItems.AsNoTracking() on mapping.ModelLibraryItemId equals model.Id
+                    // SqlSugar 不支持 LINQ query syntax 的多表 join，改为先各自读出再在内存连接。
+                    var fbMappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+                    var fbSites = await dbContext.Sites.ToListAsync(cancellationToken);
+                    var fbModels = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    var rawMappings = (
+                            from mapping in fbMappings
+                            join site in fbSites on mapping.SiteId equals site.Id
+                            join model in fbModels on mapping.ModelLibraryItemId equals model.Id
                             where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
                             select new
                             {
@@ -883,7 +888,7 @@ public sealed partial class ProxyRequestMetadataCache
                                 site.ApiKey,
                                 SiteModelName = mapping.RemoteModelName
                             })
-                        .ToListAsync(cancellationToken);
+                        .ToList();
 
                     var mappings = rawMappings
                         .GroupBy(x => x.ModelId)

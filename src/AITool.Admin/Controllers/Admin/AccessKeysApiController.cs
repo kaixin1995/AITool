@@ -5,7 +5,6 @@ using AITool.Admin.Services;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Controllers.Admin;
 
@@ -113,7 +112,7 @@ public sealed class AccessKeysApiController : ControllerBase
     public async Task<IActionResult> List(CancellationToken cancellationToken)
     {
         var keys = await _dbContext.ProxyAccessKeys
-            .AsNoTracking()
+            
             .OrderBy(k => k.KeyName)
             .ToListAsync(cancellationToken);
 
@@ -156,8 +155,7 @@ public sealed class AccessKeysApiController : ControllerBase
             IsEnabled = true,
             AllowedRouteNames = string.Empty
         };
-        _dbContext.ProxyAccessKeys.Add(key);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.InsertAsync(key, cancellationToken);
         await _cacheInvalidationService.InvalidateAccessKeysAsync();
 
         return Ok(new CreateAccessKeyResult
@@ -175,11 +173,11 @@ public sealed class AccessKeysApiController : ControllerBase
     [HttpPost("update-routes/{keyId}")]
     public async Task<IActionResult> UpdateRoutes(Guid keyId, [FromBody] UpdateAccessKeyRoutesRequest request, CancellationToken cancellationToken)
     {
-        var key = await _dbContext.ProxyAccessKeys.FindAsync([keyId], cancellationToken);
+        var key = await _dbContext.ProxyAccessKeys.InSingleAsync(keyId);
         if (key is null) return NotFound(new { message = "密钥不存在" });
 
         key.AllowedRouteNames = SerializeRouteNames(request.AllowedRouteNames);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(key, cancellationToken);
         await _cacheInvalidationService.InvalidateAccessKeysAsync();
 
         return Ok(new { keyId, allowedRouteNames = DeserializeRouteNames(key.AllowedRouteNames) });
@@ -191,11 +189,11 @@ public sealed class AccessKeysApiController : ControllerBase
     [HttpPost("toggle/{keyId}")]
     public async Task<IActionResult> Toggle(Guid keyId, CancellationToken cancellationToken)
     {
-        var key = await _dbContext.ProxyAccessKeys.FindAsync([keyId], cancellationToken);
+        var key = await _dbContext.ProxyAccessKeys.InSingleAsync(keyId);
         if (key is null) return NotFound(new { message = "密钥不存在" });
 
         key.IsEnabled = !key.IsEnabled;
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.UpdateAsync(key, cancellationToken);
         await _cacheInvalidationService.InvalidateAccessKeysAsync();
 
         return Ok(new { keyId, isEnabled = key.IsEnabled });
@@ -207,11 +205,10 @@ public sealed class AccessKeysApiController : ControllerBase
     [HttpPost("delete/{keyId}")]
     public async Task<IActionResult> Delete(Guid keyId, CancellationToken cancellationToken)
     {
-        var key = await _dbContext.ProxyAccessKeys.FindAsync([keyId], cancellationToken);
+        var key = await _dbContext.ProxyAccessKeys.InSingleAsync(keyId);
         if (key is null) return NotFound(new { message = "密钥不存在" });
 
-        _dbContext.ProxyAccessKeys.Remove(key);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.DeleteAsync(key, cancellationToken);
         await _cacheInvalidationService.InvalidateAccessKeysAsync();
 
         return Ok(new { keyId });

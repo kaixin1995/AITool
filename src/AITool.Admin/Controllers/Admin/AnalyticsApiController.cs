@@ -1,7 +1,6 @@
 using AITool.Admin.Services;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Controllers.Admin;
 
@@ -450,7 +449,7 @@ public sealed class AnalyticsApiController : ControllerBase
     public async Task<ActionResult<AnalyticsFilterOptionsDto>> GetOptions(CancellationToken cancellationToken)
     {
         var sites = await _dbContext.Sites
-            .AsNoTracking()
+            
             .OrderBy(x => x.Name)
             .Select(x => new AnalyticsSiteOptionDto
             {
@@ -460,7 +459,7 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var models = await _dbContext.ModelLibraryItems
-            .AsNoTracking()
+            
             .Where(x => x.IsEnabled)
             .OrderBy(x => x.ModelName)
             .Select(x => new AnalyticsModelOptionDto
@@ -470,7 +469,7 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var accessKeys = await _dbContext.ProxyAccessKeys
-            .AsNoTracking()
+            
             .OrderBy(x => x.KeyName)
             .Select(x => new AnalyticsAccessKeyOptionDto
             {
@@ -507,20 +506,20 @@ public sealed class AnalyticsApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         var siteNames = await dbContext.Sites
-            .AsNoTracking()
+            
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
 
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
         var isAllRange = string.Equals(query.RangeType, "all", StringComparison.OrdinalIgnoreCase);
 
-        // 用 Dapper 手写 SQL，时间过滤 + 非时间筛选全部下推到 DB，避免全表加载到内存。
+        // 用 SqlSugar Ado 原生 SQL，时间过滤 + 非时间筛选全部下推到 DB，避免全表加载到内存。
         var (dapperRows, actualStartTime) = await UsageLogSqlQueries.QueryForAnalyticsAsync(
-            dbContext.Database.GetDbConnection(),
+            dbContext.Client,
             startTime, endTime,
             query.ProtocolType, query.ModelName, query.AccessKeyId, query.SiteId, isAllRange);
 
-        // 对 all 范围，用 Dapper 返回的实际起始时间重新解析桶类型。
+        // 对 all 范围，用原生 SQL 返回的实际起始时间重新解析桶类型。
         if (isAllRange)
         {
             startTime = actualStartTime;

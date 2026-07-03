@@ -4,7 +4,6 @@ using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -187,9 +186,7 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
         });
     }
 
@@ -207,10 +204,9 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
     /// </summary>
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         var today = DateTimeOffset.Now;
         var yesterday = today.AddDays(-1);
@@ -230,7 +226,6 @@ internal sealed class ConversationPageWebApplicationFactory : WebApplicationFact
             UsageLogAutoCleanupEnabled = true,
             ConversationLogEnabled = true
         });
-        await db.SaveChangesAsync();
 
         // 对话记录现在只走本地 JSONL 文件（不再写 DB 表），通过 IConversationLogStore 写入种子数据。
         var store = scope.ServiceProvider.GetRequiredService<AITool.Application.Conversations.IConversationLogStore>();

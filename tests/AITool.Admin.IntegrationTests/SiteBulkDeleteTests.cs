@@ -5,7 +5,7 @@ using AITool.Infrastructure.Persistence;
 using AITool.Admin.Pages.Admin.Sites;
 using FluentAssertions;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
+using SqlSugar;
 
 namespace AITool.Admin.IntegrationTests;
 
@@ -24,7 +24,7 @@ public sealed class SiteBulkDeleteTests
     [Fact]
     public async Task OnPostBulkDeleteAsync_removes_selected_sites_and_related_mappings()
     {
-        await using var db = CreateDbContext();
+        await using var db = await CreateDbContext();
         await SeedAsync(db);
         var page = new IndexModel(db)
         {
@@ -60,7 +60,7 @@ public sealed class SiteBulkDeleteTests
     [Fact]
     public async Task OnPostDeleteAsync_removes_related_rules_and_empty_entries()
     {
-        await using var db = CreateDbContext();
+        await using var db = await CreateDbContext();
         await SeedAsync(db);
         var page = new IndexModel(db);
 
@@ -80,22 +80,25 @@ public sealed class SiteBulkDeleteTests
     /// <summary>
     /// 创建当前测试要使用的数据库上下文。
     /// </summary>
-    private static AppDbContext CreateDbContext()
+    private static Task<AppDbContext> CreateDbContext()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseSqlite($"Data Source={Path.Combine(Path.GetTempPath(), $"aitool-site-bulk-delete-{Guid.NewGuid():N}.db")}")
-            .Options;
+        var databasePath = Path.Combine(Path.GetTempPath(), $"aitool-site-bulk-delete-{Guid.NewGuid():N}.db");
+        var sqlSugar = new SqlSugarScope(new ConnectionConfig
+        {
+            ConnectionString = $"Data Source={databasePath}",
+            DbType = SqlSugar.DbType.Sqlite,
+            IsAutoCloseConnection = true
+        });
 
-        var db = new AppDbContext(options);
-        db.Database.EnsureDeleted();
-        db.Database.EnsureCreated();
-        return db;
+        var db = new AppDbContext(sqlSugar);
+        SqlSugarSetup.InitializeDatabase(sqlSugar);
+        return Task.FromResult(db);
     }
 
     /// <summary>
     /// 准备当前测试场景所需的数据。
     /// </summary>
-    private static async Task SeedAsync(AppDbContext db)
+    private static Task SeedAsync(AppDbContext db)
     {
         var siteA = new Site
         {
@@ -199,6 +202,6 @@ public sealed class SiteBulkDeleteTests
                 IsEnabled = true
             });
 
-        await db.SaveChangesAsync();
+        return Task.CompletedTask;
     }
 }

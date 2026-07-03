@@ -4,7 +4,6 @@ using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Retention;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.ApplicationTests.Retention;
 
@@ -17,6 +16,10 @@ public sealed class LogRetentionServiceTests : IDisposable
     /// 内存数据库上下文，用于准备测试数据并验证清理结果。
     /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 测试工厂的清理回调，用于释放临时 SQLite 文件。
+    /// </summary>
+    private readonly Action _dispose;
     /// <summary>
     /// 空实现的对话记录存储，供保留策略测试复用。
     /// </summary>
@@ -32,10 +35,9 @@ public sealed class LogRetentionServiceTests : IDisposable
     /// </summary>
     public LogRetentionServiceTests()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        _dbContext = new AppDbContext(options);
+        var factory = TestDatabaseFactory.Create();
+        _dbContext = factory.DbContext;
+        _dispose = factory.Dispose;
         _service = new LogRetentionService(_dbContext, _conversationLogStore);
     }
 
@@ -46,14 +48,15 @@ public sealed class LogRetentionServiceTests : IDisposable
     public async Task PruneAsync_uses_runtime_retention_settings_and_writes_back_prune_result()
     {
         // 这里显式写入运行时设置，模拟系统已启用按天数保留日志的场景。
-        _dbContext.SystemRuntimeSettings.Add(new SystemRuntimeSettings
+        await _dbContext.InsertAsync(new SystemRuntimeSettings
         {
             Id = 1,
             UsageLogRetentionDays = 3,
             UsageLogAutoCleanupEnabled = true
         });
 
-        _dbContext.ProxyUsageLogs.AddRange(
+        await _dbContext.InsertRangeAsync(new[]
+        {
             new ProxyUsageLog
             {
                 AccessKeyId = Guid.NewGuid(),
@@ -83,9 +86,8 @@ public sealed class LogRetentionServiceTests : IDisposable
                 OutputTokens = 5,
                 TotalTokens = 15,
                 RequestedAt = DateTimeOffset.UtcNow.AddDays(-2)
-            });
-
-        await _dbContext.SaveChangesAsync();
+            }
+        });
 
         // 记录清理前时间，用来校验回写时间和边界是否合理。
         var beforePruneAt = DateTimeOffset.UtcNow;
@@ -94,11 +96,13 @@ public sealed class LogRetentionServiceTests : IDisposable
         var settings = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
 
         result.UsageLogPrunedCount.Should().Be(1);
-        _dbContext.ProxyUsageLogs.Should().ContainSingle();
-        _dbContext.ProxyUsageLogs.Single().RequestedAt.Should().BeAfter(beforePruneAt.AddDays(-3).AddMinutes(-1));
+        var remainingLogs = _dbContext.ProxyUsageLogs.ToList();
+        remainingLogs.Should().ContainSingle();
+        remainingLogs.Single().RequestedAt.Should().BeAfter(beforePruneAt.AddDays(-3).AddMinutes(-1));
         settings.LastUsageLogPrunedCount.Should().Be(1);
         settings.LastUsageLogPrunedAt.Should().NotBeNull();
-        settings.LastUsageLogPrunedAt.Should().BeOnOrAfter(beforePruneAt);
+        // SqlSugar 在 SQLite 下读回 DateTimeOffset 时配本地时区 offset，比较瞬时时刻而非精确 offset。
+        settings.LastUsageLogPrunedAt!.Value.DateTime.Should().BeOnOrAfter(beforePruneAt.DateTime);
     }
 
     /// <summary>
@@ -112,14 +116,14 @@ public sealed class LogRetentionServiceTests : IDisposable
         // 通过注入时钟委托，让清理逻辑按固定时间执行。
         var service = new LogRetentionService(_dbContext, _conversationLogStore, () => baseTime);
 
-        _dbContext.SystemRuntimeSettings.Add(new SystemRuntimeSettings
+        await _dbContext.InsertAsync(new SystemRuntimeSettings
         {
             Id = 1,
             UsageLogRetentionDays = 3,
             UsageLogAutoCleanupEnabled = true
         });
         // 这条日志恰好处于保留窗口边界，用来验证比较条件是否包含等号。
-        _dbContext.ProxyUsageLogs.Add(new ProxyUsageLog
+        await _dbContext.InsertAsync(new ProxyUsageLog
         {
             AccessKeyId = Guid.NewGuid(),
             ProtocolType = "OpenAI",
@@ -134,16 +138,16 @@ public sealed class LogRetentionServiceTests : IDisposable
             TotalTokens = 15,
             RequestedAt = baseTime.AddDays(-3)
         });
-        await _dbContext.SaveChangesAsync();
 
         var result = await service.PruneAsync();
         // 清理完成后重新查询设置，确认统计信息同步更新。
         var settings = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
 
         result.UsageLogPrunedCount.Should().Be(0);
-        _dbContext.ProxyUsageLogs.Should().ContainSingle();
+        _dbContext.ProxyUsageLogs.ToList().Should().ContainSingle();
         settings.LastUsageLogPrunedCount.Should().Be(0);
-        settings.LastUsageLogPrunedAt.Should().Be(baseTime);
+        // SqlSugar 在 SQLite 下读回 DateTimeOffset 时配本地时区 offset，比较瞬时时刻而非精确 offset。
+        settings.LastUsageLogPrunedAt!.Value.DateTime.Should().Be(baseTime.DateTime);
     }
 
     /// <summary>
@@ -157,14 +161,14 @@ public sealed class LogRetentionServiceTests : IDisposable
         // 使用固定时钟，验证禁用清理时回写的时间值是否稳定。
         var service = new LogRetentionService(_dbContext, _conversationLogStore, () => baseTime);
 
-        _dbContext.SystemRuntimeSettings.Add(new SystemRuntimeSettings
+        await _dbContext.InsertAsync(new SystemRuntimeSettings
         {
             Id = 1,
             UsageLogRetentionDays = 3,
             UsageLogAutoCleanupEnabled = false
         });
         // 放入一条明显超过保留期的日志，确认它不会被误删。
-        _dbContext.ProxyUsageLogs.Add(new ProxyUsageLog
+        await _dbContext.InsertAsync(new ProxyUsageLog
         {
             AccessKeyId = Guid.NewGuid(),
             ProtocolType = "OpenAI",
@@ -176,22 +180,26 @@ public sealed class LogRetentionServiceTests : IDisposable
             ReasoningEffort = string.Empty,
             RequestedAt = baseTime.AddDays(-10)
         });
-        await _dbContext.SaveChangesAsync();
 
         var result = await service.PruneAsync();
         // 读取最新设置，确认虽然未删除日志，但仍记录了本次执行结果。
         var settings = await _dbContext.SystemRuntimeSettings.SingleAsync(x => x.Id == 1);
 
         result.UsageLogPrunedCount.Should().Be(0);
-        _dbContext.ProxyUsageLogs.Should().ContainSingle();
+        _dbContext.ProxyUsageLogs.ToList().Should().ContainSingle();
         settings.LastUsageLogPrunedCount.Should().Be(0);
-        settings.LastUsageLogPrunedAt.Should().Be(baseTime);
+        // SqlSugar 在 SQLite 下读回 DateTimeOffset 时配本地时区 offset，比较瞬时时刻而非精确 offset。
+        settings.LastUsageLogPrunedAt!.Value.DateTime.Should().Be(baseTime.DateTime);
     }
 
     /// <summary>
     /// 释放测试使用的数据库上下文。
     /// </summary>
-    public void Dispose() => _dbContext.Dispose();
+    public void Dispose()
+    {
+        _dbContext.Dispose();
+        _dispose();
+    }
 
     /// <summary>
     /// 保留策略测试不关心对话文件写入，这里提供一个空实现即可。

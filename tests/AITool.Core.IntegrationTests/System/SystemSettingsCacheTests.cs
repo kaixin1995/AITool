@@ -1,10 +1,10 @@
 using AITool.Application.Operations;
+using AITool.Core.IntegrationTests;
 using AITool.Domain.Operations;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Caching.Memory;
 
@@ -37,7 +37,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
     {
         var services = new ServiceCollection();
         services.AddMemoryCache();
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+        services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
         services.AddSingleton<ProxyRequestMetadataCache>();
         _serviceProvider = services.BuildServiceProvider();
@@ -55,8 +55,7 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
         var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(_serviceProvider);
 
         // 插入初始设置数据
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
@@ -73,7 +72,6 @@ public sealed class SystemSettingsCacheTests : IAsyncDisposable
             UsageLogAutoCleanupEnabled = true,
             DeveloperFeaturesEnabled = false
         });
-        await db.SaveChangesAsync();
 
         // 首次加载缓存，验证初始值
         var before = await cache.GetRuntimeSettingsAsync(CancellationToken.None);

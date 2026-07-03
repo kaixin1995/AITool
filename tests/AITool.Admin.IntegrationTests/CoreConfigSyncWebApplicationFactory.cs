@@ -1,3 +1,4 @@
+using AITool.Admin.IntegrationTests;
 using AITool.Application.CoreRuntime;
 using AITool.Application.Operations;
 using AITool.Application.UsageLogs;
@@ -7,7 +8,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -27,9 +27,7 @@ internal sealed class CoreConfigSyncWebApplicationFactory : WebApplicationFactor
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
 
             // 注册代理运行时基础设施，提供 IUsageLogService、事件 spool、
             // 配置快照等 Core 控制器所需的服务。
@@ -138,10 +136,9 @@ internal sealed class CoreConfigSyncWebApplicationFactory : WebApplicationFactor
 
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         db.Sites.Add(new AITool.Domain.Sites.Site
         {
@@ -217,7 +214,5 @@ internal sealed class CoreConfigSyncWebApplicationFactory : WebApplicationFactor
             ConcurrencyMode = 0,
             ConcurrencyQueueTimeoutSeconds = 120
         });
-
-        await db.SaveChangesAsync();
     }
 }

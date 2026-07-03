@@ -1,7 +1,6 @@
 using AITool.Application.Operations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
@@ -92,8 +91,8 @@ public sealed class CoreConfigSyncHostedService : IHostedService
                 var settingsService = scope.ServiceProvider.GetRequiredService<ISystemRuntimeSettingsService>();
                 var coreClient = scope.ServiceProvider.GetRequiredService<CoreAdminClient>();
                 var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                var siteCount = await dbContext.Sites.AsNoTracking().CountAsync(cancellationToken);
-                var accessKeyCount = await dbContext.ProxyAccessKeys.AsNoTracking().CountAsync(cancellationToken);
+                var siteCount = await dbContext.Sites.CountAsync(cancellationToken);
+                var accessKeyCount = await dbContext.ProxyAccessKeys.CountAsync(cancellationToken);
 
                 if (siteCount == 0 || accessKeyCount == 0)
                 {

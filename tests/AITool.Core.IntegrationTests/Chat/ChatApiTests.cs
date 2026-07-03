@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using AITool.Core.IntegrationTests;
 using AITool.Application.Proxy;
 using AITool.Domain.Models;
 using AITool.Domain.Operations;
@@ -12,7 +13,6 @@ using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -275,9 +275,9 @@ public sealed class ChatApiTests
         await using (var scope = factory.Services.CreateAsyncScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var mapping = await db.SiteModelMappings.FindAsync(ChatWebApplicationFactory.MappingId);
+            var mapping = await db.SiteModelMappings.InSingleAsync(ChatWebApplicationFactory.MappingId);
             mapping!.MaxConcurrency = 2;
-            await db.SaveChangesAsync();
+            await db.UpdateAsync(mapping);
             // 数据库修改后需手动刷新并发限制缓存，否则 AcquireAsync 仍从缓存读取旧值并覆盖 UpdateLimit 的结果
             var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
             metadataCache.InvalidateRuntimeRouteTargets();
@@ -368,9 +368,7 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
             if (_httpClientFactory is not null)
@@ -405,10 +403,9 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
     /// </summary>
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         db.Sites.AddRange(
             new Site
@@ -487,8 +484,6 @@ internal sealed class ChatWebApplicationFactory : WebApplicationFactory<Program>
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
-
-        await db.SaveChangesAsync();
     }
 }
 

@@ -1,7 +1,6 @@
 using System.Text.Json;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Pages.Admin.AccessKeys;
 

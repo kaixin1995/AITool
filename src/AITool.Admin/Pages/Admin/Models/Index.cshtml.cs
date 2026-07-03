@@ -5,7 +5,6 @@ using AITool.Domain.Models;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Admin.Pages.Admin.Models;
@@ -202,10 +201,10 @@ public class IndexModel : PageModel
     {
         try
         {
-            var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
+            var model = await _dbContext.ModelLibraryItems.InSingleAsync(modelId);
             if (model is null) return RedirectToPage();
             model.IsEnabled = !model.IsEnabled;
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(model, cancellationToken);
             await _cacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
             await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
             StatusMessage = "模型状态已切换";
@@ -230,7 +229,7 @@ public class IndexModel : PageModel
         var isAjaxRequest = IsAjaxRequest();
         try
         {
-            var model = await _dbContext.ModelLibraryItems.FindAsync([modelId], cancellationToken);
+            var model = await _dbContext.ModelLibraryItems.InSingleAsync(modelId);
             if (model is null)
             {
                 if (isAjaxRequest)
@@ -272,24 +271,24 @@ public class IndexModel : PageModel
 
             if (mappings.Count > 0)
             {
-                _dbContext.SiteModelMappings.RemoveRange(mappings);
+                await _dbContext.DeleteRangeAsync(mappings, cancellationToken);
             }
             if (affectedRules.Count > 0)
             {
-                _dbContext.ProxyRouteRules.RemoveRange(affectedRules);
+                await _dbContext.DeleteRangeAsync(affectedRules, cancellationToken);
             }
             if (affectedMonitors.Count > 0)
             {
-                _dbContext.ModelHealthMonitors.RemoveRange(affectedMonitors);
+                await _dbContext.DeleteRangeAsync(affectedMonitors, cancellationToken);
             }
             foreach (var task in affectedDetectionTasks)
             {
                 // 删除模型后清空检测任务的模型绑定，避免后台继续出现已删除模型。
                 task.ModelLibraryItemId = null;
+                await _dbContext.UpdateAsync(task, cancellationToken);
             }
-            _dbContext.ModelLibraryItems.Remove(model);
+            await _dbContext.DeleteAsync(model, cancellationToken);
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
             await CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
 
             await _cacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
@@ -356,11 +355,11 @@ public class IndexModel : PageModel
             .Select(s => s.Id)
             .ToListAsync(cancellationToken);
 
-        var siteCounts = await _dbContext.SiteModelMappings
+        var siteCounts = (await _dbContext.SiteModelMappings.ToListAsync(cancellationToken))
             .Where(m => m.IsEnabled && enabledSiteIds.Contains(m.SiteId))
             .GroupBy(m => m.ModelLibraryItemId)
             .Select(g => new { ModelId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.ModelId, x => x.Count, cancellationToken);
+            .ToDictionary(x => x.ModelId, x => x.Count);
 
         var models = await _dbContext.ModelLibraryItems
             .OrderBy(x => x.ModelName)
@@ -437,8 +436,7 @@ public class IndexModel : PageModel
             return;
         }
 
-        _dbContext.ProxyRouteEntries.RemoveRange(emptyEntries);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.DeleteRangeAsync(emptyEntries, cancellationToken);
     }
 }
 
@@ -520,14 +518,13 @@ public class CreateModelModel : PageModel
     {
         if (!ModelState.IsValid) return Page();
 
-        _dbContext.ModelLibraryItems.Add(new ModelLibraryItem
+        await _dbContext.InsertAsync(new ModelLibraryItem
         {
             ModelName = Command.ModelName,
             DisplayName = Command.DisplayName,
             IsEnabled = Command.IsEnabled
-        });
+        }, cancellationToken);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         await _cacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
         await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
         return RedirectToPage("./Index");

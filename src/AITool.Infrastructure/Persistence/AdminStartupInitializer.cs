@@ -1,16 +1,18 @@
+using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Scheduling;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using SqlSugar;
 
 namespace AITool.Infrastructure.Persistence;
 
 /// <summary>
-/// 提供管理后台宿主启动时共享的初始化能力，封装数据库创建、Schema 迁移和 Hangfire 调度注册。
+/// 提供管理后台宿主启动时共享的初始化能力，封装数据库创建和 Hangfire 调度注册。
 /// <para>
-/// Web 宿主和 Admin 宿主在启动时都需要执行数据库初始化和 Hangfire 调度任务注册。
-/// 此类将这些通用步骤集中管理，避免两个 Program.cs 中的重复代码。
+/// 管理后台宿主（以及历史上与 Web 共享启动逻辑的宿主）在启动时都需要执行数据库初始化和
+/// Hangfire 调度任务注册。此类将这些通用步骤集中管理，避免 Program.cs 中的重复代码。
 /// </para>
 /// </summary>
 public static class AdminStartupInitializer
@@ -20,8 +22,8 @@ public static class AdminStartupInitializer
     /// <para>
     /// 包含三个步骤：
     /// <list type="number">
-    ///     <item>创建或打开 SQLite 数据库（EnsureCreated）</item>
-    ///     <item>补齐历史数据库缺失的表结构（Schema 迁移）</item>
+    ///     <item>CodeFirst 建表/补列 + 持久化 PRAGMA（SqlSugarSetup.InitializeDatabase）</item>
+    ///     <item>（历史 ALTER TABLE 升级脚本已由 CodeFirst 差量建表替代，不再需要）</item>
     ///     <item>注册所有已启用的 Hangfire 定时检测任务</item>
     /// </list>
     /// </para>
@@ -31,23 +33,11 @@ public static class AdminStartupInitializer
     public static async Task InitializeAsync(IServiceProvider serviceProvider, ILogger logger)
     {
         using var scope = serviceProvider.CreateScope();
-        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-        // 确保数据库文件存在并创建表结构。
-        // SQLite 的 EnsureCreated 仅在数据库不存在时创建完整结构，
-        // 已有旧库不会自动增加新列或新表，下面的 Schema 迁移负责补齐。
-        db.Database.EnsureCreated();
-
-        // 启用 WAL 模式并调优持久化的 PRAGMA。
-        // WAL（Write-Ahead Logging）让读写不再互斥，并发读写吞吐提升 3-10 倍；
-        // synchronous=NORMAL 在 WAL 下安全且减少 fsync 频次 50%+。
-        // 这两个 PRAGMA 是数据库文件级持久属性，执行一次即可。
-        // 连接级 PRAGMA（cache_size/busy_timeout）由 SqlitePragmaInterceptor 在每次连接打开时设置。
-        await ApplyPersistentPragmasAsync(db);
-
-        // 补齐历史数据库缺失的列和表。
-        // 这些迁移步骤是幂等的：已存在的列不会重复添加。
-        await DatabaseSchemaMigrator.EnsureProxyUsageLogSchemaAsync(db);
+        // 初始化数据库：CodeFirst 建表（表已存在时只增不删，自动补齐缺失列）+ 持久化/连接级 PRAGMA。
+        // 替代原 EF 的 EnsureCreated + 手写 ALTER TABLE 升级脚本。
+        var sqlSugar = scope.ServiceProvider.GetRequiredService<ISqlSugarClient>();
+        SqlSugarSetup.InitializeDatabase(sqlSugar);
 
         // 注册所有已启用的定时检测任务到 Hangfire 调度器。
         // 如果注册失败（如任务配置异常），仅记录警告，不阻止启动。
@@ -69,7 +59,7 @@ public static class AdminStartupInitializer
         {
             try
             {
-                var cache = scope.ServiceProvider.GetService<Proxy.ProxyRequestMetadataCache>();
+                var cache = scope.ServiceProvider.GetService<ProxyRequestMetadataCache>();
                 if (cache is not null)
                 {
                     await cache.GetRuntimeSettingsAsync(default);
@@ -80,30 +70,6 @@ public static class AdminStartupInitializer
             {
                 // 预热失败不阻塞启动，首个请求会触发懒加载。
                 logger.LogWarning(ex, "启动时预热代理缓存失败，首个代理请求将懒加载");
-            }
-        }
-    }
-
-    /// <summary>
-    /// 应用数据库文件级持久化的 PRAGMA（WAL 模式 + synchronous=NORMAL）。
-    /// 幂等：已设置时重复执行无副作用。
-    /// </summary>
-    private static async Task ApplyPersistentPragmasAsync(AppDbContext db)
-    {
-        var pragmaStatements = new[]
-        {
-            "PRAGMA journal_mode=WAL;",
-            "PRAGMA synchronous=NORMAL;"
-        };
-        foreach (var statement in pragmaStatements)
-        {
-            try
-            {
-                await db.Database.ExecuteSqlRawAsync(statement);
-            }
-            catch
-            {
-                // PRAGMA 执行失败不阻塞启动（如只读环境），降级为默认模式。
             }
         }
     }

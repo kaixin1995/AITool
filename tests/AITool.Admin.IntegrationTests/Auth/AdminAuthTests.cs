@@ -1,6 +1,7 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using AITool.Admin.IntegrationTests;
 using AITool.Application.Proxy;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
@@ -11,7 +12,6 @@ using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -155,9 +155,7 @@ internal sealed class AdminAuthWebApplicationFactory : WebApplicationFactory<AIT
         });
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
 
@@ -209,10 +207,9 @@ internal sealed class AdminAuthWebApplicationFactory : WebApplicationFactory<AIT
     /// </summary>
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         var siteId = Guid.Parse("77777777-7777-7777-7777-777777777777");
         var accessKeyRaw = "anthropic-test-key";
@@ -271,8 +268,6 @@ internal sealed class AdminAuthWebApplicationFactory : WebApplicationFactory<AIT
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
-
-        await db.SaveChangesAsync();
     }
 }
 

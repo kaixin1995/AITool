@@ -3,7 +3,6 @@ using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
 using Microsoft.AspNetCore.Mvc.Rendering;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Admin.Pages.Admin.Models;
@@ -166,13 +165,13 @@ public class EditModel : PageModel
 
         try
         {
-            var model = await _dbContext.ModelLibraryItems.FindAsync([id], cancellationToken);
+            var model = await _dbContext.ModelLibraryItems.InSingleAsync(id);
             if (model is null) return RedirectToPage("./Index");
 
             model.ModelName = ModelName;
             model.DisplayName = DisplayName; model.IsEnabled = IsEnabled;
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(model, cancellationToken);
             await _cacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
             await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
             StatusMessage = "模型已更新";
@@ -215,14 +214,14 @@ public class EditModel : PageModel
 
         try
         {
-            var model = await _dbContext.ModelLibraryItems.FindAsync([id], cancellationToken);
+            var model = await _dbContext.ModelLibraryItems.InSingleAsync(id);
             if (model is null)
             {
                 return RedirectToPage("./Index");
             }
 
             var site = await _dbContext.Sites
-                .FirstOrDefaultAsync(x => x.Id == NewMapping.SiteId && x.IsEnabled, cancellationToken);
+                .FirstAsync(x => x.Id == NewMapping.SiteId && x.IsEnabled, cancellationToken);
             if (site is null)
             {
                 StatusMessage = "所选站点不存在或已禁用";
@@ -233,26 +232,26 @@ public class EditModel : PageModel
 
             var remoteModelName = NewMapping.RemoteModelName.Trim();
             var existingMapping = await _dbContext.SiteModelMappings
-                .FirstOrDefaultAsync(x => x.SiteId == NewMapping.SiteId && x.RemoteModelName == remoteModelName, cancellationToken);
+                .FirstAsync(x => x.SiteId == NewMapping.SiteId && x.RemoteModelName == remoteModelName, cancellationToken);
             if (existingMapping is not null)
             {
                 existingMapping.ModelLibraryItemId = id;
                 existingMapping.IsEnabled = NewMapping.IsEnabled;
                 existingMapping.LastStatus = "manual";
+                await _dbContext.UpdateAsync(existingMapping, cancellationToken);
             }
             else
             {
-                _dbContext.SiteModelMappings.Add(new AITool.Domain.SiteCatalog.SiteModelMapping
+                await _dbContext.InsertAsync(new AITool.Domain.SiteCatalog.SiteModelMapping
                 {
                     SiteId = NewMapping.SiteId,
                     ModelLibraryItemId = id,
                     RemoteModelName = remoteModelName,
                     LastStatus = "manual",
                     IsEnabled = NewMapping.IsEnabled
-                });
+                }, cancellationToken);
             }
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
             await _cacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
             await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
             StatusMessage = "关联站点已添加";
@@ -277,13 +276,13 @@ public class EditModel : PageModel
         try
         {
             var mapping = await _dbContext.SiteModelMappings
-                .FirstOrDefaultAsync(x => x.Id == mappingId && x.ModelLibraryItemId == id, cancellationToken);
+                .FirstAsync(x => x.Id == mappingId && x.ModelLibraryItemId == id, cancellationToken);
             if (mapping is null)
             {
                 return RedirectToPage("./Index");
             }
 
-            var model = await _dbContext.ModelLibraryItems.FindAsync([id], cancellationToken);
+            var model = await _dbContext.ModelLibraryItems.InSingleAsync(id);
             if (model is null)
             {
                 return RedirectToPage("./Index");
@@ -298,13 +297,12 @@ public class EditModel : PageModel
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
 
-            _dbContext.SiteModelMappings.Remove(mapping);
+            await _dbContext.DeleteAsync(mapping, cancellationToken);
             if (affectedRules.Count > 0)
             {
-                _dbContext.ProxyRouteRules.RemoveRange(affectedRules);
+                await _dbContext.DeleteRangeAsync(affectedRules, cancellationToken);
             }
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
             await CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
 
             await _cacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
@@ -332,7 +330,7 @@ public class EditModel : PageModel
     /// </summary>
     private async Task<bool> LoadPageDataAsync(Guid id, CancellationToken cancellationToken)
     {
-        var model = await _dbContext.ModelLibraryItems.FindAsync([id], cancellationToken);
+        var model = await _dbContext.ModelLibraryItems.InSingleAsync(id);
         if (model is null)
         {
             return false;
@@ -356,9 +354,11 @@ public class EditModel : PageModel
     /// </summary>
     private async Task LoadSiteMappingsAsync(Guid modelId, CancellationToken cancellationToken)
     {
-        SiteMappings = await (
-                from mapping in _dbContext.SiteModelMappings
-                join site in _dbContext.Sites on mapping.SiteId equals site.Id
+        var mappings = await _dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+        var sites = await _dbContext.Sites.ToListAsync(cancellationToken);
+        SiteMappings = (
+                from mapping in mappings
+                join site in sites on mapping.SiteId equals site.Id
                 where mapping.ModelLibraryItemId == modelId
                 orderby site.Name, mapping.RemoteModelName
                 select new ModelSiteMappingViewModel
@@ -370,7 +370,7 @@ public class EditModel : PageModel
                     IsEnabled = mapping.IsEnabled,
                     MaxConcurrency = mapping.MaxConcurrency
                 })
-            .ToListAsync(cancellationToken);
+            .ToList();
     }
 
     /// <summary>
@@ -431,7 +431,6 @@ public class EditModel : PageModel
             return;
         }
 
-        _dbContext.ProxyRouteEntries.RemoveRange(emptyEntries);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dbContext.DeleteRangeAsync(emptyEntries, cancellationToken);
     }
 }

@@ -2,7 +2,6 @@ using AITool.Admin.Services;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Pages.Admin.Detection;
 
@@ -108,23 +107,23 @@ public class IndexModel : PageModel
     /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        // 用 Dapper 窗口函数（ROW_NUMBER）在 DB 端取每组最新一条，避免全表加载后内存分组。
+        // 用 SqlSugar Ado 窗口函数（ROW_NUMBER）在 DB 端取每组最新一条，避免全表加载后内存分组。
         var latestRows = await UsageLogSqlQueries.QueryLatestFinalLogsAsync(
-            _dbContext.Database.GetDbConnection());
+            _dbContext.Client);
         var latestLogs = latestRows
             .ToDictionary(
                 d => (d.TargetSiteId, d.RequestModel),
                 d => d);
 
         var models = await _dbContext.ModelLibraryItems
-            .AsNoTracking()
+            
             .ToDictionaryAsync(m => m.Id, m => m, cancellationToken);
         var sites = await _dbContext.Sites
-            .AsNoTracking()
+            
             .Where(s => s.IsEnabled)
             .ToDictionaryAsync(s => s.Id, s => s, cancellationToken);
         var mappings = await _dbContext.SiteModelMappings
-            .AsNoTracking()
+            
             .Where(m => m.IsEnabled)
             .ToListAsync(cancellationToken);
 

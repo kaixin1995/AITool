@@ -9,7 +9,6 @@ using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.ApplicationTests.Operations;
 
@@ -19,6 +18,7 @@ namespace AITool.ApplicationTests.Operations;
 public sealed class SystemRuntimeSettingsServiceCoreSnapshotTests : IDisposable
 {
     private readonly AppDbContext _dbContext;
+    private readonly Action _dispose;
     private readonly SystemRuntimeSettingsService _service;
 
     /// <summary>
@@ -26,10 +26,9 @@ public sealed class SystemRuntimeSettingsServiceCoreSnapshotTests : IDisposable
     /// </summary>
     public SystemRuntimeSettingsServiceCoreSnapshotTests()
     {
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        _dbContext = new AppDbContext(options);
+        var factory = TestDatabaseFactory.Create();
+        _dbContext = factory.DbContext;
+        _dispose = factory.Dispose;
         _service = new SystemRuntimeSettingsService(_dbContext);
     }
 
@@ -39,7 +38,7 @@ public sealed class SystemRuntimeSettingsServiceCoreSnapshotTests : IDisposable
     [Fact]
     public async Task BuildCoreRuntimeConfigSnapshotAsync_projects_current_authoritative_data()
     {
-        _dbContext.Sites.Add(new Site
+        await _dbContext.InsertAsync(new Site
         {
             Id = Guid.Parse("11111111-1111-1111-1111-111111111111"),
             Name = "Primary OpenAI",
@@ -51,14 +50,14 @@ public sealed class SystemRuntimeSettingsServiceCoreSnapshotTests : IDisposable
             SupportsAnthropic = false,
             IsEnabled = true
         });
-        _dbContext.ModelLibraryItems.Add(new ModelLibraryItem
+        await _dbContext.InsertAsync(new ModelLibraryItem
         {
             Id = Guid.Parse("22222222-2222-2222-2222-222222222222"),
             ModelName = "gpt-5.4",
             DisplayName = "GPT-5.4",
             IsEnabled = true
         });
-        _dbContext.SiteModelMappings.Add(new SiteModelMapping
+        await _dbContext.InsertAsync(new SiteModelMapping
         {
             Id = Guid.Parse("33333333-3333-3333-3333-333333333333"),
             SiteId = Guid.Parse("11111111-1111-1111-1111-111111111111"),
@@ -68,12 +67,12 @@ public sealed class SystemRuntimeSettingsServiceCoreSnapshotTests : IDisposable
             IsEnabled = true,
             MaxConcurrency = 8
         });
-        _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
+        await _dbContext.InsertAsync(new ProxyRouteEntry
         {
             Id = Guid.Parse("44444444-4444-4444-4444-444444444444"),
             EntryName = "chat-prod"
         });
-        _dbContext.ProxyRouteRules.Add(new ProxyRouteRule
+        await _dbContext.InsertAsync(new ProxyRouteRule
         {
             Id = Guid.Parse("55555555-5555-5555-5555-555555555555"),
             ExternalModelName = "chat-prod",
@@ -87,7 +86,7 @@ public sealed class SystemRuntimeSettingsServiceCoreSnapshotTests : IDisposable
             AvailabilityMode = "AllDay",
             TimeRangesJson = string.Empty
         });
-        _dbContext.ProxyAccessKeys.Add(new ProxyAccessKey
+        await _dbContext.InsertAsync(new ProxyAccessKey
         {
             Id = Guid.Parse("66666666-6666-6666-6666-666666666666"),
             KeyName = "prod-key",
@@ -96,7 +95,6 @@ public sealed class SystemRuntimeSettingsServiceCoreSnapshotTests : IDisposable
             MaskedValue = "sk-***",
             IsEnabled = true
         });
-        await _dbContext.SaveChangesAsync();
 
         var updated = await _service.UpdateAsync(new UpdateSystemRuntimeSettingsRequest
         {
@@ -138,5 +136,6 @@ public sealed class SystemRuntimeSettingsServiceCoreSnapshotTests : IDisposable
     public void Dispose()
     {
         _dbContext.Dispose();
+        _dispose();
     }
 }

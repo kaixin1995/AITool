@@ -5,7 +5,6 @@ using AITool.Infrastructure.Persistence;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
@@ -376,7 +375,6 @@ public sealed class AnalyticsPageTests
                 TotalDurationMs = 120,
                 RequestedAt = DateTimeOffset.UtcNow.AddMinutes(-10)
             });
-            await db.SaveChangesAsync();
         }
 
         var body = await GetDashboardBodyAsync(client, "/api/admin/analytics/dashboard?rangeType=all&bucketType=day");
@@ -451,9 +449,7 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<AIT
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
         });
     }
 
@@ -471,10 +467,9 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<AIT
     /// </summary>
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         db.Sites.AddRange(
             new AITool.Domain.Sites.Site
@@ -584,7 +579,5 @@ internal sealed class AnalyticsWebApplicationFactory : WebApplicationFactory<AIT
                 FirstTokenLatencyMs = 300,
                 RequestedAt = singleFailureRequestedAt
             });
-
-        await db.SaveChangesAsync();
     }
 }

@@ -2,6 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AITool.Core.IntegrationTests;
 using AITool.Application.Proxy;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
@@ -11,7 +12,6 @@ using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -291,7 +291,7 @@ public sealed class AnthropicProxyControllerTests
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var accessKey = await db.ProxyAccessKeys.SingleAsync();
             accessKey.IsEnabled = false;
-            await db.SaveChangesAsync();
+            await db.UpdateAsync(accessKey);
             // 数据库修改后需手动刷新代理访问密钥缓存，否则代理仍使用旧缓存
             var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
             metadataCache.InvalidateAccessKeys();
@@ -324,9 +324,8 @@ public sealed class AnthropicProxyControllerTests
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var entry = await db.ProxyRouteEntries.SingleAsync(x => x.EntryName == "claude-proxy");
             var rules = await db.ProxyRouteRules.Where(x => x.ExternalModelName == "claude-proxy").ToListAsync();
-            db.ProxyRouteRules.RemoveRange(rules);
-            db.ProxyRouteEntries.Remove(entry);
-            await db.SaveChangesAsync();
+            await db.DeleteRangeAsync(rules);
+            await db.DeleteAsync(entry);
             // 数据库修改后需手动刷新运行时路由缓存，否则代理仍使用旧路由快照
             var metadataCache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
             metadataCache.InvalidateRouteTargets();
@@ -808,9 +807,7 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
 
@@ -840,10 +837,9 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
     /// </summary>
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         var siteId = Guid.Parse("77777777-7777-7777-7777-777777777777");
         var accessKeyRaw = "anthropic-test-key";
@@ -902,8 +898,6 @@ internal sealed class AnthropicProxyWebApplicationFactory : WebApplicationFactor
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
-
-        await db.SaveChangesAsync();
     }
 }
 
@@ -937,9 +931,7 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
 
@@ -969,10 +961,9 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
     /// </summary>
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         var openAiSiteId = Guid.Parse("71717171-7171-7171-7171-717171717171");
         var anthropicSiteId = Guid.Parse("72727272-7272-7272-7272-727272727272");
@@ -1057,8 +1048,6 @@ internal sealed class AnthropicProxyFallbackWebApplicationFactory : WebApplicati
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
-
-        await db.SaveChangesAsync();
     }
 }
 

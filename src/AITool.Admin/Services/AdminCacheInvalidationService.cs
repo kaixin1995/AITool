@@ -6,7 +6,6 @@ using AITool.Application.Operations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Services;
 
@@ -323,8 +322,8 @@ public sealed class AdminCacheInvalidationService
     /// </summary>
     private async Task FullSyncFallbackAsync(long version, CancellationToken cancellationToken)
     {
-        var siteCount = await _dbContext.Sites.AsNoTracking().CountAsync(cancellationToken);
-        var accessKeyCount = await _dbContext.ProxyAccessKeys.AsNoTracking().CountAsync(cancellationToken);
+        var siteCount = await _dbContext.Sites.CountAsync(cancellationToken);
+        var accessKeyCount = await _dbContext.ProxyAccessKeys.CountAsync(cancellationToken);
 
         if (siteCount == 0 || accessKeyCount == 0)
         {

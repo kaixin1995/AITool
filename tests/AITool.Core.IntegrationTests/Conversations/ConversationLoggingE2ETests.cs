@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AITool.Core.IntegrationTests;
 using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Domain.Models;
@@ -15,7 +16,6 @@ using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -139,11 +139,9 @@ internal sealed class ConversationLoggingWebApplicationFactory : WebApplicationF
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
             services.RemoveAll<IProxyForwardService>();
             services.RemoveAll<IHttpClientFactory>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.AddSingleton<IProxyForwardService, StubConversationProxyForwardService>();
             services.AddSingleton<ConversationLoggingStreamingHttpMessageHandler>();
             services.AddSingleton<IHttpClientFactory, ConversationLoggingFakeHttpClientFactory>();
@@ -197,10 +195,9 @@ internal sealed class ConversationLoggingWebApplicationFactory : WebApplicationF
 
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         var siteId = Guid.Parse("44444444-4444-4444-4444-444444444444");
 
@@ -258,8 +255,6 @@ internal sealed class ConversationLoggingWebApplicationFactory : WebApplicationF
             MaskedValue = "aito***-key",
             IsEnabled = true
         });
-
-        await db.SaveChangesAsync();
     }
 }
 

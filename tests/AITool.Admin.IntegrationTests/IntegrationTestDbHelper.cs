@@ -2,7 +2,7 @@ using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.DependencyInjection;
 using SqlSugar;
 
-namespace AITool.Core.IntegrationTests;
+namespace AITool.Admin.IntegrationTests;
 
 /// <summary>
 /// IntegrationTests 的 SqlSugar 数据库初始化辅助方法。

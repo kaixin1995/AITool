@@ -6,7 +6,6 @@ using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Controllers.Admin;
 
@@ -162,7 +161,7 @@ public sealed class SiteCatalogApiController : ControllerBase
     [HttpGet("fetch-models/{siteId}")]
     public async Task<IActionResult> FetchModels(Guid siteId, CancellationToken cancellationToken)
     {
-        var site = await _dbContext.Sites.FindAsync([siteId], cancellationToken);
+        var site = await _dbContext.Sites.InSingleAsync(siteId);
         if (site is null)
         {
             return NotFound(new { message = "站点不存在" });
@@ -321,24 +320,25 @@ public sealed class SiteCatalogApiController : ControllerBase
                             ModelName = item.RemoteModelName,
                             DisplayName = string.IsNullOrWhiteSpace(item.DisplayName) ? item.RemoteModelName : item.DisplayName
                         };
-                        _dbContext.ModelLibraryItems.Add(modelItem);
+                        await _dbContext.InsertAsync(modelItem, cancellationToken);
                         existingModelItems[item.RemoteModelName] = modelItem;
                     }
                     else if (!string.IsNullOrWhiteSpace(item.DisplayName) && item.DisplayName != modelItem.DisplayName)
                     {
                         modelItem.DisplayName = item.DisplayName;
+                        await _dbContext.UpdateAsync(modelItem, cancellationToken);
                     }
 
                     if (mapping is null)
                     {
-                        _dbContext.SiteModelMappings.Add(new SiteModelMapping
+                        await _dbContext.InsertAsync(new SiteModelMapping
                         {
                             SiteId = siteId,
                             ModelLibraryItemId = modelItem.Id,
                             RemoteModelName = item.RemoteModelName,
                             LastStatus = "imported",
                             IsEnabled = true
-                        });
+                        }, cancellationToken);
                     }
                     else
                     {
@@ -346,6 +346,7 @@ public sealed class SiteCatalogApiController : ControllerBase
                         mapping.ModelLibraryItemId = modelItem.Id;
                         mapping.IsEnabled = true;
                         mapping.LastStatus = "updated";
+                        await _dbContext.UpdateAsync(mapping, cancellationToken);
                     }
 
                     importedCount++;
@@ -354,11 +355,11 @@ public sealed class SiteCatalogApiController : ControllerBase
                 {
                     mapping.IsEnabled = false;
                     mapping.LastStatus = "disabled";
+                    await _dbContext.UpdateAsync(mapping, cancellationToken);
                 }
             }
         }
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
         await _cacheInvalidationService.InvalidateModelMetadataAsync(cancellationToken);
         await _cacheInvalidationService.InvalidateRouteTargetsAsync(cancellationToken);
         return Ok(new { importedCount });

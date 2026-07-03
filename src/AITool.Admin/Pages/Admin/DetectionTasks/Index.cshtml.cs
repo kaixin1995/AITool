@@ -3,7 +3,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Scheduling;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Pages.Admin.DetectionTasks;
 
@@ -177,8 +176,8 @@ public class IndexModel : PageModel
             foreach (var task in tasks.Where(t => orphanTaskIds.Contains(t.Id)))
             {
                 task.ModelLibraryItemId = null;
+                await _dbContext.UpdateAsync(task, cancellationToken);
             }
-            await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
         Tasks = tasks.Select(t =>
@@ -242,8 +241,7 @@ public class IndexModel : PageModel
                 // 如果 modelId 有值且不为空 Guid，则关联指定模型
                 ModelLibraryItemId = (modelId.HasValue && modelId.Value != Guid.Empty) ? modelId : null
             };
-            _dbContext.DetectionTasks.Add(task);
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.InsertAsync(task, cancellationToken);
 
             // 注册到 Hangfire 调度
             await _scheduler.ScheduleAllAsync(cancellationToken);
@@ -267,11 +265,11 @@ public class IndexModel : PageModel
     {
         try
         {
-            var task = await _dbContext.DetectionTasks.FindAsync([taskId], cancellationToken);
+            var task = await _dbContext.DetectionTasks.InSingleAsync(taskId);
             if (task is null) return RedirectToPage();
 
             task.IsEnabled = !task.IsEnabled;
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _dbContext.UpdateAsync(task, cancellationToken);
 
             await _scheduler.ScheduleAllAsync(cancellationToken);
             StatusMessage = "任务状态已切换";

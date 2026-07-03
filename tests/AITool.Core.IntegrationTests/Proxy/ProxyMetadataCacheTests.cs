@@ -1,12 +1,12 @@
 using System.Security.Cryptography;
 using System.Text;
+using AITool.Core.IntegrationTests;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -33,7 +33,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
     {
         var services = new ServiceCollection();
         services.AddMemoryCache();
-        services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+        services.AddSqlSugar($"Data Source={_databasePath}");
         services.AddSingleton<ProxyRequestMetadataCache>();
         services.AddSingleton<ModelConcurrencyLimiter>();
         _serviceProvider = services.BuildServiceProvider();
@@ -49,8 +49,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(_serviceProvider);
 
         var rawKey = "cache-key";
         db.ProxyAccessKeys.Add(new ProxyAccessKey
@@ -62,13 +61,12 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
             MaskedValue = "sk-***",
             IsEnabled = true
         });
-        await db.SaveChangesAsync();
 
         (await cache.ValidateAccessKeyAsync(rawKey, CancellationToken.None)).Should().NotBeNull();
 
         var accessKey = await db.ProxyAccessKeys.SingleAsync();
         accessKey.IsEnabled = false;
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(accessKey);
 
         // 缓存未失效前仍会命中旧快照，这里先确认失效动作确实有意义。
         (await cache.ValidateAccessKeyAsync(rawKey, CancellationToken.None)).Should().NotBeNull();
@@ -88,8 +86,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(_serviceProvider);
 
         db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
         {
@@ -104,7 +101,6 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
-        await db.SaveChangesAsync();
 
         var before = await cache.GetRuntimeSettingsAsync(CancellationToken.None);
         before.ProxyRequestTimeoutSeconds.Should().Be(8);
@@ -121,7 +117,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         settings.CircuitBreakerFailureThreshold = 7;
         settings.CircuitBreakerRecoveryMinutes = 9;
         settings.UsageLogAutoCleanupEnabled = false;
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(settings);
 
         cache.InvalidateRuntimeSettings();
 
@@ -146,8 +142,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(_serviceProvider);
 
         var siteId = Guid.Parse("22222222-2222-2222-2222-222222222222");
         db.Sites.Add(new Site
@@ -173,13 +168,12 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
             InstancePriority = 0,
             IsEnabled = true
         });
-        await db.SaveChangesAsync();
 
         (await cache.GetRouteTargetsForModelAsync("OpenAI", "cache-route-model", CancellationToken.None)).Should().HaveCount(1);
 
         var route = await db.ProxyRouteRules.SingleAsync();
         route.IsEnabled = false;
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(route);
 
         cache.InvalidateRouteTargets();
 
@@ -196,8 +190,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(_serviceProvider);
 
         db.Sites.Add(new Site
         {
@@ -210,7 +203,6 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
             SupportsAnthropic = false,
             IsEnabled = true
         });
-        await db.SaveChangesAsync();
 
         var before = await cache.GetEnabledSiteNamesAsync(CancellationToken.None);
         before.Should().ContainKey(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"));
@@ -218,7 +210,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
 
         var site = await db.Sites.SingleAsync();
         site.Name = "New Site Name";
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(site);
 
         cache.InvalidateRouteTargets();
 
@@ -237,8 +229,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         var limiter = scope.ServiceProvider.GetRequiredService<ModelConcurrencyLimiter>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(_serviceProvider);
 
         var firstSiteId = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
         var secondSiteId = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
@@ -290,7 +281,6 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
                 InstancePriority = 0,
                 IsEnabled = true
             });
-        await db.SaveChangesAsync();
 
         var before = await cache.GetRouteTargetsForModelAsync("OpenAI", "deferred-route-model", CancellationToken.None);
         before.Select(x => x.SiteModelName).Should().Equal("first-model", "second-model");
@@ -318,7 +308,8 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         firstRule.ModelPriority = 1;
         secondRule.Priority = 0;
         secondRule.ModelPriority = 0;
-        await db.SaveChangesAsync();
+        await db.UpdateAsync(firstRule);
+        await db.UpdateAsync(secondRule);
 
         cache.DeferRuntimeRouteTargetsRefresh("deferred-route-model", activeSnapshot, previousRoutes);
 
@@ -341,8 +332,7 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(_serviceProvider);
 
         var openAiSiteId = Guid.Parse("44444444-4444-4444-4444-444444444444");
         var anthropicSiteId = Guid.Parse("55555555-5555-5555-5555-555555555555");
@@ -396,8 +386,6 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
                 InstancePriority = 1,
                 IsEnabled = true
             });
-
-        await db.SaveChangesAsync();
 
         var anthropicRoutes = await cache.GetRouteTargetsForModelAsync("Anthropic", "dual-route-model", CancellationToken.None);
         anthropicRoutes.Should().HaveCount(2);

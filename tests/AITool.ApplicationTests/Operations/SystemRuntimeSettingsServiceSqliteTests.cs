@@ -1,8 +1,6 @@
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
-using Microsoft.Data.Sqlite;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.ApplicationTests.Operations;
 
@@ -12,14 +10,14 @@ namespace AITool.ApplicationTests.Operations;
 public sealed class SystemRuntimeSettingsServiceSqliteTests : IDisposable
 {
     /// <summary>
-    /// 持续打开的 SQLite 内存连接，确保数据库在整个测试期间不会被释放。
-    /// </summary>
-    private readonly SqliteConnection _connection;
-
-    /// <summary>
     /// 基于 SQLite 的数据库上下文，用于验证关系型存储场景。
     /// </summary>
     private readonly AppDbContext _dbContext;
+
+    /// <summary>
+    /// 测试工厂的清理回调，用于释放临时 SQLite 文件。
+    /// </summary>
+    private readonly Action _dispose;
 
     /// <summary>
     /// 被测服务，负责读取或创建默认运行时设置。
@@ -31,16 +29,10 @@ public sealed class SystemRuntimeSettingsServiceSqliteTests : IDisposable
     /// </summary>
     public SystemRuntimeSettingsServiceSqliteTests()
     {
-        _connection = new SqliteConnection("Data Source=:memory:");
-        _connection.Open();
-
-        var options = new DbContextOptionsBuilder<AppDbContext>()
-            .UseSqlite(_connection)
-            .Options;
-
-        _dbContext = new AppDbContext(options);
-        // 显式建表，模拟应用启动后数据库结构已经就绪的状态。
-        _dbContext.Database.EnsureCreated();
+        // TestDatabaseFactory 内部已创建临时 SQLite 文件并通过 SqlSugarSetup.InitializeDatabase 建表。
+        var factory = TestDatabaseFactory.Create();
+        _dbContext = factory.DbContext;
+        _dispose = factory.Dispose;
         _service = new SystemRuntimeSettingsService(_dbContext);
     }
 
@@ -76,6 +68,6 @@ public sealed class SystemRuntimeSettingsServiceSqliteTests : IDisposable
     public void Dispose()
     {
         _dbContext.Dispose();
-        _connection.Dispose();
+        _dispose();
     }
 }

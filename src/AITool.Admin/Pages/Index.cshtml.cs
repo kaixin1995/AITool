@@ -3,7 +3,6 @@ using AITool.Admin.Services;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc.RazorPages;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Pages;
 

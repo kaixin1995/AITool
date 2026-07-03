@@ -1,7 +1,6 @@
 using AITool.Admin.Services;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
 
 namespace AITool.Admin.Controllers.Admin;
 
@@ -433,21 +432,21 @@ public sealed class UsageLogsApiController : ControllerBase
     public async Task<ActionResult<AdminUsageLogListResponseDto>> GetList([FromQuery] AdminUsageLogListQueryDto query, CancellationToken cancellationToken)
     {
         var sites = await _dbContext.Sites
-            .AsNoTracking()
+            
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules
-            .AsNoTracking()
+            
             .ToListAsync(cancellationToken);
         var accessKeyNames = await _dbContext.ProxyAccessKeys
-            .AsNoTracking()
+            
             .ToDictionaryAsync(x => x.Id, x => x.KeyName, cancellationToken);
         var (rangeStart, rangeEnd) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
 
-        // 用 Dapper 手写 SQL，时间过滤/排序/分页全部在 SQLite 引擎端完成（datetime() 函数解析 TEXT 列），
-        // 避免全表加载到内存后客户端过滤（EF Core 的 Sqlite provider 不支持 DateTimeOffset 翻译）。
+        // 用 SqlSugar Ado 原生 SQL，时间过滤/排序/分页全部在 SQLite 引擎端完成（julianday() 解析 TEXT 列），
+        // 避免全表加载到内存后客户端过滤。
         var (rows, totalCount) = await UsageLogSqlQueries.QueryListAsync(
-            _dbContext.Database.GetDbConnection(),
+            _dbContext.Client,
             rangeStart, rangeEnd,
             query.SiteId, query.AccessKeyId, query.Source, query.Status, query.ModelKeyword,
             Math.Max(1, query.Page), pageSize);
@@ -455,11 +454,11 @@ public sealed class UsageLogsApiController : ControllerBase
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
         var page = totalPages == 0 ? 1 : Math.Min(Math.Max(1, query.Page), totalPages);
 
-        // 若请求页超出范围（Dapper 返回空但 totalCount>0），回退到第 1 页重新查询。
+        // 若请求页超出范围（原生 SQL 返回空但 totalCount>0），回退到第 1 页重新查询。
         if (totalCount > 0 && rows.Count == 0 && page > 1)
         {
             (rows, _) = await UsageLogSqlQueries.QueryListAsync(
-                _dbContext.Database.GetDbConnection(),
+                _dbContext.Client,
                 rangeStart, rangeEnd,
                 query.SiteId, query.AccessKeyId, query.Source, query.Status, query.ModelKeyword,
                 1, pageSize);
@@ -514,9 +513,9 @@ public sealed class UsageLogsApiController : ControllerBase
     {
         var (rangeStart, rangeEnd) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
 
-        // 用 Dapper 手写 SQL 聚合，避免全表加载到内存后客户端聚合。
+        // 用 SqlSugar Ado 原生 SQL 聚合，避免全表加载到内存后客户端聚合。
         var row = await UsageLogSqlQueries.QuerySummaryAsync(
-            _dbContext.Database.GetDbConnection(),
+            _dbContext.Client,
             rangeStart, rangeEnd,
             query.SiteId, query.AccessKeyId, query.Source, query.Status, query.ModelKeyword);
 
@@ -547,16 +546,16 @@ public sealed class UsageLogsApiController : ControllerBase
     public async Task<ActionResult<AdminUsageLogRequestDetailDto>> GetRequestDetail(Guid requestId, CancellationToken cancellationToken)
     {
         var sites = await _dbContext.Sites
-            .AsNoTracking()
+            
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
         var accessKeys = await _dbContext.ProxyAccessKeys
-            .AsNoTracking()
+            
             .ToDictionaryAsync(x => x.Id, x => x.KeyName, cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules
-            .AsNoTracking()
+            
             .ToListAsync(cancellationToken);
         var logs = await _dbContext.ProxyUsageLogs
-            .AsNoTracking()
+            
             .Where(x => x.RequestId == requestId)
             .ToListAsync(cancellationToken);
         if (logs.Count == 0)

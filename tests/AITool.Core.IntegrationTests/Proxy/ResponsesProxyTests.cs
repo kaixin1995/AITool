@@ -4,6 +4,7 @@ using System.Net.WebSockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using AITool.Core.IntegrationTests;
 using AITool.Application.Proxy;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
@@ -13,7 +14,6 @@ using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -863,9 +863,7 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
         builder.UseEnvironment("Testing");
         builder.ConfigureServices(services =>
         {
-            services.RemoveAll<DbContextOptions<AppDbContext>>();
-            services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_databasePath}"));
+            IntegrationTestDbHelper.ReplaceWithSqlSugar(services, _databasePath);
             services.RemoveAll<IProxyForwardService>();
             services.AddSingleton<IProxyForwardService>(_fakeForwardService);
 
@@ -889,10 +887,9 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
 
     private async Task SeedAsync()
     {
+        await IntegrationTestDbHelper.InitializeDatabaseAsync(Services);
         await using var scope = Services.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        await db.Database.EnsureDeletedAsync();
-        await db.Database.EnsureCreatedAsync();
 
         var openAiSiteId = Guid.Parse("a1a1a1a1-a1a1-a1a1-a1a1-a1a1a1a1a1a1");
         var anthropicSiteId = Guid.Parse("b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2");
@@ -975,8 +972,6 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
             UsageLogRetentionDays = 7,
             UsageLogAutoCleanupEnabled = true
         });
-
-        await db.SaveChangesAsync();
     }
 }
 

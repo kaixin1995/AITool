@@ -12,7 +12,6 @@ using AITool.Infrastructure.Scheduling;
 using Hangfire;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Http;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AITool.Infrastructure.DependencyInjection;
@@ -73,14 +72,10 @@ public static class AdminInfrastructureExtensions
             });
         services.AddAuthorization();
 
-        // 注册 EF Core SQLite 数据库上下文。
-        // SqlitePragmaInterceptor 在每次连接打开时设置 cache_size/busy_timeout（连接级），
-        // WAL/synchronous 等持久 PRAGMA 由 AdminStartupInitializer 在启动时执行一次。
-        services.AddDbContext<AppDbContext>(options =>
-        {
-            options.UseSqlite(connectionString);
-            options.AddInterceptors(new SqlitePragmaInterceptor());
-        });
+        // 注册 SqlSugar 数据库访问层（替代原 EF Core）。
+        // SqlSugarSetup.AddSqlSugar 注册 SqlSugarScope（线程安全单例）+ AppDbContext（Scoped 适配）。
+        // WAL/synchronous/cache_size/busy_timeout 等 PRAGMA 由 SqlSugarSetup.InitializeDatabase 在启动时执行。
+        services.AddSqlSugar(connectionString);
 
         // 注册系统运行时设置服务，管理持久化的超时、重试和日志保留配置。
         services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
