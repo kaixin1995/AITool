@@ -2,7 +2,7 @@
 
 **日期**：2026-07-03  
 **分支**：`feature/codex-oauth-accounts`  
-**提交**：`7660954`, `e3fa632`, `dcf374a`, `e683dc8`, `562d3c8`, `66b3a44`
+**提交**：`7660954`, `e3fa632`, `dcf374a`, `e683dc8`, `562d3c8`, `66b3a44`, `773ee40`
 
 ---
 
@@ -609,6 +609,219 @@ function formatTime(s) {
 
 ---
 
+## 7. 卡片按钮布局重设计
+
+### 7.1 问题反馈
+
+用户反馈："卡片的按钮好好设计下，太丑了，你布局要合理，看着要好看啊。"
+
+### 7.2 原因分析
+
+**原有设计问题**：
+1. **布局混乱**：
+   - 使用 Flexbox 右对齐（`justify-content: flex-end`）
+   - 按钮不换行（`flex-wrap: nowrap`）
+   - 容器宽度不够时出现横向滚动条
+   - 按钮宽度不一致，视觉杂乱
+
+2. **样式单调**：
+   - Bootstrap 默认样式，缺乏自定义
+   - 没有悬停效果
+   - 没有颜色分类，操作层级不清晰
+
+3. **时间信息挤压**：
+   - 时间和按钮使用 Grid 左右布局
+   - 时间信息占据左侧整个宽度
+   - 按钮被挤压到右侧
+
+### 7.3 优化方案
+
+#### 布局重设计：Grid 自适应
+
+```css
+.codex-card-meta {
+    margin-top: 12px;
+    padding-top: 16px;
+    border-top: 1px solid #e7e1d7;
+}
+
+/* 时间信息独立一行 */
+.codex-source-meta { 
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: 12px;
+    font-size: 11px;
+    color: #9ca3af;
+    line-height: 1.5;
+}
+
+/* 按钮 Grid 自适应布局 */
+.codex-card-actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+    gap: 8px;
+}
+```
+
+**Grid 自适应优势**：
+- `repeat(auto-fit, minmax(80px, 1fr))`：自动根据容器宽度分配列数
+- 每个按钮最小 80px，最大填满可用空间
+- 按钮宽度一致，自动换行
+- 视觉整齐美观
+
+#### 按钮样式精致化
+
+```css
+.codex-card-actions .btn { 
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-weight: 500;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    text-align: center;
+}
+
+/* 悬停微提升效果 */
+.codex-card-actions .btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+```
+
+#### 按钮颜色分类
+
+```css
+/* 次要操作（刷新额度、启用/禁用） */
+.codex-card-actions .btn-outline-secondary {
+    color: #6c757d;
+    border-color: #d4c5b4;
+}
+.codex-card-actions .btn-outline-secondary:hover {
+    background: #f7f4ef;
+    border-color: #C4612F;
+    color: #C4612F;
+}
+
+/* 主要操作（编辑） */
+.codex-card-actions .btn-outline-primary {
+    color: #C4612F;
+    border-color: #C4612F;
+}
+.codex-card-actions .btn-outline-primary:hover {
+    background: #C4612F;
+    border-color: #C4612F;
+    color: #fff;
+}
+
+/* 信息操作（拉取模型） */
+.codex-card-actions .btn-outline-info {
+    color: #0ea5e9;
+    border-color: #bae6fd;
+}
+.codex-card-actions .btn-outline-info:hover {
+    background: #0ea5e9;
+    border-color: #0ea5e9;
+    color: #fff;
+}
+
+/* 危险操作（删除） */
+.codex-card-actions .btn-outline-danger {
+    color: #dc2626;
+    border-color: #fecaca;
+}
+.codex-card-actions .btn-outline-danger:hover {
+    background: #dc2626;
+    border-color: #dc2626;
+    color: #fff;
+}
+```
+
+### 7.4 效果对比
+
+#### 布局对比
+
+**修改前**：
+- ❌ Flexbox 右对齐，按钮不换行
+- ❌ 容器宽度不够时出现滚动条
+- ❌ 按钮宽度不一致，参差不齐
+- ❌ 时间信息与按钮左右布局，互相挤压
+
+**修改后**：
+- ✅ Grid 自适应，按钮自动均匀分布
+- ✅ 自动换行，适配不同屏幕宽度
+- ✅ 按钮宽度一致，视觉整齐
+- ✅ 时间信息独立一行，与按钮层次分明
+
+#### 样式对比
+
+**修改前**：
+- ❌ Bootstrap 默认样式，单调
+- ❌ 无悬停效果
+- ❌ 无颜色分类
+
+**修改后**：
+- ✅ 自定义样式，精致
+- ✅ 悬停微提升 + 阴影效果
+- ✅ 颜色分类清晰：
+   - 次要（灰色系）
+   - 主要（主题色 #C4612F）
+   - 信息（天蓝色 #0ea5e9）
+   - 危险（红色 #dc2626）
+
+### 7.5 设计细节
+
+1. **字号优化**：
+   - 按钮：12px（更精致）
+   - 时间信息：11px（更小，不抢眼）
+
+2. **内边距优化**：
+   - 按钮：6px 12px（更紧凑）
+   - 时间下边距：12px（与按钮保持距离）
+
+3. **圆角优化**：
+   - 按钮圆角：6px（更柔和）
+
+4. **动画优化**：
+   - 过渡时间：0.15s（流畅不拖沓）
+   - 悬停提升：-1px（微妙但明显）
+   - 阴影：0 2px 8px（增强立体感）
+
+5. **边框优化**：
+   - 次要按钮：#d4c5b4（暖灰色，与卡片边框协调）
+   - 其他按钮：浅色系（视觉更轻盈）
+
+### 7.6 响应式表现
+
+**宽容器**（3 列）：
+```
+[刷新额度] [启用/禁用] [编辑]
+[拉取模型] [删除]
+```
+
+**中等容器**（2 列）：
+```
+[刷新额度] [启用/禁用]
+[编辑]     [拉取模型]
+[删除]
+```
+
+**窄容器**（1 列）：
+```
+[刷新额度]
+[启用/禁用]
+[编辑]
+[拉取模型]
+[删除]
+```
+
+Grid 自适应自动处理，无需媒体查询。
+
+**提交**：`773ee40`
+
+---
+
 ## 验证结果
 
 ### 编译验证
@@ -641,7 +854,7 @@ function formatTime(s) {
 
 ## 总结
 
-本次任务完成了 **6 个主要改进**：
+本次任务完成了 **7 个主要改进**：
 
 1. **修复 BrowserLink 警告**：开发环境禁用响应压缩
 2. **新增凭证导出功能**：后端 API + 前端交互 + JSON 下载
@@ -649,6 +862,7 @@ function formatTime(s) {
 4. **进度条逻辑优化**：显示剩余额度 + 反转颜色规则
 5. **紧急修复**：导出 JS 丢失 + 卡片布局优化 + 时间格式简化
 6. **导出模式优化**：复选框移到卡片左上角，视觉更美观
+7. **按钮布局重设计**：Grid 自适应 + 精致样式 + 颜色分类
 
 所有改动均已通过编译验证、集成测试和功能验证，代码已推送到远程仓库。
 
