@@ -3,6 +3,9 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/master/VisualStudio.gitignore
 
+# 临时验证项目（SqlSugar 迁移可行性验证等）
+/tmp-sqlsugar-verify/
+
 # User-specific files
 *.rsuser
 *.suo
