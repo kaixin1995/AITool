@@ -181,58 +181,60 @@
         word-break: break-word;
     }
     .codex-card-actions {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(80px, 1fr));
+        display: flex;
         gap: 8px;
+        justify-content: flex-start;
+        align-items: center;
     }
-    .codex-card-actions .btn { 
-        font-size: 12px;
-        padding: 6px 12px;
+    .codex-card-actions .btn-icon {
+        width: 36px;
+        height: 36px;
+        padding: 0;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid #d4c5b4;
         border-radius: 6px;
-        font-weight: 500;
+        background: transparent;
+        color: #6c757d;
+        cursor: pointer;
         transition: all 0.15s ease;
-        white-space: nowrap;
-        text-align: center;
+        flex-shrink: 0;
     }
-    .codex-card-actions .btn:hover {
+    .codex-card-actions .btn-icon:hover {
         transform: translateY(-1px);
         box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
-    }
-    .codex-card-actions .btn-outline-secondary {
-        color: #6c757d;
-        border-color: #d4c5b4;
-    }
-    .codex-card-actions .btn-outline-secondary:hover {
-        background: #f7f4ef;
         border-color: #C4612F;
         color: #C4612F;
     }
-    .codex-card-actions .btn-outline-primary {
+    .codex-card-actions .btn-icon.btn-primary {
         color: #C4612F;
         border-color: #C4612F;
     }
-    .codex-card-actions .btn-outline-primary:hover {
+    .codex-card-actions .btn-icon.btn-primary:hover {
         background: #C4612F;
-        border-color: #C4612F;
         color: #fff;
     }
-    .codex-card-actions .btn-outline-info {
+    .codex-card-actions .btn-icon.btn-info {
         color: #0ea5e9;
         border-color: #bae6fd;
     }
-    .codex-card-actions .btn-outline-info:hover {
+    .codex-card-actions .btn-icon.btn-info:hover {
         background: #0ea5e9;
         border-color: #0ea5e9;
         color: #fff;
     }
-    .codex-card-actions .btn-outline-danger {
+    .codex-card-actions .btn-icon.btn-danger {
         color: #dc2626;
         border-color: #fecaca;
     }
-    .codex-card-actions .btn-outline-danger:hover {
+    .codex-card-actions .btn-icon.btn-danger:hover {
         background: #dc2626;
         border-color: #dc2626;
         color: #fff;
+    }
+    .codex-card-actions .btn-icon svg {
+        display: block;
     }
     .codex-account-name {
         display: flex;
@@ -647,11 +649,21 @@
                     <div>${escapeHtml(tokenExp)}</div>
                 </div>
                 <div class="codex-card-actions">
-                    <button class="btn btn-sm btn-outline-secondary" onclick="refreshQuota('${a.id}', this)">刷新额度</button>
-                    <button class="btn btn-sm btn-outline-secondary" onclick="toggleAccount('${a.id}')">${a.isEnabled ? '禁用' : '启用'}</button>
-                    <button class="btn btn-sm btn-outline-primary" onclick="openEditModal('${a.id}')">编辑</button>
-                    <button class="btn btn-sm btn-outline-info" onclick="openCodexModelModal('${a.id}', '${escapeHtml(a.displayName)}')">拉取模型</button>
-                    <button class="btn btn-sm btn-outline-danger" onclick="deleteAccount('${a.id}')">删除</button>
+                    <button class="btn btn-icon" onclick="refreshQuota('${a.id}', this)" title="刷新额度">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
+                    </button>
+                    <button class="btn btn-icon" onclick="toggleAccount('${a.id}')" title="${a.isEnabled ? '禁用账号' : '启用账号'}">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${a.isEnabled ? '<line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line>' : '<polyline points="20 6 9 17 4 12"></polyline>'}</svg>
+                    </button>
+                    <button class="btn btn-icon btn-primary" onclick="openEditModal('${a.id}')" title="编辑账号">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                    </button>
+                    <button class="btn btn-icon btn-info" onclick="openCodexModelModal('${a.id}', '${escapeHtml(a.displayName)}')" title="拉取模型">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                    </button>
+                    <button class="btn btn-icon btn-danger" onclick="deleteAccount('${a.id}')" title="删除账号">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                    </button>
                 </div>
             </div>
         </div>`;
@@ -1196,6 +1208,127 @@
         document.getElementById('codexModalErrorBox').style.display = 'block';
         currentCodexModels = [];
         renderCodexModelList();
+    }
+
+    // —— 导出模式 ——
+    let isExportMode = false;
+    let selectedAccountIds = new Set();
+
+    function toggleExportMode() {
+        isExportMode = !isExportMode;
+        const container = document.getElementById('accountsContainer');
+        const toolbar = document.getElementById('exportToolbar');
+        const btnText = document.getElementById('exportModeText');
+        
+        if (isExportMode) {
+            container.classList.add('export-mode');
+            toolbar.style.display = 'block';
+            btnText.textContent = '取消导出';
+            selectedAccountIds.clear();
+            updateSelectedCount();
+        } else {
+            cancelExportMode();
+        }
+    }
+
+    function cancelExportMode() {
+        isExportMode = false;
+        const container = document.getElementById('accountsContainer');
+        const toolbar = document.getElementById('exportToolbar');
+        const btnText = document.getElementById('exportModeText');
+        
+        container.classList.remove('export-mode');
+        toolbar.style.display = 'none';
+        btnText.textContent = '导出凭证';
+        selectedAccountIds.clear();
+        
+        document.querySelectorAll('.codex-card.selected').forEach(card => {
+            card.classList.remove('selected');
+        });
+        document.querySelectorAll('.codex-export-checkbox:checked').forEach(cb => {
+            cb.checked = false;
+        });
+    }
+
+    function handleCardClick(event, accountId) {
+        if (!isExportMode) return;
+        if (event.target.tagName === 'INPUT') return;
+        if (event.target.tagName === 'BUTTON') return;
+        if (event.target.closest('button')) return;
+        if (event.target.classList.contains('codex-reset-credits-hint')) return;
+        
+        event.preventDefault();
+        event.stopPropagation();
+        toggleCardSelection(event, accountId);
+    }
+
+    function toggleCardSelection(event, accountId) {
+        if (!isExportMode) return;
+        event.stopPropagation();
+        
+        const card = document.querySelector(`.codex-card[data-id="${accountId}"]`);
+        const checkbox = card.querySelector('.codex-export-checkbox');
+        
+        if (selectedAccountIds.has(accountId)) {
+            selectedAccountIds.delete(accountId);
+            card.classList.remove('selected');
+            checkbox.checked = false;
+        } else {
+            selectedAccountIds.add(accountId);
+            card.classList.add('selected');
+            checkbox.checked = true;
+        }
+        
+        updateSelectedCount();
+    }
+
+    function updateSelectedCount() {
+        const countEl = document.getElementById('selectedCount');
+        if (countEl) {
+            countEl.textContent = selectedAccountIds.size;
+        }
+    }
+
+    async function exportSelectedCredentials() {
+        if (selectedAccountIds.size === 0) {
+            alert('请至少选择一个账号');
+            return;
+        }
+
+        try {
+            const r = await fetch('/api/admin/codex/accounts/export-credentials', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ accountIds: Array.from(selectedAccountIds) })
+            });
+
+            if (!r.ok) {
+                const data = await r.json();
+                alert(data.message || '导出失败');
+                return;
+            }
+
+            const data = await r.json();
+            
+            // 为每个账号生成独立的 JSON 文件并下载
+            data.credentials.forEach((cred, index) => {
+                const fileName = `codex_credential_${cred.email || cred.account_id || index + 1}.json`;
+                const blob = new Blob([JSON.stringify(cred, null, 2)], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = fileName;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(() => URL.revokeObjectURL(url), 1000);
+            });
+
+            alert(`成功导出 ${data.credentials.length} 个账号的凭证文件`);
+            cancelExportMode();
+        } catch (e) {
+            alert('导出异常：' + e.message);
+        }
     }
 
     // —— 工具 ——
