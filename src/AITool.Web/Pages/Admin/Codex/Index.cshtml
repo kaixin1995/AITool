@@ -275,6 +275,50 @@
     .codex-inspection-logs .log-line { white-space: pre-wrap; word-break: break-word; }
     .codex-inspection-logs .log-time { color: #9ca3af; margin-right: 8px; }
     .codex-inspection-toolbar .btn { min-height: 34px; }
+    
+    /* 巡检 Tab 布局修复 */
+    #inspection-pane .card {
+        background: #fbf9f5;
+        border: 1px solid #e7e1d7;
+        border-radius: 8px;
+        box-shadow: 0 1px 3px rgba(196, 97, 47, 0.05);
+    }
+    #inspection-pane .card-title {
+        font-size: 14px;
+        font-weight: 600;
+        color: #1f2421;
+        margin-bottom: 12px;
+    }
+    #inspection-pane .card-body {
+        padding: 16px;
+    }
+    #inspection-pane .table-wrapper {
+        overflow-x: auto;
+        margin: 0 -16px;
+        padding: 0 16px;
+    }
+    #inspection-pane .table {
+        font-size: 13px;
+        color: #1f2421;
+    }
+    #inspection-pane .table th {
+        font-weight: 600;
+        color: #6c757d;
+        border-bottom: 2px solid #e7e1d7;
+        padding: 8px 12px;
+        white-space: nowrap;
+    }
+    #inspection-pane .table td {
+        padding: 8px 12px;
+        border-bottom: 1px solid #f0ede6;
+        vertical-align: middle;
+    }
+    #inspection-pane .table tbody tr:last-child td {
+        border-bottom: none;
+    }
+    #inspection-pane .table tbody tr:hover {
+        background: rgba(196, 97, 47, 0.02);
+    }
 
     /* Reset credits 小字提示 */
     .codex-reset-credits-hint {
