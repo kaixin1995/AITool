@@ -510,16 +510,23 @@
 
     // 渲染单个额度窗口（label | 进度条 | 百分比）
     function renderWindow(w) {
-        const percent = w.usedPercent ?? 0;
-        const tone = percent >= 100 ? 'bad' : percent >= 80 ? 'warn' : 'good';
+        const usedPercent = w.usedPercent ?? 0;
+        const remainingPercent = Math.max(0, 100 - usedPercent);
+        
+        // 颜色规则：剩余越少越红（剩余 < 20% 红色，< 50% 黄色，>= 50% 绿色）
+        const tone = remainingPercent < 20 ? 'bad' : remainingPercent < 50 ? 'warn' : 'good';
+        
         const label = w.label || '-';
         const resetLabel = w.resetLabel || '-';
-        const percentText = (w.usedPercent !== null && w.usedPercent !== undefined) ? w.usedPercent.toFixed(1) + '%' : '--';
+        const percentText = (w.usedPercent !== null && w.usedPercent !== undefined) 
+            ? remainingPercent.toFixed(1) + '%' 
+            : '--';
+        
         return `
         <div class="codex-window">
             <div class="codex-window-label" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
             <div class="codex-window-bar">
-                <div class="codex-window-fill ${tone}" style="width:${Math.min(percent, 100)}%"></div>
+                <div class="codex-window-fill ${tone}" style="width:${Math.min(remainingPercent, 100)}%"></div>
             </div>
             <div class="codex-window-percent">${percentText}</div>
             <div class="codex-window-reset" title="${escapeHtml(resetLabel)}">${escapeHtml(resetLabel)}</div>
