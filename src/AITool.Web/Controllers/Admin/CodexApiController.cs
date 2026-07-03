@@ -443,6 +443,42 @@ public sealed class CodexApiController : ControllerBase
         return Ok(new { message = "手动重置额度成功" });
     }
 
+    // —— 导出凭证 ——
+
+    /// <summary>导出选中账号的凭证（access_token / refresh_token / id_token 等）。</summary>
+    [HttpPost("accounts/export-credentials")]
+    public async Task<IActionResult> ExportCredentials([FromBody] ExportCredentialsRequest req, CancellationToken ct)
+    {
+        if (req?.AccountIds == null || req.AccountIds.Count == 0)
+        {
+            return BadRequest(new { message = "请至少选择一个账号" });
+        }
+
+        var accounts = await _dbContext.CodexAccounts
+            .Where(a => req.AccountIds.Contains(a.Id))
+            .ToListAsync(ct);
+
+        if (accounts.Count == 0)
+        {
+            return NotFound(new { message = "未找到匹配的账号" });
+        }
+
+        var credentials = accounts.Select(a => new
+        {
+            account_id = a.AccountId,
+            email = a.Email,
+            display_name = a.DisplayName,
+            plan_type = a.PlanType,
+            access_token = a.AccessToken,
+            refresh_token = a.RefreshToken,
+            id_token = a.IdToken,
+            token_expires_at = a.TokenExpiresAt?.ToString("o"),
+            created_at = a.CreatedAt.ToString("o"),
+        }).ToList();
+
+        return Ok(new { credentials });
+    }
+
     // —— 私有 ——
 
     private async Task<CodexAccount?> GetAccountAsync(Guid id, CancellationToken ct)
@@ -541,4 +577,9 @@ public sealed class UpdateAccountRequest
 {
     public string? DisplayName { get; set; }
     public decimal? AutoDisableThreshold { get; set; }
+}
+
+public sealed class ExportCredentialsRequest
+{
+    public List<Guid> AccountIds { get; set; } = [];
 }

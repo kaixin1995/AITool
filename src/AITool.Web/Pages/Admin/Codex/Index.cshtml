@@ -260,66 +260,6 @@
     [data-theme="dark"] .codex-window-bar,
     body.theme-dark .codex-window-bar { background: rgba(255, 255, 255, 0.12); }
 
-    /* 巡检运行输出 */
-    .codex-inspection-logs {
-        max-height: 320px;
-        overflow-y: auto;
-        font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
-        font-size: 12px;
-        line-height: 1.7;
-        color: var(--text-secondary, #7a8599);
-        background: var(--card-bg, rgba(245, 247, 251, 0.6));
-        border-radius: 8px;
-        padding: 10px 12px;
-    }
-    .codex-inspection-logs .log-line { white-space: pre-wrap; word-break: break-word; }
-    .codex-inspection-logs .log-time { color: #9ca3af; margin-right: 8px; }
-    .codex-inspection-toolbar .btn { min-height: 34px; }
-    
-    /* 巡检 Tab 布局修复 */
-    #inspection-pane .card {
-        background: #fbf9f5;
-        border: 1px solid #e7e1d7;
-        border-radius: 8px;
-        box-shadow: 0 1px 3px rgba(196, 97, 47, 0.05);
-    }
-    #inspection-pane .card-title {
-        font-size: 14px;
-        font-weight: 600;
-        color: #1f2421;
-        margin-bottom: 12px;
-    }
-    #inspection-pane .card-body {
-        padding: 16px;
-    }
-    #inspection-pane .table-wrapper {
-        overflow-x: auto;
-        margin: 0 -16px;
-        padding: 0 16px;
-    }
-    #inspection-pane .table {
-        font-size: 13px;
-        color: #1f2421;
-    }
-    #inspection-pane .table th {
-        font-weight: 600;
-        color: #6c757d;
-        border-bottom: 2px solid #e7e1d7;
-        padding: 8px 12px;
-        white-space: nowrap;
-    }
-    #inspection-pane .table td {
-        padding: 8px 12px;
-        border-bottom: 1px solid #f0ede6;
-        vertical-align: middle;
-    }
-    #inspection-pane .table tbody tr:last-child td {
-        border-bottom: none;
-    }
-    #inspection-pane .table tbody tr:hover {
-        background: rgba(196, 97, 47, 0.02);
-    }
-
     /* Reset credits 小字提示 */
     .codex-reset-credits-hint {
         display: inline-block;
@@ -376,60 +316,7 @@
 
     <!-- Tab 2：巡检 -->
     <div class="tab-pane fade" id="inspection-pane" role="tabpanel">
-        <div class="codex-inspection-toolbar d-flex flex-wrap gap-2 mb-3">
-            <button type="button" class="btn btn-outline-primary btn-sm" id="btnInspectionRun" onclick="runInspection(false)">手动巡检</button>
-            <button type="button" class="btn btn-outline-warning btn-sm" id="btnInspectionForce" onclick="runInspection(true)">真实巡检</button>
-            <button type="button" class="btn btn-outline-secondary btn-sm" onclick="loadInspectionData()">刷新状态</button>
-        </div>
-
-        <div class="row g-3 mb-3">
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-body">
-                        <h6 class="card-title">巡检状态</h6>
-                        <div id="inspectionStatus" class="text-secondary" style="font-size:13px;">加载中...</div>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-6">
-                <div class="card">
-                    <div class="card-body">
-                        <h6 class="card-title">上次巡检结果</h6>
-                        <div id="inspectionSummary" class="text-secondary" style="font-size:13px;">暂无</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="card mb-3">
-            <div class="card-body">
-                <h6 class="card-title">账号明细</h6>
-                <div class="table-wrapper">
-                    <table class="table table-sm mb-0">
-                        <thead>
-                            <tr>
-                                <th>账号</th>
-                                <th>动作</th>
-                                <th>5小时</th>
-                                <th>周</th>
-                                <th>缓存</th>
-                                <th>原因</th>
-                            </tr>
-                        </thead>
-                        <tbody id="inspectionAccountsBody">
-                            <tr><td colspan="6" class="text-center text-secondary">暂无数据</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-body">
-                <h6 class="card-title">运行输出</h6>
-                <div id="inspectionLogs" class="codex-inspection-logs"></div>
-            </div>
-        </div>
+        <iframe src="/Admin/Codex/Inspection" style="width:100%;height:800px;border:none;border-radius:8px;"></iframe>
     </div>
 </div>
 
@@ -600,7 +487,26 @@
     let codexAccounts = [];
     let oauthState = null;
 
-    document.addEventListener('DOMContentLoaded', loadAccounts);
+    document.addEventListener('DOMContentLoaded', () => {
+        // 支持 URL 参数切换 tab：?tab=inspection
+        const urlParams = new URLSearchParams(window.location.search);
+        const tab = urlParams.get('tab');
+        if (tab === 'inspection') {
+            const inspectionTab = document.getElementById('inspection-tab');
+            const inspectionPane = document.getElementById('inspection-pane');
+            const quotaTab = document.getElementById('quota-tab');
+            const quotaPane = document.getElementById('quota-pane');
+            
+            if (inspectionTab && inspectionPane && quotaTab && quotaPane) {
+                quotaTab.classList.remove('active');
+                quotaPane.classList.remove('show', 'active');
+                inspectionTab.classList.add('active');
+                inspectionPane.classList.add('show', 'active');
+            }
+        }
+        
+        loadAccounts();
+    });
 
     async function loadAccounts() {
         try {
