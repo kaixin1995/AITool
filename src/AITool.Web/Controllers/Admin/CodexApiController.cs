@@ -301,9 +301,9 @@ public sealed class CodexApiController : ControllerBase
         }
     }
 
-    /// <summary>动态拉取上游模型目录并追加映射。</summary>
-    [HttpPost("accounts/{id}/pull-models")]
-    public async Task<IActionResult> PullModels(Guid id, CancellationToken ct)
+    /// <summary>拉取该账号的上游模型列表（预览，不立即导入）。</summary>
+    [HttpGet("accounts/{id}/fetch-models")]
+    public async Task<IActionResult> FetchModels(Guid id, CancellationToken ct)
     {
         var account = await GetAccountAsync(id, ct);
         if (account == null) return NotFound(new { message = "账号不存在" });
@@ -312,19 +312,70 @@ public sealed class CodexApiController : ControllerBase
             return BadRequest(new { message = "账号无 access_token" });
         }
 
-        List<CodexRemoteModel> models;
         try
         {
-            models = (await _modelFetcher.FetchAsync(account.AccessToken, account.AccountId ?? string.Empty, ct)).ToList();
+            var remoteModels = (await _modelFetcher.FetchAsync(account.AccessToken, account.AccountId ?? string.Empty, ct)).ToList();
+            var existingMappings = await _dbContext.SiteModelMappings
+                .Where(m => m.SiteId == account.LinkedSiteId)
+                .ToListAsync(ct);
+
+            var remoteNames = remoteModels.Select(m => m.Slug).ToList();
+            var modelItems = await _dbContext.ModelLibraryItems
+                .Where(m => remoteNames.Contains(m.ModelName))
+                .ToListAsync(ct);
+
+            var result = new List<object>();
+            foreach (var remote in remoteModels)
+            {
+                var mapping = existingMappings.FirstOrDefault(m => m.RemoteModelName == remote.Slug);
+                var modelItem = modelItems.FirstOrDefault(m => m.ModelName == remote.Slug);
+                var hasValidImport = mapping != null && modelItem != null && mapping.ModelLibraryItemId == modelItem.Id;
+
+                result.Add(new
+                {
+                    remoteModelName = remote.Slug,
+                    displayName = remote.DisplayName,
+                    existingMappingId = hasValidImport ? mapping!.Id : (Guid?)null,
+                    isEnabled = hasValidImport && mapping!.IsEnabled,
+                    existingDisplayName = modelItem?.DisplayName
+                });
+            }
+
+            return Ok(result);
         }
         catch (Exception ex)
         {
-            return BadRequest(new { message = "拉取模型失败：" + ex.Message });
+            _logger.LogError(ex, "Fetch Codex models failed for account {AccountId}", id);
+            return Ok(new { success = false, message = ex.Message });
         }
+    }
 
-        await _provisioner.UpsertRemoteModelsAsync(account.LinkedSiteId,
-            models.Select(m => (m.Slug, m.DisplayName)), ct);
-        return Ok(new { count = models.Count });
+    /// <summary>导入选中的 Codex 模型（用户已在前端选择）。</summary>
+    [HttpPost("accounts/{id}/import-selected-models")]
+    public async Task<IActionResult> ImportSelectedModels(Guid id, [FromBody] ImportCodexModelsRequest request, CancellationToken ct)
+    {
+        var account = await GetAccountAsync(id, ct);
+        if (account == null) return NotFound(new { message = "账号不存在" });
+
+        var selected = request.Selections.Where(s => s.Selected).ToList();
+        if (selected.Count == 0) return BadRequest(new { message = "请至少选择一个模型" });
+
+        var modelsToImport = selected.Select(s => (s.RemoteModelName, string.IsNullOrWhiteSpace(s.DisplayName) ? s.RemoteModelName : s.DisplayName)).ToList();
+        await _provisioner.UpsertRemoteModelsAsync(account.LinkedSiteId, modelsToImport, ct);
+
+        return Ok(new { importedCount = modelsToImport.Count });
+    }
+
+    public sealed class ImportCodexModelsRequest
+    {
+        public List<CodexModelSelection> Selections { get; set; } = [];
+    }
+
+    public sealed class CodexModelSelection
+    {
+        public string RemoteModelName { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public bool Selected { get; set; }
     }
 
     // —— 巡检 ——

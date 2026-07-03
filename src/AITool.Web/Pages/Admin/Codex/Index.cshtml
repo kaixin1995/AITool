@@ -131,13 +131,17 @@
         text-overflow: ellipsis;
     }
     .codex-card-actions {
-        display: flex;
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
         gap: 6px;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-        align-items: flex-start;
     }
-    .codex-card-actions .btn { min-height: 32px; white-space: nowrap; flex-shrink: 0; }
+    .codex-card-actions .btn { min-height: 32px; white-space: nowrap; font-size: 13px; }
+    .codex-account-name {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
     .codex-empty {
         grid-column: 1 / -1;
         padding: 48px 0;
@@ -393,6 +397,48 @@
     </div>
 </div>
 
+<!-- Codex 模型选择 Modal -->
+<div class="modal fade" id="codexModelSelectModal" tabindex="-1">
+    <div class="modal-dialog modal-xl modal-dialog-scrollable">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="codexModalTitle">选择要导入的模型</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <div class="modal-body">
+                <div id="codexModalLoading" class="text-center py-4">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <p class="mt-2 text-secondary">正在拉取模型列表...</p>
+                </div>
+                <div id="codexModalToolbar" style="display:none;">
+                    <div id="codexModalErrorBox" class="alert alert-danger" style="display:none;">
+                        <div>拉取失败</div>
+                        <pre id="codexModalErrorText" style="margin:8px 0 0;white-space:pre-wrap;word-break:break-word;font-size:12px;"></pre>
+                    </div>
+                    <div class="d-flex gap-2 align-items-center mb-3">
+                        <input type="text" id="codexModalSearch" class="form-control form-control-sm" placeholder="搜索模型名称..." style="max-width:300px;" />
+                        <span id="codexModalSelectedCount" class="text-secondary" style="font-size:13px;white-space:nowrap;">已选 0 个</span>
+                        <div class="form-check ms-auto">
+                            <input type="checkbox" id="codexModalSelectAll" class="form-check-input" onchange="updateCodexSelectAllState()" />
+                            <label for="codexModalSelectAll" class="form-check-label" style="font-size:13px;">全选</label>
+                        </div>
+                    </div>
+                    <div class="d-flex align-items-center gap-2 py-1 border-bottom" style="font-size:12px;color:var(--text-secondary);font-weight:600;">
+                        <div style="width:30px;"></div>
+                        <div style="flex:1;">远程模型名</div>
+                        <div style="width:200px;">显示别名</div>
+                    </div>
+                </div>
+                <div id="codexModelListContainer"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" id="btnImportCodexSelected" class="btn btn-primary" onclick="submitCodexImport()">导入选中模型</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 @section Scripts {
 <script>
     let codexAccounts = [];
@@ -464,8 +510,10 @@
         <div class="codex-card" data-id="${a.id}">
             <div class="codex-card-header">
                 <div class="codex-card-header-main">
-                    <div class="codex-account-name" title="${escapeHtml(a.displayName)}">${escapeHtml(a.displayName)}</div>
-                    ${resetCreditsHint}
+                    <div class="codex-account-name">
+                        <span title="${escapeHtml(a.displayName)}">${escapeHtml(a.displayName)}</span>
+                        ${resetCreditsHint}
+                    </div>
                     <div class="codex-account-email">${escapeHtml(a.email || '')}</div>
                     <div class="codex-badges">
                         ${statusBadge}${planBadge}
@@ -483,7 +531,7 @@
                     <button class="btn btn-sm btn-outline-warning" onclick="openResetCreditsModal('${a.id}', '${escapeHtml(a.displayName)}', event)">重置额度</button>
                     <button class="btn btn-sm btn-outline-secondary" onclick="toggleAccount('${a.id}')">${a.isEnabled ? '禁用' : '启用'}</button>
                     <button class="btn btn-sm btn-outline-primary" onclick="openEditModal('${a.id}')">编辑</button>
-                    <button class="btn btn-sm btn-outline-info" onclick="pullModels('${a.id}')">拉取模型</button>
+                    <button class="btn btn-sm btn-outline-info" onclick="openCodexModelModal('${a.id}', '${escapeHtml(a.displayName)}')">拉取模型</button>
                     <button class="btn btn-sm btn-outline-danger" onclick="deleteAccount('${a.id}')">删除</button>
                 </div>
             </div>
@@ -835,6 +883,195 @@
         } catch {
             return utcStr;
         }
+    }
+
+    // —— Codex Model Selection ——
+    let currentCodexAccountId = null;
+    let currentCodexModels = [];
+    let bsCodexModelModal = null;
+
+    async function openCodexModelModal(accountId, accountName) {
+        currentCodexAccountId = accountId;
+        currentCodexModels = [];
+
+        if (!bsCodexModelModal) {
+            bsCodexModelModal = new bootstrap.Modal(document.getElementById('codexModelSelectModal'));
+        }
+
+        document.getElementById('codexModalTitle').textContent = '拉取模型 - ' + accountName;
+        document.getElementById('codexModalLoading').style.display = 'block';
+        document.getElementById('codexModalToolbar').style.display = 'none';
+        document.getElementById('codexModalErrorBox').style.display = 'none';
+        document.getElementById('codexModelListContainer').innerHTML = '';
+
+        bsCodexModelModal.show();
+
+        try {
+            const r = await fetch(`/api/admin/codex/accounts/${accountId}/fetch-models`);
+            const data = await r.json();
+
+            if (data && data.success === false) {
+                showCodexModalError(data.message || '拉取失败');
+                return;
+            }
+
+            currentCodexModels = data.map(m => ({
+                remoteModelName: m.remoteModelName,
+                displayName: m.displayName || m.remoteModelName,
+                existingMappingId: m.existingMappingId,
+                isEnabled: m.isEnabled,
+                existingDisplayName: m.existingDisplayName
+            }));
+
+            renderCodexModelList();
+        } catch (e) {
+            showCodexModalError(e.message || '拉取失败');
+        }
+    }
+
+    function renderCodexModelList() {
+        document.getElementById('codexModalLoading').style.display = 'none';
+        document.getElementById('codexModalToolbar').style.display = '';
+        document.getElementById('codexModalSearch').value = '';
+
+        const container = document.getElementById('codexModelListContainer');
+        container.innerHTML = '';
+
+        if (currentCodexModels.length === 0) {
+            container.innerHTML = '<div class="text-center text-secondary py-3">未拉取到任何模型</div>';
+            updateCodexSelectedCount();
+            return;
+        }
+
+        currentCodexModels.forEach((m, index) => {
+            const row = document.createElement('div');
+            row.className = 'align-items-center gap-2 py-2 border-bottom codex-model-row';
+            row.style.display = 'flex';
+            row.setAttribute('data-model-name', m.remoteModelName);
+            row.setAttribute('data-index', index);
+
+            const checked = m.existingMappingId ? m.isEnabled : true;
+            const displayName = m.existingDisplayName || m.displayName;
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'codex-model-check';
+            checkbox.checked = checked;
+            checkbox.style.cssText = 'width:30px;flex-shrink:0;';
+            checkbox.onchange = updateCodexSelectedCount;
+
+            const nameCol = document.createElement('code');
+            nameCol.style.cssText = 'flex:1;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;';
+            nameCol.title = m.remoteModelName;
+            nameCol.textContent = m.remoteModelName;
+
+            const aliasInput = document.createElement('input');
+            aliasInput.type = 'text';
+            aliasInput.className = 'form-control form-control-sm codex-alias-input';
+            aliasInput.value = displayName;
+            aliasInput.style.cssText = 'width:200px;flex-shrink:0;';
+            aliasInput.placeholder = '显示别名';
+
+            const badge = document.createElement('span');
+            badge.className = m.existingMappingId ? (m.isEnabled ? 'badge bg-success' : 'badge bg-secondary') : 'badge bg-light text-dark';
+            badge.style.cssText = 'font-size:10px;flex-shrink:0;';
+            badge.textContent = m.existingMappingId ? (m.isEnabled ? '已启用' : '已禁用') : '新';
+
+            row.appendChild(checkbox);
+            row.appendChild(nameCol);
+            row.appendChild(aliasInput);
+            row.appendChild(badge);
+            container.appendChild(row);
+        });
+
+        updateCodexSelectedCount();
+        setupCodexModelSearch();
+    }
+
+    function setupCodexModelSearch() {
+        const searchInput = document.getElementById('codexModalSearch');
+        searchInput.oninput = () => {
+            const keyword = searchInput.value.toLowerCase();
+            document.querySelectorAll('.codex-model-row').forEach(row => {
+                const name = row.getAttribute('data-model-name').toLowerCase();
+                row.style.display = name.includes(keyword) ? 'flex' : 'none';
+            });
+            updateCodexSelectedCount();
+        };
+    }
+
+    function updateCodexSelectedCount() {
+        const visible = Array.from(document.querySelectorAll('.codex-model-row')).filter(r => r.style.display !== 'none');
+        const total = visible.length;
+        const checked = visible.filter(r => r.querySelector('.codex-model-check').checked).length;
+        document.getElementById('codexModalSelectedCount').textContent = `已选 ${checked} / ${total} 个`;
+        updateCodexSelectAllState();
+    }
+
+    function updateCodexSelectAllState() {
+        const visible = Array.from(document.querySelectorAll('.codex-model-row')).filter(r => r.style.display !== 'none');
+        const checks = visible.map(r => r.querySelector('.codex-model-check'));
+        const allChecked = checks.length > 0 && checks.every(c => c.checked);
+        const someChecked = checks.some(c => c.checked);
+        const selectAll = document.getElementById('codexModalSelectAll');
+        selectAll.checked = allChecked;
+        selectAll.indeterminate = !allChecked && someChecked;
+        selectAll.onchange = () => {
+            const newState = selectAll.checked;
+            checks.forEach(c => c.checked = newState);
+            updateCodexSelectedCount();
+        };
+    }
+
+    async function submitCodexImport() {
+        const selections = currentCodexModels.map((m, index) => {
+            const row = document.querySelector(`.codex-model-row[data-index="${index}"]`);
+            const checked = row.querySelector('.codex-model-check').checked;
+            const alias = row.querySelector('.codex-alias-input').value.trim() || m.remoteModelName;
+            return {
+                RemoteModelName: m.remoteModelName,
+                DisplayName: alias,
+                Selected: checked
+            };
+        });
+
+        if (selections.filter(s => s.Selected).length === 0) {
+            alert('请至少选择一个模型');
+            return;
+        }
+
+        const btn = document.getElementById('btnImportCodexSelected');
+        btn.disabled = true;
+        btn.textContent = '导入中...';
+
+        try {
+            const r = await fetch(`/api/admin/codex/accounts/${currentCodexAccountId}/import-selected-models`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ Selections: selections })
+            });
+            const data = await r.json();
+            if (!r.ok) {
+                throw new Error(data.message || '导入失败');
+            }
+            bsCodexModelModal.hide();
+            alert('导入完成，共导入 ' + data.importedCount + ' 个模型');
+            await loadAccounts();
+        } catch (e) {
+            alert('导入失败：' + e.message);
+        } finally {
+            btn.disabled = false;
+            btn.textContent = '导入选中模型';
+        }
+    }
+
+    function showCodexModalError(message) {
+        document.getElementById('codexModalLoading').style.display = 'none';
+        document.getElementById('codexModalToolbar').style.display = '';
+        document.getElementById('codexModalErrorText').textContent = message;
+        document.getElementById('codexModalErrorBox').style.display = 'block';
+        currentCodexModels = [];
+        renderCodexModelList();
     }
 
     // —— 工具 ——
