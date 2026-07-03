@@ -131,9 +131,10 @@
         text-overflow: ellipsis;
     }
     .codex-card-actions {
-        display: grid;
-        grid-template-columns: repeat(3, 1fr);
+        display: flex;
         gap: 6px;
+        justify-content: flex-end;
+        flex-wrap: wrap;
     }
     .codex-card-actions .btn { min-height: 32px; white-space: nowrap; font-size: 13px; }
     .codex-account-name {
@@ -528,7 +529,6 @@
                 </div>
                 <div class="codex-card-actions">
                     <button class="btn btn-sm btn-outline-secondary" onclick="refreshQuota('${a.id}', this)">刷新额度</button>
-                    <button class="btn btn-sm btn-outline-warning" onclick="openResetCreditsModal('${a.id}', '${escapeHtml(a.displayName)}', event)">重置额度</button>
                     <button class="btn btn-sm btn-outline-secondary" onclick="toggleAccount('${a.id}')">${a.isEnabled ? '禁用' : '启用'}</button>
                     <button class="btn btn-sm btn-outline-primary" onclick="openEditModal('${a.id}')">编辑</button>
                     <button class="btn btn-sm btn-outline-info" onclick="openCodexModelModal('${a.id}', '${escapeHtml(a.displayName)}')">拉取模型</button>
@@ -837,10 +837,15 @@
                 const listHtml = data.credits.map((c, idx) => {
                     const granted = c.grantedAt ? formatBeijingTime(c.grantedAt) : '—';
                     const expires = c.expiresAt ? formatBeijingTime(c.expiresAt) : '—';
-                    return `<div style="padding:8px;border-bottom:1px solid #e7e1d7;font-size:13px;">
-                        <strong>第 ${idx + 1} 次</strong><br>
-                        发放时间：${granted}<br>
-                        过期时间：<span style="color:#c4612f;">${expires}</span>
+                    return `<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;margin-bottom:8px;border-radius:6px;background:#f7f4ef;border:1px solid #e7e1d7;">
+                        <div style="flex:1;">
+                            <div style="font-size:14px;font-weight:600;color:#1f2421;margin-bottom:4px;">第 ${idx + 1} 次重置</div>
+                            <div style="font-size:12px;color:#6c757d;">发放时间：${granted}</div>
+                        </div>
+                        <div style="text-align:right;">
+                            <div style="font-size:11px;color:#6c757d;margin-bottom:2px;">过期时间</div>
+                            <div style="font-size:13px;font-weight:600;color:#c4612f;">${expires}</div>
+                        </div>
                     </div>`;
                 }).join('');
                 document.getElementById('resetCreditsList').innerHTML = listHtml;
