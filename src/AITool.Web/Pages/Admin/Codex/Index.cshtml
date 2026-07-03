@@ -26,6 +26,35 @@
         box-shadow: 0 4px 16px rgba(196, 97, 47, 0.12);
         border-color: #d4c5b4;
     }
+    
+    /* 导出模式 */
+    .codex-card {
+        position: relative;
+    }
+    .codex-export-checkbox {
+        display: none;
+        position: absolute;
+        top: 16px;
+        left: 16px;
+        width: 20px;
+        height: 20px;
+        cursor: pointer;
+        z-index: 10;
+        accent-color: #C4612F;
+    }
+    .export-mode .codex-export-checkbox {
+        display: block;
+    }
+    .export-mode .codex-card {
+        cursor: pointer;
+        padding-left: 48px;
+    }
+    .export-mode .codex-card.selected {
+        border-color: #C4612F;
+        box-shadow: 0 0 0 3px rgba(196, 97, 47, 0.15);
+        background: rgba(196, 97, 47, 0.02);
+    }
+    
     .codex-card-header {
         display: flex;
         justify-content: space-between;
