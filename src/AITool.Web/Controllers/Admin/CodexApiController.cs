@@ -324,11 +324,15 @@ public sealed class CodexApiController : ControllerBase
                 .Where(m => remoteNames.Contains(m.ModelName))
                 .ToListAsync(ct);
 
+            // 使用 Dictionary 优化 Join，避免 O(n²) 复杂度
+            var mappingDict = existingMappings.ToDictionary(m => m.RemoteModelName);
+            var modelItemDict = modelItems.ToDictionary(m => m.ModelName);
+
             var result = new List<object>();
             foreach (var remote in remoteModels)
             {
-                var mapping = existingMappings.FirstOrDefault(m => m.RemoteModelName == remote.Slug);
-                var modelItem = modelItems.FirstOrDefault(m => m.ModelName == remote.Slug);
+                mappingDict.TryGetValue(remote.Slug, out var mapping);
+                modelItemDict.TryGetValue(remote.Slug, out var modelItem);
                 var hasValidImport = mapping != null && modelItem != null && mapping.ModelLibraryItemId == modelItem.Id;
 
                 result.Add(new
