@@ -145,9 +145,10 @@ public sealed class CodexAccountProvisioner
     }
 
     /// <summary>
-    /// 编辑 Codex 账号（DisplayName / AutoDisableThreshold），同步隐藏 Site 名称。
+    /// 编辑 Codex 账号（当前仅支持 DisplayName），同步隐藏 Site 名称。
+    /// 自动禁用阈值已改为系统级设置，不再按账号单独维护。
     /// </summary>
-    public async Task UpdateAsync(Guid codexAccountId, string? displayName, decimal? autoDisableThreshold, CancellationToken ct)
+    public async Task UpdateAsync(Guid codexAccountId, string? displayName, CancellationToken ct)
     {
         var account = (await _dbContext.CodexAccounts
             .Where(a => a.Id == codexAccountId)
@@ -162,7 +163,6 @@ public sealed class CodexAccountProvisioner
                 await _dbContext.UpdateAsync(site, ct);
             }
         }
-        account.AutoDisableThreshold = autoDisableThreshold;
         await _dbContext.UpdateAsync(account, ct);
 
         _metadataCache.InvalidateRouteTargets();

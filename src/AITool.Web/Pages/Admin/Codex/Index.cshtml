@@ -401,10 +401,6 @@
                     <label class="form-label">显示名称</label>
                     <input type="text" id="editDisplayName" class="form-control" />
                 </div>
-                <div class="mb-3">
-                    <label class="form-label">自动禁用阈值（任一额度窗口使用百分比达到此值时自动禁用，留空不启用，单位 %，如 95）</label>
-                    <input type="number" step="any" id="editThreshold" class="form-control" placeholder="例如 95" />
-                </div>
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
@@ -755,18 +751,15 @@
         if (!a) return;
         document.getElementById('editId').value = id;
         document.getElementById('editDisplayName').value = a.displayName || '';
-        document.getElementById('editThreshold').value = (a.autoDisableThreshold !== null && a.autoDisableThreshold !== undefined) ? a.autoDisableThreshold : '';
         new bootstrap.Modal(document.getElementById('editModal')).show();
     }
 
     async function submitEdit() {
         const id = document.getElementById('editId').value;
         const displayName = document.getElementById('editDisplayName').value.trim();
-        const thresholdStr = document.getElementById('editThreshold').value.trim();
-        const threshold = thresholdStr === '' ? null : parseFloat(thresholdStr);
         const r = await fetch(`/api/admin/codex/accounts/${id}`, {
             method: 'PUT', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ displayName: displayName || null, autoDisableThreshold: threshold })
+            body: JSON.stringify({ displayName: displayName || null })
         });
         if (!r.ok) { const e = await r.json(); alert(e.message || '保存失败'); return; }
         bootstrap.Modal.getInstance(document.getElementById('editModal')).hide();

@@ -70,6 +70,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.CodexInspectionEnabled = request.CodexInspectionEnabled;
         settings.CodexInspectionIntervalMinutes = Math.Max(5, request.CodexInspectionIntervalMinutes);
         settings.CodexQuotaMaxCacheHours = Math.Max(1, request.CodexQuotaMaxCacheHours);
+        settings.CodexAutoDisableThresholdPercent = Math.Max(1, Math.Min(100, request.CodexAutoDisableThresholdPercent));
 
         await _dbContext.UpdateAsync(settings, cancellationToken);
 

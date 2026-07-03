@@ -80,15 +80,16 @@ public sealed class CodexQuotaService : ICodexQuotaService
                 account.LastQuotaCheckedAt = DateTimeOffset.UtcNow;
                 await _dbContext.UpdateAsync(account, cancellationToken);
 
-                // 自动禁用判定：任一窗口使用百分比达到阈值时禁用（阈值用百分比 0-100 表达）
-                if (info.Success && account.AutoDisableThreshold.HasValue && account.IsEnabled)
+                // 自动禁用判定：任一窗口使用百分比达到全局阈值时禁用（阈值用百分比 0-100 表达）
+                var runtime = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+                if (info.Success && account.IsEnabled)
                 {
                     var maxPercent = GetMaxUsedPercent(info);
-                    var threshold = (double)account.AutoDisableThreshold.Value;
+                    var threshold = (double)runtime.CodexAutoDisableThresholdPercent;
                     if (maxPercent.HasValue && maxPercent.Value >= threshold)
                     {
                         await DisableAccountAsync(account, cancellationToken,
-                            $"额度使用 {maxPercent.Value:F1}% 达到阈值 {threshold}");
+                            $"额度使用 {maxPercent.Value:F1}% 达到全局阈值 {threshold}");
                     }
                 }
             }

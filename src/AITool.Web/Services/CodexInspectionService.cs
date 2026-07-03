@@ -86,7 +86,7 @@ public sealed class CodexInspectionService : BackgroundService
         {
             var interval = TimeSpan.FromMinutes(Math.Max(5, runtime.CodexInspectionIntervalMinutes));
             _nextScheduledAt = now + interval;
-            await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, forceRefresh: false, autoTriggered: true, ct);
+            await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh: false, autoTriggered: true, ct);
         }
         finally
         {
@@ -104,7 +104,7 @@ public sealed class CodexInspectionService : BackgroundService
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         var quotaService = scope.ServiceProvider.GetRequiredService<ICodexQuotaService>();
         var runtime = await cache.GetRuntimeSettingsAsync(ct);
-        return await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, forceRefresh, autoTriggered: false, ct);
+        return await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh, autoTriggered: false, ct);
     }
 
     /// <summary>
@@ -133,6 +133,7 @@ public sealed class CodexInspectionService : BackgroundService
     // —— 核心 ——
     private async Task<InspectionRunResult> RunInspectionAsync(
         AppDbContext dbContext, ProxyRequestMetadataCache cache, ICodexQuotaService quotaService, int maxCacheHours,
+        int autoDisableThresholdPercent,
         bool forceRefresh, bool autoTriggered, CancellationToken ct)
     {
         var result = new InspectionRunResult
@@ -155,7 +156,7 @@ public sealed class CodexInspectionService : BackgroundService
             foreach (var account in accounts)
             {
                 if (ct.IsCancellationRequested) break;
-                var ar = await InspectAccountAsync(dbContext, cache, quotaService, account, maxCacheHours, forceRefresh, ct);
+                var ar = await InspectAccountAsync(dbContext, cache, quotaService, account, maxCacheHours, autoDisableThresholdPercent, forceRefresh, ct);
                 result.Accounts.Add(ar);
             }
 
@@ -176,7 +177,7 @@ public sealed class CodexInspectionService : BackgroundService
 
     private async Task<InspectionAccountResult> InspectAccountAsync(
         AppDbContext dbContext, ProxyRequestMetadataCache cache, ICodexQuotaService quotaService,
-        CodexAccount account, int maxCacheHours, bool forceRefresh, CancellationToken ct)
+        CodexAccount account, int maxCacheHours, int autoDisableThresholdPercent, bool forceRefresh, CancellationToken ct)
     {
         var ar = new InspectionAccountResult { AccountId = account.Id, DisplayName = account.DisplayName };
 
@@ -221,7 +222,7 @@ public sealed class CodexInspectionService : BackgroundService
         ar.FiveHourUsedPercent = info.Windows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
 
         // 4. 自动禁用/启用判定（移植 codex-patrol ResolveDecision）
-        var threshold = (double)(account.AutoDisableThreshold ?? 95);
+        var threshold = (double)autoDisableThresholdPercent;
         var weekly = ar.WeeklyUsedPercent;
 
         if (info.Success && weekly.HasValue && weekly.Value >= threshold && account.IsEnabled)

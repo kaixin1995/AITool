@@ -112,6 +112,12 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     /// Codex 额度缓存最大小时数，超过则强制真实刷新。
     /// </summary>
     public int CodexQuotaMaxCacheHours { get; set; }
+
+    /// <summary>
+    /// Codex 自动禁用阈值（百分比，1-100）。
+    /// 当任一关键额度窗口的已使用百分比达到该阈值时，账号自动禁用。
+    /// </summary>
+    public int CodexAutoDisableThresholdPercent { get; set; }
 }
 
 /// <summary>

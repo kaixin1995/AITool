@@ -139,22 +139,25 @@
 
     <div class="card">
         <div class="card-body">
-            <h5 class="card-title">Codex 巡检</h5>
-            <p class="text-secondary" style="font-size:13px;">仅在 Codex 功能总开关开启时生效。巡检会周期性检查各 Codex 账号额度：被使用过的账号才真实刷新，未使用的用缓存；但超过最大缓存小时数会强制真实刷新一次。</p>
+            <h5 class="card-title">Codex 巡检<span class="tip-icon ms-2" data-bs-toggle="tooltip" data-bs-placement="top" title="仅在 Codex 功能总开关开启时生效。巡检会周期性检查各 Codex 账号额度：被使用过的账号才真实刷新，未使用的用缓存；但超过最大缓存小时数会强制真实刷新一次。自动禁用阈值为全局配置，对所有 Codex 账号统一生效。">?</span></h5>
             <div class="row g-3 mt-1 align-items-end">
-                <div class="col-md-4">
+                <div class="col-md-3">
                     <div class="form-check form-switch mt-1">
                         <input asp-for="Input.CodexInspectionEnabled" class="form-check-input" type="checkbox" />
                         <label asp-for="Input.CodexInspectionEnabled" class="form-check-label">启用自动巡检</label>
                     </div>
                 </div>
-                <div class="col-md-4">
-                    <label asp-for="Input.CodexInspectionIntervalMinutes" class="form-label">巡检周期（分钟，下限 5）</label>
+                <div class="col-md-3">
+                    <label asp-for="Input.CodexInspectionIntervalMinutes" class="form-label form-label-tip">巡检周期（分钟）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="每隔多少分钟执行一轮自动巡检，下限 5 分钟。">?</span></label>
                     <input asp-for="Input.CodexInspectionIntervalMinutes" class="form-control" type="number" min="5" />
                 </div>
-                <div class="col-md-4">
-                    <label asp-for="Input.CodexQuotaMaxCacheHours" class="form-label">额度缓存最大小时数</label>
+                <div class="col-md-3">
+                    <label asp-for="Input.CodexQuotaMaxCacheHours" class="form-label form-label-tip">额度缓存最大小时数<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="未被使用的账号可以命中缓存，但超过该小时数后会强制真实刷新一次额度。">?</span></label>
                     <input asp-for="Input.CodexQuotaMaxCacheHours" class="form-control" type="number" min="1" />
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="Input.CodexAutoDisableThresholdPercent" class="form-label form-label-tip">自动禁用阈值（%）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="当任一关键额度窗口的已使用百分比达到该阈值时，账号自动禁用。该值为全局配置，对所有 Codex 账号统一生效。建议 95。">?</span></label>
+                    <input asp-for="Input.CodexAutoDisableThresholdPercent" class="form-control" type="number" min="1" max="100" />
                 </div>
             </div>
         </div>

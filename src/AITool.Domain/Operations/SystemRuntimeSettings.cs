@@ -114,4 +114,11 @@ public sealed class SystemRuntimeSettings
     /// Codex 额度缓存最大小时数。超过该时长未真实刷新的账号，巡检时强制真实刷新（codex-patrol 缺失的兜底）。
     /// </summary>
     public int CodexQuotaMaxCacheHours { get; set; } = 6;
+
+    /// <summary>
+    /// Codex 自动禁用阈值（百分比，1-100）。
+    /// 当任一关键额度窗口的已使用百分比达到该阈值时，账号自动禁用。
+    /// 这是全局配置，对所有 Codex 账号统一生效。
+    /// </summary>
+    public int CodexAutoDisableThresholdPercent { get; set; } = 95;
 }

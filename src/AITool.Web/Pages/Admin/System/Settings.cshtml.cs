@@ -136,7 +136,8 @@ public class SettingsModel : PageModel
             CodexFeaturesEnabled = settings.CodexFeaturesEnabled,
             CodexInspectionEnabled = settings.CodexInspectionEnabled,
             CodexInspectionIntervalMinutes = settings.CodexInspectionIntervalMinutes,
-            CodexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours
+            CodexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours,
+            CodexAutoDisableThresholdPercent = settings.CodexAutoDisableThresholdPercent
         };
         LastUsageLogPrunedCount = settings.LastUsageLogPrunedCount;
         StatusMessage = Request.Query["statusMessage"];

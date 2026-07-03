@@ -166,7 +166,7 @@ public class CodexAccount : EntityBase
 3. **账号管理**
    - 列表展示（卡片布局）
    - 启用 / 禁用切换
-   - 编辑（名称 / 自动禁用阈值）
+   - 编辑（当前仅名称；自动禁用阈值已上移为系统级全局配置）
    - 删除（级联删除 Site + 映射 + 路由）
 
 4. **额度查询**
@@ -182,6 +182,7 @@ public class CodexAccount : EntityBase
 6. **巡检服务**
    - 手动巡检 / 真实巡检
    - 根据额度自动启用 / 禁用账号
+   - 自动禁用阈值为系统级全局配置（Admin/System/Settings → Codex 巡检）
    - 巡检日志 + 账号明细
    - 5 秒自动轮询（页面隐藏时停止）
 

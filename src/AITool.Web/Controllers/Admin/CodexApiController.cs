@@ -250,13 +250,13 @@ public sealed class CodexApiController : ControllerBase
         }
     }
 
-    /// <summary>编辑账号（名称 / 自动禁用阈值）。</summary>
+    /// <summary>编辑账号（当前仅支持修改名称）。</summary>
     [HttpPut("accounts/{id}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateAccountRequest req, CancellationToken ct)
     {
         try
         {
-            await _provisioner.UpdateAsync(id, req.DisplayName, req.AutoDisableThreshold, ct);
+            await _provisioner.UpdateAsync(id, req.DisplayName, ct);
             var account = await GetAccountAsync(id, ct);
             return Ok(ToSummary(account!));
         }
@@ -576,7 +576,6 @@ public sealed class CompleteOAuthRequest
 public sealed class UpdateAccountRequest
 {
     public string? DisplayName { get; set; }
-    public decimal? AutoDisableThreshold { get; set; }
 }
 
 public sealed class ExportCredentialsRequest

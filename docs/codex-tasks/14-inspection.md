@@ -6,11 +6,16 @@
 
 ## 实施记录
 
-### 块 1 — SystemRuntimeSettings +4 字段
-- 实体加 `CodexFeaturesEnabled`(默认 false)、`CodexInspectionEnabled`(false)、`CodexInspectionIntervalMinutes`(30,下限5)、`CodexQuotaMaxCacheHours`(6)。
-- 同步 DTO(`UpdateSystemRuntimeSettingsRequest`) + Service(`UpdateAsync` clamp + 总开关联动) + PageModel LoadAsync + Settings.cshtml（开发者功能 card 加「启用 Codex 功能」开关；新增「Codex 巡检」card 含 3 输入）。
-- `CachedProxyRuntimeSettings` 同步加 4 字段 + `GetRuntimeSettingsAsync` 映射。
+### 块 1 — SystemRuntimeSettings +5 字段
+- 实体加 `CodexFeaturesEnabled`(默认 false)、`CodexInspectionEnabled`(false)、`CodexInspectionIntervalMinutes`(30,下限5)、`CodexQuotaMaxCacheHours`(6)、`CodexAutoDisableThresholdPercent`(95,全局阈值)。
+- 同步 DTO(`UpdateSystemRuntimeSettingsRequest`) + Service(`UpdateAsync` clamp + 总开关联动) + PageModel LoadAsync + Settings.cshtml。
+- `Settings.cshtml` 中：
+  - 开发者功能 card 加「启用 Codex 功能」开关
+  - 新增「Codex 巡检」card，包含 4 项：自动巡检、巡检周期、缓存最大小时数、自动禁用阈值
+  - 全部说明改为问号 tooltip 风格，不再直接铺大段文字
+- `CachedProxyRuntimeSettings` 同步加 5 字段 + `GetRuntimeSettingsAsync` 映射。
 - `CodexAccount` 加 `DisabledByFeatureToggle`（区分被总开关禁用 vs 额度/手动禁用）。
+- **自动禁用阈值语义调整**：从“账号级配置”改为“系统级全局配置”，对所有 Codex 账号统一生效。账号编辑弹窗已移除该输入。
 
 ### 块 2 — 总开关禁用联动
 - `_Layout.cshtml`：Codex 导航包进 `@if (runtimeSettings.CodexFeaturesEnabled)`。
