@@ -517,7 +517,9 @@ public sealed partial class OpenAiProxyController
                 inputTokens = promptTokens.GetInt32();
             }
 
-            if (usage.TryGetProperty("output_tokens", out var outputTokenElement) && outputTokenElement.ValueKind == JsonValueKind.Number)
+            // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
+            // 所以 output_tokens=0 时回退到 completion_tokens。
+            if (usage.TryGetProperty("output_tokens", out var outputTokenElement) && outputTokenElement.ValueKind == JsonValueKind.Number && outputTokenElement.GetInt32() > 0)
             {
                 outputTokens = outputTokenElement.GetInt32();
             }
@@ -526,16 +528,19 @@ public sealed partial class OpenAiProxyController
                 outputTokens = completionTokens.GetInt32();
             }
 
-            // OpenAI Chat Completions 与 Responses 的缓存字段名称不同，流式统计同时兼容两种格式。
-            if (usage.TryGetProperty("input_tokens_details", out var inputTokenDetails) &&
-                inputTokenDetails.TryGetProperty("cached_tokens", out var inputCachedTokenElement) &&
-                inputCachedTokenElement.ValueKind == JsonValueKind.Number)
+            // 缓存 token：同时兼容 input_tokens_details / prompt_tokens_details 两种格式。
+            // 部分中间层（如 newapi）的 input_tokens_details 为 null，需要回退到 prompt_tokens_details。
+            if (usage.TryGetProperty("input_tokens_details", out var inputTokenDetails)
+                && inputTokenDetails.ValueKind == JsonValueKind.Object
+                && inputTokenDetails.TryGetProperty("cached_tokens", out var inputCachedTokenElement)
+                && inputCachedTokenElement.ValueKind == JsonValueKind.Number)
             {
                 cachedTokens = inputCachedTokenElement.GetInt32();
             }
-            else if (usage.TryGetProperty("prompt_tokens_details", out var promptTokenDetails) &&
-                     promptTokenDetails.TryGetProperty("cached_tokens", out var cachedTokenElement) &&
-                     cachedTokenElement.ValueKind == JsonValueKind.Number)
+            else if (usage.TryGetProperty("prompt_tokens_details", out var promptTokenDetails)
+                     && promptTokenDetails.ValueKind == JsonValueKind.Object
+                     && promptTokenDetails.TryGetProperty("cached_tokens", out var cachedTokenElement)
+                     && cachedTokenElement.ValueKind == JsonValueKind.Number)
             {
                 cachedTokens = cachedTokenElement.GetInt32();
             }
