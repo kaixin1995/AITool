@@ -180,6 +180,8 @@ builder.Services.AddHttpClient<ICodexResetCreditsService, CodexResetCreditsServi
 });
 // Codex 功能总开关过滤器（控制器级 gating）。
 builder.Services.AddScoped<CodexFeatureToggleAttribute>();
+// Codex 巡检开关过滤器（仅巡检相关 action 使用，关闭时返回 404）。
+builder.Services.AddScoped<CodexInspectionToggleAttribute>();
 // Codex 巡检后台服务（周期额度巡检 + 缓存策略 + 自动禁用）。单例，供 API 与后台共用状态。
 builder.Services.AddSingleton<CodexInspectionService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CodexInspectionService>());

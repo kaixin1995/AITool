@@ -285,9 +285,12 @@
     <li class="nav-item" role="presentation">
         <button class="nav-link active" id="quota-tab" data-bs-toggle="tab" data-bs-target="#quota-pane" type="button" role="tab">账号额度</button>
     </li>
-    <li class="nav-item" role="presentation">
-        <button class="nav-link" id="inspection-tab" data-bs-toggle="tab" data-bs-target="#inspection-pane" type="button" role="tab">巡检</button>
-    </li>
+    @if (Model.InspectionEnabled)
+    {
+        <li class="nav-item" role="presentation">
+            <button class="nav-link" id="inspection-tab" data-bs-toggle="tab" data-bs-target="#inspection-pane" type="button" role="tab">巡检</button>
+        </li>
+    }
 </ul>
 
 <div class="tab-content">
@@ -312,10 +315,13 @@
         </div>
     </div>
 
-    <!-- Tab 2：巡检 -->
-    <div class="tab-pane fade" id="inspection-pane" role="tabpanel">
-        <iframe src="/Admin/Codex/Inspection" style="width:100%;height:800px;border:none;border-radius:8px;"></iframe>
-    </div>
+    @if (Model.InspectionEnabled)
+    {
+        <!-- Tab 2：巡检 -->
+        <div class="tab-pane fade" id="inspection-pane" role="tabpanel">
+            <iframe src="/Admin/Codex/Inspection" style="width:100%;height:800px;border:none;border-radius:8px;"></iframe>
+        </div>
+    }
 </div>
 
 <!-- OAuth 登录 Modal -->

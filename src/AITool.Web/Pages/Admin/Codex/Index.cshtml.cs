@@ -20,6 +20,11 @@ public class IndexModel : PageModel
     }
 
     /// <summary>
+    /// 是否启用巡检页签与独立巡检页。
+    /// </summary>
+    public bool InspectionEnabled { get; private set; }
+
+    /// <summary>
     /// 页面加载。若 Codex 功能总开关关闭，重定向到系统设置页（避免直接访问 URL 绕过导航隐藏）。
     /// </summary>
     public async Task<IActionResult> OnGetAsync(CancellationToken cancellationToken)
@@ -29,6 +34,8 @@ public class IndexModel : PageModel
         {
             return RedirectToPage("/Admin/System/Settings");
         }
+
+        InspectionEnabled = settings.CodexInspectionEnabled;
         return Page();
     }
 }

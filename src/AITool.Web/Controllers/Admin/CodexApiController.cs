@@ -386,6 +386,7 @@ public sealed class CodexApiController : ControllerBase
 
     /// <summary>触发一轮巡检。force=true 强制真实刷新全部账号；false 允许命中缓存。</summary>
     [HttpPost("inspection/run")]
+    [ServiceFilter(typeof(CodexInspectionToggleAttribute))]
     public async Task<IActionResult> RunInspection([FromQuery] bool force, CancellationToken ct)
     {
         var result = await _inspectionService.RunManualAsync(force, ct);
@@ -394,6 +395,7 @@ public sealed class CodexApiController : ControllerBase
 
     /// <summary>巡检状态（是否运行中、下次调度时间、上次完成时间）。</summary>
     [HttpGet("inspection/status")]
+    [ServiceFilter(typeof(CodexInspectionToggleAttribute))]
     public IActionResult InspectionStatus()
     {
         return Ok(_inspectionService.GetStatus());
@@ -401,6 +403,7 @@ public sealed class CodexApiController : ControllerBase
 
     /// <summary>上次巡检结果（每账号动作/原因/百分比）。</summary>
     [HttpGet("inspection/last-run")]
+    [ServiceFilter(typeof(CodexInspectionToggleAttribute))]
     public IActionResult InspectionLastRun()
     {
         return Ok(_inspectionService.GetLastRun());
@@ -408,6 +411,7 @@ public sealed class CodexApiController : ControllerBase
 
     /// <summary>巡检操作日志（最新在前）。</summary>
     [HttpGet("inspection/logs")]
+    [ServiceFilter(typeof(CodexInspectionToggleAttribute))]
     public IActionResult InspectionLogs()
     {
         return Ok(_inspectionService.GetLogs());
