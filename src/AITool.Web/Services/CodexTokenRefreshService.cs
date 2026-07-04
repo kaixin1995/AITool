@@ -79,11 +79,12 @@ public sealed class CodexTokenRefreshService : BackgroundService
         }
 
         var now = DateTimeOffset.UtcNow;
+        var refreshLeadTime = now + RefreshLead;
         var due = await dbContext.CodexAccounts
             .Where(a => a.IsEnabled
                         && !string.IsNullOrEmpty(a.RefreshToken)
                         && (a.TokenExpiresAt == null
-                            || a.TokenExpiresAt <= now + RefreshLead))
+                            || a.TokenExpiresAt <= refreshLeadTime))
             .OrderBy(a => a.TokenExpiresAt)
             .ToListAsync(ct);
 
