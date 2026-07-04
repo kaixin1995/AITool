@@ -23,7 +23,7 @@ public sealed partial class OpenAiProxyController
     /// 空或空字典返回新的空字典（大小写不敏感），避免共享缓存实例被修改。
     /// Codex 隐藏 Site 用此机制注入 Originator / Chatgpt-Account-Id / User-Agent。
     /// </summary>
-    private static Dictionary<string, string> MergeExtraHeaders(Dictionary<string, string>? extra)
+    public static Dictionary<string, string> MergeExtraHeaders(Dictionary<string, string>? extra)
     {
         if (extra == null || extra.Count == 0)
         {

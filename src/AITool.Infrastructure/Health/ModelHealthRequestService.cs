@@ -73,6 +73,22 @@ public sealed class ModelHealthRequestService
             .FirstAsync(x => x.Id == 1, cancellationToken)
             ?? new AITool.Domain.Operations.SystemRuntimeSettings();
         var requestBody = BuildProbeRequestBody(protocolType, mapping.RemoteModelName, BuildRandomMathPrompt());
+
+        // 解析 Site 的自定义请求头（Codex 的 Originator / Chatgpt-Account-Id / User-Agent 等）
+        Dictionary<string, string> extraHeaders = new(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(site.ExtraHeadersJson))
+        {
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(site.ExtraHeadersJson);
+                if (parsed != null)
+                {
+                    extraHeaders = new Dictionary<string, string>(parsed, StringComparer.OrdinalIgnoreCase);
+                }
+            }
+            catch { }
+        }
+
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = site.BaseUrl,
@@ -85,6 +101,7 @@ public sealed class ModelHealthRequestService
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.DetectionRequestTimeoutSeconds,
             RetryCount = runtimeSettings.DetectionRetryCount,
+            ForwardHeaders = extraHeaders,
             TargetPath = string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                 ? SiteEndpointPathResolver.ResolvePath(site.EndpointPathMode, "responses")
                 : null

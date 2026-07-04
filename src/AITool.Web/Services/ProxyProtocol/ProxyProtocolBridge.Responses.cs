@@ -108,6 +108,12 @@ public static partial class ProxyProtocolBridge
         CopyIfPresent(root, payload, "metadata");
         CopyIfPresent(root, payload, "store");
 
+        // Codex 上游要求 store 必须为 false；原始 Chat 请求不携带此字段时强制设置
+        if (payload["store"] is null)
+        {
+            payload["store"] = false;
+        }
+
         // max_output_tokens → max_tokens
         if (root.TryGetPropertyValue("max_output_tokens", out var maxTokens) && maxTokens is not null)
         {
@@ -302,6 +308,12 @@ public static partial class ProxyProtocolBridge
         CopyIfPresent(root, payload, "user");
         CopyIfPresent(root, payload, "metadata");
         CopyIfPresent(root, payload, "store");
+
+        // Codex 上游要求 store 必须为 false；原始 Chat 请求不携带此字段时强制设置
+        if (payload["store"] is null)
+        {
+            payload["store"] = false;
+        }
 
         if (root.TryGetPropertyValue("max_completion_tokens", out var maxCompletionTokens) && maxCompletionTokens is not null)
         {

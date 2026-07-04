@@ -325,7 +325,8 @@ public sealed class ProxyRequestMetadataCache
                                 BaseUrl = site.BaseUrl,
                                 EndpointPathMode = site.EndpointPathMode,
                                 ApiKey = site.ApiKey,
-                                SiteModelName = mapping.RemoteModelName
+                                SiteModelName = mapping.RemoteModelName,
+                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson)
                             })
                         .ToList();
                 })
@@ -1135,7 +1136,8 @@ public sealed class ProxyRequestMetadataCache
                                 site.BaseUrl,
                                 site.EndpointPathMode,
                                 site.ApiKey,
-                                SiteModelName = mapping.RemoteModelName
+                                SiteModelName = mapping.RemoteModelName,
+                                site.ExtraHeadersJson
                             })
                         .ToList();
 
@@ -1157,7 +1159,8 @@ public sealed class ProxyRequestMetadataCache
                                 BaseUrl = first.BaseUrl,
                                 EndpointPathMode = first.EndpointPathMode,
                                 ApiKey = first.ApiKey,
-                                SiteModelName = first.SiteModelName
+                                SiteModelName = first.SiteModelName,
+                                ExtraHeaders = TryParseExtraHeaders(first.ExtraHeadersJson)
                             };
                         })
                         .ToList();
@@ -1686,6 +1689,10 @@ public sealed class CachedChatTarget
     /// 站点模型名称。
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头。
+    /// </summary>
+    public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -1748,4 +1755,9 @@ public sealed class CachedFallbackTarget
     /// 站点模型名称。
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头。
+    /// </summary>
+    public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
+

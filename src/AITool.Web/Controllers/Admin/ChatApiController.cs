@@ -479,6 +479,7 @@ public sealed class ChatApiController : ControllerBase
                     EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                     RetryCount = runtimeSettings.ProxyRetryCount,
+                    ForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(route.ExtraHeaders),
                     TargetPath = string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                         ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
                         : null
@@ -631,6 +632,7 @@ public sealed class ChatApiController : ControllerBase
                 async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
                 async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
                 runtimeSettings.ProxyRequestTimeoutSeconds,
+                route.ExtraHeaders,
                 cancellationToken);
 
             var attemptResult = BuildAttemptResult(
@@ -832,6 +834,7 @@ public sealed class ChatApiController : ControllerBase
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount,
+            ForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(mapping.ExtraHeaders),
             TargetPath = string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                 ? SiteEndpointPathResolver.ResolvePath(mapping.EndpointPathMode, "responses")
                 : null
@@ -930,6 +933,7 @@ public sealed class ChatApiController : ControllerBase
             async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
             async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
             runtimeSettings.ProxyRequestTimeoutSeconds,
+            mapping.ExtraHeaders,
             cancellationToken);
 
         var attemptResult = BuildAttemptResult(
@@ -1025,6 +1029,7 @@ public sealed class ChatApiController : ControllerBase
         Func<string, Task> onContentChunk,
         Func<string, Task> onReasoningChunk,
         int requestTimeoutSeconds,
+        Dictionary<string, string>? extraHeaders,
         CancellationToken cancellationToken)
     {
         // 提前构建请求体，供调用方记录到尝试详情
@@ -1057,6 +1062,15 @@ public sealed class ChatApiController : ControllerBase
             else
             {
                 httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            }
+
+            // 注入 Site.ExtraHeadersJson 中的自定义请求头（Codex 的 Originator / Chatgpt-Account-Id / User-Agent 等）
+            if (extraHeaders != null && extraHeaders.Count > 0)
+            {
+                foreach (var header in extraHeaders)
+                {
+                    httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
             }
 
             using var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
