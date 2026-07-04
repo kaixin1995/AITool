@@ -172,7 +172,6 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var settings = await dbContext.SystemRuntimeSettings
-                        
                         .FirstAsync(x => x.Id == 1, cancellationToken);
 
                     return settings is null

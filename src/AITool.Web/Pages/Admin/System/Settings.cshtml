@@ -149,7 +149,7 @@
                 </div>
                 <div class="col-md-3">
                     <label asp-for="Input.CodexInspectionIntervalMinutes" class="form-label form-label-tip">巡检周期（分钟）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="每隔多少分钟执行一轮自动巡检，下限 5 分钟。">?</span></label>
-                    <input asp-for="Input.CodexInspectionIntervalMinutes" class="form-control" type="number" min="5" />
+                    <input asp-for="Input.CodexInspectionIntervalMinutes" class="form-control" type="number" min="1" />
                 </div>
                 <div class="col-md-3">
                     <label asp-for="Input.CodexQuotaMaxCacheHours" class="form-label form-label-tip">额度缓存最大小时数<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="未被使用的账号可以命中缓存，但超过该小时数后会强制真实刷新一次额度。">?</span></label>
