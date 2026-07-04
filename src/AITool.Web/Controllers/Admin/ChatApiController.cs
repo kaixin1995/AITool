@@ -466,7 +466,10 @@ public sealed class ChatApiController : ControllerBase
                     continue;
                 }
 
-                var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
+                var chatBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
+                var requestBody = string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                    ? ProxyProtocolBridge.ConvertChatRequestToResponses(chatBody, route.SiteModelName, false)
+                    : chatBody;
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = route.BaseUrl,
@@ -1033,7 +1036,11 @@ public sealed class ChatApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         // 提前构建请求体，供调用方记录到尝试详情
-        var requestBody = BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort);
+        var chatRequestBody = BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort);
+        // Responses 协议需要把 Chat 格式转换为 Responses 格式
+        var requestBody = string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+            ? ProxyProtocolBridge.ConvertChatRequestToResponses(chatRequestBody, targetModelName, true)
+            : chatRequestBody;
 
         var client = _httpClientFactory.CreateClient();
         // 这里同样交给运行时设置控制超时，避免落回 HttpClient 默认 100 秒。
