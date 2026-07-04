@@ -1237,6 +1237,9 @@ public sealed class AnthropicProxyController : ControllerBase
         ProxyForwardResult result,
         int requestBodyLength)
     {
+        // 只有异常（失败/中断）才输出到控制台，正常请求不再刷屏
+        if (result.Success && !result.IsStreamInterrupted) return;
+
         try
         {
             Console.WriteLine(ConsoleProxyLogFormatter.BuildSummary(
