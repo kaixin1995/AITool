@@ -466,10 +466,12 @@ public sealed class ChatApiController : ControllerBase
                     continue;
                 }
 
-                var chatBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
-                var requestBody = string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                    ? ProxyProtocolBridge.ConvertChatRequestToResponses(chatBody, route.SiteModelName, false)
-                    : chatBody;
+                var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
+                // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数。
+                if (string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+                {
+                    requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(route.BaseUrl));
+                }
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = route.BaseUrl,
@@ -782,8 +784,14 @@ public sealed class ChatApiController : ControllerBase
             SiteName = selectedTarget.SiteName,
             ProtocolType = selectedTarget.ProtocolType,
             BaseUrl = selectedTarget.BaseUrl,
+            // EndpointPathMode 必须复制：Codex 隐藏站点为 versioned-base，
+            // 缺失会回落到 standard-root，导致 URL 变成 /codex/v1/responses（多出 /v1/，被 Cloudflare 拦截）。
+            EndpointPathMode = selectedTarget.EndpointPathMode,
             ApiKey = selectedTarget.ApiKey,
-            SiteModelName = selectedTarget.SiteModelName
+            SiteModelName = selectedTarget.SiteModelName,
+            // ExtraHeaders 必须复制：Codex 的 Originator / Chatgpt-Account-Id / User-Agent，
+            // 缺失会让上游请求不带任何 Codex 专属头，触发 Cloudflare 拦截页。
+            ExtraHeaders = selectedTarget.ExtraHeaders
         };
     }
 
@@ -825,6 +833,12 @@ public sealed class ChatApiController : ControllerBase
         }
 
         var requestBody = BuildChatRequestBody(mapping.ProtocolType, mapping.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
+        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数（max_output_tokens / metadata 等），
+        // 否则会返回 {"detail":"Unsupported parameter: xxx"}（400）。
+        if (string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(mapping.BaseUrl));
+        }
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = mapping.BaseUrl,
@@ -1036,11 +1050,15 @@ public sealed class ChatApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         // 提前构建请求体，供调用方记录到尝试详情
-        var chatRequestBody = BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort);
-        // Responses 协议需要把 Chat 格式转换为 Responses 格式
-        var requestBody = string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-            ? ProxyProtocolBridge.ConvertChatRequestToResponses(chatRequestBody, targetModelName, true)
-            : chatRequestBody;
+        // BuildChatRequestBody 内部已按协议类型完成转换（Responses 会调用 ConvertChatRequestToResponses），
+        // 这里不能再二次转换——否则传入的已是 Responses 体（无 messages 字段），二次转换会得到空 input 数组，
+        // 导致上游返回 "One of input or previous_response_id ... must be provided."。
+        var requestBody = BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort);
+        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数（max_output_tokens / metadata 等）。
+        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(baseUrl));
+        }
 
         var client = _httpClientFactory.CreateClient();
         // 这里同样交给运行时设置控制超时，避免落回 HttpClient 默认 100 秒。

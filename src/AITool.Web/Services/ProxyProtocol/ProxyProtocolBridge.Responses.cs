@@ -303,6 +303,8 @@ public static partial class ProxyProtocolBridge
             payload["instructions"] = instructions;
         }
 
+        // 透传通用参数（temperature / top_p / user / metadata 对标准 OpenAI Responses 有效；
+        // Codex 上游不接受，会在 PrepareRequestBody 出口的 NormalizeResponsesBody 中按目标 URL 剔除）。
         CopyIfPresent(root, payload, "temperature");
         CopyIfPresent(root, payload, "top_p");
         CopyIfPresent(root, payload, "user");
@@ -315,6 +317,9 @@ public static partial class ProxyProtocolBridge
             payload["store"] = false;
         }
 
+        // max_completion_tokens / max_tokens → max_output_tokens。
+        // 标准 OpenAI Responses API 接受此参数；Codex 上游不接受，但会在 PrepareRequestBody
+        // 出口的 NormalizeResponsesBody 中按目标 URL 剔除，无需在此处特殊处理。
         if (root.TryGetPropertyValue("max_completion_tokens", out var maxCompletionTokens) && maxCompletionTokens is not null)
         {
             payload["max_output_tokens"] = maxCompletionTokens.DeepClone();

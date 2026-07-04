@@ -364,6 +364,15 @@ public sealed class ProxyForwardService : IProxyForwardService
                         receivedAnthropicMessageStop = true;
                     }
 
+                    // Responses 协议（如 Codex 上游）以 response.completed 事件结束流，而非 [DONE]。
+                    // 若不识别该事件，流虽正常完成也会被误判为 IsStreamInterrupted=true（UsageLog 红点）。
+                    if (string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                        && root.TryGetProperty("type", out var responsesEventType)
+                        && string.Equals(responsesEventType.GetString(), "response.completed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        receivedDoneEvent = true;
+                    }
+
                     if (root.TryGetProperty("usage", out var usage))
                     {
                         var extracted = ExtractUsageFromElement(usage, request.ProtocolType);
@@ -469,7 +478,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         var targetPath = string.IsNullOrWhiteSpace(request.TargetPath)
             ? request.ProtocolType == "Anthropic"
                 ? SiteEndpointPathResolver.ResolvePath(request.TargetEndpointPathMode, "messages")
-                : SiteEndpointPathResolver.ResolvePath(request.TargetEndpointPathMode, "chat/completions")
+                : string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                    ? SiteEndpointPathResolver.ResolvePath(request.TargetEndpointPathMode, "responses")
+                    : SiteEndpointPathResolver.ResolvePath(request.TargetEndpointPathMode, "chat/completions")
             : request.TargetPath!;
         var targetUrl = $"{request.TargetBaseUrl.TrimEnd('/')}/{targetPath.TrimStart('/')}";
 

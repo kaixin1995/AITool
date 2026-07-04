@@ -593,7 +593,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 preparedClientRequestBody,
                 route.SiteModelName,
                 enableStreaming,
-                route.OverrideReasoningEffort);
+                route.OverrideReasoningEffort,
+                route.BaseUrl);
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
