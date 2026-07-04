@@ -105,6 +105,77 @@ public sealed class OpenAiCrossProtocolProxyTests
         document.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32().Should().Be(4);
     }
 
+    [Fact]
+    public async Task Post_chat_completions_bridges_tool_calls_to_top_level_responses_items()
+    {
+        var fakeForwardService = new OpenAiCrossProtocolFakeProxyForwardService
+        {
+            ResponseResultFactory = static request => new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "{\"id\":\"resp_tool\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-4.1-real\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"tool-bridged-ok\"}]}],\"usage\":{\"input_tokens\":9,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens\":4,\"total_tokens\":13}}",
+                InputTokens = 9,
+                CachedTokens = 2,
+                OutputTokens = 4
+            }
+        };
+        await using var factory = new OpenAiCrossProtocolWebApplicationFactory(fakeForwardService, "Responses");
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"system\",\"content\":\"be helpful\"},{\"role\":\"user\",\"content\":\"hello\"},{\"role\":\"assistant\",\"content\":\"让我调用工具\",\"tool_calls\":[{\"id\":\"call_weather_1\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Shanghai\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_weather_1\",\"content\":\"sunny\"}],\"max_tokens\":32}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "openai-cross-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        var prepared = fakeForwardService.Requests[0].PreparedRequestBody ?? string.Empty;
+        prepared.Should().Contain("\"type\":\"function_call\"");
+        prepared.Should().Contain("\"call_id\":\"call_weather_1\"");
+        prepared.Should().Contain("\"type\":\"function_call_output\"");
+        prepared.Should().NotContain("\"content\":[{\"type\":\"output_text\",\"text\":\"让我调用工具\"},{\"type\":\"function_call\"");
+    }
+
+    [Fact]
+    public async Task Post_chat_completions_does_not_emit_empty_assistant_message_when_only_tool_calls_exist()
+    {
+        var fakeForwardService = new OpenAiCrossProtocolFakeProxyForwardService
+        {
+            ResponseResultFactory = static request => new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "{\"id\":\"resp_tool_only\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"gpt-4.1-real\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"tool-only-bridged-ok\"}]}],\"usage\":{\"input_tokens\":9,\"input_tokens_details\":{\"cached_tokens\":2},\"output_tokens\":4,\"total_tokens\":13}}",
+                InputTokens = 9,
+                CachedTokens = 2,
+                OutputTokens = 4
+            }
+        };
+        await using var factory = new OpenAiCrossProtocolWebApplicationFactory(fakeForwardService, "Responses");
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"auto\",\"messages\":[{\"role\":\"user\",\"content\":\"hello\"},{\"role\":\"assistant\",\"content\":null,\"tool_calls\":[{\"id\":\"call_weather_2\",\"type\":\"function\",\"function\":{\"name\":\"get_weather\",\"arguments\":\"{\\\"city\\\":\\\"Beijing\\\"}\"}}]},{\"role\":\"tool\",\"tool_call_id\":\"call_weather_2\",\"content\":\"cloudy\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "openai-cross-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        var prepared = fakeForwardService.Requests[0].PreparedRequestBody ?? string.Empty;
+        prepared.Should().Contain("\"type\":\"function_call\"");
+        prepared.Should().Contain("\"type\":\"function_call_output\"");
+        prepared.Should().NotContain("\"role\":\"assistant\",\"content\":[]");
+    }
+
     /// <summary>
     /// 验证 Responses 流式事件能够实时转换为 OpenAI SSE 分片。
     /// </summary>

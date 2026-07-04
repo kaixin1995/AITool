@@ -257,22 +257,25 @@ public static partial class ProxyProtocolBridge
                 }
 
                 var content = ConvertChatContentToResponses(messageObj["content"], role);
-                var inputMessage = new JsonObject
+                var hasVisibleMessageContent = content is JsonArray contentArray && contentArray.Count > 0;
+
+                // assistant 的 tool_calls 在 Responses/Codex 协议里必须是 top-level function_call，
+                // 不能嵌在 message.content[] 中，否则上游会报：
+                // Invalid value: 'function_call'. Supported values are ...
+                // 另外，如果 assistant 这一轮只有 tool_calls 没有文本，也不能额外生成空 assistant message。
+                if (!string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase) || hasVisibleMessageContent)
                 {
-                    ["type"] = "message",
-                    ["role"] = role,
-                    ["content"] = content
-                };
+                    input.Add(new JsonObject
+                    {
+                        ["type"] = "message",
+                        ["role"] = role,
+                        ["content"] = content
+                    });
+                }
 
                 if (string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase)
                     && messageObj["tool_calls"] is JsonArray toolCalls)
                 {
-                    if (content is not JsonArray assistantContentArray)
-                    {
-                        assistantContentArray = new JsonArray();
-                        inputMessage["content"] = assistantContentArray;
-                    }
-
                     foreach (var toolCall in toolCalls)
                     {
                         if (toolCall is not JsonObject toolCallObj)
@@ -281,7 +284,7 @@ public static partial class ProxyProtocolBridge
                         }
 
                         var callId = toolCallObj["id"]?.ToString();
-                        assistantContentArray.Add(new JsonObject
+                        input.Add(new JsonObject
                         {
                             ["type"] = "function_call",
                             ["id"] = toolCallObj["id"]?.DeepClone() ?? $"fc_{Guid.NewGuid():N}",
@@ -291,8 +294,6 @@ public static partial class ProxyProtocolBridge
                         });
                     }
                 }
-
-                input.Add(inputMessage);
             }
         }
 

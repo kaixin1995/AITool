@@ -598,8 +598,7 @@
                 const metaEl = card.querySelector('.codex-source-meta');
                 if (metaEl) {
                     const lastCheck = freshAccount.lastQuotaCheckedAt ? '刷新时间：' + formatTime(freshAccount.lastQuotaCheckedAt) : '';
-                    const tokenExp = freshAccount.tokenExpiresAt ? 'token 过期：' + formatTime(freshAccount.tokenExpiresAt) : '';
-                    const newMetaHtml = `<div>${escapeHtml(lastCheck)}</div><div>${escapeHtml(tokenExp)}</div>`;
+                    const newMetaHtml = lastCheck ? `<div>${escapeHtml(lastCheck)}</div>` : '';
                     if (metaEl.innerHTML !== newMetaHtml) {
                         metaEl.innerHTML = newMetaHtml;
                     }
@@ -685,7 +684,6 @@
         }
 
         const lastCheck = a.lastQuotaCheckedAt ? '刷新时间：' + formatTime(a.lastQuotaCheckedAt) : '';
-        const tokenExp = a.tokenExpiresAt ? 'token 过期：' + formatTime(a.tokenExpiresAt) : '';
 
         return `
         <div class="codex-card" data-id="${a.id}" onclick="handleCardClick(event, '${a.id}')">
@@ -708,7 +706,6 @@
             <div class="codex-card-meta">
                 <div class="codex-source-meta">
                     <div>${escapeHtml(lastCheck)}</div>
-                    <div>${escapeHtml(tokenExp)}</div>
                 </div>
                 <div class="codex-card-actions">
                     <button class="btn btn-icon" onclick="refreshQuota('${a.id}', this)" title="刷新额度">
