@@ -1163,7 +1163,10 @@ public sealed class ChatApiController : ControllerBase
             var responseBodySummary = $"[SSE streaming] content={contentBuilder.Length} chars, reasoning={reasoningBuilder.Length} chars, input={state.InputTokens}, output={state.OutputTokens}";
             return new ChatStreamForwardResult
             {
-                Success = state.HadAnyContent || contentBuilder.Length > 0 || reasoningBuilder.Length > 0,
+                // 收到 [DONE]（done=true）或收到过内容都算成功
+                // Responses 协议的 SSE 格式与 Chat 不同，内容可能无法被 Chat 解析器提取，
+                // 但只要流正常结束（收到 [DONE]），就认为成功
+                Success = done || state.HadAnyContent || contentBuilder.Length > 0 || reasoningBuilder.Length > 0,
                 HadAnyContent = state.HadAnyContent,
                 Content = contentBuilder.ToString(),
                 ReasoningContent = reasoningBuilder.ToString(),
