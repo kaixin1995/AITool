@@ -268,38 +268,38 @@
 
         function renderInspectionSummary(lastRun) {
             const el = document.getElementById('inspectionSummary');
-            if (!lastRun || !lastRun.Accounts || lastRun.Accounts.length === 0) {
+            if (!lastRun || !lastRun.accounts || lastRun.accounts.length === 0) {
                 el.textContent = '暂无';
                 return;
             }
             const actions = {
-                enabled: lastRun.Accounts.filter(a => a.Action === 'enable').length,
-                disabled: lastRun.Accounts.filter(a => a.Action === 'disable').length,
-                skipped: lastRun.Accounts.filter(a => a.Action === 'keep').length,
+                enabled: lastRun.accounts.filter(a => a.action === 'enable').length,
+                disabled: lastRun.accounts.filter(a => a.action === 'disable').length,
+                skipped: lastRun.accounts.filter(a => a.action === 'keep').length,
             };
-            el.innerHTML = `共 ${lastRun.Accounts.length} 个账号<br>启用：${actions.enabled}，禁用：${actions.disabled}，保留：${actions.skipped}`;
+            el.innerHTML = `共 ${lastRun.accounts.length} 个账号<br>启用：${actions.enabled}，禁用：${actions.disabled}，保留：${actions.skipped}`;
         }
 
         function renderInspectionAccounts(lastRun) {
             const tbody = document.getElementById('inspectionAccountsBody');
-            if (!lastRun || !lastRun.Accounts || lastRun.Accounts.length === 0) {
+            if (!lastRun || !lastRun.accounts || lastRun.accounts.length === 0) {
                 tbody.innerHTML = '<tr><td colspan="6" class="text-center text-secondary">暂无数据</td></tr>';
                 return;
             }
-            tbody.innerHTML = lastRun.Accounts.map(a => {
-                const actionBadge = a.Action === 'disable' ? '<span class="badge bg-danger">禁用</span>' :
-                                   a.Action === 'enable' ? '<span class="badge bg-success">启用</span>' :
+            tbody.innerHTML = lastRun.accounts.map(a => {
+                const actionBadge = a.action === 'disable' ? '<span class="badge bg-danger">禁用</span>' :
+                                   a.action === 'enable' ? '<span class="badge bg-success">启用</span>' :
                                    '<span class="badge bg-secondary">保留</span>';
-                const fiveHour = a.FiveHourUsedPercent != null ? a.FiveHourUsedPercent.toFixed(1) + '%' : '—';
-                const weekly = a.WeeklyUsedPercent != null ? a.WeeklyUsedPercent.toFixed(1) + '%' : '—';
-                const cached = a.FromCache ? '✓' : '✗';
+                const fiveHour = a.fiveHourUsedPercent != null ? a.fiveHourUsedPercent.toFixed(1) + '%' : '—';
+                const weekly = a.weeklyUsedPercent != null ? a.weeklyUsedPercent.toFixed(1) + '%' : '—';
+                const cached = a.fromCache ? '✓' : '✗';
                 return `<tr>
-                    <td>${escapeHtml(a.DisplayName)}</td>
+                    <td>${escapeHtml(a.displayName)}</td>
                     <td>${actionBadge}</td>
                     <td>${fiveHour}</td>
                     <td>${weekly}</td>
                     <td>${cached}</td>
-                    <td>${escapeHtml(a.Reason || '—')}</td>
+                    <td>${escapeHtml(a.reason || '—')}</td>
                 </tr>`;
             }).join('');
         }
@@ -311,8 +311,8 @@
                 return;
             }
             el.innerHTML = logs.map(log => {
-                const time = log.At ? formatTime(log.At) : '';
-                return `<div class="log-line"><span class="log-time">${time}</span>${escapeHtml(log.Message)}</div>`;
+                const time = log.at ? formatTime(log.at) : '';
+                return `<div class="log-line"><span class="log-time">${time}</span>${escapeHtml(log.message)}</div>`;
             }).join('');
             el.scrollTop = el.scrollHeight;
         }
