@@ -500,7 +500,119 @@
         }
         
         loadAccounts();
+        
+        // 账号额度 Tab 可见时，每 10 秒局部刷新数据
+        let quotaPollTimer = null;
+        const quotaPane = document.getElementById('quota-pane');
+        const quotaTab = document.getElementById('quota-tab');
+        
+        function startQuotaPolling() {
+            stopQuotaPolling();
+            quotaPollTimer = setInterval(partialRefreshAccounts, 10000);
+        }
+        function stopQuotaPolling() {
+            if (quotaPollTimer) { clearInterval(quotaPollTimer); quotaPollTimer = null; }
+        }
+        
+        if (quotaTab) {
+            quotaTab.addEventListener('shown.bs.tab', startQuotaPolling);
+            quotaTab.addEventListener('hidden.bs.tab', stopQuotaPolling);
+        }
+        // 页面隐藏时暂停
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) { stopQuotaPolling(); }
+            else if (quotaPane && quotaPane.classList.contains('active')) { startQuotaPolling(); }
+        });
+        
+        // 默认在账号额度 Tab 时启动
+        if (quotaPane && quotaPane.classList.contains('active')) { startQuotaPolling(); }
     });
+
+    // 局部刷新：只更新数值变化的部分，不重建整个 DOM
+    async function partialRefreshAccounts() {
+        try {
+            const r = await fetch('/api/admin/codex/accounts');
+            if (!r.ok) return;
+            const fresh = await r.json();
+            
+            // 对比并更新每个卡片的数值
+            fresh.forEach(freshAccount => {
+                const oldAccount = codexAccounts.find(a => a.id === freshAccount.id);
+                if (!oldAccount) return; // 新账号，跳过（下次全量渲染会带上）
+                
+                const card = document.querySelector(`.codex-card[data-id="${freshAccount.id}"]`);
+                if (!card) return;
+                
+                // 更新额度窗口进度条和百分比
+                if (JSON.stringify(oldAccount.windows) !== JSON.stringify(freshAccount.windows)) {
+                    const container = card.querySelector('.codex-windows-container');
+                    if (container && freshAccount.windows && freshAccount.windows.length) {
+                        container.innerHTML = freshAccount.windows.map(w => {
+                            const usedPercent = w.usedPercent ?? 0;
+                            const remainingPercent = Math.max(0, 100 - usedPercent);
+                            const tone = remainingPercent < 20 ? 'bad' : remainingPercent < 50 ? 'warn' : 'good';
+                            const label = w.label || '-';
+                            const resetLabel = w.resetLabel || '-';
+                            const percentText = (w.usedPercent !== null && w.usedPercent !== undefined) ? remainingPercent.toFixed(1) + '%' : '--';
+                            return `<div class="codex-window">
+                                <div class="codex-window-label" title="${escapeHtml(label)}">${escapeHtml(label)}</div>
+                                <div class="codex-window-bar"><div class="codex-window-fill ${tone}" style="width:${Math.min(remainingPercent, 100)}%"></div></div>
+                                <div class="codex-window-percent">${percentText}</div>
+                                <div class="codex-window-reset" title="${escapeHtml(resetLabel)}">${escapeHtml(resetLabel)}</div>
+                            </div>`;
+                        }).join('');
+                    }
+                }
+                
+                // 更新剩余重置次数小字
+                const hintEl = card.querySelector('.codex-reset-credits-hint');
+                if (hintEl) {
+                    const newText = freshAccount.resetCreditsAvailableCount > 0
+                        ? `剩余 ${freshAccount.resetCreditsAvailableCount} 次手动重置`
+                        : '';
+                    if (hintEl.textContent !== newText) {
+                        hintEl.textContent = newText;
+                        if (!newText) hintEl.style.display = 'none';
+                        else hintEl.style.display = '';
+                    }
+                }
+                
+                // 更新状态徽章
+                const badgesEl = card.querySelector('.codex-badges');
+                if (badgesEl) {
+                    const freshStatusBadge = renderStatusBadge(freshAccount);
+                    const freshPlanBadge = freshAccount.planType ? `<span class="codex-plan">${escapeHtml(freshAccount.planType)}</span>` : '';
+                    const newBadgesHtml = freshStatusBadge + freshPlanBadge;
+                    if (badgesEl.innerHTML !== newBadgesHtml) {
+                        badgesEl.innerHTML = newBadgesHtml;
+                    }
+                }
+                
+                // 更新时间信息
+                const metaEl = card.querySelector('.codex-source-meta');
+                if (metaEl) {
+                    const lastCheck = freshAccount.lastQuotaCheckedAt ? '刷新时间：' + formatTime(freshAccount.lastQuotaCheckedAt) : '';
+                    const tokenExp = freshAccount.tokenExpiresAt ? 'token 过期：' + formatTime(freshAccount.tokenExpiresAt) : '';
+                    const newMetaHtml = `<div>${escapeHtml(lastCheck)}</div><div>${escapeHtml(tokenExp)}</div>`;
+                    if (metaEl.innerHTML !== newMetaHtml) {
+                        metaEl.innerHTML = newMetaHtml;
+                    }
+                }
+                
+                // 更新启用/禁用按钮文字
+                const toggleBtn = Array.from(card.querySelectorAll('.codex-card-actions .btn-icon')).find(b => b.getAttribute('onclick')?.includes('toggleAccount'));
+                if (toggleBtn && oldAccount.isEnabled !== freshAccount.isEnabled) {
+                    toggleBtn.innerHTML = freshAccount.isEnabled
+                        ? '<svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><line x1=\"18\" y1=\"6\" x2=\"6\" y2=\"18\"></line><line x1=\"6\" y1=\"6\" x2=\"18\" y2=\"18\"></line></svg>'
+                        : '<svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"20 6 9 17 4 12\"></polyline></svg>';
+                    toggleBtn.title = freshAccount.isEnabled ? '禁用账号' : '启用账号';
+                }
+            });
+            
+            // 更新内存数据
+            codexAccounts = fresh;
+        } catch (e) { /* 静默 */ }
+    }
 
     async function loadAccounts() {
         try {
