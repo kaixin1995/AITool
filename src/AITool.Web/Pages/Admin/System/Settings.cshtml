@@ -156,7 +156,7 @@
                     <input asp-for="Input.CodexQuotaMaxCacheHours" class="form-control" type="number" min="1" />
                 </div>
                 <div class="col-md-3">
-                    <label asp-for="Input.CodexAutoDisableThresholdPercent" class="form-label form-label-tip">自动禁用阈值（%）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="当任一关键额度窗口的已使用百分比达到该阈值时，账号自动禁用。该值为全局配置，对所有 Codex 账号统一生效。建议 95。">?</span></label>
+                    <label asp-for="Input.CodexAutoDisableThresholdPercent" class="form-label form-label-tip">自动禁用阈值（%）<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="当账号额度达到该使用百分比时自动禁用。判断规则：优先看 5 小时窗口，没有 5 小时窗口才看周窗口。建议 95。">?</span></label>
                     <input asp-for="Input.CodexAutoDisableThresholdPercent" class="form-control" type="number" min="1" max="100" />
                 </div>
             </div>

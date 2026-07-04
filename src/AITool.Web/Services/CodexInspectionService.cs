@@ -217,28 +217,26 @@ public sealed class CodexInspectionService : BackgroundService
             AddLog("quota", $"账号 {account.DisplayName} 真实刷新{(info.Success ? "成功" : "失败：" + info.Error)}");
         }
 
-        // 3. 提取窗口百分比
-        ar.WeeklyUsedPercent = info.Windows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;
+        // 3. 提取窗口百分比（优先 5 小时，没有才看周窗口）
         ar.FiveHourUsedPercent = info.Windows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
+        ar.WeeklyUsedPercent = info.Windows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;
+        var checkPercent = ar.FiveHourUsedPercent ?? ar.WeeklyUsedPercent;
 
-        // 4. 自动禁用/启用判定（移植 codex-patrol ResolveDecision）
+        // 4. 自动禁用/启用判定
         var threshold = (double)autoDisableThresholdPercent;
-        var weekly = ar.WeeklyUsedPercent;
 
-        if (info.Success && weekly.HasValue && weekly.Value >= threshold && account.IsEnabled)
+        if (info.Success && checkPercent.HasValue && checkPercent.Value >= threshold && account.IsEnabled)
         {
-            // 周额度达阈值 → 禁用
-            await DisableAccountAsync(dbContext, cache, account, ct, $"周额度使用 {weekly.Value:F1}% 达到阈值 {threshold}");
+            await DisableAccountAsync(dbContext, cache, account, ct, $"额度使用 {checkPercent.Value:F1}% 达到阈值 {threshold}");
             ar.Action = "disable";
-            ar.Reason = (ar.Reason + "；").Replace("；；", "；") + $"周额度 {weekly.Value:F1}%≥{threshold}，已自动禁用";
+            ar.Reason = (ar.Reason + "；").Replace("；；", "；") + $"额度 {checkPercent.Value:F1}%≥{threshold}，已自动禁用";
         }
         else if (info.Success && account.IsEnabled == false && !account.IsQuotaCooling && !account.DisabledByFeatureToggle
-                 && weekly.HasValue && weekly.Value < threshold)
+                 && checkPercent.HasValue && checkPercent.Value < threshold)
         {
-            // 已禁用（非冷却、非总开关禁用）且周额度恢复 → 启用
-            await EnableAccountAsync(dbContext, cache, account, ct, "周额度已恢复");
+            await EnableAccountAsync(dbContext, cache, account, ct, "额度已恢复");
             ar.Action = "enable";
-            ar.Reason = (ar.Reason + "；").Replace("；；", "；") + "周额度已恢复，已自动启用";
+            ar.Reason = (ar.Reason + "；").Replace("；；", "；") + "额度已恢复，已自动启用";
         }
         else
         {

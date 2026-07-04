@@ -161,13 +161,15 @@ public sealed class CodexQuotaService : ICodexQuotaService
         }
     }
 
+    /// <summary>
+    /// 获取用于自动禁用判定的已使用百分比。
+    /// 规则：优先看 5 小时窗口；没有 5 小时才看周窗口。只看一个，不叠加。
+    /// </summary>
     private static double? GetMaxUsedPercent(CodexQuotaInfo info)
     {
-        var percents = info.Windows
-            .Where(w => w.UsedPercent.HasValue)
-            .Select(w => w.UsedPercent!.Value)
-            .ToList();
-        return percents.Count > 0 ? percents.Max() : null;
+        var fiveHour = info.Windows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
+        if (fiveHour.HasValue) return fiveHour;
+        return info.Windows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;
     }
 
     private async Task DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)
