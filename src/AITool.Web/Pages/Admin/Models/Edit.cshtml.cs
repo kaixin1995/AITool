@@ -113,10 +113,11 @@ public class EditModel : PageModel
     public string OverrideReasoningEffort { get; set; } = string.Empty;
 
     /// <summary>
-    /// 转发上游前要从请求体剔除的字段路径，逗号分隔。留空=不剔除。
+    /// 关联的兼容规则集 Id（可空）。为空表示不应用任何规则集。
+    /// 第二阶段会换成从规则集列表选择的下拉框。
     /// </summary>
     [BindProperty]
-    public string StripRequestFields { get; set; } = string.Empty;
+    public Guid? CompatibilityProfileId { get; set; }
 
     /// <summary>
     /// 状态提示。
@@ -183,7 +184,7 @@ public class EditModel : PageModel
             model.DisplayName = DisplayName;
             model.IsEnabled = IsEnabled;
             model.OverrideReasoningEffort = (OverrideReasoningEffort ?? string.Empty).Trim();
-            model.StripRequestFields = (StripRequestFields ?? string.Empty).Trim();
+            model.CompatibilityProfileId = CompatibilityProfileId;
 
             await _dbContext.UpdateAsync(model, cancellationToken);
             _metadataCache?.InvalidateModelMetadata();
@@ -355,7 +356,7 @@ public class EditModel : PageModel
         DisplayName = model.DisplayName;
         IsEnabled = model.IsEnabled;
         OverrideReasoningEffort = model.OverrideReasoningEffort;
-        StripRequestFields = model.StripRequestFields;
+        CompatibilityProfileId = model.CompatibilityProfileId;
         await LoadSiteMappingsAsync(id, cancellationToken);
         await LoadAvailableSitesAsync(id, cancellationToken);
         if (string.IsNullOrWhiteSpace(NewMapping.RemoteModelName))

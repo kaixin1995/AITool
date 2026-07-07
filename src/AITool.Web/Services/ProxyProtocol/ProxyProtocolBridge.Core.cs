@@ -3,6 +3,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AITool.Domain.Proxy;
 
 namespace AITool.Web.Services;
 
@@ -112,7 +113,8 @@ public static partial class ProxyProtocolBridge
         bool enableStreaming,
         string? overrideReasoningEffort = null,
         string? targetBaseUrl = null,
-        string? stripRequestFields = null)
+        IReadOnlyList<CompatibilityRule>? compatibilityRules = null,
+        bool isPassthrough = true)
     {
         string result;
         JsonObject? rootNode = null;
@@ -180,11 +182,11 @@ public static partial class ProxyProtocolBridge
             result = NormalizeResponsesBody(result, isCodex);
         }
 
-        // 按模型配置的字段黑名单剔除请求体字段（透传与转换路径都生效，放最后一步统一处理）。
-        // 用于兼容不支持某些字段的上游（如 GPT-5 不认 reasoning_content、z.ai 不认 metadata）。
-        if (!string.IsNullOrWhiteSpace(stripRequestFields))
+        // 应用模型关联的兼容规则集（透传与转换路径都生效，放最后一步统一处理）。
+        // 按当前路径（isPassthrough）筛选规则 scope 后依次 strip/rename/default。
+        if (compatibilityRules is { Count: > 0 })
         {
-            result = ApplyStripRequestFields(result, stripRequestFields);
+            result = ApplyCompatibilityProfile(result, compatibilityRules, isPassthrough);
         }
 
         return result;
@@ -303,6 +305,91 @@ public static partial class ProxyProtocolBridge
         {
             return requestBody;
         }
+    }
+
+    /// <summary>
+    /// 应用兼容规则集：按规则对请求体做字段级变换（strip/rename/default）。
+    /// 规则已由缓存层解析为列表，此处按 isPassthrough 筛选 scope 后依次应用，零 JSON 规则解析开销。
+    /// 任一规则失败静默跳过，不影响其他规则和转发可用性。
+    /// </summary>
+    /// <param name="isPassthrough">当前是否透传路径（clientProtocol==targetProtocol）。true 保留 scope=passthrough/all 的规则；false 保留 scope=bridge/all 的规则。</param>
+    private static string ApplyCompatibilityProfile(string requestBody, IReadOnlyList<CompatibilityRule> rules, bool isPassthrough)
+    {
+        if (rules.Count == 0) return requestBody;
+
+        try
+        {
+            var rootNode = JsonNode.Parse(requestBody) as JsonObject;
+            if (rootNode is null) return requestBody;
+
+            foreach (var rule in rules)
+            {
+                // 按 scope 筛选：all 始终生效；passthrough/bridge 仅对应路径生效。
+                var scope = (rule.Scope ?? "all").Trim().ToLowerInvariant();
+                if (scope != "all")
+                {
+                    var wantPassthrough = string.Equals(scope, "passthrough", StringComparison.OrdinalIgnoreCase);
+                    if (wantPassthrough != isPassthrough) continue;
+                }
+
+                try
+                {
+                    var op = (rule.Op ?? "").Trim().ToLowerInvariant();
+                    switch (op)
+                    {
+                        case "strip":
+                            var target = NormalizeStripPath(rule.Target ?? "");
+                            if (!string.IsNullOrWhiteSpace(target)) StripPath(rootNode, target);
+                            break;
+                        case "rename":
+                            ApplyRename(rootNode, rule.From, rule.To);
+                            break;
+                        case "default":
+                            ApplyDefault(rootNode, rule.Key, rule.Value);
+                            break;
+                    }
+                }
+                catch
+                {
+                    // 单条规则失败不影响其他规则。
+                }
+            }
+
+            return rootNode.ToJsonString();
+        }
+        catch
+        {
+            return requestBody;
+        }
+    }
+
+    /// <summary>
+    /// 顶层字段重命名：from 存在且 to 非空时，把 from 的值移到 to（保留原值类型），再删除 from。
+    /// from 不存在或 to 为空则跳过。
+    /// </summary>
+    private static void ApplyRename(JsonObject root, string from, string to)
+    {
+        if (string.IsNullOrWhiteSpace(from) || string.IsNullOrWhiteSpace(to)) return;
+        if (root[from] is null) return;
+        root[to] = root[from]!.DeepClone();
+        root.Remove(from);
+    }
+
+    /// <summary>
+    /// 为缺失的顶层字段补默认值。仅当字段不存在时才注入（不覆盖客户端已有值）。
+    /// value 按 true/false/整数/小数 自动推断类型，否则按字符串。
+    /// </summary>
+    private static void ApplyDefault(JsonObject root, string key, string value)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return;
+        if (root[key] is not null) return; // 已有值不覆盖
+
+        var v = value ?? string.Empty;
+        if (string.Equals(v, "true", StringComparison.OrdinalIgnoreCase)) { root[key] = true; return; }
+        if (string.Equals(v, "false", StringComparison.OrdinalIgnoreCase)) { root[key] = false; return; }
+        if (int.TryParse(v, out var intVal)) { root[key] = intVal; return; }
+        if (double.TryParse(v, out var dblVal)) { root[key] = dblVal; return; }
+        root[key] = v;
     }
 
     /// <summary>

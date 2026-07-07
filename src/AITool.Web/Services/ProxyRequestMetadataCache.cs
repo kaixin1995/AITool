@@ -3,6 +3,8 @@ using System.Text;
 using System.Text.Json;
 using AITool.Application.Common;
 using AITool.Domain.Codex;
+using AITool.Domain.Models;
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Controllers.Admin;
 using AITool.Web.Pages.Admin.ClientSimulator;
@@ -786,6 +788,14 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 兼容规则集发生增删改后调用。规则随路由目标一起缓存，故复用路由缓存失效。
+    /// </summary>
+    public void InvalidateCompatibilityProfiles()
+    {
+        InvalidateRouteTargets();
+    }
+
+    /// <summary>
     /// 获取待巡检的 Codex 账号列表（未被功能总开关禁用，按最近检查时间升序）。
     /// 走缓存，账号变更后需调 <see cref="InvalidateCodexAccounts"/> 失效。
     /// </summary>
@@ -1073,6 +1083,13 @@ public sealed class ProxyRequestMetadataCache
                     var routes = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
                     var sites = await dbContext.Sites.ToListAsync(cancellationToken);
                     var models = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    // 一次性加载所有启用的兼容规则集，构建 Id→规则列表字典，供路由目标投影时查（避免 N+1）。
+                    var profiles = await dbContext.CompatibilityProfiles
+                        .Where(p => p.IsEnabled)
+                        .ToListAsync(cancellationToken);
+                    var profileRules = profiles.ToDictionary(
+                        p => p.Id,
+                        p => ParseCompatibilityRules(p.RulesJson));
 
                     return (
                             from route in routes
@@ -1099,7 +1116,7 @@ public sealed class ProxyRequestMetadataCache
                                 InstancePriority = route.InstancePriority,
                                 Priority = route.Priority,
                                 OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
-                                StripRequestFields = model?.StripRequestFields ?? string.Empty,
+                                CompatibilityRules = GetRulesForModel(model, profileRules),
                                 AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
                             })
@@ -1238,6 +1255,33 @@ public sealed class ProxyRequestMetadataCache
             RemoteModelName = remoteModelName,
             SiteEnabled = true
         });
+    }
+
+    /// <summary>
+    /// 解析规则集的 RulesJson 为规则列表。解析失败返回空列表，不影响转发。
+    /// </summary>
+    private static IReadOnlyList<CompatibilityRule> ParseCompatibilityRules(string? rulesJson)
+    {
+        if (string.IsNullOrWhiteSpace(rulesJson)) return Array.Empty<CompatibilityRule>();
+        try
+        {
+            var rules = JsonSerializer.Deserialize<List<CompatibilityRule>>(rulesJson);
+            return rules is null || rules.Count == 0 ? Array.Empty<CompatibilityRule>() : rules;
+        }
+        catch
+        {
+            return Array.Empty<CompatibilityRule>();
+        }
+    }
+
+    /// <summary>
+    /// 取模型关联的兼容规则集（按 CompatibilityProfileId 查字典）。模型或 profileId 为空、或字典里没有则返回空。
+    /// </summary>
+    private static IReadOnlyList<CompatibilityRule> GetRulesForModel(ModelLibraryItem? model, Dictionary<Guid, IReadOnlyList<CompatibilityRule>> profileRules)
+    {
+        var profileId = model?.CompatibilityProfileId;
+        if (profileId is null || profileId == Guid.Empty) return Array.Empty<CompatibilityRule>();
+        return profileRules.TryGetValue(profileId.Value, out var rules) ? rules : Array.Empty<CompatibilityRule>();
     }
 
     /// <summary>
@@ -1574,9 +1618,10 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public string OverrideReasoningEffort { get; set; } = string.Empty;
     /// <summary>
-    /// 转发前要从请求体剔除的字段路径（逗号分隔）。空=不剔除。
+    /// 该模型关联的兼容规则集（已解析的规则列表）。转发时按 isPassthrough 筛选 scope 后应用。
+    /// 为空表示不应用任何规则。
     /// </summary>
-    public string StripRequestFields { get; set; } = string.Empty;
+    public IReadOnlyList<CompatibilityRule> CompatibilityRules { get; set; } = Array.Empty<CompatibilityRule>();
     /// <summary>
     /// 时间可用性模式，空值兼容为全天可用。
     /// </summary>

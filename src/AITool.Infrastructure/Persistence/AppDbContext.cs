@@ -90,6 +90,7 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<ProxyUsageLog> ProxyUsageLogs => _client.Queryable<ProxyUsageLog>();
     public ISugarQueryable<ModelHealthMonitor> ModelHealthMonitors => _client.Queryable<ModelHealthMonitor>();
     public ISugarQueryable<SystemRuntimeSettings> SystemRuntimeSettings => _client.Queryable<SystemRuntimeSettings>();
+    public ISugarQueryable<CompatibilityProfile> CompatibilityProfiles => _client.Queryable<CompatibilityProfile>();
 
     /// <summary>
     /// 由 DI 注入的 SqlSugar 客户端构造。
@@ -228,6 +229,7 @@ public static class SqlSugarSetup
             typeof(ProxyAccessKey),
             typeof(ProxyUsageLog),
             typeof(ModelHealthMonitor),
-            typeof(SystemRuntimeSettings));
+            typeof(SystemRuntimeSettings),
+            typeof(CompatibilityProfile));
     }
 }

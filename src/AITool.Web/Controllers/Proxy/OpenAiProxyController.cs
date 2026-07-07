@@ -594,7 +594,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 enableStreaming,
                 route.OverrideReasoningEffort,
                 route.BaseUrl,
-                route.StripRequestFields);
+                route.CompatibilityRules,
+                isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase));
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量

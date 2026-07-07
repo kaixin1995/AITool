@@ -42,14 +42,10 @@ public sealed class ModelLibraryItem
     public string OverrideReasoningEffort { get; set; } = string.Empty;
 
     /// <summary>
-    /// 转发上游前要从请求体剔除的字段路径，逗号分隔。
-    /// 语法：顶层字段直接写名字（如 metadata、stream_options）；
-    /// 裸字段名若无 . 或 []，自动作用于 messages 数组每条（如 reasoning_content 等价于 messages[].reasoning_content）；
-    /// 也可写精确路径 a.b 或 a[].b。
-    /// 用于兼容不支持某些字段的上游（如 GPT-5 不认 reasoning_content、z.ai 不认 metadata）。
+    /// 关联的兼容规则集 Id。转发上游前按该规则集对请求体做字段级变换（剔除/重命名/补默认值）。
+    /// 为空表示不应用任何规则集。规则集独立维护，可被多个模型引用。
     /// </summary>
-    [SugarColumn(IsNullable = false)]
-    public string StripRequestFields { get; set; } = string.Empty;
+    public Guid? CompatibilityProfileId { get; set; }
 
     /// <summary>
     /// 标记该模型当前是否启用，禁用后不再参与代理路由和检测任务。
