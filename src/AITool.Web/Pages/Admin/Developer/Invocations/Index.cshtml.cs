@@ -1,3 +1,5 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using AITool.Application.Operations;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Pages.Admin.ClientSimulator;
@@ -194,7 +196,7 @@ public sealed class IndexModel : PageModel
     /// <summary>
     /// 返回调用记录详情。
     /// </summary>
-    public async Task<IActionResult> OnGetDetailAsync(Guid traceId, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> OnGetDetailAsync(Guid traceId, bool summarize = false, CancellationToken cancellationToken = default)
     {
         var settings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
         if (!settings.DeveloperFeaturesEnabled)
@@ -208,7 +210,7 @@ public sealed class IndexModel : PageModel
             return NotFound();
         }
 
-        return new JsonResult(ToDetailDto(entry));
+        return new JsonResult(ToDetailDto(entry, summarize));
     }
 
     /// <summary>
@@ -292,7 +294,7 @@ public sealed class IndexModel : PageModel
     /// <summary>
     /// 转换为详情数据。
     /// </summary>
-    private static DeveloperInvocationTraceDto ToDetailDto(DeveloperInvocationTraceEntry entry)
+    private static DeveloperInvocationTraceDto ToDetailDto(DeveloperInvocationTraceEntry entry, bool summarize = false)
     {
         return new DeveloperInvocationTraceDto
         {
@@ -312,14 +314,14 @@ public sealed class IndexModel : PageModel
             AttemptedModel = entry.AttemptedModel,
             TargetSiteId = entry.TargetSiteId,
             TargetSiteName = entry.TargetSiteName,
-            RequestBody = entry.RequestBody,
+            RequestBody = summarize ? SummarizeJsonBody(entry.RequestBody) : entry.RequestBody,
             RequestHeaders = entry.RequestHeaders,
             Status = entry.Status,
             StatusText = GetStatusText(entry.Status),
             StatusClass = GetStatusClass(entry.Status),
             StatusCode = entry.StatusCode,
             ErrorMessage = entry.ErrorMessage,
-            ResponseBody = entry.ResponseBody,
+            ResponseBody = summarize ? SummarizeJsonBody(entry.ResponseBody) : entry.ResponseBody,
             ResponseContentType = entry.ResponseContentType,
             IsStreaming = entry.IsStreaming,
             InputTokens = entry.InputTokens,
@@ -328,7 +330,7 @@ public sealed class IndexModel : PageModel
             TotalDurationMs = entry.TotalDurationMs,
             SummarySite = string.IsNullOrWhiteSpace(entry.TargetSiteName) ? "未命中站点" : entry.TargetSiteName,
             SummaryAttemptedModel = string.IsNullOrWhiteSpace(entry.AttemptedModel) ? "未解析调用模型" : entry.AttemptedModel,
-            Attempts = entry.Attempts.Select(ToAttemptDto).ToList(),
+            Attempts = entry.Attempts.Select(a => ToAttemptDto(a, summarize)).ToList(),
             FailedAttemptCount = entry.Attempts.Count(x => !string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(x.Status, "pending", StringComparison.OrdinalIgnoreCase)),
             PendingAttemptCount = entry.Attempts.Count(x => string.Equals(x.Status, "pending", StringComparison.OrdinalIgnoreCase)),
             SuccessAttemptCount = entry.Attempts.Count(x => string.Equals(x.Status, "success", StringComparison.OrdinalIgnoreCase))
@@ -338,7 +340,7 @@ public sealed class IndexModel : PageModel
     /// <summary>
     /// 转换为尝试详情数据。
     /// </summary>
-    private static DeveloperInvocationTraceAttemptDto ToAttemptDto(DeveloperInvocationTraceAttempt attempt)
+    private static DeveloperInvocationTraceAttemptDto ToAttemptDto(DeveloperInvocationTraceAttempt attempt, bool summarize = false)
     {
         return new DeveloperInvocationTraceAttemptDto
         {
@@ -352,13 +354,13 @@ public sealed class IndexModel : PageModel
             ForwardingMode = attempt.ForwardingMode,
             TargetSiteId = attempt.TargetSiteId,
             TargetSiteName = attempt.TargetSiteName,
-            PreparedRequestBody = attempt.PreparedRequestBody,
+            PreparedRequestBody = summarize ? SummarizeJsonBody(attempt.PreparedRequestBody) : attempt.PreparedRequestBody,
             Status = attempt.Status,
             StatusText = GetStatusText(attempt.Status),
             StatusClass = GetStatusClass(attempt.Status),
             StatusCode = attempt.StatusCode,
             ErrorMessage = attempt.ErrorMessage,
-            ResponseBody = attempt.ResponseBody,
+            ResponseBody = summarize ? SummarizeJsonBody(attempt.ResponseBody) : attempt.ResponseBody,
             ResponseContentType = attempt.ResponseContentType,
             IsStreaming = attempt.IsStreaming,
             InputTokens = attempt.InputTokens,
@@ -398,6 +400,105 @@ public sealed class IndexModel : PageModel
             "pending" => "pending",
             _ => "danger"
         };
+    }
+
+    /// <summary>
+    /// 对 JSON 请求/响应体做"结构保留、内容精简"摘要：仅截断超长字符串值（&gt;200 字符），
+    /// 保留头 100 + 尾 20，中间标注省略字符数。字段名、嵌套层级、数组结构、数值、布尔、短字符串原样保留。
+    /// 非 JSON（如 SSE 流）或解析失败时原样返回，不影响展示。
+    /// </summary>
+    private static string SummarizeJsonBody(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return body ?? string.Empty;
+
+        try
+        {
+            var node = JsonNode.Parse(body);
+            if (node is null) return body;
+
+            SummarizeNode(node);
+
+            // 用带缩进的方式重新序列化，便于在页面上阅读（与原有 FormatBody 行为一致）。
+            return node.ToJsonString(_summarizeOptions);
+        }
+        catch
+        {
+            return body;
+        }
+    }
+
+    /// <summary>
+    /// 摘要化用的 JSON 序列化选项：带缩进、不转义非 ASCII（中文直接显示，便于阅读）。
+    /// </summary>
+    private static readonly JsonSerializerOptions _summarizeOptions = new()
+    {
+        WriteIndented = true,
+        Encoder = global::System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+    };
+
+    /// <summary>
+    /// 触发摘要的字符串长度阈值（超过才截断）。
+    /// </summary>
+    private const int SummarizeThreshold = 200;
+    /// <summary>
+    /// 截断时保留的头部字符数。
+    /// </summary>
+    private const int SummarizeHeadKeep = 100;
+    /// <summary>
+    /// 截断时保留的尾部字符数。
+    /// </summary>
+    private const int SummarizeTailKeep = 20;
+
+    /// <summary>
+    /// 递归摘要化 JSON 节点：对象遍历每个属性值、数组遍历每个元素，遇到超长字符串值就截断。
+    /// </summary>
+    private static void SummarizeNode(JsonNode node)
+    {
+        switch (node)
+        {
+            case JsonObject obj:
+                // 复制成数组再改值，避免遍历时修改集合。
+                foreach (var kvp in obj.ToArray())
+                {
+                    if (kvp.Value is JsonValue v && v.TryGetValue<string>(out var s) && s != null)
+                    {
+                        obj[kvp.Key] = SummarizeStringValue(s);
+                    }
+                    else if (kvp.Value is not null)
+                    {
+                        SummarizeNode(kvp.Value);
+                    }
+                }
+                break;
+
+            case JsonArray arr:
+                for (int i = 0; i < arr.Count; i++)
+                {
+                    var item = arr[i];
+                    if (item is JsonValue v && v.TryGetValue<string>(out var s) && s != null)
+                    {
+                        arr[i] = SummarizeStringValue(s);
+                    }
+                    else if (item is not null)
+                    {
+                        SummarizeNode(item);
+                    }
+                }
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 截断单个字符串值：超阈值则保留头尾并标注省略字符数，否则原样返回。
+    /// </summary>
+    private static string SummarizeStringValue(string s)
+    {
+        if (string.IsNullOrEmpty(s) || s.Length <= SummarizeThreshold) return s;
+
+        var head = s.Length > SummarizeHeadKeep ? s[..SummarizeHeadKeep] : s;
+        var tail = s.Length > SummarizeTailKeep ? s[^SummarizeTailKeep..] : string.Empty;
+        var omitted = s.Length - head.Length - tail.Length;
+        return $"{head}…(省略{omitted}字符){tail}";
     }
 
     /// <summary>

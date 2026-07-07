@@ -3,6 +3,25 @@
 @{
     ViewData["Title"] = "编辑模型";
 }
+<style>
+    .tip-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        font-size: 11px;
+        font-weight: 700;
+        font-style: normal;
+        line-height: 1;
+        color: #6c757d;
+        border: 1.5px solid #6c757d;
+        border-radius: 50%;
+        cursor: help;
+        flex-shrink: 0;
+        margin-left: 4px;
+    }
+</style>
 
 <!-- 页面标题 -->
 <div class="page-header">
@@ -49,9 +68,8 @@
         </div>
 
         <div class="mb-3">
-            <label asp-for="StripRequestFields" class="form-label">剔除请求字段</label>
+            <label asp-for="StripRequestFields" class="form-label">剔除请求字段<span class="tip-icon" data-bs-toggle="tooltip" data-bs-placement="top" title="转发上游前从请求体剔除的字段，逗号分隔。用于兼容不认某些字段的上游（如 GPT-5 不认 reasoning_content、z.ai 不认 metadata）。写法：顶层字段直接写名字（metadata）；裸字段名自动作用于 messages 每条（reasoning_content）；也可写精确路径（messages[].reasoning_content）。">?</span></label>
             <input asp-for="StripRequestFields" class="form-control" placeholder="留空=不剔除，如 reasoning_content, metadata" />
-            <div class="form-text">转发上游前从请求体剔除的字段，逗号分隔。用于兼容不认某些字段的上游（如 GPT-5 不认 reasoning_content、z.ai 不认 metadata）。写法：顶层字段直接写名字（metadata）；裸字段名自动作用于 messages 每条（reasoning_content）；也可写精确路径（messages[].reasoning_content）。</div>
         </div>
 
         <div class="divider"></div>
@@ -61,6 +79,17 @@
         </div>
     </form>
 </div>
+
+@section Scripts {
+    <script>
+        // 初始化 Bootstrap Tooltip（tip-icon 的悬停提示）。
+        document.querySelectorAll('[data-bs-toggle="tooltip"]').forEach(function (element) {
+            if (window.bootstrap && window.bootstrap.Tooltip) {
+                new window.bootstrap.Tooltip(element);
+            }
+        });
+    </script>
+}
 
 <div class="form-card mt-3">
     <div class="d-flex justify-content-between align-items-center mb-3">

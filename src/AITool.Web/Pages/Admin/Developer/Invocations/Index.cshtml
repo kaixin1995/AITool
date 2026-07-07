@@ -340,14 +340,23 @@
 
             <div class="tab-pane fade @(invocationsTabActive ? "show active" : null)" id="developerInvocationsPane" role="tabpanel">
                 <div class="trace-page-header mb-3">
-                    <div>
-                        <h3 class="page-title h4 mb-1">调用调试</h3>
-                        <p class="page-subtitle mb-0">内存中最多保留最近 100 条记录，且仅保留 6 小时；列表按页加载，每页只展示 20 条</p>
+                    <div class="d-inline-flex align-items-center gap-1">
+                        <h3 class="page-title h4 mb-0">调用调试</h3>
+                        <span class="tip-icon"
+                              role="button"
+                              tabindex="0"
+                              data-bs-toggle="tooltip"
+                              data-bs-placement="bottom"
+                              title="内存中最多保留最近 30 条记录，且仅保留 15 分钟；列表按页加载，每页 20 条。">?</span>
                     </div>
                     <div class="trace-toolbar">
                         <label class="trace-refresh-switch" for="autoRefreshToggle">
                             <input type="checkbox" id="autoRefreshToggle">
                             <span>自动刷新（5 秒）</span>
+                        </label>
+                        <label class="trace-refresh-switch" for="summarizeToggle">
+                            <input type="checkbox" id="summarizeToggle" checked>
+                            <span>精简显示</span>
                         </label>
                         <button type="button" class="btn btn-primary" id="refreshNowButton">立即刷新</button>
                     </div>
@@ -357,7 +366,7 @@
                     <article class="trace-overview-card trace-overview-card-primary">
                         <span class="trace-overview-label">当前记录数</span>
                         <strong class="trace-overview-value" id="traceTotalCount">@Model.InitialTotalCount</strong>
-                        <span class="trace-overview-hint">最多 100 条，且仅保留 6 小时</span>
+                        <span class="trace-overview-hint">最多 30 条，且仅保留 15 分钟</span>
                     </article>
                     <article class="trace-overview-card trace-overview-card-danger">
                         <span class="trace-overview-label">失败 / 异常</span>
@@ -443,6 +452,23 @@
         max-height: 400px;
         overflow-y: auto;
         background: #111827;
+    }
+
+    .tip-icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        font-size: 11px;
+        font-weight: 700;
+        font-style: normal;
+        line-height: 1;
+        color: #6c757d;
+        border: 1.5px solid #6c757d;
+        border-radius: 50%;
+        cursor: help;
+        flex-shrink: 0;
     }
 
     .trace-page-header {
@@ -1595,6 +1621,7 @@
 
         (function () {
             var autoRefreshToggle = document.getElementById('autoRefreshToggle');
+            var summarizeToggle = document.getElementById('summarizeToggle');
             var refreshNowButton = document.getElementById('refreshNowButton');
             var traceAccordion = document.getElementById('invocationTraceAccordion');
             var traceLoadingCard = document.getElementById('traceLoadingCard');
@@ -1702,6 +1729,9 @@
             function buildDetailUrl(traceId) {
                 var url = new URL(detailEndpoint, window.location.origin);
                 url.searchParams.set('traceId', String(traceId || ''));
+                // 按勾选状态决定是否返回摘要化（结构保留、超长字符串值截断）的请求/响应体。
+                var summarize = document.getElementById('summarizeToggle');
+                url.searchParams.set('summarize', summarize && summarize.checked ? 'true' : 'false');
                 return url.toString();
             }
 
@@ -2115,6 +2145,18 @@
                     if (autoRefreshToggle.checked && !hasLoadedListOnce && isInvocationsTabActive()) {
                         refreshTraceList(currentPage);
                     }
+                });
+            }
+
+            // 精简显示切换：对所有已展开的卡片重新拉取详情（按新勾选状态返回原文或摘要版）。
+            if (summarizeToggle) {
+                summarizeToggle.addEventListener('change', function () {
+                    var expanded = document.querySelectorAll('#invocationTraceAccordion .collapse.show[data-trace-id]');
+                    expanded.forEach(function (collapseElement) {
+                        // 清掉加载标记，让 loadTraceDetail 能重新进入。
+                        collapseElement.removeAttribute('data-detail-loading');
+                        loadTraceDetail(collapseElement);
+                    });
                 });
             }
 
