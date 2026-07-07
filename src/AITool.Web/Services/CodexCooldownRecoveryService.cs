@@ -63,37 +63,43 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
             return;
         }
 
-        var now = DateTimeOffset.UtcNow;
-        var due = await dbContext.CodexAccounts
-            .Where(a => a.IsQuotaCooling && a.QuotaCoolingUntil != null && a.QuotaCoolingUntil <= now)
-            .ToListAsync(ct);
-
-        if (due.Count == 0) return;
-
-        var anyRecovered = false;
-        foreach (var account in due)
+        // 用全局 SQLite 串行化锁包裹"查 due → 更新账号/站点"完整块，
+        // 避免与巡检/日志写等后台服务并发踩 SqlSugarScope 竞态。
+        await dbContext.SerialExecuteAsync(async () =>
         {
-            account.IsQuotaCooling = false;
-            account.QuotaCoolingUntil = null;
-            await dbContext.UpdateAsync(account, ct);
+            var now = DateTimeOffset.UtcNow;
+            var due = await dbContext.CodexAccounts
+                .Where(a => a.IsQuotaCooling && a.QuotaCoolingUntil != null && a.QuotaCoolingUntil <= now)
+                .ToListAsync(ct);
 
-            // 仅当账号本身启用（非手动禁用）才恢复 Site
-            if (account.IsEnabled)
+            if (due.Count == 0) return;
+
+            var anyRecovered = false;
+            foreach (var account in due)
             {
-                var site = await dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                if (site != null && !site.IsEnabled)
-                {
-                    site.IsEnabled = true;
-                    await dbContext.UpdateAsync(site, ct);
-                    anyRecovered = true;
-                }
-            }
-            _logger.LogInformation("Codex account {Id} cooldown recovered", account.Id);
-        }
+                account.IsQuotaCooling = false;
+                account.QuotaCoolingUntil = null;
+                await dbContext.UpdateAsync(account, ct);
 
-        if (anyRecovered)
-        {
-            cache.InvalidateRouteTargets();
-        }
+                // 仅当账号本身启用（非手动禁用）才恢复 Site
+                if (account.IsEnabled)
+                {
+                    var site = await dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+                    if (site != null && !site.IsEnabled)
+                    {
+                        site.IsEnabled = true;
+                        await dbContext.UpdateAsync(site, ct);
+                        anyRecovered = true;
+                    }
+                }
+                _logger.LogInformation("Codex account {Id} cooldown recovered", account.Id);
+            }
+
+            if (anyRecovered)
+            {
+                cache.InvalidateRouteTargets();
+                cache.InvalidateCodexAccounts();
+            }
+        }, ct);
     }
 }

@@ -3,6 +3,7 @@ using AITool.Application.Codex;
 using AITool.Domain.Codex;
 using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using Microsoft.Extensions.Hosting;
 
 namespace AITool.Web.Services;
@@ -29,6 +30,7 @@ public sealed class CodexInspectionService : BackgroundService
     private readonly IServiceProvider _services;
     private readonly ILogger<CodexInspectionService> _logger;
     private readonly IHostEnvironment _environment;
+    private readonly SiteUsageTracker _siteUsageTracker;
 
     // —— 进程内状态（供前端轮询展示）——
     private InspectionRunResult? _lastRun;
@@ -39,11 +41,13 @@ public sealed class CodexInspectionService : BackgroundService
     public CodexInspectionService(
         IServiceProvider services,
         ILogger<CodexInspectionService> logger,
-        IHostEnvironment environment)
+        IHostEnvironment environment,
+        SiteUsageTracker siteUsageTracker)
     {
         _services = services;
         _logger = logger;
         _environment = environment;
+        _siteUsageTracker = siteUsageTracker;
     }
 
     /// <inheritdoc />
@@ -86,7 +90,10 @@ public sealed class CodexInspectionService : BackgroundService
         {
             var interval = TimeSpan.FromMinutes(Math.Max(5, runtime.CodexInspectionIntervalMinutes));
             _nextScheduledAt = now + interval;
-            await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh: false, autoTriggered: true, ct);
+            // 用全局 SQLite 串行化锁包裹巡检的 DB 访问，避免与其他后台服务（日志写/冷却恢复）并发踩 SqlSugarScope 竞态。
+            await dbContext.SerialExecuteAsync(() =>
+                RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh: false, autoTriggered: true, ct),
+                ct);
         }
         finally
         {
@@ -148,10 +155,7 @@ public sealed class CodexInspectionService : BackgroundService
 
         try
         {
-            var accounts = await dbContext.CodexAccounts
-                .Where(a => !a.DisabledByFeatureToggle) // 被总开关禁用的不巡检
-                .OrderBy(a => a.LastQuotaCheckedAt)
-                .ToListAsync(ct);
+            var accounts = await cache.GetCodexAccountsAsync(ct);
 
             foreach (var account in accounts)
             {
@@ -193,8 +197,8 @@ public sealed class CodexInspectionService : BackgroundService
         bool usedCache = false;
         if (!forceRefresh)
         {
-            // 是否被使用：查 ProxyUsageLogs 该账号隐藏 Site 自上次刷新后是否有新记录
-            var hasUsage = await HasRecentUsageAsync(dbContext, account.LinkedSiteId, account.LastQuotaCheckedAt, ct);
+            // 是否被使用：读内存映射（SiteUsageTracker），不查 DB
+            var hasUsage = HasRecentUsage(account.LinkedSiteId, account.LastQuotaCheckedAt);
             if (QuotaCachePolicy.TryReuseQuota(lastInfo, account.LastQuotaCheckedAt, hasUsage, maxCacheHours, now, out var reason))
             {
                 usedCache = true;
@@ -249,16 +253,16 @@ public sealed class CodexInspectionService : BackgroundService
     /// <summary>
     /// 查询该账号隐藏 Site 自 since 后是否有新的使用日志（判定是否被使用）。
     /// </summary>
-    private static async Task<bool> HasRecentUsageAsync(AppDbContext dbContext, Guid siteId, DateTimeOffset? since, CancellationToken ct)
+    /// <summary>
+    /// 判断该账号关联的 Site 自 since 后是否被使用过。
+    /// 读内存映射（SiteUsageTracker，由日志入队时增量更新），零 DB 查询，替代原回查 ProxyUsageLogs。
+    /// </summary>
+    private bool HasRecentUsage(Guid siteId, DateTimeOffset? since)
     {
+        var lastUsedAt = _siteUsageTracker.GetLastUsedAt(siteId);
+        if (lastUsedAt is null) return false;
         var cutoff = since ?? DateTimeOffset.UtcNow.AddDays(-1);
-        // 只要存在一条该 SiteId 且时间晚于 cutoff 的日志即视为被使用（命中 TargetSiteId 索引）
-        var any = await dbContext.ProxyUsageLogs
-            .Where(l => l.TargetSiteId == siteId && l.RequestedAt > cutoff)
-            .Select(l => l.Id)
-            .Take(1)
-            .ToListAsync(ct);
-        return any.Count > 0;
+        return lastUsedAt.Value > cutoff;
     }
 
     private static CodexQuotaInfo? BuildInfoFromRaw(string rawJson)
@@ -292,6 +296,7 @@ public sealed class CodexInspectionService : BackgroundService
             await dbContext.UpdateAsync(site, ct);
         }
         cache.InvalidateRouteTargets();
+        cache.InvalidateCodexAccounts();
     }
 
     private static async Task EnableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
@@ -305,6 +310,7 @@ public sealed class CodexInspectionService : BackgroundService
             await dbContext.UpdateAsync(site, ct);
         }
         cache.InvalidateRouteTargets();
+        cache.InvalidateCodexAccounts();
     }
 
     private void AddLog(string category, string message)

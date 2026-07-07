@@ -79,6 +79,8 @@ public sealed class CodexQuotaService : ICodexQuotaService
                 account.LastQuotaRawJson = info.RawJson;
                 account.LastQuotaCheckedAt = DateTimeOffset.UtcNow;
                 await _dbContext.UpdateAsync(account, cancellationToken);
+                // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
+                _metadataCache.InvalidateCodexAccounts();
 
                 // 自动禁用判定：任一窗口使用百分比达到全局阈值时禁用（阈值用百分比 0-100 表达）
                 var runtime = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
@@ -185,6 +187,7 @@ public sealed class CodexQuotaService : ICodexQuotaService
         }
 
         _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateCodexAccounts();
         _logger.LogWarning("Codex account {Id} auto-disabled: {Reason}", account.Id, reason);
     }
 }

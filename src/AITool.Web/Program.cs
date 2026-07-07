@@ -141,6 +141,8 @@ builder.Services.AddScoped<ModelHealthRequestService>();
 // 注册使用日志服务，记录每次代理调用的 Token 用量。
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
+// Site 使用时间内存映射：日志入队时增量更新，Codex 巡检读它判断账号是否被使用，避免回查 DB。
+builder.Services.AddSingleton<SiteUsageTracker>();
 var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
     ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
     : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
@@ -212,6 +214,11 @@ using (var scope = app.Services.CreateScope())
     // CodeFirst 建表 + 补齐历史库缺失列（差量更新，只增不删）+ 持久化 PRAGMA（WAL、synchronous）。
     // 替代原 EF 的 EnsureCreated + 手写 ALTER TABLE 升级脚本：SqlSugar 的 InitTables 会自动补齐缺失列。
     SqlSugarSetup.InitializeDatabase(sqlSugarClient);
+
+    // 预热 SiteUsageTracker：从 DB 读每个 Site 最近一次使用时间，避免重启后历史丢失。
+    var siteUsageTracker = scope.ServiceProvider.GetRequiredService<SiteUsageTracker>();
+    var warmupDbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await siteUsageTracker.WarmupAsync(warmupDbContext);
 
     var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
     try

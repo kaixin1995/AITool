@@ -117,6 +117,7 @@ public sealed class CodexAccountProvisioner
         // —— 失效缓存（一次性）——
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateCodexAccounts();
 
         _logger.LogInformation("Codex account {Id} provisioned (site {SiteId})", account.Id, site.Id);
         return account;
@@ -140,6 +141,7 @@ public sealed class CodexAccountProvisioner
 
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateCodexAccounts();
 
         _logger.LogInformation("Codex account {Id} deprovisioned", codexAccountId);
     }
@@ -166,6 +168,7 @@ public sealed class CodexAccountProvisioner
         await _dbContext.UpdateAsync(account, ct);
 
         _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateCodexAccounts();
     }
 
     /// <summary>
@@ -176,6 +179,7 @@ public sealed class CodexAccountProvisioner
         await UpsertModelMappingsCoreAsync(linkedSiteId, models, ct);
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateCodexAccounts();
     }
 
     // —— 私有 ——

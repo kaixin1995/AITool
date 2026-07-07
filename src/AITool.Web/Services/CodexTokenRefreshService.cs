@@ -106,6 +106,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
         if (anyUpdated)
         {
             cache.InvalidateRouteTargets();
+            cache.InvalidateCodexAccounts();
         }
     }
 

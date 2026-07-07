@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Common;
+using AITool.Domain.Codex;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Controllers.Admin;
 using AITool.Web.Pages.Admin.ClientSimulator;
@@ -42,6 +43,10 @@ public sealed class ProxyRequestMetadataCache
     /// 模型并发限制缓存键。
     /// </summary>
     private const string ModelConcurrencyLimitsCacheKey = "model-concurrency-limits";
+    /// <summary>
+    /// Codex 账号列表缓存键（账号少且低频变更，巡检高频读，适合缓存）。
+    /// </summary>
+    private const string CodexAccountsCacheKey = "codex-accounts";
     /// <summary>
     /// 启用站点名称缓存键。
     /// </summary>
@@ -770,6 +775,36 @@ public sealed class ProxyRequestMetadataCache
     {
         _memoryCache.Remove(AccessKeyCacheKey);
         _memoryCache.Remove(DeveloperDefaultAccessKeyCacheKey);
+    }
+
+    /// <summary>
+    /// 清除 Codex 账号列表缓存。账号发生增删改（额度更新/启停/token刷新/冷却/管理后台操作）后调用。
+    /// </summary>
+    public void InvalidateCodexAccounts()
+    {
+        _memoryCache.Remove(CodexAccountsCacheKey);
+    }
+
+    /// <summary>
+    /// 获取待巡检的 Codex 账号列表（未被功能总开关禁用，按最近检查时间升序）。
+    /// 走缓存，账号变更后需调 <see cref="InvalidateCodexAccounts"/> 失效。
+    /// </summary>
+    public async Task<List<CodexAccount>> GetCodexAccountsAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                CodexAccountsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    return await dbContext.CodexAccounts
+                        .Where(a => !a.DisabledByFeatureToggle)
+                        .OrderBy(a => a.LastQuotaCheckedAt)
+                        .ToListAsync(cancellationToken);
+                })
+            ?? [];
     }
 
     /// <summary>

@@ -33,6 +33,7 @@ public sealed class CodexApiController : ControllerBase
     private readonly ICodexResetCreditsService _resetCreditsService;
     private readonly CodexInspectionService _inspectionService;
     private readonly ILogger<CodexApiController> _logger;
+    private readonly ProxyRequestMetadataCache _metadataCache;
 
     public CodexApiController(
         AppDbContext dbContext,
@@ -43,7 +44,8 @@ public sealed class CodexApiController : ControllerBase
         ICodexQuotaCooldownService cooldownService,
         ICodexResetCreditsService resetCreditsService,
         CodexInspectionService inspectionService,
-        ILogger<CodexApiController> logger)
+        ILogger<CodexApiController> logger,
+        ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
         _oauth = oauth;
@@ -54,6 +56,7 @@ public sealed class CodexApiController : ControllerBase
         _resetCreditsService = resetCreditsService;
         _inspectionService = inspectionService;
         _logger = logger;
+        _metadataCache = metadataCache;
     }
 
     /// <summary>启动 OAuth 登录，返回授权 URL 与 state。</summary>
@@ -232,6 +235,8 @@ public sealed class CodexApiController : ControllerBase
             site.IsEnabled = account.IsEnabled;
             await _dbContext.UpdateAsync(site, ct);
         }
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateCodexAccounts();
         return Ok(ToSummary(account));
     }
 
@@ -293,6 +298,8 @@ public sealed class CodexApiController : ControllerBase
                 site.ApiKey = tokens.AccessToken;
                 await _dbContext.UpdateAsync(site, ct);
             }
+            _metadataCache.InvalidateRouteTargets();
+            _metadataCache.InvalidateCodexAccounts();
             return Ok(ToSummary(account));
         }
         catch (Exception ex)

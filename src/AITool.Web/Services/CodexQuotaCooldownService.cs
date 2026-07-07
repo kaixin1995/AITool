@@ -59,6 +59,7 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             site.IsEnabled = false;
             await _dbContext.UpdateAsync(site, ct);
             _metadataCache.InvalidateRouteTargets();
+            _metadataCache.InvalidateCodexAccounts();
         }
 
         _logger.LogWarning("Codex account {Id} cooling until {Until}", account.Id, coolingUntil);
@@ -114,6 +115,7 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
         }
 
         _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateCodexAccounts();
         _logger.LogInformation("Codex account {Id} quota reset", codexAccountId);
     }
 

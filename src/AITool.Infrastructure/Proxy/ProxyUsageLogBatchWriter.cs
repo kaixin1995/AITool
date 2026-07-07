@@ -44,20 +44,29 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
     private readonly bool _writeThroughMode;
 
     /// <summary>
-    /// 注入服务范围工厂、日志记录器和主机环境信息
+    /// Site 使用时间内存映射。每条日志入队时增量更新它，供 Codex 巡检零 DB 判断账号是否被使用。
     /// </summary>
-    public ProxyUsageLogBatchWriter(IServiceScopeFactory scopeFactory, ILogger<ProxyUsageLogBatchWriter> logger, IHostEnvironment hostEnvironment)
+    private readonly SiteUsageTracker _siteUsageTracker;
+
+    /// <summary>
+    /// 注入服务范围工厂、日志记录器、主机环境信息和 Site 使用追踪器
+    /// </summary>
+    public ProxyUsageLogBatchWriter(IServiceScopeFactory scopeFactory, ILogger<ProxyUsageLogBatchWriter> logger, IHostEnvironment hostEnvironment, SiteUsageTracker siteUsageTracker)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
         _writeThroughMode = hostEnvironment.IsEnvironment("Testing");
+        _siteUsageTracker = siteUsageTracker;
     }
 
     /// <summary>
-    /// 代理链路只尝试入队，不等待数据库写入完成。
+    /// 代理链路只尝试入队，不等待数据库写入完成。同时更新 Site 使用时间映射（零 DB 开销）。
     /// </summary>
     public async ValueTask<bool> EnqueueAsync(UsageLogEntry entry, CancellationToken cancellationToken)
     {
+        // 入队即记录 Site 被使用：用日志的 RequestedAt 作为使用时间，比 DateTime.UtcNow 更准（保留请求真实时刻）。
+        _siteUsageTracker.RecordUsage(entry.TargetSiteId, entry.RequestedAt);
+
         if (_writeThroughMode)
         {
             await FlushBatchAsync([entry], cancellationToken);
@@ -193,6 +202,9 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             RequestedAt = entry.RequestedAt
         }).ToList();
 
-        await dbContext.InsertRangeAsync(logs, cancellationToken);
+        // 用全局 SQLite 串行化锁包裹批量写入，避免与巡检/冷却恢复等后台服务并发踩 SqlSugarScope 竞态。
+        await dbContext.SerialExecuteAsync(
+            () => dbContext.InsertRangeAsync(logs, cancellationToken),
+            cancellationToken);
     }
 }
