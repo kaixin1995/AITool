@@ -113,6 +113,12 @@ public class EditModel : PageModel
     public string OverrideReasoningEffort { get; set; } = string.Empty;
 
     /// <summary>
+    /// 转发上游前要从请求体剔除的字段路径，逗号分隔。留空=不剔除。
+    /// </summary>
+    [BindProperty]
+    public string StripRequestFields { get; set; } = string.Empty;
+
+    /// <summary>
     /// 状态提示。
     /// </summary>
     public string? StatusMessage { get; set; }
@@ -177,6 +183,7 @@ public class EditModel : PageModel
             model.DisplayName = DisplayName;
             model.IsEnabled = IsEnabled;
             model.OverrideReasoningEffort = (OverrideReasoningEffort ?? string.Empty).Trim();
+            model.StripRequestFields = (StripRequestFields ?? string.Empty).Trim();
 
             await _dbContext.UpdateAsync(model, cancellationToken);
             _metadataCache?.InvalidateModelMetadata();
@@ -348,6 +355,7 @@ public class EditModel : PageModel
         DisplayName = model.DisplayName;
         IsEnabled = model.IsEnabled;
         OverrideReasoningEffort = model.OverrideReasoningEffort;
+        StripRequestFields = model.StripRequestFields;
         await LoadSiteMappingsAsync(id, cancellationToken);
         await LoadAvailableSitesAsync(id, cancellationToken);
         if (string.IsNullOrWhiteSpace(NewMapping.RemoteModelName))

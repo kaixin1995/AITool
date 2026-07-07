@@ -173,13 +173,13 @@ public sealed partial class OpenAiProxyController
 
             if (isPassthrough)
             {
-                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", "OpenAI", requestBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort, route.BaseUrl);
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", "OpenAI", requestBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort, route.BaseUrl, route.StripRequestFields);
             }
             else
             {
                 // Responses → Chat Completions → Anthropic：先转为 Chat Completions，再由协议桥接转为目标格式
                 var chatBody = ProxyProtocolBridge.ConvertResponsesRequestToChat(requestBody, route.SiteModelName, enableStreaming);
-                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", actualProtocolType, chatBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort, route.BaseUrl);
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", actualProtocolType, chatBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort, route.BaseUrl, route.StripRequestFields);
             }
 
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
@@ -480,7 +480,8 @@ public sealed partial class OpenAiProxyController
                     route.SiteModelName,
                     true,
                     route.OverrideReasoningEffort,
-                    route.BaseUrl);
+                    route.BaseUrl,
+                    route.StripRequestFields);
 
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 

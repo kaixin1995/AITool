@@ -48,6 +48,12 @@
             <div class="form-text">留空时透传客户端原始思考等级；填写后无论客户端传什么都会强制覆盖成此值。常见值：low、medium、high、xhigh、max。</div>
         </div>
 
+        <div class="mb-3">
+            <label asp-for="StripRequestFields" class="form-label">剔除请求字段</label>
+            <input asp-for="StripRequestFields" class="form-control" placeholder="留空=不剔除，如 reasoning_content, metadata" />
+            <div class="form-text">转发上游前从请求体剔除的字段，逗号分隔。用于兼容不认某些字段的上游（如 GPT-5 不认 reasoning_content、z.ai 不认 metadata）。写法：顶层字段直接写名字（metadata）；裸字段名自动作用于 messages 每条（reasoning_content）；也可写精确路径（messages[].reasoning_content）。</div>
+        </div>
+
         <div class="divider"></div>
         <div class="d-flex gap-2">
             <button type="submit" class="btn btn-primary">保存</button>

@@ -1099,6 +1099,7 @@ public sealed class ProxyRequestMetadataCache
                                 InstancePriority = route.InstancePriority,
                                 Priority = route.Priority,
                                 OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
+                                StripRequestFields = model?.StripRequestFields ?? string.Empty,
                                 AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
                             })
@@ -1572,6 +1573,10 @@ public sealed class CachedProxyRouteTarget
     /// 强制覆盖的思考等级。空=不干预，非空=强制覆盖转发给上游的思考等级。
     /// </summary>
     public string OverrideReasoningEffort { get; set; } = string.Empty;
+    /// <summary>
+    /// 转发前要从请求体剔除的字段路径（逗号分隔）。空=不剔除。
+    /// </summary>
+    public string StripRequestFields { get; set; } = string.Empty;
     /// <summary>
     /// 时间可用性模式，空值兼容为全天可用。
     /// </summary>
