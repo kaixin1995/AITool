@@ -744,7 +744,8 @@ public sealed partial class OpenAiProxyController
     /// <summary>
     /// 为当前追踪追加一次路由尝试记录。
     /// </summary>
-    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
+    /// <param name="preparedRequestBody">转换后实际发给上游的请求体，用于在调用追踪页排查上游参数错误。</param>
+    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType, string preparedRequestBody)
     {
         if (!traceId.HasValue)
         {
@@ -757,18 +758,19 @@ public sealed partial class OpenAiProxyController
             UpstreamProtocolType = actualProtocolType,
             ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
             TargetSiteId = route.SiteId,
-            TargetSiteName = route.SiteName
+            TargetSiteName = route.SiteName,
+            PreparedRequestBody = preparedRequestBody
         });
     }
 
     /// <summary>
     /// 安全地记录一次路由尝试，避免追踪异常中断主流程。
     /// </summary>
-    private Guid AddDeveloperTraceAttemptSafely(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
+    private Guid AddDeveloperTraceAttemptSafely(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType, string preparedRequestBody)
     {
         try
         {
-            return AddDeveloperTraceAttempt(traceId, route, actualProtocolType);
+            return AddDeveloperTraceAttempt(traceId, route, actualProtocolType, preparedRequestBody);
         }
         catch (Exception ex)
         {

@@ -223,7 +223,7 @@ public static partial class ProxyProtocolBridge
             }
             else
             {
-                // OpenAI 协议：用顶层 reasoning_effort 表达
+                // OpenAI 协议：用顶层 reasoning_effort 表达（覆盖值原样透传，max/xhigh 等均合法）。
                 rootNode["reasoning_effort"] = normalized;
             }
 

@@ -219,7 +219,6 @@ public sealed class AnthropicProxyController : ControllerBase
                 continue;
             }
 
-            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
             var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
                 "Anthropic",
                 actualProtocolType,
@@ -228,6 +227,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 enableStreaming,
                 route.OverrideReasoningEffort,
                 route.BaseUrl);
+            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
@@ -1077,7 +1077,8 @@ public sealed class AnthropicProxyController : ControllerBase
     /// <summary>
     /// 为当前追踪追加一次路由尝试记录。
     /// </summary>
-    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
+    /// <param name="preparedRequestBody">转换后实际发给上游的请求体，用于在调用追踪页排查上游参数错误。</param>
+    private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType, string preparedRequestBody)
     {
         if (!traceId.HasValue)
         {
@@ -1090,18 +1091,19 @@ public sealed class AnthropicProxyController : ControllerBase
             UpstreamProtocolType = actualProtocolType,
             ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType),
             TargetSiteId = route.SiteId,
-            TargetSiteName = route.SiteName
+            TargetSiteName = route.SiteName,
+            PreparedRequestBody = preparedRequestBody
         });
     }
 
     /// <summary>
     /// 安全地记录一次路由尝试，避免追踪异常中断主流程。
     /// </summary>
-    private Guid AddDeveloperTraceAttemptSafely(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType)
+    private Guid AddDeveloperTraceAttemptSafely(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType, string preparedRequestBody)
     {
         try
         {
-            return AddDeveloperTraceAttempt(traceId, route, actualProtocolType);
+            return AddDeveloperTraceAttempt(traceId, route, actualProtocolType, preparedRequestBody);
         }
         catch (Exception ex)
         {

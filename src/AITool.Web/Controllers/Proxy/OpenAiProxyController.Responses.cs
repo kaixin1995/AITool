@@ -182,7 +182,7 @@ public sealed partial class OpenAiProxyController
                 preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", actualProtocolType, chatBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort, route.BaseUrl);
             }
 
-            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
+            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 
             // PrepareRequestBody 已内联覆盖思考等级，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
@@ -482,7 +482,7 @@ public sealed partial class OpenAiProxyController
                     route.OverrideReasoningEffort,
                     route.BaseUrl);
 
-            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType);
+            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 
             // PrepareRequestBody 已内联覆盖思考等级，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))

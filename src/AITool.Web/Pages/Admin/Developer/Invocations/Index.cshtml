@@ -1753,6 +1753,8 @@
                         var attemptStatusCodeText = attempt.statusCode > 0 ? String(attempt.statusCode) : '-';
                         var attemptDurationText = formatDuration(attempt.totalDurationMs);
                         var attemptResponseBodyText = attempt.responseBody && attempt.responseBody.trim() ? attempt.responseBody : '-';
+                        // 转换后实际发给上游的请求体（兼容中转场景的最终 payload），排查上游参数错误的关键
+                        var attemptPreparedBodyText = attempt.preparedRequestBody && attempt.preparedRequestBody.trim() ? attempt.preparedRequestBody : '-';
                         var attemptErrorBlock = attempt.errorMessage && attempt.errorMessage.trim()
                             ? '<div class="trace-error-stack"><div class="trace-section-title trace-section-title-danger">尝试错误</div><pre class="trace-pre trace-code-panel trace-code-panel-danger">' + escapeHtml(attempt.errorMessage) + '</pre></div>'
                             : '';
@@ -1780,6 +1782,13 @@
                                 '</div>' +
                                 attemptErrorBlock +
                                 '<div class="row g-3">' +
+                                    '<div class="col-xl-6">' +
+                                        '<div class="trace-panel-header">' +
+                                            '<div class="trace-section-title mb-0">转换后请求体（发往上游）</div>' +
+                                            '<button type="button" class="btn btn-sm btn-outline-secondary trace-copy-btn" onclick="copyTraceContent(this)" data-copy-target="attempt-prepared-body-' + entry.traceId + '-' + attempt.attemptId + '">复制请求体</button>' +
+                                        '</div>' +
+                                        '<pre id="attempt-prepared-body-' + entry.traceId + '-' + attempt.attemptId + '" class="trace-pre trace-code-panel">' + escapeHtml(attemptPreparedBodyText) + '</pre>' +
+                                    '</div>' +
                                     '<div class="col-xl-6">' +
                                         '<div class="trace-panel-header">' +
                                             '<div class="trace-section-title mb-0">尝试返回体</div>' +

@@ -85,6 +85,8 @@ public sealed class DeveloperInvocationTraceStore
                 ForwardingMode = attempt.ForwardingMode,
                 TargetSiteId = attempt.TargetSiteId,
                 TargetSiteName = attempt.TargetSiteName,
+                // 格式化转换后请求体，便于在调用追踪页与原始请求体并排对比，定位上游参数错误。
+                PreparedRequestBody = FormatBody(attempt.PreparedRequestBody),
                 Status = "pending"
             };
             node.Value.Attempts.Add(traceAttempt);
@@ -253,6 +255,7 @@ public sealed class DeveloperInvocationTraceStore
             ForwardingMode = attempt.ForwardingMode,
             TargetSiteId = attempt.TargetSiteId,
             TargetSiteName = attempt.TargetSiteName,
+            PreparedRequestBody = attempt.PreparedRequestBody,
             Status = attempt.Status,
             StatusCode = attempt.StatusCode,
             ErrorMessage = attempt.ErrorMessage,
@@ -366,6 +369,11 @@ public sealed class DeveloperInvocationAttempt
     /// 目标站点名称。
     /// </summary>
     public string TargetSiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 转换后实际发给上游的请求体（兼容中转场景的最终 payload）。
+    /// 透传场景下与原始请求体基本一致；转换场景下是协议转换后的结果，排查上游参数错误（如 1210）的关键。
+    /// </summary>
+    public string PreparedRequestBody { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -567,6 +575,11 @@ public sealed class DeveloperInvocationTraceAttempt
     /// 目标站点名称。
     /// </summary>
     public string TargetSiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 转换后实际发给上游的请求体（兼容中转场景的最终 payload）。
+    /// 透传场景下与原始请求体基本一致；转换场景下是协议转换后的结果，排查上游参数错误（如 1210）的关键。
+    /// </summary>
+    public string PreparedRequestBody { get; set; } = string.Empty;
     /// <summary>
     /// 状态。
     /// </summary>

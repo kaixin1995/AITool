@@ -352,6 +352,7 @@ public sealed class IndexModel : PageModel
             ForwardingMode = attempt.ForwardingMode,
             TargetSiteId = attempt.TargetSiteId,
             TargetSiteName = attempt.TargetSiteName,
+            PreparedRequestBody = attempt.PreparedRequestBody,
             Status = attempt.Status,
             StatusText = GetStatusText(attempt.Status),
             StatusClass = GetStatusClass(attempt.Status),
@@ -714,6 +715,10 @@ public sealed class DeveloperInvocationTraceAttemptDto
     /// 转发模式。
     /// </summary>
     public string ForwardingMode { get; set; } = string.Empty;
+    /// <summary>
+    /// 转换后实际发给上游的请求体（兼容中转场景的最终 payload），排查上游参数错误（如 GLM 1210）的关键。
+    /// </summary>
+    public string PreparedRequestBody { get; set; } = string.Empty;
     /// <summary>
     /// 目标站点标识。
     /// </summary>
