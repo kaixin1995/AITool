@@ -171,24 +171,18 @@ public sealed class IndexModel : PageModel
 
         var entries = _traceStore.List();
         var totalCount = entries.Count;
-        var totalPages = Math.Max(1, (int)Math.Ceiling(totalCount / (double)PageSize));
-        // Razor Pages 会把 page 当作保留路由字段参与绑定，这里改用 pageNumber 避免翻页始终回到第一页。
-        var currentPage = Math.Min(Math.Max(pageNumber, 1), totalPages);
-        var pagedEntries = entries
-            .Skip((currentPage - 1) * PageSize)
-            .Take(PageSize)
-            .Select(ToSummaryDto)
-            .ToList();
+        // 不分页：一次性返回全部记录（最多 40 条，由 DeveloperInvocationTraceStore 上限控制）。
+        var allEntries = entries.Select(ToSummaryDto).ToList();
 
         var payload = new DeveloperInvocationListResponse
         {
             TotalCount = totalCount,
             FailedCount = entries.Count(x => x.Attempts.Any(a => !string.Equals(a.Status, "success", StringComparison.OrdinalIgnoreCase) && !string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase))),
             PendingCount = entries.Count(x => x.Attempts.Any(a => string.Equals(a.Status, "pending", StringComparison.OrdinalIgnoreCase))),
-            PageNumber = currentPage,
-            PageSize = PageSize,
-            TotalPages = totalPages,
-            Entries = pagedEntries
+            PageNumber = 1,
+            PageSize = totalCount,
+            TotalPages = 1,
+            Entries = allEntries
         };
         return new JsonResult(payload);
     }

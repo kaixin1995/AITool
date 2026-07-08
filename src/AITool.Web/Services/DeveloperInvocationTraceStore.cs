@@ -12,11 +12,11 @@ public sealed class DeveloperInvocationTraceStore
     /// <summary>
     /// 最大保留记录数。
     /// </summary>
-    private const int MaxEntryCount = 30;
+    private const int MaxEntryCount = 40;
     /// <summary>
     /// 调用记录保留时长。
     /// </summary>
-    private static readonly TimeSpan EntryRetention = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan EntryRetention = TimeSpan.FromMinutes(20);
     /// <summary>
     /// 并发访问锁对象。
     /// </summary>

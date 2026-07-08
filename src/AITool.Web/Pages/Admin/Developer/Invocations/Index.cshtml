@@ -347,7 +347,7 @@
                               tabindex="0"
                               data-bs-toggle="tooltip"
                               data-bs-placement="bottom"
-                              title="内存中最多保留最近 30 条记录，且仅保留 15 分钟；列表按页加载，每页 20 条。">?</span>
+                              title="内存中最多保留最近 40 条记录，且仅保留 20 分钟；一页全部展示，不分页。">?</span>
                     </div>
                     <div class="trace-toolbar">
                         <label class="trace-refresh-switch" for="autoRefreshToggle">
@@ -366,7 +366,7 @@
                     <article class="trace-overview-card trace-overview-card-primary">
                         <span class="trace-overview-label">当前记录数</span>
                         <strong class="trace-overview-value" id="traceTotalCount">@Model.InitialTotalCount</strong>
-                        <span class="trace-overview-hint">最多 30 条，且仅保留 15 分钟</span>
+                        <span class="trace-overview-hint">最多 40 条，且仅保留 20 分钟</span>
                     </article>
                     <article class="trace-overview-card trace-overview-card-danger">
                         <span class="trace-overview-label">失败 / 异常</span>
@@ -382,18 +382,11 @@
 
                 <div class="trace-loading-card" id="traceLoadingCard">
                     <div class="trace-loading-title">调用记录按需加载中</div>
-                    <div class="trace-loading-text">首次进入页面时先展示统计信息，详细列表会在后台懒加载，并按页加载 20 条，避免一次性渲染过多记录导致页面抖动。</div>
+                    <div class="trace-loading-text">首次进入页面时先展示统计信息，详细列表会在后台懒加载，一页全部展示。</div>
                 </div>
 
                 <div class="accordion trace-accordion d-flex flex-column gap-3" id="invocationTraceAccordion"></div>
 
-                <div class="trace-pagination-bar" id="tracePaginationBar">
-                    <div class="trace-pagination-summary" id="tracePaginationSummary">每页 20 条</div>
-                    <div class="trace-pagination-actions">
-                        <button type="button" class="btn btn-outline-secondary btn-sm" id="tracePrevPageButton">上一页</button>
-                        <button type="button" class="btn btn-outline-secondary btn-sm" id="traceNextPageButton">下一页</button>
-                    </div>
-                </div>
             </div>
         </div>
     </div>
