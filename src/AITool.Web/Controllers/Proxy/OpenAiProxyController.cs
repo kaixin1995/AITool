@@ -567,6 +567,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
         foreach (var route in allRoutes)
         {
+            // 客户端已断开则不再尝试任何后续路由（无意义，响应已无法写回）。
+            if (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
             if (IsRouteBlockedSafely(route.RouteId))
                 continue;
 

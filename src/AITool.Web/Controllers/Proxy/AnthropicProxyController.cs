@@ -202,6 +202,12 @@ public sealed class AnthropicProxyController : ControllerBase
 
         foreach (var route in allRoutes)
         {
+            // 客户端已断开则不再尝试任何后续路由（无意义，响应已无法写回）。
+            if (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
             // 跳过已被熔断器屏蔽的路由
             if (IsRouteBlockedSafely(route.RouteId))
                 continue;
