@@ -209,7 +209,11 @@ public static partial class ProxyProtocolBridge
 
             if (string.Equals(targetProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase))
             {
-                // Anthropic 协议：用 thinking.budget_tokens 表达思考强度
+                // claude-code 新版的思考强度由 output_config.effort 决定（thinking.type 只是开关）。
+                // 必须同时覆盖 output_config.effort，否则客户端原值（如 max）会盖过配置的覆盖值。
+                rootNode["output_config"] = new JsonObject { ["effort"] = normalized };
+
+                // thinking 同时设成 enabled + budget_tokens，兼容只认老式 budget_tokens 的 Anthropic 端点。
                 rootNode["thinking"] = new JsonObject
                 {
                     ["type"] = "enabled",
