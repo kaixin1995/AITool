@@ -1,3 +1,4 @@
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -114,10 +115,14 @@ public class EditModel : PageModel
 
     /// <summary>
     /// 关联的兼容规则集 Id（可空）。为空表示不应用任何规则集。
-    /// 第二阶段会换成从规则集列表选择的下拉框。
     /// </summary>
     [BindProperty]
     public Guid? CompatibilityProfileId { get; set; }
+
+    /// <summary>
+    /// 可选的兼容规则集列表（仅启用的），供下拉框选择。
+    /// </summary>
+    public List<ProfileOption> AvailableProfiles { get; set; } = new();
 
     /// <summary>
     /// 状态提示。
@@ -357,6 +362,7 @@ public class EditModel : PageModel
         IsEnabled = model.IsEnabled;
         OverrideReasoningEffort = model.OverrideReasoningEffort;
         CompatibilityProfileId = model.CompatibilityProfileId;
+        await LoadAvailableProfilesAsync(cancellationToken);
         await LoadSiteMappingsAsync(id, cancellationToken);
         await LoadAvailableSitesAsync(id, cancellationToken);
         if (string.IsNullOrWhiteSpace(NewMapping.RemoteModelName))
@@ -364,6 +370,18 @@ public class EditModel : PageModel
             NewMapping.RemoteModelName = model.ModelName;
         }
         return true;
+    }
+
+    /// <summary>
+    /// 加载启用的兼容规则集列表，供模型编辑页下拉框选择。
+    /// </summary>
+    private async Task LoadAvailableProfilesAsync(CancellationToken cancellationToken)
+    {
+        var profiles = await _dbContext.CompatibilityProfiles
+            .Where(p => p.IsEnabled)
+            .OrderBy(p => p.Name)
+            .ToListAsync(cancellationToken);
+        AvailableProfiles = profiles.Select(p => new ProfileOption(p.Id, p.Name)).ToList();
     }
 
     /// <summary>
@@ -451,3 +469,8 @@ public class EditModel : PageModel
         _dbContext.ProxyRouteEntries.RemoveRange(emptyEntries);
     }
 }
+
+/// <summary>
+/// 兼容规则集下拉选项。
+/// </summary>
+public sealed record ProfileOption(Guid Id, string Name);

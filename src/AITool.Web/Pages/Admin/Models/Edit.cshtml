@@ -1,5 +1,6 @@
 @page "{id:guid}"
 @model AITool.Web.Pages.Admin.Models.EditModel
+@using Microsoft.AspNetCore.Mvc.Rendering
 @{
     ViewData["Title"] = "编辑模型";
 }
@@ -69,8 +70,10 @@
 
         <div class="mb-3">
             <label asp-for="CompatibilityProfileId" class="form-label">兼容规则集</label>
-            <input asp-for="CompatibilityProfileId" class="form-control" placeholder="留空=不应用，填规则集 Id（稍后改为下拉选择）" />
-            <div class="form-text">关联兼容规则集（独立维护的字段剔除/重命名/补默认值规则）。留空表示不应用。后续会改为下拉选择。</div>
+            <select asp-for="CompatibilityProfileId" class="form-select" asp-items="@(new SelectList(Model.AvailableProfiles, "Id", "Name"))">
+                <option value="">不应用（透传原始请求体）</option>
+            </select>
+            <div class="form-text">关联兼容规则集（在「兼容规则集」页面维护的字段剔除/重命名/补默认值规则）。留空表示不应用。多个模型可共用同一规则集。</div>
         </div>
 
         <div class="divider"></div>

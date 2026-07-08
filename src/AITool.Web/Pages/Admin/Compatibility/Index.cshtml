@@ -1,0 +1,323 @@
+@page
+@model AITool.Web.Pages.Admin.Compatibility.IndexModel
+@{
+    ViewData["Title"] = "兼容规则集";
+}
+<div class="page-header">
+    <div>
+        <h2 class="page-title">兼容规则集</h2>
+        <p class="page-subtitle">独立维护字段级兼容规则（剔除/重命名/补默认值），可被多个模型引用，避免重复配置</p>
+    </div>
+</div>
+
+<div id="cpStatusMsg" class="alert" style="display:none;"></div>
+
+<div class="cp-layout">
+    <!-- 左：规则集列表 -->
+    <section class="cp-panel">
+        <div class="cp-panel-header">
+            <h5 class="cp-panel-title">规则集列表</h5>
+            <button type="button" class="btn btn-primary btn-sm" onclick="cpShowCreate()">新建规则集</button>
+        </div>
+        <div id="cpEmptyState" class="cp-empty-state" style="display:none;">暂无规则集，点击右上角新建</div>
+        <div id="cpList" class="cp-list"></div>
+    </section>
+
+    <!-- 右：编辑区 -->
+    <section class="cp-panel">
+        <div class="cp-panel-header">
+            <h5 class="cp-panel-title" id="cpEditorTitle">编辑规则集</h5>
+            <div id="cpEditorHint" class="cp-panel-subtitle">从左侧选择一个规则集，或点击新建</div>
+        </div>
+
+        <div id="cpEditor" class="cp-editor" style="display:none;">
+            <input type="hidden" id="cpId" />
+            <div class="mb-3">
+                <label class="form-label" for="cpName">名称</label>
+                <input id="cpName" type="text" class="form-control" placeholder="如 GPT-5 兼容、z.ai 兼容" />
+            </div>
+            <div class="mb-3">
+                <label class="form-label" for="cpDesc">说明</label>
+                <input id="cpDesc" type="text" class="form-control" placeholder="适用场景描述" />
+            </div>
+            <div class="mb-3 form-check">
+                <input id="cpEnabled" type="checkbox" class="form-check-input" checked />
+                <label class="form-check-label" for="cpEnabled">启用（禁用的规则集不会出现在模型下拉里，也不会生效）</label>
+            </div>
+
+            <div class="cp-rules-header">
+                <label class="form-label mb-0">规则</label>
+                <button type="button" class="btn btn-outline-secondary btn-sm" onclick="cpAddRule()">+ 添加规则</button>
+            </div>
+            <div class="cp-rules-tip">每条规则：选择操作类型与生效路径（透传/兼容中转/两者）；按操作类型填写对应字段。strip 的 target 沿用路径语法（裸字段名自动作用于 messages 每条）。</div>
+            <div id="cpRules" class="cp-rules"></div>
+
+            <div class="cp-editor-actions">
+                <button type="button" class="btn btn-primary" onclick="cpSave()">保存</button>
+                <button type="button" class="btn btn-outline-secondary" onclick="cpCancel()">取消</button>
+                <button type="button" class="btn btn-outline-danger cp-delete-btn" onclick="cpDelete()">删除</button>
+            </div>
+        </div>
+    </section>
+</div>
+
+<style>
+    .cp-layout { display: grid; grid-template-columns: 360px 1fr; gap: 16px; }
+    .cp-panel { background: #fff; border: 1px solid var(--bs-border-color, #dee2e6); border-radius: 8px; padding: 16px; }
+    .cp-panel-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+    .cp-panel-title { margin: 0; font-size: 1rem; font-weight: 600; }
+    .cp-panel-subtitle { color: #6c757d; font-size: .85rem; }
+    .cp-empty-state { color: #6c757d; padding: 24px 0; text-align: center; }
+    .cp-list { display: flex; flex-direction: column; gap: 8px; }
+    .cp-card { border: 1px solid #e9ecef; border-radius: 6px; padding: 12px; cursor: pointer; transition: border-color .15s; }
+    .cp-card:hover { border-color: #adb5bd; }
+    .cp-card.active { border-color: #0d6efd; background: #f8f9ff; }
+    .cp-card-title { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+    .cp-card-desc { color: #6c757d; font-size: .82rem; margin-top: 4px; word-break: break-all; }
+    .cp-card-meta { color: #6c757d; font-size: .78rem; margin-top: 6px; }
+    .cp-badge { font-size: .7rem; padding: 1px 6px; border-radius: 10px; background: #e9ecef; color: #495057; }
+    .cp-badge-off { background: #f8d7da; color: #842029; }
+    .cp-badge-on { background: #d1e7dd; color: #0f5132; }
+    .cp-rules-header { display: flex; align-items: center; justify-content: space-between; margin: 16px 0 4px; }
+    .cp-rules-tip { color: #6c757d; font-size: .8rem; margin-bottom: 8px; }
+    .cp-rules { display: flex; flex-direction: column; gap: 8px; min-height: 40px; }
+    .cp-rule-row { display: grid; grid-template-columns: 110px 1fr 110px auto; gap: 6px; align-items: center; background: #f8f9fa; padding: 8px; border-radius: 6px; }
+    .cp-rule-fields { display: flex; gap: 6px; flex-wrap: wrap; }
+    .cp-rule-fields input { flex: 1; min-width: 80px; }
+    .cp-rule-row select, .cp-rule-row input { font-size: .85rem; }
+    .cp-rule-remove { width: 32px; }
+    .cp-editor-actions { display: flex; gap: 8px; margin-top: 20px; align-items: center; }
+    .cp-delete-btn { margin-left: auto; }
+    @@media (max-width: 900px) { .cp-layout { grid-template-columns: 1fr; } .cp-rule-row { grid-template-columns: 1fr; } }
+</style>
+
+@section Scripts {
+<script>
+    // 兼容规则集管理：列表加载、增删改、规则动态编辑、序列化提交。
+    var cpApiBase = '/api/admin/compatibility-profiles';
+    var cpRules = []; // 当前编辑中的规则数组（CompatibilityRule 结构）
+
+    document.addEventListener('DOMContentLoaded', cpLoadList);
+
+    function cpShowStatus(msg, ok) {
+        var box = document.getElementById('cpStatusMsg');
+        box.textContent = msg;
+        box.className = 'alert ' + (ok ? 'alert-success' : 'alert-danger');
+        box.style.display = 'block';
+        setTimeout(function () { box.style.display = 'none'; }, 3000);
+    }
+
+    async function cpLoadList() {
+        try {
+            var res = await fetch(cpApiBase, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            if (!res.ok) throw new Error();
+            var list = await res.json();
+            renderList(list);
+        } catch (e) { cpShowStatus('加载规则集列表失败', false); }
+    }
+
+    function renderList(list) {
+        var box = document.getElementById('cpList');
+        var empty = document.getElementById('cpEmptyState');
+        box.innerHTML = '';
+        if (!list || list.length === 0) { empty.style.display = 'block'; return; }
+        empty.style.display = 'none';
+        list.forEach(function (p) {
+            var card = document.createElement('div');
+            card.className = 'cp-card';
+            card.setAttribute('data-id', p.id);
+            card.onclick = function () { cpLoadForEdit(p.id, card); };
+            card.innerHTML =
+                '<div class="cp-card-title">' + escapeHtml(p.name) +
+                ' <span class="cp-badge ' + (p.isEnabled ? 'cp-badge-on' : 'cp-badge-off') + '">' + (p.isEnabled ? '启用' : '禁用') + '</span></div>' +
+                '<div class="cp-card-desc">' + escapeHtml(p.description || '（无说明）') + '</div>' +
+                '<div class="cp-card-meta">规则 ' + p.ruleCount + ' 条</div>';
+            box.appendChild(card);
+        });
+    }
+
+    async function cpLoadForEdit(id, cardEl) {
+        try {
+            var res = await fetch(cpApiBase + '/' + id, { headers: { 'X-Requested-With': 'XMLHttpRequest' } });
+            if (!res.ok) throw new Error();
+            var p = await res.json();
+            // 标记选中
+            document.querySelectorAll('.cp-card').forEach(function (c) { c.classList.remove('active'); });
+            if (cardEl) cardEl.classList.add('active');
+
+            document.getElementById('cpId').value = p.id;
+            document.getElementById('cpName').value = p.name;
+            document.getElementById('cpDesc').value = p.description || '';
+            document.getElementById('cpEnabled').checked = p.isEnabled;
+            cpRules = cpParseRules(p.rulesJson);
+            cpRenderRules();
+            document.getElementById('cpEditorTitle').textContent = '编辑：' + p.name;
+            document.getElementById('cpEditorHint').textContent = '修改后点击保存生效';
+            document.querySelector('.cp-delete-btn').style.display = '';
+            document.getElementById('cpEditor').style.display = 'block';
+        } catch (e) { cpShowStatus('加载详情失败', false); }
+    }
+
+    function cpShowCreate() {
+        document.getElementById('cpId').value = '';
+        document.getElementById('cpName').value = '';
+        document.getElementById('cpDesc').value = '';
+        document.getElementById('cpEnabled').checked = true;
+        cpRules = [];
+        cpRenderRules();
+        document.getElementById('cpEditorTitle').textContent = '新建规则集';
+        document.getElementById('cpEditorHint').textContent = '填写信息后点击保存';
+        document.querySelector('.cp-delete-btn').style.display = 'none';
+        document.getElementById('cpEditor').style.display = 'block';
+        document.querySelectorAll('.cp-card').forEach(function (c) { c.classList.remove('active'); });
+    }
+
+    function cpCancel() {
+        document.getElementById('cpEditor').style.display = 'none';
+        document.querySelectorAll('.cp-card').forEach(function (c) { c.classList.remove('active'); });
+    }
+
+    function cpParseRules(rulesJson) {
+        try { var r = JSON.parse(rulesJson || '[]'); return Array.isArray(r) ? r : []; }
+        catch (e) { return []; }
+    }
+
+    function cpRenderRules() {
+        var box = document.getElementById('cpRules');
+        box.innerHTML = '';
+        if (cpRules.length === 0) {
+            box.innerHTML = '<div style="color:#6c757d;font-size:.85rem;padding:8px;">暂无规则，点击「添加规则」</div>';
+            return;
+        }
+        cpRules.forEach(function (rule, idx) {
+            box.appendChild(cpBuildRuleRow(rule, idx));
+        });
+    }
+
+    function cpBuildRuleRow(rule, idx) {
+        var row = document.createElement('div');
+        row.className = 'cp-rule-row';
+
+        // op 下拉
+        var opSel = document.createElement('select');
+        opSel.className = 'form-select form-select-sm';
+        [['strip', '剔除 strip'], ['rename', '重命名 rename'], ['default', '补默认值 default']].forEach(function (o) {
+            var opt = document.createElement('option');
+            opt.value = o[0]; opt.textContent = o[1];
+            if ((rule.op || 'strip') === o[0]) opt.selected = true;
+            opSel.appendChild(opt);
+        });
+        opSel.onchange = function () { rule.op = opSel.value; cpRenderRules(); };
+
+        // 字段区（按 op 切换）
+        var fields = document.createElement('div');
+        fields.className = 'cp-rule-fields';
+        cpAppendFields(fields, rule);
+
+        // scope 下拉
+        var scopeSel = document.createElement('select');
+        scopeSel.className = 'form-select form-select-sm';
+        [['all', '两者 all'], ['passthrough', '仅透传'], ['bridge', '仅兼容中转']].forEach(function (o) {
+            var opt = document.createElement('option');
+            opt.value = o[0]; opt.textContent = o[1];
+            if ((rule.scope || 'all') === o[0]) opt.selected = true;
+            scopeSel.appendChild(opt);
+        });
+        scopeSel.onchange = function () { rule.scope = scopeSel.value; };
+
+        // 删除按钮
+        var removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-outline-danger btn-sm cp-rule-remove';
+        removeBtn.textContent = '×';
+        removeBtn.title = '删除此规则';
+        removeBtn.onclick = function () { cpRules.splice(idx, 1); cpRenderRules(); };
+
+        row.appendChild(opSel);
+        row.appendChild(fields);
+        row.appendChild(scopeSel);
+        row.appendChild(removeBtn);
+        return row;
+    }
+
+    // 按 op 追加对应输入框，绑定到 rule 对象。
+    function cpAppendFields(container, rule) {
+        var op = rule.op || 'strip';
+        if (op === 'strip') {
+            container.appendChild(cpMakeInput(rule, 'target', 'target 字段路径（如 reasoning_content）'));
+        } else if (op === 'rename') {
+            container.appendChild(cpMakeInput(rule, 'from', 'from 旧名'));
+            container.appendChild(cpMakeInput(rule, 'to', 'to 新名'));
+        } else if (op === 'default') {
+            container.appendChild(cpMakeInput(rule, 'key', 'key 字段名'));
+            container.appendChild(cpMakeInput(rule, 'value', 'value 值（true/false/数字/字符串）'));
+        }
+    }
+
+    function cpMakeInput(rule, prop, placeholder) {
+        var input = document.createElement('input');
+        input.type = 'text';
+        input.className = 'form-control form-control-sm';
+        input.placeholder = placeholder;
+        input.value = rule[prop] || '';
+        input.oninput = function () { rule[prop] = input.value; };
+        return input;
+    }
+
+    function cpAddRule() {
+        cpRules.push({ op: 'strip', target: '', scope: 'all' });
+        cpRenderRules();
+    }
+
+    async function cpSave() {
+        var name = document.getElementById('cpName').value.trim();
+        if (!name) { cpShowStatus('名称不能为空', false); return; }
+        var payload = {
+            name: name,
+            description: document.getElementById('cpDesc').value.trim(),
+            rulesJson: JSON.stringify(cpRules || []),
+            isEnabled: document.getElementById('cpEnabled').checked
+        };
+        var id = document.getElementById('cpId').value;
+        var url = id ? cpApiBase + '/' + id : cpApiBase;
+        var method = id ? 'PUT' : 'POST';
+        try {
+            var res = await fetch(url, {
+                method: method,
+                headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' },
+                body: JSON.stringify(payload)
+            });
+            if (!res.ok) {
+                var err = await res.json().catch(function () { return {}; });
+                throw new Error(err.message || '保存失败');
+            }
+            cpShowStatus('保存成功', true);
+            await cpLoadList();
+            cpCancel();
+        } catch (e) { cpShowStatus(e.message || '保存失败', false); }
+    }
+
+    async function cpDelete() {
+        var id = document.getElementById('cpId').value;
+        if (!id) return;
+        if (!confirm('确认删除此规则集？引用它的模型将变为不应用规则集。')) return;
+        try {
+            var res = await fetch(cpApiBase + '/' + id, {
+                method: 'DELETE',
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            if (!res.ok) throw new Error();
+            cpShowStatus('已删除', true);
+            await cpLoadList();
+            cpCancel();
+        } catch (e) { cpShowStatus('删除失败', false); }
+    }
+
+    function escapeHtml(s) {
+        if (s == null) return '';
+        return String(s).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+</script>
+}

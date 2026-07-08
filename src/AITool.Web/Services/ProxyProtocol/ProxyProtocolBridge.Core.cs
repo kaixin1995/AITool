@@ -338,8 +338,22 @@ public static partial class ProxyProtocolBridge
                     switch (op)
                     {
                         case "strip":
-                            var target = NormalizeStripPath(rule.Target ?? "");
-                            if (!string.IsNullOrWhiteSpace(target)) StripPath(rootNode, target);
+                            // 裸字段名（不含 . 和 []）：同时尝试删顶层字段和 messages 数组每条的该字段，
+                            // 兼容 metadata（顶层）和 reasoning_content（messages 内）两种常见场景。
+                            // 含 . 或 [] 的视为精确路径，原样解析。
+                            var rawTarget = (rule.Target ?? "").Trim();
+                            if (!string.IsNullOrWhiteSpace(rawTarget))
+                            {
+                                if (rawTarget.Contains('.') || rawTarget.Contains('['))
+                                {
+                                    StripPath(rootNode, rawTarget);
+                                }
+                                else
+                                {
+                                    StripPath(rootNode, rawTarget);
+                                    StripPath(rootNode, "messages[]." + rawTarget);
+                                }
+                            }
                             break;
                         case "rename":
                             ApplyRename(rootNode, rule.From, rule.To);
@@ -390,69 +404,6 @@ public static partial class ProxyProtocolBridge
         if (int.TryParse(v, out var intVal)) { root[key] = intVal; return; }
         if (double.TryParse(v, out var dblVal)) { root[key] = dblVal; return; }
         root[key] = v;
-    }
-
-    /// <summary>
-    /// 按字段黑名单从请求体剔除指定字段。透传与协议转换后统一调用，兼容不支持某些字段的上游。
-    /// <para>
-    /// 字段路径语法（逗号分隔多项）：
-    /// - 顶层字段：直接写名字，如 <c>metadata</c>、<c>stream_options</c>
-    /// - 裸字段名（不含 . 或 []）：自动当作 <c>messages[].字段名</c>，如 <c>reasoning_content</c>
-    /// - 精确路径：<c>a.b</c> 嵌套属性，<c>a[].b</c> 对数组每条元素的 b 生效
-    /// </para>
-    /// 解析或剔除失败时静默保留原值，不影响转发可用性。
-    /// </summary>
-    private static string ApplyStripRequestFields(string requestBody, string? stripFields)
-    {
-        if (string.IsNullOrWhiteSpace(stripFields))
-        {
-            return requestBody;
-        }
-
-        try
-        {
-            var rootNode = JsonNode.Parse(requestBody) as JsonObject;
-            if (rootNode is null)
-            {
-                return requestBody;
-            }
-
-            // 解析字段路径列表，并对裸字段名做语法糖（自动包成 messages[].字段名）。
-            var paths = stripFields.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Select(NormalizeStripPath)
-                .Where(p => !string.IsNullOrWhiteSpace(p))
-                .ToList();
-
-            if (paths.Count == 0)
-            {
-                return requestBody;
-            }
-
-            foreach (var path in paths)
-            {
-                StripPath(rootNode, path);
-            }
-
-            return rootNode.ToJsonString();
-        }
-        catch
-        {
-            return requestBody;
-        }
-    }
-
-    /// <summary>
-    /// 规范化单个字段路径：裸字段名（不含 . 和 []）自动当作 messages 数组每条的字段。
-    /// 如 reasoning_content → messages[].reasoning_content；metadata 保持不变（顶层）。
-    /// </summary>
-    private static string NormalizeStripPath(string raw)
-    {
-        var path = raw.Trim();
-        if (path.Contains('.') || path.Contains('['))
-        {
-            return path;
-        }
-        return $"messages[].{path}";
     }
 
     /// <summary>
