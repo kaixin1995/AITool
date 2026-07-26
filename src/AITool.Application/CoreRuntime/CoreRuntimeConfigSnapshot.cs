@@ -1,3 +1,5 @@
+using AITool.Domain.Proxy;
+
 namespace AITool.Application.CoreRuntime;
 
 /// <summary>
@@ -131,6 +133,16 @@ public sealed class CoreRuntimeModel
     /// 是否启用。
     /// </summary>
     public bool IsEnabled { get; set; }
+
+    /// <summary>
+    /// 强制覆盖的思考等级。空=不干预，非空=强制覆盖转发给上游的思考等级。
+    /// </summary>
+    public string OverrideReasoningEffort { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 关联的兼容规则集 Id（可空）。为空表示不应用任何规则集。
+    /// </summary>
+    public Guid? CompatibilityProfileId { get; set; }
 }
 
 /// <summary>
@@ -249,6 +261,19 @@ public sealed class CoreRuntimeRouteRule
     /// 时间范围 JSON。
     /// </summary>
     public string TimeRangesJson { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 强制覆盖的思考等级。空=不干预，非空=强制覆盖转发给上游的思考等级。
+    /// 由 Admin 在构建快照时按 model.OverrideReasoningEffort 填充（派生数据，Core 直接透传）。
+    /// </summary>
+    public string OverrideReasoningEffort { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 该规则关联模型解析后的兼容规则集（已按 isPassthrough 筛选前的原始列表）。
+    /// 由 Admin 在构建快照时按 model.CompatibilityProfileId 解析填充（派生数据，Core 直接透传）。
+    /// 为空表示不应用任何规则。
+    /// </summary>
+    public IReadOnlyList<CompatibilityRule> CompatibilityRules { get; set; } = Array.Empty<CompatibilityRule>();
 }
 
 /// <summary>

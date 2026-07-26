@@ -24,6 +24,7 @@ public static class CoreRuntimeConfigSnapshotBuilder
     /// <summary>
     /// 从当前主数据构建完整配置快照。
     /// </summary>
+    /// <param name="compatibilityProfiles">兼容规则集（可选）。提供后会预解析规则并烤进对应 RouteRule/Model，供 Core 直接透传。</param>
     public static CoreRuntimeConfigSnapshot Build(
         IEnumerable<Site> sites,
         IEnumerable<ModelLibraryItem> models,
@@ -33,8 +34,19 @@ public static class CoreRuntimeConfigSnapshotBuilder
         IEnumerable<ProxyAccessKey> accessKeys,
         SystemRuntimeSettings runtimeSettings,
         long configVersion,
-        DateTimeOffset generatedAt)
+        DateTimeOffset generatedAt,
+        IEnumerable<CompatibilityProfile>? compatibilityProfiles = null)
     {
+        // 预解析兼容规则集：构建 Id→规则列表字典（仅启用的），供路由规则投影时查（避免 N+1）。
+        var profileRules = compatibilityProfiles is null
+            ? new Dictionary<Guid, IReadOnlyList<CompatibilityRule>>()
+            : CompatibilityRuleParser.BuildProfileRuleMap(compatibilityProfiles);
+        // 预建 model 查找字典：按 UpstreamModelName 关联（route.UpstreamModelName → model），左外联。
+        var modelList = models as IList<ModelLibraryItem> ?? models.ToList();
+        var modelByName = modelList
+            .GroupBy(m => m.ModelName, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
         var snapshot = new CoreRuntimeConfigSnapshot
         {
             ConfigVersion = configVersion,
@@ -54,14 +66,16 @@ public static class CoreRuntimeConfigSnapshotBuilder
                     IsEnabled = x.IsEnabled
                 })
                 .ToList(),
-            Models = models
+            Models = modelList
                 .OrderBy(x => x.Id)
                 .Select(x => new CoreRuntimeModel
                 {
                     Id = x.Id,
                     ModelName = x.ModelName,
                     DisplayName = x.DisplayName,
-                    IsEnabled = x.IsEnabled
+                    IsEnabled = x.IsEnabled,
+                    OverrideReasoningEffort = x.OverrideReasoningEffort ?? string.Empty,
+                    CompatibilityProfileId = x.CompatibilityProfileId
                 })
                 .ToList(),
             SiteModelMappings = siteModelMappings
@@ -91,19 +105,27 @@ public static class CoreRuntimeConfigSnapshotBuilder
                 .ThenBy(x => x.InstancePriority)
                 .ThenBy(x => x.Priority)
                 .ThenBy(x => x.Id)
-                .Select(x => new CoreRuntimeRouteRule
+                .Select(x =>
                 {
-                    Id = x.Id,
-                    ExternalModelName = x.ExternalModelName,
-                    UpstreamModelName = x.UpstreamModelName,
-                    SiteId = x.SiteId,
-                    SiteModelName = x.SiteModelName,
-                    Priority = x.Priority,
-                    ModelPriority = x.ModelPriority,
-                    InstancePriority = x.InstancePriority,
-                    IsEnabled = x.IsEnabled,
-                    AvailabilityMode = x.AvailabilityMode,
-                    TimeRangesJson = x.TimeRangesJson
+                    // 按上游模型名关联 model，左外联：model 不存在（如规则指向已删除模型）时按空规则处理。
+                    modelByName.TryGetValue(x.UpstreamModelName ?? string.Empty, out var model);
+                    return new CoreRuntimeRouteRule
+                    {
+                        Id = x.Id,
+                        ExternalModelName = x.ExternalModelName,
+                        UpstreamModelName = x.UpstreamModelName,
+                        SiteId = x.SiteId,
+                        SiteModelName = x.SiteModelName,
+                        Priority = x.Priority,
+                        ModelPriority = x.ModelPriority,
+                        InstancePriority = x.InstancePriority,
+                        IsEnabled = x.IsEnabled,
+                        AvailabilityMode = x.AvailabilityMode,
+                        TimeRangesJson = x.TimeRangesJson,
+                        // 派生字段：由 Admin 端预解析，Core 直接透传，避免 Core 重复实现解析+关联逻辑。
+                        OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
+                        CompatibilityRules = CompatibilityRuleParser.GetRulesForModel(model?.CompatibilityProfileId, profileRules)
+                    };
                 })
                 .ToList(),
             AccessKeys = accessKeys

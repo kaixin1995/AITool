@@ -103,6 +103,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         var routeEntries = await _dbContext.ProxyRouteEntries.ToListAsync(cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
         var accessKeys = await _dbContext.ProxyAccessKeys.ToListAsync(cancellationToken);
+        var compatibilityProfiles = await _dbContext.CompatibilityProfiles.ToListAsync(cancellationToken);
         var runtimeSettings = await GetOrCreateAsync(cancellationToken);
 
         return CoreRuntimeConfigSnapshotBuilder.Build(
@@ -114,7 +115,8 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
             accessKeys,
             runtimeSettings,
             configVersion,
-            generatedAt);
+            generatedAt,
+            compatibilityProfiles);
     }
 
     /// <summary>

@@ -732,6 +732,9 @@ public sealed partial class ProxyRequestMetadataCache
                                 ModelPriority = rule.ModelPriority,
                                 InstancePriority = rule.InstancePriority,
                                 Priority = rule.Priority,
+                                // 派生字段：Admin 在构建快照时已按 model 关联预解析，Core 直接透传。
+                                OverrideReasoningEffort = rule.OverrideReasoningEffort,
+                                CompatibilityRules = rule.CompatibilityRules,
                                 AvailabilityMode = NormalizeAvailabilityMode(rule.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(rule.AvailabilityMode, rule.TimeRangesJson)
                             })
@@ -762,7 +765,7 @@ public sealed partial class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
                     var profileRules = profiles.ToDictionary(
                         p => p.Id,
-                        p => ParseCompatibilityRules(p.RulesJson));
+                        p => CompatibilityRuleParser.Parse(p.RulesJson));
 
                     return (
                             from route in routeRows
@@ -789,7 +792,7 @@ public sealed partial class ProxyRequestMetadataCache
                                 InstancePriority = route.InstancePriority,
                                 Priority = route.Priority,
                                 OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
-                                CompatibilityRules = GetRulesForModel(model, profileRules),
+                                CompatibilityRules = CompatibilityRuleParser.GetRulesForModel(model?.CompatibilityProfileId, profileRules),
                                 AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
                             })
@@ -1025,33 +1028,6 @@ public sealed partial class ProxyRequestMetadataCache
             RemoteModelName = remoteModelName,
             SiteEnabled = true
         });
-    }
-
-    /// <summary>
-    /// 解析规则集的 RulesJson 为规则列表。解析失败返回空列表，不影响转发。
-    /// </summary>
-    private static IReadOnlyList<CompatibilityRule> ParseCompatibilityRules(string? rulesJson)
-    {
-        if (string.IsNullOrWhiteSpace(rulesJson)) return Array.Empty<CompatibilityRule>();
-        try
-        {
-            var rules = JsonSerializer.Deserialize<List<CompatibilityRule>>(rulesJson);
-            return rules is null || rules.Count == 0 ? Array.Empty<CompatibilityRule>() : rules;
-        }
-        catch
-        {
-            return Array.Empty<CompatibilityRule>();
-        }
-    }
-
-    /// <summary>
-    /// 取模型关联的兼容规则集（按 CompatibilityProfileId 查字典）。模型或 profileId 为空、或字典里没有则返回空。
-    /// </summary>
-    private static IReadOnlyList<CompatibilityRule> GetRulesForModel(ModelLibraryItem? model, Dictionary<Guid, IReadOnlyList<CompatibilityRule>> profileRules)
-    {
-        var profileId = model?.CompatibilityProfileId;
-        if (profileId is null || profileId == Guid.Empty) return Array.Empty<CompatibilityRule>();
-        return profileRules.TryGetValue(profileId.Value, out var rules) ? rules : Array.Empty<CompatibilityRule>();
     }
 
     /// <summary>

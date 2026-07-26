@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using AITool.Application.CoreRuntime;
 using AITool.Application.Operations;
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
@@ -135,6 +136,18 @@ public sealed class AdminCacheInvalidationService
     }
 
     /// <summary>
+    /// 兼容规则集变更后的失效。
+    /// 规则集是路由目标的派生数据（按 model.CompatibilityProfileId 关联），已预解析烤进每条 RouteRule。
+    /// 因此 profile 变更只需重发 RouteRules（BuildPatchAsync 会重新读 model+profile 计算派生字段），
+    /// Core 收到新 RouteRules 后透传即可生效。
+    /// </summary>
+    public async Task InvalidateCompatibilityProfilesAsync(CancellationToken cancellationToken = default)
+    {
+        await SyncToCoreAsync(["RouteRules"], cancellationToken);
+        _metadataCache.InvalidateCompatibilityProfiles(); // Admin 本地缓存同步失效
+    }
+
+    /// <summary>
     /// 向 Core 发送增量 Patch 同步。
     /// 仅读取变更类别对应的数据库表，构建 Patch 载荷发送给 Core。
     /// 如果 Core 尚未初始化（返回 400），自动回退到全量同步。
@@ -215,7 +228,9 @@ public sealed class AdminCacheInvalidationService
                     Id = x.Id,
                     ModelName = x.ModelName,
                     DisplayName = x.DisplayName,
-                    IsEnabled = x.IsEnabled
+                    IsEnabled = x.IsEnabled,
+                    OverrideReasoningEffort = x.OverrideReasoningEffort ?? string.Empty,
+                    CompatibilityProfileId = x.CompatibilityProfileId
                 })
                 .ToList();
         }
@@ -254,25 +269,40 @@ public sealed class AdminCacheInvalidationService
         if (categorySet.Contains("RouteRules"))
         {
             var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+            // 兼容规则集是路由目标的派生数据：按 model 关联预解析后烤进每条 RouteRule，
+            // Core 端直接透传，避免重复实现解析+关联逻辑。
+            var models = await _dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+            var profiles = await _dbContext.CompatibilityProfiles.ToListAsync(cancellationToken);
+            var profileRules = CompatibilityRuleParser.BuildProfileRuleMap(profiles);
+            var modelByName = models
+                .GroupBy(m => m.ModelName, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+
             patch.RouteRules = routeRules
                 .OrderBy(x => x.ExternalModelName, StringComparer.Ordinal)
                 .ThenBy(x => x.ModelPriority)
                 .ThenBy(x => x.InstancePriority)
                 .ThenBy(x => x.Priority)
                 .ThenBy(x => x.Id)
-                .Select(x => new CoreRuntimeRouteRule
+                .Select(x =>
                 {
-                    Id = x.Id,
-                    ExternalModelName = x.ExternalModelName,
-                    UpstreamModelName = x.UpstreamModelName,
-                    SiteId = x.SiteId,
-                    SiteModelName = x.SiteModelName,
-                    Priority = x.Priority,
-                    ModelPriority = x.ModelPriority,
-                    InstancePriority = x.InstancePriority,
-                    IsEnabled = x.IsEnabled,
-                    AvailabilityMode = x.AvailabilityMode,
-                    TimeRangesJson = x.TimeRangesJson
+                    modelByName.TryGetValue(x.UpstreamModelName ?? string.Empty, out var model);
+                    return new CoreRuntimeRouteRule
+                    {
+                        Id = x.Id,
+                        ExternalModelName = x.ExternalModelName,
+                        UpstreamModelName = x.UpstreamModelName,
+                        SiteId = x.SiteId,
+                        SiteModelName = x.SiteModelName,
+                        Priority = x.Priority,
+                        ModelPriority = x.ModelPriority,
+                        InstancePriority = x.InstancePriority,
+                        IsEnabled = x.IsEnabled,
+                        AvailabilityMode = x.AvailabilityMode,
+                        TimeRangesJson = x.TimeRangesJson,
+                        OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
+                        CompatibilityRules = CompatibilityRuleParser.GetRulesForModel(model?.CompatibilityProfileId, profileRules)
+                    };
                 })
                 .ToList();
         }
@@ -341,11 +371,12 @@ public sealed class AdminCacheInvalidationService
         var routeEntries = await _dbContext.ProxyRouteEntries.ToListAsync(cancellationToken);
         var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
         var accessKeys = await _dbContext.ProxyAccessKeys.ToListAsync(cancellationToken);
+        var compatibilityProfiles = await _dbContext.CompatibilityProfiles.ToListAsync(cancellationToken);
         var runtimeSettings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
 
         var snapshot = CoreRuntimeConfigSnapshotBuilder.Build(
             sites, models, mappings, routeEntries, routeRules, accessKeys,
-            runtimeSettings, version, DateTimeOffset.UtcNow);
+            runtimeSettings, version, DateTimeOffset.UtcNow, compatibilityProfiles);
 
         var result = await _coreClient.FullSyncAsync(snapshot, cancellationToken);
 

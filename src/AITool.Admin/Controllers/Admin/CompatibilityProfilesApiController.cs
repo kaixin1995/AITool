@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Admin.Services;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
@@ -8,7 +9,7 @@ namespace AITool.Admin.Controllers.Admin;
 
 /// <summary>
 /// 兼容规则集管理控制器：对 <see cref="CompatibilityProfile"/> 做 CRUD。
-/// 规则集合随路由目标一起缓存，任何写操作后都需失效缓存。
+/// 规则集合随路由目标一起缓存，任何写操作后都需失效缓存并推送到 Core（双宿主下规则烤进 RouteRule 下发）。
 /// </summary>
 [ApiController]
 [Route("api/admin/compatibility-profiles")]
@@ -16,11 +17,16 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly AdminCacheInvalidationService _adminCacheInvalidation;
 
-    public CompatibilityProfilesApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
+    public CompatibilityProfilesApiController(
+        AppDbContext dbContext,
+        ProxyRequestMetadataCache metadataCache,
+        AdminCacheInvalidationService adminCacheInvalidation)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
+        _adminCacheInvalidation = adminCacheInvalidation;
     }
 
     /// <summary>
@@ -83,7 +89,8 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
             IsEnabled = payload.IsEnabled
         };
         await _dbContext.InsertAsync(profile, cancellationToken);
-        _metadataCache.InvalidateCompatibilityProfiles();
+        // 规则集是路由目标的派生数据（烤进 RouteRule），变更后重发 RouteRules 让 Core 拿到新规则。
+        await _adminCacheInvalidation.InvalidateCompatibilityProfilesAsync(cancellationToken);
 
         return Ok(new { id = profile.Id });
     }
@@ -108,7 +115,8 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
         profile.IsEnabled = payload.IsEnabled;
         profile.UpdatedAt = DateTimeOffset.UtcNow;
         await _dbContext.UpdateAsync(profile, cancellationToken);
-        _metadataCache.InvalidateCompatibilityProfiles();
+        // 规则集是路由目标的派生数据（烤进 RouteRule），变更后重发 RouteRules 让 Core 拿到新规则。
+        await _adminCacheInvalidation.InvalidateCompatibilityProfilesAsync(cancellationToken);
 
         return Ok(new { id = profile.Id });
     }
@@ -125,7 +133,8 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
         profile.IsEnabled = !profile.IsEnabled;
         profile.UpdatedAt = DateTimeOffset.UtcNow;
         await _dbContext.UpdateAsync(profile, cancellationToken);
-        _metadataCache.InvalidateCompatibilityProfiles();
+        // 规则集是路由目标的派生数据（烤进 RouteRule），变更后重发 RouteRules 让 Core 拿到新规则。
+        await _adminCacheInvalidation.InvalidateCompatibilityProfilesAsync(cancellationToken);
 
         return Ok(new { id = profile.Id, isEnabled = profile.IsEnabled });
     }
@@ -140,7 +149,8 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
         if (profile is null) return NotFound(new { message = "规则集不存在" });
 
         await _dbContext.DeleteAsync(profile, cancellationToken);
-        _metadataCache.InvalidateCompatibilityProfiles();
+        // 规则集是路由目标的派生数据（烤进 RouteRule），变更后重发 RouteRules 让 Core 拿到新规则。
+        await _adminCacheInvalidation.InvalidateCompatibilityProfilesAsync(cancellationToken);
 
         return Ok(new { id });
     }
