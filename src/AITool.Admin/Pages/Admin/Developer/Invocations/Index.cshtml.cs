@@ -15,9 +15,10 @@ namespace AITool.Admin.Pages.Admin.Developer.Invocations;
 public sealed class IndexModel : PageModel
 {
     /// <summary>
-    /// 每页记录数，与 Core 侧保持一致。
+    /// 调试页取消分页：Core 端 DeveloperInvocationTraceStore 限制最多 40 条（MaxEntryCount），
+    /// 一次性全部返回。此常量保留仅为接口兼容，实际不再用于分页。
     /// </summary>
-    public const int PageSize = 20;
+    public const int PageSize = 100;
 
     private readonly CoreAdminClient _coreClient;
     private readonly AppDbContext _dbContext;
@@ -215,29 +216,23 @@ public sealed class IndexModel : PageModel
 
     private CoreDeveloperInvocationListResponse BuildLocalListResponse(int pageNumber)
     {
-        pageNumber = Math.Max(1, pageNumber);
+        // 调试页取消分页：一次性返回全部记录（最多 MaxEntryCount=40 条），totalPages 始终为 1。
         var allEntries = _traceStore.List();
         var totalCount = allEntries.Count;
         var failedCount = allEntries.Count(e => string.Equals(e.Status, "error", StringComparison.OrdinalIgnoreCase));
         var pendingCount = allEntries.Count(e => string.Equals(e.Status, "pending", StringComparison.OrdinalIgnoreCase));
-        var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)PageSize);
-        var effectivePage = totalPages == 0 ? 1 : Math.Min(pageNumber, totalPages);
 
-        var paged = allEntries
-            .Skip((effectivePage - 1) * PageSize)
-            .Take(PageSize)
-            .Select(ToSummary)
-            .ToList();
+        var entries = allEntries.Select(ToSummary).ToList();
 
         return new CoreDeveloperInvocationListResponse
         {
             TotalCount = totalCount,
             FailedCount = failedCount,
             PendingCount = pendingCount,
-            PageNumber = effectivePage,
-            PageSize = PageSize,
-            TotalPages = totalPages,
-            Entries = paged
+            PageNumber = 1,
+            PageSize = totalCount,
+            TotalPages = 1,
+            Entries = entries
         };
     }
 

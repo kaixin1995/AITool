@@ -360,9 +360,17 @@ public sealed partial class ProxyRequestMetadataCache
     /// <summary>
     /// 获取待巡检的 Codex 账号列表（未被功能总开关禁用，按最近检查时间升序）。
     /// 走缓存，账号变更后需调 <see cref="InvalidateCodexAccounts"/> 失效。
+    /// 注意：仅 Admin 宿主可用（需 AppDbContext）。Core 宿主返回空列表——Core 不持有 Codex 账号实体。
     /// </summary>
     public async Task<List<CodexAccount>> GetCodexAccountsAsync(CancellationToken cancellationToken)
     {
+        // Core 宿主（_configProvider 非 null）没有 AppDbContext，直接返回空列表避免解析异常。
+        // Core 不缓存 Codex 账号实体，巡检逻辑只在 Admin 运行。
+        if (_configProvider is not null)
+        {
+            return [];
+        }
+
         return await _memoryCache.GetOrCreateAsync(
                 CodexAccountsCacheKey,
                 async entry =>

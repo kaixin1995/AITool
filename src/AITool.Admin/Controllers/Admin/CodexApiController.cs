@@ -35,6 +35,7 @@ public sealed class CodexApiController : ControllerBase
     private readonly CodexInspectionService _inspectionService;
     private readonly ILogger<CodexApiController> _logger;
     private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly AdminCacheInvalidationService _adminCacheInvalidation;
 
     public CodexApiController(
         AppDbContext dbContext,
@@ -46,7 +47,8 @@ public sealed class CodexApiController : ControllerBase
         ICodexResetCreditsService resetCreditsService,
         CodexInspectionService inspectionService,
         ILogger<CodexApiController> logger,
-        ProxyRequestMetadataCache metadataCache)
+        ProxyRequestMetadataCache metadataCache,
+        AdminCacheInvalidationService adminCacheInvalidation)
     {
         _dbContext = dbContext;
         _oauth = oauth;
@@ -58,6 +60,7 @@ public sealed class CodexApiController : ControllerBase
         _inspectionService = inspectionService;
         _logger = logger;
         _metadataCache = metadataCache;
+        _adminCacheInvalidation = adminCacheInvalidation;
     }
 
     /// <summary>启动 OAuth 登录，返回授权 URL 与 state。</summary>
@@ -236,7 +239,8 @@ public sealed class CodexApiController : ControllerBase
             site.IsEnabled = account.IsEnabled;
             await _dbContext.UpdateAsync(site, ct);
         }
-        _metadataCache.InvalidateRouteTargets();
+        // 写 Site.IsEnabled 后必须推送到 Core，否则 Core 转发仍用旧启用状态。
+        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
         _metadataCache.InvalidateCodexAccounts();
         return Ok(ToSummary(account));
     }
@@ -299,7 +303,8 @@ public sealed class CodexApiController : ControllerBase
                 site.ApiKey = tokens.AccessToken;
                 await _dbContext.UpdateAsync(site, ct);
             }
-            _metadataCache.InvalidateRouteTargets();
+            // 写 Site.ApiKey（新 token）后必须推送到 Core，否则 Core 转发仍用过期 token。
+            await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
             _metadataCache.InvalidateCodexAccounts();
             return Ok(ToSummary(account));
         }

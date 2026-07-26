@@ -31,24 +31,27 @@ public sealed class CoreDeveloperQueryController : ControllerBase
     [HttpGet("invocations/list")]
     public async Task<IActionResult> ListInvocations(
         [FromQuery] int pageNumber = 1,
-        [FromQuery] int pageSize = 20,
+        [FromQuery] int pageSize = 100,
         CancellationToken cancellationToken = default)
     {
         if (!await IsDeveloperEnabledAsync(cancellationToken))
             return NotFound(new { message = "开发者功能未启用" });
 
+        // 调试页取消分页：DeveloperInvocationTraceStore 已限制最多 40 条记录（MaxEntryCount），
+        // 这里一次性返回全部，totalPages 始终为 1，前端单页全展示，不再出现分页栏。
+        // 保留 pageNumber/pageSize 参数仅为接口兼容，pageSize 默认调高到 100 确保覆盖全部记录。
         pageSize = Math.Clamp(pageSize, 1, 100);
         var allEntries = _traceStore.List();
         var totalCount = allEntries.Count;
         var failedCount = allEntries.Count(e => e.Status is "failed" or "error");
         var pendingCount = allEntries.Count(e => e.Status is "pending" or "running");
-        var totalPages = (int)Math.Ceiling((double)totalCount / pageSize);
-        var paged = allEntries.Skip((pageNumber - 1) * pageSize).Take(pageSize).Select(ToSummary).ToList();
+        var totalPages = 1;
+        var paged = allEntries.Select(ToSummary).ToList();
 
         return Ok(new CoreDeveloperInvocationListResponse
         {
             TotalCount = totalCount, FailedCount = failedCount, PendingCount = pendingCount,
-            PageNumber = pageNumber, PageSize = pageSize, TotalPages = totalPages, Entries = paged
+            PageNumber = 1, PageSize = totalCount, TotalPages = totalPages, Entries = paged
         });
     }
 
