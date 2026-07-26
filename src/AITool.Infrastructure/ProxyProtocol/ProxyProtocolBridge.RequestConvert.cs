@@ -16,14 +16,19 @@ public static partial class ProxyProtocolBridge
     {
         var messages = new JsonArray();
 
-        // 将 Anthropic system 字段提取为 OpenAI system 消息
+        // 将 Anthropic 顶层 system 字段提取为 OpenAI 的第一条 system 消息。
+        // 保留引用，后续 messages 数组里若混入额外的 role=system 条目（claude-code 新版会这么做），
+        // 需要合并到这里，而不是原样追加——否则会出现 system 穿插在对话中间、甚至以 system 结尾，
+        // 违反 OpenAI 规范（system 只能在最前，最后一条必须是 user），导致上游返回 1210。
+        JsonObject? systemMessage = null;
         var systemNode = rootNode["system"];
         if (systemNode is not null)
         {
             var systemText = ExtractSystemContent(systemNode);
             if (!string.IsNullOrWhiteSpace(systemText))
             {
-                messages.Add(new JsonObject { ["role"] = "system", ["content"] = systemText });
+                systemMessage = new JsonObject { ["role"] = "system", ["content"] = systemText };
+                messages.Add(systemMessage);
             }
         }
 
@@ -130,7 +135,30 @@ public static partial class ProxyProtocolBridge
                     continue;
                 }
 
-                // 其他角色（system 已处理）直接复制
+                // messages 数组里混入的 system 条目（claude-code 新版常见）：合并到开头的 system message，
+                // 不能原样追加，否则会破坏 OpenAI 的 messages 顺序规范（system 只能在最前）。
+                if (string.Equals(role, "system", StringComparison.OrdinalIgnoreCase))
+                {
+                    var extraSystemText = content is JsonValue sv
+                        ? sv.GetValue<string>()
+                        : content?.GetValue<string>() ?? content?.ToJsonString() ?? string.Empty;
+                    if (!string.IsNullOrWhiteSpace(extraSystemText))
+                    {
+                        if (systemMessage is null)
+                        {
+                            systemMessage = new JsonObject { ["role"] = "system", ["content"] = extraSystemText };
+                            messages.Insert(0, systemMessage);
+                        }
+                        else
+                        {
+                            var existing = systemMessage["content"]?.GetValue<string>() ?? string.Empty;
+                            systemMessage["content"] = existing + "\n\n" + extraSystemText;
+                        }
+                    }
+                    continue;
+                }
+
+                // 其他角色直接复制
                 var copyMsg = new JsonObject { ["role"] = role };
                 if (content is not null)
                 {
@@ -155,14 +183,17 @@ public static partial class ProxyProtocolBridge
             payload["max_tokens"] = maxTokens;
         }
 
-        if (enableStreaming)
-        {
-            payload["stream_options"] = new JsonObject { ["include_usage"] = true };
-        }
+        // 注意：此处不再主动添加 stream_options.include_usage。
+        // Anthropic 客户端（claude-code 等）经此转换后常发往 GLM 等 OpenAI 兼容端点，
+        // 这些端点不支持 stream_options 字段，会返回 1210（API 调用参数有误）。
+        // 同时这些端点在流式结束时本就会自带 usage，token 统计不依赖该字段
+        // （见 OpenAiProxyController.Streaming 的 UpdateOpenAiUsageFromPayload）。
 
         CopyNodeIfPresent(rootNode, payload, "temperature");
         CopyNodeIfPresent(rootNode, payload, "top_p");
-        CopyNodeIfPresent(rootNode, payload, "metadata");
+        // 注意：不透传 metadata。Anthropic 的 metadata（含 user_id 追踪标识）对模型调用无价值，
+        // 且 z.ai/GLM 等 OpenAI 兼容端点不支持该字段，收到会返回 1210（API 调用参数有误）。
+        // z.ai 官方 chat completions 字段清单不含 metadata。
 
         // tools 格式转换：Anthropic tools → OpenAI function tools
         ConvertAnthropicToolsToOpenAi(rootNode, payload);
@@ -176,19 +207,65 @@ public static partial class ProxyProtocolBridge
             payload["stop"] = rootNode["stop_sequences"]!.DeepClone();
         }
 
-        // thinking → reasoning_effort 分级映射
-        if (rootNode["thinking"] is JsonObject thinkingObj)
+        // thinking / output_config → reasoning_effort 分级映射
+        // 兼容三套写法（按优先级）：
+        //   1) output_config.effort：claude-code 新版（thinking.type=adaptive）的标准载体
+        //   2) thinking.type=adaptive：无 output_config 时降级为 high（自适应默认倾向较强思考）
+        //   3) thinking.budget_tokens：老式 Anthropic 格式，向后兼容
+        // thinking.type=disabled 时不输出 reasoning_effort，避免给不支持 none 的端点发非法值。
+        var effort = ResolveEffortFromAnthropicThinking(rootNode);
+        if (!string.IsNullOrEmpty(effort))
         {
-            var budgetTokens = thinkingObj["budget_tokens"]?.GetValue<int>() ?? 0;
-            payload["reasoning_effort"] = budgetTokens switch
-            {
-                <= 1280 => "low",
-                <= 2048 => "medium",
-                _ => "high"
-            };
+            payload["reasoning_effort"] = effort;
         }
 
         return payload.ToJsonString();
+
+        // 从 Anthropic 请求体解析出 OpenAI reasoning_effort 取值。
+        // 返回空字符串表示"不设置"（如显式 disabled）。
+        // output_config.effort 原样透传（max/xhigh 等档位 GLM 均支持，经实测确认）。
+        static string ResolveEffortFromAnthropicThinking(JsonObject rootNode)
+        {
+            // 1) output_config.effort（新版标准，最高优先级）
+            if (rootNode["output_config"] is JsonObject outputConfig &&
+                outputConfig["effort"] is JsonValue effortValue &&
+                effortValue.TryGetValue<string>(out var rawEffort))
+            {
+                return rawEffort.Trim().ToLowerInvariant();
+            }
+
+            // 2/3/4) thinking 对象
+            if (rootNode["thinking"] is JsonObject thinkingObj)
+            {
+                var type = thinkingObj["type"]?.GetValue<string>()?.Trim().ToLowerInvariant() ?? string.Empty;
+
+                // 显式关闭：不输出 reasoning_effort
+                if (string.Equals(type, "disabled", StringComparison.OrdinalIgnoreCase))
+                {
+                    return string.Empty;
+                }
+
+                // 自适应模式：默认倾向较强思考
+                if (string.Equals(type, "adaptive", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "high";
+                }
+
+                // 老式 budget_tokens 映射（enabled 或未带 type）
+                var budgetTokens = thinkingObj["budget_tokens"]?.GetValue<int>() ?? 0;
+                if (budgetTokens > 0 || string.Equals(type, "enabled", StringComparison.OrdinalIgnoreCase))
+                {
+                    return budgetTokens switch
+                    {
+                        <= 1280 => "low",
+                        <= 2048 => "medium",
+                        _ => "high"
+                    };
+                }
+            }
+
+            return string.Empty;
+        }
     }
 
     /// <summary>

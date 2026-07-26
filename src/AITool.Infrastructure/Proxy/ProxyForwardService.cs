@@ -156,6 +156,19 @@ public sealed class ProxyForwardService : IProxyForwardService
             catch (Exception ex)
             {
                 stopwatch.Stop();
+                // 客户端断开（token 取消或 IO 异常）：不重试、不 fallback，直接返回取消。
+                if (cancellationToken.IsCancellationRequested
+                    || ex is System.IO.IOException
+                    || ex is ObjectDisposedException)
+                {
+                    return new ProxyForwardResult
+                    {
+                        Success = false,
+                        TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                        IsCanceled = true,
+                        ErrorMessage = ex.Message
+                    };
+                }
                 if (attempt == attempts - 1)
                 {
                     _logger.LogError(ex,
@@ -264,6 +277,20 @@ public sealed class ProxyForwardService : IProxyForwardService
             catch (Exception ex)
             {
                 stopwatch.Stop();
+                // 客户端断开（token 取消或 IO 异常）：不重试、不 fallback，直接返回取消。
+                if (cancellationToken.IsCancellationRequested
+                    || ex is System.IO.IOException
+                    || ex is ObjectDisposedException)
+                {
+                    return new ProxyForwardResult
+                    {
+                        Success = false,
+                        TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                        IsStreaming = true,
+                        IsCanceled = true,
+                        ErrorMessage = ex.Message
+                    };
+                }
                 if (attempt == attempts - 1)
                 {
                     _logger.LogError(ex,
@@ -365,6 +392,15 @@ public sealed class ProxyForwardService : IProxyForwardService
                         receivedAnthropicMessageStop = true;
                     }
 
+                    // Responses 协议（如 Codex 上游）以 response.completed 事件结束流，而非 [DONE]。
+                    // 若不识别该事件，流虽正常完成也会被误判为 IsStreamInterrupted=true（UsageLog 红点）。
+                    if (string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                        && root.TryGetProperty("type", out var responsesEventType)
+                        && string.Equals(responsesEventType.GetString(), "response.completed", StringComparison.OrdinalIgnoreCase))
+                    {
+                        receivedDoneEvent = true;
+                    }
+
                     if (root.TryGetProperty("usage", out var usage))
                     {
                         var extracted = ExtractUsageFromElement(usage, request.ProtocolType);
@@ -415,6 +451,32 @@ public sealed class ProxyForwardService : IProxyForwardService
         {
             stopwatch.Stop();
             totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+
+            // 客户端断开（token 取消，或往 Response 写抛 IOException/ObjectDisposedException）
+            // 识别为取消，而非成功/中断——避免上层误判为成功或继续 fallback 后续路由。
+            if (cancellationToken.IsCancellationRequested
+                || ex is System.IO.IOException
+                || ex is ObjectDisposedException)
+            {
+                return new ProxyForwardResult
+                {
+                    Success = false,
+                    StatusCode = (int)response.StatusCode,
+                    ResponseBody = sb.ToString(),
+                    InputTokens = inputTokens,
+                    CachedTokens = cachedTokens,
+                    OutputTokens = outputTokens,
+                    IsStreaming = isStreaming,
+                    HasStartedStreaming = true,
+                    IsStreamInterrupted = true,
+                    IsCanceled = true,
+                    FirstTokenLatencyMs = firstTokenLatencyMs,
+                    StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
+                    TotalDurationMs = totalDurationMs,
+                    ErrorMessage = ex.Message
+                };
+            }
+
             _logger.LogError(ex,
                 "代理流在返回首包后异常中断。Protocol={Protocol}, Target={Target}",
                 request.ProtocolType,
@@ -470,7 +532,9 @@ public sealed class ProxyForwardService : IProxyForwardService
         var targetPath = string.IsNullOrWhiteSpace(request.TargetPath)
             ? request.ProtocolType == "Anthropic"
                 ? SiteEndpointPathResolver.ResolvePath(request.TargetEndpointPathMode, "messages")
-                : SiteEndpointPathResolver.ResolvePath(request.TargetEndpointPathMode, "chat/completions")
+                : string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                    ? SiteEndpointPathResolver.ResolvePath(request.TargetEndpointPathMode, "responses")
+                    : SiteEndpointPathResolver.ResolvePath(request.TargetEndpointPathMode, "chat/completions")
             : request.TargetPath!;
         var targetUrl = $"{request.TargetBaseUrl.TrimEnd('/')}/{targetPath.TrimStart('/')}";
 

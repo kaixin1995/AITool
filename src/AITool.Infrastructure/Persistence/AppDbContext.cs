@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using AITool.Domain.Codex;
 using AITool.Domain.Detection;
 using AITool.Domain.Models;
 using AITool.Domain.Operations;
@@ -21,6 +22,12 @@ namespace AITool.Infrastructure.Persistence;
 public sealed class AppDbContext : IDisposable, IAsyncDisposable
 {
     private readonly ISqlSugarClient _client;
+    /// <summary>
+    /// 全局 SQLite 串行化锁。SqlSugarScope 单例在多后台服务并发时会踩 SqliteCommand 集合竞态
+    /// （Index out of range / Collection was modified / ObjectDisposed），
+    /// 用一把全局异步锁让所有 DB 操作串行执行，从根上消除并发问题。
+    /// </summary>
+    private readonly SemaphoreSlim _dbLock;
 
     /// <summary>
     /// 释放资源。注意：底层 SqlSugarScope 是 DI 管理的单例，这里不真正释放它；
@@ -34,8 +41,43 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     /// </summary>
     public ISqlSugarClient Client => _client;
 
+    /// <summary>
+    /// 在全局 SQLite 串行化锁内执行一次完整的 DB 访问块。
+    /// 供后台服务（巡检/批量写/冷却恢复）使用，确保彼此串行，避免 SqlSugarScope 单例的并发竞态。
+    /// 调用方需把"从查到写"的完整逻辑作为委托传入。
+    /// </summary>
+    public async Task<T> SerialExecuteAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken = default)
+    {
+        await _dbLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await action();
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// 在全局 SQLite 串行化锁内执行无返回值的 DB 访问块（重载）。
+    /// </summary>
+    public async Task SerialExecuteAsync(Func<Task> action, CancellationToken cancellationToken = default)
+    {
+        await _dbLock.WaitAsync(cancellationToken);
+        try
+        {
+            await action();
+        }
+        finally
+        {
+            _dbLock.Release();
+        }
+    }
+
     // —— 与原 DbSet 同名的便捷查询访问器 ——
     public ISugarQueryable<Site> Sites => _client.Queryable<Site>();
+    public ISugarQueryable<CodexAccount> CodexAccounts => _client.Queryable<CodexAccount>();
     public ISugarQueryable<ModelLibraryItem> ModelLibraryItems => _client.Queryable<ModelLibraryItem>();
     public ISugarQueryable<SiteModelMapping> SiteModelMappings => _client.Queryable<SiteModelMapping>();
     public ISugarQueryable<DetectionTask> DetectionTasks => _client.Queryable<DetectionTask>();
@@ -46,13 +88,17 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<ProxyUsageLog> ProxyUsageLogs => _client.Queryable<ProxyUsageLog>();
     public ISugarQueryable<ModelHealthMonitor> ModelHealthMonitors => _client.Queryable<ModelHealthMonitor>();
     public ISugarQueryable<SystemRuntimeSettings> SystemRuntimeSettings => _client.Queryable<SystemRuntimeSettings>();
+    public ISugarQueryable<CompatibilityProfile> CompatibilityProfiles => _client.Queryable<CompatibilityProfile>();
 
     /// <summary>
     /// 由 DI 注入的 SqlSugar 客户端构造。
     /// </summary>
-    public AppDbContext(ISqlSugarClient client)
+    /// <param name="client">SqlSugar 单例客户端。</param>
+    /// <param name="dbLock">全局 SQLite 串行化锁，供 SerialExecuteAsync 使用。</param>
+    public AppDbContext(ISqlSugarClient client, SemaphoreSlim dbLock)
     {
         _client = client;
+        _dbLock = dbLock;
     }
 
     // —— 增删改便捷方法（替代 EF 的 Add/Remove + SaveChanges）——
@@ -118,6 +164,9 @@ public static class SqlSugarSetup
         {
             ConnectionString = connectionString,
             DbType = SqlSugar.DbType.Sqlite,
+            // 保持自动关闭连接=true（项目里 27 个文件、141 处执行点都依赖它自动开关连接，改成 false 需全部手动 Open/Close）。
+            // SQLite 多线程并发竞态改由 AppDbContext.SerialExecuteAsync 全局锁根治：
+            // 同一时刻只有一个 DB 操作在跑，"自动关连接误释放别线程 command"的竞态自然消失。
             IsAutoCloseConnection = true,
             MoreSettings = new ConnMoreSettings
             {
@@ -127,6 +176,8 @@ public static class SqlSugarSetup
 
         // WAL 模式是持久化的，但首次建库时仍需确保设置一次；在 InitTables 阶段执行。
         services.AddSingleton<ISqlSugarClient>(sqlSugar);
+        // 全局 SQLite 串行化锁（单例），供 AppDbContext.SerialExecuteAsync 串行化后台 DB 操作。
+        services.AddSingleton<SemaphoreSlim>(_ => new SemaphoreSlim(1, 1));
         // AppDbContext 作为 Scoped 暴露给业务代码，与原 EF 的 Scoped 生命周期一致。
         services.AddScoped<AppDbContext>();
 
@@ -153,6 +204,7 @@ public static class SqlSugarSetup
         // CodeFirst 建表（表已存在时只增不删，自动补齐缺失列）。
         db.CodeFirst.InitTables(
             typeof(Site),
+            typeof(CodexAccount),
             typeof(ModelLibraryItem),
             typeof(SiteModelMapping),
             typeof(DetectionTask),
@@ -162,6 +214,7 @@ public static class SqlSugarSetup
             typeof(ProxyAccessKey),
             typeof(ProxyUsageLog),
             typeof(ModelHealthMonitor),
-            typeof(SystemRuntimeSettings));
+            typeof(SystemRuntimeSettings),
+            typeof(CompatibilityProfile));
     }
 }

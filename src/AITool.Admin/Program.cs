@@ -1,5 +1,7 @@
 using AppVersionInfo = AITool.Infrastructure.Hosting.AppVersionInfo;
+using AITool.Application.Codex;
 using AITool.Application.Common;
+using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.DependencyInjection;
@@ -20,7 +22,7 @@ builder.Logging.AddDebug();
 builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
-var applicationVersion = "1.0.1.4-admin";
+var applicationVersion = "1.0.1.7-admin";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 
 var serverPort = builder.Configuration.GetValue<int?>("AdminServer:Port") ?? builder.Configuration.GetValue<int?>("Server:Port") ?? 5030;
@@ -117,6 +119,46 @@ builder.Services.AddSingleton<ModelVendorCatalogService>();
 // 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
 
+// ===== Codex OAuth 账号管理功能（管理面，依赖 AppDbContext，仅在 Admin 宿主注册） =====
+// 注册 Codex OAuth 客户端，用于 PKCE 授权、token 交换与刷新（复用连接池）。
+builder.Services.AddHttpClient<ICodexOAuthClient, CodexOAuthClient>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+});
+// 注册 Codex 静态模型目录（进程内只读）。
+builder.Services.AddSingleton<ICodexModelCatalog, CodexModelCatalog>();
+// 注册 Codex 动态模型拉取客户端（chatgpt.com/backend-api/codex/models）。
+builder.Services.AddHttpClient<ICodexModelFetcher, CodexModelFetcher>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+// 注册 Codex 额度主动查询服务（30s 结果缓存防抖 + single-flight）。
+builder.Services.AddHttpClient<ICodexQuotaService, CodexQuotaService>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+});
+// 周期刷新 Codex 账号 OAuth token，写回隐藏 Site.ApiKey 并通过 AdminCacheInvalidationService 推送到 Core。
+builder.Services.AddHostedService<CodexTokenRefreshService>();
+// 周期恢复冷却到期的 Codex 账号（清除冷却，恢复 Site，若未被手动禁用）。
+builder.Services.AddHostedService<CodexCooldownRecoveryService>();
+// 注册 Codex 账号供给相关服务（站点级联删除工具 + 账号工厂）。
+builder.Services.AddScoped<SiteCascadeDeleter>();
+builder.Services.AddScoped<CodexAccountProvisioner>();
+// Codex 额度被动冷却与重置服务。
+builder.Services.AddScoped<ICodexQuotaCooldownService, CodexQuotaCooldownService>();
+// Codex 手动重置 credits 服务（查询剩余次数/过期时间 + 消耗一张 credit 执行真实重置）。
+builder.Services.AddHttpClient<ICodexResetCreditsService, CodexResetCreditsService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+// Codex 功能总开关过滤器（控制器级 gating）。
+builder.Services.AddScoped<CodexFeatureToggleAttribute>();
+// Codex 巡检开关过滤器（仅巡检相关 action 使用，关闭时返回 404）。
+builder.Services.AddScoped<CodexInspectionToggleAttribute>();
+// Codex 巡检后台服务（周期额度巡检 + 缓存策略 + 自动禁用）。单例，供 API 与后台共用状态。
+builder.Services.AddSingleton<CodexInspectionService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CodexInspectionService>());
+
 // Admin 通过最小 Core 客户端与核心宿主通信。当前阶段先提供握手、full-sync、ack、replay 这几项最关键能力。
 var coreBaseUrl = builder.Configuration["CoreServer:BaseUrl"] ?? $"http://127.0.0.1:{builder.Configuration.GetValue<int?>("CoreServer:Port") ?? 5029}/";
 builder.Services.AddHttpClient<CoreAdminClient>(client =>
@@ -141,6 +183,23 @@ var app = builder.Build();
 // 执行管理后台启动初始化：数据库创建、Schema 迁移、Hangfire 调度注册。
 var initLogger = app.Services.GetRequiredService<ILogger<Program>>();
 await AdminStartupInitializer.InitializeAsync(app.Services, initLogger);
+
+// 预热 SiteUsageTracker：从 DB 读每个 Site 最近一次使用时间，避免重启后历史丢失。
+// Testing 环境跳过（无真实数据库，预热会抛异常）。
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    using var warmupScope = app.Services.CreateScope();
+    var siteUsageTracker = warmupScope.ServiceProvider.GetRequiredService<SiteUsageTracker>();
+    var warmupDbContext = warmupScope.ServiceProvider.GetRequiredService<AppDbContext>();
+    try
+    {
+        await siteUsageTracker.WarmupAsync(warmupDbContext);
+    }
+    catch (Exception ex)
+    {
+        initLogger.LogWarning(ex, "SiteUsageTracker 预热失败，不影响启动（运行后会逐步重建映射）");
+    }
+}
 
 startupLogger.Info(
     "Admin 宿主启动完成。Version={Version}, Environment={Environment}, Port={Port}, CoreBaseUrl={CoreBaseUrl}",

@@ -48,6 +48,17 @@
                     <a class="sidebar-link" href="/Admin/Sites" title="站点管理">
                         <span class="sidebar-link-icon">🌐</span>站点管理
                     </a>
+                    @if (runtimeSettings.CodexFeaturesEnabled)
+                    {
+                        <a class="sidebar-link" href="/Admin/Codex" title="OAuth 管理">
+                            <span class="sidebar-link-icon">
+                                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="m16 19 2 2 4-4"></path>
+                                    <path d="M21 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8"></path>
+                                </svg>
+                            </span>OAuth 管理
+                        </a>
+                    }
                     <a class="sidebar-link" href="/Admin/Models" title="模型库">
                         <span class="sidebar-link-icon">🧠</span>模型库
                     </a>
@@ -57,6 +68,9 @@
                     <div class="sidebar-section-title">代理配置</div>
                     <a class="sidebar-link" href="/Admin/Routes" title="路由规则">
                         <span class="sidebar-link-icon">🔀</span>路由规则
+                    </a>
+                    <a class="sidebar-link" href="/Admin/Compatibility" title="兼容规则集">
+                        <span class="sidebar-link-icon">🧩</span>兼容规则集
                     </a>
                     <a class="sidebar-link" href="/Admin/AccessKeys" title="访问密钥">
                         <span class="sidebar-link-icon">🔑</span>访问密钥

@@ -105,6 +105,10 @@ public static class ProxyRuntimeInfrastructureExtensions
         // 宿主发布事件到总线，后台写入器批量持久化到数据库。
         services.AddSingleton<CoreConversationEventPublisher>();
         services.AddSingleton<CoreConfigAppliedEventPublisher>();
+        // Site 使用时间内存映射：日志入队时增量更新，Codex 巡检读它判断账号是否被使用，避免回查 DB。
+        // 注册在共享层，确保 Core 和 Admin 宿主都能解析（ProxyUsageLogBatchWriter 依赖它）。
+        // 预热（从 DB 读历史）由持库的 Admin 宿主在启动时执行。
+        services.AddSingleton<SiteUsageTracker>();
         services.AddSingleton<ProxyUsageLogBatchWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
 

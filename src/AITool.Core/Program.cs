@@ -17,7 +17,7 @@ builder.Host.UseNLog();
 var startupLogger = LogManager.GetLogger("Startup");
 
 // Core 宿主版本号，与 Web 宿主区分。
-var applicationVersion = "1.0.1.4-core";
+var applicationVersion = "1.0.1.7-core";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 
 // Core 宿主默认监听 5029 端口（代理主端口），与 Admin 的 5030 端口分开。

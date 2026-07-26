@@ -39,7 +39,10 @@ public class ExportModel : PageModel
     /// </summary>
     public async Task OnGetAsync(CancellationToken cancellationToken)
     {
-        var sites = await _dbContext.Sites.ToListAsync(cancellationToken);
+        // 仅导出用户自建站点，不导出 Codex 等托管 Site
+        var sites = await _dbContext.Sites
+            .Where(s => string.IsNullOrEmpty(s.ManagedSource))
+            .ToListAsync(cancellationToken);
 
         Sites = sites.Select(s => new SiteExportItem
         {

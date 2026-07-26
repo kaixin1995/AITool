@@ -84,6 +84,11 @@ public class SettingsModel : PageModel
         // 2. 调用 RouteCircuitStateStore.UpdateOptions 更新熔断参数
         await _cacheInvalidationService.InvalidateRuntimeSettingsAsync(cancellationToken);
 
+        // Codex 功能总开关联动了托管 Site 的启用状态（SystemRuntimeSettingsService 内部已改 DB），
+        // 需额外失效路由/模型缓存并推到 Core，使转发链路立即感知，否则要等下次缓存 TTL 才生效。
+        await _cacheInvalidationService.InvalidateRouteTargetsAsync(cancellationToken);
+        await _cacheInvalidationService.InvalidateModelMetadataAsync(cancellationToken);
+
         return RedirectToPage(new { statusMessage = "设置已保存" });
     }
 
@@ -126,7 +131,12 @@ public class SettingsModel : PageModel
             DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled,
             ConversationLogEnabled = settings.ConversationLogEnabled,
             ConcurrencyMode = settings.ConcurrencyMode,
-            ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds
+            ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
+            CodexFeaturesEnabled = settings.CodexFeaturesEnabled,
+            CodexInspectionEnabled = settings.CodexInspectionEnabled,
+            CodexInspectionIntervalMinutes = settings.CodexInspectionIntervalMinutes,
+            CodexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours,
+            CodexAutoDisableThresholdPercent = settings.CodexAutoDisableThresholdPercent
         };
         LastUsageLogPrunedCount = settings.LastUsageLogPrunedCount;
         StatusMessage = Request.Query["statusMessage"];

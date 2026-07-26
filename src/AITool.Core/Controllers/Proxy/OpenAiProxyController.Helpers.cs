@@ -17,6 +17,19 @@ namespace AITool.Core.Controllers.Proxy;
 public sealed partial class OpenAiProxyController
 {
     /// <summary>
+    /// 把缓存路由目标携带的自定义请求头（来自 Site.ExtraHeadersJson）转换为转发请求头字典。
+    /// 空或空字典返回新的空字典（大小写不敏感），避免共享缓存实例被修改。
+    /// Codex 隐藏 Site 用此机制注入 Originator / Chatgpt-Account-Id / User-Agent。
+    /// </summary>
+    public static Dictionary<string, string> MergeExtraHeaders(Dictionary<string, string>? extra)
+    {
+        if (extra == null || extra.Count == 0)
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+        return new Dictionary<string, string>(extra, StringComparer.OrdinalIgnoreCase);
+    }
+    /// <summary>
     /// 接收一条完整的 WebSocket 文本消息。
     /// </summary>
     /// <param name="webSocket">已经建立的下游 WebSocket 连接。</param>
@@ -886,6 +899,9 @@ public sealed partial class OpenAiProxyController
         ProxyForwardResult result,
         int requestBodyLength)
     {
+        // 只有异常（失败/中断）才输出到控制台，正常请求不再刷屏
+        if (result.Success && !result.IsStreamInterrupted) return;
+
         try
         {
             Console.WriteLine(ConsoleProxyLogFormatter.BuildSummary(

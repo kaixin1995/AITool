@@ -1,4 +1,5 @@
 using AITool.Admin.Services;
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.RazorPages;
@@ -108,6 +109,23 @@ public class EditModel : PageModel
     public bool IsEnabled { get; set; }
 
     /// <summary>
+    /// 强制覆盖的思考等级。留空=不干预（透传客户端原始值），非空=强制覆盖。
+    /// </summary>
+    [BindProperty]
+    public string OverrideReasoningEffort { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 关联的兼容规则集 Id（可空）。为空表示不应用任何规则集。
+    /// </summary>
+    [BindProperty]
+    public Guid? CompatibilityProfileId { get; set; }
+
+    /// <summary>
+    /// 可选的兼容规则集列表（仅启用的），供下拉框选择。
+    /// </summary>
+    public List<ProfileOption> AvailableProfiles { get; set; } = new();
+
+    /// <summary>
     /// 状态提示。
     /// </summary>
     public string? StatusMessage { get; set; }
@@ -169,7 +187,10 @@ public class EditModel : PageModel
             if (model is null) return RedirectToPage("./Index");
 
             model.ModelName = ModelName;
-            model.DisplayName = DisplayName; model.IsEnabled = IsEnabled;
+            model.DisplayName = DisplayName;
+            model.IsEnabled = IsEnabled;
+            model.OverrideReasoningEffort = (OverrideReasoningEffort ?? string.Empty).Trim();
+            model.CompatibilityProfileId = CompatibilityProfileId;
 
             await _dbContext.UpdateAsync(model, cancellationToken);
             await _cacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
@@ -340,6 +361,9 @@ public class EditModel : PageModel
         ModelName = model.ModelName;
         DisplayName = model.DisplayName;
         IsEnabled = model.IsEnabled;
+        OverrideReasoningEffort = model.OverrideReasoningEffort;
+        CompatibilityProfileId = model.CompatibilityProfileId;
+        await LoadAvailableProfilesAsync(cancellationToken);
         await LoadSiteMappingsAsync(id, cancellationToken);
         await LoadAvailableSitesAsync(id, cancellationToken);
         if (string.IsNullOrWhiteSpace(NewMapping.RemoteModelName))
@@ -347,6 +371,18 @@ public class EditModel : PageModel
             NewMapping.RemoteModelName = model.ModelName;
         }
         return true;
+    }
+
+    /// <summary>
+    /// 加载启用的兼容规则集列表，供模型编辑页下拉框选择。
+    /// </summary>
+    private async Task LoadAvailableProfilesAsync(CancellationToken cancellationToken)
+    {
+        var profiles = await _dbContext.CompatibilityProfiles
+            .Where(p => p.IsEnabled)
+            .OrderBy(p => p.Name)
+            .ToListAsync(cancellationToken);
+        AvailableProfiles = profiles.Select(p => new ProfileOption(p.Id, p.Name)).ToList();
     }
 
     /// <summary>
@@ -434,3 +470,8 @@ public class EditModel : PageModel
         await _dbContext.DeleteRangeAsync(emptyEntries, cancellationToken);
     }
 }
+
+/// <summary>
+/// 兼容规则集下拉选项。
+/// </summary>
+public sealed record ProfileOption(Guid Id, string Name);

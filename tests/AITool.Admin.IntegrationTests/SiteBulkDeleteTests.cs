@@ -1,3 +1,4 @@
+using System.Threading;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
@@ -90,7 +91,7 @@ public sealed class SiteBulkDeleteTests
             IsAutoCloseConnection = true
         });
 
-        var db = new AppDbContext(sqlSugar);
+        var db = new AppDbContext(sqlSugar, new SemaphoreSlim(1, 1));
         SqlSugarSetup.InitializeDatabase(sqlSugar);
         return Task.FromResult(db);
     }

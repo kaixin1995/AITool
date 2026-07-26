@@ -576,6 +576,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
         {
         foreach (var route in allRoutes)
         {
+            // 客户端已断开则不再尝试任何后续路由（无意义，响应已无法写回）。
+            if (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
             if (IsRouteBlockedSafely(route.RouteId))
                 continue;
 
@@ -624,7 +630,17 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 actualProtocolType,
                 preparedClientRequestBody,
                 route.SiteModelName,
-                enableStreaming);
+                enableStreaming,
+                route.OverrideReasoningEffort,
+                route.BaseUrl,
+                route.CompatibilityRules,
+                isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase));
+
+            // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
+            if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
+            {
+                reasoningEffort = route.OverrideReasoningEffort;
+            }
 
             var forwardRequest = new ProxyForwardRequest
             {
@@ -638,6 +654,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
+                ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
                 TargetPath = defaultTargetPathFactory is null
                     ? (string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                         ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")

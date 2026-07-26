@@ -1,3 +1,4 @@
+using System.Threading;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.DependencyInjection;
 using SqlSugar;
@@ -40,6 +41,7 @@ public static class IntegrationTestDbHelper
             IsAutoCloseConnection = true
         });
         services.AddSingleton<ISqlSugarClient>(sqlSugar);
+        services.AddSingleton<SemaphoreSlim>(_ => new SemaphoreSlim(1, 1));
         services.AddScoped<AppDbContext>();
     }
 

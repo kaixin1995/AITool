@@ -40,6 +40,7 @@ public static class IntegrationTestDbHelper
             IsAutoCloseConnection = true
         });
         services.AddSingleton<ISqlSugarClient>(sqlSugar);
+        services.AddSingleton<System.Threading.SemaphoreSlim>(_ => new System.Threading.SemaphoreSlim(1, 1));
         services.AddScoped<AppDbContext>();
     }
 

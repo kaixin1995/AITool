@@ -210,6 +210,12 @@ public sealed class AnthropicProxyController : ControllerBase
         {
         foreach (var route in allRoutes)
         {
+            // 客户端已断开则不再尝试任何后续路由（无意义，响应已无法写回）。
+            if (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
             // 跳过已被熔断器屏蔽的路由
             if (IsRouteBlockedSafely(route.RouteId))
                 continue;
@@ -254,7 +260,18 @@ public sealed class AnthropicProxyController : ControllerBase
                 actualProtocolType,
                 requestBody,
                 route.SiteModelName,
-                enableStreaming);
+                enableStreaming,
+                route.OverrideReasoningEffort,
+                route.BaseUrl,
+                route.CompatibilityRules,
+                isPassthrough: string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase));
+
+            // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
+            if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
+            {
+                reasoningEffort = route.OverrideReasoningEffort;
+            }
+
             var effectiveProtocolType = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                 ? "OpenAI"
                 : actualProtocolType;
@@ -1133,6 +1150,9 @@ public sealed class AnthropicProxyController : ControllerBase
         ProxyForwardResult result,
         int requestBodyLength)
     {
+        // 只有异常（失败/中断）才输出到控制台，正常请求不再刷屏
+        if (result.Success && !result.IsStreamInterrupted) return;
+
         try
         {
             Console.WriteLine(ConsoleProxyLogFormatter.BuildSummary(

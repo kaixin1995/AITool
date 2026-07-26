@@ -49,13 +49,15 @@ public sealed class UsageLogServiceTests : IDisposable
         // 复用同一份 SqlSugarScope 单例构建容器，使批量写入器作用域内拿到同一个临时库。
         var services = new ServiceCollection();
         services.AddSingleton<ISqlSugarClient>(_ => factory.DbContext.Client);
+        services.AddSingleton<System.Threading.SemaphoreSlim>(_ => new System.Threading.SemaphoreSlim(1, 1));
         services.AddScoped<AppDbContext>();
         _serviceProvider = services.BuildServiceProvider();
 
         var batchWriter = new ProxyUsageLogBatchWriter(
             _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<ProxyUsageLogBatchWriter>.Instance,
-            new TestHostEnvironment());
+            new TestHostEnvironment(),
+            new SiteUsageTracker());
         _service = new UsageLogService(batchWriter);
     }
 

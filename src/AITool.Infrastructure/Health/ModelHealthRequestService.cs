@@ -73,6 +73,31 @@ public sealed class ModelHealthRequestService
             .FirstAsync(x => x.Id == 1, cancellationToken)
             ?? new AITool.Domain.Operations.SystemRuntimeSettings();
         var requestBody = BuildProbeRequestBody(protocolType, mapping.RemoteModelName, BuildRandomMathPrompt());
+        // Codex 上游（Responses 协议）不接受 max_output_tokens，会返回
+        // {"detail":"Unsupported parameter: max_output_tokens"}（400）。
+        // BuildProbeRequestBody 对 Responses 会设 max_output_tokens，此处按需剔除。
+        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(site.BaseUrl)
+            && site.BaseUrl.Contains("chatgpt.com/backend-api", StringComparison.OrdinalIgnoreCase))
+        {
+            requestBody = StripCodexUnsupportedFields(requestBody);
+        }
+
+        // 解析 Site 的自定义请求头（Codex 的 Originator / Chatgpt-Account-Id / User-Agent 等）
+        Dictionary<string, string> extraHeaders = new(StringComparer.OrdinalIgnoreCase);
+        if (!string.IsNullOrWhiteSpace(site.ExtraHeadersJson))
+        {
+            try
+            {
+                var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(site.ExtraHeadersJson);
+                if (parsed != null)
+                {
+                    extraHeaders = new Dictionary<string, string>(parsed, StringComparer.OrdinalIgnoreCase);
+                }
+            }
+            catch { }
+        }
+
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = site.BaseUrl,
@@ -85,6 +110,7 @@ public sealed class ModelHealthRequestService
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.DetectionRequestTimeoutSeconds,
             RetryCount = runtimeSettings.DetectionRetryCount,
+            ForwardHeaders = extraHeaders,
             TargetPath = string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                 ? SiteEndpointPathResolver.ResolvePath(site.EndpointPathMode, "responses")
                 : null
@@ -207,7 +233,9 @@ public sealed class ModelHealthRequestService
                     }
                 },
                 ["max_output_tokens"] = 64,
-                ["stream"] = false
+                ["stream"] = false,
+                // Codex 上游强制要求 store=false，缺失会返回 400 "store must be set to false"。
+                ["store"] = false
             });
         }
 
@@ -225,6 +253,50 @@ public sealed class ModelHealthRequestService
             ["max_tokens"] = 64,
             ["stream"] = false
         });
+    }
+
+    /// <summary>
+    /// 剔除 Codex 上游不接受的请求体字段。
+    /// Codex（chatgpt.com/backend-api/codex/responses）对参数白名单很严格，
+    /// max_output_tokens / temperature / metadata 等任一字段都会触发
+    /// {"detail":"Unsupported parameter: xxx"}（400）。
+    /// 基础架构层不能引用 Web 层的 ProxyProtocolBridge，此处内联实现等价逻辑。
+    /// </summary>
+    private static string StripCodexUnsupportedFields(string requestBody)
+    {
+        try
+        {
+            var rootNode = System.Text.Json.Nodes.JsonNode.Parse(requestBody) as System.Text.Json.Nodes.JsonObject;
+            if (rootNode is null)
+            {
+                return requestBody;
+            }
+
+            var stripped = new[]
+            {
+                "metadata", "temperature", "top_p",
+                "max_output_tokens", "max_completion_tokens",
+                "truncation", "user", "previous_response_id",
+                "prompt_cache_retention", "safety_identifier",
+                "stream_options", "context_management"
+            };
+
+            foreach (var field in stripped)
+            {
+                rootNode.Remove(field);
+            }
+
+            if (rootNode["store"] is null)
+            {
+                rootNode["store"] = false;
+            }
+
+            return rootNode.ToJsonString();
+        }
+        catch
+        {
+            return requestBody;
+        }
     }
 }
 

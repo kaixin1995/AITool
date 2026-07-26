@@ -97,6 +97,8 @@ public static class AdminInfrastructureExtensions
         // 这同时修复了 Detection 页面点击无响应的问题：此前 ModelHealthRequestService 及其依赖均未注册，
         // GetRequiredService 抛出异常导致 /api/admin/detection/probe/* 全部返回 500。
         services.AddHttpClient<IProxyForwardService, ProxyForwardService>();
+        // SiteUsageTracker 被 ProxyUsageLogBatchWriter 依赖（Codex 巡检读它判断账号活跃度）。
+        services.AddSingleton<SiteUsageTracker>();
         services.AddSingleton<ProxyUsageLogBatchWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
         services.AddSingleton<IUsageLogService, UsageLogService>();

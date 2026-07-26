@@ -447,6 +447,11 @@ public sealed class ChatApiController : ControllerBase
                 }
 
                 var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
+                // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数。
+                if (string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+                {
+                    requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(route.BaseUrl));
+                }
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = route.BaseUrl,
@@ -459,6 +464,7 @@ public sealed class ChatApiController : ControllerBase
                     EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                     RetryCount = runtimeSettings.ProxyRetryCount,
+                    ForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(route.ExtraHeaders),
                     TargetPath = string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                         ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
                         : null
@@ -624,6 +630,7 @@ public sealed class ChatApiController : ControllerBase
                 async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
                 async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
                 runtimeSettings.ProxyRequestTimeoutSeconds,
+                route.ExtraHeaders,
                 cancellationToken);
 
             var attemptResult = BuildAttemptResult(
@@ -784,8 +791,14 @@ public sealed class ChatApiController : ControllerBase
             SiteName = selectedTarget.SiteName,
             ProtocolType = selectedTarget.ProtocolType,
             BaseUrl = selectedTarget.BaseUrl,
+            // EndpointPathMode 必须复制：Codex 隐藏站点为 versioned-base，
+            // 缺失会回落到 standard-root，导致 URL 变成 /codex/v1/responses（多出 /v1/，被 Cloudflare 拦截）。
+            EndpointPathMode = selectedTarget.EndpointPathMode,
             ApiKey = selectedTarget.ApiKey,
-            SiteModelName = selectedTarget.SiteModelName
+            SiteModelName = selectedTarget.SiteModelName,
+            // ExtraHeaders 必须复制：Codex 的 Originator / Chatgpt-Account-Id / User-Agent，
+            // 缺失会让上游请求不带任何 Codex 专属头，触发 Cloudflare 拦截页。
+            ExtraHeaders = selectedTarget.ExtraHeaders
         };
     }
 
@@ -827,6 +840,12 @@ public sealed class ChatApiController : ControllerBase
         }
 
         var requestBody = BuildChatRequestBody(mapping.ProtocolType, mapping.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
+        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数（max_output_tokens / metadata 等），
+        // 否则会返回 {"detail":"Unsupported parameter: xxx"}（400）。
+        if (string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(mapping.BaseUrl));
+        }
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = mapping.BaseUrl,
@@ -839,6 +858,7 @@ public sealed class ChatApiController : ControllerBase
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount,
+            ForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(mapping.ExtraHeaders),
             TargetPath = string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                 ? SiteEndpointPathResolver.ResolvePath(mapping.EndpointPathMode, "responses")
                 : null
@@ -950,6 +970,7 @@ public sealed class ChatApiController : ControllerBase
             async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
             async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
             runtimeSettings.ProxyRequestTimeoutSeconds,
+            mapping.ExtraHeaders,
             cancellationToken);
 
         var attemptResult = BuildAttemptResult(
@@ -1058,10 +1079,19 @@ public sealed class ChatApiController : ControllerBase
         Func<string, Task> onContentChunk,
         Func<string, Task> onReasoningChunk,
         int requestTimeoutSeconds,
+        Dictionary<string, string>? extraHeaders,
         CancellationToken cancellationToken)
     {
         // 提前构建请求体，供调用方记录到尝试详情
+        // BuildChatRequestBody 内部已按协议类型完成转换（Responses 会调用 ConvertChatRequestToResponses），
+        // 这里不能再二次转换——否则传入的已是 Responses 体（无 messages 字段），二次转换会得到空 input 数组，
+        // 导致上游返回 "One of input or previous_response_id ... must be provided."。
         var requestBody = BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort);
+        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数（max_output_tokens / metadata 等）。
+        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(baseUrl));
+        }
 
         var client = _httpClientFactory.CreateClient();
         // 这里同样交给运行时设置控制超时，避免落回 HttpClient 默认 100 秒。
@@ -1090,6 +1120,15 @@ public sealed class ChatApiController : ControllerBase
             else
             {
                 httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            }
+
+            // 注入 Site.ExtraHeadersJson 中的自定义请求头（Codex 的 Originator / Chatgpt-Account-Id / User-Agent 等）
+            if (extraHeaders != null && extraHeaders.Count > 0)
+            {
+                foreach (var header in extraHeaders)
+                {
+                    httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
             }
 
             using var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
@@ -1175,7 +1214,10 @@ public sealed class ChatApiController : ControllerBase
             var responseBodySummary = $"[SSE streaming] content={contentBuilder.Length} chars, reasoning={reasoningBuilder.Length} chars, input={state.InputTokens}, output={state.OutputTokens}";
             return new ChatStreamForwardResult
             {
-                Success = state.HadAnyContent || contentBuilder.Length > 0 || reasoningBuilder.Length > 0,
+                // 收到 [DONE]（done=true）或收到过内容都算成功
+                // Responses 协议的 SSE 格式与 Chat 不同，内容可能无法被 Chat 解析器提取，
+                // 但只要流正常结束（收到 [DONE]），就认为成功
+                Success = done || state.HadAnyContent || contentBuilder.Length > 0 || reasoningBuilder.Length > 0,
                 HadAnyContent = state.HadAnyContent,
                 Content = contentBuilder.ToString(),
                 ReasoningContent = reasoningBuilder.ToString(),
