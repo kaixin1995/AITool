@@ -121,25 +121,26 @@ async function handleSubmit(): Promise<void> {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #6c9eff 0%, #5a8ee8 100%);
+  background: linear-gradient(135deg, #6C9EFF 0%, #A5B4FC 100%);
 }
 .login-card {
-  width: 380px;
-  border-radius: 12px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+  width: 400px;
+  border-radius: 16px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
 }
 .login-header {
   text-align: center;
-  margin-bottom: 24px;
+  margin-bottom: 28px;
 }
 .login-title {
   margin: 0 0 8px;
-  font-size: 22px;
-  font-weight: 600;
+  font-size: 24px;
+  font-weight: 700;
+  color: #1E293B;
 }
 .login-subtitle {
   margin: 0;
   color: var(--text-color-secondary);
-  font-size: 13px;
+  font-size: 14px;
 }
 </style>

@@ -39,9 +39,9 @@ body,
   background: rgba(255, 255, 255, 0.15);
 }
 
-/* 页面内容区通用容器 */
+/* 页面内容区通用容器：对齐原设计的内边距和背景 */
 .page-container {
-  padding: 16px 24px;
+  padding: 20px 24px;
 }
 
 /* 卡片间距工具类（Tailwind preflight 关闭后，用自定义类补间距） */
