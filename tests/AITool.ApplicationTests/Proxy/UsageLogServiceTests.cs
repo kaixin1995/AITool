@@ -58,7 +58,8 @@ public sealed class UsageLogServiceTests : IDisposable
         var batchWriter = new ProxyUsageLogBatchWriter(
             _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<ProxyUsageLogBatchWriter>.Instance,
-            new TestHostEnvironment());
+            new TestHostEnvironment(),
+            new SiteUsageTracker());
         _service = new UsageLogService(batchWriter);
 
         _disposeDatabase = () =>

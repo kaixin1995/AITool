@@ -86,7 +86,7 @@ public sealed class SiteBulkDeleteTests
             IsAutoCloseConnection = true
         });
         SqlSugarSetup.InitializeDatabase(sqlSugar);
-        return new AppDbContext(sqlSugar);
+        return new AppDbContext(sqlSugar, new SemaphoreSlim(1, 1));
     }
 
     /// <summary>
