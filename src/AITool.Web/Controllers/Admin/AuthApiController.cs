@@ -1,0 +1,251 @@
+using AITool.Application.Operations;
+using AITool.Web.Contracts;
+using AITool.Web.Services;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+
+namespace AITool.Web.Controllers.Admin;
+
+/// <summary>
+/// 后台认证 API：登录、刷新 token、首次设密码、登出、登录状态查询。
+/// <para>
+/// 认证采用 JWT：登录成功后签发 access + refresh token 对，前端在后续请求中携带
+/// <c>Authorization: Bearer {access}</c>。access 过期后用 refresh 换新。
+/// </para>
+/// <para>
+/// 密码哈希兼容新旧两种格式：旧 MD5 在登录成功后透明升级为 PBKDF2。
+/// </para>
+/// </summary>
+[ApiController]
+[Route("api/auth")]
+[AllowAnonymous]
+public sealed class AuthApiController : ControllerBase
+{
+    /// <summary>
+    /// 后台认证服务（密码校验/设置）。
+    /// </summary>
+    private readonly AdminAuthService _adminAuthService;
+    /// <summary>
+    /// JWT token 签发与刷新服务。
+    /// </summary>
+    private readonly JwtTokenService _tokenService;
+    /// <summary>
+    /// 系统运行时设置服务，用于查询功能开关。
+    /// </summary>
+    private readonly ISystemRuntimeSettingsService _settingsService;
+
+    /// <summary>
+    /// 初始化认证 API 控制器。
+    /// </summary>
+    public AuthApiController(
+        AdminAuthService adminAuthService,
+        JwtTokenService tokenService,
+        ISystemRuntimeSettingsService settingsService)
+    {
+        _adminAuthService = adminAuthService;
+        _tokenService = tokenService;
+        _settingsService = settingsService;
+    }
+
+    /// <summary>
+    /// 查询当前登录状态与功能开关（前端用于决定显示登录页还是后台、菜单显隐）。
+    /// 该端点不需要认证（即使未登录也可调用）。
+    /// </summary>
+    [HttpGet("status")]
+    public async Task<IActionResult> Status(CancellationToken cancellationToken)
+    {
+        var hasPassword = _adminAuthService.HasPasswordConfigured();
+        var isAuthenticated = User.Identity?.IsAuthenticated == true;
+
+        // 即使未配置密码也读取设置（首次访问时表已通过 EnsureCreated 建好）。
+        var settings = await _settingsService.GetOrCreateAsync(cancellationToken);
+
+        var payload = new
+        {
+            hasPassword,
+            isAuthenticated,
+            features = new
+            {
+                codexEnabled = settings.CodexFeaturesEnabled,
+                codexInspectionEnabled = settings.CodexInspectionEnabled,
+                developerEnabled = settings.DeveloperFeaturesEnabled,
+                conversationLogEnabled = settings.ConversationLogEnabled
+            }
+        };
+
+        // 该端点直接返回数据对象（非 ApiResponse 包装），因为它面向登录前场景，
+        // 前端在最早期就需要读取它判断是否进登录页，统一包装反而增加耦合。
+        return Ok(payload);
+    }
+
+    /// <summary>
+    /// 登录：校验密码，成功后签发 access + refresh token。
+    /// 若密码是旧 MD5 格式，校验通过后透明升级为 PBKDF2。
+    /// </summary>
+    [HttpPost("login")]
+    public async Task<IActionResult> Login([FromBody] LoginRequest request, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request?.Password))
+        {
+            return BadRequest(ApiResponse.Fail("密码不能为空", "password_required"));
+        }
+
+        if (!_adminAuthService.HasPasswordConfigured())
+        {
+            return BadRequest(ApiResponse.Fail("尚未设置后台密码，请先完成初始化设置", "setup_required"));
+        }
+
+        if (!_adminAuthService.VerifyPassword(request.Password, out var needsUpgrade))
+        {
+            return Ok(ApiResponse.Fail("密码错误", "invalid_credentials"));
+        }
+
+        // 旧 MD5 密码透明升级为 PBKDF2。
+        if (needsUpgrade)
+        {
+            try
+            {
+                await _adminAuthService.UpgradePasswordAsync(request.Password, cancellationToken);
+            }
+            catch
+            {
+                // 升级失败不影响本次登录（密码已验证通过），下次登录会再次尝试。
+            }
+        }
+
+        var tokens = _tokenService.IssueTokens(subjectId: "admin");
+        return Ok(ApiResponse.Ok(new
+        {
+            accessToken = tokens.AccessToken,
+            refreshToken = tokens.RefreshToken,
+            accessTokenExpiresAt = tokens.AccessTokenExpiresAt,
+            refreshTokenExpiresAt = tokens.RefreshTokenExpiresAt
+        }, "登录成功"));
+    }
+
+    /// <summary>
+    /// 用 refresh token 换发新的 access + refresh token。
+    /// 旧 refresh token 立即作废（轮换）。
+    /// </summary>
+    [HttpPost("refresh")]
+    public IActionResult Refresh([FromBody] RefreshRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request?.RefreshToken))
+        {
+            return BadRequest(ApiResponse.Fail("refreshToken 不能为空", "refresh_token_required"));
+        }
+
+        var tokens = _tokenService.Refresh(request.RefreshToken);
+        if (tokens is null)
+        {
+            return Ok(ApiResponse.Fail("refresh token 无效或已过期，请重新登录", "invalid_refresh_token"));
+        }
+
+        return Ok(ApiResponse.Ok(new
+        {
+            accessToken = tokens.AccessToken,
+            refreshToken = tokens.RefreshToken,
+            accessTokenExpiresAt = tokens.AccessTokenExpiresAt,
+            refreshTokenExpiresAt = tokens.RefreshTokenExpiresAt
+        }));
+    }
+
+    /// <summary>
+    /// 登出：吊销当前 refresh token。access token 无状态无法主动吊销，会自然过期。
+    /// </summary>
+    [HttpPost("logout")]
+    public IActionResult Logout([FromBody] LogoutRequest? request)
+    {
+        if (!string.IsNullOrWhiteSpace(request?.RefreshToken))
+        {
+            _tokenService.Revoke(request.RefreshToken);
+        }
+        return Ok(ApiResponse.Ok("已登出"));
+    }
+
+    /// <summary>
+    /// 首次设置后台密码（仅在尚未配置密码时可用）。设置成功后自动签发 token，等同于登录。
+    /// </summary>
+    [HttpPost("setup")]
+    public async Task<IActionResult> Setup([FromBody] SetupRequest request, CancellationToken cancellationToken)
+    {
+        if (_adminAuthService.HasPasswordConfigured())
+        {
+            return BadRequest(ApiResponse.Fail("后台密码已设置，如需修改请联系管理员", "already_setup"));
+        }
+
+        if (string.IsNullOrWhiteSpace(request?.Password))
+        {
+            return BadRequest(ApiResponse.Fail("密码不能为空", "password_required"));
+        }
+
+        if (request.Password.Length < 6)
+        {
+            return BadRequest(ApiResponse.Fail("密码长度至少 6 位", "password_too_short"));
+        }
+
+        if (!string.Equals(request.Password, request.ConfirmPassword, StringComparison.Ordinal))
+        {
+            return BadRequest(ApiResponse.Fail("两次输入的密码不一致", "password_mismatch"));
+        }
+
+        await _adminAuthService.SetPasswordAsync(request.Password, cancellationToken);
+
+        var tokens = _tokenService.IssueTokens(subjectId: "admin");
+        return Ok(ApiResponse.Ok(new
+        {
+            accessToken = tokens.AccessToken,
+            refreshToken = tokens.RefreshToken,
+            accessTokenExpiresAt = tokens.AccessTokenExpiresAt,
+            refreshTokenExpiresAt = tokens.RefreshTokenExpiresAt
+        }, "密码设置成功"));
+    }
+}
+
+/// <summary>
+/// 登录请求。
+/// </summary>
+public sealed class LoginRequest
+{
+    /// <summary>
+    /// 明文密码。
+    /// </summary>
+    public string Password { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 首次设置密码请求。
+/// </summary>
+public sealed class SetupRequest
+{
+    /// <summary>
+    /// 明文密码。
+    /// </summary>
+    public string Password { get; set; } = string.Empty;
+    /// <summary>
+    /// 确认密码（需与 Password 一致）。
+    /// </summary>
+    public string ConfirmPassword { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 刷新 token 请求。
+/// </summary>
+public sealed class RefreshRequest
+{
+    /// <summary>
+    /// 之前签发的 refresh token。
+    /// </summary>
+    public string RefreshToken { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 登出请求。
+/// </summary>
+public sealed class LogoutRequest
+{
+    /// <summary>
+    /// 要吊销的 refresh token。
+    /// </summary>
+    public string? RefreshToken { get; set; }
+}

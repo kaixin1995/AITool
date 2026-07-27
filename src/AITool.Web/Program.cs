@@ -17,6 +17,7 @@ using AITool.Infrastructure.Scheduling;
 using AITool.Web.Services;
 using Hangfire;
 using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
@@ -64,8 +65,62 @@ builder.Services.AddControllers(options =>
 builder.Services.AddMemoryCache();
 builder.Services.AddScoped<HttpExceptionLoggingFilter>();
 
+// 注册 JWT 配置选项与 token 服务。
+builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+builder.Services.AddSingleton<JwtTokenService>();
+
+// 认证：JWT 为主（/api/* 用 Bearer token，跨端通用），Cookie 为辅（现有 Razor Pages + Login 页）。
+// 用 PolicyScheme 作为默认 scheme，按请求路径分派：/api/* 走 JWT，其余走 Cookie。
+// 大爆炸切换移除 Razor Pages 后，Cookie 方案可一并移除。
 builder.Services
-    .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
+    .AddAuthentication(options =>
+    {
+        options.DefaultScheme = "AIToolPolicy";
+        options.DefaultChallengeScheme = "AIToolPolicy";
+        options.DefaultSignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;
+    })
+    .AddPolicyScheme("AIToolPolicy", "AITool 策略认证", options =>
+    {
+        options.ForwardDefaultSelector = context =>
+        {
+            // /api/* 用 JWT；其余（Razor Pages、Hangfire）用 Cookie。
+            return context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
+                ? JwtBearerDefaults.AuthenticationScheme
+                : CookieAuthenticationDefaults.AuthenticationScheme;
+        };
+    })
+    .AddJwtBearer(options =>
+    {
+        var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
+        options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwt.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwt.Audience,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
+                System.Text.Encoding.UTF8.GetBytes(jwt.SigningKey)),
+            ClockSkew = TimeSpan.FromSeconds(30)
+        };
+        // /api/* 未携带有效 token 时统一返回 401 JSON，不重定向（前端按 401 处理）。
+        options.Events = new JwtBearerEvents
+        {
+            OnChallenge = context =>
+            {
+                context.HandleResponse();
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                context.Response.ContentType = "application/json; charset=utf-8";
+                return context.Response.WriteAsJsonAsync(new
+                {
+                    success = false,
+                    message = "未登录或登录已过期，请重新登录",
+                    errorCode = "unauthenticated"
+                });
+            }
+        };
+    })
     .AddCookie(options =>
     {
         options.LoginPath = "/Login";

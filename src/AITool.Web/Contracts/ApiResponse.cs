@@ -29,14 +29,28 @@ public class ApiResponse
         => new() { Success = true, Message = message };
 
     /// <summary>
-    /// 构造失败响应。
+    /// 构造成功响应（带数据）。泛型工厂方法，编译器可从实参推断 T，
+    /// 支持匿名类型：ApiResponse.Ok(new { foo = 1 })。
+    /// </summary>
+    public static ApiResponse<T> Ok<T>(T data, string? message = null)
+        => new() { Success = true, Data = data, Message = message };
+
+    /// <summary>
+    /// 构造失败响应（无数据）。
     /// </summary>
     public static ApiResponse Fail(string message, string? errorCode = null)
+        => new() { Success = false, Message = message, ErrorCode = errorCode };
+
+    /// <summary>
+    /// 构造失败响应（无数据），返回指定泛型载体类型，便于统一返回类型签名。
+    /// </summary>
+    public static ApiResponse<T> Fail<T>(string message, string? errorCode = null)
         => new() { Success = false, Message = message, ErrorCode = errorCode };
 }
 
 /// <summary>
-/// 带 data 的统一响应。
+/// 带 data 的统一响应。所有工厂方法都在基类 <see cref="ApiResponse"/> 上，
+/// 此类仅作为携带 Data 的载体类型，不在自身上重复定义工厂（避免重载解析冲突）。
 /// </summary>
 public sealed class ApiResponse<T> : ApiResponse
 {
@@ -44,16 +58,4 @@ public sealed class ApiResponse<T> : ApiResponse
     /// 业务数据载荷。
     /// </summary>
     public T? Data { get; init; }
-
-    /// <summary>
-    /// 构造成功响应（带数据）。
-    /// </summary>
-    public static ApiResponse<T> Ok(T data, string? message = null)
-        => new() { Success = true, Data = data, Message = message };
-
-    /// <summary>
-    /// 构造失败响应（无数据）。隐藏基类同名方法以保持返回类型为泛型版。
-    /// </summary>
-    public new static ApiResponse<T> Fail(string message, string? errorCode = null)
-        => new() { Success = false, Message = message, ErrorCode = errorCode };
 }
