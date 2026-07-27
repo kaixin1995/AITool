@@ -6,6 +6,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
 	<!-- 只生成 zh-Hans 的语言资源 -->
 	<SatelliteResourceLanguages>zh</SatelliteResourceLanguages>
+	<!-- 生成 XML 文档，供 Swagger UI 展示接口注释 -->
+	<GenerateDocumentationFile>true</GenerateDocumentationFile>
+	<!-- 项目中控制器/类型已全部标注注释，关闭公共 API 缺失告警 -->
+	<NoWarn>$(NoWarn);1591</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,6 +26,7 @@
     <PackageReference Include="Hangfire.InMemory" Version="1.0.0" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.12" />
     <PackageReference Include="NLog.Web.AspNetCore" Version="6.0.5" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
   </ItemGroup>
 
   <ItemGroup>

@@ -104,6 +104,70 @@ builder.Services
 builder.Services.AddAuthorization();
 builder.Services.AddSingleton<AdminAuthService>();
 
+// Swagger：仅开发环境启用，方便本地测试接口。测试环境（Testing）与生产都不暴露文档。
+if (builder.Environment.IsDevelopment())
+{
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen(options =>
+    {
+        options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+        {
+            Title = "AI Tool API",
+            Version = "v1",
+            Description = "AI-Tool 后台管理与代理 API 文档"
+        });
+
+        // 集成 JWT Bearer 认证：Swagger UI 顶部出现 Authorize 按钮，
+        // 粘贴 access token 后调测受保护接口自动带 Bearer header。
+        options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+        {
+            Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+            Scheme = "bearer",
+            BearerFormat = "JWT",
+            In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+            Description = "粘贴 access token（不含 'Bearer ' 前缀）。登录后从 /api/auth/login 响应获取。"
+        });
+        options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+        {
+            {
+                new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+                {
+                    Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                    {
+                        Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                        Id = "Bearer"
+                    }
+                },
+                Array.Empty<string>()
+            }
+        });
+
+        // 排除代理转发端点（/v1/*）：它们是 SSE 流式转发，请求体任意、响应是流，
+        // Swagger UI 无法有效测试，且会污染文档列表。
+        options.DocInclusionPredicate((docName, apiDesc) =>
+        {
+            apiDesc.ActionDescriptor.RouteValues.TryGetValue("controller", out var controller);
+            return controller != "OpenAiProxy" && controller != "AnthropicProxy";
+        });
+
+        // 注入 XML 注释：控制器自身的注释 + Application/Infrastructure 层的 DTO 注释，
+        // 让 Swagger 展示接口描述。XML 文件路径基于对应程序集的 dll 路径推断。
+        var xmlFiles = new[]
+        {
+            // Web：控制器注释
+            typeof(Program).Assembly.Location.Replace(".dll", ".xml"),
+            // Application：DTO / Command / 操作类注释
+            typeof(AITool.Application.Operations.ISystemRuntimeSettingsService).Assembly.Location.Replace(".dll", ".xml"),
+            // Infrastructure：领域实体与基础设施类型注释
+            typeof(AITool.Infrastructure.Persistence.AppDbContext).Assembly.Location.Replace(".dll", ".xml")
+        };
+        foreach (var path in xmlFiles.Where(File.Exists))
+        {
+            options.IncludeXmlComments(path);
+        }
+    });
+}
+
 // 数据库文件放在软件根目录下。
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
@@ -324,6 +388,20 @@ app.UseStaticFiles(new StaticFileOptions
 app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Swagger UI：仅开发环境启用。必须位于 SPA fallback（MapFallbackToFile）之前，
+// 否则 /swagger 会被当作前端路由返回 index.html。
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/swagger/v1/swagger.json", "AI Tool API v1");
+        options.DocExpansion(Swashbuckle.AspNetCore.SwaggerUI.DocExpansion.None); // 默认折叠分组
+        options.DefaultModelsExpandDepth(-1); // 隐藏 schema 模型区，减少冗余
+    });
+}
+
 app.Use(async (context, next) =>
 {
     // SPA 分离后：只有 /api/admin/* 和 /hangfire 需要服务端鉴权拦截。
@@ -360,7 +438,7 @@ app.Use(async (context, next) =>
 });
 
 // 映射健康检查端点，作为集成测试的验证入口。
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok" })).WithTags("Health");
 
 // 启用 Hangfire 仪表盘，仅限本地访问。
 app.UseHangfireDashboard("/hangfire");
