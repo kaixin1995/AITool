@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import * as echarts from 'echarts'
+import { echarts, type ECharts } from '@/composables/useEcharts'
 import { NCard, NSpace, NSelect, NDatePicker, NButton, NStatistic, NEmpty, NSpin } from 'naive-ui'
 import * as api from '@/api/analytics'
 import type { AnalyticsDashboard } from '@/api/analytics'
@@ -13,8 +13,8 @@ const endTime = ref<number | null>(null)
 
 const trendChartEl = ref<HTMLElement | null>(null)
 const modelChartEl = ref<HTMLElement | null>(null)
-const trendChart = shallowRef<echarts.ECharts | null>(null)
-const modelChart = shallowRef<echarts.ECharts | null>(null)
+const trendChart = shallowRef<ECharts | null>(null)
+const modelChart = shallowRef<ECharts | null>(null)
 
 const rangeOptions = [
   { label: '今天', value: 'day' }, { label: '本周', value: 'week' },
