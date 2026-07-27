@@ -23,7 +23,8 @@ export async function getDetectionMatrix(): Promise<DetectionMatrix> {
   return httpGet<DetectionMatrix>('/api/admin/detection/matrix')
 }
 
-export async function probeMapping(mappingId: string): Promise<{ status: string; durationMs: number; errorMessage?: string }> {
+export async function probeMapping(mappingId: string): Promise<{ status: string; durationMs: number; error?: string }> {
+  // 后端 ProbeResultItem 的错误字段名为 error（不是 errorMessage）
   return httpPost(`/api/admin/detection/probe/${mappingId}`)
 }
 
@@ -34,6 +35,7 @@ export async function probeModel(modelId: string): Promise<{ taskId: string }> {
 export async function probeAll(): Promise<{ taskId: string }> {
   return httpPost<{ taskId: string }>('/api/admin/detection/probe-all')
 }
-export async function getProbeProgress(taskId: string): Promise<{ isCompleted: boolean; allResults: Array<{ mappingId: string; siteName: string; status: string }> }> {
+// 后端返回 { taskId, total, completed, isCompleted, newResults }（增量结果，不是 allResults）
+export async function getProbeProgress(taskId: string): Promise<{ taskId: string; total: number; completed: number; isCompleted: boolean; newResults: Array<{ mappingId: string; siteName: string; status: string }> }> {
   return httpGet(`/api/admin/detection/progress/${taskId}`)
 }

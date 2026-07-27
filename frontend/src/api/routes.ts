@@ -56,7 +56,8 @@ export interface SaveRuleItem {
   isEnabled: boolean
 }
 export async function saveRouteRules(modelName: string, rules: SaveRuleItem[]): Promise<void> {
-  await httpPost('/api/admin/route-rules/save', { modelName, rules })
+  // 后端字段名为 externalModelName（对应 ProxyRouteEntry.EntryName），不是 modelName
+  await httpPost('/api/admin/route-rules/save', { externalModelName: modelName, rules })
 }
 export async function toggleRouteRule(ruleId: string): Promise<void> {
   await httpPost(`/api/admin/route-rules/toggle/${ruleId}`)

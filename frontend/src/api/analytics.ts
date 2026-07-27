@@ -1,17 +1,45 @@
 import { httpGet } from './http'
 
+// 与后端 AnalyticsApiController 的 DTO 完全对齐。
+export interface AnalyticsSummary {
+  totalRequests: number
+  successRequests: number
+  failedRequests: number
+  totalInputTokens: number
+  totalOutputTokens: number
+  totalCachedTokens: number
+  averageDurationMs?: number
+  averageFirstTokenLatencyMs?: number
+  successRate?: number
+}
+export interface AnalyticsTrendPoint {
+  label: string
+  requestCount: number
+}
+export interface AnalyticsResultTrendPoint {
+  label: string
+  successCount: number
+  failedCount: number
+}
+export interface AnalyticsDistributionPoint {
+  label: string
+  requestCount: number
+  successCount?: number
+  failedCount?: number
+  totalTokens?: number
+}
 export interface AnalyticsDashboard {
-  summary?: {
-    totalRequests: number
-    totalInputTokens: number
-    totalOutputTokens: number
-    totalCachedTokens: number
-    successCount: number
-    failCount: number
-  }
-  trends?: Array<{ date: string; count: number }>
-  modelDistribution?: Array<{ model: string; count: number }>
-  siteDistribution?: Array<{ site: string; count: number }>
+  summary: AnalyticsSummary
+  requestTrend: AnalyticsTrendPoint[]
+  resultTrend?: AnalyticsResultTrendPoint[]
+  modelDistribution: AnalyticsDistributionPoint[]
+  siteDistribution: AnalyticsDistributionPoint[]
+}
+
+export interface AnalyticsFilterOptions {
+  sites: { siteId: string; siteName: string }[]
+  models: { modelName: string }[]
+  accessKeys: { accessKeyId: string; accessKeyLabel: string }[]
 }
 
 export async function getAnalyticsDashboard(params: Record<string, unknown>): Promise<AnalyticsDashboard> {
@@ -22,6 +50,6 @@ export async function getAnalyticsDashboard(params: Record<string, unknown>): Pr
   return httpGet<AnalyticsDashboard>(`/api/admin/analytics/dashboard?${query.toString()}`)
 }
 
-export async function getAnalyticsOptions(): Promise<{ sites: { id: string; name: string }[]; models: { name: string; displayName: string }[] }> {
-  return httpGet('/api/admin/analytics/options')
+export async function getAnalyticsOptions(): Promise<AnalyticsFilterOptions> {
+  return httpGet<AnalyticsFilterOptions>('/api/admin/analytics/options')
 }

@@ -37,20 +37,20 @@ async function load(): Promise<void> {
 function renderCharts(): void {
   const d = dashboard.value
   if (!d) return
-  if (trendChartEl.value && d.trends) {
+  if (trendChartEl.value && d.requestTrend) {
     if (!trendChart.value) trendChart.value = echarts.init(trendChartEl.value)
     trendChart.value.setOption({
       tooltip: { trigger: 'axis' },
-      xAxis: { type: 'category', data: d.trends.map((t) => t.date) },
+      xAxis: { type: 'category', data: d.requestTrend.map((t) => t.label) },
       yAxis: { type: 'value' },
-      series: [{ name: '请求数', type: 'line', smooth: true, data: d.trends.map((t) => t.count), areaStyle: {}, itemStyle: { color: '#6C9EFF' } }]
+      series: [{ name: '请求数', type: 'line', smooth: true, data: d.requestTrend.map((t) => t.requestCount), areaStyle: {}, itemStyle: { color: '#6C9EFF' } }]
     })
   }
   if (modelChartEl.value && d.modelDistribution) {
     if (!modelChart.value) modelChart.value = echarts.init(modelChartEl.value)
     modelChart.value.setOption({
       tooltip: { trigger: 'item' },
-      series: [{ type: 'pie', radius: ['40%', '70%'], data: d.modelDistribution.map((m) => ({ name: m.model, value: m.count })), itemStyle: { borderRadius: 6 } }]
+      series: [{ type: 'pie', radius: ['40%', '70%'], data: d.modelDistribution.map((m) => ({ name: m.label, value: m.requestCount })), itemStyle: { borderRadius: 6 } }]
     })
   }
 }
@@ -95,8 +95,8 @@ watch([rangeType, startTime, endTime], () => {
 
         <div v-if="dashboard?.summary" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px">
           <NCard size="small"><NStatistic label="总请求" :value="dashboard.summary.totalRequests" /></NCard>
-          <NCard size="small"><NStatistic label="成功" :value="dashboard.summary.successCount" /></NCard>
-          <NCard size="small"><NStatistic label="失败" :value="dashboard.summary.failCount" /></NCard>
+          <NCard size="small"><NStatistic label="成功" :value="dashboard.summary.successRequests" /></NCard>
+          <NCard size="small"><NStatistic label="失败" :value="dashboard.summary.failedRequests" /></NCard>
           <NCard size="small"><NStatistic label="输入 Token" :value="dashboard.summary.totalInputTokens" /></NCard>
           <NCard size="small"><NStatistic label="输出 Token" :value="dashboard.summary.totalOutputTokens" /></NCard>
           <NCard size="small"><NStatistic label="缓存 Token" :value="dashboard.summary.totalCachedTokens" /></NCard>
@@ -105,7 +105,7 @@ watch([rangeType, startTime, endTime], () => {
         <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 16px">
           <NCard title="请求趋势" size="small">
             <div ref="trendChartEl" style="height: 300px" />
-            <NEmpty v-if="!dashboard?.trends?.length" description="暂无趋势数据" style="padding: 80px 0" />
+            <NEmpty v-if="!dashboard?.requestTrend?.length" description="暂无趋势数据" style="padding: 80px 0" />
           </NCard>
           <NCard title="模型分布" size="small">
             <div ref="modelChartEl" style="height: 300px" />

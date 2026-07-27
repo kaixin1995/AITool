@@ -1,26 +1,58 @@
 import { httpGet } from './http'
 import { getAccessToken } from './http'
 
+// 与后端 ChatApiController 的 ChatModelItem / ChatModelTargetItem 对齐。
 export interface ChatModel {
   modelId: string
   displayName: string
   availableSiteCount: number
+}
+export interface ChatModelTarget {
+  mappingId: string
+  modelId: string
+  modelDisplayName: string
+  siteName: string
+  siteModelName: string
+}
+
+// 与后端 ChatSendRequest 对齐（注意是 modelId/message 单条，不是 OpenAI 的 model/messages 数组）。
+export interface ChatSendOptions {
+  modelId: string
+  message: string
+  mappingId?: string
+  enableReasoning?: boolean
+  enableStreaming?: boolean
+  reasoningEffort?: string
+  signal?: AbortSignal
+}
+
+// 非流式响应（与后端 ChatSendResult 对齐）。
+export interface ChatSendResult {
+  success: boolean
+  content: string
+  reasoningContent?: string
+  error?: string | null
+  durationMs?: number
 }
 
 export async function getChatModels(): Promise<ChatModel[]> {
   return httpGet<ChatModel[]>('/api/admin/chat/models')
 }
 
-export interface ChatSendOptions {
-  model: string
-  messages: Array<{ role: string; content: string }>
-  stream?: boolean
-  signal?: AbortSignal
+export async function getChatTargets(modelId: string): Promise<ChatModelTarget[]> {
+  return httpGet<ChatModelTarget[]>(`/api/admin/chat/models/${modelId}/targets`)
 }
 
-// 非流式发送
-export async function sendChat(opts: ChatSendOptions): Promise<{ content: string }> {
-  const body = { model: opts.model, messages: opts.messages, stream: false }
+// 非流式发送。
+export async function sendChat(opts: ChatSendOptions): Promise<ChatSendResult> {
+  const body = {
+    modelId: opts.modelId,
+    mappingId: opts.mappingId ?? '00000000-0000-0000-0000-000000000000',
+    message: opts.message,
+    enableReasoning: opts.enableReasoning ?? false,
+    enableStreaming: false,
+    reasoningEffort: opts.reasoningEffort ?? 'high'
+  }
   const resp = await fetch('/api/admin/chat/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAccessToken()}` },
@@ -30,20 +62,29 @@ export async function sendChat(opts: ChatSendOptions): Promise<{ content: string
     const err = await resp.json().catch(() => ({}))
     throw new Error(err.message || `请求失败 (${resp.status})`)
   }
-  const data = await resp.json()
-  // 兼容 OpenAI chat 格式
-  const content = data?.choices?.[0]?.message?.content ?? data?.content ?? ''
-  return { content }
+  return (await resp.json()) as ChatSendResult
 }
 
-// 流式发送（SSE）：逐 chunk 回调。用 fetch + ReadableStream（因需带 Bearer header，不能用 EventSource）。
-export async function sendChatStream(
-  opts: ChatSendOptions,
-  onDelta: (text: string) => void,
-  onDone: () => void,
+// SSE 事件回调。
+export interface ChatStreamCallbacks {
+  onToken: (text: string) => void
+  onReasoning?: (text: string) => void
+  onMeta?: (meta: unknown) => void
+  onDone?: () => void
   onError: (err: Error) => void
-): Promise<void> {
-  const body = { model: opts.model, messages: opts.messages, stream: true }
+}
+
+// 流式发送：后端用命名事件（event: token/reasoning/meta/done/error），不是 OpenAI 的 [DONE]。
+// 必须解析 event: 行确定事件类型，再从 data: 行取 payload。
+export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallbacks): Promise<void> {
+  const body = {
+    modelId: opts.modelId,
+    mappingId: opts.mappingId ?? '00000000-0000-0000-0000-000000000000',
+    message: opts.message,
+    enableReasoning: opts.enableReasoning ?? false,
+    enableStreaming: true,
+    reasoningEffort: opts.reasoningEffort ?? 'high'
+  }
   try {
     const resp = await fetch('/api/admin/chat/send-stream', {
       method: 'POST',
@@ -58,30 +99,49 @@ export async function sendChatStream(
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
+    let currentEvent = ''
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
       buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed.startsWith('data:')) continue
-        const jsonText = trimmed.slice(5).trim()
-        if (jsonText === '[DONE]') { onDone(); return }
-        try {
-          const obj = JSON.parse(jsonText)
-          // 兼容 OpenAI chat 流式：choices[0].delta.content
-          const delta = obj?.choices?.[0]?.delta?.content ?? obj?.delta ?? ''
-          if (delta) onDelta(delta)
-        } catch {
-          // 非 JSON 的 data 行忽略
+      // SSE 以空行分隔事件块。
+      const blocks = buffer.split('\n\n')
+      buffer = blocks.pop() ?? ''
+      for (const block of blocks) {
+        const lines = block.split('\n')
+        let eventName = ''
+        let dataLine = ''
+        for (const line of lines) {
+          if (line.startsWith('event:')) {
+            eventName = line.slice(6).trim()
+          } else if (line.startsWith('data:')) {
+            dataLine = line.slice(5).trim()
+          }
         }
+        if (!dataLine) continue
+        let payload: { content?: string; message?: string } = {}
+        try { payload = JSON.parse(dataLine) } catch { /* 非 JSON 忽略 */ }
+        if (eventName === 'token' && payload.content) {
+          cb.onToken(payload.content)
+        } else if (eventName === 'reasoning' && payload.content && cb.onReasoning) {
+          cb.onReasoning(payload.content)
+        } else if (eventName === 'meta') {
+          cb.onMeta?.(payload)
+        } else if (eventName === 'done') {
+          cb.onDone?.()
+          return
+        } else if (eventName === 'error') {
+          throw new Error(payload.message || '上游返回错误')
+        }
+        currentEvent = eventName
       }
     }
-    onDone()
+    // 流自然结束（未收到 done 事件）。
+    cb.onDone?.()
   } catch (e) {
     if ((e as Error).name === 'AbortError') return
-    onError(e as Error)
+    cb.onError(e as Error)
   }
+  // 避免未使用变量告警（currentEvent 留作调试）。
+  void currentEvent
 }

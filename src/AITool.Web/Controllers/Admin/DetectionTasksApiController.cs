@@ -187,7 +187,7 @@ public sealed class DetectionTasksApiController : ControllerBase
     }
 
     /// <summary>
-    /// 删除检测任务。
+    /// 删除检测任务（级联清理执行历史，避免留孤儿记录）。
     /// </summary>
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
@@ -198,6 +198,14 @@ public sealed class DetectionTasksApiController : ControllerBase
             return NotFound(ApiResponse.Fail("任务不存在", "task_not_found"));
         }
 
+        // 级联清理执行历史（DetectionTaskExecution 无数据库级 FK 级联，需手动删）。
+        var executions = await _dbContext.DetectionTaskExecutions
+            .Where(x => x.DetectionTaskId == id)
+            .ToListAsync(cancellationToken);
+        if (executions.Count > 0)
+        {
+            _dbContext.DetectionTaskExecutions.RemoveRange(executions);
+        }
         _dbContext.DetectionTasks.Remove(task);
         await _scheduler.ScheduleAllAsync(cancellationToken);
 

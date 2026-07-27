@@ -140,8 +140,12 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         return Ok(ApiResponse.Ok(new
         {
             traceId = entry.TraceId,
+            requestId = entry.RequestId,
             createdAt = entry.CreatedAt,
+            updatedAt = entry.UpdatedAt,
             source = entry.Source,
+            userAgent = entry.UserAgent,
+            clientIp = entry.ClientIp,
             protocolType = entry.UpstreamProtocolType,
             requestPath = entry.RequestPath,
             requestModel = entry.RequestModel,
@@ -152,6 +156,10 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             attemptedModel = entry.AttemptedModel,
             status = entry.Status,
             statusCode = entry.StatusCode,
+            errorMessage = entry.ErrorMessage,
+            responseBody = summarize ? DeveloperInvocationTraceStore.FormatBody(entry.ResponseBody) : entry.ResponseBody,
+            responseContentType = entry.ResponseContentType,
+            isStreaming = entry.IsStreaming,
             totalDurationMs = entry.TotalDurationMs,
             inputTokens = entry.InputTokens,
             cachedTokens = entry.CachedTokens,

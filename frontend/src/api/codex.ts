@@ -35,8 +35,9 @@ export async function updateCodexAccount(id: string, displayName: string): Promi
 export async function deleteCodexAccount(id: string): Promise<void> {
   await httpDelete(`/api/admin/codex/accounts/${id}`)
 }
-export async function startCodexOAuth(): Promise<{ authorizeUrl: string; state: string }> {
-  return httpPost<{ authorizeUrl: string; state: string }>('/api/admin/codex/start-oauth')
+export async function startCodexOAuth(): Promise<{ url: string; state: string }> {
+  // 后端返回字段名为 url（不是 authorizeUrl）
+  return httpPost<{ url: string; state: string }>('/api/admin/codex/start-oauth')
 }
 export async function completeCodexOAuth(callbackUrl: string): Promise<void> {
   await httpPost('/api/admin/codex/complete-oauth', { callbackUrl })

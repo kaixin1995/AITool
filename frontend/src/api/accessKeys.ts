@@ -5,8 +5,8 @@ export interface AccessKeyItem {
   keyName: string
   maskedValue: string
   isEnabled: boolean
-  allowedRouteNames: string
-  createdAt: string
+  // 后端返回 List<string>，空列表=允许全部路由；为兼容旧数据也可能是 JSON 字符串。
+  allowedRouteNames: string[] | string
 }
 
 export async function listAccessKeys(): Promise<AccessKeyItem[]> {

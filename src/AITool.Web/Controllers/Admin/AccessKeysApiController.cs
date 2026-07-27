@@ -116,17 +116,19 @@ public sealed class AccessKeysApiController : ControllerBase
     public async Task<IActionResult> List(CancellationToken cancellationToken)
     {
         var keys = await _dbContext.ProxyAccessKeys
-            
+
             .OrderBy(k => k.KeyName)
             .ToListAsync(cancellationToken);
 
-        var items = keys.Select(k => new AccessKeyListItem
+        // 列表只返回脱敏密钥（maskedValue），不返回完整明文，避免一次请求泄漏所有密钥。
+        // 完整明文仅创建时返回一次（见 Create 端点）。
+        var items = keys.Select(k => new
         {
-            KeyId = k.Id,
-            KeyName = k.KeyName,
-            PlainKey = k.PlainKey,
-            IsEnabled = k.IsEnabled,
-            AllowedRouteNames = DeserializeRouteNames(k.AllowedRouteNames)
+            id = k.Id,
+            keyName = k.KeyName,
+            maskedValue = k.MaskedValue,
+            isEnabled = k.IsEnabled,
+            allowedRouteNames = DeserializeRouteNames(k.AllowedRouteNames)
         }).ToList();
         return Ok(items);
     }

@@ -4,22 +4,23 @@ export interface UsageLogFilters {
   sites: { id: string; name: string }[]
   accessKeys: { id: string; name: string }[]
 }
+// 与后端 UsageLogListItemDto 对齐。后端列表不返回 accessKeyId/targetSiteId/forwardingMode/errorMessage/reasoningEffort，
+// 而是返回解析后的 siteName/accessKeyName/siteModelName。
 export interface UsageLogItem {
   id: string
   requestId: string
-  accessKeyId: string
   protocolType: string
-  forwardingMode: string
   requestModel: string
   attemptedModel: string
-  targetSiteId: string
+  siteModelName: string
   status: string
   source: string
+  siteName: string
+  accessKeyName: string
   retryCount: number
   attemptIndex: number
   isFinalResult: boolean
   fallbackTriggered: boolean
-  errorMessage: string
   inputTokens: number
   cachedTokens: number
   outputTokens: number
@@ -29,7 +30,6 @@ export interface UsageLogItem {
   firstTokenLatencyMs: number
   streamDurationMs: number
   totalDurationMs: number
-  reasoningEffort: string
   requestedAt: string
 }
 

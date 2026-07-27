@@ -41,18 +41,18 @@ async function handleDelete(row: AccessKeyItem): Promise<void> {
 const columns = computed<DataTableColumns<AccessKeyItem>>(() => [
   { title: '名称', key: 'keyName', minWidth: 140 },
   { title: '密钥', key: 'maskedValue', minWidth: 160 },
-  { title: '允许路由', key: 'allowedRouteNames', minWidth: 120, render: (r) => r.allowedRouteNames ? h(NTag, { size: 'small', bordered: false }, () => r.allowedRouteNames) : '全部' },
+  { title: '允许路由', key: 'allowedRouteNames', minWidth: 120, render: (r) => {
+    const val = r.allowedRouteNames
+    // 后端返回 string[] 或 JSON 字符串；空数组/空串=允许全部
+    const arr = Array.isArray(val) ? val : (typeof val === 'string' && val.trim() ? (() => { try { return JSON.parse(val) } catch { return [] } })() : [])
+    return Array.isArray(arr) && arr.length > 0 ? h(NTag, { size: 'small', bordered: false }, () => arr.join(', ')) : '全部'
+  } },
   { title: '状态', key: 'isEnabled', width: 80, render: (r) => h(NTag, { size: 'small', type: r.isEnabled ? 'success' : 'default', bordered: false }, () => r.isEnabled ? '启用' : '禁用') },
-  { title: '创建时间', key: 'createdAt', minWidth: 160, render: (r) => formatTime(r.createdAt) },
   { title: '操作', key: 'actions', width: 140, fixed: 'right', render: (row) => h(NSpace, { size: 8 }, () => [
     h(NButton, { size: 'small', quaternary: true, onClick: () => handleToggle(row) }, () => row.isEnabled ? '禁用' : '启用'),
     h(NPopconfirm, { onPositiveClick: () => handleDelete(row) }, { trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, () => '删除'), default: () => `确认删除「${row.keyName}」？` })
   ]) }
 ])
-
-function formatTime(s: string): string {
-  try { return new Date(s).toLocaleString('zh-CN') } catch { return s }
-}
 
 onMounted(load)
 </script>

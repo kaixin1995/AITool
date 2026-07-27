@@ -29,7 +29,7 @@ async function load(): Promise<void> {
 async function handleStartOAuth(): Promise<void> {
   try {
     const result = await api.startCodexOAuth()
-    oauthUrl.value = result.authorizeUrl
+    oauthUrl.value = result.url
     oauthCallbackInput.value = ''
     oauthModal.value = true
   } catch (e) { message.error((e as Error).message) }

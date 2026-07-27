@@ -25,7 +25,7 @@ async function loadSessions(): Promise<void> {
   try {
     const params: Record<string, unknown> = { page: page.value, pageSize: 30 }
     if (sourceTool.value) params.sourceTool = sourceTool.value
-    if (keyword.value) params.keyword = keyword.value
+    if (keyword.value) params.sessionKeyword = keyword.value
     const resp = await api.listSessions(params)
     sessions.value = resp.items ?? []
   } finally { loading.value = false }
@@ -35,7 +35,8 @@ async function loadTurns(groupKey: string): Promise<void> {
   selectedGroupKey.value = groupKey
   turnsLoading.value = true
   try {
-    turns.value = await api.getTurns(groupKey)
+    const resp = await api.getTurns(groupKey)
+    turns.value = resp.items ?? []
   } finally { turnsLoading.value = false }
 }
 
@@ -71,12 +72,12 @@ onMounted(loadSessions)
               <NThing>
                 <template #header>
                   <NSpace :size="6" align="center">
-                    <NTag v-if="s.sourceTool" size="tiny" :bordered="false">{{ s.sourceTool }}</NTag>
-                    <span>{{ s.title || s.requestModel }}</span>
+                    <NTag v-if="s.sourceTool" size="tiny" :bordered="false">{{ s.sourceToolText || s.sourceTool }}</NTag>
+                    <span>{{ s.title }}</span>
                   </NSpace>
                 </template>
                 <template #description>
-                  <span style="font-size: 12px; color: #888">{{ new Date(s.lastCreatedAt).toLocaleString('zh-CN') }} · {{ s.turnCount }} 轮</span>
+                  <span style="font-size: 12px; color: #888">{{ s.lastActivityAtText }} · {{ s.turnCount }} 轮</span>
                 </template>
               </NThing>
               <template #suffix>
@@ -107,7 +108,7 @@ onMounted(loadSessions)
                 <div class="turn-content markdown-body">{{ turn.assistantOutputMarkdown || '(空)' }}</div>
               </div>
               <div class="turn-meta">
-                <NTag size="tiny" :bordered="false">{{ new Date(turn.createdAt).toLocaleString('zh-CN') }}</NTag>
+                <NTag size="tiny" :bordered="false">{{ turn.createdAtText }}</NTag>
                 <NTag size="tiny" :bordered="false">输入 {{ turn.inputTokens }} / 输出 {{ turn.outputTokens }}</NTag>
               </div>
             </div>
