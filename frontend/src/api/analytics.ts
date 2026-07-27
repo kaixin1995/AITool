@@ -8,7 +8,7 @@ export interface AnalyticsSummary {
   totalInputTokens: number
   totalOutputTokens: number
   totalCachedTokens: number
-  averageDurationMs?: number
+  averageTotalDurationMs?: number
   averageFirstTokenLatencyMs?: number
   successRate?: number
 }

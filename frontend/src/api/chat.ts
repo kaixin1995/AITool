@@ -99,7 +99,6 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let currentEvent = ''
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
@@ -133,7 +132,6 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
         } else if (eventName === 'error') {
           throw new Error(payload.message || '上游返回错误')
         }
-        currentEvent = eventName
       }
     }
     // 流自然结束（未收到 done 事件）。
@@ -142,6 +140,4 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
     if ((e as Error).name === 'AbortError') return
     cb.onError(e as Error)
   }
-  // 避免未使用变量告警（currentEvent 留作调试）。
-  void currentEvent
 }

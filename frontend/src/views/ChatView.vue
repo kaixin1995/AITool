@@ -17,10 +17,6 @@ const streamingReasoning = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
 
-const modelOptions = models.value
-  ? [] as { label: string; value: string }[]
-  : []
-
 async function loadModels(): Promise<void> {
   models.value = await chatApi.getChatModels()
   if (models.value.length > 0) selectedModelId.value = models.value[0].modelId
@@ -110,7 +106,7 @@ onMounted(loadModels)
           <div class="chat-bubble">
             <div class="chat-role">{{ msg.role === 'user' ? '我' : 'AI' }}</div>
             <div v-if="msg.reasoning" class="chat-reasoning">{{ msg.reasoning }}</div>
-            <div class="chat-text">{{ msg.content || (sending.value && idx === messages.length - 1 ? '正在输入...' : '') }}</div>
+            <div class="chat-text">{{ msg.content || (sending && idx === messages.length - 1 ? '正在输入...' : '') }}</div>
           </div>
         </div>
       </div>
