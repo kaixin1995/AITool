@@ -107,6 +107,12 @@ public sealed class CodexQuotaService : ICodexQuotaService
         finally
         {
             gate.Release();
+            // 清理无竞争的 entry，避免账号删除后 SemaphoreSlim 泄漏。
+            // 仅当此刻空闲（无人等待）才移除；并发等待中则保留复用。
+            if (gate.CurrentCount == 1 && _locks.TryRemove(account.Id, out var removed) && ReferenceEquals(removed, gate))
+            {
+                removed.Dispose();
+            }
         }
     }
 

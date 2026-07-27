@@ -236,6 +236,7 @@ public sealed class CodexInspectionService : BackgroundService
             ar.Reason = (ar.Reason + "；").Replace("；；", "；") + $"额度 {checkPercent.Value:F1}%≥{threshold}，已自动禁用";
         }
         else if (info.Success && account.IsEnabled == false && !account.IsQuotaCooling && !account.DisabledByFeatureToggle
+                 && !account.ManuallyDisabled
                  && checkPercent.HasValue && checkPercent.Value < threshold)
         {
             await EnableAccountAsync(dbContext, cache, account, ct, "额度已恢复");
@@ -302,6 +303,9 @@ public sealed class CodexInspectionService : BackgroundService
     private static async Task EnableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
     {
         account.IsEnabled = true;
+        // 自动恢复（额度恢复）时清除手动禁用标记——虽然上游 if 已确保不进到这里，
+        // 但保留幂等清除，防止状态残留。
+        account.ManuallyDisabled = false;
         await dbContext.UpdateAsync(account, ct);
         var site = await dbContext.Sites.InSingleAsync(account.LinkedSiteId);
         if (site != null && !site.IsEnabled)

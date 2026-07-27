@@ -57,7 +57,9 @@ public static partial class ProxyProtocolBridge
                     state.InputTokens = extracted.InputTokens;
                 }
 
-                if (extracted.CachedTokens >= 0)
+                // 与 InputTokens/OutputTokens 一致用 > 0 守卫：
+                // 上游 usage 缺 cached 字段时返回 0，不应覆盖外部传入的有效值。
+                if (extracted.CachedTokens > 0)
                 {
                     state.CachedTokens = extracted.CachedTokens;
                 }

@@ -95,6 +95,14 @@ public sealed class CodexAccount
     public bool DisabledByFeatureToggle { get; set; }
 
     /// <summary>
+    /// 标记该账号是否被用户手动禁用（区别于额度阈值自动禁用/总开关禁用/被动冷却）。
+    /// 巡检自动恢复时跳过此标记为 true 的账号，避免「手动禁用后被自动重新启用」违反直觉。
+    /// 用户再次手动启用时清除该标记。
+    /// </summary>
+    [SugarColumn(IsNullable = false)]
+    public bool ManuallyDisabled { get; set; }
+
+    /// <summary>
     /// 剩余额度自动禁用阈值：当主动查询到的剩余额度低于此值时自动禁用账号。
     /// null 表示不启用自动禁用。单位由上游返回决定。
     /// </summary>

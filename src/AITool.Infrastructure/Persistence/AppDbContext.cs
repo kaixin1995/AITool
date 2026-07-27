@@ -25,9 +25,13 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
 {
     private readonly ISqlSugarClient _client;
     /// <summary>
-    /// 全局 SQLite 串行化锁。SqlSugarScope 单例在多后台服务并发时会踩 SqliteCommand 集合竞态
-    /// （Index out of range / Collection was modified / ObjectDisposed），
-    /// 用一把全局异步锁让所有 DB 操作串行执行，从根上消除并发问题。
+    /// 后台 DB 操作串行化锁。仅 <see cref="SerialExecuteAsync"/> 使用，
+    /// 供后台服务（巡检/批量写/冷却恢复）彼此串行，避免与代理热路径的批量写踩 SqlSugarScope 竞态。
+    /// <para>
+    /// 注意：Web 请求路径（控制器的 Insert/Update/Delete）<b>不</b>走此锁——它们依赖
+    /// SqlSugarScope 自身的线程安全性 + SQLite WAL 模式 + busy_timeout 处理写冲突。
+    /// 给所有写加全局锁会严重拖慢并发，且管理后台写并发量低，无需如此。
+    /// </para>
     /// </summary>
     private readonly SemaphoreSlim _dbLock;
 
@@ -44,8 +48,9 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISqlSugarClient Client => _client;
 
     /// <summary>
-    /// 在全局 SQLite 串行化锁内执行一次完整的 DB 访问块。
-    /// 供后台服务（巡检/批量写/冷却恢复）使用，确保彼此串行，避免 SqlSugarScope 单例的并发竞态。
+    /// 在后台 DB 串行化锁内执行一次完整的 DB 访问块。
+    /// <b>仅供后台服务</b>（巡检/批量写/冷却恢复）使用，确保彼此串行，避免与代理热路径批量写踩 SqlSugarScope 竞态。
+    /// Web 请求路径（控制器）<b>不要</b>调用此方法——会破坏并发性能，且 Web 写并发量低无需串行。
     /// 调用方需把"从查到写"的完整逻辑作为委托传入。
     /// </summary>
     public async Task<T> SerialExecuteAsync<T>(Func<Task<T>> action, CancellationToken cancellationToken = default)
@@ -162,8 +167,8 @@ public static class SqlSugarSetup
             ConnectionString = connectionString,
             DbType = SqlSugar.DbType.Sqlite,
             // 保持自动关闭连接=true（项目里 27 个文件、141 处执行点都依赖它自动开关连接，改成 false 需全部手动 Open/Close）。
-            // SQLite 多线程并发竞态改由 AppDbContext.SerialExecuteAsync 全局锁根治：
-            // 同一时刻只有一个 DB 操作在跑，"自动关连接误释放别线程 command"的竞态自然消失。
+            // SQLite 多线程并发竞态：后台批量写走 AppDbContext.SerialExecuteAsync 串行；
+            // Web 请求路径依赖 SqlSugarScope 自身线程安全 + WAL + busy_timeout，不加全局锁以保并发性能。
             IsAutoCloseConnection = true,
             MoreSettings = new ConnMoreSettings
             {
