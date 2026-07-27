@@ -1,6 +1,7 @@
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
+using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Contracts;
 using AITool.Web.Services;
@@ -225,13 +226,19 @@ public sealed class ModelsApiController : ControllerBase
             return NotFound(ApiResponse.Fail("模型不存在", "model_not_found"));
         }
 
-        // 关联站点映射列表（join 站点名）。
-        var mappings = await _dbContext.SiteModelMappings.ToListAsync(cancellationToken);
-        var sites = await _dbContext.Sites.ToListAsync(cancellationToken);
+        // 关联站点映射列表：数据库侧先过滤当前模型的映射（避免拉全表），再内存 join 站点名。
+        var modelMappings = await _dbContext.SiteModelMappings
+            .Where(x => x.ModelLibraryItemId == id)
+            .ToListAsync(cancellationToken);
+        var mappedSiteIds = modelMappings.Select(x => x.SiteId).Distinct().ToList();
+        var mappedSites = mappedSiteIds.Count > 0
+            ? await _dbContext.Sites.Where(s => mappedSiteIds.Contains(s.Id)).ToListAsync(cancellationToken)
+            : new List<Site>();
+        var siteLookup = mappedSites.ToDictionary(s => s.Id);
         var siteMappings = (
-                from mapping in mappings
-                join site in sites on mapping.SiteId equals site.Id
-                where mapping.ModelLibraryItemId == id
+                from mapping in modelMappings
+                where siteLookup.ContainsKey(mapping.SiteId)
+                join site in mappedSites on mapping.SiteId equals site.Id
                 orderby site.Name, mapping.RemoteModelName
                 select new
                 {
@@ -245,7 +252,6 @@ public sealed class ModelsApiController : ControllerBase
             .ToList();
 
         // 可选站点（启用且未被当前模型关联）。
-        var mappedSiteIds = mappings.Where(x => x.ModelLibraryItemId == id).Select(x => x.SiteId).Distinct().ToList();
         var availableSites = await _dbContext.Sites
             .Where(x => x.IsEnabled && !mappedSiteIds.Contains(x.Id))
             .OrderBy(x => x.Name)
@@ -454,19 +460,18 @@ public sealed class ModelsApiController : ControllerBase
             return NotFound(ApiResponse.Fail("模型不存在", "model_not_found"));
         }
 
-        // SqlSugar 扩展未提供 FirstOrDefaultAsync，用 ToListAsync + 内存 FirstOrDefault 规避。
-        var site = (await _dbContext.Sites
-            .Where(x => x.Id == request.SiteId && x.IsEnabled)
-            .ToListAsync(cancellationToken))
-            .FirstOrDefault();
-        if (site is null)
+        // 按主键取单行，用 InSingleAsync 避免 ToListAsync 实体化。
+        var site = await _dbContext.Sites.InSingleAsync(request.SiteId);
+        if (site is null || !site.IsEnabled)
         {
             return BadRequest(ApiResponse.Fail("所选站点不存在或已禁用", "site_unavailable"));
         }
 
         var remoteModelName = request.RemoteModelName.Trim();
+        // 按组合键取单行，加 Take(1) 让 SQL 加 LIMIT 1。
         var existingMapping = (await _dbContext.SiteModelMappings
             .Where(x => x.SiteId == request.SiteId && x.RemoteModelName == remoteModelName)
+            .Take(1)
             .ToListAsync(cancellationToken))
             .FirstOrDefault();
 
@@ -501,11 +506,9 @@ public sealed class ModelsApiController : ControllerBase
     [HttpDelete("{id:guid}/mappings/{mappingId:guid}")]
     public async Task<IActionResult> DeleteMapping(Guid id, Guid mappingId, CancellationToken cancellationToken)
     {
-        var mapping = (await _dbContext.SiteModelMappings
-            .Where(x => x.Id == mappingId && x.ModelLibraryItemId == id)
-            .ToListAsync(cancellationToken))
-            .FirstOrDefault();
-        if (mapping is null)
+        // 按主键取单行，用 InSingleAsync。
+        var mapping = await _dbContext.SiteModelMappings.InSingleAsync(mappingId);
+        if (mapping is null || mapping.ModelLibraryItemId != id)
         {
             return NotFound(ApiResponse.Fail("关联映射不存在", "mapping_not_found"));
         }

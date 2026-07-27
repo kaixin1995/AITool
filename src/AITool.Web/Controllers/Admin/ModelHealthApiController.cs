@@ -77,6 +77,7 @@ public sealed class ModelHealthApiController : ControllerBase
     {
         var monitor = (await _dbContext.ModelHealthMonitors
             .Where(m => m.ModelLibraryItemId == modelId)
+            .Take(1)
             .ToListAsync(cancellationToken))
             .FirstOrDefault();
         if (monitor is null)
@@ -197,6 +198,7 @@ public sealed class ModelHealthApiController : ControllerBase
                 .Where(l => matchedRequestModels.Contains(l.RequestModel) || matchedAttemptedModels.Contains(l.AttemptedModel))
                 .ToList();
 
+            // 用强类型 record 投影，避免反射开销（原 PageModel 用强类型 ViewModel，零反射）。
             var healthList = modelMappings.Select(map =>
             {
                 sites.TryGetValue(map.SiteId, out var site);
@@ -210,35 +212,43 @@ public sealed class ModelHealthApiController : ControllerBase
                 var successCount = siteLogs.Count(l => l.Status == "success");
                 var totalLogs = siteLogs.Count;
 
-                return new
+                return new HealthSiteItem
                 {
-                    siteName = site?.Name ?? "(未知站点)",
-                    remoteModelName = map.RemoteModelName,
-                    lastStatus = latestLog?.Status ?? map.LastStatus,
-                    lastCheckedAt = latestLog?.RequestedAt,
-                    lastDurationMs = latestLog?.TotalDurationMs,
-                    recentLogs = siteLogs.Select(l => new
+                    SiteName = site?.Name ?? "(未知站点)",
+                    RemoteModelName = map.RemoteModelName,
+                    LastStatus = latestLog?.Status ?? map.LastStatus,
+                    LastCheckedAt = latestLog?.RequestedAt,
+                    LastDurationMs = latestLog?.TotalDurationMs,
+                    RecentLogs = siteLogs.Select(l => new HealthLogEntry
                     {
-                        status = l.Status,
-                        durationMs = l.TotalDurationMs,
-                        checkedAt = l.RequestedAt,
-                        errorMessage = l.ErrorMessage
+                        Status = l.Status,
+                        DurationMs = l.TotalDurationMs,
+                        CheckedAt = l.RequestedAt,
+                        ErrorMessage = l.ErrorMessage
                     }).ToList(),
-                    timelineSegments = BuildTimelineSegments(siteLogs),
-                    successRate = totalLogs > 0 ? (double)successCount / totalLogs : 0,
-                    successCount,
-                    failureCount = totalLogs - successCount
+                    TimelineSegments = BuildTimelineSegments(siteLogs),
+                    SuccessRate = totalLogs > 0 ? (double)successCount / totalLogs : 0,
+                    SuccessCount = successCount,
+                    FailureCount = totalLogs - successCount
                 };
             })
-            .OrderBy(s => s.siteName)
-            .ToList<object>();
+            .OrderBy(s => s.SiteName)
+            .ToList();
 
-            healthData[modelId] = healthList;
+            healthData[modelId] = healthList.Select(h => (object)new
+            {
+                siteName = h.SiteName,
+                remoteModelName = h.RemoteModelName,
+                lastStatus = h.LastStatus,
+                lastCheckedAt = h.LastCheckedAt,
+                lastDurationMs = h.LastDurationMs,
+                successRate = h.SuccessRate,
+                timelineSegments = h.TimelineSegments
+            }).ToList();
 
-            // 模型级汇总（二次聚合）。
-            var healths = healthList;
-            var modelLevelLogs = healths
-                .SelectMany(GetRecentLogsFromHealthItem)
+            // 模型级汇总（二次聚合）—— 直接属性访问，零反射。
+            var modelLevelLogs = healthList
+                .SelectMany(h => h.RecentLogs)
                 .Select(x => new ProxyUsageLog
                 {
                     Status = x.Status,
@@ -248,20 +258,20 @@ public sealed class ModelHealthApiController : ControllerBase
                 })
                 .ToList();
 
-            var siteCount = healths.Count;
-            var healthySiteCount = CountByLastStatus(healths, "success");
-            var unhealthySiteCount = CountByLastStatus(healths, "fail");
-            var lastCheckedAt = healths
-                .Select(GetLastCheckedAt)
-                .Where(x => x.HasValue)
+            var siteCount = healthList.Count;
+            var healthySiteCount = healthList.Count(x => string.Equals(x.LastStatus, "success", StringComparison.OrdinalIgnoreCase));
+            var unhealthySiteCount = healthList.Count(x => string.Equals(x.LastStatus, "fail", StringComparison.OrdinalIgnoreCase));
+            var lastCheckedAt = healthList
+                .Where(x => x.LastCheckedAt.HasValue)
+                .Select(x => x.LastCheckedAt)
                 .OrderByDescending(x => x)
                 .FirstOrDefault();
-            var durations = healths.Select(GetLastDurationMs).Where(x => x.HasValue).Select(x => x!.Value).ToList();
+            var durations = healthList.Where(x => x.LastDurationMs.HasValue).Select(x => x.LastDurationMs!.Value).ToList();
             var averageDurationMs = durations.Count > 0
                 ? (int)Math.Round(durations.Average(), MidpointRounding.AwayFromZero)
                 : (int?)null;
-            var successTotal = healths.Sum(GetSuccessCount);
-            var failureTotal = healths.Sum(GetFailureCount);
+            var successTotal = healthList.Sum(x => x.SuccessCount);
+            var failureTotal = healthList.Sum(x => x.FailureCount);
             var totalRequestCount = successTotal + failureTotal;
 
             modelSummaries.Add(new
@@ -289,29 +299,6 @@ public sealed class ModelHealthApiController : ControllerBase
             rangeOptions = new[] { new { value = "1d", label = "近 1 天" }, new { value = "7d", label = "近 7 天" }, new { value = "30d", label = "近 30 天" } }
         };
     }
-
-    // —— 反射友好的辅助方法：从匿名类型 health item 中取字段（避免定义中间 DTO）——
-    // 这些方法用 dynamic 访问匿名对象属性，保持与匿名投影字段名一致。
-    private static IEnumerable<(string Status, int DurationMs, DateTimeOffset CheckedAt, string? ErrorMessage)> GetRecentLogsFromHealthItem(object item)
-    {
-        var recentLogs = (IEnumerable<dynamic>)item.GetType().GetProperty("recentLogs")!.GetValue(item)!;
-        return recentLogs.Select(l => ((string)l.status, (int)l.durationMs, (DateTimeOffset)l.checkedAt, (string?)l.errorMessage));
-    }
-
-    private static int CountByLastStatus(IEnumerable<object> healths, string status)
-        => healths.Count(h => string.Equals((string)h.GetType().GetProperty("lastStatus")!.GetValue(h)!, status, StringComparison.OrdinalIgnoreCase));
-
-    private static DateTimeOffset? GetLastCheckedAt(object item)
-        => (DateTimeOffset?)item.GetType().GetProperty("lastCheckedAt")!.GetValue(item);
-
-    private static int? GetLastDurationMs(object item)
-        => (int?)item.GetType().GetProperty("lastDurationMs")!.GetValue(item);
-
-    private static int GetSuccessCount(object item)
-        => (int)item.GetType().GetProperty("successCount")!.GetValue(item)!;
-
-    private static int GetFailureCount(object item)
-        => (int)item.GetType().GetProperty("failureCount")!.GetValue(item)!;
 
     /// <summary>
     /// 计算最近数据的时间下限。
@@ -399,4 +386,32 @@ public sealed class ModelHealthApiController : ControllerBase
 
         return buckets;
     }
+}
+
+/// <summary>
+/// 健康面板单个站点+模型的健康项（强类型，避免反射）。
+/// </summary>
+internal sealed class HealthSiteItem
+{
+    public string SiteName { get; set; } = string.Empty;
+    public string RemoteModelName { get; set; } = string.Empty;
+    public string LastStatus { get; set; } = string.Empty;
+    public DateTimeOffset? LastCheckedAt { get; set; }
+    public int? LastDurationMs { get; set; }
+    public List<HealthLogEntry> RecentLogs { get; set; } = [];
+    public List<object> TimelineSegments { get; set; } = [];
+    public double SuccessRate { get; set; }
+    public int SuccessCount { get; set; }
+    public int FailureCount { get; set; }
+}
+
+/// <summary>
+/// 健康面板单条日志项。
+/// </summary>
+internal sealed class HealthLogEntry
+{
+    public string Status { get; set; } = string.Empty;
+    public int DurationMs { get; set; }
+    public DateTimeOffset CheckedAt { get; set; }
+    public string? ErrorMessage { get; set; }
 }
