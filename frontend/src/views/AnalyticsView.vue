@@ -29,7 +29,15 @@ async function load(): Promise<void> {
       if (startTime.value) params.startTime = new Date(startTime.value).toISOString()
       if (endTime.value) params.endTime = new Date(endTime.value).toISOString()
     }
-    dashboard.value = await api.getAnalyticsDashboard(params)
+    // analytics 后端是异步查询队列：首次请求返回 202 {status:"pending",retryAfterMs}，
+    // 需要等待后重试拿真实结果。最多重试 5 次。
+    let result = await api.getAnalyticsDashboard(params)
+    for (let i = 0; i < 5 && result && (result as { status?: string }).status === 'pending'; i++) {
+      const retryAfter = (result as { retryAfterMs?: number }).retryAfterMs ?? 1500
+      await new Promise((r) => setTimeout(r, retryAfter))
+      result = await api.getAnalyticsDashboard(params)
+    }
+    dashboard.value = result
     renderCharts()
   } finally { loading.value = false }
 }
