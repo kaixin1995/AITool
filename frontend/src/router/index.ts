@@ -15,16 +15,16 @@ const routes: RouteRecordRaw[] = [
       { path: 'models', name: 'models', component: () => import('@/views/ModelsView.vue'), meta: { title: '模型库' } },
       { path: 'routes', name: 'routes', component: () => import('@/views/RoutesView.vue'), meta: { title: '路由规则' } },
       { path: 'access-keys', name: 'access-keys', component: () => import('@/views/AccessKeysView.vue'), meta: { title: '访问密钥' } },
-      { path: 'detection', name: 'detection', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '模型检测' } },
-      { path: 'detection-tasks', name: 'detection-tasks', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '检测任务' } },
-      { path: 'model-health', name: 'model-health', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '模型健康' } },
+      { path: 'detection', name: 'detection', component: () => import('@/views/DetectionView.vue'), meta: { title: '模型检测' } },
+      { path: 'detection-tasks', name: 'detection-tasks', component: () => import('@/views/DetectionTasksView.vue'), meta: { title: '检测任务' } },
+      { path: 'model-health', name: 'model-health', component: () => import('@/views/ModelHealthView.vue'), meta: { title: '模型健康' } },
       { path: 'conversations', name: 'conversations', component: () => import('@/views/ConversationsView.vue'), meta: { title: '对话记录' } },
       { path: 'usage-logs', name: 'usage-logs', component: () => import('@/views/UsageLogsView.vue'), meta: { title: '使用日志' } },
       { path: 'analytics', name: 'analytics', component: () => import('@/views/AnalyticsView.vue'), meta: { title: '统计分析' } },
       { path: 'compatibility', name: 'compatibility', component: () => import('@/views/CompatibilityView.vue'), meta: { title: '兼容规则' } },
       { path: 'system/settings', name: 'system-settings', component: () => import('@/views/SystemSettingsView.vue'), meta: { title: '系统设置' } },
-      { path: 'developer/invocations', name: 'developer-invocations', component: () => import('@/views/PlaceholderView.vue'), meta: { title: '调试追踪', requiresDeveloper: true } },
-      { path: 'codex', name: 'codex', component: () => import('@/views/PlaceholderView.vue'), meta: { title: 'Codex 账号', requiresCodex: true } }
+      { path: 'developer/invocations', name: 'developer-invocations', component: () => import('@/views/DeveloperInvocationsView.vue'), meta: { title: '调试追踪', requiresDeveloper: true } },
+      { path: 'codex', name: 'codex', component: () => import('@/views/CodexView.vue'), meta: { title: 'Codex 账号', requiresCodex: true } }
     ]
   },
   { path: '/:pathMatch(.*)*', redirect: '/' }
