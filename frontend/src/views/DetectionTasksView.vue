@@ -85,7 +85,7 @@ onMounted(load)
           <div v-for="(h, idx) in t.executionHistory" :key="idx" class="history-row">
             <NTag size="tiny" :type="h.status === 'completed' ? 'success' : 'warning'" :bordered="false">{{ h.status }}</NTag>
             <span>{{ h.startedAt ? new Date(h.startedAt).toLocaleString('zh-CN') : '—' }}</span>
-            <span style="color: #888">{{ h.summary }}</span>
+            <span style="color: var(--text-color-secondary)">{{ h.summary }}</span>
           </div>
         </NCollapseItem>
       </NCollapse>

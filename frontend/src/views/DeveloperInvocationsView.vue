@@ -78,12 +78,12 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               <NButton size="small" @click="load">刷新</NButton>
             </NSpace>
           </template>
-          <NDataTable :columns="columns" :data="entries" :loading="loading" :row-key="(r: DeveloperInvocationSummary) => r.traceId" size="small" />
+          <NDataTable :columns="columns" :data="entries" :loading="loading" :row-key="(r: DeveloperInvocationSummary) => r.traceId" :pagination="{ pageSize: 20 }" size="small" />
         </NCard>
       </NTabPane>
       <NTabPane name="concurrency" tab="并发面板">
         <NCard>
-          <NDataTable :columns="concColumns" :data="concurrency" :row-key="(r: DeveloperConcurrencyItem) => r.siteId + r.modelName" size="small" />
+          <NDataTable :columns="concColumns" :data="concurrency" :row-key="(r: DeveloperConcurrencyItem) => r.siteId + r.modelName" :pagination="{ pageSize: 20 }" size="small" />
         </NCard>
       </NTabPane>
     </NTabs>

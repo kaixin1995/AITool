@@ -96,7 +96,7 @@ onMounted(loadModels)
         <NEmpty description="请选择一个模型" />
       </div>
       <div v-else>
-        <h4 style="margin: 0 0 12px; font-size: 14px; color: #666">已配置路由（按优先级排序，越靠前越优先）</h4>
+        <h4 style="margin: 0 0 12px; font-size: 14px; color: var(--text-color-secondary)">已配置路由（按优先级排序，越靠前越优先）</h4>
         <NEmpty v-if="rules.length === 0" description="暂无路由规则，从下方发现站点添加" size="small" />
         <div v-for="(rule, idx) in rules" :key="rule.ruleId || `${rule.siteId}-${rule.siteModelName}`" class="rule-row">
           <NSpace align="center" :size="8" style="flex: 1">
@@ -116,7 +116,7 @@ onMounted(loadModels)
           </NSpace>
         </div>
 
-        <h4 style="margin: 24px 0 12px; font-size: 14px; color: #666">可发现的站点</h4>
+        <h4 style="margin: 24px 0 12px; font-size: 14px; color: var(--text-color-secondary)">可发现的站点</h4>
         <NEmpty v-if="discoveredSites.length === 0" description="没有更多可用站点" size="small" />
         <div v-for="site in discoveredSites" :key="`${site.siteId}-${site.remoteModelName}`" class="discover-row">
           <NSpace align="center" :size="8" style="flex: 1">

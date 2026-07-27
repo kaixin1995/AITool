@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NCard, NSpace, NSelect, NInput, NButton, NList, NListItem, NThing, NTag, NEmpty, NSpin, NPopconfirm, useMessage } from 'naive-ui'
+import { NCard, NSpace, NSelect, NInput, NButton, NList, NListItem, NThing, NTag, NEmpty, NSpin, NPopconfirm, NPagination, useMessage } from 'naive-ui'
 import * as api from '@/api/conversations'
 import type { ConversationSession, ConversationTurn } from '@/api/conversations'
 
 const message = useMessage()
 const loading = ref(false)
 const sessions = ref<ConversationSession[]>([])
+const totalCount = ref(0)
 const selectedGroupKey = ref<string | null>(null)
 const turns = ref<ConversationTurn[]>([])
 const turnsLoading = ref(false)
@@ -28,6 +29,7 @@ async function loadSessions(): Promise<void> {
     if (keyword.value) params.sessionKeyword = keyword.value
     const resp = await api.listSessions(params)
     sessions.value = resp.items ?? []
+    totalCount.value = resp.totalCount ?? 0
   } finally { loading.value = false }
 }
 
@@ -77,7 +79,7 @@ onMounted(loadSessions)
                   </NSpace>
                 </template>
                 <template #description>
-                  <span style="font-size: 12px; color: #888">{{ s.lastActivityAtText }} · {{ s.turnCount }} 轮</span>
+                  <span style="font-size: 12px; color: var(--text-color-secondary)">{{ s.lastActivityAtText }} · {{ s.turnCount }} 轮</span>
                 </template>
               </NThing>
               <template #suffix>
@@ -89,6 +91,15 @@ onMounted(loadSessions)
             </NListItem>
           </NList>
         </NSpin>
+        <NPagination
+          v-if="totalCount > 0"
+          :page="page"
+          :page-size="30"
+          :item-count="totalCount"
+          :page-slot="5"
+          style="margin-top: 12px; justify-content: center"
+          @update:page="(p: number) => { page = p; loadSessions() }"
+        />
       </NCard>
 
       <!-- 轮次详情 -->

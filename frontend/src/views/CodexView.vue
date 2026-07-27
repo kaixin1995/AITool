@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref } from 'vue'
-import { NCard, NButton, NSpace, NTag, NGrid, NGi, NEmpty, NSpin, NModal, NInput, NPopconfirm, useMessage } from 'naive-ui'
+import { NCard, NButton, NSpace, NTag, NGrid, NGi, NEmpty, NSpin, NModal, NInput, NPopconfirm, NUpload, useMessage } from 'naive-ui'
 import * as api from '@/api/codex'
 import type { CodexAccount, CodexInspectionStatus } from '@/api/codex'
 
@@ -14,6 +14,11 @@ const oauthModal = ref(false)
 const oauthUrl = ref('')
 const oauthCallbackInput = ref('')
 const oauthLoading = ref(false)
+
+// 凭证导入弹窗
+const importModal = ref(false)
+const importJsonText = ref('')
+const importLoading = ref(false)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -66,6 +71,27 @@ async function handleRunInspection(): Promise<void> {
   setTimeout(load, 2000)
 }
 
+async function handleImportCredential(): Promise<void> {
+  if (!importJsonText.value.trim()) { message.warning('请粘贴凭证 JSON'); return }
+  importLoading.value = true
+  try {
+    await api.importCredential(importJsonText.value.trim())
+    message.success('凭证导入成功')
+    importModal.value = false
+    importJsonText.value = ''
+    await load()
+  } catch (e) { message.error((e as Error).message) } finally { importLoading.value = false }
+}
+
+async function handleExportCredentials(): Promise<void> {
+  const ids = accounts.value.map((a) => a.id)
+  if (ids.length === 0) { message.warning('没有可导出的账号'); return }
+  try {
+    await api.exportCredentials(ids)
+    message.success('凭证已导出')
+  } catch (e) { message.error((e as Error).message) }
+}
+
 onMounted(() => {
   load()
   pollTimer = setInterval(() => {
@@ -84,6 +110,8 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
             <span>Codex 账号管理（{{ accounts.length }} 个）</span>
             <NSpace>
               <NButton v-if="inspection" size="small" @click="handleRunInspection">触发巡检</NButton>
+              <NButton size="small" quaternary @click="importModal = true">导入凭证</NButton>
+              <NButton size="small" quaternary :disabled="accounts.length === 0" @click="handleExportCredentials">导出凭证</NButton>
               <NButton size="small" type="primary" @click="handleStartOAuth">OAuth 登录</NButton>
             </NSpace>
           </NSpace>
@@ -95,7 +123,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
             <NTag :type="inspection.isRunning ? 'warning' : 'success'" :bordered="false">
               {{ inspection.isRunning ? '巡检中' : '空闲' }}
             </NTag>
-            <span v-if="inspection.lastRun" style="font-size: 13px; color: #888">
+            <span v-if="inspection.lastRun" style="font-size: 13px; color: var(--text-color-secondary)">
               上次：{{ inspection.lastRun.totalAccounts }} 账号，禁用 {{ inspection.lastRun.disabledAccounts }} 个
             </span>
           </NSpace>
@@ -117,7 +145,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                   <NTag v-if="acc.isQuotaCooling" size="tiny" type="warning" :bordered="false">冷却中</NTag>
                 </NSpace>
               </template>
-              <div style="font-size: 12px; color: #888; margin-bottom: 8px">
+              <div style="font-size: 12px; color: var(--text-color-secondary); margin-bottom: 8px">
                 上次额度检查：{{ acc.lastQuotaCheckedAt ? new Date(acc.lastQuotaCheckedAt).toLocaleString('zh-CN') : '从未' }}
               </div>
               <NSpace :size="4">
@@ -149,6 +177,24 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         <NSpace justify="end">
           <NButton @click="oauthModal = false">取消</NButton>
           <NButton type="primary" :loading="oauthLoading" @click="handleCompleteOAuth">完成登录</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- 导入凭证弹窗 -->
+    <NModal v-model:show="importModal" title="导入 Codex 凭证" preset="card" style="width: 600px" :mask-closable="false">
+      <p style="margin: 0 0 8px; color: var(--text-color-secondary)">粘贴 CPA 格式的凭证 JSON（含 access_token / refresh_token / id_token）：</p>
+      <NInput
+        v-model:value="importJsonText"
+        type="textarea"
+        :autosize="{ minRows: 8, maxRows: 20 }"
+        placeholder='{"access_token":"...","refresh_token":"...","id_token":"..."}'
+        style="font-family: monospace"
+      />
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="importModal = false">取消</NButton>
+          <NButton type="primary" :loading="importLoading" @click="handleImportCredential">导入</NButton>
         </NSpace>
       </template>
     </NModal>

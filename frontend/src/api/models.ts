@@ -45,3 +45,32 @@ export async function toggleModel(id: string): Promise<{ isEnabled: boolean }> {
 export async function deleteModel(id: string): Promise<void> {
   await httpDelete(`/api/admin/models/${id}`)
 }
+
+// 模型详情 + 映射管理（原 Models/Edit 功能）
+export interface ModelSiteMapping {
+  mappingId: string
+  siteId: string
+  siteName: string
+  remoteModelName: string
+  isEnabled: boolean
+  maxConcurrency: number
+}
+export interface ModelDetail {
+  id: string
+  modelName: string
+  displayName: string
+  isEnabled: boolean
+  overrideReasoningEffort: string
+  compatibilityProfileId: string | null
+  siteMappings: ModelSiteMapping[]
+  availableSites: { id: string; name: string }[]
+}
+export async function getModelDetail(id: string): Promise<ModelDetail> {
+  return httpGet<ModelDetail>(`/api/admin/models/${id}`)
+}
+export async function addModelMapping(id: string, siteId: string, remoteModelName: string, isEnabled = true): Promise<void> {
+  await httpPost(`/api/admin/models/${id}/mappings`, { siteId, remoteModelName, isEnabled })
+}
+export async function deleteModelMapping(id: string, mappingId: string): Promise<void> {
+  await httpDelete(`/api/admin/models/${id}/mappings/${mappingId}`)
+}

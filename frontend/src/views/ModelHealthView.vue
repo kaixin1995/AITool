@@ -87,7 +87,7 @@ onMounted(load)
       </NSpace>
 
       <div v-if="availableModels.length > 0" style="margin-top: 24px">
-        <h4 style="margin: 0 0 12px; color: #666">可添加监控的模型</h4>
+        <h4 style="margin: 0 0 12px; color: var(--text-color-secondary)">可添加监控的模型</h4>
         <NSpace>
           <NButton v-for="am in availableModels" :key="am.id" size="small" quaternary type="primary" @click="handleAdd(am.id)">
             + {{ am.displayName }}

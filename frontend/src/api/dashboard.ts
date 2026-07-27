@@ -15,11 +15,12 @@ export interface DashboardStats {
 
 export async function getDashboardStats(): Promise<DashboardStats> {
   // 并发拉取多个轻量接口。
-  const [entries, chatModels, siteInstances, accessKeys] = await Promise.all([
+  const [entries, chatModels, siteInstances, accessKeys, detectionTasks] = await Promise.all([
     httpGet<{ entryName: string; candidateCount: number }[]>('/api/admin/route-rules/entries'),
     httpGet<{ modelId: string; displayName: string; availableSiteCount: number }[]>('/api/admin/chat/models'),
     httpGet<{ siteId: string }[]>('/api/admin/route-rules/site-instances'),
-    httpGet<{ id: string }[]>('/api/admin/access-keys')
+    httpGet<{ id: string }[]>('/api/admin/access-keys'),
+    httpGet<{ tasks: unknown[] }>('/api/admin/detection-tasks')
   ])
 
   return {
@@ -28,6 +29,6 @@ export async function getDashboardStats(): Promise<DashboardStats> {
     mappingCount: siteInstances.length,
     routeCount: entries.reduce((sum, e) => sum + e.candidateCount, 0),
     accessKeyCount: accessKeys.length,
-    detectionTaskCount: 0 // 检测任务数由检测任务页接口提供，这里暂不拉取（避免依赖）。
+    detectionTaskCount: detectionTasks.tasks.length
   }
 }

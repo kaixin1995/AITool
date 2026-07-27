@@ -4,6 +4,15 @@
 
 /* 极少量全局样式，主要靠 Naive UI 组件库。这里只补充 Naive UI 不覆盖的细节。 */
 
+/* 全局次要文字色变量：亮色 #888，暗色自动调亮为 #999（暗色下 #888 太暗）。
+   替代散落在各视图的硬编码 color:#888/#666，确保暗色模式可读。 */
+:root {
+  --text-color-secondary: #888;
+}
+[data-theme='dark'] {
+  --text-color-secondary: #999;
+}
+
 html,
 body,
 #app {

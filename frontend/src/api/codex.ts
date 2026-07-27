@@ -35,6 +35,21 @@ export async function updateCodexAccount(id: string, displayName: string): Promi
 export async function deleteCodexAccount(id: string): Promise<void> {
   await httpDelete(`/api/admin/codex/accounts/${id}`)
 }
+export async function importCredential(jsonText: string): Promise<void> {
+  // 后端接受 raw JSON 字符串体（单文件导入）
+  await httpPost('/api/admin/codex/import-credential', JSON.parse(jsonText))
+}
+export async function exportCredentials(accountIds: string[]): Promise<void> {
+  // 后端返回 { credentials: [...] }，前端触发下载
+  const resp = await httpPost<{ credentials: unknown[] }>('/api/admin/codex/accounts/export-credentials', { accountIds })
+  const blob = new Blob([JSON.stringify(resp.credentials, null, 2)], { type: 'application/json' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `codex-credentials-${Date.now()}.json`
+  a.click()
+  URL.revokeObjectURL(url)
+}
 export async function startCodexOAuth(): Promise<{ url: string; state: string }> {
   // 后端返回字段名为 url（不是 authorizeUrl）
   return httpPost<{ url: string; state: string }>('/api/admin/codex/start-oauth')

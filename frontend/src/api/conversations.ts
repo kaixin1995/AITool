@@ -16,6 +16,7 @@ export interface ConversationSession {
 }
 export interface ConversationSessionListResponse {
   items: ConversationSession[]
+  totalCount: number
 }
 
 // turns 端点返回 { items, truncated }。

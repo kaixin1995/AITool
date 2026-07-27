@@ -86,7 +86,7 @@ public sealed class ConversationsApiController : ControllerBase
             })
             .ToList();
 
-        return Ok(new { items = sessions });
+        return Ok(new { items = sessions, totalCount = summaries.Count });
     }
 
     /// <summary>

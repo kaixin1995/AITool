@@ -69,8 +69,8 @@ onMounted(load)
                 <span style="min-width: 140px">{{ s.siteName }}</span>
                 <NTag size="small" :bordered="false">{{ s.remoteModelName }}</NTag>
                 <component :is="statusTag(s.lastStatus)" />
-                <span v-if="s.lastDurationMs" style="font-size: 12px; color: #888">{{ s.lastDurationMs }}ms</span>
-                <span v-if="s.lastCheckedAt" style="font-size: 12px; color: #888">{{ new Date(s.lastCheckedAt).toLocaleString('zh-CN') }}</span>
+                <span v-if="s.lastDurationMs" style="font-size: 12px; color: var(--text-color-secondary)">{{ s.lastDurationMs }}ms</span>
+                <span v-if="s.lastCheckedAt" style="font-size: 12px; color: var(--text-color-secondary)">{{ new Date(s.lastCheckedAt).toLocaleString('zh-CN') }}</span>
               </NSpace>
               <NButton size="tiny" quaternary @click="handleProbe(s.mappingId)">探测</NButton>
             </div>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref } from 'vue'
-import { NCard, NSpace, NSelect, NInput, NButton, NTag, useMessage } from 'naive-ui'
+import { NCard, NSpace, NSelect, NInput, NButton, NTag, NSwitch, useMessage } from 'naive-ui'
 import * as chatApi from '@/api/chat'
 import type { ChatModel } from '@/api/chat'
 
@@ -13,6 +13,13 @@ const input = ref('')
 const sending = ref(false)
 const messages = ref<Message[]>([])
 const streamingContent = ref('')
+const enableReasoning = ref(false)
+const reasoningEffort = ref('high')
+const reasoningOptions = [
+  { label: '低 (low)', value: 'low' },
+  { label: '中 (medium)', value: 'medium' },
+  { label: '高 (high)', value: 'high' }
+]
 const streamingReasoning = ref('')
 const messagesContainer = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
@@ -40,7 +47,7 @@ async function handleSend(): Promise<void> {
   abortController = new AbortController()
 
   await chatApi.sendChatStream(
-    { modelId: selectedModelId.value, message: text, signal: abortController.signal },
+    { modelId: selectedModelId.value, message: text, enableReasoning: enableReasoning.value, reasoningEffort: reasoningEffort.value, signal: abortController.signal },
     {
       onToken: (delta) => {
         streamingContent.value += delta
@@ -92,6 +99,17 @@ onMounted(loadModels)
               :options="models.map(m => ({ label: `${m.displayName} (${m.availableSiteCount}站点)`, value: m.modelId }))"
               placeholder="选择模型"
               style="width: 280px"
+            />
+            <NSpace align="center" :size="4">
+              <NSwitch v-model:value="enableReasoning" size="small" />
+              <span style="font-size: 13px">思考</span>
+            </NSpace>
+            <NSelect
+              v-if="enableReasoning"
+              v-model:value="reasoningEffort"
+              :options="reasoningOptions"
+              size="small"
+              style="width: 120px"
             />
           </NSpace>
           <NButton size="small" quaternary @click="handleClear">清空</NButton>

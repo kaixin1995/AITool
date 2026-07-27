@@ -47,6 +47,11 @@ onMounted(async () => {
             <NStatistic label="访问密钥数" :value="stats.accessKeyCount" />
           </NCard>
         </NGi>
+        <NGi span="4 m:2 l:1">
+          <NCard>
+            <NStatistic label="检测任务数" :value="stats.detectionTaskCount" />
+          </NCard>
+        </NGi>
       </NGrid>
       <NEmpty v-else-if="!loading" :description="error || '暂无数据'" />
     </NSpin>
