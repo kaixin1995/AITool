@@ -387,7 +387,15 @@ app.Use(async (context, next) =>
 
     if (IsAdminApiRequest(context.Request))
     {
+        // 后台 API 未认证统一返回 ApiResponse 格式的 JSON（与 JWT OnChallenge 一致），前端按 401 + errorCode 处理。
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            success = false,
+            message = "未登录或登录已过期，请重新登录",
+            errorCode = "unauthenticated"
+        });
         return;
     }
 
