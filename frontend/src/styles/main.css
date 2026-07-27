@@ -1,0 +1,44 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 极少量全局样式，主要靠 Naive UI 组件库。这里只补充 Naive UI 不覆盖的细节。 */
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+/* 滚动条样式（与原 theme.css 一致的细滚动条） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* 页面内容区通用容器 */
+.page-container {
+  padding: 16px 24px;
+}
+
+/* 卡片间距工具类（Tailwind preflight 关闭后，用自定义类补间距） */
+.flex-gap-12 {
+  gap: 12px;
+}
+.flex-gap-16 {
+  gap: 16px;
+}

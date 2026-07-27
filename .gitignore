@@ -386,3 +386,7 @@ FodyWeavers.xsd
 /子页面文档
 /nul
 /.zcode/plans
+
+# 前端工程
+/frontend/node_modules/
+/frontend/dist/
