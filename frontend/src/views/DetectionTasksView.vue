@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
-import { NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput, NSelect, NPopconfirm, NCollapse, NCollapseItem, useMessage, type DataTableColumns } from 'naive-ui'
+import { NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput, NSelect, NPopconfirm, NCollapse, NCollapseItem, useMessage, type DataTableColumns, type SelectOption } from 'naive-ui'
 import * as api from '@/api/detectionTasks'
 import type { DetectionTaskItem } from '@/api/detectionTasks'
 
@@ -21,8 +21,8 @@ async function load(): Promise<void> {
   } finally { loading.value = false }
 }
 
-const modelOptions = computed(() => [
-  { label: '全部模型', value: null },
+const modelOptions = computed<SelectOption[]>(() => [
+  { label: '全部模型', value: '' },
   ...availableModels.value.map((m) => ({ label: m.displayName, value: m.id }))
 ])
 

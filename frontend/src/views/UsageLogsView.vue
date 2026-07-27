@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
-import { NCard, NSpace, NDataTable, NTag, NSelect, NDatePicker, NButton, useMessage, type DataTableColumns } from 'naive-ui'
+import { NCard, NSpace, NDataTable, NTag, NSelect, NDatePicker, NButton, useMessage, type DataTableColumns, type SelectOption } from 'naive-ui'
 import * as api from '@/api/usageLogs'
 import type { UsageLogItem } from '@/api/usageLogs'
 
@@ -19,11 +19,11 @@ const query = reactive({
 
 const siteOptions = computed(() => filters.value.sites.map((s) => ({ label: s.name, value: s.id })))
 const keyOptions = computed(() => filters.value.accessKeys.map((k) => ({ label: k.name, value: k.id })))
-const sourceOptions = [
-  { label: '全部', value: null }, { label: '代理', value: 'proxy' }, { label: '对话', value: 'chat' }, { label: '检测', value: 'detection-task' }
+const sourceOptions: SelectOption[] = [
+  { label: '全部', value: '' }, { label: '代理', value: 'proxy' }, { label: '对话', value: 'chat' }, { label: '检测', value: 'detection-task' }
 ]
-const statusOptions = [{ label: '全部', value: null }, { label: '成功', value: 'success' }, { label: '失败', value: 'fail' }]
-const rangeOptions = [{ label: '今天', value: 'day' }, { label: '本周', value: 'week' }, { label: '本月', value: 'month' }, { label: '自定义', value: 'custom' }, { label: '全部', value: 'all' }]
+const statusOptions: SelectOption[] = [{ label: '全部', value: '' }, { label: '成功', value: 'success' }, { label: '失败', value: 'fail' }]
+const rangeOptions: SelectOption[] = [{ label: '今天', value: 'day' }, { label: '本周', value: 'week' }, { label: '本月', value: 'month' }, { label: '自定义', value: 'custom' }, { label: '全部', value: 'all' }]
 
 async function loadFilters(): Promise<void> {
   filters.value = await api.getUsageLogFilters()

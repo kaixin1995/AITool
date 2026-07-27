@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { NCard, NSpace, NSelect, NInput, NButton, NList, NListItem, NThing, NTag, NEmpty, NSpin, NPopconfirm, NPagination, useMessage } from 'naive-ui'
+import { NCard, NSpace, NSelect, NInput, NButton, NList, NListItem, NThing, NTag, NEmpty, NSpin, NPopconfirm, NPagination, useMessage, type SelectOption } from 'naive-ui'
 import * as api from '@/api/conversations'
 import type { ConversationSession, ConversationTurn } from '@/api/conversations'
 
@@ -16,8 +16,8 @@ const sourceTool = ref<string | null>(null)
 const keyword = ref('')
 const page = ref(1)
 
-const sourceOptions = [
-  { label: '全部', value: null }, { label: 'claude-code', value: 'claude-code' },
+const sourceOptions: SelectOption[] = [
+  { label: '全部', value: '' }, { label: 'claude-code', value: 'claude-code' },
   { label: 'codex', value: 'codex' }, { label: 'proxy', value: 'proxy' }
 ]
 
