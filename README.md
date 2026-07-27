@@ -29,11 +29,14 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 | 层级 | 技术 |
 |------|------|
 | 运行时 | .NET 8.0 (ASP.NET Core) |
-| 数据库 | SQLite (EF Core, EnsureCreated 模式，无 Migration) |
+| 数据库 | SQLite (SqlSugar, CodeFirst 模式，自动补列) |
 | 任务调度 | Hangfire (内存存储) |
-| 前端 | Razor Pages + Bootstrap 5.3.3 + 原生 CSS |
-| 交互方式 | 管理页面全部使用 AJAX（fetch API），无整页刷新 |
+| 后端 API | REST API + JWT 认证（管理后台），AccessKey 认证（代理端点） |
+| 前端 | Vue 3 + TypeScript + Vite + Naive UI + Tailwind CSS + Pinia + ECharts |
+| 部署 | 同进程托管（前端 build 产物输出到 wwwroot，由 ASP.NET Core 同时服务） |
 | 测试 | xUnit + FluentAssertions + 隔离 SQLite 数据库 |
+
+> **架构变更说明（2026-07）**：项目已从「Razor Pages + 内联 JS + Cookie 认证」改造为「Vue 3 SPA + REST API + JWT 认证」的前后端分离架构。ORM 从 EF Core 迁移到 SqlSugar。`src/AITool.Web/Pages/` 目录为旧 Razor Pages 残留（路由已下线，待清理），实际管理后台由 `frontend/` 工程构建。
 
 ---
 
@@ -44,8 +47,10 @@ AI-Tool/
 ├── src/
 │   ├── AITool.Domain/           # 领域实体（纯 POCO，零依赖，sealed 类）
 │   ├── AITool.Application/      # 应用层接口和 DTO（纯接口定义，不含实现）
-│   ├── AITool.Infrastructure/   # 基础设施实现（EF Core、HttpClient、Hangfire）
-│   └── AITool.Web/              # Web 入口（控制器 + Razor Pages + Program.cs）
+│   ├── AITool.Infrastructure/   # 基础设施实现（SqlSugar、HttpClient、Hangfire）
+│   └── AITool.Web/              # Web 入口（Controllers + Program.cs + wwwroot 前端产物）
+├── frontend/                    # Vue 3 前端工程（build 产物输出到 src/AITool.Web/wwwroot）
+│   └── src/{api,views,layouts,router,stores,composables}
 ├── tests/
 │   ├── AITool.ApplicationTests/ # 单元测试
 │   └── AITool.IntegrationTests/ # 集成测试
@@ -54,12 +59,13 @@ AI-Tool/
 └── AITool.slnx                  # 解决方案文件
 ```
 
-**依赖关系：** `Domain` ← `Application` ← `Infrastructure` ← `Web`
+**依赖关系：** `Domain` ← `Application` ← `Infrastructure` ← `Web`，`frontend` 独立构建
 
 - `Domain`：纯 POCO 实体，零外部依赖，所有类为 `sealed`
 - `Application`：仅引用 `Domain`，定义接口和 DTO，不含任何实现
 - `Infrastructure`：引用 `Application` 和 `Domain`，实现所有接口
-- `Web`：引用所有项目，作为宿主入口
+- `Web`：引用所有项目，作为宿主入口（同时服务 API + 前端静态文件）
+- `frontend`：独立 npm 工程，`npm run build` 产物输出到 `Web/wwwroot`
 
 ---
 
@@ -1418,19 +1424,40 @@ Hangfire Dashboard：`/hangfire`（需管理员登录）
 
 ## 快速开始
 
-```bash
-# 还原依赖
-dotnet restore
+### 生产部署（同进程托管）
 
-# 编译
+```bash
+# 1. 构建前端（产物输出到 src/AITool.Web/wwwroot）
+cd frontend
+npm install
+npm run build
+cd ..
+
+# 2. 编译后端
 dotnet build
 
-# 运行（默认 http://0.0.0.0:5029）
+# 3. 运行（默认 http://0.0.0.0:5029）
 cd src/AITool.Web
 dotnet run
 ```
 
-首次运行自动创建 SQLite 数据库。访问管理后台即可开始配置站点和模型。
+访问 `http://localhost:5029`，首次访问会引导设置管理密码（JWT 认证）。
+
+### 开发模式（前后端分离调试）
+
+```bash
+# 终端 1：启动后端 API（5029 端口）
+cd src/AITool.Web
+dotnet run
+
+# 终端 2：启动前端 dev server（5173 端口，proxy 转发 /api /v1 到后端）
+cd frontend
+npm run dev
+```
+
+访问 `http://localhost:5173` 开发调试（支持热更新）。后端 API 也可直接访问 `http://localhost:5029/api/*`。
+
+> 若后端端口非 5029，用环境变量覆盖：`VITE_API_TARGET=http://127.0.0.1:<端口> npm run dev`
 
 ---
 

@@ -16,7 +16,6 @@ using AITool.Infrastructure.Retention;
 using AITool.Infrastructure.Scheduling;
 using AITool.Web.Services;
 using Hangfire;
-using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
@@ -54,10 +53,7 @@ builder.Services.AddResponseCompression(options =>
     options.EnableForHttps = true;
 });
 
-// 注册 Razor Pages，作为管理后台的页面框架。
-builder.Services.AddRazorPages();
-
-// 注册 API 控制器，用于代理转发端点。
+// 注册 API 控制器，用于代理转发端点 + 后台管理 API。
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<HttpExceptionLoggingFilter>();
@@ -69,26 +65,10 @@ builder.Services.AddScoped<HttpExceptionLoggingFilter>();
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
 builder.Services.AddSingleton<JwtTokenService>();
 
-// 认证：JWT 为主（/api/* 用 Bearer token，跨端通用），Cookie 为辅（现有 Razor Pages + Login 页）。
-// 用 PolicyScheme 作为默认 scheme，按请求路径分派：/api/* 走 JWT，其余走 Cookie。
-// 大爆炸切换移除 Razor Pages 后，Cookie 方案可一并移除。
+// 认证：纯 JWT（SPA 分离后不再需要 Cookie）。
+// /api/* 用 Bearer token 验证；代理端点 /v1/* 不走 ASP.NET 认证（自己用 AccessKey 校验）。
 builder.Services
-    .AddAuthentication(options =>
-    {
-        options.DefaultScheme = "AIToolPolicy";
-        options.DefaultChallengeScheme = "AIToolPolicy";
-        options.DefaultSignInScheme = CookieAuthenticationDefaults.AuthenticationScheme;
-    })
-    .AddPolicyScheme("AIToolPolicy", "AITool 策略认证", options =>
-    {
-        options.ForwardDefaultSelector = context =>
-        {
-            // /api/* 用 JWT；其余（Razor Pages、Hangfire）用 Cookie。
-            return context.Request.Path.StartsWithSegments("/api", StringComparison.OrdinalIgnoreCase)
-                ? JwtBearerDefaults.AuthenticationScheme
-                : CookieAuthenticationDefaults.AuthenticationScheme;
-        };
-    })
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
     {
         var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
@@ -104,7 +84,7 @@ builder.Services
                 System.Text.Encoding.UTF8.GetBytes(jwt.SigningKey)),
             ClockSkew = TimeSpan.FromSeconds(30)
         };
-        // /api/* 未携带有效 token 时统一返回 401 JSON，不重定向（前端按 401 处理）。
+        // /api/* 未携带有效 token 时统一返回 401 JSON（前端按 401 + errorCode 处理）。
         options.Events = new JwtBearerEvents
         {
             OnChallenge = context =>
@@ -118,31 +98,6 @@ builder.Services
                     message = "未登录或登录已过期，请重新登录",
                     errorCode = "unauthenticated"
                 });
-            }
-        };
-    })
-    .AddCookie(options =>
-    {
-        options.LoginPath = "/Login";
-        options.AccessDeniedPath = "/Login";
-        options.Cookie.Name = "AITool.AdminAuth";
-        options.SlidingExpiration = true;
-        options.Events = new CookieAuthenticationEvents
-        {
-            OnRedirectToLogin = context =>
-            {
-                if (IsAdminRequest(context.Request))
-                {
-                    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
-                    var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
-                        ? "/Login"
-                        : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
-                    context.Response.Redirect(loginUrl);
-                    return Task.CompletedTask;
-                }
-
-                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                return Task.CompletedTask;
             }
         };
     });
@@ -359,7 +314,11 @@ app.UseStaticFiles(new StaticFileOptions
 {
     OnPrepareResponse = ctx =>
     {
-        ctx.Context.Response.Headers["Cache-Control"] = "public, max-age=86400";
+        // 已 hash 的资源（assets/）长期缓存；index.html 不缓存，确保发版即时生效。
+        var path = ctx.Context.Request.Path.Value ?? string.Empty;
+        ctx.Context.Response.Headers["Cache-Control"] = path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase)
+            ? "public, max-age=31536000, immutable"
+            : "no-cache";
     }
 });
 app.UseWebSockets();
@@ -367,7 +326,9 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.Use(async (context, next) =>
 {
-    if (app.Environment.IsEnvironment("Testing") || !IsAdminRequest(context.Request) || IsLoginPageRequest(context.Request))
+    // SPA 分离后：只有 /api/admin/* 和 /hangfire 需要服务端鉴权拦截。
+    // 其余路径（/sites、/login 等前端路由）交给 SPA fallback + 前端 router 处理。
+    if (app.Environment.IsEnvironment("Testing") || (!IsAdminApiRequest(context.Request) && !IsHangfireRequest(context.Request)))
     {
         await next();
         return;
@@ -379,15 +340,9 @@ app.Use(async (context, next) =>
         return;
     }
 
-    var authService = context.RequestServices.GetRequiredService<AdminAuthService>();
-    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
-    var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
-        ? "/Login"
-        : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
-
+    // 未认证的后台 API：返回 401 JSON（前端拦截器统一处理）。
     if (IsAdminApiRequest(context.Request))
     {
-        // 后台 API 未认证统一返回 ApiResponse 格式的 JSON（与 JWT OnChallenge 一致），前端按 401 + errorCode 处理。
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
         context.Response.ContentType = "application/json; charset=utf-8";
         await context.Response.WriteAsJsonAsync(new
@@ -399,19 +354,9 @@ app.Use(async (context, next) =>
         return;
     }
 
-    if (IsHangfireRequest(context.Request))
-    {
-        context.Response.Redirect(loginUrl);
-        return;
-    }
-
-    if (authService.HasPasswordConfigured())
-    {
-        context.Response.Redirect(loginUrl);
-        return;
-    }
-
-    context.Response.Redirect(loginUrl);
+    // 未认证的 Hangfire 仪表盘：重定向到前端登录页。
+    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
+    context.Response.Redirect($"/login?returnUrl={Uri.EscapeDataString(returnUrl)}");
 });
 
 // 映射健康检查端点，作为集成测试的验证入口。
@@ -426,41 +371,20 @@ RecurringJob.AddOrUpdate<ILogRetentionService>(
     svc => svc.PruneAsync(CancellationToken.None),
     "0 3 * * *");
 
-// 映射 Razor Pages 路由。
-app.MapRazorPages();
-
-// 映射 API 控制器路由，用于代理转发端点。
+// 映射 API 控制器路由，用于代理转发端点 + 后台管理 API。
 app.MapControllers();
+
+// SPA fallback：非 /api、/v1、/health、/hangfire 的请求全部返回 index.html，
+// 交给前端 Vue Router 处理（history 模式）。MapFallbackToFile 会自动排除已映射的端点。
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    app.MapFallbackToFile("index.html");
+}
 
 app.Run();
 
 /// <summary>
-/// 判断是否为后台请求。
-/// </summary>
-static bool IsAdminRequest(HttpRequest request)
-{
-    return IsAdminPageRequest(request) || IsAdminApiRequest(request) || IsHangfireRequest(request);
-}
-
-/// <summary>
-/// 判断是否为后台页面请求。
-/// </summary>
-static bool IsAdminPageRequest(HttpRequest request)
-{
-    var path = request.Path;
-    return path == "/" || path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase);
-}
-
-/// <summary>
-/// 判断是否为登录页请求。
-/// </summary>
-static bool IsLoginPageRequest(HttpRequest request)
-{
-    return request.Path == "/Login";
-}
-
-/// <summary>
-/// 判断是否为后台接口请求。
+/// 判断是否为后台接口请求（/api/admin 前缀）。
 /// </summary>
 static bool IsAdminApiRequest(HttpRequest request)
 {

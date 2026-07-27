@@ -390,3 +390,7 @@ FodyWeavers.xsd
 # 前端工程
 /frontend/node_modules/
 /frontend/dist/
+
+# 前端构建产物（由 npm run build 生成，不入库）
+/src/AITool.Web/wwwroot/assets/
+/src/AITool.Web/wwwroot/index.html
