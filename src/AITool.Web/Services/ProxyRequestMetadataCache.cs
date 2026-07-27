@@ -7,7 +7,7 @@ using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Controllers.Admin;
-using AITool.Web.Pages.Admin.ClientSimulator;
+using AITool.Web.Contracts;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace AITool.Web.Services;
