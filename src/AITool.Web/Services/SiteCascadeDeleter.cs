@@ -62,14 +62,21 @@ public sealed class SiteCascadeDeleter
         }
 
         _dbContext.Sites.RemoveRange(sites);
-        await CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
+        await CleanupEmptyRouteEntriesAsyncCore(affectedEntryNames, cancellationToken);
         return sites.Count;
     }
 
     /// <summary>
     /// 删除失去全部候选规则的路由入口，避免路由管理页继续看到空壳入口。
+    /// <para>该方法已公开，供 Models 模块删除模型/映射后复用同一套清理逻辑，避免重复实现。</para>
     /// </summary>
-    private async Task CleanupEmptyRouteEntriesAsync(IEnumerable<string> entryNames, CancellationToken cancellationToken)
+    public Task CleanupEmptyRouteEntriesAsync(IEnumerable<string> entryNames, CancellationToken cancellationToken)
+        => CleanupEmptyRouteEntriesAsyncCore(entryNames, cancellationToken);
+
+    /// <summary>
+    /// 删除失去全部候选规则的路由入口，避免路由管理页继续看到空壳入口（内部实现）。
+    /// </summary>
+    private async Task CleanupEmptyRouteEntriesAsyncCore(IEnumerable<string> entryNames, CancellationToken cancellationToken)
     {
         var normalizedNames = entryNames
             .Where(x => !string.IsNullOrWhiteSpace(x))
