@@ -96,14 +96,14 @@ onMounted(async () => {
 <template>
   <div class="app-wrapper" :class="{ 'sidebar-collapsed': collapsed }">
     <aside class="app-sidebar">
-      <!-- 品牌区 -->
+      <!-- 品牌区（折叠/展开按钮始终在此处，对齐原设计：顶部品牌行右侧） -->
       <div class="sidebar-brand">
         <div class="sidebar-brand-main">
           <div class="brand-icon">AI</div>
           <span v-if="!collapsed" class="brand-text">AI Tool</span>
         </div>
-        <div v-if="!collapsed" class="sidebar-brand-actions">
-          <button class="sidebar-collapse-toggle" type="button" title="折叠侧边栏" @click="toggleCollapsed">‹</button>
+        <div class="sidebar-brand-actions">
+          <button class="sidebar-collapse-toggle" type="button" :title="collapsed ? '展开侧边栏' : '折叠侧边栏'" @click="toggleCollapsed">{{ collapsed ? '›' : '‹' }}</button>
         </div>
       </div>
 
@@ -112,17 +112,14 @@ onMounted(async () => {
         <NMenu
           :value="activeKey"
           :collapsed="collapsed"
-          :collapsed-width="64"
-          :collapsed-icon-size="20"
+          :collapsed-width="72"
+          :collapsed-icon-size="18"
           :indent="18"
           :root-indent="18"
           :options="menuOptions"
           @update:value="handleMenuSelect"
         />
       </nav>
-
-      <!-- 收起状态下的展开按钮（底部） -->
-      <button v-if="collapsed" class="sidebar-expand-toggle" type="button" title="展开侧边栏" @click="toggleCollapsed">›</button>
     </aside>
 
     <!-- 主内容区 -->
@@ -170,21 +167,27 @@ onMounted(async () => {
   overflow: hidden;
 }
 .app-wrapper.sidebar-collapsed .app-sidebar {
-  width: 64px;
+  width: 72px;
 }
 
-/* 品牌区 */
+/* 品牌区（对齐原 .sidebar-brand） */
 .sidebar-brand {
-  height: 60px;
+  padding: 20px 16px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 20px;
+  gap: 12px;
   border-bottom: 1px solid var(--border-color-global);
   flex-shrink: 0;
 }
+/* 折叠后品牌区纵向排列：图标在上、折叠按钮在下（对齐原 sidebar-collapsed 逻辑） */
 .app-wrapper.sidebar-collapsed .sidebar-brand {
-  padding: 0;
+  padding: 18px 0 12px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+}
+.app-wrapper.sidebar-collapsed .sidebar-brand-main {
   justify-content: center;
 }
 .sidebar-brand-main {
@@ -211,20 +214,34 @@ onMounted(async () => {
   font-size: 16px;
   white-space: nowrap;
 }
+.sidebar-brand-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
 .sidebar-collapse-toggle {
-  background: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
   border: 1px solid var(--border-color-global);
-  border-radius: 6px;
-  width: 24px;
-  height: 24px;
-  cursor: pointer;
+  border-radius: 8px;
+  background: var(--bg-card);
   color: var(--text-color-secondary);
-  font-size: 16px;
+  cursor: pointer;
+  font-size: 18px;
   line-height: 1;
+  transition: all 0.15s ease;
 }
 .sidebar-collapse-toggle:hover {
+  background: #EEF4FF;
   color: #6C9EFF;
-  border-color: #6C9EFF;
+  border-color: #EEF4FF;
+}
+[data-theme='dark'] .sidebar-collapse-toggle:hover {
+  background: rgba(108, 158, 255, 0.15);
 }
 
 /* 导航区滚动 */
@@ -234,24 +251,28 @@ onMounted(async () => {
   overflow-x: hidden;
   padding: 8px 12px;
 }
-
-/* 收起状态下的展开按钮 */
-.sidebar-expand-toggle {
-  margin: 8px auto 12px;
-  background: none;
-  border: 1px solid var(--border-color-global);
-  border-radius: 6px;
-  width: 24px;
-  height: 24px;
-  cursor: pointer;
-  color: var(--text-color-secondary);
-  font-size: 16px;
-  line-height: 1;
-  flex-shrink: 0;
+.app-wrapper.sidebar-collapsed .sidebar-nav {
+  padding: 12px 8px;
 }
-.sidebar-expand-toggle:hover {
-  color: #6C9EFF;
-  border-color: #6C9EFF;
+
+/* 折叠态：强制隐藏菜单项文字，只留图标（对齐原 sidebar-link font-size:0 逻辑）。
+   NaiveUI NMenu 的 collapsed 在 group 模式下不会完全隐藏 label，需手动收口。 */
+.app-wrapper.sidebar-collapsed :deep(.n-menu-item-content) {
+  padding-left: 0 !important;
+  justify-content: center;
+}
+.app-wrapper.sidebar-collapsed :deep(.n-menu-item-content-header) {
+  display: none;
+}
+.app-wrapper.sidebar-collapsed :deep(.n-menu-item-content__icon) {
+  margin-right: 0 !important;
+}
+/* 折叠态隐藏分组标题（概览/资源管理等） */
+.app-wrapper.sidebar-collapsed :deep(.n-menu-item-group) {
+  --n-font-size: 0 !important;
+}
+.app-wrapper.sidebar-collapsed :deep(.n-menu-item-group-title) {
+  display: none;
 }
 
 /* 主内容区 */
@@ -264,7 +285,7 @@ onMounted(async () => {
   transition: margin-left 0.2s ease;
 }
 .app-wrapper.sidebar-collapsed .app-main {
-  margin-left: 64px;
+  margin-left: 72px;
 }
 
 /* 顶部栏 */
