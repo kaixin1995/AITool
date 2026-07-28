@@ -53,9 +53,9 @@ onMounted(loadSessions)
 </script>
 
 <template>
-  <div style="display: grid; grid-template-columns: 360px 1fr; gap: 16px; height: 100%">
+  <div class="conversations-layout">
     <!-- 会话列表 -->
-    <NCard size="small">
+    <NCard size="small" class="session-card">
       <template #header>
         <NSpace vertical :size="8">
           <span>对话记录</span>
@@ -102,7 +102,7 @@ onMounted(loadSessions)
       </NCard>
 
       <!-- 轮次详情 -->
-      <NCard size="small">
+      <NCard size="small" class="detail-card">
         <template #header>对话详情</template>
         <NSpin :show="turnsLoading">
           <NEmpty v-if="!selectedGroupKey" description="选择左侧会话查看详情" />
@@ -129,9 +129,15 @@ onMounted(loadSessions)
 </template>
 
 <style scoped>
-.turns-list { padding: 0 8px; max-height: calc(100vh - 200px); overflow-y: auto; }
-.turn-item { padding: 12px 0; border-bottom: 1px solid var(--n-border-color); }
+.conversations-layout { display: grid; grid-template-columns: 340px 1fr; gap: 16px; height: 100%; min-height: 0; }
+.session-card { overflow: hidden; display: flex; flex-direction: column; }
+.detail-card { overflow: hidden; display: flex; flex-direction: column; }
+.turns-list { padding: 0 8px; flex: 1; overflow-y: auto; }
+.turn-item { padding: 12px 0; border-bottom: 1px solid var(--border-color-global); }
 .turn-content { margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
 .turn-assistant { margin-top: 12px; }
 .turn-meta { margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 768px) {
+  .conversations-layout { grid-template-columns: 1fr; }
+}
 </style>

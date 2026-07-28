@@ -255,12 +255,9 @@ onMounted(async () => {
   padding: 12px 8px;
 }
 
-/* 折叠态：强制隐藏菜单项文字，只留图标（对齐原 sidebar-link font-size:0 逻辑）。
-   NaiveUI NMenu 的 collapsed 在 group 模式下不会完全隐藏 label，需手动收口。 */
-.app-wrapper.sidebar-collapsed :deep(.n-menu-item-content) {
-  padding-left: 0 !important;
-  justify-content: center;
-}
+/* 折叠态：隐藏菜单项文字，只留图标。
+   关键：不加 padding-left:0 / justify-content，让 NMenu 原生 collapsed 居中图标，
+   选中指示条也会自动对齐图标位置。只隐藏 label 和分组标题即可。 */
 .app-wrapper.sidebar-collapsed :deep(.n-menu-item-content-header) {
   display: none;
 }
@@ -268,9 +265,6 @@ onMounted(async () => {
   margin-right: 0 !important;
 }
 /* 折叠态隐藏分组标题（概览/资源管理等） */
-.app-wrapper.sidebar-collapsed :deep(.n-menu-item-group) {
-  --n-font-size: 0 !important;
-}
 .app-wrapper.sidebar-collapsed :deep(.n-menu-item-group-title) {
   display: none;
 }

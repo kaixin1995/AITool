@@ -62,6 +62,15 @@ router.beforeEach(async (to) => {
     return { name: 'login', query: { returnUrl: to.fullPath } }
   }
 
+  // 功能开关：未开启对应功能的页面重定向到仪表盘，避免空白页。
+  const features = auth.status?.features
+  if (to.meta.requiresCodex && !features?.codexEnabled) {
+    return { name: 'dashboard' }
+  }
+  if (to.meta.requiresDeveloper && !features?.developerEnabled) {
+    return { name: 'dashboard' }
+  }
+
   return true
 })
 

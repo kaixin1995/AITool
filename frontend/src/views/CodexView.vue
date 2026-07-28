@@ -9,6 +9,8 @@ const message = useMessage()
 const loading = ref(false)
 const accounts = ref<CodexAccount[]>([])
 const inspection = ref<CodexInspectionStatus | null>(null)
+// 功能未开启时的提示态
+const featureDisabled = ref(false)
 
 // OAuth 弹窗
 const oauthModal = ref(false)
@@ -45,10 +47,21 @@ let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function load(): Promise<void> {
   loading.value = true
+  featureDisabled.value = false
   try {
-    const [accs, insp] = await Promise.all([api.listCodexAccounts(), api.getCodexInspectionStatus().catch(() => null)])
+    const [accs, insp] = await Promise.all([
+      api.listCodexAccounts(),
+      api.getCodexInspectionStatus().catch(() => null)
+    ])
     accounts.value = accs
     inspection.value = insp
+  } catch (e) {
+    // Codex 功能未开启时后端返回 404，显示提示而非空白
+    if ((e as { status?: number }).status === 404) {
+      featureDisabled.value = true
+    } else {
+      message.error((e as Error).message)
+    }
   } finally { loading.value = false }
 }
 
@@ -226,7 +239,8 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
           </NSpace>
         </NCard>
 
-        <NEmpty v-if="accounts.length === 0" description="暂无 Codex 账号，点击右上角 OAuth 登录" />
+        <NEmpty v-if="featureDisabled" description="Codex 功能未开启，请在系统设置中开启" />
+        <NEmpty v-else-if="accounts.length === 0" description="暂无 Codex 账号，点击右上角 OAuth 登录" />
 
         <NGrid v-else :cols="3" :x-gap="16" :y-gap="16" responsive="screen" item-responsive>
           <NGi v-for="acc in accounts" :key="acc.id" span="3 m:1 l:1">

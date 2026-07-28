@@ -3,6 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } fr
 import { echarts, initChart as initThemedChart, type ECharts } from '@/composables/useEcharts'
 import { NCard, NSpace, NSelect, NDatePicker, NButton, NStatistic, NEmpty, NSpin } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
+import { formatCompact } from '@/composables/useFormat'
 import * as api from '@/api/analytics'
 import type { AnalyticsDashboard, AnalyticsFilterOptions } from '@/api/analytics'
 
@@ -296,14 +297,14 @@ watch([startTime, endTime], () => {
         <template v-if="dashboard?.summary">
           <!-- 汇总 KPI 卡片 -->
           <div class="kpi-grid">
-            <NCard size="small"><NStatistic label="总请求" :value="dashboard.summary.totalRequests" /></NCard>
-            <NCard size="small"><NStatistic label="成功" :value="dashboard.summary.successRequests" /></NCard>
-            <NCard size="small"><NStatistic label="失败" :value="dashboard.summary.failedRequests" /></NCard>
+            <NCard size="small"><NStatistic label="总请求" :value="formatCompact(dashboard.summary.totalRequests)" /></NCard>
+            <NCard size="small"><NStatistic label="成功" :value="formatCompact(dashboard.summary.successRequests)" /></NCard>
+            <NCard size="small"><NStatistic label="失败" :value="formatCompact(dashboard.summary.failedRequests)" /></NCard>
             <NCard size="small"><NStatistic label="成功率" :value="`${dashboard.summary.successRate ?? 0}%`" /></NCard>
             <NCard size="small"><NStatistic label="回退触发" :value="dashboard.summary.fallbackRequestCount ?? 0" /></NCard>
-            <NCard size="small"><NStatistic label="输入 Token" :value="dashboard.summary.totalInputTokens" /></NCard>
-            <NCard size="small"><NStatistic label="输出 Token" :value="dashboard.summary.totalOutputTokens" /></NCard>
-            <NCard size="small"><NStatistic label="缓存 Token" :value="dashboard.summary.totalCachedTokens" /></NCard>
+            <NCard size="small"><NStatistic label="输入 Token" :value="formatCompact(dashboard.summary.totalInputTokens)" /></NCard>
+            <NCard size="small"><NStatistic label="输出 Token" :value="formatCompact(dashboard.summary.totalOutputTokens)" /></NCard>
+            <NCard size="small"><NStatistic label="缓存 Token" :value="formatCompact(dashboard.summary.totalCachedTokens)" /></NCard>
           </div>
 
           <!-- 图表网格 -->

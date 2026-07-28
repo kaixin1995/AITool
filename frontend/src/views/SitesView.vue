@@ -167,12 +167,12 @@ async function handleImport(): Promise<void> {
 
 const columns = computed<DataTableColumns<SiteListItem>>(() => [
   { type: 'selection' },
-  { title: '名称', key: 'name', minWidth: 140 },
-  { title: '地址', key: 'baseUrl', minWidth: 220, ellipsis: { tooltip: true } },
+  { title: '名称', key: 'name', width: 120, ellipsis: { tooltip: true } },
+  { title: '地址', key: 'baseUrl', minWidth: 280, ellipsis: { tooltip: true } },
   {
     title: '协议',
     key: 'protocol',
-    width: 140,
+    width: 120,
     render: (row) => {
       const tags: Array<'success' | 'info' | 'warning'> = []
       if (row.protocolType === 'Responses') tags.push('warning')
@@ -183,7 +183,6 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
       ])
     }
   },
-  { title: '密钥', key: 'apiKeyMasked', width: 140 },
   {
     title: '状态',
     key: 'isEnabled',
@@ -196,7 +195,7 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 180,
+    width: 220,
     fixed: 'right',
     render: (row) =>
       h(NSpace, { size: 8 }, () => [

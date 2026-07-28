@@ -295,11 +295,21 @@ onMounted(loadModels)
 }
 .model-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
   gap: 12px;
 }
 .model-card {
   border-radius: 8px;
+  height: 100%;
+}
+.model-card :deep(.n-card__content) {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  min-height: 80px;
+}
+.model-card :deep(.n-space) {
+  flex-wrap: wrap;
 }
 .model-meta {
   font-size: 12px;

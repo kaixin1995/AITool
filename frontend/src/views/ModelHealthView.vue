@@ -124,7 +124,8 @@ onMounted(load)
 .timeline-seg.success { background: #18a058; }
 .timeline-seg.fail { background: #d03050; }
 .site-detail { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
-.site-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--border-color-global); }
-.site-timeline { height: 16px; flex: 1; min-width: 120px; }
+.site-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--border-color-global); flex-wrap: nowrap; }
+.site-row > div:first-child { flex-shrink: 0; min-width: 200px; }
+.site-timeline { height: 16px; flex: 1; min-width: 100px; }
 [data-theme='dark'] .timeline-seg { background: #3a3a40; }
 </style>

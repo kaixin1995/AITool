@@ -153,38 +153,40 @@ onMounted(loadModels)
 <template>
   <NCard style="flex: 1; display: flex; flex-direction: column" content-style="flex: 1; display: flex; flex-direction: column; padding: 0">
     <template #header>
-      <NSpace justify="space-between" align="center" wrap>
-        <NSpace align="center" :size="12" wrap>
+      <div class="chat-header">
+        <div class="chat-header-controls">
           <NSelect
             v-model:value="selectedModelId"
             :options="models.map(m => ({ label: `${m.displayName} (${m.availableSiteCount}站点)`, value: m.modelId }))"
             placeholder="选择模型"
-            style="width: 240px"
+            style="width: 220px"
           />
           <NSelect
             v-model:value="selectedMappingId"
             :options="targetOptionsComputed"
             placeholder="目标站点"
-            style="width: 220px"
+            style="width: 200px"
           />
-          <NSpace align="center" :size="4">
-            <NSwitch v-model:value="enableReasoning" size="small" />
-            <span style="font-size: 13px">思考</span>
-          </NSpace>
           <NSelect
             v-if="enableReasoning"
             v-model:value="reasoningEffort"
             :options="reasoningOptions"
             size="small"
-            style="width: 120px"
+            style="width: 110px"
           />
+        </div>
+        <div class="chat-header-toggles">
+          <NSpace align="center" :size="4">
+            <NSwitch v-model:value="enableReasoning" size="small" />
+            <span style="font-size: 13px">思考</span>
+          </NSpace>
           <NSpace align="center" :size="4">
             <NSwitch v-model:value="enableStreaming" size="small" />
             <span style="font-size: 13px">流式</span>
           </NSpace>
-        </NSpace>
-        <NButton size="small" quaternary @click="handleClear">清空</NButton>
-      </NSpace>
+          <NButton size="small" quaternary @click="handleClear">清空</NButton>
+        </div>
+      </div>
     </template>
 
     <div ref="messagesContainer" class="chat-messages">
@@ -215,23 +217,26 @@ onMounted(loadModels)
     </NCollapse>
 
     <div class="chat-input-area">
-      <NSpace :size="8" align="flex-end">
+      <div class="chat-input-row">
         <NInput
           v-model:value="input"
           type="textarea"
           :autosize="{ minRows: 1, maxRows: 4 }"
           placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-          style="width: 100%; max-width: 600px"
+          style="flex: 1"
           @keydown.enter.exact.prevent="handleSend"
         />
         <NButton v-if="!sending" type="primary" :disabled="!input.trim()" @click="handleSend">发送</NButton>
         <NButton v-else type="error" @click="handleStop">停止</NButton>
-      </NSpace>
+      </div>
     </div>
   </NCard>
 </template>
 
 <style scoped>
+.chat-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.chat-header-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chat-header-toggles { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
 .chat-messages { flex: 1; overflow-y: auto; padding: 16px 24px; }
 .chat-empty { display: flex; justify-content: center; align-items: center; height: 100%; }
 .chat-msg { display: flex; margin-bottom: 16px; }
@@ -245,6 +250,7 @@ onMounted(loadModels)
 .chat-reasoning { font-size: 12px; opacity: 0.6; margin-bottom: 6px; padding: 4px 8px; border-left: 2px solid currentColor; white-space: pre-wrap; }
 .chat-text { white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
 .chat-input-area { padding: 12px 24px; border-top: 1px solid var(--border-color-global); }
+.chat-input-row { display: flex; align-items: flex-end; gap: 8px; }
 .attempts-panel { border-top: 1px solid var(--border-color-global); max-height: 200px; overflow-y: auto; }
 .attempt-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; }
 </style>

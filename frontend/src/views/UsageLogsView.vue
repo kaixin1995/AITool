@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
-import { NCard, NSpace, NDataTable, NTag, NSelect, NDatePicker, NButton, NStatistic, NGrid, NGi, useMessage, type DataTableColumns, type SelectOption } from 'naive-ui'
+import { NCard, NSpace, NDataTable, NTag, NSelect, NDatePicker, NButton, NStatistic, NGrid, NGi, NCollapse, NCollapseItem, useMessage, type DataTableColumns, type SelectOption } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
+import { formatCompact, formatDuration } from '@/composables/useFormat'
 import * as api from '@/api/usageLogs'
 import type { UsageLogItem } from '@/api/usageLogs'
 
@@ -65,10 +66,10 @@ const columns = computed<DataTableColumns<UsageLogItem>>(() => [
   { title: '来源', key: 'source', width: 90 },
   { title: '状态', key: 'status', width: 80, render: (r) => h(NTag, { size: 'small', type: r.status === 'success' ? 'success' : 'error', bordered: false }, () => r.status === 'success' ? '成功' : '失败') },
   { title: '重试', key: 'retryCount', width: 60 },
-  { title: '输入', key: 'inputTokens', width: 80 },
-  { title: '缓存', key: 'cachedTokens', width: 80 },
-  { title: '输出', key: 'outputTokens', width: 80 },
-  { title: '总耗时(ms)', key: 'totalDurationMs', width: 100 },
+  { title: '输入', key: 'inputTokens', width: 80, render: (r) => formatCompact(r.inputTokens) },
+  { title: '缓存', key: 'cachedTokens', width: 80, render: (r) => formatCompact(r.cachedTokens) },
+  { title: '输出', key: 'outputTokens', width: 80, render: (r) => formatCompact(r.outputTokens) },
+  { title: '耗时', key: 'totalDurationMs', width: 90, render: (r) => formatDuration(r.totalDurationMs) },
   { title: '流式', key: 'isStreaming', width: 70, render: (r) => r.isStreaming ? (r.isStreamInterrupted ? h(NTag, { size: 'tiny', type: 'warning', bordered: false }, () => '中断') : '是') : '否' }
 ])
 
@@ -90,15 +91,15 @@ onMounted(async () => {
         <NCard size="small"><NStatistic label="成功率" :value="`${summary.successRate}%`" /></NCard>
       </NGi>
       <NGi span="4 m:2 l:1">
-        <NCard size="small"><NStatistic label="总 Tokens（本页）" :value="summary.totalTokens" /></NCard>
+        <NCard size="small"><NStatistic label="总 Tokens（本页）" :value="formatCompact(summary.totalTokens)" /></NCard>
       </NGi>
       <NGi span="4 m:2 l:1">
         <NCard size="small"><NStatistic label="失败请求（本页）" :value="summary.failed" /></NCard>
       </NGi>
     </NGrid>
 
-    <NCard>
-      <template #header>
+    <NCollapse :default-expanded-names="['filter']" style="margin-bottom: 16px">
+      <NCollapseItem name="filter" title="筛选条件">
         <NSpace align="center" :size="12" wrap>
           <NSelect v-model:value="query.rangeType" :options="rangeOptions" placeholder="时间范围" size="small" style="width: 110px" />
           <template v-if="query.rangeType === 'custom'">
@@ -111,7 +112,10 @@ onMounted(async () => {
           <NSelect v-model:value="query.status" :options="statusOptions" placeholder="状态" clearable size="small" style="width: 110px" />
           <NButton type="primary" size="small" @click="query.page = 1; load()">查询</NButton>
         </NSpace>
-      </template>
+      </NCollapseItem>
+    </NCollapse>
+
+    <NCard>
       <NDataTable :columns="columns" :data="items" :loading="loading" :row-key="(r: UsageLogItem) => r.id" :scroll-x="1200" remote :pagination="{
         page: query.page, pageSize: query.pageSize, itemCount: totalCount,
         onUpdatePage: (p: number) => { query.page = p; load() }
