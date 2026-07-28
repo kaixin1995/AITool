@@ -58,6 +58,48 @@ body,
   padding: 20px 24px;
 }
 
+/* ===== 全局 NaiveUI 组件覆写：让表格/卡片外观接近原 Bootstrap 设计 ===== */
+
+/* 表格：复刻原 .table 的表头灰底、大写小字、行间距 */
+.n-data-table .n-data-table-thead {
+  background: var(--bg-page) !important;
+}
+.n-data-table .n-data-table-th {
+  background: transparent !important;
+  color: var(--text-color-secondary) !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 12px 16px !important;
+}
+.n-data-table .n-data-table-td {
+  padding: 12px 16px !important;
+  font-size: 13.5px !important;
+}
+/* 表格行 hover 高亮（复刻原 primary-50） */
+.n-data-table .n-data-table-tr:hover .n-data-table-td {
+  background: rgba(108, 158, 255, 0.04) !important;
+}
+/* 斑马纹颜色 */
+.n-data-table .n-data-table-tr.n-data-table-tr--striped .n-data-table-td {
+  background: rgba(0, 0, 0, 0.015) !important;
+}
+[data-theme='dark'] .n-data-table .n-data-table-tr.n-data-table-tr--striped .n-data-table-td {
+  background: rgba(255, 255, 255, 0.02) !important;
+}
+
+/* 卡片：圆角和阴影接近原 .card */
+.n-card {
+  border-radius: 12px !important;
+}
+.n-card-header {
+  padding: 16px 20px !important;
+}
+.n-card__content {
+  padding: 20px !important;
+}
+
 /* 卡片间距工具类（Tailwind preflight 关闭后，用自定义类补间距） */
 .flex-gap-12 {
   gap: 12px;
