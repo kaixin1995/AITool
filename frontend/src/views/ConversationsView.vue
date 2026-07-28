@@ -53,13 +53,12 @@ onMounted(loadSessions)
 </script>
 
 <template>
-  <div class="page-container">
-    <div style="display: grid; grid-template-columns: 360px 1fr; gap: 16px; height: calc(100vh - 120px)">
-      <!-- 会话列表 -->
-      <NCard size="small">
-        <template #header>
-          <NSpace vertical :size="8">
-            <span>对话记录</span>
+  <div style="display: grid; grid-template-columns: 360px 1fr; gap: 16px; height: 100%">
+    <!-- 会话列表 -->
+    <NCard size="small">
+      <template #header>
+        <NSpace vertical :size="8">
+          <span>对话记录</span>
             <NSpace :size="8">
               <NSelect v-model:value="sourceTool" :options="sourceOptions" placeholder="来源" size="small" style="width: 130px" />
               <NInput v-model:value="keyword" placeholder="关键词" size="small" style="width: 130px" @keyup.enter="loadSessions" />
@@ -127,7 +126,6 @@ onMounted(loadSessions)
         </NSpin>
       </NCard>
     </div>
-  </div>
 </template>
 
 <style scoped>

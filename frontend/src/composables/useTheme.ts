@@ -64,13 +64,33 @@ const darkOverrides: GlobalThemeOverrides = {
     primaryColorHover: '#85B0FF',
     primaryColorPressed: '#5A8EE8',
     primaryColorSuppl: '#6C9EFF',
+    // 暗色模式完整色板：页面背景、卡片、弹窗、输入框全部跟随，避免白色穿透。
     bodyColor: '#101014',
     cardColor: '#18181C',
-    modalColor: '#18181C',
-    popoverColor: '#18181C'
+    modalColor: '#1F1F24',
+    popoverColor: '#1F1F24',
+    tableColor: '#18181C',
+    tableHeaderColor: '#202026',
+    inputColor: '#1F1F24',
+    inputColorDisabled: '#1A1A1F',
+    actionColor: '#202026',
+    hoverColor: '#25252B',
+    borderColor: '#2D2D33',
+    dividerColor: '#25252B',
+    textColorBase: 'rgba(255, 255, 255, 0.82)',
+    textColor1: 'rgba(255, 255, 255, 0.82)',
+    textColor2: 'rgba(255, 255, 255, 0.65)',
+    textColor3: 'rgba(255, 255, 255, 0.45)'
   },
   Card: {
-    color: '#18181C'
+    color: '#18181C',
+    colorModal: '#1F1F24',
+    colorPopover: '#1F1F24'
+  },
+  Menu: {
+    itemColorActive: 'rgba(108, 158, 255, 0.15)',
+    itemColorActiveHover: 'rgba(108, 158, 255, 0.18)',
+    itemColorActiveCollapsed: 'rgba(108, 158, 255, 0.15)'
   }
 }
 
@@ -85,9 +105,16 @@ function loadInitialTheme(): boolean {
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false
 }
 
+function applyThemeAttribute(dark: boolean): void {
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
+}
+
+// 初始化即应用 data-theme，避免首屏闪白 / 首屏暗色模式下 body 仍是白色。
+applyThemeAttribute(isDark.value)
+
 watch(isDark, (dark) => {
   localStorage.setItem(THEME_KEY, dark ? 'dark' : 'light')
-  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
+  applyThemeAttribute(dark)
 })
 
 export function useTheme() {

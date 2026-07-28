@@ -36,7 +36,7 @@ var startupLogger = LogManager.GetLogger("Startup");
 var applicationVersion = "1.0.1.7";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 
-var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
+var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 15029;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
 
 // 配置 Kestrel 连接与请求体限制，确保代理大请求体（长对话、base64 图片）和可预测的并发行为。

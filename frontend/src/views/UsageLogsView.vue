@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
-import { NCard, NSpace, NDataTable, NTag, NSelect, NDatePicker, NButton, useMessage, type DataTableColumns, type SelectOption } from 'naive-ui'
+import { NCard, NSpace, NDataTable, NTag, NSelect, NDatePicker, NButton, NStatistic, NGrid, NGi, useMessage, type DataTableColumns, type SelectOption } from 'naive-ui'
 import * as api from '@/api/usageLogs'
 import type { UsageLogItem } from '@/api/usageLogs'
 
@@ -47,6 +47,16 @@ async function load(): Promise<void> {
   } finally { loading.value = false }
 }
 
+// 本页汇总（与原 Razor Pages 的 4 个汇总卡片对齐）。
+const summary = computed(() => {
+  const list = items.value
+  const success = list.filter((x) => x.status === 'success').length
+  const failed = list.length - success
+  const successRate = list.length === 0 ? 0 : Math.round((success * 100) / list.length)
+  const totalTokens = list.reduce((s, x) => s + x.totalTokens, 0)
+  return { total: totalCount.value, successRate, totalTokens, failed }
+})
+
 const columns = computed<DataTableColumns<UsageLogItem>>(() => [
   { title: '时间', key: 'requestedAt', width: 160, render: (r) => new Date(r.requestedAt).toLocaleString('zh-CN') },
   { title: '模型', key: 'requestModel', minWidth: 120, ellipsis: { tooltip: true } },
@@ -69,20 +79,38 @@ onMounted(async () => {
 
 <template>
   <div class="page-container">
+    <!-- 汇总卡片（对齐原设计：总请求/成功率/总Tokens/失败请求） -->
+    <NGrid :cols="4" :x-gap="12" :y-gap="12" responsive="screen" item-responsive style="margin-bottom: 16px">
+      <NGi span="4 m:2 l:1">
+        <NCard size="small"><NStatistic label="总请求" :value="summary.total" /></NCard>
+      </NGi>
+      <NGi span="4 m:2 l:1">
+        <NCard size="small"><NStatistic label="成功率" :value="`${summary.successRate}%`" /></NCard>
+      </NGi>
+      <NGi span="4 m:2 l:1">
+        <NCard size="small"><NStatistic label="总 Tokens（本页）" :value="summary.totalTokens" /></NCard>
+      </NGi>
+      <NGi span="4 m:2 l:1">
+        <NCard size="small"><NStatistic label="失败请求（本页）" :value="summary.failed" /></NCard>
+      </NGi>
+    </NGrid>
+
     <NCard>
-      <template #header>使用日志（共 {{ totalCount }} 条）</template>
-      <NSpace :size="12" style="margin-bottom: 16px" wrap>
-        <NSelect v-model:value="query.rangeType" :options="rangeOptions" placeholder="时间范围" style="width: 120px" />
-        <template v-if="query.rangeType === 'custom'">
-          <NDatePicker v-model:value="query.startTime" type="datetime" placeholder="开始时间" />
-          <NDatePicker v-model:value="query.endTime" type="datetime" placeholder="结束时间" />
-        </template>
-        <NSelect v-model:value="query.siteId" :options="siteOptions" placeholder="站点" clearable style="width: 160px" />
-        <NSelect v-model:value="query.accessKeyId" :options="keyOptions" placeholder="密钥" clearable style="width: 160px" />
-        <NSelect v-model:value="query.source" :options="sourceOptions" placeholder="来源" clearable style="width: 120px" />
-        <NSelect v-model:value="query.status" :options="statusOptions" placeholder="状态" clearable style="width: 120px" />
-        <NButton type="primary" @click="query.page = 1; load()">查询</NButton>
-      </NSpace>
+      <template #header>
+        <NSpace align="center" :size="12" wrap>
+          <span>使用日志</span>
+          <NSelect v-model:value="query.rangeType" :options="rangeOptions" placeholder="时间范围" size="small" style="width: 110px" />
+          <template v-if="query.rangeType === 'custom'">
+            <NDatePicker v-model:value="query.startTime" type="datetime" placeholder="开始时间" size="small" />
+            <NDatePicker v-model:value="query.endTime" type="datetime" placeholder="结束时间" size="small" />
+          </template>
+          <NSelect v-model:value="query.siteId" :options="siteOptions" placeholder="站点" clearable size="small" style="width: 150px" />
+          <NSelect v-model:value="query.accessKeyId" :options="keyOptions" placeholder="密钥" clearable size="small" style="width: 150px" />
+          <NSelect v-model:value="query.source" :options="sourceOptions" placeholder="来源" clearable size="small" style="width: 110px" />
+          <NSelect v-model:value="query.status" :options="statusOptions" placeholder="状态" clearable size="small" style="width: 110px" />
+          <NButton type="primary" size="small" @click="query.page = 1; load()">查询</NButton>
+        </NSpace>
+      </template>
       <NDataTable :columns="columns" :data="items" :loading="loading" :row-key="(r: UsageLogItem) => r.id" :scroll-x="1200" remote :pagination="{
         page: query.page, pageSize: query.pageSize, itemCount: totalCount,
         onUpdatePage: (p: number) => { query.page = p; load() }

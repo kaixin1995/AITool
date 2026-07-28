@@ -8,9 +8,19 @@
    替代散落在各视图的硬编码 color:#888/#666，确保暗色模式可读。 */
 :root {
   --text-color-secondary: #888;
+  --bg-page: #F8FAFC;
+  --bg-card: #FFFFFF;
+  --bg-input: #FFFFFF;
+  --border-color-global: #E2E8F0;
+  --text-primary: #1E293B;
 }
 [data-theme='dark'] {
   --text-color-secondary: #999;
+  --bg-page: #101014;
+  --bg-card: #18181C;
+  --bg-input: #1F1F24;
+  --border-color-global: #2D2D33;
+  --text-primary: rgba(255, 255, 255, 0.82);
 }
 
 html,
@@ -19,8 +29,12 @@ body,
   margin: 0;
   padding: 0;
   height: 100%;
+  /* 默认跟随主题的页面背景，避免暗色模式下 body 透出白色。 */
+  background: var(--bg-page);
+  color: var(--text-primary);
   font-family:
     -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 /* 滚动条样式（与原 theme.css 一致的细滚动条） */
