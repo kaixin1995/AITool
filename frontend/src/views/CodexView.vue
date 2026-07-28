@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref } from 'vue'
-import { NCard, NButton, NSpace, NTag, NGrid, NGi, NEmpty, NSpin, NModal, NInput, NPopconfirm, NUpload, useMessage } from 'naive-ui'
+import { NCard, NButton, NSpace, NTag, NGrid, NGi, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/codex'
 import type { CodexAccount, CodexInspectionStatus } from '@/api/codex'
@@ -14,12 +14,32 @@ const inspection = ref<CodexInspectionStatus | null>(null)
 const oauthModal = ref(false)
 const oauthUrl = ref('')
 const oauthCallbackInput = ref('')
+const oauthDisplayName = ref('')
 const oauthLoading = ref(false)
 
 // 凭证导入弹窗
 const importModal = ref(false)
 const importJsonText = ref('')
 const importLoading = ref(false)
+
+// 编辑账号（重命名）弹窗
+const editModal = ref(false)
+const editAccount = ref<CodexAccount | null>(null)
+const editDisplayName = ref('')
+const editLoading = ref(false)
+
+// 重置额度信用弹窗
+const resetCreditModal = ref(false)
+const resetCreditAccount = ref<CodexAccount | null>(null)
+const resetCreditInfo = ref<{ availableCount: number; items: Array<{ count: number; expiresAt: string }> } | null>(null)
+const resetCreditLoading = ref(false)
+
+// 拉取/导入模型弹窗
+const modelModal = ref(false)
+const modelAccount = ref<CodexAccount | null>(null)
+const modelList = ref<Array<{ id: string; name: string }>>([])
+const checkedModels = ref<string[]>([])
+const modelLoading = ref(false)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -37,6 +57,7 @@ async function handleStartOAuth(): Promise<void> {
     const result = await api.startCodexOAuth()
     oauthUrl.value = result.url
     oauthCallbackInput.value = ''
+    oauthDisplayName.value = ''
     oauthModal.value = true
   } catch (e) { message.error((e as Error).message) }
 }
@@ -45,7 +66,7 @@ async function handleCompleteOAuth(): Promise<void> {
   if (!oauthCallbackInput.value.trim()) { message.warning('请粘贴回调 URL'); return }
   oauthLoading.value = true
   try {
-    await api.completeCodexOAuth(oauthCallbackInput.value.trim())
+    await api.completeCodexOAuth(oauthCallbackInput.value.trim(), oauthDisplayName.value.trim() || undefined)
     message.success('OAuth 登录成功')
     oauthModal.value = false
     await load()
@@ -53,13 +74,24 @@ async function handleCompleteOAuth(): Promise<void> {
 }
 
 async function handleToggle(acc: CodexAccount): Promise<void> {
-  await api.toggleCodexAccount(acc.id)
-  acc.isEnabled = !acc.isEnabled
+  try {
+    await api.toggleCodexAccount(acc.id)
+    acc.isEnabled = !acc.isEnabled
+  } catch (e) { message.error((e as Error).message) }
 }
 async function handleRefreshQuota(acc: CodexAccount): Promise<void> {
-  await api.refreshCodexQuota(acc.id)
-  message.success('已刷新额度')
-  await load()
+  try {
+    await api.refreshCodexQuota(acc.id)
+    message.success('已刷新额度')
+    await load()
+  } catch (e) { message.error((e as Error).message) }
+}
+async function handleRefreshToken(acc: CodexAccount): Promise<void> {
+  try {
+    await api.refreshCodexToken(acc.id)
+    message.success('已刷新 Token')
+    await load()
+  } catch (e) { message.error((e as Error).message) }
 }
 async function handleDelete(acc: CodexAccount): Promise<void> {
   await api.deleteCodexAccount(acc.id)
@@ -70,6 +102,64 @@ async function handleRunInspection(): Promise<void> {
   await api.runCodexInspection()
   message.success('已触发巡检')
   setTimeout(load, 2000)
+}
+
+// 编辑（重命名）
+function openEdit(acc: CodexAccount): void {
+  editAccount.value = acc
+  editDisplayName.value = acc.displayName
+  editModal.value = true
+}
+async function handleSaveEdit(): Promise<void> {
+  if (!editAccount.value || !editDisplayName.value.trim()) { message.warning('名称不能为空'); return }
+  editLoading.value = true
+  try {
+    await api.updateCodexAccount(editAccount.value.id, editDisplayName.value.trim())
+    message.success('已更新')
+    editModal.value = false
+    await load()
+  } catch (e) { message.error((e as Error).message) } finally { editLoading.value = false }
+}
+
+// 重置额度信用
+async function openResetCredit(acc: CodexAccount): Promise<void> {
+  resetCreditAccount.value = acc
+  resetCreditInfo.value = null
+  resetCreditModal.value = true
+  resetCreditLoading.value = true
+  try {
+    resetCreditInfo.value = await api.getResetCredits(acc.id)
+  } catch (e) { message.error((e as Error).message) } finally { resetCreditLoading.value = false }
+}
+async function handleConsumeResetCredit(): Promise<void> {
+  if (!resetCreditAccount.value) return
+  try {
+    await api.consumeResetCredit(resetCreditAccount.value.id)
+    message.success('已消耗一次重置信用')
+    resetCreditInfo.value = await api.getResetCredits(resetCreditAccount.value.id)
+    await load()
+  } catch (e) { message.error((e as Error).message) }
+}
+
+// 拉取/导入模型
+async function openFetchModels(acc: CodexAccount): Promise<void> {
+  modelAccount.value = acc
+  modelList.value = []
+  checkedModels.value = []
+  modelModal.value = true
+  modelLoading.value = true
+  try {
+    modelList.value = await api.fetchCodexModels(acc.id)
+  } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
+}
+async function handleImportModels(): Promise<void> {
+  if (!modelAccount.value || checkedModels.value.length === 0) { message.warning('请选择要导入的模型'); return }
+  modelLoading.value = true
+  try {
+    await api.importSelectedCodexModels(modelAccount.value.id, checkedModels.value)
+    message.success(`已导入 ${checkedModels.value.length} 个模型`)
+    modelModal.value = false
+  } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
 }
 
 async function handleImportCredential(): Promise<void> {
@@ -91,6 +181,14 @@ async function handleExportCredentials(): Promise<void> {
     await api.exportCredentials(ids)
     message.success('凭证已导出')
   } catch (e) { message.error((e as Error).message) }
+}
+
+// 额度进度条颜色
+function quotaColor(percent: number | null | undefined): 'success' | 'warning' | 'error' {
+  if (percent == null) return 'success'
+  if (percent >= 95) return 'error'
+  if (percent >= 80) return 'warning'
+  return 'success'
 }
 
 onMounted(() => {
@@ -147,8 +245,34 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               <div style="font-size: 12px; color: var(--text-color-secondary); margin-bottom: 8px">
                 上次额度检查：{{ acc.lastQuotaCheckedAt ? new Date(acc.lastQuotaCheckedAt).toLocaleString('zh-CN') : '从未' }}
               </div>
-              <NSpace :size="4">
+
+              <!-- 额度窗口进度条 -->
+              <div v-if="acc.windows && acc.windows.length > 0" class="quota-windows">
+                <div v-for="w in acc.windows" :key="w.id" class="quota-window">
+                  <div class="quota-label">
+                    <span>{{ w.label }}</span>
+                    <span v-if="w.resetLabel" style="font-size: 11px; color: var(--text-color-secondary)">重置于 {{ w.resetLabel }}</span>
+                  </div>
+                  <NProgress
+                    :percentage="Math.round(w.usedPercent)"
+                    :status="quotaColor(w.usedPercent)"
+                    :show-indicator="false"
+                    :height="8"
+                    :border-radius="4"
+                  />
+                  <span class="quota-percent">{{ Math.round(w.usedPercent) }}%</span>
+                </div>
+              </div>
+              <div v-if="acc.resetCreditsAvailableCount != null && acc.resetCreditsAvailableCount > 0" style="font-size: 12px; margin: 6px 0; color: #6C9EFF">
+                剩余 {{ acc.resetCreditsAvailableCount }} 次手动重置
+              </div>
+
+              <NSpace :size="4" wrap>
                 <NButton size="tiny" quaternary @click="handleRefreshQuota(acc)">刷新额度</NButton>
+                <NButton size="tiny" quaternary @click="handleRefreshToken(acc)">刷新Token</NButton>
+                <NButton size="tiny" quaternary @click="openEdit(acc)">编辑</NButton>
+                <NButton size="tiny" quaternary @click="openFetchModels(acc)">拉取模型</NButton>
+                <NButton v-if="acc.resetCreditsAvailableCount != null && acc.resetCreditsAvailableCount > 0" size="tiny" quaternary @click="openResetCredit(acc)">重置额度</NButton>
                 <NButton size="tiny" quaternary @click="handleToggle(acc)">{{ acc.isEnabled ? '禁用' : '启用' }}</NButton>
                 <NPopconfirm @positive-click="handleDelete(acc)">
                   <template #trigger><NButton size="tiny" quaternary type="error">删除</NButton></template>
@@ -171,6 +295,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       <div>
         <p style="margin: 0 0 8px; font-weight: 600">第 2 步：完成授权后，粘贴回调后的完整 URL</p>
         <NInput v-model:value="oauthCallbackInput" placeholder="https://chatgpt.com/auth/callback?code=..." type="textarea" :autosize="{ minRows: 2 }" />
+      </div>
+      <div style="margin-top: 12px">
+        <p style="margin: 0 0 8px; font-weight: 600">显示名称（可选）</p>
+        <NInput v-model:value="oauthDisplayName" placeholder="给这个账号起个好认的名字" />
       </div>
       <template #footer>
         <NSpace justify="end">
@@ -197,5 +325,74 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         </NSpace>
       </template>
     </NModal>
+
+    <!-- 编辑账号（重命名）弹窗 -->
+    <NModal v-model:show="editModal" title="编辑账号" preset="card" style="width: 420px; max-width: 92vw">
+      <NInput v-model:value="editDisplayName" placeholder="显示名称" />
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="editModal = false">取消</NButton>
+          <NButton type="primary" :loading="editLoading" @click="handleSaveEdit">保存</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- 重置额度信用弹窗 -->
+    <NModal v-model:show="resetCreditModal" title="重置额度信用" preset="card" style="width: 480px; max-width: 92vw">
+      <NSpin :show="resetCreditLoading">
+        <div v-if="resetCreditInfo">
+          <p style="margin: 0 0 12px">可用重置次数：<strong>{{ resetCreditInfo.availableCount }}</strong></p>
+          <div v-if="resetCreditInfo.items.length > 0">
+            <p style="margin: 0 0 8px; color: var(--text-color-secondary); font-size: 13px">信用明细：</p>
+            <div v-for="(item, idx) in resetCreditInfo.items" :key="idx" style="font-size: 13px; margin-bottom: 4px">
+              {{ item.count }} 次 · 过期 {{ new Date(item.expiresAt).toLocaleString('zh-CN') }}
+            </div>
+          </div>
+        </div>
+      </NSpin>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="resetCreditModal = false">关闭</NButton>
+          <NButton
+            v-if="resetCreditInfo && resetCreditInfo.availableCount > 0"
+            type="primary"
+            @click="handleConsumeResetCredit"
+          >消耗一次重置</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- 拉取/导入模型弹窗 -->
+    <NModal v-model:show="modelModal" :title="`拉取模型 - ${modelAccount?.displayName ?? ''}`" preset="card" style="width: 560px; max-width: 92vw">
+      <NSpin :show="modelLoading">
+        <NEmpty v-if="!modelLoading && modelList.length === 0" description="该账号无可用模型" size="small" />
+        <NSpace v-else vertical :size="6">
+          <NCheckbox
+            v-for="m in modelList"
+            :key="m.id"
+            :checked="checkedModels.includes(m.id)"
+            @update:checked="(v: boolean) => v ? checkedModels.push(m.id) : (checkedModels = checkedModels.filter(x => x !== m.id))"
+          >
+            {{ m.name }}
+          </NCheckbox>
+        </NSpace>
+      </NSpin>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="modelModal = false">取消</NButton>
+          <NButton type="primary" :disabled="checkedModels.length === 0" :loading="modelLoading" @click="handleImportModels">
+            导入选中（{{ checkedModels.length }}）
+          </NButton>
+        </NSpace>
+      </template>
+    </NModal>
   </div>
 </template>
+
+<style scoped>
+.quota-windows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.quota-window { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; }
+.quota-window .n-progress { grid-column: 1 / 2; }
+.quota-label { grid-column: 1 / 3; display: flex; justify-content: space-between; font-size: 12px; color: var(--text-color-secondary); }
+.quota-percent { grid-column: 2 / 3; font-size: 12px; font-weight: 600; min-width: 36px; text-align: right; }
+</style>

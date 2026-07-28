@@ -4,6 +4,7 @@ import { NCard, NSpace, NButton, NDataTable, NTag, NStatistic, NModal, NTabs, NT
 import * as api from '@/api/developer'
 import type { DeveloperInvocationSummary, DeveloperConcurrencyItem } from '@/api/developer'
 import PageHeader from '@/components/PageHeader.vue'
+import ClientSimulator from './ClientSimulator.vue'
 
 const message = useMessage()
 const loading = ref(false)
@@ -87,6 +88,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         <NCard>
           <NDataTable :columns="concColumns" :data="concurrency" :row-key="(r: DeveloperConcurrencyItem) => r.siteId + r.modelName" :pagination="{ pageSize: 20 }" size="small" />
         </NCard>
+      </NTabPane>
+      <NTabPane name="simulator" tab="客户端模拟">
+        <ClientSimulator />
       </NTabPane>
     </NTabs>
 
