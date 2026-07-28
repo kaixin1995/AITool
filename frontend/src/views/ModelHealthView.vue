@@ -2,7 +2,7 @@
 import { computed, h, onMounted, ref, watch } from 'vue'
 import { NCard, NButton, NSpace, NSelect, NTag, NStatistic, NPopconfirm, NEmpty, useMessage, type DataTableColumns } from 'naive-ui'
 import * as api from '@/api/modelHealth'
-import type { ModelHealthMonitoredModel } from '@/api/modelHealth'
+import type { ModelHealthMonitoredModel, ModelHealthDashboard } from '@/api/modelHealth'
 import PageHeader from '@/components/PageHeader.vue'
 
 const message = useMessage()
@@ -11,6 +11,8 @@ const monitored = ref<ModelHealthMonitoredModel[]>([])
 const availableModels = ref<{ id: string; displayName: string }[]>([])
 const range = ref('7d')
 const rangeOptions = ref<Array<{ value: string; label: string }>>([])
+// 每个模型按站点维度的健康明细（原 Razor 页有 per-site 卡片，这里保留数据供渲染）。
+const healthData = ref<ModelHealthDashboard['healthData']>({})
 
 async function load(): Promise<void> {
   loading.value = true
@@ -19,6 +21,7 @@ async function load(): Promise<void> {
     monitored.value = resp.monitoredModels
     availableModels.value = resp.availableModels
     rangeOptions.value = resp.rangeOptions
+    healthData.value = resp.healthData ?? {}
   } finally { loading.value = false }
 }
 
@@ -80,6 +83,26 @@ onMounted(load)
               :title="`${new Date(seg.startAt).toLocaleString('zh-CN')} · 成功${seg.successCount}/失败${seg.failureCount}`"
             />
           </div>
+
+          <!-- 按站点维度的健康明细（对齐原 Razor 页 per-site 卡片） -->
+          <div v-if="healthData[m.modelLibraryItemId]?.length" class="site-detail">
+            <div v-for="(site, sIdx) in healthData[m.modelLibraryItemId]" :key="sIdx" class="site-row">
+              <NSpace align="center" :size="8" style="flex: 1">
+                <span style="min-width: 120px; font-size: 13px">{{ site.siteName }}</span>
+                <NTag size="tiny" :bordered="false">{{ site.remoteModelName }}</NTag>
+                <NTag size="tiny" :type="site.lastStatus === 'success' ? 'success' : site.lastStatus === 'fail' ? 'error' : 'default'" :bordered="false">
+                  {{ site.lastStatus || '未知' }}
+                </NTag>
+                <span style="font-size: 12px; color: var(--text-color-secondary)">成功率 {{ (site.successRate * 100).toFixed(1) }}%</span>
+              </NSpace>
+              <div class="timeline site-timeline">
+                <span v-for="(seg, segIdx) in site.timelineSegments" :key="segIdx"
+                  :class="['timeline-seg', seg.status]"
+                  :title="`${new Date(seg.startAt).toLocaleString('zh-CN')}`"
+                />
+              </div>
+            </div>
+          </div>
         </NCard>
       </NSpace>
 
@@ -97,7 +120,11 @@ onMounted(load)
 
 <style scoped>
 .timeline { display: flex; gap: 2px; height: 24px; }
-.timeline-seg { flex: 1; min-width: 4px; border-radius: 2px; }
+.timeline-seg { flex: 1; min-width: 4px; border-radius: 2px; background: #d4d4d8; }
 .timeline-seg.success { background: #18a058; }
 .timeline-seg.fail { background: #d03050; }
+.site-detail { margin-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.site-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; border-top: 1px solid var(--border-color-global); }
+.site-timeline { height: 16px; flex: 1; min-width: 120px; }
+[data-theme='dark'] .timeline-seg { background: #3a3a40; }
 </style>

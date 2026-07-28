@@ -54,6 +54,10 @@ export interface SaveRuleItem {
   siteModelName: string
   upstreamModelName: string
   isEnabled: boolean
+  // 可用性模式：AllDay（全天）/ TimeRangeOnly（仅指定时间）/ TimeRangeExcluded（指定时间不可用）
+  availabilityMode?: string
+  // 时间段 JSON：[{start:"HH:mm", end:"HH:mm"}]，availabilityMode 为 AllDay 时为空
+  timeRangesJson?: string
 }
 export async function saveRouteRules(modelName: string, rules: SaveRuleItem[]): Promise<void> {
   // 后端字段名为 externalModelName（对应 ProxyRouteEntry.EntryName），不是 modelName

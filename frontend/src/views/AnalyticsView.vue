@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { echarts, type ECharts } from '@/composables/useEcharts'
+import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
+import { echarts, initChart as initThemedChart, type ECharts } from '@/composables/useEcharts'
 import { NCard, NSpace, NSelect, NDatePicker, NButton, NStatistic, NEmpty, NSpin } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/analytics'
@@ -89,11 +89,14 @@ const SUCCESS = '#34D399'
 const WARNING = '#FBBF24'
 const DANGER = '#F87171'
 const CACHED = '#A5B4FC'
+// 饼图分隔色随明暗主题（亮色卡片白底、暗色卡片深底）
+const pieBorderColor = computed(() => (document.documentElement.getAttribute('data-theme') === 'dark' ? '#18181C' : '#FFFFFF'))
 
 function initChart(key: ChartKey): ECharts | null {
   const el = chartEls.value[key]
   if (!el) return null
-  if (!charts.value[key]) charts.value[key] = echarts.init(el)
+  // 用主题感知的初始化（暗色模式注册了 aitool-dark 主题）
+  if (!charts.value[key]) charts.value[key] = initThemedChart(el)
   return charts.value[key]
 }
 
@@ -215,7 +218,7 @@ function renderCharts(): void {
       series: [{
         type: 'pie', radius: ['40%', '70%'], center: ['40%', '50%'],
         data: d.modelDistribution.map((m) => ({ name: m.label, value: m.requestCount })),
-        label: { show: false }, itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 }
+        label: { show: false }, itemStyle: { borderRadius: 6, borderColor: pieBorderColor, borderWidth: 2 }
       }]
     }, true)
   }

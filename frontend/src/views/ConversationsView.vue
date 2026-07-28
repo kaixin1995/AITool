@@ -83,7 +83,7 @@ onMounted(loadSessions)
               </NThing>
               <template #suffix>
                 <NPopconfirm @positive-click="handleDelete(s.groupKey)">
-                  <template #trigger><NButton size="tiny" quaternary type="error">删除</NButton></template>
+                  <template #trigger><NButton size="tiny" quaternary type="error" @click.stop>删除</NButton></template>
                   删除整个会话？
                 </NPopconfirm>
               </template>

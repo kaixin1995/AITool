@@ -136,7 +136,7 @@ async function handleSubmit(): Promise<void> {
   margin: 0 0 8px;
   font-size: 24px;
   font-weight: 700;
-  color: #1E293B;
+  color: var(--text-primary, #1E293B);
 }
 .login-subtitle {
   margin: 0;

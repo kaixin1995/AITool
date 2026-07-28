@@ -69,7 +69,7 @@ onMounted(load)
       <NDataTable :columns="columns" :data="items" :loading="loading" :row-key="(r: AccessKeyItem) => r.id" :pagination="{ pageSize: 20 }" striped />
     </NCard>
 
-    <NModal v-model:show="showModal" title="新建访问密钥" preset="card" style="width: 480px" :mask-closable="false">
+    <NModal v-model:show="showModal" title="新建访问密钥" preset="card" style="width: 480px; max-width: 92vw" :mask-closable="false">
       <NAlert v-if="newKeyPlain" type="success" :show-icon="true" style="margin-bottom: 16px">
         密钥已创建（仅展示一次，请立即复制）：
         <NInput :value="newKeyPlain" readonly type="textarea" :autosize="{ minRows: 2 }" style="margin-top: 8px" />

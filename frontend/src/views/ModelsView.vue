@@ -215,7 +215,7 @@ onMounted(loadModels)
       v-model:show="showModal"
       :title="isEditMode ? '编辑模型' : '新建模型'"
       preset="card"
-      style="width: 480px"
+      style="width: 480px; max-width: 92vw"
       :mask-closable="false"
     >
       <NForm label-placement="top">

@@ -75,10 +75,10 @@ onMounted(load)
       </template>
     </PageHeader>
     <NCard>
-      <NDataTable :columns="columns" :data="items" :loading="loading" :row-key="(r: CompatibilityProfileListItem) => r.id" striped />
+      <NDataTable :columns="columns" :data="items" :loading="loading" :row-key="(r: CompatibilityProfileListItem) => r.id" :pagination="{ pageSize: 20 }" striped />
     </NCard>
 
-    <NModal v-model:show="showModal" :title="isEdit ? '编辑规则集' : '新建规则集'" preset="card" style="width: 640px" :mask-closable="false">
+    <NModal v-model:show="showModal" :title="isEdit ? '编辑规则集' : '新建规则集'" preset="card" style="width: 640px; max-width: 92vw" :mask-closable="false">
       <NForm label-placement="top">
         <NFormItem label="名称"><NInput v-model:value="form.name" /></NFormItem>
         <NFormItem label="描述"><NInput v-model:value="form.description" type="textarea" :autosize="{ minRows: 2 }" /></NFormItem>

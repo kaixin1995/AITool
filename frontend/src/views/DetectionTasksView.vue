@@ -78,20 +78,23 @@ onMounted(load)
       </template>
     </PageHeader>
     <NCard>
-      <NDataTable :columns="columns" :data="tasks" :loading="loading" :row-key="(r: DetectionTaskItem) => r.id" striped />
+      <NDataTable :columns="columns" :data="tasks" :loading="loading" :row-key="(r: DetectionTaskItem) => r.id" :pagination="{ pageSize: 20 }" striped />
 
       <NCollapse v-if="tasks.some((t) => t.executionHistory.length > 0)" style="margin-top: 16px">
         <NCollapseItem v-for="t in tasks.filter((x) => x.executionHistory.length > 0)" :key="t.id" :title="`${t.name} 执行历史`" :name="t.id">
           <div v-for="(h, idx) in t.executionHistory" :key="idx" class="history-row">
             <NTag size="tiny" :type="h.status === 'completed' ? 'success' : 'warning'" :bordered="false">{{ h.status }}</NTag>
             <span>{{ h.startedAt ? new Date(h.startedAt).toLocaleString('zh-CN') : '—' }}</span>
+            <span v-if="h.startedAt && h.finishedAt" style="color: var(--text-color-secondary); min-width: 70px">
+              耗时 {{ Math.round((new Date(h.finishedAt).getTime() - new Date(h.startedAt).getTime()) / 1000) }}s
+            </span>
             <span style="color: var(--text-color-secondary)">{{ h.summary }}</span>
           </div>
         </NCollapseItem>
       </NCollapse>
     </NCard>
 
-    <NModal v-model:show="showModal" title="新建检测任务" preset="card" style="width: 480px">
+    <NModal v-model:show="showModal" title="新建检测任务" preset="card" style="width: 480px; max-width: 92vw">
       <NForm label-placement="top">
         <NFormItem label="任务名称"><NInput v-model:value="form.name" /></NFormItem>
         <NFormItem label="Cron 表达式"><NInput v-model:value="form.cronExpression" placeholder="如 0 * * * *（每小时）" /></NFormItem>

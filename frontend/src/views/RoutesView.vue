@@ -55,8 +55,10 @@ async function handleSave(): Promise<void> {
   if (!selectedModel.value) return
   saving.value = true
   try {
+    // 保留 availabilityMode / timeRangesJson，避免保存时把时间规则重置为全天（数据丢失）
     await api.saveRouteRules(selectedModel.value, rules.value.map((r) => ({
-      siteId: r.siteId, siteModelName: r.siteModelName, upstreamModelName: r.upstreamModelName, isEnabled: r.isEnabled
+      siteId: r.siteId, siteModelName: r.siteModelName, upstreamModelName: r.upstreamModelName, isEnabled: r.isEnabled,
+      availabilityMode: r.availabilityMode, timeRangesJson: r.timeRangesJson
     })))
     message.success('路由规则已保存')
     if (selectedModel.value) rules.value = await api.getRouteRules(selectedModel.value)

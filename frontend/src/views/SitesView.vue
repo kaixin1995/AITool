@@ -223,14 +223,12 @@ onMounted(loadSites)
   <div class="page-container">
     <PageHeader title="站点管理" subtitle="管理所有代理站点及其配置">
       <template #actions>
-        <NButton
-          v-if="checkedRowKeys.length > 0"
-          type="error"
-          quaternary
-          @click="handleBulkDelete"
-        >
-          批量删除（{{ checkedRowKeys.length }}）
-        </NButton>
+        <NPopconfirm v-if="checkedRowKeys.length > 0" @positive-click="handleBulkDelete">
+          <template #trigger>
+            <NButton type="error" quaternary>批量删除（{{ checkedRowKeys.length }}）</NButton>
+          </template>
+          确认批量删除选中的 {{ checkedRowKeys.length }} 个站点？关联映射和路由规则会一并清理。
+        </NPopconfirm>
         <NButton quaternary @click="handleExport">导出</NButton>
         <NButton quaternary @click="openImport">导入</NButton>
         <NButton type="primary" @click="openCreate">新建站点</NButton>
@@ -254,7 +252,7 @@ onMounted(loadSites)
       v-model:show="showModal"
       :title="modalTitle"
       preset="card"
-      style="width: 560px"
+      style="width: 560px; max-width: 92vw"
       :mask-closable="false"
     >
       <NForm label-placement="top">
@@ -294,7 +292,7 @@ onMounted(loadSites)
     </NModal>
 
     <!-- 导入站点 -->
-    <NModal v-model:show="importVisible" title="导入站点" preset="card" style="width: 560px" :mask-closable="false">
+    <NModal v-model:show="importVisible" title="导入站点" preset="card" style="width: 560px; max-width: 92vw" :mask-closable="false">
       <NFormItem label="粘贴站点 JSON 数组" :show-feedback="false">
         <NInput
           v-model:value="importJson"

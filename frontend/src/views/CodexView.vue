@@ -162,7 +162,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     </NSpin>
 
     <!-- OAuth 弹窗 -->
-    <NModal v-model:show="oauthModal" title="Codex OAuth 登录" preset="card" style="width: 600px" :mask-closable="false">
+    <NModal v-model:show="oauthModal" title="Codex OAuth 登录" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false">
       <div style="margin-bottom: 12px">
         <p style="margin: 0 0 8px; font-weight: 600">第 1 步：打开授权链接</p>
         <NInput :value="oauthUrl" readonly type="textarea" :autosize="{ minRows: 2 }" />
@@ -181,7 +181,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     </NModal>
 
     <!-- 导入凭证弹窗 -->
-    <NModal v-model:show="importModal" title="导入 Codex 凭证" preset="card" style="width: 600px" :mask-closable="false">
+    <NModal v-model:show="importModal" title="导入 Codex 凭证" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false">
       <p style="margin: 0 0 8px; color: var(--text-color-secondary)">粘贴 CPA 格式的凭证 JSON（含 access_token / refresh_token / id_token）：</p>
       <NInput
         v-model:value="importJsonText"

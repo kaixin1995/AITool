@@ -21,5 +21,34 @@ echarts.use([
   CanvasRenderer
 ])
 
+// 暗色主题：深色画布 + 浅色文字/网格线，避免暗色模式下图表白色背景刺眼。
+echarts.registerTheme('aitool-dark', {
+  backgroundColor: 'transparent',
+  textStyle: { color: 'rgba(255,255,255,0.82)' },
+  title: { textStyle: { color: 'rgba(255,255,255,0.82)' } },
+  legend: { textStyle: { color: 'rgba(255,255,255,0.65)' } },
+  categoryAxis: {
+    axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } },
+    axisLabel: { color: 'rgba(255,255,255,0.55)' },
+    splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } }
+  },
+  valueAxis: {
+    axisLine: { lineStyle: { color: 'rgba(255,255,255,0.2)' } },
+    axisLabel: { color: 'rgba(255,255,255,0.55)' },
+    splitLine: { lineStyle: { color: 'rgba(255,255,255,0.08)' } }
+  },
+  tooltip: {
+    backgroundColor: 'rgba(40,40,48,0.95)',
+    borderColor: 'rgba(255,255,255,0.12)',
+    textStyle: { color: 'rgba(255,255,255,0.9)' }
+  }
+})
+
+// 根据当前主题（data-theme 属性）初始化图表实例，自动适配明暗。
+export function initChart(el: HTMLElement): echarts.ECharts {
+  const isDark = document.documentElement.getAttribute('data-theme') === 'dark'
+  return echarts.init(el, isDark ? 'aitool-dark' : undefined)
+}
+
 export { echarts }
 export type ECharts = echarts.ECharts
