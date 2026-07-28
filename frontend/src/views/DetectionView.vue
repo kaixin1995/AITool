@@ -36,9 +36,19 @@ async function handleProbeModel(modelId: string): Promise<void> {
   } catch (e) { message.error((e as Error).message) }
 }
 
-function statusTag(status: string) {
-  const type = status === 'success' ? 'success' : status === 'fail' ? 'error' : 'default'
-  return h(NTag, { size: 'small', type, bordered: false }, () => status || '未知')
+async function handleProbeAll(): Promise<void> {
+  try {
+    const resp = await api.probeAll()
+    message.info(`已提交全量探测任务 ${resp.taskId}`)
+    setTimeout(load, 3000)
+  } catch (e) { message.error((e as Error).message) }
+}
+
+// 状态 → NTag type 映射，模板里直接用 <NTag :type="statusType(...)">。
+function statusType(status: string): 'success' | 'error' | 'default' {
+  if (status === 'success') return 'success'
+  if (status === 'fail') return 'error'
+  return 'default'
 }
 
 onMounted(load)
@@ -50,7 +60,10 @@ onMounted(load)
       <template #header>
         <NSpace justify="space-between" align="center">
           <span>模型检测（{{ groups.length }} 个模型）</span>
-          <NButton @click="load">刷新</NButton>
+          <NSpace :size="8">
+            <NButton size="small" type="primary" quaternary :disabled="groups.length === 0" @click="handleProbeAll">全部探测</NButton>
+            <NButton size="small" @click="load">刷新</NButton>
+          </NSpace>
         </NSpace>
       </template>
       <NEmpty v-if="!loading && groups.length === 0" description="暂无模型映射" />
@@ -60,7 +73,7 @@ onMounted(load)
             <NSpace align="center" :size="8">
               <span style="font-weight: 600">{{ g.displayName }}</span>
               <NTag size="tiny" :bordered="false">{{ g.sites.length }} 站点</NTag>
-              <NButton size="tiny" quaternary type="primary" @click="handleProbeModel(g.modelLibraryItemId)">全部探测</NButton>
+              <NButton size="tiny" quaternary type="primary" @click="handleProbeModel(g.modelLibraryItemId)">探测此模型</NButton>
             </NSpace>
           </template>
           <NSpace vertical :size="6">
@@ -68,7 +81,7 @@ onMounted(load)
               <NSpace align="center" :size="8" style="flex: 1">
                 <span style="min-width: 140px">{{ s.siteName }}</span>
                 <NTag size="small" :bordered="false">{{ s.remoteModelName }}</NTag>
-                <component :is="statusTag(s.lastStatus)" />
+                <NTag size="small" :type="statusType(s.lastStatus)" :bordered="false">{{ s.lastStatus || '未知' }}</NTag>
                 <span v-if="s.lastDurationMs" style="font-size: 12px; color: var(--text-color-secondary)">{{ s.lastDurationMs }}ms</span>
                 <span v-if="s.lastCheckedAt" style="font-size: 12px; color: var(--text-color-secondary)">{{ new Date(s.lastCheckedAt).toLocaleString('zh-CN') }}</span>
               </NSpace>

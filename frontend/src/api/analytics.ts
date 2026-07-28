@@ -8,9 +8,12 @@ export interface AnalyticsSummary {
   totalInputTokens: number
   totalOutputTokens: number
   totalCachedTokens: number
+  totalTokens?: number
   averageTotalDurationMs?: number
   averageFirstTokenLatencyMs?: number
   successRate?: number
+  failureRate?: number
+  fallbackRequestCount?: number
 }
 export interface AnalyticsTrendPoint {
   label: string
@@ -19,7 +22,26 @@ export interface AnalyticsTrendPoint {
 export interface AnalyticsResultTrendPoint {
   label: string
   successCount: number
-  failedCount: number
+  failCount: number
+  successRate?: number
+  failureRate?: number
+}
+export interface AnalyticsTokenTrendPoint {
+  label: string
+  inputTokens: number
+  cachedTokens: number
+  outputTokens: number
+  totalTokens: number
+}
+export interface AnalyticsDurationTrendPoint {
+  label: string
+  averageTotalDurationMs: number
+  averageFirstTokenLatencyMs: number
+}
+export interface AnalyticsFallbackTrendPoint {
+  label: string
+  fallbackCount: number
+  fallbackRate: number
 }
 export interface AnalyticsDistributionPoint {
   label: string
@@ -27,13 +49,28 @@ export interface AnalyticsDistributionPoint {
   successCount?: number
   failedCount?: number
   totalTokens?: number
+  inputTokens?: number
+  cachedTokens?: number
+  outputTokens?: number
+  averageTotalDurationMs?: number
+}
+export interface AnalyticsCacheRatioPoint {
+  label: string
+  inputTokens: number
+  cachedTokens: number
+  totalInputScope: number
+  cacheHitRate: number
 }
 export interface AnalyticsDashboard {
   summary: AnalyticsSummary
   requestTrend: AnalyticsTrendPoint[]
   resultTrend?: AnalyticsResultTrendPoint[]
+  tokenTrend?: AnalyticsTokenTrendPoint[]
+  durationTrend?: AnalyticsDurationTrendPoint[]
+  fallbackTrend?: AnalyticsFallbackTrendPoint[]
   modelDistribution: AnalyticsDistributionPoint[]
   siteDistribution: AnalyticsDistributionPoint[]
+  modelCacheRatioDistribution?: AnalyticsCacheRatioPoint[]
 }
 
 export interface AnalyticsFilterOptions {
