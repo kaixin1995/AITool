@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref, watch } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { NCard, NButton, NSpace, NSelect, NTag, NStatistic, NPopconfirm, NEmpty, useMessage, type DataTableColumns } from 'naive-ui'
 import * as api from '@/api/modelHealth'
 import type { ModelHealthMonitoredModel, ModelHealthDashboard } from '@/api/modelHealth'

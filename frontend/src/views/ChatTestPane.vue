@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { NCard, NSpace, NSelect, NInput, NButton, NTag, NSwitch, NCollapse, NCollapseItem, useMessage, type SelectOption } from 'naive-ui'
 import * as chatApi from '@/api/chat'
 import type { ChatModel, ChatModelTarget } from '@/api/chat'
@@ -50,12 +50,7 @@ watch(selectedModelId, async (id) => {
   }
 }, { immediate: false })
 
-const targetOptions: SelectOption[] = [
-  { label: '自动（走完整 fallback 链）', value: '' },
-  ...targets.value.map((t) => ({ label: `${t.siteName} · ${t.siteModelName}`, value: t.mappingId }))
-]
 // targets 是 ref，需要用 computed 保证选项随 targets 变化更新
-import { computed } from 'vue'
 const targetOptionsComputed = computed<SelectOption[]>(() => [
   { label: '自动（走完整 fallback 链）', value: '' },
   ...targets.value.map((t) => ({ label: `${t.siteName} · ${t.siteModelName}`, value: t.mappingId }))

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { NCard, NSpace, NInput, NButton, NSelect, NTag, useMessage, type SelectOption } from 'naive-ui'
 import * as devApi from '@/api/developer'
 
@@ -25,13 +25,11 @@ onMounted(async () => {
   }
 })
 
-const modelOptions: SelectOption[] = []
 const modelOptionsRef = ref<SelectOption[]>([])
 async function refreshOptions() {
   modelOptionsRef.value = models.value.map((m) => ({ label: m.modelName, value: m.modelName }))
 }
 // 监听 models 变化更新选项
-import { watch } from 'vue'
 watch(models, refreshOptions, { immediate: true })
 
 async function handleSend(): Promise<void> {

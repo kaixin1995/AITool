@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { NCard, NButton, NSpace, NTag, NEmpty, NPopconfirm, useMessage, type DataTableColumns } from 'naive-ui'
 import * as api from '@/api/detection'
 import type { DetectionModelGroup, DetectionSiteStatus } from '@/api/detection'
