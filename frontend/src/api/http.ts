@@ -138,7 +138,8 @@ instance.interceptors.response.use(
       ''
     const apiError = new ApiError(message, errorCode, status ?? 0)
     // 401 不重复弹提示（已在上方处理跳转）。
-    if (status !== 401) {
+    // skipErrorNotify：调用方声明自行处理该错误（如可选功能未启用），不弹全局提示。
+    if (status !== 401 && !originalRequest?.skipErrorNotify) {
       notify('error', message)
     }
     return Promise.reject(apiError)
@@ -154,6 +155,14 @@ export class ApiError extends Error {
     this.name = 'ApiError'
     this.errorCode = errorCode
     this.status = status
+  }
+}
+
+// 扩展 axios 配置：skipErrorNotify=true 时，响应拦截器不弹全局错误提示，
+// 供调用方自行处理「预期内」的错误（如可选功能未启用返回 404）。
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    skipErrorNotify?: boolean
   }
 }
 

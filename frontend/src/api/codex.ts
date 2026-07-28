@@ -61,5 +61,6 @@ export async function runCodexInspection(): Promise<void> {
   await httpPost('/api/admin/codex/inspection/run')
 }
 export async function getCodexInspectionStatus(): Promise<CodexInspectionStatus> {
-  return httpGet<CodexInspectionStatus>('/api/admin/codex/inspection/status')
+  // 巡检是可选功能：未启用时后端返回 404，这里静默处理（不弹全局错误提示）。
+  return httpGet<CodexInspectionStatus>('/api/admin/codex/inspection/status', { skipErrorNotify: true })
 }
