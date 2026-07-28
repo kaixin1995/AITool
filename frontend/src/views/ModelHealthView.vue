@@ -3,6 +3,7 @@ import { computed, h, onMounted, ref, watch } from 'vue'
 import { NCard, NButton, NSpace, NSelect, NTag, NStatistic, NPopconfirm, NEmpty, useMessage, type DataTableColumns } from 'naive-ui'
 import * as api from '@/api/modelHealth'
 import type { ModelHealthMonitoredModel } from '@/api/modelHealth'
+import PageHeader from '@/components/PageHeader.vue'
 
 const message = useMessage()
 const loading = ref(false)
@@ -44,17 +45,13 @@ onMounted(load)
 
 <template>
   <div class="page-container">
-    <NCard>
-      <template #header>
-        <NSpace justify="space-between" align="center">
-          <span>模型健康监控</span>
-          <NSpace :size="12">
-            <NSelect v-model:value="range" :options="rangeOptions" style="width: 140px" />
-            <NButton @click="load">刷新</NButton>
-          </NSpace>
-        </NSpace>
+    <PageHeader title="模型健康看板" subtitle="监控指定模型在各站点的健康状态和检测历史">
+      <template #actions>
+        <NSelect v-model:value="range" :options="rangeOptions" style="width: 140px" />
+        <NButton @click="load">刷新</NButton>
       </template>
-
+    </PageHeader>
+    <NCard>
       <NEmpty v-if="!loading && monitored.length === 0" description="暂无监控模型，从下方添加" />
 
       <NSpace vertical :size="12">

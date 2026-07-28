@@ -3,6 +3,7 @@ import { computed, h, onMounted, reactive, ref } from 'vue'
 import { NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput, NPopconfirm, useMessage, type DataTableColumns } from 'naive-ui'
 import * as api from '@/api/compatibility'
 import type { CompatibilityProfileListItem } from '@/api/compatibility'
+import PageHeader from '@/components/PageHeader.vue'
 
 const message = useMessage()
 const loading = ref(false)
@@ -68,13 +69,12 @@ onMounted(load)
 
 <template>
   <div class="page-container">
-    <NCard>
-      <template #header>
-        <NSpace justify="space-between" align="center">
-          <span>兼容规则集</span>
-          <NButton type="primary" @click="openCreate">新建规则集</NButton>
-        </NSpace>
+    <PageHeader title="兼容规则集" subtitle="独立维护字段级兼容规则（剔除/重命名/补默认值），可被多个模型引用">
+      <template #actions>
+        <NButton type="primary" @click="openCreate">新建规则集</NButton>
       </template>
+    </PageHeader>
+    <NCard>
       <NDataTable :columns="columns" :data="items" :loading="loading" :row-key="(r: CompatibilityProfileListItem) => r.id" striped />
     </NCard>
 

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
 import { NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput, NSelect, NPopconfirm, NCollapse, NCollapseItem, useMessage, type DataTableColumns, type SelectOption } from 'naive-ui'
+import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/detectionTasks'
 import type { DetectionTaskItem } from '@/api/detectionTasks'
 
@@ -71,13 +72,12 @@ onMounted(load)
 
 <template>
   <div class="page-container">
-    <NCard>
-      <template #header>
-        <NSpace justify="space-between" align="center">
-          <span>检测任务</span>
-          <NButton type="primary" @click="showModal = true">新建任务</NButton>
-        </NSpace>
+    <PageHeader title="检测任务管理" subtitle="配置定时检测任务，自动监控模型可用性">
+      <template #actions>
+        <NButton type="primary" @click="showModal = true">新建任务</NButton>
       </template>
+    </PageHeader>
+    <NCard>
       <NDataTable :columns="columns" :data="tasks" :loading="loading" :row-key="(r: DetectionTaskItem) => r.id" striped />
 
       <NCollapse v-if="tasks.some((t) => t.executionHistory.length > 0)" style="margin-top: 16px">

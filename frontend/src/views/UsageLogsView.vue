@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
 import { NCard, NSpace, NDataTable, NTag, NSelect, NDatePicker, NButton, NStatistic, NGrid, NGi, useMessage, type DataTableColumns, type SelectOption } from 'naive-ui'
+import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/usageLogs'
 import type { UsageLogItem } from '@/api/usageLogs'
 
@@ -79,6 +80,7 @@ onMounted(async () => {
 
 <template>
   <div class="page-container">
+    <PageHeader title="调用日志" subtitle="查看代理服务和对话测试的调用记录" />
     <!-- 汇总卡片（对齐原设计：总请求/成功率/总Tokens/失败请求） -->
     <NGrid :cols="4" :x-gap="12" :y-gap="12" responsive="screen" item-responsive style="margin-bottom: 16px">
       <NGi span="4 m:2 l:1">
@@ -98,7 +100,6 @@ onMounted(async () => {
     <NCard>
       <template #header>
         <NSpace align="center" :size="12" wrap>
-          <span>使用日志</span>
           <NSelect v-model:value="query.rangeType" :options="rangeOptions" placeholder="时间范围" size="small" style="width: 110px" />
           <template v-if="query.rangeType === 'custom'">
             <NDatePicker v-model:value="query.startTime" type="datetime" placeholder="开始时间" size="small" />

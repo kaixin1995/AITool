@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import { NCard, NButton, NSpace, NTag, NGrid, NGi, NEmpty, NSpin, NModal, NInput, NPopconfirm, NUpload, useMessage } from 'naive-ui'
+import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/codex'
 import type { CodexAccount, CodexInspectionStatus } from '@/api/codex'
 
@@ -103,19 +104,17 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 <template>
   <div class="page-container">
+    <PageHeader title="OAuth 管理" subtitle="管理 Codex OAuth 登录账号、凭证导入、额度、巡检与自动禁用">
+      <template #actions>
+        <NTag v-if="accounts.length" round :bordered="false" size="small">{{ accounts.length }} 个</NTag>
+        <NButton v-if="inspection" size="small" @click="handleRunInspection">触发巡检</NButton>
+        <NButton size="small" quaternary @click="importModal = true">导入凭证</NButton>
+        <NButton size="small" quaternary :disabled="accounts.length === 0" @click="handleExportCredentials">导出凭证</NButton>
+        <NButton size="small" type="primary" @click="handleStartOAuth">OAuth 登录</NButton>
+      </template>
+    </PageHeader>
     <NSpin :show="loading">
       <NCard>
-        <template #header>
-          <NSpace justify="space-between" align="center">
-            <span>Codex 账号管理（{{ accounts.length }} 个）</span>
-            <NSpace>
-              <NButton v-if="inspection" size="small" @click="handleRunInspection">触发巡检</NButton>
-              <NButton size="small" quaternary @click="importModal = true">导入凭证</NButton>
-              <NButton size="small" quaternary :disabled="accounts.length === 0" @click="handleExportCredentials">导出凭证</NButton>
-              <NButton size="small" type="primary" @click="handleStartOAuth">OAuth 登录</NButton>
-            </NSpace>
-          </NSpace>
-        </template>
 
         <!-- 巡检状态 -->
         <NCard v-if="inspection" size="small" style="margin-bottom: 16px">

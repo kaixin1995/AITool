@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, reactive, ref } from 'vue'
 import { NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput, NPopconfirm, NAlert, useMessage, type DataTableColumns } from 'naive-ui'
+import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/accessKeys'
 import type { AccessKeyItem } from '@/api/accessKeys'
 
@@ -59,13 +60,12 @@ onMounted(load)
 
 <template>
   <div class="page-container">
-    <NCard>
-      <template #header>
-        <NSpace justify="space-between" align="center">
-          <span>访问密钥</span>
-          <NButton type="primary" @click="showModal = true; newKeyName = ''; newKeyPlain = ''">新建密钥</NButton>
-        </NSpace>
+    <PageHeader title="访问密钥管理" subtitle="管理用于访问代理服务的密钥，可限定每个密钥只能访问指定路由">
+      <template #actions>
+        <NButton type="primary" @click="showModal = true; newKeyName = ''; newKeyPlain = ''">新建密钥</NButton>
       </template>
+    </PageHeader>
+    <NCard>
       <NDataTable :columns="columns" :data="items" :loading="loading" :row-key="(r: AccessKeyItem) => r.id" :pagination="{ pageSize: 20 }" striped />
     </NCard>
 

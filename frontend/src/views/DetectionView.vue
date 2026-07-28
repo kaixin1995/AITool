@@ -3,6 +3,7 @@ import { computed, h, onMounted, ref } from 'vue'
 import { NCard, NButton, NSpace, NTag, NEmpty, NPopconfirm, useMessage, type DataTableColumns } from 'naive-ui'
 import * as api from '@/api/detection'
 import type { DetectionModelGroup, DetectionSiteStatus } from '@/api/detection'
+import PageHeader from '@/components/PageHeader.vue'
 
 const message = useMessage()
 const loading = ref(false)
@@ -56,16 +57,14 @@ onMounted(load)
 
 <template>
   <div class="page-container">
-    <NCard>
-      <template #header>
-        <NSpace justify="space-between" align="center">
-          <span>模型检测（{{ groups.length }} 个模型）</span>
-          <NSpace :size="8">
-            <NButton size="small" type="primary" quaternary :disabled="groups.length === 0" @click="handleProbeAll">全部探测</NButton>
-            <NButton size="small" @click="load">刷新</NButton>
-          </NSpace>
-        </NSpace>
+    <PageHeader title="模型检测" subtitle="按模型分组查看各站点的可用性和响应状态">
+      <template #actions>
+        <NTag v-if="groups.length" round :bordered="false" size="small">{{ groups.length }} 个模型</NTag>
+        <NButton size="small" type="primary" quaternary :disabled="groups.length === 0" @click="handleProbeAll">全部探测</NButton>
+        <NButton size="small" @click="load">刷新</NButton>
       </template>
+    </PageHeader>
+    <NCard>
       <NEmpty v-if="!loading && groups.length === 0" description="暂无模型映射" />
       <NSpace v-else vertical :size="12">
         <NCard v-for="g in groups" :key="g.modelLibraryItemId" size="small">

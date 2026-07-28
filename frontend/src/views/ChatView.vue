@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { NTabs, NTabPane } from 'naive-ui'
+import PageHeader from '@/components/PageHeader.vue'
 import { useAuthStore } from '@/stores/auth'
 import ChatTestPane from './ChatTestPane.vue'
 import ConversationsView from './ConversationsView.vue'
@@ -12,6 +13,7 @@ const conversationLogEnabled = computed(() => auth.status?.features?.conversatio
 
 <template>
   <div class="page-container" style="height: calc(100vh - 88px); display: flex; flex-direction: column">
+    <PageHeader title="对话" subtitle="对话测试与对话记录" />
     <NTabs type="line" animated size="large" style="flex: 1; display: flex; flex-direction: column">
       <NTabPane name="chat" tab="对话测试" style="flex: 1; display: flex; flex-direction: column">
         <ChatTestPane />

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { NCard, NGrid, NGi, NStatistic, NSpin, NEmpty } from 'naive-ui'
+import PageHeader from '@/components/PageHeader.vue'
 import { getDashboardStats, type DashboardStats } from '@/api/dashboard'
 
 const stats = ref<DashboardStats | null>(null)
@@ -20,6 +21,7 @@ onMounted(async () => {
 
 <template>
   <div class="page-container">
+    <PageHeader title="仪表盘" subtitle="系统总览" />
     <NSpin :show="loading">
       <NGrid v-if="stats" :cols="4" :x-gap="16" :y-gap="16" responsive="screen" item-responsive>
         <NGi span="4 m:2 l:1">

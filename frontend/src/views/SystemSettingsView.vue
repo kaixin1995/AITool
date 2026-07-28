@@ -4,6 +4,7 @@ import {
   NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NSpace,
   NDivider, NPopconfirm, NTag, NTooltip, NSpin, useMessage
 } from 'naive-ui'
+import PageHeader from '@/components/PageHeader.vue'
 import * as systemApi from '@/api/system'
 import type { SystemSettings } from '@/api/system'
 
@@ -67,6 +68,7 @@ onMounted(loadSettings)
 
 <template>
   <div class="page-container">
+    <PageHeader title="系统设置" subtitle="配置检测、代理、日志保留与危险操作" />
     <NSpin :show="loading">
       <NCard>
         <NSpace vertical :size="0">

@@ -4,6 +4,7 @@ import {
   NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput,
   NSwitch, NPopconfirm, NSelect, useMessage, type DataTableColumns
 } from 'naive-ui'
+import PageHeader from '@/components/PageHeader.vue'
 import * as sitesApi from '@/api/sites'
 import type { SiteListItem, SitePayload } from '@/api/sites'
 
@@ -220,26 +221,23 @@ onMounted(loadSites)
 
 <template>
   <div class="page-container">
-    <NCard>
-      <template #header>
-        <NSpace justify="space-between" align="center">
-          <span>站点管理</span>
-          <NSpace>
-            <NButton
-              v-if="checkedRowKeys.length > 0"
-              type="error"
-              quaternary
-              @click="handleBulkDelete"
-            >
-              批量删除（{{ checkedRowKeys.length }}）
-            </NButton>
-            <NButton quaternary @click="handleExport">导出</NButton>
-            <NButton quaternary @click="openImport">导入</NButton>
-            <NButton type="primary" @click="openCreate">新建站点</NButton>
-          </NSpace>
-        </NSpace>
+    <PageHeader title="站点管理" subtitle="管理所有代理站点及其配置">
+      <template #actions>
+        <NButton
+          v-if="checkedRowKeys.length > 0"
+          type="error"
+          quaternary
+          @click="handleBulkDelete"
+        >
+          批量删除（{{ checkedRowKeys.length }}）
+        </NButton>
+        <NButton quaternary @click="handleExport">导出</NButton>
+        <NButton quaternary @click="openImport">导入</NButton>
+        <NButton type="primary" @click="openCreate">新建站点</NButton>
       </template>
+    </PageHeader>
 
+    <NCard>
       <NDataTable
         v-model:checked-row-keys="checkedRowKeys"
         :columns="columns"

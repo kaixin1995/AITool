@@ -2,6 +2,7 @@
 import { nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { echarts, type ECharts } from '@/composables/useEcharts'
 import { NCard, NSpace, NSelect, NDatePicker, NButton, NStatistic, NEmpty, NSpin } from 'naive-ui'
+import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/analytics'
 import type { AnalyticsDashboard, AnalyticsFilterOptions } from '@/api/analytics'
 
@@ -242,17 +243,16 @@ watch([startTime, endTime], () => {
 
 <template>
   <div class="page-container">
+    <PageHeader title="可视化分析" subtitle="请求量、Token 用量、成功率、回退、缓存命中等趋势分析" />
     <NSpin :show="loading">
       <NCard>
         <template #header>
-          <NSpace justify="space-between" align="center" wrap :size="12">
-            <span>统计分析</span>
-            <NSpace :size="12" wrap>
-              <NSelect v-model:value="rangeType" :options="rangeOptions" placeholder="时间范围" style="width: 120px" />
-              <template v-if="rangeType === 'custom'">
-                <NDatePicker v-model:value="startTime" type="datetime" placeholder="开始时间" />
-                <NDatePicker v-model:value="endTime" type="datetime" placeholder="结束时间" />
-              </template>
+          <NSpace align="center" wrap :size="12">
+            <NSelect v-model:value="rangeType" :options="rangeOptions" placeholder="时间范围" style="width: 120px" />
+            <template v-if="rangeType === 'custom'">
+              <NDatePicker v-model:value="startTime" type="datetime" placeholder="开始时间" />
+              <NDatePicker v-model:value="endTime" type="datetime" placeholder="结束时间" />
+            </template>
               <NSelect
                 v-if="filterOptions"
                 v-model:value="protocolType"
@@ -285,7 +285,6 @@ watch([startTime, endTime], () => {
                 style="width: 160px"
               />
               <NButton type="primary" @click="load">查询</NButton>
-            </NSpace>
           </NSpace>
         </template>
 

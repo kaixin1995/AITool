@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref, watch } from 'vue'
 import { NCard, NButton, NSpace, NSelect, NTag, NEmpty, NPopconfirm, useMessage, NIcon } from 'naive-ui'
+import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/routes'
 import type { RouteModelItem, RouteRuleItem, DiscoveredSite } from '@/api/routes'
 
@@ -81,17 +82,13 @@ onMounted(loadModels)
 
 <template>
   <div class="page-container">
-    <NCard>
-      <template #header>
-        <NSpace justify="space-between" align="center">
-          <NSpace align="center" :size="12">
-            <span>路由规则</span>
-            <NSelect v-model:value="selectedModel" :options="modelOptions" placeholder="选择模型" style="width: 280px" />
-          </NSpace>
-          <NButton type="primary" :loading="saving" :disabled="!selectedModel" @click="handleSave">保存顺序</NButton>
-        </NSpace>
+    <PageHeader title="路由规则管理" subtitle="主入口绑定有序候选实例队列，请求时按顺序失败切换、成功即停止">
+      <template #actions>
+        <NSelect v-model:value="selectedModel" :options="modelOptions" placeholder="选择模型" style="width: 280px" />
+        <NButton type="primary" :loading="saving" :disabled="!selectedModel" @click="handleSave">保存顺序</NButton>
       </template>
-
+    </PageHeader>
+    <NCard>
       <div v-if="!selectedModel">
         <NEmpty description="请选择一个模型" />
       </div>

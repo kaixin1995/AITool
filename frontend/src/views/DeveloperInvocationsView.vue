@@ -3,6 +3,7 @@ import { computed, h, onMounted, onUnmounted, ref } from 'vue'
 import { NCard, NSpace, NButton, NDataTable, NTag, NStatistic, NModal, NTabs, NTabPane, useMessage, type DataTableColumns } from 'naive-ui'
 import * as api from '@/api/developer'
 import type { DeveloperInvocationSummary, DeveloperConcurrencyItem } from '@/api/developer'
+import PageHeader from '@/components/PageHeader.vue'
 
 const message = useMessage()
 const loading = ref(false)
@@ -65,6 +66,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 <template>
   <div class="page-container">
+    <PageHeader title="调试工具" subtitle="调用调试、客户端模拟和开发者追踪" />
     <NTabs type="line" animated>
       <NTabPane name="invocations" tab="调用记录">
         <NCard>

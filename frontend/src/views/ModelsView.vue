@@ -7,6 +7,7 @@ import {
 import * as modelsApi from '@/api/models'
 import * as compatApi from '@/api/compatibility'
 import type { ModelListItem, ModelPayload } from '@/api/models'
+import PageHeader from '@/components/PageHeader.vue'
 
 const message = useMessage()
 const loading = ref(false)
@@ -142,14 +143,13 @@ onMounted(loadModels)
 
 <template>
   <div class="page-container">
-    <NCard>
-      <template #header>
-        <NSpace justify="space-between" align="center">
-          <span>模型库（共 {{ allModels.length }} 个模型）</span>
-          <NButton type="primary" @click="openCreate">新建模型</NButton>
-        </NSpace>
+    <PageHeader title="模型库管理" subtitle="支持按厂商分组浏览模型，并维护模型与厂商的匹配规则">
+      <template #actions>
+        <NTag v-if="allModels.length" round :bordered="false" size="small">共 {{ allModels.length }} 个</NTag>
+        <NButton type="primary" @click="openCreate">新建模型</NButton>
       </template>
-
+    </PageHeader>
+    <NCard>
       <NEmpty v-if="!loading && vendorGroups.length === 0" description="暂无模型，点击右上角创建" />
 
       <NCollapse v-else v-model:expanded-names="expandedNames" arrow-placement="left">
