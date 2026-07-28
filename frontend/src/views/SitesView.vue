@@ -116,6 +116,54 @@ async function handleBulkDelete(): Promise<void> {
   await loadSites()
 }
 
+// 导入/导出
+const importVisible = ref(false)
+const importJson = ref('')
+const importing = ref(false)
+
+async function handleExport(): Promise<void> {
+  try {
+    const items = await sitesApi.exportSites()
+    const blob = new Blob([JSON.stringify(items, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `sites-${new Date().toISOString().slice(0, 10)}.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    message.success(`已导出 ${(items as unknown[]).length} 个站点`)
+  } catch (e) {
+    message.error((e as Error).message)
+  }
+}
+
+function openImport(): void {
+  importJson.value = ''
+  importVisible.value = true
+}
+
+async function handleImport(): Promise<void> {
+  let items: SitePayload[]
+  try {
+    items = JSON.parse(importJson.value)
+    if (!Array.isArray(items)) throw new Error('JSON 必须是数组')
+  } catch (e) {
+    message.error('JSON 格式无效：' + (e as Error).message)
+    return
+  }
+  importing.value = true
+  try {
+    const result = await sitesApi.importSites(items)
+    message.success(`已导入 ${result.importedCount} 个站点`)
+    importVisible.value = false
+    await loadSites()
+  } catch (e) {
+    message.error((e as Error).message)
+  } finally {
+    importing.value = false
+  }
+}
+
 const columns = computed<DataTableColumns<SiteListItem>>(() => [
   { type: 'selection' },
   { title: '名称', key: 'name', minWidth: 140 },
@@ -185,6 +233,8 @@ onMounted(loadSites)
             >
               批量删除（{{ checkedRowKeys.length }}）
             </NButton>
+            <NButton quaternary @click="handleExport">导出</NButton>
+            <NButton quaternary @click="openImport">导入</NButton>
             <NButton type="primary" @click="openCreate">新建站点</NButton>
           </NSpace>
         </NSpace>
@@ -241,6 +291,25 @@ onMounted(loadSites)
         <NSpace justify="end">
           <NButton @click="showModal = false">取消</NButton>
           <NButton type="primary" :loading="saving" @click="handleSave">保存</NButton>
+        </NSpace>
+      </template>
+    </NModal>
+
+    <!-- 导入站点 -->
+    <NModal v-model:show="importVisible" title="导入站点" preset="card" style="width: 560px" :mask-closable="false">
+      <NFormItem label="粘贴站点 JSON 数组" :show-feedback="false">
+        <NInput
+          v-model:value="importJson"
+          type="textarea"
+          placeholder='[{"name":"...","baseUrl":"...","apiKey":"sk-...","supportsOpenAi":true}]'
+          :autosize="{ minRows: 8, maxRows: 16 }"
+          style="font-family: monospace"
+        />
+      </NFormItem>
+      <template #footer>
+        <NSpace justify="end">
+          <NButton @click="importVisible = false">取消</NButton>
+          <NButton type="primary" :loading="importing" @click="handleImport">导入</NButton>
         </NSpace>
       </template>
     </NModal>
