@@ -1,4 +1,53 @@
+import { Marked, Renderer } from 'marked'
+import hljs from 'highlight.js/lib/core'
+import bash from 'highlight.js/lib/languages/bash'
+import csharp from 'highlight.js/lib/languages/csharp'
+import css from 'highlight.js/lib/languages/css'
+import javascript from 'highlight.js/lib/languages/javascript'
+import json from 'highlight.js/lib/languages/json'
+import markdownLanguage from 'highlight.js/lib/languages/markdown'
+import plaintext from 'highlight.js/lib/languages/plaintext'
+import python from 'highlight.js/lib/languages/python'
+import sql from 'highlight.js/lib/languages/sql'
+import typescript from 'highlight.js/lib/languages/typescript'
+import xml from 'highlight.js/lib/languages/xml'
+import { FilterXSS } from 'xss'
+
 const SAFE_LINK_RE = /^(https?:|mailto:)/i
+const LANGUAGE_ALIASES: Record<string, string> = {
+  bash: 'bash',
+  csharp: 'csharp',
+  cs: 'csharp',
+  css: 'css',
+  html: 'xml',
+  javascript: 'javascript',
+  js: 'javascript',
+  json: 'json',
+  markdown: 'markdown',
+  md: 'markdown',
+  plaintext: 'plaintext',
+  python: 'python',
+  py: 'python',
+  shell: 'bash',
+  sh: 'bash',
+  sql: 'sql',
+  text: 'plaintext',
+  ts: 'typescript',
+  typescript: 'typescript',
+  xml: 'xml'
+}
+
+hljs.registerLanguage('bash', bash)
+hljs.registerLanguage('csharp', csharp)
+hljs.registerLanguage('css', css)
+hljs.registerLanguage('javascript', javascript)
+hljs.registerLanguage('json', json)
+hljs.registerLanguage('markdown', markdownLanguage)
+hljs.registerLanguage('plaintext', plaintext)
+hljs.registerLanguage('python', python)
+hljs.registerLanguage('sql', sql)
+hljs.registerLanguage('typescript', typescript)
+hljs.registerLanguage('xml', xml)
 
 export function escapeHtml(value: string): string {
   return value
@@ -9,142 +58,89 @@ export function escapeHtml(value: string): string {
     .replace(/'/g, '&#39;')
 }
 
-function renderInline(value: string): string {
-  return escapeHtml(value)
-    .replace(/`([^`]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-    .replace(/\[([^\]]+)\]\(([^\s)]+)\)/g, (_match, text: string, href: string) => {
-      const decodedHref = href.replace(/&amp;/g, '&')
-      if (!SAFE_LINK_RE.test(decodedHref)) return text
-      return `<a href="${escapeHtml(decodedHref)}" target="_blank" rel="noopener noreferrer">${text}</a>`
-    })
+function normalizeMarkdown(value: string): string {
+  return value.replace(
+    /```([A-Za-z0-9_+#.-]+)(?=[{[])/g,
+    '```$1\n'
+  )
 }
 
-function isTableSeparator(line: string): boolean {
-  return /^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$/.test(line)
+function renderCode(code: string, info: string | undefined): string {
+  const requestedLanguage = info?.trim().split(/\s+/, 1)[0] || 'text'
+  const normalizedLanguage = LANGUAGE_ALIASES[requestedLanguage.toLowerCase()]
+  const highlighted = normalizedLanguage
+    ? hljs.highlight(code, { language: normalizedLanguage }).value
+    : escapeHtml(code)
+
+  return [
+    '<div class="conversation-code-block">',
+    '<div class="conversation-code-header">',
+    `<span>${escapeHtml(requestedLanguage)}</span>`,
+    '<button type="button" class="conversation-code-copy" data-conversation-copy-code>复制</button>',
+    '</div>',
+    `<pre><code class="hljs language-${escapeHtml(requestedLanguage)}">${highlighted}</code></pre>`,
+    '</div>'
+  ].join('')
 }
 
-function splitTableRow(line: string): string[] {
-  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim())
+const renderer = new Renderer()
+renderer.code = renderCode
+renderer.html = () => ''
+renderer.link = (href, title, text) => {
+  if (!SAFE_LINK_RE.test(href)) return text
+  const titleAttribute = title
+    ? ` title="${escapeHtml(title)}"`
+    : ''
+  return `<a href="${escapeHtml(href)}"${titleAttribute} target="_blank" rel="noopener noreferrer">${text}</a>`
 }
 
-function renderTable(lines: string[], index: number): { html: string; nextIndex: number } | null {
-  if (index + 1 >= lines.length || !lines[index].includes('|') || !isTableSeparator(lines[index + 1])) return null
-  const header = splitTableRow(lines[index])
-  const rows: string[][] = []
-  let cursor = index + 2
-  while (cursor < lines.length && lines[cursor].includes('|') && lines[cursor].trim()) {
-    rows.push(splitTableRow(lines[cursor]))
-    cursor += 1
-  }
-  const headHtml = header.map((cell) => `<th>${renderInline(cell)}</th>`).join('')
-  const bodyHtml = rows.map((row) => `<tr>${row.map((cell) => `<td>${renderInline(cell)}</td>`).join('')}</tr>`).join('')
-  return { html: `<table><thead><tr>${headHtml}</tr></thead><tbody>${bodyHtml}</tbody></table>`, nextIndex: cursor }
-}
+const markdownParser = new Marked({
+  breaks: true,
+  gfm: true,
+  renderer
+})
 
-function renderList(lines: string[], index: number): { html: string; nextIndex: number } | null {
-  const first = lines[index]
-  const ordered = /^\s*\d+\.\s+/.test(first)
-  const unordered = /^\s*[-*+]\s+/.test(first)
-  if (!ordered && !unordered) return null
-
-  const tag = ordered ? 'ol' : 'ul'
-  const marker = ordered ? /^\s*\d+\.\s+/ : /^\s*[-*+]\s+/
-  const items: string[] = []
-  let cursor = index
-  while (cursor < lines.length && marker.test(lines[cursor])) {
-    items.push(`<li>${renderInline(lines[cursor].replace(marker, '').trim())}</li>`)
-    cursor += 1
-  }
-  return { html: `<${tag}>${items.join('')}</${tag}>`, nextIndex: cursor }
-}
+const sanitizer = new FilterXSS({
+  allowList: {
+    a: ['href', 'title', 'target', 'rel'],
+    blockquote: [],
+    br: [],
+    button: ['type', 'class', 'data-conversation-copy-code'],
+    code: ['class'],
+    del: [],
+    div: ['class'],
+    em: [],
+    h1: [],
+    h2: [],
+    h3: [],
+    h4: [],
+    h5: [],
+    h6: [],
+    hr: [],
+    input: ['type', 'checked', 'disabled'],
+    li: ['class'],
+    ol: [],
+    p: [],
+    pre: [],
+    span: ['class'],
+    strong: [],
+    table: [],
+    tbody: [],
+    td: [],
+    th: [],
+    thead: [],
+    tr: [],
+    ul: ['class']
+  },
+  css: false,
+  stripIgnoreTag: true,
+  stripIgnoreTagBody: ['script', 'style', 'iframe', 'object', 'embed']
+})
 
 export function renderSafeMarkdown(value: string): string {
   if (!value) return '<p>(空)</p>'
-
-  const codeBlocks: string[] = []
-  const withoutCode = value.replace(/```([^\n]*)\n?([\s\S]*?)```/g, (_match, lang: string, code: string) => {
-    const token = `@@CODE_${codeBlocks.length}@@`
-    const label = lang?.trim() || 'code'
-    codeBlocks.push(`<div class="conversation-code-block"><div class="conversation-code-header"><span>${escapeHtml(label)}</span></div><pre><code>${escapeHtml(code.trim())}</code></pre></div>`)
-    return token
-  })
-
-  const lines = withoutCode.split(/\r?\n/)
-  const blocks: string[] = []
-  let paragraph: string[] = []
-  let index = 0
-
-  function flushParagraph(): void {
-    if (paragraph.length === 0) return
-    blocks.push(`<p>${paragraph.map(renderInline).join('<br>')}</p>`)
-    paragraph = []
-  }
-
-  while (index < lines.length) {
-    const line = lines[index]
-    const trimmed = line.trim()
-
-    if (!trimmed) {
-      flushParagraph()
-      index += 1
-      continue
-    }
-
-    if (/^@@CODE_\d+@@$/.test(trimmed)) {
-      flushParagraph()
-      blocks.push(trimmed)
-      index += 1
-      continue
-    }
-
-    const table = renderTable(lines, index)
-    if (table) {
-      flushParagraph()
-      blocks.push(table.html)
-      index = table.nextIndex
-      continue
-    }
-
-    const list = renderList(lines, index)
-    if (list) {
-      flushParagraph()
-      blocks.push(list.html)
-      index = list.nextIndex
-      continue
-    }
-
-    const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed)
-    if (heading) {
-      flushParagraph()
-      blocks.push(`<h${heading[1].length}>${renderInline(heading[2])}</h${heading[1].length}>`)
-      index += 1
-      continue
-    }
-
-    if (/^---+$/.test(trimmed)) {
-      flushParagraph()
-      blocks.push('<hr>')
-      index += 1
-      continue
-    }
-
-    if (trimmed.startsWith('> ')) {
-      flushParagraph()
-      const quoteLines: string[] = []
-      while (index < lines.length && lines[index].trim().startsWith('> ')) {
-        quoteLines.push(lines[index].trim().slice(2))
-        index += 1
-      }
-      blocks.push(`<blockquote>${quoteLines.map(renderInline).join('<br>')}</blockquote>`)
-      continue
-    }
-
-    paragraph.push(line)
-    index += 1
-  }
-
-  flushParagraph()
-  return blocks.join('').replace(/@@CODE_(\d+)@@/g, (_match, codeIndex: string) => codeBlocks[Number(codeIndex)] ?? '')
+  const rendered = markdownParser.parse(normalizeMarkdown(value))
+  return sanitizer.process(
+    typeof rendered === 'string' ? rendered : ''
+  )
 }

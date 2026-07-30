@@ -4,6 +4,7 @@ import { NButton, NCard, NEmpty, NInput, NPopconfirm, NSelect, useMessage } from
 import * as api from '@/api/modelHealth'
 import type { ModelHealthMonitoredModel, ModelHealthDashboard, ModelHealthTimelineSegment } from '@/api/modelHealth'
 import PageHeader from '@/components/PageHeader.vue'
+import { modelHealthSuccessColor } from './modelHealthState'
 
 const message = useMessage()
 const loading = ref(false)
@@ -254,16 +255,24 @@ onMounted(load)
                           <code>{{ site.remoteModelName }}</code>
                           <span class="health-badge" :class="site.lastStatus === 'success' ? 'success' : site.lastStatus === 'fail' ? 'danger' : 'neutral'">{{ statusLabel(site.lastStatus) }}</span>
                         </div>
-                        <div class="health-site-meta">成功率 {{ formatPercent(site.successRate) }}</div>
+                        <div class="health-site-meta">
+                          成功率 {{ formatPercent(site.successRate) }} ·
+                          成功 {{ formatNumber(site.successCount) }} 次 ·
+                          失败 {{ formatNumber(site.failureCount) }} 次 ·
+                          总请求 {{ formatNumber(site.totalRequestCount) }} 次 ·
+                          最近耗时 {{ formatDuration(site.lastDurationMs) }}
+                        </div>
                       </div>
 
                       <div class="health-rate-bar">
                         <div class="health-rate-label">成功率 {{ formatPercent(site.successRate) }}</div>
-                        <div class="health-rate-track"><div class="health-rate-fill" :style="{ width: formatPercent(site.successRate) }" /></div>
+                        <div class="health-rate-track"><div class="health-rate-fill" :style="{ width: formatPercent(site.successRate), background: modelHealthSuccessColor(site.successRate) }" /></div>
                       </div>
 
                       <div v-if="site.timelineSegments.length" class="health-timeline">
-                        <div class="health-timeline-label">{{ rangeTitle() }}共 {{ formatNumber(site.timelineSegments.reduce((sum, segment) => sum + segment.count, 0)) }} 次请求（线段按时间段聚合，出现失败即标红）</div>
+                        <div class="health-timeline-label">
+                          {{ rangeTitle() }}共 {{ formatNumber(site.totalRequestCount) }} 次请求，成功 {{ formatNumber(site.successCount) }} 次，失败 {{ formatNumber(site.failureCount) }} 次（线段按时间段聚合，出现失败即标红）
+                        </div>
                         <div class="health-timeline-line">
                           <span
                             v-for="(segment, segmentIndex) in site.timelineSegments"

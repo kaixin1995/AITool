@@ -49,8 +49,15 @@ watch(activeTab, (value) => {
 .chat-tabs {
   display: flex;
   flex: 1;
+  min-width: 0;
+  max-width: 100%;
   min-height: 0;
   flex-direction: column;
+}
+
+.chat-tabs :deep(.n-tabs-nav-scroll-wrapper) {
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .chat-tabs :deep(.n-tabs-pane-wrapper),

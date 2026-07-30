@@ -246,13 +246,14 @@ onBeforeUnmount(() => {
 
 /* 顶部栏 */
 .app-topbar {
+  width: 100%; min-width: 0; box-sizing: border-box;
   height: 60px; display: flex; align-items: center; justify-content: space-between;
   padding: 0 var(--layout-gutter-x); border-bottom: 1px solid var(--border-color-global);
   background: var(--bg-card); flex-shrink: 0;
 }
-.app-topbar-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.app-topbar-heading { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
 .app-topbar-title { margin: 0; font-size: 16px; font-weight: 600; color: var(--text-primary); }
-.app-topbar-right { display: flex; align-items: center; gap: 16px; }
+.app-topbar-right { display: flex; align-items: center; gap: 16px; flex-shrink: 0; }
 .theme-icon-toggle {
   background: none; border: none; cursor: pointer; font-size: 18px; line-height: 1;
   padding: 4px; border-radius: 6px;

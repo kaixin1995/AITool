@@ -6,6 +6,37 @@ import { useAuthStore } from '@/stores/auth'
 const routes: RouteRecordRaw[] = [
   { path: '/login', name: 'login', component: () => import('@/views/LoginView.vue'), meta: { public: true, title: '登录' } },
   {
+    path: '/Admin/ClientSimulator',
+    redirect: to => ({
+      path: '/developer/invocations',
+      query: to.query,
+      hash: '#developerSimulatorPane'
+    })
+  },
+  {
+    path: '/Admin/Developer/Invocations',
+    redirect: to => ({
+      path: '/developer/invocations',
+      query: to.query,
+      hash: to.hash
+    })
+  },
+  {
+    path: '/Admin/ModelHealth',
+    redirect: to => ({
+      path: '/model-health',
+      query: to.query
+    })
+  },
+  {
+    path: '/Admin/Conversations',
+    redirect: to => ({
+      path: '/chat',
+      query: to.query,
+      hash: '#conversationLogPane'
+    })
+  },
+  {
     path: '/',
     component: () => import('@/layouts/MainLayout.vue'),
     children: [

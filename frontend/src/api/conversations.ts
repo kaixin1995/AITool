@@ -18,7 +18,10 @@ export interface ConversationSession {
 }
 export interface ConversationSessionListResponse {
   items: ConversationSession[]
+  page: number
+  pageSize: number
   totalCount: number
+  totalPages: number
 }
 
 // turns 端点返回 { items, truncated }。

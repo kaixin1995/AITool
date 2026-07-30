@@ -5,6 +5,7 @@ import {
   exportCredentials,
   getCodexInspectionLastRun,
   getCodexInspectionLogs,
+  getCodexInspectionStatus,
   getResetCredits,
   importCredential,
   importCredentialFiles,
@@ -138,6 +139,17 @@ describe('Codex 模型 API 合同', () => {
 })
 
 describe('Codex 巡检 API 合同', () => {
+  it('使用正确的巡检状态路径', async () => {
+    mockedHttpGet.mockResolvedValueOnce({ isRunning: false })
+
+    await getCodexInspectionStatus()
+
+    expect(mockedHttpGet).toHaveBeenCalledWith(
+      '/api/admin/codex/inspection/status',
+      { skipErrorNotify: true }
+    )
+  })
+
   it('区分普通巡检和强制真实巡检', async () => {
     const result = {
       isRunning: false,

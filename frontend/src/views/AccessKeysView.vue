@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, h, onMounted, ref } from 'vue'
-import { NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput, NPopconfirm, NAlert, NCheckbox, NCheckboxGroup, useMessage, type DataTableColumns } from 'naive-ui'
+import { NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput, NPopconfirm, NAlert, NCheckbox, NCheckboxGroup, NEmpty, useMessage, type DataTableColumns } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/accessKeys'
 import * as routesApi from '@/api/routes'
@@ -17,6 +17,9 @@ const saving = ref(false)
 
 // 可用路由入口列表（供权限选择）
 const routeEntries = ref<string[]>([])
+const routeEntriesLoading = ref(false)
+const routeEntriesReady = ref(false)
+const routeEntriesError = ref('')
 
 // 编辑路由权限弹窗
 const editRoutesVisible = ref(false)
@@ -24,19 +27,46 @@ const editKey = ref<AccessKeyItem | null>(null)
 const editRoutes = ref<string[]>([])
 const editSaving = ref(false)
 
+async function loadRouteEntries(): Promise<void> {
+  routeEntriesLoading.value = true
+  routeEntriesReady.value = false
+  routeEntriesError.value = ''
+  try {
+    const entries = await routesApi.getRouteEntries()
+    routeEntries.value = entries.map((entry) => entry.entryName)
+    routeEntriesReady.value = true
+  } catch {
+    routeEntries.value = []
+    routeEntriesError.value = '路由入口加载失败。为避免误将密钥设置为允许全部路由，创建和编辑权限已暂时禁用。'
+  } finally {
+    routeEntriesLoading.value = false
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true
   try {
-    const [keys, entries] = await Promise.all([
+    const [keys] = await Promise.all([
       api.listAccessKeys(),
-      routesApi.getRouteEntries().catch(() => [])
+      loadRouteEntries()
     ])
     items.value = keys
-    routeEntries.value = entries.map((e) => e.entryName)
   } finally { loading.value = false }
 }
 
+function openCreate(): void {
+  if (!routeEntriesReady.value) {
+    message.error(routeEntriesError.value || '路由入口尚未加载完成')
+    return
+  }
+  newKeyName.value = ''
+  newKeyPlain.value = ''
+  newKeyRoutes.value = []
+  showModal.value = true
+}
+
 async function handleCreate(): Promise<void> {
+  if (!routeEntriesReady.value) { message.error('路由入口未成功加载，暂不能创建密钥'); return }
   if (!newKeyName.value.trim()) { message.warning('请输入密钥名称'); return }
   saving.value = true
   try {
@@ -89,6 +119,10 @@ async function handleDelete(row: AccessKeyItem): Promise<void> {
 
 // 编辑路由权限
 function openEditRoutes(row: AccessKeyItem): void {
+  if (!routeEntriesReady.value) {
+    message.error(routeEntriesError.value || '路由入口尚未加载完成')
+    return
+  }
   editKey.value = row
   const val = row.allowedRouteNames
   editRoutes.value = Array.isArray(val) ? val : (typeof val === 'string' && val.trim() ? (() => { try { return JSON.parse(val) as string[] } catch { return [] } })() : [])
@@ -111,6 +145,7 @@ const editRoutesLabel = computed(() => {
 
 async function handleSaveRoutes(): Promise<void> {
   if (!editKey.value) return
+  if (!routeEntriesReady.value) { message.error('路由入口未成功加载，暂不能保存权限'); return }
   editSaving.value = true
   try {
     await api.updateAccessKeyRoutes(editKey.value.id, editRoutes.value)
@@ -137,7 +172,7 @@ const columns = computed<DataTableColumns<AccessKeyItem>>(() => [
   { title: '状态', key: 'isEnabled', width: 80, render: (r) => h(NTag, { size: 'small', type: r.isEnabled ? 'success' : 'default', bordered: false }, () => r.isEnabled ? '启用' : '禁用') },
   { title: '操作', key: 'actions', width: 292, fixed: 'right', render: (row) => h(NSpace, { size: 6, wrap: false }, () => [
     h(NButton, { size: 'small', quaternary: true, onClick: () => copyText(row.maskedValue, '已复制脱敏值；历史密钥不会再次显示明文') }, () => '复制脱敏值'),
-    h(NButton, { size: 'small', quaternary: true, onClick: () => openEditRoutes(row) }, () => '编辑路由'),
+    h(NButton, { size: 'small', quaternary: true, disabled: !routeEntriesReady.value, onClick: () => openEditRoutes(row) }, () => '编辑路由'),
     h(NButton, { size: 'small', quaternary: true, onClick: () => handleToggle(row) }, () => row.isEnabled ? '禁用' : '启用'),
     h(NPopconfirm, { onPositiveClick: () => handleDelete(row) }, { trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, () => '删除'), default: () => `确认删除「${row.keyName}」？` })
   ]) }
@@ -150,9 +185,20 @@ onMounted(load)
   <div class="page-container">
     <PageHeader title="访问密钥管理" subtitle="管理用于访问代理服务的密钥，可限定每个密钥只能访问指定路由">
       <template #actions>
-        <NButton type="primary" @click="showModal = true; newKeyName = ''; newKeyPlain = ''; newKeyRoutes = []">新建密钥</NButton>
+        <NButton type="primary" :disabled="!routeEntriesReady" @click="openCreate">新建密钥</NButton>
       </template>
     </PageHeader>
+    <NAlert
+      v-if="routeEntriesError"
+      type="error"
+      :show-icon="true"
+      style="margin-bottom: 16px"
+    >
+      <div class="route-load-error">
+        <span>{{ routeEntriesError }}</span>
+        <NButton size="small" :loading="routeEntriesLoading" @click="loadRouteEntries">重试</NButton>
+      </div>
+    </NAlert>
     <NCard>
       <NDataTable :columns="columns" :data="items" :loading="loading" :row-key="(r: AccessKeyItem) => r.id" :pagination="{ pageSize: 20 }" striped />
     </NCard>
@@ -214,6 +260,13 @@ onMounted(load)
 </template>
 
 <style scoped>
+.route-load-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .created-key-alert {
   display: flex;
   flex-direction: column;

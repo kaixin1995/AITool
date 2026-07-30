@@ -1,6 +1,8 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, ref } from 'vue'
+import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import {
+  NAlert,
   NButton,
   NCard,
   NDataTable,
@@ -19,6 +21,11 @@ import * as api from '@/api/developer'
 import type { DeveloperInvocationSummary, DeveloperConcurrencyItem } from '@/api/developer'
 import PageHeader from '@/components/PageHeader.vue'
 import ClientSimulator from './ClientSimulator.vue'
+import {
+  developerHashForTab,
+  developerTabFromHash,
+  type DeveloperToolTab
+} from './developerInvocationsState'
 
 interface DeveloperInvocationAttempt {
   attemptId: string
@@ -68,7 +75,12 @@ interface DeveloperInvocationDetail {
 }
 
 const message = useMessage()
+const route = useRoute()
+const router = useRouter()
+const activeTab = ref<DeveloperToolTab>(developerTabFromHash(route.hash))
 const loading = ref(false)
+const concurrencyLoading = ref(false)
+const concurrencyError = ref('')
 const autoRefresh = ref(false)
 const summarizeDetail = ref(true)
 const entries = ref<DeveloperInvocationSummary[]>([])
@@ -83,6 +95,7 @@ const expandedTraceIds = ref<Set<string>>(new Set())
 const details = ref<Record<string, DeveloperInvocationDetail>>({})
 const detailLoading = ref<Record<string, boolean>>({})
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let invocationRequestRunning = false
 
 function isPending(status: string): boolean {
   return status?.toLowerCase() === 'pending'
@@ -159,29 +172,64 @@ function configureAutoRefresh(): void {
     clearInterval(pollTimer)
     pollTimer = null
   }
-  if (autoRefresh.value) {
-    pollTimer = setInterval(() => {
-      if (document.visibilityState === 'visible') void load(false)
-    }, 5000)
-  }
+  if (
+    activeTab.value !== 'concurrency'
+    && !(activeTab.value === 'invocations' && autoRefresh.value)
+  ) return
+
+  pollTimer = setInterval(() => {
+    if (document.visibilityState !== 'visible') return
+    if (activeTab.value === 'concurrency') void loadConcurrency(false)
+    else if (activeTab.value === 'invocations' && autoRefresh.value) void loadInvocations(false)
+  }, 5000)
 }
 
-async function load(showSpinner = true, targetPage = page.value): Promise<void> {
+async function loadInvocations(showSpinner = true, targetPage = page.value): Promise<void> {
+  if (invocationRequestRunning) return
+  invocationRequestRunning = true
   if (showSpinner) loading.value = true
   try {
-    const [listResp, concResp] = await Promise.all([api.getDeveloperList(targetPage, pageSize), api.getDeveloperConcurrency()])
+    const listResp = await api.getDeveloperList(targetPage, pageSize)
     entries.value = listResp.entries ?? []
     page.value = listResp.page
     totalPages.value = listResp.totalPages || 1
     totalCount.value = listResp.totalCount
     failedCount.value = listResp.failedCount
     pendingCount.value = listResp.pendingCount
-    concurrency.value = concResp.items ?? []
-  } catch {
-    // 功能开关关闭时会 404，忽略。
+  } catch (error) {
+    if (showSpinner && (error as { status?: number }).status !== 404) {
+      message.error((error as Error).message)
+    }
   } finally {
+    invocationRequestRunning = false
     if (showSpinner) loading.value = false
   }
+}
+
+async function loadConcurrency(showError = true): Promise<void> {
+  if (concurrencyLoading.value) return
+  concurrencyLoading.value = true
+  if (showError) concurrencyError.value = ''
+  try {
+    const response = await api.getDeveloperConcurrency()
+    concurrency.value = response.items ?? []
+    concurrencyError.value = ''
+  } catch (error) {
+    if ((error as { status?: number }).status !== 404) {
+      concurrencyError.value = '并发数据加载失败，当前保留上次成功结果。'
+    }
+  } finally {
+    concurrencyLoading.value = false
+  }
+}
+
+function refreshActiveTab(): void {
+  if (activeTab.value === 'invocations') void loadInvocations(false)
+  else if (activeTab.value === 'concurrency') void loadConcurrency(false)
+}
+
+function handleVisibilityChange(): void {
+  if (document.visibilityState === 'visible') refreshActiveTab()
 }
 
 function handleSummarizeChange(): void {
@@ -262,13 +310,29 @@ const concColumns = computed<DataTableColumns<DeveloperConcurrencyItem>>(() => [
   }
 ])
 
-onMounted(() => {
-  void load()
+watch(activeTab, (tab) => {
+  const hash = developerHashForTab(tab)
+  if (route.hash !== hash) void router.replace({ hash })
+  if (tab === 'invocations') void loadInvocations()
+  else if (tab === 'concurrency') void loadConcurrency()
   configureAutoRefresh()
+})
+
+watch(() => route.hash, (hash) => {
+  const tab = developerTabFromHash(hash)
+  if (activeTab.value !== tab) activeTab.value = tab
+})
+
+onMounted(() => {
+  if (activeTab.value === 'invocations') void loadInvocations()
+  else if (activeTab.value === 'concurrency') void loadConcurrency()
+  configureAutoRefresh()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 </script>
 
@@ -277,7 +341,7 @@ onUnmounted(() => {
     <PageHeader title="调试工具" subtitle="调用调试、客户端模拟和开发者追踪" />
 
     <NCard class="developer-tools-card" :content-style="{ padding: '16px' }">
-      <NTabs type="line" animated>
+      <NTabs v-model:value="activeTab" type="line" animated>
         <NTabPane name="invocations" tab="调用调试">
           <div class="trace-page-header">
             <div>
@@ -293,7 +357,7 @@ onUnmounted(() => {
                 <NSwitch v-model:value="summarizeDetail" size="small" @update:value="handleSummarizeChange" />
                 <span>精简显示</span>
               </label>
-              <NButton type="primary" :loading="loading" @click="load()">立即刷新</NButton>
+              <NButton type="primary" :loading="loading" @click="loadInvocations()">立即刷新</NButton>
             </div>
           </div>
 
@@ -453,7 +517,7 @@ onUnmounted(() => {
 
           <div v-if="totalPages > 1" class="trace-pagination-bar">
             <div class="trace-pagination-summary">{{ paginationSummary }}</div>
-            <NPagination v-model:page="page" :page-count="totalPages" size="small" @update:page="(p) => load(true, p)" />
+            <NPagination v-model:page="page" :page-count="totalPages" size="small" @update:page="(p) => loadInvocations(true, p)" />
           </div>
         </NTabPane>
 
@@ -472,10 +536,14 @@ onUnmounted(() => {
             </h2>
             <div class="concurrency-refresh-tip">进入此页后自动刷新</div>
           </div>
+          <NAlert v-if="concurrencyError" type="error" :show-icon="false" class="concurrency-error">
+            {{ concurrencyError }}
+          </NAlert>
           <NCard class="concurrency-table-card" :content-style="{ padding: 0 }">
             <NDataTable
               :columns="concColumns"
               :data="concurrency"
+              :loading="concurrencyLoading"
               :row-key="(r: DeveloperConcurrencyItem) => r.siteId + r.modelName"
               :pagination="{ pageSize: 20 }"
               :scroll-x="760"

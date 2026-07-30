@@ -517,6 +517,40 @@ public sealed class ProxyFallbackFlowTests
     }
 
     /// <summary>
+    /// 验证回退列表会在同一响应中返回筛选后的摘要和样本范围信息。
+    /// </summary>
+    [Fact]
+    public async Task Get_route_fallback_list_returns_filtered_summary_and_sample_metadata()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"chat-prod\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+        (await client.SendAsync(request)).EnsureSuccessStatusCode();
+
+        var response = await client.GetAsync("/api/admin/route-fallback/list?modelKeyword=glm-5.1&page=1&pageSize=20");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        var items = root.GetProperty("items").EnumerateArray().ToList();
+        var summary = root.GetProperty("summary");
+
+        items.Should().ContainSingle();
+        summary.GetProperty("totalCount").GetInt32().Should().Be(items.Count);
+        summary.GetProperty("uniqueFromSites").GetInt32().Should().Be(1);
+        summary.GetProperty("uniqueToSites").GetInt32().Should().Be(1);
+        root.GetProperty("sampleLogLimit").GetInt32().Should().Be(5000);
+        root.GetProperty("isTruncated").GetBoolean().Should().BeFalse();
+        root.GetProperty("sampleOldestRequestedAt").ValueKind.Should().Be(JsonValueKind.String);
+    }
+
+    /// <summary>
     /// 验证路由保存触发延迟刷新时，旧运行时快照仍保留转发元数据。
     /// </summary>
     [Fact]

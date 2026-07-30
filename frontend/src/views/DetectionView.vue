@@ -4,7 +4,7 @@ import { NCard, NButton, NTag, NEmpty, NInput, NProgress, useMessage } from 'nai
 import * as api from '@/api/detection'
 import type { DetectionModelGroup, ProbeProgress } from '@/api/detection'
 import PageHeader from '@/components/PageHeader.vue'
-import { applyDetectionProbeResult, formatDetectionDateTime } from './detectionState'
+import { applyDetectionProbeResult, formatDetectionDateTime, shouldRetryDetectionProgress } from './detectionState'
 
 interface DetectionProgressState extends ProbeProgress {
   successCount: number
@@ -170,10 +170,18 @@ async function pollProgress(taskId: string): Promise<void> {
     } catch {
       // 请求层已经统一提示刷新错误，检测任务本身仍视为完成。
     }
-  } catch {
-    if (probeProgress.value?.taskId === taskId) {
+  } catch (error) {
+    if (probeProgress.value?.taskId !== taskId) return
+    if (shouldRetryDetectionProgress(error)) {
       scheduleProgressPoll(taskId, 2000)
+      return
     }
+
+    clearProgressTimer()
+    probeProgress.value = null
+    probingAll.value = false
+    probingModelId.value = null
+    message.error('检测任务已过期，请重新发起检测')
   }
 }
 

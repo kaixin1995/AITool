@@ -120,6 +120,46 @@ public sealed class ConversationLoggingE2ETests
                 assistantOutput.Should().Contain("删除旧分支判断");
             });
     }
+
+    [Fact]
+    public async Task Get_sessions_should_apply_server_side_pagination_before_projection()
+    {
+        await using var factory = new ConversationLoggingWebApplicationFactory();
+        using var client = factory.CreateClient();
+        await using var scope = factory.Services.CreateAsyncScope();
+        var store = scope.ServiceProvider.GetRequiredService<IConversationLogStore>();
+        var now = DateTimeOffset.Now;
+
+        await store.AppendBatchAsync(Enumerable.Range(1, 35)
+            .Select(index => new ConversationTurnLog
+            {
+                CreatedAt = now.AddSeconds(index),
+                SourceTool = "claude-code",
+                SessionId = $"paged-session-{index:00}",
+                ConversationGroupKey = $"claude-code:paged-session-{index:00}",
+                RequestModel = "paged-model",
+                UserInputText = $"分页输入 {index}",
+                AssistantOutputMarkdown = $"分页回复 {index}",
+                InputTokens = 1,
+                OutputTokens = 1
+            })
+            .ToList());
+
+        var response = await client.GetAsync("/api/admin/conversations/sessions?page=2&pageSize=10");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var root = document.RootElement;
+        var items = root.GetProperty("items").EnumerateArray().ToList();
+
+        items.Should().HaveCount(10);
+        root.GetProperty("page").GetInt32().Should().Be(2);
+        root.GetProperty("pageSize").GetInt32().Should().Be(10);
+        root.GetProperty("totalCount").GetInt32().Should().Be(35);
+        root.GetProperty("totalPages").GetInt32().Should().Be(4);
+        items[0].GetProperty("sessionIdShort").GetString().Should().Be("paged-se");
+    }
 }
 
 internal sealed class ConversationLoggingWebApplicationFactory : WebApplicationFactory<Program>

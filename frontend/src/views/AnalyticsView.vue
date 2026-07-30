@@ -12,6 +12,11 @@ import type {
   AnalyticsFilterOptions,
   AnalyticsPendingResult
 } from '@/api/analytics'
+import {
+  buildAnalyticsDefaultCustomRange,
+  calculateAnalyticsTotalTokens,
+  shouldAutoLoadAnalytics
+} from './analyticsState'
 
 const loading = ref(false)
 const waitingForResult = ref(false)
@@ -59,10 +64,11 @@ const charts = shallowRef<Record<ChartKey, ECharts | null>>({
   requestTrend: null, resultTrend: null, tokenTrend: null, durationTrend: null,
   fallbackTrend: null, cacheRatio: null, siteDist: null, modelDist: null
 })
+let chartResizeObserver: ResizeObserver | null = null
 
 const summary = computed(() => dashboard.value?.summary)
-const totalTokens = computed(() => summary.value?.totalTokens ?? ((summary.value?.totalInputTokens ?? 0) + (summary.value?.totalCachedTokens ?? 0) + (summary.value?.totalOutputTokens ?? 0)))
-const tokenSplit = computed(() => `${formatCompact((summary.value?.totalInputTokens ?? 0) + (summary.value?.totalCachedTokens ?? 0))} / ${formatCompact(summary.value?.totalOutputTokens ?? 0)}`)
+const totalTokens = computed(() => calculateAnalyticsTotalTokens(summary.value))
+const tokenSplit = computed(() => `${formatCompact(summary.value?.totalInputTokens ?? 0)} / ${formatCompact(summary.value?.totalOutputTokens ?? 0)}`)
 const filterSummary = computed(() => {
   const applied = dashboard.value?.appliedFilter
   const appliedRange = applied?.rangeType ?? rangeType.value
@@ -87,7 +93,10 @@ const filterSummary = computed(() => {
 })
 
 function setEl(key: ChartKey, el: HTMLElement | null) {
+  const previous = chartEls.value[key]
+  if (previous && previous !== el) chartResizeObserver?.unobserve(previous)
   chartEls.value[key] = el
+  if (el) chartResizeObserver?.observe(el)
 }
 
 async function loadFilters(): Promise<void> {
@@ -96,6 +105,13 @@ async function loadFilters(): Promise<void> {
   } catch {
     // 筛选项加载失败不阻塞主数据
   }
+}
+
+function ensureCustomRangeDefaults(): void {
+  if (startTime.value && endTime.value) return
+  const defaults = buildAnalyticsDefaultCustomRange()
+  startTime.value ??= defaults.startTime
+  endTime.value ??= defaults.endTime
 }
 
 function buildParams(): Record<string, unknown> {
@@ -336,20 +352,27 @@ function handleResize(): void {
 }
 
 onMounted(async () => {
+  chartResizeObserver = new ResizeObserver(handleResize)
   await Promise.all([loadFilters(), load()])
   window.addEventListener('resize', handleResize)
 })
 onUnmounted(() => {
   loadController?.abort()
+  chartResizeObserver?.disconnect()
+  chartResizeObserver = null
   window.removeEventListener('resize', handleResize)
   ;(Object.keys(charts.value) as ChartKey[]).forEach((k) => charts.value[k]?.dispose())
 })
 
-// 筛选条件变化时自动查询（自定义范围需两个时间都填）
-watch([rangeType, bucketType, protocolType, modelName, siteId, accessKeyId], () => load())
-watch([startTime, endTime], () => {
-  if (rangeType.value !== 'custom' || (startTime.value && endTime.value)) load()
+// 切换到指定时间范围时等待用户确认，避免使用尚未填写的时间提前查询。
+watch(rangeType, (value) => {
+  if (value === 'custom') {
+    ensureCustomRangeDefaults()
+    return
+  }
+  if (shouldAutoLoadAnalytics(value)) void load()
 })
+watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void load() })
 </script>
 
 <template>

@@ -88,7 +88,8 @@ export async function sendChat(opts: ChatSendOptions): Promise<ChatSendResult> {
   const resp = await fetch('/api/admin/chat/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAccessToken()}` },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    signal: opts.signal
   })
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}))
@@ -153,7 +154,7 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
     const handleBlock = (block: string): boolean => {
       const event = parseSseBlock(block)
       if (!event) return false
-      let payload: { content?: string; message?: string } = {}
+      let payload: { content?: string; message?: string; attempts?: ChatAttemptResult[] } = {}
       try { payload = JSON.parse(event.data) } catch { /* 非 JSON 忽略 */ }
       if (event.event === 'token' && payload.content) {
         cb.onToken(payload.content)
@@ -165,7 +166,11 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
         cb.onDone?.()
         return true
       } else if (event.event === 'error') {
-        throw new Error(payload.message || '上游返回错误')
+        const error = new Error(payload.message || '上游返回错误') as Error & {
+          attempts?: ChatAttemptResult[]
+        }
+        error.attempts = payload.attempts
+        throw error
       }
       return false
     }

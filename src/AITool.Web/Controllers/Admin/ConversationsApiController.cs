@@ -38,7 +38,9 @@ public sealed class ConversationsApiController : ControllerBase
         [FromQuery] string? rangeType,
         [FromQuery] DateTimeOffset? startTime,
         [FromQuery] DateTimeOffset? endTime,
-        CancellationToken cancellationToken)
+        [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 30,
+        CancellationToken cancellationToken = default)
     {
         if (!await IsConversationLogEnabledAsync(cancellationToken))
         {
@@ -59,7 +61,18 @@ public sealed class ConversationsApiController : ControllerBase
             SessionKeyword = sessionKeyword ?? string.Empty
         }, cancellationToken);
 
+        var normalizedPageSize = Math.Clamp(pageSize, 1, 100);
+        var totalCount = summaries.Count;
+        var totalPages = totalCount == 0
+            ? 0
+            : (int)Math.Ceiling(totalCount / (double)normalizedPageSize);
+        var normalizedPage = totalPages == 0
+            ? 1
+            : Math.Min(Math.Max(1, page), totalPages);
+
         var sessions = summaries
+            .Skip((normalizedPage - 1) * normalizedPageSize)
+            .Take(normalizedPageSize)
             .Select(summary =>
             {
                 // 每个会话只解压一次压缩原文，取标题预览（替代历史实现里对分组内每条都解压再 FirstOrDefault）。
@@ -86,7 +99,14 @@ public sealed class ConversationsApiController : ControllerBase
             })
             .ToList();
 
-        return Ok(new { items = sessions, totalCount = summaries.Count });
+        return Ok(new
+        {
+            items = sessions,
+            page = normalizedPage,
+            pageSize = normalizedPageSize,
+            totalCount,
+            totalPages
+        });
     }
 
     /// <summary>

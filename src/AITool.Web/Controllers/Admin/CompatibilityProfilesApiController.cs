@@ -75,11 +75,16 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
             return BadRequest(new { message = "名称不能为空" });
         }
 
+        if (!TryNormalizeRulesJson(payload.RulesJson, out var rulesJson))
+        {
+            return BadRequest(new { message = "规则必须是有效的 JSON 数组" });
+        }
+
         var profile = new CompatibilityProfile
         {
             Name = payload.Name.Trim(),
             Description = payload.Description?.Trim() ?? string.Empty,
-            RulesJson = NormalizeRulesJson(payload.RulesJson),
+            RulesJson = rulesJson,
             IsEnabled = payload.IsEnabled
         };
         await _dbContext.InsertAsync(profile, cancellationToken);
@@ -101,10 +106,14 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
 
         var profile = await _dbContext.CompatibilityProfiles.InSingleAsync(id);
         if (profile is null) return NotFound(new { message = "规则集不存在" });
+        if (!TryNormalizeRulesJson(payload.RulesJson, out var rulesJson))
+        {
+            return BadRequest(new { message = "规则必须是有效的 JSON 数组" });
+        }
 
         profile.Name = payload.Name.Trim();
         profile.Description = payload.Description?.Trim() ?? string.Empty;
-        profile.RulesJson = NormalizeRulesJson(payload.RulesJson);
+        profile.RulesJson = rulesJson;
         profile.IsEnabled = payload.IsEnabled;
         profile.UpdatedAt = DateTimeOffset.UtcNow;
         await _dbContext.UpdateAsync(profile, cancellationToken);
@@ -146,19 +155,22 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
     }
 
     /// <summary>
-    /// 规范化 RulesJson：空或解析失败时返回 "[]"，否则原样保留（已是合法 JSON 数组）。
+    /// 校验并规范化 RulesJson；无效 JSON 或非数组输入由接口明确拒绝。
     /// </summary>
-    private static string NormalizeRulesJson(string? raw)
+    private static bool TryNormalizeRulesJson(string? raw, out string normalized)
     {
-        if (string.IsNullOrWhiteSpace(raw)) return "[]";
+        normalized = "[]";
+        if (string.IsNullOrWhiteSpace(raw)) return true;
         try
         {
             var rules = JsonSerializer.Deserialize<List<CompatibilityRule>>(raw);
-            return rules is null ? "[]" : JsonSerializer.Serialize(rules);
+            if (rules is null) return false;
+            normalized = JsonSerializer.Serialize(rules);
+            return true;
         }
         catch
         {
-            return "[]";
+            return false;
         }
     }
 

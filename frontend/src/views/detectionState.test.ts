@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { DetectionModelGroup } from '@/api/detection'
-import { applyDetectionProbeResult, formatDetectionDateTime } from './detectionState'
+import { applyDetectionProbeResult, formatDetectionDateTime, shouldRetryDetectionProgress } from './detectionState'
 
 function createGroups(): DetectionModelGroup[] {
   return [{
@@ -43,5 +43,11 @@ describe('Detection 页面状态', () => {
     const value = new Date(2026, 6, 30, 8, 9, 5).toISOString()
     expect(formatDetectionDateTime(value)).toBe('2026-07-30 08:09:05')
     expect(formatDetectionDateTime(null)).toBe('-')
+  })
+
+  it('任务已过期时停止轮询，临时错误继续重试', () => {
+    expect(shouldRetryDetectionProgress({ status: 404 })).toBe(false)
+    expect(shouldRetryDetectionProgress({ status: 503 })).toBe(true)
+    expect(shouldRetryDetectionProgress(new Error('网络错误'))).toBe(true)
   })
 })

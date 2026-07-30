@@ -74,14 +74,13 @@ public sealed class SitesApiController : ControllerBase
             return NotFound(ApiResponse.Fail("站点不存在", "site_not_found"));
         }
 
-        // 注意：详情接口返回 ApiKey（编辑回填用），与列表接口的脱敏值不同。
+        // 编辑时密钥留空表示保留原值，详情接口不向浏览器返回原始密钥。
         return Ok(ApiResponse.Ok(new
         {
             id = site.Id,
             name = site.Name,
             baseUrl = site.BaseUrl,
             endpointPathMode = SiteEndpointPathResolver.NormalizeMode(site.EndpointPathMode),
-            apiKey = site.ApiKey,
             supportsOpenAi = site.SupportsOpenAi,
             supportsAnthropic = site.SupportsAnthropic,
             protocolType = site.ProtocolType,

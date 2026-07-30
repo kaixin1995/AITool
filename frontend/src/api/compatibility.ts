@@ -23,10 +23,17 @@ export async function listProfiles(): Promise<CompatibilityProfileListItem[]> {
 export async function getProfile(id: string): Promise<CompatibilityProfileDetail> {
   return httpGet<CompatibilityProfileDetail>(`/api/admin/compatibility-profiles/${id}`)
 }
-export async function createProfile(payload: { name: string; description?: string; rulesJson?: string }): Promise<void> {
+export interface CompatibilityProfilePayload {
+  name: string
+  description?: string
+  rulesJson?: string
+  isEnabled: boolean
+}
+
+export async function createProfile(payload: CompatibilityProfilePayload): Promise<void> {
   await httpPost('/api/admin/compatibility-profiles', payload)
 }
-export async function updateProfile(id: string, payload: { name: string; description?: string; rulesJson?: string }): Promise<void> {
+export async function updateProfile(id: string, payload: CompatibilityProfilePayload): Promise<void> {
   await httpPut(`/api/admin/compatibility-profiles/${id}`, payload)
 }
 export async function toggleProfile(id: string): Promise<void> {

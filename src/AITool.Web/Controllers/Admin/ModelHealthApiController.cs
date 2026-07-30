@@ -243,6 +243,9 @@ public sealed class ModelHealthApiController : ControllerBase
                 lastCheckedAt = h.LastCheckedAt,
                 lastDurationMs = h.LastDurationMs,
                 successRate = h.SuccessRate,
+                successCount = h.SuccessCount,
+                failureCount = h.FailureCount,
+                totalRequestCount = h.SuccessCount + h.FailureCount,
                 timelineSegments = h.TimelineSegments
             }).ToList();
 

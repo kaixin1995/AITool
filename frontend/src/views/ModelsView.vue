@@ -101,7 +101,7 @@ async function loadModels(): Promise<void> {
     vendorCatalog.value = structuredClone(catalog)
     profileOptions.value = [
       { label: '无', value: '' },
-      ...profiles.map((p) => ({ label: p.name, value: p.id }))
+      ...profiles.filter((profile) => profile.isEnabled).map((profile) => ({ label: profile.name, value: profile.id }))
     ]
   } finally {
     loading.value = false
@@ -440,7 +440,7 @@ onMounted(loadModels)
     >
       <NForm label-placement="top">
         <NFormItem label="模型名称（唯一）">
-          <NInput v-model:value="form.modelName" placeholder="如 gpt-4o" :disabled="isEditMode" />
+          <NInput v-model:value="form.modelName" placeholder="如 gpt-4o" />
         </NFormItem>
         <NFormItem label="显示名称">
           <NInput v-model:value="form.displayName" placeholder="留空则用模型名称" />

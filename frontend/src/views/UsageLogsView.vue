@@ -19,6 +19,11 @@ import {
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/usageLogs'
 import type { UsageLogItem, UsageLogRequestDetail, UsageLogSummary } from '@/api/usageLogs'
+import {
+  buildUsageLogsDefaultCustomRange,
+  buildVisibleUsageLogPages,
+  canAutoLoadUsageLogs
+} from './usageLogsState'
 
 const message = useMessage()
 const loading = ref(false)
@@ -34,6 +39,7 @@ const summary = ref<UsageLogSummary>({ totalRequests: 0, failedRequests: 0, succ
 const detailVisible = ref(false)
 const requestDetail = ref<UsageLogRequestDetail | null>(null)
 let refreshTimer: number | undefined
+let searchTimer: number | undefined
 
 const query = reactive({
   page: 1,
@@ -168,6 +174,13 @@ function latencyBadges(row: UsageLogItem) {
   ])
 }
 
+function ensureCustomRangeDefaults(): void {
+  if (query.startTime && query.endTime) return
+  const defaults = buildUsageLogsDefaultCustomRange()
+  query.startTime ??= defaults.startTime
+  query.endTime ??= defaults.endTime
+}
+
 function buildParams(page = query.page): Record<string, unknown> {
   const params: Record<string, unknown> = { page, pageSize: query.pageSize, rangeType: query.rangeType }
   if (query.siteId) params.siteId = query.siteId
@@ -194,8 +207,10 @@ async function load(page = query.page): Promise<void> {
       api.getUsageLogSummary(params)
     ])
     items.value = listResp.items ?? []
-    totalCount.value = listResp.totalCount ?? 0
-    totalPages.value = listResp.totalPages ?? Math.ceil(totalCount.value / query.pageSize)
+    query.page = listResp.page
+    query.pageSize = listResp.pageSize
+    totalCount.value = listResp.totalCount
+    totalPages.value = listResp.totalPages
     summary.value = summaryResp
   } catch (e) {
     message.error((e as Error).message)
@@ -204,14 +219,40 @@ async function load(page = query.page): Promise<void> {
   }
 }
 
+function clearSearchTimer(): void {
+  if (searchTimer === undefined) return
+  window.clearTimeout(searchTimer)
+  searchTimer = undefined
+}
+
 function handleSearch(): void {
+  clearSearchTimer()
   void load(1)
 }
 
-// 筛选项选择后立即查询，恢复历史页面“改条件即刷新”的使用方式。
+// 筛选项选择后立即查询；自定义时间需先补齐默认范围，避免中间态请求。
 watch(
   () => [query.rangeType, query.siteId, query.accessKeyId, query.source, query.status, query.startTime, query.endTime],
-  () => { void load(1) }
+  () => {
+    if (query.rangeType === 'custom' && (!query.startTime || !query.endTime)) {
+      ensureCustomRangeDefaults()
+      return
+    }
+    if (!canAutoLoadUsageLogs(query.rangeType, query.startTime, query.endTime)) return
+    void load(1)
+  }
+)
+
+// 模型关键词输入完成后再查询，避免连续输入触发重复请求。
+watch(
+  () => query.modelKeyword,
+  () => {
+    clearSearchTimer()
+    searchTimer = window.setTimeout(() => {
+      searchTimer = undefined
+      void load(1)
+    }, 300)
+  }
 )
 
 async function openRequestDetail(requestId: string): Promise<void> {
@@ -248,13 +289,7 @@ const detailAccessKeyName = computed(() => {
   return [...new Set(names)].join(' / ') || '-'
 })
 
-const pageNumbers = computed(() => {
-  const total = Math.max(1, totalPages.value)
-  const current = Math.min(Math.max(1, query.page), total)
-  const start = Math.max(1, current - 2)
-  const end = Math.min(total, start + 4)
-  return Array.from({ length: end - start + 1 }, (_, index) => start + index)
-})
+const pageNumbers = computed(() => buildVisibleUsageLogPages(query.page, totalPages.value))
 
 const paginationSummary = computed(() => {
   if (totalCount.value === 0) return '共 0 条'
@@ -286,6 +321,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
+  clearSearchTimer()
 })
 </script>
 

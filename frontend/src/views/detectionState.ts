@@ -17,6 +17,13 @@ export function applyDetectionProbeResult(
   return false
 }
 
+export function shouldRetryDetectionProgress(error: unknown): boolean {
+  return !(typeof error === 'object'
+    && error !== null
+    && 'status' in error
+    && error.status === 404)
+}
+
 export function formatDetectionDateTime(value: string | null): string {
   if (!value) return '-'
   const date = new Date(value)

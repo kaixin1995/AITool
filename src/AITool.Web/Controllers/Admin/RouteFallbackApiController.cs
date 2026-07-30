@@ -12,6 +12,7 @@ namespace AITool.Web.Controllers.Admin;
 [Route("api/admin/route-fallback")]
 public sealed class RouteFallbackApiController : ControllerBase
 {
+    private const int SampleLogLimit = 5000;
     private readonly AppDbContext _dbContext;
 
     public RouteFallbackApiController(AppDbContext dbContext)
@@ -25,8 +26,8 @@ public sealed class RouteFallbackApiController : ControllerBase
     [HttpGet("list")]
     public async Task<ActionResult<RouteFallbackListResponseDto>> GetList([FromQuery] RouteFallbackQueryDto query, CancellationToken cancellationToken)
     {
-        var events = await BuildEventsAsync(cancellationToken);
-        var filtered = ApplyFilters(events, query).ToList();
+        var snapshot = await BuildEventsAsync(cancellationToken);
+        var filtered = ApplyFilters(snapshot.Events, query).ToList();
         var pageSize = Math.Clamp(query.PageSize, 1, 100);
         var totalCount = filtered.Count;
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
@@ -41,7 +42,11 @@ public sealed class RouteFallbackApiController : ControllerBase
             Items = filtered
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .ToList()
+                .ToList(),
+            Summary = BuildSummary(filtered),
+            SampleLogLimit = SampleLogLimit,
+            IsTruncated = snapshot.IsTruncated,
+            SampleOldestRequestedAt = snapshot.SampleOldestRequestedAt
         });
     }
 
@@ -49,20 +54,25 @@ public sealed class RouteFallbackApiController : ControllerBase
     /// 获取路由回退摘要统计。
     /// </summary>
     [HttpGet("summary")]
-    public async Task<ActionResult<RouteFallbackSummaryDto>> GetSummary(CancellationToken cancellationToken)
+    public async Task<ActionResult<RouteFallbackSummaryDto>> GetSummary([FromQuery] RouteFallbackQueryDto query, CancellationToken cancellationToken)
     {
-        var events = await BuildEventsAsync(cancellationToken);
-        var list = events.ToList();
-        return Ok(new RouteFallbackSummaryDto
-        {
-            TotalCount = list.Count,
-            UniqueFromSites = list.Select(x => x.FromSiteId).Where(x => x != Guid.Empty).Distinct().Count(),
-            UniqueToSites = list.Select(x => x.ToSiteId).Where(x => x != Guid.Empty).Distinct().Count(),
-            LatestOccurredAt = list.FirstOrDefault()?.OccurredAt
-        });
+        var snapshot = await BuildEventsAsync(cancellationToken);
+        var filtered = ApplyFilters(snapshot.Events, query).ToList();
+        return Ok(BuildSummary(filtered));
     }
 
-    private async Task<IEnumerable<RouteFallbackEventDto>> BuildEventsAsync(CancellationToken cancellationToken)
+    private static RouteFallbackSummaryDto BuildSummary(IReadOnlyList<RouteFallbackEventDto> events)
+    {
+        return new RouteFallbackSummaryDto
+        {
+            TotalCount = events.Count,
+            UniqueFromSites = events.Select(x => x.FromSiteId).Where(x => x != Guid.Empty).Distinct().Count(),
+            UniqueToSites = events.Select(x => x.ToSiteId).Where(x => x != Guid.Empty).Distinct().Count(),
+            LatestOccurredAt = events.FirstOrDefault()?.OccurredAt
+        };
+    }
+
+    private async Task<RouteFallbackSnapshot> BuildEventsAsync(CancellationToken cancellationToken)
     {
         var sites = await _dbContext.Sites
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
@@ -70,14 +80,19 @@ public sealed class RouteFallbackApiController : ControllerBase
         // 回退事件只依赖最近的多尝试链路；限制读取量，避免监控页在大日志库上全表扫描。
         var logs = await _dbContext.ProxyUsageLogs
             .OrderBy(x => x.RequestedAt, SqlSugar.OrderByType.Desc)
-            .Take(5000)
+            .Take(SampleLogLimit)
             .ToListAsync(cancellationToken);
 
-        return logs
+        var events = logs
             .GroupBy(x => x.RequestId)
             .SelectMany(group => BuildEventsForRequest(group.OrderBy(x => x.AttemptIndex).ThenBy(x => x.RequestedAt).ToList(), sites))
             .OrderByDescending(x => x.OccurredAt)
             .ToList();
+
+        return new RouteFallbackSnapshot(
+            events,
+            logs.Count >= SampleLogLimit,
+            logs.LastOrDefault()?.RequestedAt);
     }
 
     private static IEnumerable<RouteFallbackEventDto> BuildEventsForRequest(IReadOnlyList<ProxyUsageLog> logs, IReadOnlyDictionary<Guid, string> sites)
@@ -136,6 +151,11 @@ public sealed class RouteFallbackApiController : ControllerBase
     {
         return value.Contains(keyword, StringComparison.OrdinalIgnoreCase);
     }
+
+    private sealed record RouteFallbackSnapshot(
+        List<RouteFallbackEventDto> Events,
+        bool IsTruncated,
+        DateTimeOffset? SampleOldestRequestedAt);
 }
 
 public sealed class RouteFallbackQueryDto
@@ -153,6 +173,10 @@ public sealed class RouteFallbackListResponseDto
     public int TotalCount { get; set; }
     public int TotalPages { get; set; }
     public List<RouteFallbackEventDto> Items { get; set; } = [];
+    public RouteFallbackSummaryDto Summary { get; set; } = new();
+    public int SampleLogLimit { get; set; }
+    public bool IsTruncated { get; set; }
+    public DateTimeOffset? SampleOldestRequestedAt { get; set; }
 }
 
 public sealed class RouteFallbackSummaryDto

@@ -84,7 +84,8 @@ async function handleSend(): Promise<void> {
   lastAttempts.value = null
   expandedAttemptIndexes.value = new Set()
   sending.value = true
-  abortController = new AbortController()
+  const controller = new AbortController()
+  abortController = controller
   await scrollToBottom()
 
   const commonOpts = {
@@ -93,47 +94,51 @@ async function handleSend(): Promise<void> {
     mappingId: target.mappingId,
     enableReasoning: enableReasoning.value,
     reasoningEffort: reasoningEffort.value,
-    signal: abortController.signal
+    signal: controller.signal
   }
 
-  if (enableStreaming.value) {
-    await chatApi.sendChatStream(commonOpts, {
-      onToken: (delta) => {
-        streamingContent.value += delta
-        messages.value[assistantIdx].content = streamingContent.value
-        scrollToBottom()
-      },
-      onReasoning: (delta) => {
-        streamingReasoning.value += delta
-        messages.value[assistantIdx].reasoning = streamingReasoning.value
-      },
-      onMeta: (meta) => {
-        // meta 事件携带路由尝试明细（每段尝试的站点/模型/状态/耗时）
-        const m = meta as ChatSendResult
-        if (m?.attempts) {
-          lastAttempts.value = m.attempts
-          messages.value[assistantIdx].meta = m
+  try {
+    if (enableStreaming.value) {
+      await chatApi.sendChatStream(commonOpts, {
+        onToken: (delta) => {
+          streamingContent.value += delta
+          messages.value[assistantIdx].content = streamingContent.value
+          scrollToBottom()
+        },
+        onReasoning: (delta) => {
+          streamingReasoning.value += delta
+          messages.value[assistantIdx].reasoning = streamingReasoning.value
+        },
+        onMeta: (meta) => {
+          // meta 事件携带路由尝试明细（每段尝试的站点/模型/状态/耗时）
+          const m = meta as ChatSendResult
+          if (m?.attempts) {
+            lastAttempts.value = m.attempts
+            messages.value[assistantIdx].meta = m
+          }
+        },
+        onDone: () => {
+          messages.value[assistantIdx].durationMs = Date.now() - startedAt
+          if (!streamingContent.value) {
+            messages.value[assistantIdx].content = '(空回复)'
+          }
+        },
+        onError: (err) => {
+          const streamError = err as Error & { attempts?: ChatAttemptResult[] }
+          if (streamError.attempts) {
+            lastAttempts.value = streamError.attempts
+            messages.value[assistantIdx].meta = { success: false, content: '', attempts: streamError.attempts }
+          }
+          messages.value[assistantIdx].error = true
+          messages.value[assistantIdx].content = `(错误：${err.message})`
+          message.error(err.message)
         }
-      },
-      onDone: () => {
-        sending.value = false
-        messages.value[assistantIdx].durationMs = Date.now() - startedAt
-        if (!streamingContent.value) {
-          messages.value[assistantIdx].content = '(空回复)'
-        }
-      },
-      onError: (err) => {
-        sending.value = false
-        messages.value[assistantIdx].error = true
-        messages.value[assistantIdx].content = `(错误：${err.message})`
-        message.error(err.message)
+      })
+      if (controller.signal.aborted && !messages.value[assistantIdx].content) {
+        messages.value[assistantIdx].content = '(已停止)'
       }
-    })
-  } else {
-    // 非流式
-    try {
+    } else {
       const result = await chatApi.sendChat(commonOpts)
-      sending.value = false
       messages.value[assistantIdx].meta = result
       lastAttempts.value = result.attempts ?? []
       messages.value[assistantIdx].durationMs = result.totalDurationMs || result.durationMs || (Date.now() - startedAt)
@@ -144,20 +149,25 @@ async function handleSend(): Promise<void> {
         messages.value[assistantIdx].error = true
         messages.value[assistantIdx].content = `(错误：${result.error || '未知错误'})`
       }
-    } catch (e) {
-      sending.value = false
-      messages.value[assistantIdx].error = true
-      messages.value[assistantIdx].content = `(错误：${(e as Error).message})`
-      message.error((e as Error).message)
-    } finally {
-      await scrollToBottom()
     }
+  } catch (e) {
+    const error = e as Error
+    if (error.name === 'AbortError') {
+      messages.value[assistantIdx].content = '(已停止)'
+    } else {
+      messages.value[assistantIdx].error = true
+      messages.value[assistantIdx].content = `(错误：${error.message})`
+      message.error(error.message)
+    }
+  } finally {
+    if (abortController === controller) abortController = null
+    sending.value = false
+    await scrollToBottom()
   }
 }
 
 function handleStop(): void {
   abortController?.abort()
-  sending.value = false
 }
 
 function handleClear(): void {
@@ -252,7 +262,7 @@ onMounted(loadModels)
             </div>
             <div class="chat-toolbar-actions">
               <NButton secondary @click="loadModels">刷新候选</NButton>
-              <NButton secondary @click="handleClear">清空</NButton>
+              <NButton secondary :disabled="sending" @click="handleClear">清空</NButton>
             </div>
           </div>
 

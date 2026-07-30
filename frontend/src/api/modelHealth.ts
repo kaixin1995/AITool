@@ -29,7 +29,12 @@ export interface ModelHealthDashboard {
     siteName: string
     remoteModelName: string
     lastStatus: string
+    lastCheckedAt: string | null
+    lastDurationMs: number | null
     successRate: number
+    successCount: number
+    failureCount: number
+    totalRequestCount: number
     timelineSegments: ModelHealthTimelineSegment[]
   }>>
   rangeOptions: Array<{ value: string; label: string }>

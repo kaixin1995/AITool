@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NCard, NButton, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, useMessage } from 'naive-ui'
+import { NAlert, NCard, NButton, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/codex'
 import type {
@@ -14,6 +14,10 @@ import type {
   CodexRemoteModelItem,
   CodexResetCreditsInfo
 } from '@/api/codex'
+import {
+  inspectionActionLabel,
+  isInspectionDisabledError
+} from './codexInspectionState'
 
 const message = useMessage()
 const route = useRoute()
@@ -25,6 +29,10 @@ const inspection = ref<CodexInspectionStatus | null>(null)
 const inspectionLastRun = ref<CodexInspectionRunResult | null>(null)
 const inspectionLogs = ref<CodexInspectionLog[]>([])
 const inspectionRunning = ref(false)
+const inspectionDisabled = ref(false)
+const inspectionStatusError = ref('')
+const inspectionLastRunError = ref('')
+const inspectionLogsError = ref('')
 // 功能未开启时的提示态
 const featureDisabled = ref(false)
 
@@ -95,46 +103,71 @@ const someVisibleModelsChecked = computed(() => (
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
-async function loadInspection(): Promise<void> {
-  try {
-    const [status, lastRun, logs] = await Promise.all([
-      api.getCodexInspectionStatus(),
-      api.getCodexInspectionLastRun(),
-      api.getCodexInspectionLogs()
-    ])
-    inspection.value = status
-    inspectionLastRun.value = lastRun
-    inspectionLogs.value = logs
-  } catch {
+async function loadInspection(force = false): Promise<void> {
+  if (inspectionDisabled.value && !force) return
+
+  inspectionStatusError.value = ''
+  inspectionLastRunError.value = ''
+  inspectionLogsError.value = ''
+  const [statusResult, lastRunResult, logsResult] = await Promise.allSettled([
+    api.getCodexInspectionStatus(),
+    api.getCodexInspectionLastRun(),
+    api.getCodexInspectionLogs()
+  ])
+
+  if (statusResult.status === 'fulfilled') {
+    inspection.value = statusResult.value
+    inspectionDisabled.value = false
+  } else if (isInspectionDisabledError(statusResult.reason)) {
     inspection.value = null
-    inspectionLastRun.value = null
-    inspectionLogs.value = []
+    inspectionDisabled.value = true
+  } else {
+    inspectionStatusError.value = '巡检状态加载失败，请稍后重试。'
+  }
+
+  if (inspectionDisabled.value) return
+
+  if (lastRunResult.status === 'fulfilled') {
+    inspectionLastRun.value = lastRunResult.value
+  } else {
+    inspectionLastRunError.value = '上次巡检结果加载失败，当前保留上次成功数据。'
+  }
+
+  if (logsResult.status === 'fulfilled') {
+    inspectionLogs.value = logsResult.value
+  } else {
+    inspectionLogsError.value = '巡检日志加载失败，当前保留上次成功数据。'
   }
 }
 
 async function load(): Promise<void> {
   loading.value = true
   featureDisabled.value = false
-  try {
-    accounts.value = await api.listCodexAccounts()
-    await loadInspection()
-  } catch (e) {
-    // Codex 功能未开启时后端返回 404，显示提示而非空白
-    if ((e as { status?: number }).status === 404) {
-      featureDisabled.value = true
-    } else {
-      message.error((e as Error).message)
-    }
-  } finally { loading.value = false }
+  await Promise.all([
+    (async () => {
+      try {
+        accounts.value = await api.listCodexAccounts()
+      } catch (e) {
+        // Codex 功能未开启时后端返回 404，显示提示而非空白。
+        if ((e as { status?: number }).status === 404) {
+          featureDisabled.value = true
+        } else {
+          message.error((e as Error).message)
+        }
+      }
+    })(),
+    loadInspection(true)
+  ])
+  loading.value = false
 }
 
 async function refreshSilently(): Promise<void> {
-  try {
-    accounts.value = await api.listCodexAccounts()
-  } catch {
-    return
-  }
-  await loadInspection()
+  await Promise.all([
+    api.listCodexAccounts()
+      .then(result => { accounts.value = result })
+      .catch(() => undefined),
+    loadInspection()
+  ])
 }
 
 async function handleStartOAuth(): Promise<void> {
@@ -464,6 +497,11 @@ function formatQuotaPercent(value: number | null | undefined): string {
   return `${Math.round(Number(value))}%`
 }
 
+function formatInspectionPercent(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(Number(value))) return '-'
+  return `${Number(value).toFixed(1)}%`
+}
+
 function accountQuotaPercent(acc: CodexAccount): number | null {
   if (acc.windows && acc.windows.length > 0) {
     return Math.min(...acc.windows.map((w) => Math.max(0, 100 - Number(w.usedPercent || 0))))
@@ -493,8 +531,13 @@ function quotaColor(percent: number | null | undefined): 'success' | 'warning' |
 
 watch(activeTab, (tab) => {
   const query = { ...route.query }
-  if (tab === 'inspection') query.tab = 'inspection'
-  else delete query.tab
+  if (tab === 'inspection') {
+    query.tab = 'inspection'
+    if (exportMode.value) cancelExportCredentials()
+    void loadInspection(true)
+  } else {
+    delete query.tab
+  }
   void router.replace({ query })
 })
 
@@ -517,16 +560,18 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   <div class="page-container">
     <PageHeader title="OAuth 管理" subtitle="管理 Codex OAuth 登录账号、凭证导入、额度、巡检与自动禁用">
       <template #actions>
-        <template v-if="exportMode">
-          <NTag round :bordered="false" size="small">已选 {{ selectedExportAccountIds.length }} 个</NTag>
-          <NButton size="small" @click="cancelExportCredentials">取消选择</NButton>
-          <NButton size="small" type="primary" :loading="exportLoading" @click="handleExportCredentials">导出选中</NButton>
-        </template>
-        <template v-else>
-          <NTag v-if="accounts.length" round :bordered="false" size="small">{{ accounts.length }} 个</NTag>
-          <NButton size="small" quaternary @click="openImportCredential">导入凭证</NButton>
-          <NButton size="small" quaternary :disabled="accounts.length === 0" @click="beginExportCredentials">导出凭证</NButton>
-          <NButton size="small" type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">OAuth 登录</NButton>
+        <template v-if="activeTab === 'accounts'">
+          <template v-if="exportMode">
+            <NTag round :bordered="false" size="small">已选 {{ selectedExportAccountIds.length }} 个</NTag>
+            <NButton size="small" @click="cancelExportCredentials">取消选择</NButton>
+            <NButton size="small" type="primary" :loading="exportLoading" @click="handleExportCredentials">导出选中</NButton>
+          </template>
+          <template v-else>
+            <NTag v-if="accounts.length" round :bordered="false" size="small">{{ accounts.length }} 个</NTag>
+            <NButton size="small" quaternary @click="openImportCredential">导入凭证</NButton>
+            <NButton size="small" quaternary :disabled="accounts.length === 0" @click="beginExportCredentials">导出凭证</NButton>
+            <NButton size="small" type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">OAuth 登录</NButton>
+          </template>
         </template>
       </template>
     </PageHeader>
@@ -610,8 +655,18 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         </NTabPane>
 
         <NTabPane name="inspection" tab="巡检">
-          <NEmpty v-if="!inspection" description="Codex 巡检功能未开启" />
+          <div v-if="inspectionDisabled" class="inspection-empty-state">
+            <NEmpty description="Codex 巡检功能未开启" />
+            <NButton size="small" secondary @click="loadInspection(true)">重新检测</NButton>
+          </div>
+          <div v-else-if="!inspection" class="inspection-empty-state">
+            <NEmpty :description="inspectionStatusError || '正在加载巡检状态'" />
+            <NButton size="small" secondary @click="loadInspection(true)">重试</NButton>
+          </div>
           <div v-else class="inspection-workspace">
+            <NAlert v-if="inspectionStatusError" type="error" :show-icon="false">
+              巡检状态刷新失败，当前显示上次成功状态。
+            </NAlert>
             <NCard class="inspection-card" size="small">
               <div class="inspection-content">
                 <div class="inspection-main">
@@ -627,11 +682,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                   <span v-if="inspection.nextScheduledAt" class="inspection-meta">下次：{{ formatDateTime(inspection.nextScheduledAt) }}</span>
                   <NButton size="small" :loading="inspectionRunning" @click="handleRunInspection(false)">手动巡检</NButton>
                   <NButton size="small" type="primary" :loading="inspectionRunning" @click="handleRunInspection(true)">真实巡检</NButton>
-                  <NButton size="small" secondary :disabled="inspectionRunning" @click="loadInspection">刷新状态</NButton>
+                  <NButton size="small" secondary :disabled="inspectionRunning" @click="loadInspection()">刷新状态</NButton>
                 </div>
               </div>
             </NCard>
 
+            <NAlert v-if="inspectionLastRunError" type="error" :show-icon="false">
+              {{ inspectionLastRunError }}
+            </NAlert>
             <NCard v-if="inspectionLastRun" title="上次巡检结果" size="small">
               <div class="inspection-summary-grid">
                 <div><span>保留</span><strong>{{ inspectionLastRun.keepCount }}</strong></div>
@@ -652,10 +710,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                   </div>
                   <div v-for="item in inspectionLastRun.accounts" :key="item.accountId" class="inspection-table-row">
                     <strong>{{ item.displayName }}</strong>
-                    <span>{{ formatQuotaPercent(item.fiveHourUsedPercent) }}</span>
-                    <span>{{ formatQuotaPercent(item.weeklyUsedPercent) }}</span>
+                    <span>{{ formatInspectionPercent(item.fiveHourUsedPercent) }}</span>
+                    <span>{{ formatInspectionPercent(item.weeklyUsedPercent) }}</span>
                     <NTag size="tiny" :bordered="false">{{ item.fromCache ? '缓存' : '实时' }}</NTag>
-                    <NTag size="tiny" :type="item.action === 'disable' ? 'error' : item.action === 'enable' ? 'success' : 'default'" :bordered="false">{{ item.action }}</NTag>
+                    <NTag size="tiny" :type="item.action === 'disable' ? 'error' : item.action === 'enable' ? 'success' : 'default'" :bordered="false">{{ inspectionActionLabel(item.action) }}</NTag>
                     <span class="inspection-reason">{{ item.reason }}</span>
                   </div>
                 </div>
@@ -663,8 +721,11 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
             </NCard>
 
             <NCard title="巡检日志" size="small">
-              <NEmpty v-if="inspectionLogs.length === 0" description="暂无巡检日志" size="small" />
-              <div v-else class="inspection-log-list">
+              <NAlert v-if="inspectionLogsError" type="error" :show-icon="false">
+                {{ inspectionLogsError }}
+              </NAlert>
+              <NEmpty v-if="inspectionLogs.length === 0 && !inspectionLogsError" description="暂无巡检日志" size="small" />
+              <div v-if="inspectionLogs.length > 0" class="inspection-log-list">
                 <div v-for="(log, idx) in inspectionLogs" :key="`${log.at}-${idx}`" class="inspection-log-row">
                   <span>{{ formatDateTime(log.at) }}</span>
                   <NTag size="tiny" :bordered="false">{{ log.category }}</NTag>
@@ -1018,6 +1079,13 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.inspection-empty-state {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  padding: 32px 0;
 }
 
 .inspection-workspace {

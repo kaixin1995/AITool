@@ -19,7 +19,6 @@ export interface SiteDetail {
   name: string
   baseUrl: string
   endpointPathMode: string
-  apiKey: string
   supportsOpenAi: boolean
   supportsAnthropic: boolean
   protocolType: string

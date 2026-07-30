@@ -19,6 +19,10 @@ export interface RouteFallbackListResponse {
   totalCount: number
   totalPages: number
   items: RouteFallbackEvent[]
+  summary: RouteFallbackSummary
+  sampleLogLimit: number
+  isTruncated: boolean
+  sampleOldestRequestedAt: string | null
 }
 
 export interface RouteFallbackSummary {
@@ -40,6 +44,7 @@ export async function listRouteFallbackEvents(params: Record<string, unknown>): 
   return httpGet<RouteFallbackListResponse>(`/api/admin/route-fallback/list?${buildQuery(params)}`)
 }
 
-export async function getRouteFallbackSummary(): Promise<RouteFallbackSummary> {
-  return httpGet<RouteFallbackSummary>('/api/admin/route-fallback/summary')
+export async function getRouteFallbackSummary(params: Record<string, unknown> = {}): Promise<RouteFallbackSummary> {
+  const query = buildQuery(params)
+  return httpGet<RouteFallbackSummary>(`/api/admin/route-fallback/summary${query ? `?${query}` : ''}`)
 }

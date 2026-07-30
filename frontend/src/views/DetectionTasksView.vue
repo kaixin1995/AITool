@@ -4,12 +4,14 @@ import { NCard, NButton, NSpace, NTag, NForm, NFormItem, NInput, NSelect, NPopco
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/detectionTasks'
 import type { DetectionTaskItem } from '@/api/detectionTasks'
+import { formatDetectionDateTime } from './detectionState'
+import { ALL_MODELS_VALUE, normalizeDetectionTaskModelId } from './detectionTasksState'
 
 const message = useMessage()
 const loading = ref(false)
 const tasks = ref<DetectionTaskItem[]>([])
 const availableModels = ref<{ id: string; displayName: string }[]>([])
-const form = reactive({ name: '', cronExpression: '*/30 * * * *', modelLibraryItemId: null as string | null })
+const form = reactive({ name: '', cronExpression: '*/30 * * * *', modelLibraryItemId: ALL_MODELS_VALUE })
 const executing = ref<string | null>(null)
 
 async function load(): Promise<void> {
@@ -22,21 +24,26 @@ async function load(): Promise<void> {
 }
 
 const modelOptions = computed<SelectOption[]>(() => [
-  { label: '全部模型', value: '' },
+  { label: '全部模型', value: ALL_MODELS_VALUE },
   ...availableModels.value.map((m) => ({ label: m.displayName, value: m.id }))
 ])
 
 async function handleCreate(): Promise<void> {
   if (!form.name.trim() || !form.cronExpression.trim()) { message.warning('名称和 Cron 不能为空'); return }
-  await api.createDetectionTask(form)
+  await api.createDetectionTask({
+    name: form.name,
+    cronExpression: form.cronExpression,
+    modelLibraryItemId: normalizeDetectionTaskModelId(form.modelLibraryItemId)
+  })
   message.success('任务已创建')
-  Object.assign(form, { name: '', cronExpression: '*/30 * * * *', modelLibraryItemId: null })
+  Object.assign(form, { name: '', cronExpression: '*/30 * * * *', modelLibraryItemId: ALL_MODELS_VALUE })
   await load()
 }
 
 async function handleToggle(row: DetectionTaskItem): Promise<void> {
-  const r = await api.toggleDetectionTask(row.id)
-  row.isEnabled = r.isEnabled
+  await api.toggleDetectionTask(row.id)
+  // 后端按启用状态和名称排序，切换后重新加载以保持列表顺序一致。
+  await load()
 }
 async function handleExecute(row: DetectionTaskItem): Promise<void> {
   executing.value = row.id
@@ -52,13 +59,9 @@ async function handleDelete(row: DetectionTaskItem): Promise<void> {
   await load()
 }
 
-function formatDateTime(value: string | null): string {
-  return value ? new Date(value).toLocaleString('zh-CN') : '—'
-}
-
 function historyDuration(startedAt: string, finishedAt: string | null): string {
   if (!startedAt || !finishedAt) return '-'
-  return `${Math.round((new Date(finishedAt).getTime() - new Date(startedAt).getTime()) / 1000)}s`
+  return `${((new Date(finishedAt).getTime() - new Date(startedAt).getTime()) / 1000).toFixed(1)}s`
 }
 
 function historyStatusType(status: string): 'success' | 'error' | 'warning' {
@@ -99,8 +102,8 @@ onMounted(load)
             </div>
             <NSpace :wrap="false">
               <NTag size="small" :type="task.isEnabled ? 'success' : 'default'" :bordered="false">{{ task.isEnabled ? '启用' : '禁用' }}</NTag>
-              <NButton size="tiny" quaternary :loading="executing === task.id" @click="handleExecute(task)">立即执行</NButton>
               <NButton size="tiny" quaternary @click="handleToggle(task)">{{ task.isEnabled ? '禁用' : '启用' }}</NButton>
+              <NButton size="tiny" quaternary :loading="executing === task.id" @click="handleExecute(task)">立即执行</NButton>
               <NPopconfirm @positive-click="handleDelete(task)">
                 <template #trigger><NButton size="tiny" quaternary type="error">删除</NButton></template>
                 删除任务？
@@ -108,12 +111,12 @@ onMounted(load)
             </NSpace>
           </div>
         </template>
-        <div class="task-last-line">上次执行：{{ formatDateTime(task.lastExecutionStartedAt) }} <NTag v-if="task.lastExecutionStatus" size="tiny" :bordered="false">{{ task.lastExecutionStatus }}</NTag></div>
+        <div class="task-last-line">上次执行：{{ formatDetectionDateTime(task.lastExecutionStartedAt) }} <NTag v-if="task.lastExecutionStatus" size="tiny" :bordered="false">{{ task.lastExecutionStatus }}</NTag></div>
         <div class="history-table-scroll">
           <div class="history-table">
             <div class="history-head"><span>开始时间</span><span>耗时</span><span>状态</span><span>摘要</span></div>
             <div v-for="(h, idx) in task.executionHistory" :key="idx" class="history-row">
-              <span>{{ formatDateTime(h.startedAt) }}</span>
+              <span>{{ formatDetectionDateTime(h.startedAt) }}</span>
               <span>{{ historyDuration(h.startedAt, h.finishedAt) }}</span>
               <NTag size="tiny" :type="historyStatusType(h.status)" :bordered="false">{{ h.status }}</NTag>
               <span class="history-summary">{{ h.summary || '-' }}</span>

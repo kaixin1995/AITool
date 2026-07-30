@@ -1,5 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref
+} from 'vue'
 import {
   NCard, NSelect, NInput, NButton, NTag, NEmpty, NSpin, NPopconfirm, NPagination,
   NModal, NForm, NFormItem, useMessage, type SelectOption
@@ -8,6 +14,13 @@ import * as api from '@/api/conversations'
 import * as routesApi from '@/api/routes'
 import type { ConversationSession, ConversationTurn } from '@/api/conversations'
 import { renderSafeMarkdown } from './conversationsMarkdown'
+import {
+  buildConversationAssistantMeta,
+  buildConversationUserMeta,
+  buildInitialConversationWindow,
+  buildPreviousConversationWindow,
+  type ConversationRenderWindow
+} from './conversationsState'
 
 const message = useMessage()
 const loading = ref(false)
@@ -19,6 +32,15 @@ const selectedSessionTitle = ref('对话详情')
 const turns = ref<ConversationTurn[]>([])
 const turnsLoading = ref(false)
 const truncated = ref(false)
+const turnsContainer = ref<HTMLElement | null>(null)
+const turnsSentinel = ref<HTMLElement | null>(null)
+const renderWindow = ref<ConversationRenderWindow>({
+  start: 0,
+  end: 0
+})
+let turnsObserver: IntersectionObserver | null = null
+let turnsPrepending = false
+const copyFeedbackTimers = new Set<ReturnType<typeof setTimeout>>()
 
 function formatDateTimeLocal(date: Date): string {
   const pad = (value: number) => String(value).padStart(2, '0')
@@ -38,7 +60,7 @@ const requestModel = ref<string | null>(null)
 const roleFilter = ref('all')
 const keyword = ref('')
 const page = ref(1)
-const pageSize = 30
+const pageSize = ref(30)
 
 const renameModal = ref(false)
 const renaming = ref(false)
@@ -73,6 +95,70 @@ const requestModelOptions = computed<SelectOption[]>(() => [
 ])
 
 const selectedSession = computed(() => sessions.value.find((s) => s.groupKey === selectedGroupKey.value) ?? null)
+const visibleTurns = computed(() => turns.value.slice(
+  renderWindow.value.start,
+  renderWindow.value.end
+))
+const hasOlderTurns = computed(() => renderWindow.value.start > 0)
+
+function disconnectTurnsObserver(): void {
+  turnsObserver?.disconnect()
+  turnsObserver = null
+}
+
+async function revealPreviousTurns(): Promise<void> {
+  if (turnsPrepending) return
+  if (!hasOlderTurns.value) {
+    disconnectTurnsObserver()
+    return
+  }
+
+  turnsPrepending = true
+  try {
+    const container = turnsContainer.value
+    const previousHeight = container?.scrollHeight ?? 0
+    const previousTop = container?.scrollTop ?? 0
+    renderWindow.value = buildPreviousConversationWindow(
+      renderWindow.value.start,
+      turns.value.length
+    )
+    await nextTick()
+
+    if (container) {
+      container.scrollTop = previousTop
+        + container.scrollHeight
+        - previousHeight
+    }
+    if (!hasOlderTurns.value) disconnectTurnsObserver()
+  } finally {
+    turnsPrepending = false
+  }
+}
+
+async function setupTurnsObserver(): Promise<void> {
+  disconnectTurnsObserver()
+  await nextTick()
+  if (
+    !hasOlderTurns.value
+    || !turnsContainer.value
+    || !turnsSentinel.value
+    || typeof IntersectionObserver === 'undefined'
+  ) return
+
+  turnsObserver = new IntersectionObserver(
+    entries => {
+      if (entries.some(entry => entry.isIntersecting)) {
+        void revealPreviousTurns()
+      }
+    },
+    {
+      root: turnsContainer.value,
+      rootMargin: '200px 0px 0px 0px',
+      threshold: 0
+    }
+  )
+  turnsObserver.observe(turnsSentinel.value)
+}
 
 function buildRangeParams(): Record<string, unknown> {
   const params: Record<string, unknown> = { rangeType: rangeType.value }
@@ -87,17 +173,25 @@ async function loadSessions(resetPage = false): Promise<void> {
   if (resetPage) page.value = 1
   loading.value = true
   try {
-    const params: Record<string, unknown> = { ...buildRangeParams(), page: page.value, pageSize }
+    const params: Record<string, unknown> = {
+      ...buildRangeParams(),
+      page: page.value,
+      pageSize: pageSize.value
+    }
     if (sourceTool.value) params.sourceTool = sourceTool.value
     if (requestModel.value) params.requestModel = requestModel.value
     if (keyword.value) params.sessionKeyword = keyword.value
     const resp = await api.listSessions(params)
     sessions.value = resp.items ?? []
+    page.value = resp.page ?? page.value
+    pageSize.value = resp.pageSize ?? pageSize.value
     totalCount.value = resp.totalCount ?? 0
     if (selectedGroupKey.value && !sessions.value.some((s) => s.groupKey === selectedGroupKey.value)) {
       selectedGroupKey.value = null
       selectedSessionTitle.value = '对话详情'
       turns.value = []
+      renderWindow.value = { start: 0, end: 0 }
+      disconnectTurnsObserver()
     }
     if (!selectedGroupKey.value && sessions.value.length > 0) {
       await loadTurns(sessions.value[0].groupKey, sessions.value[0].title)
@@ -105,20 +199,36 @@ async function loadSessions(resetPage = false): Promise<void> {
   } finally { loading.value = false }
 }
 
-async function loadTurns(groupKey: string, title?: string): Promise<void> {
+async function loadTurns(
+  groupKey: string,
+  title?: string,
+  scrollToBottom = false
+): Promise<void> {
+  disconnectTurnsObserver()
   selectedGroupKey.value = groupKey
   selectedSessionTitle.value = title || sessions.value.find((s) => s.groupKey === groupKey)?.title || '对话详情'
   turnsLoading.value = true
   try {
     const resp = await api.getTurns(groupKey, buildRangeParams())
     turns.value = resp.items ?? []
+    renderWindow.value = buildInitialConversationWindow(
+      turns.value.length
+    )
     truncated.value = resp.truncated === true
+    await setupTurnsObserver()
+    if (scrollToBottom && turnsContainer.value) {
+      await nextTick()
+      turnsContainer.value.scrollTop =
+        turnsContainer.value.scrollHeight
+    }
   } finally { turnsLoading.value = false }
 }
 
 async function refreshCurrentSession(): Promise<void> {
   await loadSessions()
-  if (selectedGroupKey.value) await loadTurns(selectedGroupKey.value)
+  if (selectedGroupKey.value) {
+    await loadTurns(selectedGroupKey.value, undefined, true)
+  }
 }
 
 async function handleDelete(groupKey: string): Promise<void> {
@@ -128,6 +238,8 @@ async function handleDelete(groupKey: string): Promise<void> {
     selectedGroupKey.value = null
     selectedSessionTitle.value = '对话详情'
     turns.value = []
+    renderWindow.value = { start: 0, end: 0 }
+    disconnectTurnsObserver()
   }
   await loadSessions()
 }
@@ -155,9 +267,56 @@ async function handleRename(): Promise<void> {
   }
 }
 
-function tokenText(turn: ConversationTurn): string {
-  const cached = turn.cachedTokens ? ` / 缓存 ${turn.cachedTokens}` : ''
-  return `输入 ${turn.inputTokens}${cached} / 输出 ${turn.outputTokens}`
+async function copyText(text: string): Promise<boolean> {
+  if (window.isSecureContext && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text)
+      return true
+    } catch {
+      // 浏览器权限受限时继续使用传统复制路径。
+    }
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+  try {
+    return document.execCommand('copy')
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
+async function handleTurnsClick(event: MouseEvent): Promise<void> {
+  const target = event.target
+  if (!(target instanceof Element)) return
+  const button = target.closest<HTMLButtonElement>(
+    '[data-conversation-copy-code]'
+  )
+  if (!button) return
+
+  const code = button
+    .closest('.conversation-code-block')
+    ?.querySelector('code')
+    ?.textContent
+  if (!code) return
+
+  try {
+    if (!await copyText(code)) throw new Error('copy failed')
+    button.textContent = '已复制'
+    const timer = setTimeout(() => {
+      button.textContent = '复制'
+      copyFeedbackTimers.delete(timer)
+    }, 1500)
+    copyFeedbackTimers.add(timer)
+  } catch {
+    message.error('复制失败，请手动复制')
+  }
 }
 
 onMounted(async () => {
@@ -167,6 +326,12 @@ onMounted(async () => {
     routeEntries.value = []
   }
   await loadSessions()
+})
+
+onBeforeUnmount(() => {
+  disconnectTurnsObserver()
+  copyFeedbackTimers.forEach(timer => clearTimeout(timer))
+  copyFeedbackTimers.clear()
 })
 </script>
 
@@ -251,21 +416,27 @@ onMounted(async () => {
         <NSpin :show="turnsLoading" class="conversation-turns-spin">
           <div v-if="!selectedGroupKey" class="conversation-log-content-empty text-muted">请选择左侧会话查看内容。</div>
           <div v-else-if="turns.length === 0" class="conversation-log-content-empty text-muted">该会话无轮次记录。</div>
-          <div v-else id="conversationTurns" class="conversation-turns-content">
+          <div v-else id="conversationTurns" ref="turnsContainer" class="conversation-turns-content" @click="handleTurnsClick">
+            <div
+              v-if="hasOlderTurns"
+              ref="turnsSentinel"
+              class="conversation-turns-sentinel"
+              aria-hidden="true"
+            />
             <NTag v-if="truncated" type="warning" :bordered="false" class="conversation-truncated-tip">记录过多，仅展示最近一部分，请缩小时间范围查看完整内容。</NTag>
-            <div v-for="turn in turns" :key="turn.id" class="conversation-turn">
-              <div v-if="roleFilter === 'all' || roleFilter === 'user'" class="conversation-msg conversation-msg-user">
+            <div v-for="turn in visibleTurns" :key="turn.id" class="conversation-turn">
+              <div v-if="turn.userInputText && (roleFilter === 'all' || roleFilter === 'user')" class="conversation-msg conversation-msg-user">
                 <div class="conversation-avatar conversation-avatar-user">我</div>
                 <div class="conversation-msg-body">
-                  <div class="conversation-msg-meta">{{ turn.userCreatedAtText || turn.createdAtText }} · {{ turn.requestModel }}</div>
-                  <div class="conversation-bubble conversation-bubble-user">{{ turn.userInputText || '(空)' }}</div>
+                  <div class="conversation-msg-meta">{{ buildConversationUserMeta(turn) }}</div>
+                  <div class="conversation-bubble conversation-bubble-user">{{ turn.userInputText }}</div>
                 </div>
               </div>
 
-              <div v-if="roleFilter === 'all' || roleFilter === 'assistant'" class="conversation-msg conversation-msg-assistant">
+              <div v-if="turn.assistantOutputMarkdown && (roleFilter === 'all' || roleFilter === 'assistant')" class="conversation-msg conversation-msg-assistant">
                 <div class="conversation-avatar conversation-avatar-assistant">AI</div>
                 <div class="conversation-msg-body">
-                  <div class="conversation-msg-meta">{{ turn.createdAtText }} · {{ tokenText(turn) }}</div>
+                  <div class="conversation-msg-meta">{{ buildConversationAssistantMeta(turn) }}</div>
                   <div class="conversation-bubble conversation-bubble-assistant conversation-markdown" v-html="renderSafeMarkdown(turn.assistantOutputMarkdown)" />
                 </div>
               </div>
@@ -308,7 +479,7 @@ onMounted(async () => {
   flex-wrap: wrap;
   gap: 12px;
   padding: 14px 20px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-color-global);
   border-radius: 18px;
   background: var(--bg-card);
   flex-shrink: 0;
@@ -322,7 +493,7 @@ onMounted(async () => {
 }
 
 .conversation-filter-label {
-  color: #475569;
+  color: var(--text-color-secondary);
   font-size: 13px;
   white-space: nowrap;
 }
@@ -358,7 +529,7 @@ onMounted(async () => {
 .conversation-log-main {
   min-height: 0;
   overflow: hidden;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-color-global);
   border-radius: 18px;
   background: var(--bg-card);
 }
@@ -399,11 +570,11 @@ onMounted(async () => {
 }
 
 .conversation-session-card:hover {
-  background: #f3f4f6;
+  background: rgba(108, 158, 255, 0.08);
 }
 
 .conversation-session-card.active {
-  background: #dbeafe;
+  background: rgba(108, 158, 255, 0.18);
 }
 
 .conversation-session-item {
@@ -475,7 +646,7 @@ onMounted(async () => {
 
 .conversation-log-title {
   padding: 18px 24px;
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--border-color-global);
   font-size: 26px;
   font-weight: 700;
   flex-shrink: 0;
@@ -497,6 +668,11 @@ onMounted(async () => {
   min-height: 0;
   overflow: auto;
   padding: 24px;
+}
+
+.conversation-turns-sentinel {
+  width: 100%;
+  height: 1px;
 }
 
 .conversation-truncated-tip {
@@ -578,8 +754,8 @@ onMounted(async () => {
 }
 
 .conversation-bubble-assistant {
-  background: #f8fafc;
-  border: 1px solid #e5e7eb;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color-global);
   border-bottom-left-radius: 4px;
 }
 
@@ -614,15 +790,15 @@ onMounted(async () => {
 .conversation-markdown :deep(blockquote) {
   margin: 10px 0;
   padding: 8px 12px;
-  border-left: 3px solid #93c5fd;
-  background: #eff6ff;
-  color: #475569;
+  border-left: 3px solid #6c9eff;
+  background: rgba(108, 158, 255, 0.1);
+  color: var(--text-primary);
 }
 
 .conversation-markdown :deep(hr) {
   margin: 14px 0;
   border: 0;
-  border-top: 1px solid #e5e7eb;
+  border-top: 1px solid var(--border-color-global);
 }
 
 .conversation-markdown :deep(a) {
@@ -645,12 +821,12 @@ onMounted(async () => {
 .conversation-markdown :deep(th),
 .conversation-markdown :deep(td) {
   padding: 8px 10px;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-color-global);
   text-align: left;
 }
 
 .conversation-markdown :deep(th) {
-  background: #f8fafc;
+  background: var(--bg-input);
   font-weight: 600;
 }
 
@@ -664,7 +840,7 @@ onMounted(async () => {
 }
 
 .conversation-markdown :deep(code) {
-  background: rgba(15, 23, 42, 0.06);
+  background: rgba(108, 158, 255, 0.12);
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 14px;
@@ -673,7 +849,7 @@ onMounted(async () => {
 .conversation-markdown :deep(.conversation-code-block) {
   position: relative;
   margin: 12px 0;
-  border: 1px solid #e5e7eb;
+  border: 1px solid var(--border-color-global);
   border-radius: 10px;
   overflow: hidden;
 }
@@ -683,9 +859,24 @@ onMounted(async () => {
   align-items: center;
   justify-content: space-between;
   padding: 6px 12px;
-  background: #f1f5f9;
-  color: #64748b;
+  background: var(--bg-input);
+  color: var(--text-color-secondary);
   font-size: 12px;
+}
+
+.conversation-markdown :deep(.conversation-code-copy) {
+  padding: 2px 8px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 5px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  font: inherit;
+}
+
+.conversation-markdown :deep(.conversation-code-copy:hover) {
+  border-color: #6c9eff;
+  color: #6c9eff;
 }
 
 .conversation-markdown :deep(.conversation-code-block pre) {
@@ -693,7 +884,8 @@ onMounted(async () => {
   max-height: 520px;
   overflow-x: auto;
   padding: 14px 16px;
-  background: #fff;
+  background: var(--bg-card);
+  color: var(--text-primary);
   white-space: pre;
 }
 
@@ -703,6 +895,44 @@ onMounted(async () => {
   font-size: 13px;
   line-height: 1.6;
 }
+
+.conversation-markdown :deep(.hljs-comment),
+.conversation-markdown :deep(.hljs-quote) { color: #6a737d; }
+.conversation-markdown :deep(.hljs-keyword),
+.conversation-markdown :deep(.hljs-selector-tag),
+.conversation-markdown :deep(.hljs-subst) { color: #d73a49; }
+.conversation-markdown :deep(.hljs-string),
+.conversation-markdown :deep(.hljs-doctag),
+.conversation-markdown :deep(.hljs-regexp) { color: #0a7a31; }
+.conversation-markdown :deep(.hljs-number),
+.conversation-markdown :deep(.hljs-literal),
+.conversation-markdown :deep(.hljs-variable),
+.conversation-markdown :deep(.hljs-template-variable) { color: #005cc5; }
+.conversation-markdown :deep(.hljs-title),
+.conversation-markdown :deep(.hljs-section),
+.conversation-markdown :deep(.hljs-selector-id) { color: #6f42c1; }
+.conversation-markdown :deep(.hljs-built_in),
+.conversation-markdown :deep(.hljs-type),
+.conversation-markdown :deep(.hljs-attribute) { color: #b35c00; }
+
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-comment),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-quote) { color: #9ca3af; }
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-keyword),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-selector-tag),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-subst) { color: #ff7b72; }
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-string),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-doctag),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-regexp) { color: #a5d6ff; }
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-number),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-literal),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-variable),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-template-variable) { color: #79c0ff; }
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-title),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-section),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-selector-id) { color: #d2a8ff; }
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-built_in),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-type),
+:global([data-theme='dark']) .conversation-markdown :deep(.hljs-attribute) { color: #ffa657; }
 
 .conversation-modal-footer {
   display: flex;

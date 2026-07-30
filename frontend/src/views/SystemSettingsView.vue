@@ -7,6 +7,7 @@ import {
 import PageHeader from '@/components/PageHeader.vue'
 import * as systemApi from '@/api/system'
 import type { SystemSettings } from '@/api/system'
+import { validateSystemSettingsNumbers } from './systemSettingsState'
 
 const message = useMessage()
 const loading = ref(false)
@@ -74,6 +75,12 @@ async function loadSettings(): Promise<void> {
 }
 
 async function handleSave(): Promise<void> {
+  const validationError = validateSystemSettingsNumbers(form)
+  if (validationError) {
+    message.warning(validationError)
+    return
+  }
+
   saving.value = true
   try {
     await systemApi.updateSystemSettings(form)
@@ -117,11 +124,11 @@ onMounted(loadSettings)
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">检测重试次数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>单个检测映射失败后重新尝试的次数。值越大越容易排除偶发网络抖动。</NTooltip></span></template>
-                <NInputNumber v-model:value="form.detectionRetryCount" :min="0" :max="5" />
+                <NInputNumber v-model:value="form.detectionRetryCount" :min="0" />
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">检测并发数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>同一时刻并行执行的检测数量。值越大整轮检测越快完成。</NTooltip></span></template>
-                <NInputNumber v-model:value="form.detectionConcurrency" :min="1" :max="20" />
+                <NInputNumber v-model:value="form.detectionConcurrency" :min="1" />
               </NFormItem>
             </div>
           </NForm>
@@ -137,7 +144,7 @@ onMounted(loadSettings)
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">代理重试次数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>当前路由失败后允许重新尝试的次数。值越大越有机会切到其他路由。</NTooltip></span></template>
-                <NInputNumber v-model:value="form.proxyRetryCount" :min="0" :max="5" />
+                <NInputNumber v-model:value="form.proxyRetryCount" :min="0" />
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">熔断失败阈值<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>同一路由连续失败多少次后进入熔断。数值越小越敏感。</NTooltip></span></template>
@@ -173,7 +180,7 @@ onMounted(loadSettings)
           <NForm label-placement="top">
             <div class="settings-grid cols-3">
               <NFormItem label="UsageLogs 保留天数">
-                <NInputNumber v-model:value="form.usageLogRetentionDays" :min="1" :max="365" />
+                <NInputNumber v-model:value="form.usageLogRetentionDays" :min="1" />
               </NFormItem>
               <NFormItem label="自动清理">
                 <label class="settings-switch-inline"><NSwitch v-model:value="form.usageLogAutoCleanupEnabled" />启用自动清理</label>
@@ -207,7 +214,7 @@ onMounted(loadSettings)
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">额度缓存最大小时数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>未被使用的账号可以命中缓存，但超过该小时数后会强制真实刷新一次额度。</NTooltip></span></template>
-                <NInputNumber v-model:value="form.codexQuotaMaxCacheHours" :min="1" :max="72" :disabled="!form.codexFeaturesEnabled" />
+                <NInputNumber v-model:value="form.codexQuotaMaxCacheHours" :min="1" :disabled="!form.codexFeaturesEnabled" />
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">自动禁用阈值（%）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>当账号额度达到该使用百分比时自动禁用，建议 95。</NTooltip></span></template>

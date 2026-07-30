@@ -1,7 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
-import { NButton, NCard, NInput, NSelect, NSpace, NSwitch, NTabPane, NTabs, NTag, useMessage, type SelectOption } from 'naive-ui'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { NButton, NCard, NInput, NSelect, NSwitch, NTabPane, NTabs, useMessage, type SelectOption } from 'naive-ui'
 import * as devApi from '@/api/developer'
+import {
+  buildModelSupportLabels,
+  formatSimulatorResponse,
+  shouldReadStreamingResponse,
+  SimulatorRequestRegistry
+} from './clientSimulatorState'
 
 interface SimulatorTab {
   key: string
@@ -21,21 +27,16 @@ const inputText = ref('你好，请简单介绍一下你自己。')
 const activeTab = ref('models')
 const streamEnabled = ref<Record<string, boolean>>({ openai: false, anthropic: false, responses: false, completions: false })
 const responses = ref<Record<string, string>>({})
-const sendingTab = ref<string | null>(null)
-let abortController: AbortController | null = null
+const runningTabs = ref<Record<string, boolean>>({})
+const resultElements = new Map<string, HTMLElement>()
+const requestRegistry = new SimulatorRequestRegistry()
 
 const normalizedBaseUrl = computed(() => baseUrl.value.replace(/\/$/, ''))
 const modelOptions = computed<SelectOption[]>(() => models.value.map((m) => ({ label: m.modelName, value: m.modelName })))
 const supportHint = computed(() => {
   const model = models.value.find((m) => m.modelName === selectedModel.value)
   if (!model) return '请选择支持当前协议的模型。'
-  const parts = []
-  if (model.supportsOpenAi) parts.push('OpenAI 原生')
-  if (model.supportsAnthropic) parts.push('Anthropic 原生')
-  if (model.supportsResponses) parts.push('Responses 原生')
-  if (model.canUseOpenAi) parts.push('OpenAI 兼容')
-  if (model.canUseAnthropic) parts.push('Anthropic 兼容')
-  if (model.routeCount !== undefined) parts.push(`路由 ${model.routeCount}`)
+  const parts = buildModelSupportLabels(model)
   return parts.length ? `当前模型支持：${parts.join(' / ')}` : '当前模型暂无可用协议。'
 })
 
@@ -83,6 +84,39 @@ function requestExample(tab: SimulatorTab): string {
   return JSON.stringify({ method: tab.method, url: endpointUrl(tab), headers, body: tab.method === 'POST' ? tab.buildBody() : undefined }, null, 2)
 }
 
+function setRunning(tabKey: string, running: boolean): void {
+  runningTabs.value = { ...runningTabs.value, [tabKey]: running }
+}
+
+function isRunning(tabKey: string): boolean {
+  return runningTabs.value[tabKey] === true
+}
+
+function setResultElement(tabKey: string, element: unknown): void {
+  if (element instanceof HTMLElement) resultElements.set(tabKey, element)
+  else resultElements.delete(tabKey)
+}
+
+async function scrollResultToBottom(tabKey: string): Promise<void> {
+  await nextTick()
+  const element = resultElements.get(tabKey)
+  if (element) element.scrollTop = element.scrollHeight
+}
+
+function formatResponseBody(text: string): string {
+  if (!text) return ''
+  try {
+    return JSON.stringify(JSON.parse(text), null, 2)
+  } catch {
+    return text
+  }
+}
+
+function successMessage(tab: SimulatorTab, streaming: boolean): string {
+  if (tab.key === 'models') return '模型列表拉取完成'
+  return streaming ? `${tab.label} 流式调用完成` : `${tab.label} 调用完成`
+}
+
 function protocolSupported(tab: SimulatorTab): boolean {
   const model = models.value.find((m) => m.modelName === selectedModel.value)
   if (!model || tab.method === 'GET') return true
@@ -104,20 +138,38 @@ function ensureProtocolModel(tab: SimulatorTab): boolean {
 
 async function readStreamingResponse(resp: Response, tabKey: string): Promise<void> {
   if (!resp.body) {
-    responses.value[tabKey] = `HTTP ${resp.status}`
+    responses.value[tabKey] = '流式响应为空'
     return
   }
   const reader = resp.body.getReader()
   const decoder = new TextDecoder()
-  responses.value[tabKey] = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    responses.value[tabKey] += decoder.decode(value, { stream: true })
+  let received = false
+  responses.value[tabKey] = '正在接收流式响应...'
+  await scrollResultToBottom(tabKey)
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      const chunk = decoder.decode(value, { stream: true })
+      if (!chunk) continue
+      responses.value[tabKey] = received
+        ? responses.value[tabKey] + chunk
+        : chunk
+      received = true
+      await scrollResultToBottom(tabKey)
+    }
+    const tail = decoder.decode()
+    if (tail) {
+      responses.value[tabKey] = received
+        ? responses.value[tabKey] + tail
+        : tail
+      received = true
+    }
+    if (!received) responses.value[tabKey] = '流式响应为空'
+    await scrollResultToBottom(tabKey)
+  } finally {
+    reader.releaseLock()
   }
-  const tail = decoder.decode()
-  if (tail) responses.value[tabKey] += tail
-  if (!responses.value[tabKey]) responses.value[tabKey] = `HTTP ${resp.status}`
 }
 
 async function copyText(text: string): Promise<void> {
@@ -150,7 +202,7 @@ async function copyText(text: string): Promise<void> {
 
 async function sendRequest(tabKey = activeTab.value): Promise<void> {
   const tab = getTab(tabKey)
-  if (sendingTab.value) return
+  if (requestRegistry.isRunning(tab.key)) return
   if (!baseUrl.value.trim()) {
     message.warning('请先填写代理根地址')
     return
@@ -168,40 +220,52 @@ async function sendRequest(tabKey = activeTab.value): Promise<void> {
     return
   }
   if (!ensureProtocolModel(tab)) return
-  sendingTab.value = tab.key
-  responses.value[tab.key] = '请求中...'
-  abortController = new AbortController()
+
+  const isStreaming = tab.streamable === true && streamEnabled.value[tab.key] === true
+  const controller = new AbortController()
+  requestRegistry.start(tab.key, controller)
+  setRunning(tab.key, true)
+  responses.value[tab.key] = isStreaming ? '正在接收流式响应...' : '请求中...'
   try {
+    if (isStreaming) message.info(`${tab.label} 流式响应接收中`)
     const resp = await fetch(endpointUrl(tab), {
       method: tab.method,
       headers: requestHeaders(tab),
       body: tab.method === 'POST' ? JSON.stringify(tab.buildBody()) : undefined,
-      signal: abortController.signal
+      signal: controller.signal
     })
-    if (tab.streamable && streamEnabled.value[tab.key] === true) {
+
+    if (shouldReadStreamingResponse(isStreaming, resp.ok, Boolean(resp.body))) {
       await readStreamingResponse(resp, tab.key)
     } else {
       const text = await resp.text()
-      try {
-        responses.value[tab.key] = JSON.stringify(JSON.parse(text), null, 2)
-      } catch {
-        responses.value[tab.key] = text || `HTTP ${resp.status}`
-      }
+      responses.value[tab.key] = formatSimulatorResponse(
+        resp.status,
+        resp.ok,
+        formatResponseBody(text)
+      )
     }
-    if (!resp.ok) responses.value[tab.key] = `HTTP ${resp.status}\n${responses.value[tab.key]}`
+    await scrollResultToBottom(tab.key)
+    if (resp.ok) message.success(successMessage(tab, isStreaming))
+    else message.error(`${tab.label} 调用失败（HTTP ${resp.status}）`)
   } catch (e) {
-    if ((e as Error).name !== 'AbortError') {
+    if ((e as Error).name === 'AbortError') {
+      responses.value[tab.key] = '请求已取消'
+      message.info(`${tab.label} 请求已取消`)
+    } else {
       responses.value[tab.key] = `请求失败：${(e as Error).message}`
       message.error((e as Error).message)
     }
   } finally {
-    sendingTab.value = null
+    if (requestRegistry.finish(tab.key, controller)) setRunning(tab.key, false)
   }
 }
 
-function stopRequest(): void {
-  abortController?.abort()
-  sendingTab.value = null
+function stopRequest(tabKey: string): void {
+  if (requestRegistry.stop(tabKey)) {
+    setRunning(tabKey, false)
+    responses.value[tabKey] = '请求已取消'
+  }
 }
 
 onMounted(async () => {
@@ -214,6 +278,11 @@ onMounted(async () => {
   } catch {
     // 功能开关关闭或加载失败时保留空表单，允许手动输入。
   }
+})
+
+onBeforeUnmount(() => {
+  requestRegistry.abortAll()
+  resultElements.clear()
 })
 
 watch(activeTab, (key) => {
@@ -267,8 +336,8 @@ watch(activeTab, (key) => {
                 <span>流式</span>
               </label>
               <NButton size="small" secondary type="primary" @click="copyText(endpointUrl(tab))">复制 URL</NButton>
-              <NButton v-if="sendingTab !== tab.key" size="small" type="primary" @click="sendRequest(tab.key)">{{ tab.method === 'GET' ? '拉取模型' : '发送请求' }}</NButton>
-              <NButton v-else size="small" type="error" @click="stopRequest">停止</NButton>
+              <NButton v-if="!isRunning(tab.key)" size="small" type="primary" @click="sendRequest(tab.key)">{{ tab.method === 'GET' ? '拉取模型' : '发送请求' }}</NButton>
+              <NButton v-else size="small" type="error" @click="stopRequest(tab.key)">停止</NButton>
             </div>
           </div>
           <div class="simulator-panel-grid">
@@ -278,7 +347,7 @@ watch(activeTab, (key) => {
             </div>
             <div>
               <div class="simulator-section-title">响应结果</div>
-              <pre class="simulator-pre simulator-result-pre">{{ responses[tab.key] || '尚未请求' }}</pre>
+              <pre :ref="element => setResultElement(tab.key, element)" class="simulator-pre simulator-result-pre">{{ responses[tab.key] || '尚未请求' }}</pre>
             </div>
           </div>
         </NTabPane>
@@ -298,7 +367,7 @@ watch(activeTab, (key) => {
 .simulator-input-group { display: flex; gap: 8px; min-width: 0; }
 .simulator-input-group :deep(.n-input) { min-width: 0; flex: 1; }
 .simulator-endpoint-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
-.simulator-endpoint-code { min-width: 0; overflow: hidden; padding: 6px 8px; border-radius: 6px; background: var(--bg-input, #f6f6f6); text-overflow: ellipsis; white-space: nowrap; }
+.simulator-endpoint-code { min-width: 0; overflow-wrap: anywhere; padding: 6px 8px; border-radius: 6px; background: var(--bg-input, #f6f6f6); white-space: normal; }
 .simulator-toolbar, .simulator-stream-toggle { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
 .simulator-panel-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
 .simulator-section-title { margin-bottom: 8px; color: var(--text-primary); font-size: 13px; font-weight: 700; }

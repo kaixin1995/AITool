@@ -65,7 +65,7 @@ function buildQuery(params: Record<string, unknown>): string {
   return query.toString()
 }
 
-export async function listUsageLogs(params: Record<string, unknown>): Promise<{ items: UsageLogItem[]; totalCount: number; totalPages?: number }> {
+export async function listUsageLogs(params: Record<string, unknown>): Promise<{ items: UsageLogItem[]; page: number; pageSize: number; totalCount: number; totalPages: number }> {
   return httpGet(`/api/admin/usage-logs/list?${buildQuery(params)}`)
 }
 

@@ -1050,7 +1050,8 @@ public sealed class AnalyticsApiController : ControllerBase
             query.EndTime?.ToString("O") ?? "-",
             query.ProtocolType ?? "all",
             query.ModelName ?? "all",
-            query.SiteId?.ToString() ?? "-");
+            query.SiteId?.ToString() ?? "-",
+            query.AccessKeyId?.ToString() ?? "-");
     }
 
     /// <summary>
