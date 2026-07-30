@@ -28,3 +28,7 @@ Write-Host ""
 Write-Host "=== 构建全部完成 ===" -ForegroundColor Green
 Write-Host "运行：cd src/AITool.Web; dotnet run"
 Write-Host "访问：http://localhost:5029"
+
+Write-Host ""
+Write-Host "按任意键退出..." -ForegroundColor Yellow
+[void][System.Console]::ReadKey($true)
