@@ -94,7 +94,6 @@ const requestModelOptions = computed<SelectOption[]>(() => [
   ...routeEntries.value.map((entry) => ({ label: entry.entryName, value: entry.entryName }))
 ])
 
-const selectedSession = computed(() => sessions.value.find((s) => s.groupKey === selectedGroupKey.value) ?? null)
 const visibleTurns = computed(() => turns.value.slice(
   renderWindow.value.start,
   renderWindow.value.end

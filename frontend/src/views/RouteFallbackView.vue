@@ -192,7 +192,7 @@ onBeforeUnmount(() => {
       <div class="route-fallback-table-footer">
         <span class="route-fallback-pagination-info">{{ paginationText }}</span>
         <NPagination v-if="totalPages > 1" v-model:page="page" :page-count="totalPages" size="small" @update:page="refreshAll" />
-        <NTag v-else size="small" :bordered="false">第 1 页</NTag>
+        <NTag v-else-if="totalPages === 1" size="small" :bordered="false">第 1 页</NTag>
       </div>
     </NCard>
   </div>
