@@ -1,15 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { NCard, NSelect, NInput, NButton, NTag, NSwitch, useMessage, type SelectOption } from 'naive-ui'
+import { NCard, NSelect, NInput, NButton, NSwitch, useMessage, type SelectOption } from 'naive-ui'
 import * as chatApi from '@/api/chat'
-import type { ChatModel, ChatModelTarget } from '@/api/chat'
+import type { ChatModelTarget, ChatAttemptResult, ChatSendResult } from '@/api/chat'
 
-interface Message { role: 'user' | 'assistant'; content: string; reasoning?: string; meta?: unknown; error?: boolean }
+interface Message { role: 'user' | 'assistant'; content: string; reasoning?: string; meta?: ChatSendResult; error?: boolean }
 
 const message = useMessage()
-const models = ref<ChatModel[]>([])
 const selectedModelId = ref<string | null>(null)
-// 指定具体站点+模型组合（mappingId）。空=走完整 fallback 链。
 const targets = ref<ChatModelTarget[]>([])
 const selectedMappingId = ref<string | null>(null)
 const modelSearch = ref('')
@@ -29,40 +27,38 @@ const reasoningOptions: SelectOption[] = [
 ]
 const streamingReasoning = ref('')
 // 最近一次的调用链路（meta 事件携带的路由尝试明细）
-const lastAttempts = ref<unknown[] | null>(null)
+const lastAttempts = ref<ChatAttemptResult[] | null>(null)
+const expandedAttemptIndexes = ref<Set<number>>(new Set())
 const messagesContainer = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
 
 async function loadModels(): Promise<void> {
-  models.value = await chatApi.getChatModels()
-  if (models.value.length > 0 && !selectedModelId.value) selectedModelId.value = models.value[0].modelId
+  await loadTargets()
 }
 
-// 模型变化时加载该模型的可用站点+模型目标列表。
-watch(selectedModelId, async (id) => {
-  selectedMappingId.value = null
-  targets.value = []
+async function loadTargets(): Promise<void> {
   lastAttempts.value = null
-  if (!id) return
-  try {
-    targets.value = await chatApi.getChatTargets(id)
-  } catch {
-    // 目标列表加载失败不阻塞对话（退化为走完整 fallback 链）
+  targets.value = await chatApi.getChatTargets()
+  if (!selectedMappingId.value && targets.value.length > 0) {
+    selectedMappingId.value = targets.value[0].mappingId
+    selectedModelId.value = targets.value[0].modelId
   }
-}, { immediate: false })
+}
 
-const modelOptions = computed<SelectOption[]>(() => {
-  const keyword = modelSearch.value.trim().toLowerCase()
-  return models.value
-    .filter((m) => !keyword || `${m.displayName} ${m.modelId}`.toLowerCase().includes(keyword))
-    .map((m) => ({ label: `${m.displayName} (${m.availableSiteCount}站点)`, value: m.modelId }))
+watch(selectedMappingId, (mappingId) => {
+  const target = targets.value.find((item) => item.mappingId === mappingId)
+  selectedModelId.value = target?.modelId ?? null
 })
 
-// targets 是 ref，需要用 computed 保证选项随 targets 变化更新
-const targetOptionsComputed = computed<SelectOption[]>(() => [
-  { label: '自动（走完整 fallback 链）', value: '' },
-  ...targets.value.map((t) => ({ label: `${t.modelDisplayName} / ${t.siteName} / ${t.siteModelName}`, value: t.mappingId }))
-])
+const targetOptionsComputed = computed<SelectOption[]>(() => {
+  const keyword = modelSearch.value.trim().toLowerCase()
+  return targets.value
+    .filter((t) => {
+      const text = `${t.modelDisplayName} ${t.siteName} ${t.siteModelName}`.toLowerCase()
+      return !keyword || text.includes(keyword)
+    })
+    .map((t) => ({ label: `${t.siteName} / ${t.siteModelName}`, value: t.mappingId }))
+})
 
 const currentReasoning = computed(() => streamingReasoning.value || [...messages.value].reverse().find((m) => m.reasoning)?.reasoning || '')
 
@@ -73,7 +69,11 @@ async function scrollToBottom(): Promise<void> {
 
 async function handleSend(): Promise<void> {
   const text = input.value.trim()
-  if (!text || !selectedModelId.value || sending.value) return
+  const target = targets.value.find((item) => item.mappingId === selectedMappingId.value)
+  if (!text || !target || sending.value) {
+    if (!target) message.warning('请先选择站点模型')
+    return
+  }
   input.value = ''
   messages.value.push({ role: 'user', content: text })
   messages.value.push({ role: 'assistant', content: '' })
@@ -81,16 +81,15 @@ async function handleSend(): Promise<void> {
   streamingContent.value = ''
   streamingReasoning.value = ''
   lastAttempts.value = null
+  expandedAttemptIndexes.value = new Set()
   sending.value = true
   abortController = new AbortController()
   await scrollToBottom()
 
-  // mappingId：空字符串表示不指定（走完整 fallback 链）
-  const mappingId = selectedMappingId.value || undefined
   const commonOpts = {
-    modelId: selectedModelId.value,
+    modelId: target.modelId,
     message: text,
-    mappingId,
+    mappingId: target.mappingId,
     enableReasoning: enableReasoning.value,
     reasoningEffort: reasoningEffort.value,
     signal: abortController.signal
@@ -109,7 +108,7 @@ async function handleSend(): Promise<void> {
       },
       onMeta: (meta) => {
         // meta 事件携带路由尝试明细（每段尝试的站点/模型/状态/耗时）
-        const m = meta as { attempts?: unknown[] }
+        const m = meta as ChatSendResult
         if (m?.attempts) {
           lastAttempts.value = m.attempts
           messages.value[assistantIdx].meta = m
@@ -133,6 +132,8 @@ async function handleSend(): Promise<void> {
     try {
       const result = await chatApi.sendChat(commonOpts)
       sending.value = false
+      messages.value[assistantIdx].meta = result
+      lastAttempts.value = result.attempts ?? []
       if (result.success) {
         messages.value[assistantIdx].content = result.content || '(空回复)'
         if (result.reasoningContent) messages.value[assistantIdx].reasoning = result.reasoningContent
@@ -161,16 +162,43 @@ function handleClear(): void {
   streamingContent.value = ''
   streamingReasoning.value = ''
   lastAttempts.value = null
+  expandedAttemptIndexes.value = new Set()
 }
 
-function attemptStatusClass(att: Record<string, unknown>): string {
+function formatNumber(value: number | null | undefined): string {
+  const number = Number(value ?? 0)
+  return Number.isFinite(number) ? number.toLocaleString('zh-CN') : '-'
+}
+
+function formatDuration(value: number | null | undefined): string {
+  const number = Number(value ?? 0)
+  if (!Number.isFinite(number) || number <= 0) return '-'
+  if (number >= 1000) {
+    const seconds = number / 1000
+    return `${Math.abs(seconds - Math.round(seconds)) < 0.05 ? Math.round(seconds) : seconds.toFixed(1)}s`
+  }
+  return `${Math.round(number)}ms`
+}
+
+function attemptStatusClass(att: ChatAttemptResult): string {
   const status = String(att.status ?? '').toLowerCase()
   return status === 'success' || status === 'ok' ? 'success' : 'fail'
 }
 
-function attemptStatusLabel(att: Record<string, unknown>): string {
+function attemptStatusLabel(att: ChatAttemptResult): string {
   const status = String(att.status ?? '')
   return status || '未知'
+}
+
+function attemptError(att: ChatAttemptResult): string {
+  return att.errorMessage || ''
+}
+
+function toggleAttemptDetail(index: number): void {
+  const next = new Set(expandedAttemptIndexes.value)
+  if (next.has(index)) next.delete(index)
+  else next.add(index)
+  expandedAttemptIndexes.value = next
 }
 
 onMounted(loadModels)
@@ -178,7 +206,8 @@ onMounted(loadModels)
 
 <template>
   <div class="chat-admin-shell">
-    <div class="chat-admin-page">
+    <div class="chat-admin-stage">
+      <div class="chat-admin-page">
       <div class="chat-admin-main">
         <NCard class="chat-card" :content-style="{ padding: '0', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }">
           <div class="chat-toolbar">
@@ -186,13 +215,9 @@ onMounted(loadModels)
               <span class="chat-toolbar-field-label">模型搜索</span>
               <NInput v-model:value="modelSearch" placeholder="搜索模型" clearable />
             </label>
-            <label class="chat-toolbar-field chat-toolbar-field-model">
-              <span class="chat-toolbar-field-label">模型</span>
-              <NSelect v-model:value="selectedModelId" :options="modelOptions" placeholder="选择模型" filterable />
-            </label>
             <label class="chat-toolbar-field chat-toolbar-field-target">
-              <span class="chat-toolbar-field-label">模型 / 站点 / 站点模型</span>
-              <NSelect v-model:value="selectedMappingId" :options="targetOptionsComputed" placeholder="目标站点" filterable />
+              <span class="chat-toolbar-field-label">站点 / 模型</span>
+              <NSelect v-model:value="selectedMappingId" :options="targetOptionsComputed" placeholder="-- 请选择站点模型 --" filterable />
             </label>
             <div class="chat-toolbar-toggle-group">
               <label class="chat-toolbar-switch">
@@ -238,7 +263,7 @@ onMounted(loadModels)
                   placeholder="输入消息...（Enter 发送，Shift+Enter 换行）"
                   @keydown.enter.exact.prevent="handleSend"
                 />
-                <NButton v-if="!sending" class="chat-send-btn" type="primary" :disabled="!input.trim()" @click="handleSend">发送</NButton>
+                <NButton v-if="!sending" class="chat-send-btn" type="primary" :disabled="!input.trim() || !selectedMappingId" @click="handleSend">发送</NButton>
                 <NButton v-else class="chat-send-btn" type="error" @click="handleStop">停止</NButton>
               </div>
             </div>
@@ -257,42 +282,64 @@ onMounted(loadModels)
           <template #header>调用详细过程</template>
           <div v-if="!lastAttempts || (lastAttempts as unknown[]).length === 0" class="chat-side-empty">发送一条消息后显示本次请求的每次尝试。</div>
           <div v-else class="chat-attempt-list">
-            <article v-for="(att, aIdx) in (lastAttempts as any[])" :key="aIdx" class="chat-attempt-card">
+            <article v-for="(att, aIdx) in lastAttempts" :key="aIdx" class="chat-attempt-card">
               <div class="chat-attempt-head">
                 <div>
-                  <div class="chat-attempt-title">{{ att.siteName || att.site || '未知站点' }}</div>
-                  <div class="chat-attempt-meta">{{ att.modelName || att.model || att.siteModelName || '未知模型' }}</div>
+                  <div class="chat-attempt-title">{{ att.siteName || '未知站点' }}</div>
+                  <div class="chat-attempt-meta">{{ att.attemptedModel || att.siteModelName || '未知模型' }}</div>
                 </div>
                 <span :class="['chat-attempt-status', `chat-attempt-status-${attemptStatusClass(att)}`]">{{ attemptStatusLabel(att) }}</span>
               </div>
               <div class="chat-attempt-tokens">
-                <span v-if="att.durationMs" class="chat-attempt-token-chip">{{ att.durationMs }}ms</span>
-                <span v-if="att.inputTokens" class="chat-attempt-token-chip">输入 {{ att.inputTokens }}</span>
-                <span v-if="att.outputTokens" class="chat-attempt-token-chip">输出 {{ att.outputTokens }}</span>
+                <span class="chat-attempt-token-chip">耗时 {{ formatDuration(att.totalDurationMs) }}</span>
+                <span class="chat-attempt-token-chip">首字 {{ formatDuration(att.firstTokenLatencyMs) }}</span>
+                <span class="chat-attempt-token-chip">输入 {{ formatNumber(att.inputTokens) }}</span>
+                <span class="chat-attempt-token-chip">缓存 {{ formatNumber(att.cachedTokens) }}</span>
+                <span class="chat-attempt-token-chip">输出 {{ formatNumber(att.outputTokens) }}</span>
+                <span class="chat-attempt-token-chip">总计 {{ formatNumber(att.totalTokens) }}</span>
               </div>
-              <div v-if="att.error" class="chat-attempt-error">{{ att.error }}</div>
+              <div v-if="attemptError(att)" class="chat-attempt-error">{{ attemptError(att) }}</div>
+              <button type="button" class="chat-attempt-detail-toggle" @click="toggleAttemptDetail(aIdx)">
+                {{ expandedAttemptIndexes.has(aIdx) ? '收起请求/响应' : '展开请求/响应' }}
+              </button>
+              <div :class="['chat-attempt-detail-body', { show: expandedAttemptIndexes.has(aIdx) }]">
+                <div class="chat-attempt-detail-title">请求体</div>
+                <pre class="chat-attempt-detail-pre">{{ att.requestBody || '无' }}</pre>
+                <div class="chat-attempt-detail-title">响应体</div>
+                <pre class="chat-attempt-detail-pre">{{ att.responseBody || '无' }}</pre>
+              </div>
             </article>
           </div>
         </NCard>
       </div>
     </div>
   </div>
+</div>
 </template>
 
 <style scoped>
 .chat-admin-shell {
   width: 100%;
   min-width: 0;
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   padding-bottom: 8px;
 }
 
+.chat-admin-stage {
+  width: 100%;
+  min-width: 0;
+  transform-origin: top left;
+}
+
 .chat-admin-page {
+  --chat-admin-design-width: 1360;
   display: grid;
   grid-template-columns: minmax(0, 1.8fr) minmax(300px, 1fr);
   gap: 16px;
   align-items: stretch;
   width: 100%;
+  min-width: 1080px;
   height: calc(100vh - 180px);
   min-height: 620px;
   overflow: hidden;
@@ -328,7 +375,7 @@ onMounted(loadModels)
   align-items: flex-end;
   gap: 14px;
   flex-wrap: wrap;
-  padding: 18px 20px 16px;
+  padding: 16px 20px;
   border-bottom: 1px solid var(--border-color-global);
   flex-shrink: 0;
 }
@@ -337,7 +384,7 @@ onMounted(loadModels)
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
-  min-width: 190px;
+  min-width: 220px;
   gap: 8px;
 }
 
@@ -362,8 +409,8 @@ onMounted(loadModels)
 .chat-toolbar-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 34px;
+  gap: 12px;
+  height: 40px;
   flex-wrap: nowrap;
 }
 
@@ -403,7 +450,7 @@ onMounted(loadModels)
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding: 18px 20px;
+  padding: 16px 20px 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -486,6 +533,7 @@ onMounted(loadModels)
 }
 
 .chat-input-area {
+  padding: 12px 0 4px;
   background: var(--bg-card);
   flex-shrink: 0;
 }
@@ -503,6 +551,7 @@ onMounted(loadModels)
 .chat-send-btn {
   white-space: nowrap;
   min-width: 82px;
+  min-height: 88px;
 }
 
 .chat-side-card {
@@ -630,6 +679,51 @@ onMounted(loadModels)
   line-height: 1.6;
 }
 
+.chat-attempt-detail-toggle {
+  display: inline-block;
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #6366f1;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chat-attempt-detail-toggle:hover {
+  text-decoration: underline;
+}
+
+.chat-attempt-detail-body {
+  display: none;
+  margin-top: 6px;
+}
+
+.chat-attempt-detail-body.show {
+  display: block;
+}
+
+.chat-attempt-detail-title {
+  margin: 6px 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chat-attempt-detail-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 6px;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: 200px;
+  overflow: auto;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 8px;
+}
+
 [data-theme='dark'] .chat-bubble-ai,
 [data-theme='dark'] .chat-side-pre,
 [data-theme='dark'] .chat-attempt-card {
@@ -637,20 +731,25 @@ onMounted(loadModels)
   color: var(--text-primary);
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1400px) {
   .chat-admin-page {
-    grid-template-columns: 1fr;
-    height: auto;
-    min-height: 0;
-    overflow: visible;
+    grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.9fr);
+  }
+}
+
+@media (max-width: 1200px) {
+  .chat-admin-shell {
+    overflow-x: auto;
   }
 
-  .chat-card {
+  .chat-admin-stage {
+    min-width: 1080px;
+  }
+
+  .chat-admin-page {
+    height: calc(100vh - 180px);
     min-height: 620px;
-  }
-
-  .chat-admin-side {
-    overflow: visible;
+    overflow: hidden;
   }
 }
 

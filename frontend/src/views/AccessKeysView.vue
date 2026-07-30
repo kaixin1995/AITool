@@ -49,24 +49,31 @@ async function handleCreate(): Promise<void> {
 
 async function copyText(text: string): Promise<void> {
   if (!text) return
+  if (window.isSecureContext && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text)
+      message.success('已复制到剪贴板')
+      return
+    } catch {
+      // HTTP 或浏览器权限受限时走传统复制路径。
+    }
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
   try {
-    await navigator.clipboard.writeText(text)
+    document.execCommand('copy')
     message.success('已复制到剪贴板')
   } catch {
-    const textarea = document.createElement('textarea')
-    textarea.value = text
-    textarea.style.position = 'fixed'
-    textarea.style.opacity = '0'
-    document.body.appendChild(textarea)
-    textarea.select()
-    try {
-      document.execCommand('copy')
-      message.success('已复制到剪贴板')
-    } catch {
-      message.error('复制失败，请手动复制')
-    } finally {
-      document.body.removeChild(textarea)
-    }
+    message.error('复制失败，请手动复制')
+  } finally {
+    document.body.removeChild(textarea)
   }
 }
 
@@ -121,14 +128,15 @@ function parseRoutes(val: AccessKeyItem['allowedRouteNames']): string[] {
 }
 
 const columns = computed<DataTableColumns<AccessKeyItem>>(() => [
-  { title: '名称', key: 'keyName', minWidth: 140, ellipsis: { tooltip: true } },
-  { title: '密钥', key: 'maskedValue', minWidth: 160, ellipsis: { tooltip: true } },
+  { title: '名称', key: 'keyName', width: 120, ellipsis: { tooltip: true } },
+  { title: '密钥', key: 'maskedValue', minWidth: 170, ellipsis: { tooltip: true } },
   { title: '允许路由', key: 'allowedRouteNames', minWidth: 120, render: (r) => {
     const arr = parseRoutes(r.allowedRouteNames)
     return arr.length > 0 ? h(NTag, { size: 'small', bordered: false }, () => arr.join(', ')) : '全部'
   } },
   { title: '状态', key: 'isEnabled', width: 80, render: (r) => h(NTag, { size: 'small', type: r.isEnabled ? 'success' : 'default', bordered: false }, () => r.isEnabled ? '启用' : '禁用') },
-  { title: '操作', key: 'actions', width: 200, fixed: 'right', render: (row) => h(NSpace, { size: 8 }, () => [
+  { title: '操作', key: 'actions', width: 248, fixed: 'right', render: (row) => h(NSpace, { size: 6, wrap: false }, () => [
+    h(NButton, { size: 'small', quaternary: true, onClick: () => copyText(row.maskedValue) }, () => '复制'),
     h(NButton, { size: 'small', quaternary: true, onClick: () => openEditRoutes(row) }, () => '编辑路由'),
     h(NButton, { size: 'small', quaternary: true, onClick: () => handleToggle(row) }, () => row.isEnabled ? '禁用' : '启用'),
     h(NPopconfirm, { onPositiveClick: () => handleDelete(row) }, { trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, () => '删除'), default: () => `确认删除「${row.keyName}」？` })

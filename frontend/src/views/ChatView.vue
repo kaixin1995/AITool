@@ -29,7 +29,7 @@ const conversationLogEnabled = computed(() => auth.status?.features?.conversatio
 .chat-page {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 88px);
+  height: calc(100vh - 112px);
   min-width: 0;
   min-height: 0;
   overflow: hidden;
@@ -56,7 +56,7 @@ const conversationLogEnabled = computed(() => auth.status?.features?.conversatio
 @media (max-width: 1200px) {
   .chat-page {
     height: auto;
-    min-height: calc(100vh - 88px);
+    min-height: calc(100vh - 112px);
     overflow: visible;
   }
 }

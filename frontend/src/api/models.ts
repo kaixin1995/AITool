@@ -25,6 +25,22 @@ export interface ModelPayload {
   overrideReasoningEffort?: string
   compatibilityProfileId?: string | null
 }
+export interface ModelVendorDefinition {
+  vendorName: string
+  iconSvgBody: string
+  headerBackground: string
+  sortOrder: number
+}
+export interface ModelVendorRuleDefinition {
+  vendorName: string
+  matchType: string
+  pattern: string
+  priority: number
+}
+export interface ModelVendorCatalog {
+  vendors: ModelVendorDefinition[]
+  rules: ModelVendorRuleDefinition[]
+}
 
 export async function listModels(): Promise<ModelListResponse> {
   return httpGet<ModelListResponse>('/api/admin/models')

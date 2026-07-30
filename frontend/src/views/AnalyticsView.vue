@@ -457,6 +457,10 @@ watch([startTime, endTime], () => {
 }
 
 .analytics-filter-meta {
+  display: flex;
+  align-items: center;
+  min-height: 34px;
+  padding-top: 25px;
   color: var(--text-color-secondary);
   font-size: 13px;
   line-height: 1.5;

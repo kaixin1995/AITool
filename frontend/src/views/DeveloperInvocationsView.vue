@@ -70,13 +70,14 @@ interface DeveloperInvocationDetail {
 const message = useMessage()
 const loading = ref(false)
 const autoRefresh = ref(false)
+const summarizeDetail = ref(true)
 const entries = ref<DeveloperInvocationSummary[]>([])
 const totalCount = ref(0)
 const failedCount = ref(0)
 const pendingCount = ref(0)
 const concurrency = ref<DeveloperConcurrencyItem[]>([])
 const page = ref(1)
-const pageSize = 20
+const pageSize = 40
 const totalPages = ref(1)
 const expandedTraceIds = ref<Set<string>>(new Set())
 const details = ref<Record<string, DeveloperInvocationDetail>>({})
@@ -167,6 +168,11 @@ async function load(showSpinner = true, targetPage = page.value): Promise<void> 
   }
 }
 
+function handleSummarizeChange(): void {
+  details.value = {}
+  expandedTraceIds.value = new Set()
+}
+
 async function toggleDetail(traceId: string): Promise<void> {
   const next = new Set(expandedTraceIds.value)
   if (next.has(traceId)) {
@@ -180,7 +186,7 @@ async function toggleDetail(traceId: string): Promise<void> {
 
   detailLoading.value = { ...detailLoading.value, [traceId]: true }
   try {
-    const detail = await api.getDeveloperDetail(traceId, true) as DeveloperInvocationDetail
+    const detail = await api.getDeveloperDetail(traceId, summarizeDetail.value) as DeveloperInvocationDetail
     details.value = { ...details.value, [traceId]: detail }
   } catch (e) {
     message.error((e as Error).message)
@@ -217,7 +223,7 @@ const paginationSummary = computed(() => {
   if (totalCount.value === 0) return '共 0 条记录'
   const start = (page.value - 1) * pageSize + 1
   const end = Math.min(page.value * pageSize, totalCount.value)
-  return `显示第 ${formatNumber(start)}-${formatNumber(end)} 条，共 ${formatNumber(totalCount.value)} 条，每页 20 条`
+  return `显示第 ${formatNumber(start)}-${formatNumber(end)} 条，共 ${formatNumber(totalCount.value)} 条，一页最多 40 条`
 })
 
 const concColumns = computed<DataTableColumns<DeveloperConcurrencyItem>>(() => [
@@ -260,12 +266,16 @@ onUnmounted(() => {
           <div class="trace-page-header">
             <div>
               <h2 class="pane-title">调用调试</h2>
-              <p class="pane-subtitle">内存中最多保留最近 100 条记录，且仅保留 6 小时；列表按页加载，每页只展示 20 条</p>
+              <p class="pane-subtitle">内存中最多保留最近 40 条记录，且仅保留 20 分钟；一页全部展示，不分页</p>
             </div>
             <div class="trace-toolbar">
               <label class="trace-refresh-switch">
                 <NSwitch v-model:value="autoRefresh" size="small" @update:value="configureAutoRefresh" />
                 <span>自动刷新（5 秒）</span>
+              </label>
+              <label class="trace-refresh-switch">
+                <NSwitch v-model:value="summarizeDetail" size="small" @update:value="handleSummarizeChange" />
+                <span>精简显示</span>
               </label>
               <NButton type="primary" :loading="loading" @click="load()">立即刷新</NButton>
             </div>
@@ -275,7 +285,7 @@ onUnmounted(() => {
             <article class="trace-overview-card trace-overview-card-primary">
               <span class="trace-overview-label">当前记录数</span>
               <strong class="trace-overview-value">{{ formatNumber(totalCount) }}</strong>
-              <span class="trace-overview-hint">最多 100 条，且仅保留 6 小时</span>
+              <span class="trace-overview-hint">最多 40 条，且仅保留 20 分钟</span>
             </article>
             <article class="trace-overview-card trace-overview-card-danger">
               <span class="trace-overview-label">失败 / 异常</span>
@@ -291,7 +301,7 @@ onUnmounted(() => {
 
           <div v-if="loading && entries.length === 0" class="trace-loading-card">
             <div class="trace-loading-title">调用记录按需加载中</div>
-            <div class="trace-loading-text">首次进入页面时先展示统计信息，详细列表会在后台懒加载，并按页加载 20 条，避免一次性渲染过多记录导致页面抖动。</div>
+            <div class="trace-loading-text">首次进入页面时先展示统计信息，详细列表会在后台懒加载，一页全部展示。</div>
           </div>
 
           <div v-if="displayedEntries.length" class="trace-accordion">
@@ -384,7 +394,7 @@ onUnmounted(() => {
           </div>
           <NEmpty v-else-if="!loading" description="暂无调用记录" />
 
-          <div class="trace-pagination-bar">
+          <div v-if="totalPages > 1" class="trace-pagination-bar">
             <div class="trace-pagination-summary">{{ paginationSummary }}</div>
             <NPagination v-model:page="page" :page-count="totalPages" size="small" @update:page="(p) => load(true, p)" />
           </div>

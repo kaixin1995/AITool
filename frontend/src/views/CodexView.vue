@@ -276,20 +276,17 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         <NEmpty v-if="featureDisabled" description="Codex 功能未开启，请在系统设置中开启" />
         <NEmpty v-else-if="accounts.length === 0" description="暂无 Codex 账号，点击右上角 OAuth 登录" />
 
-        <div v-else class="codex-account-grid">
-          <article v-for="acc in accounts" :key="acc.id" class="codex-account-card" :class="{ disabled: !acc.isEnabled }">
-            <div class="account-card-header">
-              <div class="account-title-block">
-                <div class="account-avatar">{{ acc.displayName.slice(0, 1).toUpperCase() }}</div>
-                <div class="account-title-text">
-                  <div class="account-name-row">
-                    <h3 class="account-name">{{ acc.displayName }}</h3>
-                    <NTag size="small" :type="accountStatusType(acc)" :bordered="false">{{ accountStatusLabel(acc) }}</NTag>
-                  </div>
-                  <div class="account-subtitle">{{ acc.email || acc.accountId || '未记录账号标识' }}</div>
+        <div v-else class="codex-grid">
+          <article v-for="acc in accounts" :key="acc.id" class="codex-card" :class="{ disabled: !acc.isEnabled }">
+            <div class="codex-card-header">
+              <div class="codex-card-header-main">
+                <div class="codex-account-name">
+                  <span>{{ acc.displayName }}</span>
+                  <NTag size="small" :type="accountStatusType(acc)" :bordered="false">{{ accountStatusLabel(acc) }}</NTag>
                 </div>
+                <div class="codex-account-email">{{ acc.email || acc.accountId || '未记录账号标识' }}</div>
               </div>
-              <NTag v-if="acc.planType" size="small" type="info" :bordered="false">{{ acc.planType }}</NTag>
+              <span v-if="acc.planType" class="codex-plan">{{ acc.planType }}</span>
             </div>
 
             <div class="account-kpi-row">
@@ -301,10 +298,6 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                 <span class="account-kpi-label">重置信用</span>
                 <strong class="account-kpi-value">{{ acc.resetCreditsAvailableCount ?? 0 }}</strong>
               </div>
-              <div class="account-kpi">
-                <span class="account-kpi-label">Token 过期</span>
-                <strong class="account-kpi-value small">{{ formatDateTime(acc.tokenExpiresAt) }}</strong>
-              </div>
             </div>
 
             <div class="account-meta-grid">
@@ -313,25 +306,23 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               <div v-if="acc.quotaCoolingUntil"><span>冷却至</span><strong>{{ formatDateTime(acc.quotaCoolingUntil) }}</strong></div>
             </div>
 
-            <div v-if="acc.windows && acc.windows.length > 0" class="quota-windows">
-              <div v-for="w in acc.windows" :key="w.id" class="quota-window">
-                <div class="quota-label">
-                  <span>{{ w.label }}</span>
-                  <span v-if="w.resetLabel">重置于 {{ w.resetLabel }}</span>
-                </div>
+            <div v-if="acc.windows && acc.windows.length > 0" class="codex-windows-container">
+              <div v-for="w in acc.windows" :key="w.id" class="codex-window">
+                <div class="codex-window-label">{{ w.label }}</div>
                 <NProgress
                   :percentage="Math.round(w.usedPercent)"
                   :status="quotaColor(w.usedPercent)"
                   :show-indicator="false"
-                  :height="8"
-                  :border-radius="4"
+                  :height="6"
+                  :border-radius="3"
                 />
-                <span class="quota-percent">{{ Math.round(w.usedPercent) }}%</span>
+                <span class="codex-window-percent">{{ Math.round(w.usedPercent) }}%</span>
+                <div v-if="w.resetLabel" class="codex-window-reset">重置于 {{ w.resetLabel }}</div>
               </div>
             </div>
-            <div v-else class="quota-empty">暂无额度窗口数据，刷新额度后显示。</div>
+            <div v-else class="codex-window-placeholder">暂无额度窗口数据，刷新额度后显示。</div>
 
-            <div class="account-actions">
+            <div class="account-actions codex-card-actions">
               <NButton size="small" secondary @click="handleRefreshQuota(acc)">刷新额度</NButton>
               <NButton size="small" secondary @click="handleRefreshToken(acc)">刷新 Token</NButton>
               <NButton size="small" secondary @click="openEdit(acc)">编辑</NButton>
@@ -460,8 +451,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   min-width: 0;
 }
 
-.inspection-card,
-.codex-account-card {
+.inspection-card {
   min-width: 0;
 }
 
@@ -495,86 +485,82 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   font-size: 12px;
 }
 
-.codex-account-grid {
+.codex-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 18px;
+  margin-top: 16px;
 }
 
-.codex-account-card {
+.codex-card {
   display: flex;
+  position: relative;
   flex-direction: column;
-  gap: 16px;
-  padding: 18px;
-  border: 1px solid rgba(226, 232, 240, 0.92);
-  border-radius: 20px;
-  background: var(--bg-card);
-  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+  min-width: 0;
+  padding: 20px;
+  border: 1px solid #e7e1d7;
+  border-radius: 12px;
+  background: #fbf9f5;
+  box-shadow: 0 2px 8px rgba(196, 97, 47, 0.06);
+  transition: all 0.2s ease;
 }
 
-.codex-account-card.disabled {
+.codex-card:hover {
+  border-color: #d4c5b4;
+  box-shadow: 0 4px 16px rgba(196, 97, 47, 0.12);
+}
+
+.codex-card.disabled {
   opacity: 0.72;
 }
 
-.account-card-header {
+.codex-card-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e7e1d7;
+}
+
+.codex-card-header-main {
   min-width: 0;
+  flex: 1;
 }
 
-.account-title-block {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.account-avatar {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 44px;
-  height: 44px;
-  flex: 0 0 auto;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #6C9EFF 0%, #A5B4FC 100%);
-  color: #fff;
-  font-size: 18px;
-  font-weight: 800;
-  box-shadow: 0 8px 20px rgba(108, 158, 255, 0.28);
-}
-
-.account-title-text {
-  min-width: 0;
-}
-
-.account-name-row {
+.codex-account-name {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
+  color: #1f2421;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.45;
+  word-break: break-all;
 }
 
-.account-name {
-  margin: 0;
-  color: var(--text-primary);
-  font-size: 17px;
-  font-weight: 800;
-  word-break: break-word;
+.codex-account-email {
+  margin-top: 4px;
+  color: #6c757d;
+  font-size: 12px;
+  word-break: break-all;
 }
 
-.account-subtitle {
-  margin-top: 3px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.codex-plan {
+  flex-shrink: 0;
+  padding: 3px 10px;
+  border-radius: 12px;
+  background: #f2e3d6;
+  color: #c4612f;
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .account-kpi-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -626,42 +612,60 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   white-space: nowrap;
 }
 
-.quota-windows {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
+.codex-windows-container {
+  min-height: 60px;
+  margin: 16px 0;
 }
 
-.quota-window {
+.codex-window {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: 92px minmax(0, 1fr) 56px;
   align-items: center;
-  gap: 4px 8px;
+  column-gap: 12px;
+  row-gap: 6px;
+  padding: 10px 0 12px;
+  border-bottom: 1px solid #f3f4f6;
 }
 
-.quota-window .n-progress {
-  grid-column: 1 / 2;
+.codex-window:last-child {
+  border-bottom: none;
 }
 
-.quota-label {
-  grid-column: 1 / 3;
-  display: flex;
-  justify-content: space-between;
-  gap: 8px;
+.codex-window-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-color-secondary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.quota-percent {
-  grid-column: 2 / 3;
-  min-width: 40px;
-  font-size: 12px;
-  font-weight: 700;
+.codex-window-percent {
+  min-width: 56px;
+  color: var(--text-color);
+  font-size: 13px;
+  font-weight: 600;
   text-align: right;
 }
 
-.quota-empty {
-  padding: 12px;
-  border: 1px dashed var(--border-color-global);
-  border-radius: 12px;
+.codex-window-reset {
+  grid-column: 2 / 4;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-color-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.codex-window-placeholder {
+  padding: 20px;
+  border: 1px dashed #e5e7eb;
+  border-radius: 8px;
+  background: #f9fafb;
+  color: #9ca3af;
+  font-size: 13px;
   text-align: center;
 }
 
@@ -676,20 +680,19 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   background: rgba(255, 255, 255, 0.05);
 }
 
-@media (max-width: 1280px) {
-  .codex-account-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 720px) {
-  .codex-account-grid,
+  .codex-grid,
   .account-kpi-row,
-  .account-meta-grid {
+  .account-meta-grid,
+  .codex-window {
     grid-template-columns: 1fr;
   }
 
-  .account-card-header,
+  .codex-window-reset {
+    grid-column: 1;
+  }
+
+  .codex-card-header,
   .inspection-content {
     align-items: stretch;
     flex-direction: column;

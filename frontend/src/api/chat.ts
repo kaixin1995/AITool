@@ -27,19 +27,49 @@ export interface ChatSendOptions {
 }
 
 // 非流式响应（与后端 ChatSendResult 对齐）。
+export interface ChatAttemptResult {
+  attemptIndex?: number
+  siteName?: string
+  attemptedModel?: string
+  siteModelName?: string
+  status?: string
+  errorMessage?: string
+  isFinalResult?: boolean
+  isStreaming?: boolean
+  inputTokens?: number
+  cachedTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  firstTokenLatencyMs?: number
+  totalDurationMs?: number
+  requestBody?: string
+  responseBody?: string
+}
+
 export interface ChatSendResult {
   success: boolean
   content: string
   reasoningContent?: string
   error?: string | null
   durationMs?: number
+  requestId?: string | null
+  reasoningEnabled?: boolean
+  isStreaming?: boolean
+  inputTokens?: number
+  cachedTokens?: number
+  outputTokens?: number
+  totalTokens?: number
+  firstTokenLatencyMs?: number
+  totalDurationMs?: number
+  attempts?: ChatAttemptResult[]
 }
 
 export async function getChatModels(): Promise<ChatModel[]> {
   return httpGet<ChatModel[]>('/api/admin/chat/models')
 }
 
-export async function getChatTargets(modelId: string): Promise<ChatModelTarget[]> {
+export async function getChatTargets(modelId?: string): Promise<ChatModelTarget[]> {
+  if (!modelId) return httpGet<ChatModelTarget[]>('/api/admin/chat/targets')
   return httpGet<ChatModelTarget[]>(`/api/admin/chat/models/${modelId}/targets`)
 }
 

@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NSpace,
-  NPopconfirm, NTag, NTooltip, NSpin, NSelect, useMessage
+  NPopconfirm, NTooltip, NSpin, NSelect, useMessage
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as systemApi from '@/api/system'
@@ -107,7 +107,8 @@ onMounted(loadSettings)
     <PageHeader title="系统设置" subtitle="配置检测、代理、日志保留与危险操作" />
     <NSpin :show="loading">
       <div class="settings-stack">
-        <NCard title="检测设置" class="settings-card">
+        <NCard class="settings-card settings-body-card">
+          <h5 class="settings-card-title">检测设置</h5>
           <NForm label-placement="top">
             <div class="settings-grid cols-3">
               <NFormItem>
@@ -126,7 +127,8 @@ onMounted(loadSettings)
           </NForm>
         </NCard>
 
-        <NCard title="代理设置" class="settings-card">
+        <NCard class="settings-card settings-body-card">
+          <h5 class="settings-card-title">代理设置</h5>
           <NForm label-placement="top">
             <div class="settings-grid cols-4">
               <NFormItem>
@@ -149,10 +151,14 @@ onMounted(loadSettings)
             <div class="settings-grid cols-3 compact-row">
               <NFormItem>
                 <template #label><span class="form-label-tip">并发打满策略<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>“跳过”直接尝试下一顺位路由；“排队等待”先等待并发槽位释放。</NTooltip></span></template>
-                <NSpace align="center">
-                  <NSwitch :value="form.concurrencyMode === 1" @update:value="(v: boolean) => (form.concurrencyMode = v ? 1 : 0)" />
-                  <span>{{ form.concurrencyMode === 1 ? '排队等待' : '跳过 → 尝试下一顺位模型' }}</span>
-                </NSpace>
+                <NSelect
+                  :value="form.concurrencyMode"
+                  :options="[
+                    { label: '跳过 → 尝试下一顺位模型', value: 0 },
+                    { label: '排队等待 → 直到释放或超时', value: 1 }
+                  ]"
+                  @update:value="(value: number) => (form.concurrencyMode = value)"
+                />
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">排队等待超时（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在“排队等待”模式下生效。超时后顺延到下一顺位。</NTooltip></span></template>
@@ -162,23 +168,25 @@ onMounted(loadSettings)
           </NForm>
         </NCard>
 
-        <NCard title="日志设置" class="settings-card">
+        <NCard class="settings-card settings-body-card">
+          <h5 class="settings-card-title">日志设置</h5>
           <NForm label-placement="top">
             <div class="settings-grid cols-3">
               <NFormItem label="UsageLogs 保留天数">
                 <NInputNumber v-model:value="form.usageLogRetentionDays" :min="1" :max="365" />
               </NFormItem>
               <NFormItem label="自动清理">
-                <NSpace align="center"><NSwitch v-model:value="form.usageLogAutoCleanupEnabled" />启用自动清理</NSpace>
+                <label class="settings-switch-inline"><NSwitch v-model:value="form.usageLogAutoCleanupEnabled" />启用自动清理</label>
               </NFormItem>
-              <NFormItem label="最近一次自动清理数量">
-                <NTag size="small" :bordered="false">{{ form.lastUsageLogPrunedCount }} 条</NTag>
+              <NFormItem>
+                <div class="settings-muted-text">最近一次自动清理数量：{{ form.lastUsageLogPrunedCount }}</div>
               </NFormItem>
             </div>
           </NForm>
         </NCard>
 
-        <NCard title="开发者功能" class="settings-card">
+        <NCard class="settings-card settings-body-card">
+          <h5 class="settings-card-title">开发者功能</h5>
           <div class="switch-stack">
             <label class="switch-line"><NSwitch v-model:value="form.developerFeaturesEnabled" /><span class="form-label-tip">启用开发者功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后显示调试工具入口，并保留最近 100 条调用轨迹。</NTooltip></span></label>
             <label class="switch-line"><NSwitch v-model:value="form.conversationLogEnabled" /><span class="form-label-tip">启用对话记录功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后显示对话记录界面，并允许写入结构化对话记录。</NTooltip></span></label>
@@ -186,14 +194,12 @@ onMounted(loadSettings)
           </div>
         </NCard>
 
-        <NCard class="settings-card">
-          <template #header>
-            <span class="form-label-tip section-heading">Codex 巡检<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在 Codex 功能总开关开启时生效。巡检会周期性检查各 Codex 账号额度。</NTooltip></span>
-          </template>
+        <NCard class="settings-card settings-body-card">
+          <h5 class="settings-card-title form-label-tip">Codex 巡检<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在 Codex 功能总开关开启时生效。巡检会周期性检查各 Codex 账号额度。</NTooltip></h5>
           <NForm label-placement="top">
             <div class="settings-grid cols-4">
-              <NFormItem label="启用自动巡检">
-                <NSwitch v-model:value="form.codexInspectionEnabled" :disabled="!form.codexFeaturesEnabled" />
+              <NFormItem>
+                <label class="settings-switch-inline"><NSwitch v-model:value="form.codexInspectionEnabled" :disabled="!form.codexFeaturesEnabled" />启用自动巡检</label>
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">巡检周期（分钟）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>每隔多少分钟执行一轮自动巡检，下限 5 分钟。</NTooltip></span></template>
@@ -211,11 +217,12 @@ onMounted(loadSettings)
           </NForm>
         </NCard>
 
-        <NSpace justify="end">
+        <div>
           <NButton type="primary" :loading="saving" @click="handleSave">保存设置</NButton>
-        </NSpace>
+        </div>
 
-        <NCard title="危险操作" class="settings-card danger-card">
+        <NCard class="settings-card settings-body-card danger-card">
+          <h5 class="settings-card-title danger-title">危险操作</h5>
           <p class="danger-copy">手动清空 UsageLogs，并同步清空 Analytics 统计缓存。留空表示不限制该条件；来源和日期都不填时会清空全部 UsageLogs。</p>
           <div class="clear-logs-grid">
             <label class="danger-field">
@@ -262,10 +269,31 @@ onMounted(loadSettings)
   min-width: 0;
 }
 
+.settings-body-card :deep(.n-card__content) {
+  padding: 20px;
+}
+
+.settings-card-title {
+  margin: 0 0 16px;
+  color: var(--text-color);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
 .settings-grid {
   display: grid;
   gap: 16px 24px;
   align-items: end;
+}
+
+.settings-grid :deep(.n-form-item) {
+  margin-bottom: 0;
+}
+
+.settings-grid :deep(.n-input-number),
+.settings-grid :deep(.n-select) {
+  width: 100%;
 }
 
 .settings-grid.cols-3 {
@@ -285,6 +313,23 @@ onMounted(loadSettings)
   align-items: center;
   gap: 4px;
   min-width: 0;
+}
+
+.settings-switch-inline,
+.switch-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  color: var(--text-color);
+}
+
+.settings-muted-text {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  color: var(--text-color-secondary);
+  font-size: 13px;
 }
 
 .section-heading {
@@ -313,10 +358,8 @@ onMounted(loadSettings)
   gap: 14px;
 }
 
-.switch-line {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
+.danger-title {
+  color: #dc3545;
 }
 
 .danger-card {

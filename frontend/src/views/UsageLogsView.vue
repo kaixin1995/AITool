@@ -3,7 +3,6 @@ import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import {
   NButton,
   NCard,
-  NDataTable,
   NDatePicker,
   NDrawer,
   NDrawerContent,
@@ -11,12 +10,10 @@ import {
   NGi,
   NGrid,
   NSelect,
-  NSpace,
   NStatistic,
   NSwitch,
   NTag,
   useMessage,
-  type DataTableColumns,
   type SelectOption
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
@@ -30,6 +27,8 @@ const filtersExpanded = ref(false)
 const autoRefresh = ref(true)
 const items = ref<UsageLogItem[]>([])
 const totalCount = ref(0)
+const totalPages = ref(0)
+const pageJumpInput = ref<number | null>(null)
 const filters = ref<api.UsageLogFilters>({ sites: [], accessKeys: [] })
 const summary = ref<UsageLogSummary>({ totalRequests: 0, failedRequests: 0, successRate: 0, totalTokens: 0, maxDurationMs: 0 })
 const detailVisible = ref(false)
@@ -57,10 +56,10 @@ const sourceOptions: SelectOption[] = [
   { label: '对话测试', value: 'chat' },
   { label: 'Claude Code', value: 'claude-code' },
   { label: 'Codex', value: 'codex' },
-  { label: 'OpenCode', value: 'open-code' },
+  { label: 'Open Code', value: 'open-code' },
   { label: 'ZCode', value: 'zcode' },
   { label: '手动检测', value: 'detection-manual' },
-  { label: '检测任务', value: 'detection-task' }
+  { label: '定时检测', value: 'detection-task' }
 ]
 const statusOptions: SelectOption[] = [
   { label: '全部', value: '' },
@@ -129,26 +128,36 @@ function formatForwardingMode(forwardingMode: string): string {
   return '-'
 }
 
-function statusTag(row: UsageLogItem) {
+function getStatusMeta(row: UsageLogItem): { label: string; type: 'success' | 'error' } {
   const success = row.status === 'success' || row.status === 'ok'
   const label = row.fallbackTriggered && success ? '回退后成功' : row.isStreamInterrupted && !success ? '流中断' : success ? '成功' : '失败'
-  return h(NTag, { size: 'small', type: success ? 'success' : 'error', bordered: false }, () => label)
+  return { label, type: success ? 'success' : 'error' }
 }
 
-function sourceTag(source: string) {
+function statusTag(row: UsageLogItem) {
+  const meta = getStatusMeta(row)
+  return h(NTag, { size: 'small', type: meta.type, bordered: false }, () => meta.label)
+}
+
+function getSourceMeta(source: string): { label: string; type: 'default' | 'success' | 'info' | 'warning' } {
   const normalized = source?.trim().toLowerCase()
   const labels: Record<string, string> = {
     proxy: '代理',
     chat: '对话测试',
     'claude-code': 'Claude Code',
     codex: 'Codex',
-    'open-code': 'OpenCode',
+    'open-code': 'Open Code',
     zcode: 'ZCode',
     'detection-manual': '手动检测',
-    'detection-task': '检测任务'
+    'detection-task': '定时检测'
   }
   const type = normalized === 'chat' ? 'info' : normalized?.startsWith('detection') ? 'warning' : normalized === 'proxy' ? 'default' : 'success'
-  return h(NTag, { size: 'small', type, bordered: false }, () => labels[normalized] ?? source ?? '代理')
+  return { label: labels[normalized] ?? source ?? '代理', type }
+}
+
+function sourceTag(source: string) {
+  const meta = getSourceMeta(source)
+  return h(NTag, { size: 'small', type: meta.type, bordered: false }, () => meta.label)
 }
 
 function latencyBadges(row: UsageLogItem) {
@@ -186,6 +195,7 @@ async function load(page = query.page): Promise<void> {
     ])
     items.value = listResp.items ?? []
     totalCount.value = listResp.totalCount ?? 0
+    totalPages.value = listResp.totalPages ?? Math.ceil(totalCount.value / query.pageSize)
     summary.value = summaryResp
   } catch (e) {
     message.error((e as Error).message)
@@ -238,38 +248,35 @@ const detailAccessKeyName = computed(() => {
   return [...new Set(names)].join(' / ') || '-'
 })
 
-const usageLogsPagination = computed(() => ({
-  page: query.page,
-  pageSize: query.pageSize,
-  itemCount: totalCount.value,
-  showSizePicker: true,
-  pageSizes: [10, 20, 50, 100],
-  prefix: ({ itemCount }: { itemCount?: number }) => `共 ${formatNumber(itemCount ?? 0)} 条`,
-  onUpdatePage: (page: number) => { void load(page) },
-  onUpdatePageSize: (size: number) => { query.pageSize = size; void load(1) }
-}))
+const pageNumbers = computed(() => {
+  const total = Math.max(1, totalPages.value)
+  const current = Math.min(Math.max(1, query.page), total)
+  const start = Math.max(1, current - 2)
+  const end = Math.min(total, start + 4)
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index)
+})
 
-const columns = computed<DataTableColumns<UsageLogItem>>(() => [
-  { title: '时间', key: 'requestedAt', width: 168, render: (r) => formatDateTime(r.requestedAt) },
-  { title: '来源', key: 'source', width: 96, render: (r) => sourceTag(r.source) },
-  {
-    title: '模型',
-    key: 'requestModel',
-    minWidth: 180,
-    render: (r) => h('div', { class: 'usage-log-model-cell' }, [
-      h('code', r.attemptedModel || r.requestModel || '-'),
-      r.siteModelName ? h('small', r.siteModelName) : null
-    ])
-  },
-  { title: '目标站点', key: 'siteName', minWidth: 140, ellipsis: { tooltip: true }, render: (r) => r.siteName || '-' },
-  { title: '状态', key: 'status', width: 100, render: (r) => statusTag(r) },
-  { title: '用时/首字', key: 'totalDurationMs', width: 190, render: (r) => latencyBadges(r) },
-  { title: '输入', key: 'inputTokens', width: 88, align: 'right', render: (r) => formatNumber(r.inputTokens) },
-  { title: '缓存', key: 'cachedTokens', width: 88, align: 'right', render: (r) => formatNumber(r.cachedTokens) },
-  { title: '输出', key: 'outputTokens', width: 88, align: 'right', render: (r) => formatNumber(r.outputTokens) },
-  { title: '总Token数', key: 'totalTokens', width: 112, align: 'right', render: (r) => h('strong', formatNumber(r.totalTokens)) },
-  { title: '操作', key: 'actions', width: 108, fixed: 'right', render: (r) => h(NButton, { size: 'small', secondary: true, type: 'primary', onClick: () => openRequestDetail(r.requestId) }, () => '查看链路') }
-])
+const paginationSummary = computed(() => {
+  if (totalCount.value === 0) return '共 0 条'
+  const start = (query.page - 1) * query.pageSize + 1
+  const end = Math.min(query.page * query.pageSize, totalCount.value)
+  return `显示第 ${formatNumber(start)} - ${formatNumber(end)} 条，共 ${formatNumber(totalCount.value)} 条`
+})
+
+const paginationInfo = computed(() => {
+  if (totalCount.value === 0) return '第 0 / 0 页'
+  return `第 ${query.page} / ${Math.max(1, totalPages.value)} 页`
+})
+
+function goPage(page: number): void {
+  const target = Math.min(Math.max(1, page), Math.max(1, totalPages.value))
+  void load(target)
+}
+
+function jumpToPage(): void {
+  if (!pageJumpInput.value) return
+  goPage(pageJumpInput.value)
+}
 
 onMounted(async () => {
   await loadFilters()
@@ -284,7 +291,8 @@ onUnmounted(() => {
 
 <template>
   <div class="page-container usage-logs-page">
-    <PageHeader title="使用日志" subtitle="查看代理服务和对话测试的调用记录" />
+    <h2 class="usage-logs-sr-title">使用日志</h2>
+    <PageHeader title="调用日志" subtitle="查看代理服务和对话测试的调用记录" />
 
     <NCard class="usage-logs-filter-card" size="small">
       <div class="usage-logs-filter-header">
@@ -353,19 +361,94 @@ onUnmounted(() => {
       <NGi span="4 m:2 l:1"><NCard size="small"><NStatistic label="失败请求" :value="formatNumber(summary.failedRequests)" /></NCard></NGi>
     </NGrid>
 
-    <NCard class="usage-logs-table-card">
-      <NDataTable
-        :columns="columns"
-        :data="items"
-        :loading="loading"
-        :row-key="(r: UsageLogItem) => r.id"
-        :scroll-x="1320"
-        remote
-        :pagination="usageLogsPagination"
-        striped
-        size="small"
-      />
-    </NCard>
+    <div class="table-wrapper usage-logs-table-wrapper">
+      <table class="table usage-logs-table">
+        <thead>
+          <tr>
+            <th>时间</th>
+            <th>来源</th>
+            <th>模型</th>
+            <th>目标站点</th>
+            <th>访问密钥</th>
+            <th>状态</th>
+            <th>用时/首字</th>
+            <th>输入</th>
+            <th>缓存</th>
+            <th>输出</th>
+            <th>总Token数</th>
+            <th>操作</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-if="loading">
+            <td colspan="12">
+              <div class="table-empty">
+                <div class="table-empty-text">加载中...</div>
+              </div>
+            </td>
+          </tr>
+          <tr v-else-if="items.length === 0">
+            <td colspan="12">
+              <div class="table-empty">
+                <div class="table-empty-icon">📋</div>
+                <div class="table-empty-text">暂无调用日志</div>
+              </div>
+            </td>
+          </tr>
+          <template v-else>
+            <tr v-for="item in items" :key="item.id">
+              <td>{{ formatDateTime(item.requestedAt) }}</td>
+              <td><NTag size="small" :type="getSourceMeta(item.source).type" :bordered="false">{{ getSourceMeta(item.source).label }}</NTag></td>
+              <td><code>{{ item.attemptedModel || item.requestModel || '-' }}</code></td>
+              <td>{{ item.siteName || '-' }}</td>
+              <td>{{ item.accessKeyName || '-' }}</td>
+              <td><NTag size="small" :type="getStatusMeta(item).type" :bordered="false">{{ getStatusMeta(item).label }}</NTag></td>
+              <td><div class="latency-chips">
+                <span class="usage-log-chip usage-log-chip-total">{{ formatDuration(item.totalDurationMs) }}</span>
+                <span class="usage-log-chip usage-log-chip-first">{{ item.isStreaming ? formatDuration(item.firstTokenLatencyMs) : '-' }}</span>
+                <span :class="['usage-log-chip usage-log-chip-stream', item.isStreamInterrupted ? 'usage-log-chip-stream-interrupted' : '']">{{ item.isStreaming ? '流' : '非流' }}</span>
+              </div></td>
+              <td>{{ formatNumber(item.inputTokens) }}</td>
+              <td>{{ formatNumber(item.cachedTokens) }}</td>
+              <td>{{ formatNumber(item.outputTokens) }}</td>
+              <td><strong>{{ formatNumber(item.totalTokens) }}</strong></td>
+              <td>
+                <NButton size="small" secondary type="primary" @click="openRequestDetail(item.requestId)">查看链路</NButton>
+              </td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="usage-logs-pagination-wrap">
+      <div class="usage-logs-pagination-summary">{{ paginationSummary }}</div>
+      <div class="usage-logs-pagination">
+        <button type="button" class="usage-page-button" :disabled="query.page <= 1 || loading" @click="goPage(1)">首页</button>
+        <button type="button" class="usage-page-button" :disabled="query.page <= 1 || loading" @click="goPage(query.page - 1)">上一页</button>
+        <div class="usage-page-numbers">
+          <button
+            v-for="pageNumber in pageNumbers"
+            :key="pageNumber"
+            type="button"
+            class="usage-page-number"
+            :class="{ active: pageNumber === query.page }"
+            :disabled="loading || pageNumber === query.page"
+            @click="goPage(pageNumber)"
+          >
+            {{ pageNumber }}
+          </button>
+        </div>
+        <span class="usage-pagination-info">{{ paginationInfo }}</span>
+        <button type="button" class="usage-page-button" :disabled="query.page >= totalPages || loading" @click="goPage(query.page + 1)">下一页</button>
+        <button type="button" class="usage-page-button" :disabled="query.page >= totalPages || loading" @click="goPage(totalPages)">末页</button>
+        <div class="usage-page-jump-group">
+          <span>跳转</span>
+          <input v-model.number="pageJumpInput" type="number" min="1" step="1" placeholder="页码" @keyup.enter="jumpToPage" />
+          <button type="button" class="usage-page-button" :disabled="loading" @click="jumpToPage">前往</button>
+        </div>
+      </div>
+    </div>
 
     <NDrawer v-model:show="detailVisible" width="520" placement="right">
       <NDrawerContent title="请求链路详情" closable>
@@ -406,9 +489,22 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.usage-logs-sr-title {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+}
+
 .usage-logs-filter-card {
   margin-bottom: 16px;
   overflow: hidden;
+}
+
+.usage-logs-filter-card :deep(.n-card__content) {
+  padding: 0;
 }
 
 .usage-logs-filter-header {
@@ -416,6 +512,7 @@ onUnmounted(() => {
   align-items: center;
   gap: 12px;
   min-width: 0;
+  background: var(--bg-card);
 }
 
 .usage-logs-filter-toggle {
@@ -427,7 +524,7 @@ onUnmounted(() => {
   gap: 12px;
   border: 0;
   background: transparent;
-  padding: 8px 4px;
+  padding: 14px 18px;
   color: var(--text-primary);
   font-size: 14px;
   font-weight: 600;
@@ -437,7 +534,9 @@ onUnmounted(() => {
 .usage-logs-filter-header-actions {
   display: inline-flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 8px;
+  padding: 0 18px 0 0;
   white-space: nowrap;
 }
 
@@ -447,9 +546,8 @@ onUnmounted(() => {
 }
 
 .usage-logs-filter-body {
+  padding: 18px;
   border-top: 1px solid var(--border-color-global);
-  margin-top: 8px;
-  padding-top: 14px;
 }
 
 .usage-logs-filter-grid {
@@ -496,18 +594,146 @@ onUnmounted(() => {
   display: none;
 }
 
-.usage-logs-table-card {
-  min-width: 0;
-  overflow: hidden;
+.usage-logs-table-wrapper {
+  overflow: auto;
+  border: 1px solid var(--border-color-global);
+  border-radius: 10px;
+  background: var(--bg-card);
 }
 
-.usage-logs-table-card :deep(.n-card__content) {
-  min-width: 0;
-  overflow: hidden;
+.usage-logs-table {
+  width: 100%;
+  min-width: 1320px;
+  margin: 0;
+  border-collapse: collapse;
 }
 
-.usage-logs-table-card :deep(.n-data-table) {
-  max-width: 100%;
+.usage-logs-table th,
+.usage-logs-table td {
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-color-global);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.usage-logs-table th {
+  background: var(--bg-soft);
+  color: var(--text-color-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.usage-logs-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.usage-logs-pagination-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.usage-logs-pagination-summary,
+.usage-pagination-info {
+  color: var(--text-color-secondary);
+  font-size: 13px;
+}
+
+.usage-logs-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.usage-page-numbers {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.usage-page-button,
+.usage-page-number,
+.usage-page-size {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 31px;
+  min-width: 32px;
+  padding: 4px 10px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 4px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1.5;
+  vertical-align: middle;
+}
+
+.usage-page-button:disabled,
+.usage-page-number:disabled,
+.usage-page-size:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.usage-page-number.active {
+  border-color: #0d6efd;
+  background: #0d6efd;
+  color: #fff;
+}
+
+.usage-pagination-info {
+  color: var(--text-color-secondary);
+  font-size: 13px;
+}
+
+.usage-page-jump-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 0;
+}
+
+.usage-page-jump-group span,
+.usage-page-jump-group input {
+  box-sizing: border-box;
+  height: 31px;
+  border: 1px solid var(--border-color-global);
+  background: var(--bg-card);
+  line-height: 1.5;
+}
+
+.usage-page-jump-group span {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 9px;
+  border-radius: 4px 0 0 4px;
+  color: var(--text-color-secondary);
+  font-size: 13px;
+}
+
+.usage-page-jump-group input {
+  width: 64px;
+  min-width: 0;
+  margin-left: -1px;
+  padding: 4px 8px;
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.usage-page-jump-group .usage-page-button {
+  min-width: 46px;
+  margin-left: -1px;
+  border-radius: 0 4px 4px 0;
 }
 
 .usage-log-model-cell {

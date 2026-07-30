@@ -1,4 +1,4 @@
-# AI-Tool 一键构建脚本（Windows PowerShell）
+﻿# AI-Tool 一键构建脚本（Windows PowerShell）
 # 用法：.\build.ps1
 # 效果：构建前端 → 构建后端，产物输出到 src/AITool.Web/wwwroot
 
