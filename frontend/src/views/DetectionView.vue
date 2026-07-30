@@ -208,7 +208,7 @@ onBeforeUnmount(() => {
 }
 
 .detection-table-head {
-  padding: 0 0 8px;
+  padding: 12px 16px;
   color: var(--text-color-secondary);
   font-size: 12px;
   font-weight: 600;
@@ -216,7 +216,7 @@ onBeforeUnmount(() => {
 }
 
 .detection-row {
-  padding: 8px 0;
+  padding: 14px 16px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.16);
 }
 

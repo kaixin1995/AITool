@@ -79,6 +79,34 @@ async function refreshAccessToken(): Promise<boolean> {
   return refreshPromise
 }
 
+const apiResponseKeys = new Set([
+  'success',
+  'data',
+  'message',
+  'errorCode'
+])
+
+// 仅识别统一包装允许的字段，避免把领域对象中的 success 误判为响应包装。
+export function isRequestCanceled(error: unknown): boolean {
+  return axios.isCancel(error)
+    || (typeof error === 'object'
+      && error !== null
+      && 'code' in error
+      && error.code === 'ERR_CANCELED')
+}
+
+export function isApiResponse(raw: unknown): raw is ApiResponse {
+  if (
+    raw === null
+    || typeof raw !== 'object'
+    || typeof (raw as ApiResponse).success !== 'boolean'
+  ) {
+    return false
+  }
+
+  return Object.keys(raw).every(key => apiResponseKeys.has(key))
+}
+
 // 响应拦截器：统一解包 ApiResponse + 401 自动刷新重试 + 错误提示
 instance.interceptors.response.use(
   // 成功响应（HTTP 2xx）
@@ -86,7 +114,7 @@ instance.interceptors.response.use(
     // 非标准 ApiResponse（老 API 直接返回数据对象，或导出等纯数据端点）：原样返回。
     // 判据：response.data 没有 success 字段，或 success 字段不是 boolean。
     const data = response.data
-    if (data === null || typeof data !== 'object' || typeof data.success !== 'boolean') {
+    if (!isApiResponse(data)) {
       return response
     }
 
@@ -105,6 +133,11 @@ instance.interceptors.response.use(
   },
   // 错误响应（HTTP 4xx/5xx）
   async (error) => {
+    // 主动取消属于预期控制流，不转换为业务错误，也不弹全局错误提示。
+    if (isRequestCanceled(error)) {
+      return Promise.reject(error)
+    }
+
     const originalRequest = error.config as (AxiosRequestConfig & { _retried?: boolean }) | undefined
     const status = error.response?.status
 
@@ -187,11 +220,15 @@ export async function httpDelete<T = unknown>(url: string, config?: AxiosRequest
 }
 
 // 解包：如果是标准 ApiResponse 返回 .data，否则原样返回。
-function unwrap<T>(raw: unknown): T {
-  if (raw && typeof raw === 'object' && typeof (raw as ApiResponse).success === 'boolean') {
+export function unwrapResponseData<T>(raw: unknown): T {
+  if (isApiResponse(raw)) {
     return (raw as ApiResponse<T>).data as T
   }
   return raw as T
+}
+
+function unwrap<T>(raw: unknown): T {
+  return unwrapResponseData<T>(raw)
 }
 
 export default instance

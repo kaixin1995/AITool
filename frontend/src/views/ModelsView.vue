@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   NCard, NButton, NSpace, NTag, NModal, NForm, NFormItem, NInput, NInputNumber,
   NSwitch, NSelect, NPopconfirm, NEmpty, NDrawer, NDrawerContent, NSpin, NTabs, NTabPane, useMessage
@@ -16,6 +17,7 @@ import {
 } from './models/vendorCatalogState'
 
 const message = useMessage()
+const route = useRoute()
 const loading = ref(false)
 const vendorGroups = ref<modelsApi.ModelVendorGroup[]>([])
 const profileOptions = ref<{ label: string; value: string }[]>([])
@@ -111,6 +113,14 @@ function openCreate(): void {
   Object.assign(form, { modelName: '', displayName: '', isEnabled: true, overrideReasoningEffort: '', compatibilityProfileId: null })
   showModal.value = true
 }
+
+watch(
+  () => route.query.action,
+  (action) => {
+    if (action === 'create') openCreate()
+  },
+  { immediate: true }
+)
 
 async function openEdit(model: ModelListItem): Promise<void> {
   editingId.value = model.id
@@ -693,7 +703,7 @@ onMounted(loadModels)
 
 .vendor-group-title {
   margin: 0;
-  font-size: 26px;
+  font-size: 20px;
   font-weight: 700;
 }
 

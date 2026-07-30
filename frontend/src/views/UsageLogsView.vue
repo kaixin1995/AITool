@@ -291,7 +291,7 @@ onUnmounted(() => {
 
 <template>
   <div class="page-container usage-logs-page">
-    <h2 class="usage-logs-sr-title">使用日志</h2>
+    <h2 class="usage-logs-sr-title">调用日志</h2>
     <PageHeader title="调用日志" subtitle="查看代理服务和对话测试的调用记录" />
 
     <NCard class="usage-logs-filter-card" size="small">
@@ -308,7 +308,7 @@ onUnmounted(() => {
         <div class="usage-logs-filter-header-actions">
           <span class="auto-refresh-label">自动刷新</span>
           <NSwitch v-model:value="autoRefresh" size="small" @update:value="configureAutoRefresh" />
-          <NButton circle quaternary size="small" title="自动刷新固定每 5 秒执行一次。">?</NButton>
+          <NButton class="usage-logs-help-button" circle quaternary size="small" title="自动刷新固定每 5 秒执行一次。">?</NButton>
         </div>
       </div>
       <div v-show="filtersExpanded" class="usage-logs-filter-body">
@@ -347,7 +347,7 @@ onUnmounted(() => {
             <span>模型搜索</span>
             <div class="search-action-row">
               <input v-model="query.modelKeyword" class="model-keyword-input" placeholder="模型模糊搜索" @keyup.enter="handleSearch" />
-              <NButton type="primary" size="small" @click="handleSearch">刷新</NButton>
+              <NButton class="usage-logs-refresh-button" type="primary" size="small" @click="handleSearch">刷新</NButton>
             </div>
           </label>
         </div>
@@ -546,6 +546,14 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
+.usage-logs-help-button {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0;
+  font-size: 11px;
+}
+
 .usage-logs-filter-body {
   padding: 18px;
   border-top: 1px solid var(--border-color-global);
@@ -573,18 +581,23 @@ onUnmounted(() => {
 
 .search-action-row {
   display: flex;
+  align-items: stretch;
   gap: 8px;
 }
 
 .model-keyword-input {
   min-width: 0;
   flex: 1 1 auto;
-  height: 28px;
+  height: 38px;
   padding: 0 10px;
   border: 1px solid var(--border-color-global);
   border-radius: 4px;
   background: var(--bg-card);
   color: var(--text-primary);
+}
+
+.usage-logs-refresh-button {
+  height: 38px;
 }
 
 .usage-logs-summary-row {
@@ -619,7 +632,7 @@ onUnmounted(() => {
 }
 
 .usage-logs-table th {
-  background: var(--bg-soft);
+  background: var(--bg-page);
   color: var(--text-color-secondary);
   font-size: 13px;
   font-weight: 600;
@@ -843,6 +856,27 @@ onUnmounted(() => {
 
   .filter-field-wide {
     grid-column: span 1;
+  }
+
+  .usage-logs-pagination-wrap {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .usage-logs-pagination {
+    width: 100%;
+    justify-content: center;
+    gap: 4px;
+  }
+
+  .usage-page-numbers {
+    gap: 4px;
+  }
+
+  .usage-page-jump-group {
+    flex: 0 0 100%;
+    justify-content: center;
+    margin-top: 4px;
   }
 }
 </style>

@@ -556,7 +556,7 @@ onMounted(() => {
 
 .route-panel-title {
   margin: 0;
-  color: var(--text-color);
+  color: var(--text-primary);
   font-size: 16px;
   font-weight: 700;
 }
@@ -612,7 +612,7 @@ onMounted(() => {
   border: 1px solid var(--border-color-global);
   border-radius: 10px;
   background: var(--bg-card);
-  color: var(--text-color);
+  color: var(--text-primary);
   cursor: pointer;
   text-align: left;
   transition: border-color 0.15s, background 0.15s;
@@ -657,7 +657,7 @@ onMounted(() => {
 .queue-card-header {
   padding: 14px 18px;
   border-bottom: 1px solid var(--border-color-global);
-  background: var(--bg-soft);
+  background: var(--bg-page);
   color: var(--text-color-secondary);
   font-size: 13px;
 }

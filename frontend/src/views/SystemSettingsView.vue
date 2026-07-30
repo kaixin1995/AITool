@@ -275,7 +275,7 @@ onMounted(loadSettings)
 
 .settings-card-title {
   margin: 0 0 16px;
-  color: var(--text-color);
+  color: var(--text-primary);
   font-size: 16px;
   font-weight: 700;
   line-height: 1.2;
@@ -321,7 +321,7 @@ onMounted(loadSettings)
   align-items: center;
   gap: 10px;
   min-height: 34px;
-  color: var(--text-color);
+  color: var(--text-primary);
 }
 
 .settings-muted-text {

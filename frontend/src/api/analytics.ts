@@ -61,7 +61,19 @@ export interface AnalyticsCacheRatioPoint {
   totalInputScope: number
   cacheHitRate: number
 }
+export interface AnalyticsAppliedFilter {
+  startTime: string
+  endTime: string
+  rangeType: string
+  bucketType: string
+  protocolType: string
+  modelName: string
+  siteId: string | null
+  accessKeyId: string | null
+}
+
 export interface AnalyticsDashboard {
+  appliedFilter: AnalyticsAppliedFilter
   summary: AnalyticsSummary
   requestTrend: AnalyticsTrendPoint[]
   resultTrend?: AnalyticsResultTrendPoint[]
@@ -79,12 +91,39 @@ export interface AnalyticsFilterOptions {
   accessKeys: { accessKeyId: string; accessKeyLabel: string }[]
 }
 
-export async function getAnalyticsDashboard(params: Record<string, unknown>): Promise<AnalyticsDashboard> {
+export interface AnalyticsPendingResult {
+  status: 'pending'
+  retryAfterMs?: number
+  message?: string
+}
+
+export interface AnalyticsBusyResult {
+  status: 'busy'
+  retryAfterMs?: number
+  message?: string
+}
+
+export type AnalyticsDashboardResponse =
+  | AnalyticsDashboard
+  | AnalyticsPendingResult
+  | AnalyticsBusyResult
+
+export async function getAnalyticsDashboard(
+  params: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<AnalyticsDashboardResponse> {
   const query = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') query.append(k, String(v))
   }
-  return httpGet<AnalyticsDashboard>(`/api/admin/analytics/dashboard?${query.toString()}`)
+  return httpGet<AnalyticsDashboardResponse>(
+    `/api/admin/analytics/dashboard?${query.toString()}`,
+    {
+      signal,
+      // 队列满属于可重试状态，由页面按后端建议的间隔继续等待。
+      validateStatus: status => (status >= 200 && status < 300) || status === 429
+    }
+  )
 }
 
 export async function getAnalyticsOptions(): Promise<AnalyticsFilterOptions> {

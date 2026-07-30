@@ -47,12 +47,12 @@ async function handleCreate(): Promise<void> {
   } finally { saving.value = false }
 }
 
-async function copyText(text: string): Promise<void> {
+async function copyText(text: string, successMessage = '已复制到剪贴板'): Promise<void> {
   if (!text) return
   if (window.isSecureContext && navigator.clipboard) {
     try {
       await navigator.clipboard.writeText(text)
-      message.success('已复制到剪贴板')
+      message.success(successMessage)
       return
     } catch {
       // HTTP 或浏览器权限受限时走传统复制路径。
@@ -69,7 +69,7 @@ async function copyText(text: string): Promise<void> {
   textarea.select()
   try {
     document.execCommand('copy')
-    message.success('已复制到剪贴板')
+    message.success(successMessage)
   } catch {
     message.error('复制失败，请手动复制')
   } finally {
@@ -135,8 +135,8 @@ const columns = computed<DataTableColumns<AccessKeyItem>>(() => [
     return arr.length > 0 ? h(NTag, { size: 'small', bordered: false }, () => arr.join(', ')) : '全部'
   } },
   { title: '状态', key: 'isEnabled', width: 80, render: (r) => h(NTag, { size: 'small', type: r.isEnabled ? 'success' : 'default', bordered: false }, () => r.isEnabled ? '启用' : '禁用') },
-  { title: '操作', key: 'actions', width: 248, fixed: 'right', render: (row) => h(NSpace, { size: 6, wrap: false }, () => [
-    h(NButton, { size: 'small', quaternary: true, onClick: () => copyText(row.maskedValue) }, () => '复制'),
+  { title: '操作', key: 'actions', width: 292, fixed: 'right', render: (row) => h(NSpace, { size: 6, wrap: false }, () => [
+    h(NButton, { size: 'small', quaternary: true, onClick: () => copyText(row.maskedValue, '已复制脱敏值；历史密钥不会再次显示明文') }, () => '复制脱敏值'),
     h(NButton, { size: 'small', quaternary: true, onClick: () => openEditRoutes(row) }, () => '编辑路由'),
     h(NButton, { size: 'small', quaternary: true, onClick: () => handleToggle(row) }, () => row.isEnabled ? '禁用' : '启用'),
     h(NPopconfirm, { onPositiveClick: () => handleDelete(row) }, { trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, () => '删除'), default: () => `确认删除「${row.keyName}」？` })

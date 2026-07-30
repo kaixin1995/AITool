@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NLayoutContent, NButton, NTooltip } from 'naive-ui'
 import { useTheme } from '@/composables/useTheme'
@@ -12,6 +12,8 @@ const auth = useAuthStore()
 const { isDark, toggleTheme } = useTheme()
 
 const collapsed = ref(localStorage.getItem('aitool.sidebarCollapsed') === 'true')
+const mobileSidebarOpen = ref(false)
+
 function toggleCollapsed(): void {
   collapsed.value = !collapsed.value
   localStorage.setItem('aitool.sidebarCollapsed', collapsed.value ? 'true' : 'false')
@@ -66,39 +68,54 @@ const navGroups = computed<NavGroup[]>(() => {
 const activeKey = computed(() => (route.name as string) ?? '')
 
 function handleNavigate(key: string): void {
+  mobileSidebarOpen.value = false
   router.push({ name: key })
 }
+
+watch(() => route.fullPath, () => {
+  mobileSidebarOpen.value = false
+})
 
 async function handleLogout(): Promise<void> {
   await auth.logout()
   router.push({ name: 'login' })
 }
 
+function handleKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape') mobileSidebarOpen.value = false
+}
+
 onMounted(async () => {
+  window.addEventListener('keydown', handleKeydown)
   if (!auth.status) {
     try { await auth.fetchStatus() } catch { /* 路由守卫处理 */ }
   }
 })
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <template>
-  <div class="app-wrapper" :class="{ 'sidebar-collapsed': collapsed }">
+  <div class="app-wrapper" :class="{ 'sidebar-collapsed': collapsed, 'mobile-sidebar-open': mobileSidebarOpen }">
     <aside class="app-sidebar">
       <!-- 品牌区 -->
       <div class="sidebar-brand">
         <div class="sidebar-brand-main">
           <div class="brand-icon">AI</div>
-          <span v-if="!collapsed" class="brand-text">AI Tool</span>
+          <span class="brand-text">AI Tool</span>
         </div>
         <div class="sidebar-brand-actions">
           <button class="sidebar-collapse-toggle" type="button" :title="collapsed ? '展开侧边栏' : '折叠侧边栏'" @click="toggleCollapsed">{{ collapsed ? '›' : '‹' }}</button>
+          <button class="mobile-sidebar-close" type="button" title="关闭导航" @click="mobileSidebarOpen = false">×</button>
         </div>
       </div>
 
       <!-- 导航：纯 HTML，完全复刻原 _Layout.cshtml 的 sidebar-link 结构 -->
       <nav class="sidebar-nav">
         <div v-for="group in navGroups" :key="group.title" class="sidebar-section">
-          <div v-if="!collapsed" class="sidebar-section-title">{{ group.title }}</div>
+          <div class="sidebar-section-title">{{ group.title }}</div>
           <a
             v-for="item in group.items"
             :key="item.key"
@@ -113,10 +130,14 @@ onMounted(async () => {
         </div>
       </nav>
     </aside>
+    <button v-if="mobileSidebarOpen" class="sidebar-overlay" type="button" aria-label="关闭导航" @click="mobileSidebarOpen = false" />
 
     <div class="app-main">
       <header class="app-topbar">
-        <h1 class="app-topbar-title">{{ (route.meta.title as string) ?? 'AI Tool' }}</h1>
+        <div class="app-topbar-heading">
+          <button class="mobile-menu-toggle" type="button" aria-label="打开导航" @click="mobileSidebarOpen = true">☰</button>
+          <h1 class="app-topbar-title">{{ (route.meta.title as string) ?? 'AI Tool' }}</h1>
+        </div>
         <div class="app-topbar-right">
           <NTooltip trigger="hover">
             <template #trigger>
@@ -171,6 +192,7 @@ onMounted(async () => {
   box-shadow: 0 2px 8px rgba(108, 158, 255, 0.3);
 }
 .brand-text { font-weight: 700; font-size: 16px; white-space: nowrap; color: var(--text-primary); }
+.app-wrapper.sidebar-collapsed .brand-text { display: none; }
 .sidebar-brand-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .sidebar-collapse-toggle {
   display: flex; align-items: center; justify-content: center;
@@ -181,6 +203,9 @@ onMounted(async () => {
 }
 .sidebar-collapse-toggle:hover { background: #EEF4FF; color: #6C9EFF; border-color: #EEF4FF; }
 [data-theme='dark'] .sidebar-collapse-toggle:hover { background: rgba(108, 158, 255, 0.15); }
+.mobile-sidebar-close,
+.mobile-menu-toggle,
+.sidebar-overlay { display: none; }
 
 /* 导航 */
 .sidebar-nav { flex: 1; padding: 12px; overflow-y: auto; }
@@ -190,6 +215,7 @@ onMounted(async () => {
   font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
   color: var(--text-color-secondary); padding: 12px 12px 6px;
 }
+.app-wrapper.sidebar-collapsed .sidebar-section-title { display: none; }
 .sidebar-link {
   display: flex; align-items: center; gap: 10px;
   padding: 9px 12px; border-radius: 8px;
@@ -221,10 +247,11 @@ onMounted(async () => {
 /* 顶部栏 */
 .app-topbar {
   height: 60px; display: flex; align-items: center; justify-content: space-between;
-  padding: 0 24px; border-bottom: 1px solid var(--border-color-global);
+  padding: 0 var(--layout-gutter-x); border-bottom: 1px solid var(--border-color-global);
   background: var(--bg-card); flex-shrink: 0;
 }
-.app-topbar-title { margin: 0; font-size: 18px; font-weight: 600; color: var(--text-primary); }
+.app-topbar-heading { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.app-topbar-title { margin: 0; font-size: 16px; font-weight: 600; color: var(--text-primary); }
 .app-topbar-right { display: flex; align-items: center; gap: 16px; }
 .theme-icon-toggle {
   background: none; border: none; cursor: pointer; font-size: 18px; line-height: 1;
@@ -239,24 +266,33 @@ onMounted(async () => {
 .app-content-scroll { height: 100%; }
 
 @media (max-width: 991.98px) {
-  .app-wrapper {
+  .app-wrapper,
+  .app-wrapper.sidebar-collapsed {
     display: block;
     min-height: 100vh;
   }
 
   .app-sidebar,
   .app-wrapper.sidebar-collapsed .app-sidebar {
-    position: static;
-    width: 100%;
-    max-width: 100vw;
-    border-right: 0;
-    border-bottom: 1px solid var(--border-color-global);
-    overflow: hidden;
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 1100;
+    width: 260px;
+    max-width: calc(100vw - 48px);
+    border-right: 1px solid var(--border-color-global);
+    transform: translateX(-100%);
+    transition: transform 0.2s ease;
+  }
+
+  .app-wrapper.mobile-sidebar-open .app-sidebar {
+    transform: translateX(0);
   }
 
   .sidebar-brand,
   .app-wrapper.sidebar-collapsed .sidebar-brand {
-    padding: 12px 16px;
+    padding: 16px;
     flex-direction: row;
     justify-content: space-between;
   }
@@ -265,7 +301,8 @@ onMounted(async () => {
     justify-content: flex-start;
   }
 
-  .brand-text {
+  .brand-text,
+  .app-wrapper.sidebar-collapsed .brand-text {
     display: inline;
   }
 
@@ -273,33 +310,47 @@ onMounted(async () => {
     display: none;
   }
 
+  .mobile-sidebar-close {
+    display: flex;
+    width: 30px;
+    height: 30px;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-color-global);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-color-secondary);
+    cursor: pointer;
+    font-size: 20px;
+    line-height: 1;
+  }
+
   .sidebar-nav,
   .app-wrapper.sidebar-collapsed .sidebar-nav {
-    display: flex;
-    gap: 8px;
-    padding: 10px 12px;
-    overflow-x: auto;
-    overflow-y: hidden;
+    display: block;
+    padding: 12px;
+    overflow-x: hidden;
+    overflow-y: auto;
   }
 
   .sidebar-section {
-    display: flex;
-    gap: 8px;
-    margin-bottom: 0;
-    flex-shrink: 0;
+    display: block;
+    margin-bottom: 4px;
   }
 
-  .sidebar-section-title {
-    display: none;
+  .sidebar-section-title,
+  .app-wrapper.sidebar-collapsed .sidebar-section-title {
+    display: block;
   }
 
   .sidebar-link,
   .app-wrapper.sidebar-collapsed .sidebar-link {
-    gap: 6px;
-    margin-bottom: 0;
-    padding: 8px 10px;
-    font-size: 13px;
-    white-space: nowrap;
+    justify-content: flex-start;
+    gap: 10px;
+    margin-bottom: 2px;
+    padding: 9px 12px;
+    font-size: 13.5px;
+    white-space: normal;
   }
 
   .app-wrapper.sidebar-collapsed .sidebar-link-icon {
@@ -307,18 +358,43 @@ onMounted(async () => {
     font-size: 15px;
   }
 
+  .sidebar-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1050;
+    display: block;
+    padding: 0;
+    border: 0;
+    background: rgba(15, 23, 42, 0.42);
+  }
+
   .app-main,
   .app-wrapper.sidebar-collapsed .app-main {
     margin-left: 0;
     width: 100%;
-    min-height: auto;
+    min-height: 100vh;
   }
 
   .app-topbar {
     min-height: 56px;
     height: auto;
-    padding: 10px 16px;
+    padding: 10px var(--layout-gutter-x);
     gap: 12px;
+  }
+
+  .mobile-menu-toggle {
+    display: flex;
+    width: 34px;
+    height: 34px;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid var(--border-color-global);
+    border-radius: 8px;
+    background: var(--bg-card);
+    color: var(--text-primary);
+    cursor: pointer;
+    font-size: 17px;
   }
 
   .app-topbar-right {
@@ -326,15 +402,11 @@ onMounted(async () => {
   }
 }
 
-@media (max-width: 640px) {
-  .app-topbar {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .app-topbar-right {
-    width: 100%;
-    justify-content: space-between;
+@media (max-width: 575.98px) {
+  .app-topbar-title {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .topbar-version {

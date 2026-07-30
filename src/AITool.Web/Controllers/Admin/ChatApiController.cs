@@ -10,6 +10,7 @@ using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Web.Services;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Web.Controllers.Admin;
@@ -552,10 +553,13 @@ public sealed class ChatApiController : ControllerBase
     [HttpPost("send-stream")]
     public async Task SendStream([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
     {
-        Response.StatusCode = 200;
-        Response.ContentType = "text/event-stream";
-        Response.Headers.CacheControl = "no-cache";
+        Response.StatusCode = StatusCodes.Status200OK;
+        Response.ContentType = "text/event-stream; charset=utf-8";
+        Response.Headers.CacheControl = "no-cache, no-transform";
         Response.Headers["X-Accel-Buffering"] = "no";
+        HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+        await Response.StartAsync(cancellationToken);
+        await Response.Body.FlushAsync(cancellationToken);
 
         if (string.IsNullOrWhiteSpace(request.Message))
         {

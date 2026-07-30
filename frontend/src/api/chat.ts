@@ -106,6 +106,19 @@ export interface ChatStreamCallbacks {
   onError: (err: Error) => void
 }
 
+export function parseSseBlock(block: string): { event: string; data: string } | null {
+  let event = 'message'
+  const dataLines: string[] = []
+  for (const line of block.split(/\r?\n/)) {
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart())
+    }
+  }
+  return dataLines.length > 0 ? { event, data: dataLines.join('\n') } : null
+}
+
 // 流式发送：后端用命名事件（event: token/reasoning/meta/done/error），不是 OpenAI 的 [DONE]。
 // 必须解析 event: 行确定事件类型，再从 data: 行取 payload。
 export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallbacks): Promise<void> {
@@ -120,7 +133,11 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
   try {
     const resp = await fetch('/api/admin/chat/send-stream', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${getAccessToken()}` },
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'text/event-stream',
+        Authorization: `Bearer ${getAccessToken()}`
+      },
       body: JSON.stringify(body),
       signal: opts.signal
     })
@@ -128,6 +145,31 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
       const err = await resp.json().catch(() => ({}))
       throw new Error(err.message || `请求失败 (${resp.status})`)
     }
+    const contentType = resp.headers.get('content-type') ?? ''
+    if (!contentType.toLowerCase().includes('text/event-stream')) {
+      throw new Error(`预期 SSE 响应，实际为 ${contentType || '未知类型'}`)
+    }
+
+    const handleBlock = (block: string): boolean => {
+      const event = parseSseBlock(block)
+      if (!event) return false
+      let payload: { content?: string; message?: string } = {}
+      try { payload = JSON.parse(event.data) } catch { /* 非 JSON 忽略 */ }
+      if (event.event === 'token' && payload.content) {
+        cb.onToken(payload.content)
+      } else if (event.event === 'reasoning' && payload.content && cb.onReasoning) {
+        cb.onReasoning(payload.content)
+      } else if (event.event === 'meta') {
+        cb.onMeta?.(payload)
+      } else if (event.event === 'done') {
+        cb.onDone?.()
+        return true
+      } else if (event.event === 'error') {
+        throw new Error(payload.message || '上游返回错误')
+      }
+      return false
+    }
+
     const reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
@@ -135,37 +177,17 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
       const { done, value } = await reader.read()
       if (done) break
       buffer += decoder.decode(value, { stream: true })
-      // SSE 以空行分隔事件块。
-      const blocks = buffer.split('\n\n')
-      buffer = blocks.pop() ?? ''
-      for (const block of blocks) {
-        const lines = block.split('\n')
-        let eventName = ''
-        let dataLine = ''
-        for (const line of lines) {
-          if (line.startsWith('event:')) {
-            eventName = line.slice(6).trim()
-          } else if (line.startsWith('data:')) {
-            dataLine = line.slice(5).trim()
-          }
-        }
-        if (!dataLine) continue
-        let payload: { content?: string; message?: string } = {}
-        try { payload = JSON.parse(dataLine) } catch { /* 非 JSON 忽略 */ }
-        if (eventName === 'token' && payload.content) {
-          cb.onToken(payload.content)
-        } else if (eventName === 'reasoning' && payload.content && cb.onReasoning) {
-          cb.onReasoning(payload.content)
-        } else if (eventName === 'meta') {
-          cb.onMeta?.(payload)
-        } else if (eventName === 'done') {
-          cb.onDone?.()
-          return
-        } else if (eventName === 'error') {
-          throw new Error(payload.message || '上游返回错误')
-        }
+      let separator = buffer.search(/\r?\n\r?\n/)
+      while (separator >= 0) {
+        const block = buffer.slice(0, separator)
+        const separatorLength = buffer.startsWith('\r\n\r\n', separator) ? 4 : 2
+        buffer = buffer.slice(separator + separatorLength)
+        if (handleBlock(block)) return
+        separator = buffer.search(/\r?\n\r?\n/)
       }
     }
+    buffer += decoder.decode()
+    if (buffer.trim() && handleBlock(buffer)) return
     // 未收到 done 标记时提示异常结束，避免把中断流误判为成功。
     throw new Error('流式连接已结束，但未收到完成标记')
   } catch (e) {

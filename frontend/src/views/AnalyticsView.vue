@@ -5,10 +5,18 @@ import { NCard, NSelect, NDatePicker, NButton, NEmpty, NSpin, type SelectOption 
 import PageHeader from '@/components/PageHeader.vue'
 import { formatCompact, formatDuration } from '@/composables/useFormat'
 import * as api from '@/api/analytics'
-import type { AnalyticsDashboard, AnalyticsFilterOptions } from '@/api/analytics'
+import type {
+  AnalyticsBusyResult,
+  AnalyticsDashboard,
+  AnalyticsDashboardResponse,
+  AnalyticsFilterOptions,
+  AnalyticsPendingResult
+} from '@/api/analytics'
 
 const loading = ref(false)
+const waitingForResult = ref(false)
 const dashboard = ref<AnalyticsDashboard | null>(null)
+let loadController: AbortController | null = null
 const filterOptions = ref<AnalyticsFilterOptions | null>(null)
 
 // 筛选条件
@@ -56,9 +64,25 @@ const summary = computed(() => dashboard.value?.summary)
 const totalTokens = computed(() => summary.value?.totalTokens ?? ((summary.value?.totalInputTokens ?? 0) + (summary.value?.totalCachedTokens ?? 0) + (summary.value?.totalOutputTokens ?? 0)))
 const tokenSplit = computed(() => `${formatCompact((summary.value?.totalInputTokens ?? 0) + (summary.value?.totalCachedTokens ?? 0))} / ${formatCompact(summary.value?.totalOutputTokens ?? 0)}`)
 const filterSummary = computed(() => {
-  const parts = [rangeOptions.find((o) => o.value === rangeType.value)?.label, bucketOptions.find((o) => o.value === bucketType.value)?.label]
-  if (protocolType.value !== 'all') parts.push(String(protocolType.value))
-  if (modelName.value !== 'all') parts.push(modelName.value)
+  const applied = dashboard.value?.appliedFilter
+  const appliedRange = applied?.rangeType ?? rangeType.value
+  const appliedBucket = applied?.bucketType ?? bucketType.value
+  const appliedProtocol = applied?.protocolType ?? protocolType.value
+  const appliedModel = applied?.modelName ?? modelName.value
+  const appliedSiteId = applied?.siteId ?? siteId.value
+  const appliedAccessKeyId = applied?.accessKeyId ?? accessKeyId.value
+  const parts = [
+    rangeOptions.find((option) => option.value === appliedRange)?.label ?? appliedRange,
+    bucketOptions.find((option) => option.value === appliedBucket)?.label ?? appliedBucket
+  ]
+  if (appliedProtocol !== 'all') parts.push(appliedProtocol)
+  if (appliedModel !== 'all') parts.push(appliedModel)
+  if (appliedSiteId) {
+    parts.push(filterOptions.value?.sites.find((site) => site.siteId === appliedSiteId)?.siteName ?? appliedSiteId)
+  }
+  if (appliedAccessKeyId) {
+    parts.push(filterOptions.value?.accessKeys.find((key) => key.accessKeyId === appliedAccessKeyId)?.accessKeyLabel ?? appliedAccessKeyId)
+  }
   return parts.filter(Boolean).join(' · ')
 })
 
@@ -90,22 +114,78 @@ function buildParams(): Record<string, unknown> {
   return params
 }
 
-async function load(): Promise<void> {
-  loading.value = true
-  try {
-    // analytics 后端是异步查询队列：首次请求返回 202 {status:"pending",retryAfterMs}，需要等待后重试拿真实结果。
-    let result = await api.getAnalyticsDashboard(buildParams())
-    for (let i = 0; i < 5 && result && (result as { status?: string }).status === 'pending'; i++) {
-      const retryAfter = (result as { retryAfterMs?: number }).retryAfterMs ?? 1500
-      await new Promise((r) => setTimeout(r, retryAfter))
-      result = await api.getAnalyticsDashboard(buildParams())
+function isWaitingResult(
+  result: AnalyticsDashboardResponse
+): result is AnalyticsPendingResult | AnalyticsBusyResult {
+  return 'status' in result
+    && (result.status === 'pending' || result.status === 'busy')
+}
+
+function waitForRetry(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      signal.removeEventListener('abort', handleAbort)
+      resolve()
+    }, ms)
+    const handleAbort = () => {
+      window.clearTimeout(timer)
+      reject(new DOMException('查询已取消', 'AbortError'))
     }
+    signal.addEventListener('abort', handleAbort, { once: true })
+  })
+}
+
+async function load(maxAttempts = 5): Promise<void> {
+  loadController?.abort()
+  const controller = new AbortController()
+  loadController = controller
+  loading.value = true
+  waitingForResult.value = false
+  const params = buildParams()
+
+  try {
+    let result = await api.getAnalyticsDashboard(
+      params,
+      controller.signal
+    )
+    let attempts = 0
+    while (isWaitingResult(result) && attempts < maxAttempts) {
+      attempts += 1
+      await waitForRetry(
+        result.retryAfterMs ?? 1500,
+        controller.signal
+      )
+      result = await api.getAnalyticsDashboard(
+        params,
+        controller.signal
+      )
+    }
+
+    if (isWaitingResult(result)) {
+      waitingForResult.value = true
+      return
+    }
+
     dashboard.value = result
     await nextTick()
     renderCharts()
+  } catch (error) {
+    if (!controller.signal.aborted) throw error
   } finally {
-    loading.value = false
+    if (loadController === controller) {
+      loadController = null
+      loading.value = false
+    }
   }
+}
+
+function cancelLoad(): void {
+  loadController?.abort()
+  waitingForResult.value = false
+}
+
+function continueWaiting(): void {
+  void load(20)
 }
 
 const PRIMARY = '#3b82f6'
@@ -260,6 +340,7 @@ onMounted(async () => {
   window.addEventListener('resize', handleResize)
 })
 onUnmounted(() => {
+  loadController?.abort()
   window.removeEventListener('resize', handleResize)
   ;(Object.keys(charts.value) as ChartKey[]).forEach((k) => charts.value[k]?.dispose())
 })
@@ -275,7 +356,19 @@ watch([startTime, endTime], () => {
   <div class="page-container analytics-page">
     <PageHeader title="可视化分析" subtitle="聚合请求量、成功率、tokens 用量、耗时与路由分布，面向日常观察和排障">
       <template #actions>
-        <NButton type="primary" :loading="loading" @click="load">刷新数据</NButton>
+        <NButton
+          v-if="loading"
+          type="warning"
+          secondary
+          @click="cancelLoad"
+        >
+          取消查询
+        </NButton>
+        <template v-else-if="waitingForResult">
+          <NButton secondary @click="cancelLoad">取消等待</NButton>
+          <NButton type="primary" @click="continueWaiting">继续等待</NButton>
+        </template>
+        <NButton v-else type="primary" @click="load()">刷新数据</NButton>
       </template>
     </PageHeader>
 
@@ -333,8 +426,14 @@ watch([startTime, endTime], () => {
               <span class="form-label">结束时间</span>
               <NDatePicker v-model:value="endTime" type="datetime" placeholder="结束时间" clearable />
             </label>
-            <NButton secondary type="primary" class="analytics-apply-range" @click="load">应用时间范围</NButton>
+            <NButton secondary type="primary" class="analytics-apply-range" @click="load()">应用时间范围</NButton>
             <div class="analytics-range-tip">选择开始和结束时间后，点击“应用时间范围”确认生效。</div>
+          </div>
+          <div v-if="loading" class="analytics-query-status">
+            查询正在后台计算，可随时取消。
+          </div>
+          <div v-else-if="waitingForResult" class="analytics-query-status pending">
+            查询仍在计算中，可继续等待或取消本次等待。
           </div>
         </div>
       </section>
@@ -446,7 +545,7 @@ watch([startTime, endTime], () => {
 
 .analytics-filter-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr)) minmax(120px, 0.8fr);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 16px;
   align-items: end;
 }
@@ -467,9 +566,9 @@ watch([startTime, endTime], () => {
 
 .analytics-filter-meta {
   display: flex;
+  grid-column: 1 / span 1;
   align-items: center;
-  min-height: 34px;
-  padding-top: 25px;
+  min-height: 20px;
   color: var(--text-color-secondary);
   font-size: 13px;
   line-height: 1.5;
@@ -487,6 +586,20 @@ watch([startTime, endTime], () => {
   color: var(--text-color-secondary);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.analytics-query-status {
+  margin-top: 14px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.08);
+  color: #2563eb;
+  font-size: 13px;
+}
+
+.analytics-query-status.pending {
+  background: rgba(245, 158, 11, 0.1);
+  color: #b45309;
 }
 
 .analytics-kpi-grid {

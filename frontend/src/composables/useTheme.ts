@@ -53,7 +53,37 @@ const themeOverrides: GlobalThemeOverrides = {
   },
   Button: {
     borderRadiusMedium: '8px',
-    borderRadiusSmall: '6px'
+    borderRadiusSmall: '6px',
+    heightMedium: '36px',
+    heightSmall: '30px',
+    heightTiny: '24px',
+    fontSizeMedium: '13.5px',
+    fontSizeSmall: '13px',
+    fontSizeTiny: '12px',
+    paddingMedium: '0 16px',
+    paddingSmall: '0 12px'
+  },
+  Input: {
+    heightMedium: '36px',
+    heightSmall: '30px',
+    fontSizeMedium: '13.5px',
+    fontSizeSmall: '13px'
+  },
+  InputNumber: {
+    heightMedium: '36px',
+    heightSmall: '30px',
+    fontSizeMedium: '13.5px',
+    fontSizeSmall: '13px'
+  },
+  Select: {
+    peers: {
+      InternalSelection: {
+        heightMedium: '36px',
+        heightSmall: '30px',
+        fontSizeMedium: '13.5px',
+        fontSizeSmall: '13px'
+      }
+    }
   }
 }
 

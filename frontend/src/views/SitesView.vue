@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import {
   NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput,
   NSwitch, NPopconfirm, NSelect, NCheckbox, NProgress, useMessage, type DataTableColumns
@@ -9,6 +10,7 @@ import * as sitesApi from '@/api/sites'
 import type { ModelSelectionItem, SiteFetchResult, SiteListItem, SitePayload } from '@/api/sites'
 
 const message = useMessage()
+const route = useRoute()
 const loading = ref(false)
 const sites = ref<SiteListItem[]>([])
 const checkedRowKeys = ref<Array<string | number>>([])
@@ -52,6 +54,14 @@ function openCreate(): void {
   })
   showModal.value = true
 }
+
+watch(
+  () => route.query.action,
+  (action) => {
+    if (action === 'create') openCreate()
+  },
+  { immediate: true }
+)
 
 async function openEdit(row: SiteListItem): Promise<void> {
   editingId.value = row.id

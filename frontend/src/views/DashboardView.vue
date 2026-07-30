@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { NCard, NEmpty, NGrid, NGi, NSpin } from 'naive-ui'
+import { NCard, NEmpty, NSpin } from 'naive-ui'
 import { getDashboardStats, type DashboardStats } from '@/api/dashboard'
 
 const router = useRouter()
@@ -20,9 +20,17 @@ const statCards = computed(() => {
   ]
 })
 
-const quickActions = [
-  { label: '新增站点', icon: '＋', tone: 'primary', route: 'sites' },
-  { label: '新增模型', icon: '＋', tone: 'success', route: 'models' },
+interface QuickAction {
+  label: string
+  icon: string
+  tone: string
+  route: string
+  query?: Record<string, string>
+}
+
+const quickActions: QuickAction[] = [
+  { label: '新增站点', icon: '＋', tone: 'primary', route: 'sites', query: { action: 'create' } },
+  { label: '新增模型', icon: '＋', tone: 'success', route: 'models', query: { action: 'create' } },
   { label: '配置路由', icon: '🔀', tone: 'warning', route: 'routes' },
   { label: '查看日志', icon: '📋', tone: 'info', route: 'usage-logs' }
 ]
@@ -39,8 +47,8 @@ async function loadStats(): Promise<void> {
   }
 }
 
-function go(routeName: string): void {
-  void router.push({ name: routeName })
+function go(routeName: string, query?: Record<string, string>): void {
+  void router.push({ name: routeName, query })
 }
 
 onMounted(loadStats)
@@ -56,19 +64,17 @@ onMounted(loadStats)
 
     <NSpin :show="loading">
       <template v-if="stats">
-        <NGrid :cols="5" :x-gap="16" :y-gap="16" responsive="screen" item-responsive class="dashboard-stat-grid">
-          <NGi v-for="card in statCards" :key="card.label" span="5 s:1 m:1 l:1">
-            <button class="stat-card" type="button" @click="go(card.route)">
-              <span class="stat-card-icon" :class="card.tone">{{ card.icon }}</span>
-              <span class="stat-card-value">{{ card.value }}</span>
-              <span class="stat-card-label">{{ card.label }}</span>
-            </button>
-          </NGi>
-        </NGrid>
+        <div class="dashboard-stat-grid">
+          <button v-for="card in statCards" :key="card.label" class="stat-card" type="button" @click="go(card.route)">
+            <span class="stat-card-icon" :class="card.tone">{{ card.icon }}</span>
+            <span class="stat-card-value">{{ card.value }}</span>
+            <span class="stat-card-label">{{ card.label }}</span>
+          </button>
+        </div>
 
         <NCard class="quick-actions" title="快捷操作">
           <div class="quick-action-grid">
-            <button v-for="action in quickActions" :key="action.label" class="quick-action-link" type="button" @click="go(action.route)">
+            <button v-for="action in quickActions" :key="action.label" class="quick-action-link" type="button" @click="go(action.route, action.query)">
               <span class="quick-action-icon" :class="action.tone">{{ action.icon }}</span>
               <span>{{ action.label }}</span>
             </button>
@@ -106,7 +112,7 @@ onMounted(loadStats)
 
 .welcome-banner h1 {
   margin: 0;
-  font-size: 28px;
+  font-size: 24px;
   font-weight: 700;
   line-height: 1.25;
 }
@@ -120,6 +126,12 @@ onMounted(loadStats)
 .dashboard-stat-grid,
 .dashboard-status-grid {
   margin-bottom: 24px;
+}
+
+.dashboard-stat-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
 }
 
 .stat-card {
@@ -250,15 +262,27 @@ onMounted(loadStats)
   flex-shrink: 0;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 1199.98px) {
+  .dashboard-stat-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 991.98px) {
+  .dashboard-stat-grid,
+  .quick-action-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767.98px) {
   .welcome-banner {
     padding: 24px;
   }
+}
 
-  .welcome-banner h1 {
-    font-size: 24px;
-  }
-
+@media (max-width: 575.98px) {
+  .dashboard-stat-grid,
   .quick-action-grid {
     grid-template-columns: 1fr;
   }

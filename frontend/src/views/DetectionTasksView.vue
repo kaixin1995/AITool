@@ -109,15 +109,17 @@ onMounted(load)
           </div>
         </template>
         <div class="task-last-line">上次执行：{{ formatDateTime(task.lastExecutionStartedAt) }} <NTag v-if="task.lastExecutionStatus" size="tiny" :bordered="false">{{ task.lastExecutionStatus }}</NTag></div>
-        <div class="history-table">
-          <div class="history-head"><span>开始时间</span><span>耗时</span><span>状态</span><span>摘要</span></div>
-          <div v-for="(h, idx) in task.executionHistory" :key="idx" class="history-row">
-            <span>{{ formatDateTime(h.startedAt) }}</span>
-            <span>{{ historyDuration(h.startedAt, h.finishedAt) }}</span>
-            <NTag size="tiny" :type="historyStatusType(h.status)" :bordered="false">{{ h.status }}</NTag>
-            <span class="history-summary">{{ h.summary || '-' }}</span>
+        <div class="history-table-scroll">
+          <div class="history-table">
+            <div class="history-head"><span>开始时间</span><span>耗时</span><span>状态</span><span>摘要</span></div>
+            <div v-for="(h, idx) in task.executionHistory" :key="idx" class="history-row">
+              <span>{{ formatDateTime(h.startedAt) }}</span>
+              <span>{{ historyDuration(h.startedAt, h.finishedAt) }}</span>
+              <NTag size="tiny" :type="historyStatusType(h.status)" :bordered="false">{{ h.status }}</NTag>
+              <span class="history-summary">{{ h.summary || '-' }}</span>
+            </div>
+            <div v-if="task.executionHistory.length === 0" class="history-empty">暂无执行历史</div>
           </div>
-          <div v-if="task.executionHistory.length === 0" class="history-empty">暂无执行历史</div>
         </div>
       </NCard>
     </div>
@@ -130,12 +132,15 @@ onMounted(load)
 .create-task-card :deep(.n-card__content) { padding: 16px; }
 .task-form-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr auto; gap: 12px; align-items: end; }
 .task-card-list { display: grid; gap: 12px; }
+.task-card { min-width: 0; }
+.task-card :deep(.n-card__content) { min-width: 0; }
 .task-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .task-meta, .task-last-line, .history-summary { color: var(--text-color-secondary); font-size: 12px; }
 .task-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .task-last-line { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
-.history-table { min-width: 640px; overflow-x: auto; }
-.history-head, .history-row { display: grid; grid-template-columns: 180px 80px 90px minmax(180px, 1fr); gap: 12px; align-items: center; padding: 7px 0; font-size: 13px; }
+.history-table-scroll { width: 100%; min-width: 0; max-width: 100%; overflow-x: auto; }
+.history-table { min-width: 640px; }
+.history-head, .history-row { display: grid; grid-template-columns: 180px 80px 90px minmax(180px, 1fr); gap: 12px; align-items: center; padding: 12px 14px; font-size: 13px; }
 .history-head { color: var(--text-color-secondary); font-weight: 600; border-bottom: 1px solid var(--border-color-global); }
 .history-row { border-bottom: 1px solid rgba(148, 163, 184, 0.16); }
 .history-empty { padding: 12px 0; color: var(--text-color-secondary); font-size: 13px; }

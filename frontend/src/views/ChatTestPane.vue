@@ -757,23 +757,50 @@ onMounted(loadModels)
   }
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1199.98px) {
   .chat-admin-shell {
-    overflow-x: auto;
+    overflow: visible;
+    padding-bottom: 0;
   }
 
   .chat-admin-stage {
-    min-width: 1080px;
+    min-width: 0;
   }
 
   .chat-admin-page {
-    height: calc(100vh - 180px);
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+    min-width: 0;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .chat-admin-main {
     min-height: 620px;
-    overflow: hidden;
+    overflow: visible;
+  }
+
+  .chat-admin-side {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .chat-side-card,
+  .chat-attempts-card {
+    min-height: 280px;
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 767.98px) {
+  .chat-admin-main {
+    min-height: 560px;
+  }
+
+  .chat-admin-side {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .chat-toolbar {
     align-items: stretch;
     flex-direction: column;
