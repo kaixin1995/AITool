@@ -44,6 +44,8 @@ export interface ChatAttemptResult {
   totalDurationMs?: number
   requestBody?: string
   responseBody?: string
+  forwardingMode?: string
+  upstreamProtocolType?: string
 }
 
 export interface ChatSendResult {
@@ -164,8 +166,8 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
         }
       }
     }
-    // 流自然结束（未收到 done 事件）。
-    cb.onDone?.()
+    // 未收到 done 标记时提示异常结束，避免把中断流误判为成功。
+    throw new Error('流式连接已结束，但未收到完成标记')
   } catch (e) {
     if ((e as Error).name === 'AbortError') return
     cb.onError(e as Error)

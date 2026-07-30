@@ -113,8 +113,6 @@ const SUCCESS = '#10b981'
 const WARNING = '#f59e0b'
 const DANGER = '#ef4444'
 const CACHED = '#6366f1'
-// 饼图分隔色随明暗主题（亮色卡片白底、暗色卡片深底）
-const pieBorderColor = computed(() => (document.documentElement.getAttribute('data-theme') === 'dark' ? '#18181C' : '#FFFFFF'))
 
 function initChart(key: ChartKey): ECharts | null {
   const el = chartEls.value[key]
@@ -146,13 +144,17 @@ function renderCharts(): void {
   if (c2 && d.resultTrend) {
     c2.setOption({
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      legend: { data: ['成功', '失败'], top: 0, textStyle: { fontSize: 11 } },
-      grid: { left: 40, right: 20, top: 30, bottom: 30 },
+      legend: { data: ['成功', '失败', '成功率'], top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 40, right: 50, top: 30, bottom: 30 },
       xAxis: { type: 'category', data: d.resultTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
-      yAxis: { type: 'value', minInterval: 1, axisLabel: tokenAxisLabel },
+      yAxis: [
+        { type: 'value', minInterval: 1, axisLabel: tokenAxisLabel },
+        { type: 'value', name: '%', position: 'right', min: 0, max: 100, axisLabel: { formatter: '{value}%' } }
+      ],
       series: [
         { name: '成功', type: 'bar', stack: 'total', data: d.resultTrend.map((t) => t.successCount), itemStyle: { color: SUCCESS } },
-        { name: '失败', type: 'bar', stack: 'total', data: d.resultTrend.map((t) => t.failCount), itemStyle: { color: DANGER } }
+        { name: '失败', type: 'bar', stack: 'total', data: d.resultTrend.map((t) => t.failCount), itemStyle: { color: DANGER } },
+        { name: '成功率', type: 'line', yAxisIndex: 1, smooth: true, data: d.resultTrend.map((t) => t.successRate ?? 0), itemStyle: { color: PRIMARY } }
       ]
     }, true)
   }
@@ -209,11 +211,18 @@ function renderCharts(): void {
   const c6 = initChart('cacheRatio')
   if (c6 && d.modelCacheRatioDistribution) {
     c6.setOption({
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: (v: number | string) => `${v}%` },
-      grid: { left: 50, right: 20, top: 20, bottom: 60 },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      legend: { data: ['缓存命中率', '缓存命中 Token'], top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 50, right: 58, top: 30, bottom: 60 },
       xAxis: { type: 'category', data: d.modelCacheRatioDistribution.map((t) => t.label), axisLabel: { fontSize: 10, rotate: 30, interval: 0 } },
-      yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
-      series: [{ name: '缓存命中率', type: 'bar', data: d.modelCacheRatioDistribution.map((t) => t.cacheHitRate), itemStyle: { color: CACHED }, barMaxWidth: 32 }]
+      yAxis: [
+        { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
+        { type: 'value', position: 'right', axisLabel: tokenAxisLabel }
+      ],
+      series: [
+        { name: '缓存命中率', type: 'bar', data: d.modelCacheRatioDistribution.map((t) => t.cacheHitRate), itemStyle: { color: CACHED }, barMaxWidth: 32 },
+        { name: '缓存命中 Token', type: 'line', yAxisIndex: 1, smooth: true, data: d.modelCacheRatioDistribution.map((t) => t.cachedTokens), itemStyle: { color: SUCCESS } }
+      ]
     }, true)
   }
 
@@ -231,14 +240,13 @@ function renderCharts(): void {
 
   const c8 = initChart('modelDist')
   if (c8 && d.modelDistribution) {
+    const data = [...d.modelDistribution].sort((a, b) => (b.totalTokens ?? 0) - (a.totalTokens ?? 0)).slice(0, 10).reverse()
     c8.setOption({
-      tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-      legend: { type: 'scroll', orient: 'vertical', right: 0, top: 'middle', textStyle: { fontSize: 10 } },
-      series: [{
-        type: 'pie', radius: ['40%', '70%'], center: ['40%', '50%'],
-        data: d.modelDistribution.map((m) => ({ name: m.label, value: m.requestCount })),
-        label: { show: false }, itemStyle: { borderRadius: 6, borderColor: pieBorderColor.value, borderWidth: 2 }
-      }]
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      grid: { left: 10, right: 30, top: 20, bottom: 20, containLabel: true },
+      xAxis: { type: 'value', axisLabel: tokenAxisLabel },
+      yAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10 } },
+      series: [{ name: 'Token 用量', type: 'bar', data: data.map((t) => t.totalTokens ?? 0), itemStyle: { color: CACHED }, barMaxWidth: 20 }]
     }, true)
   }
 }
@@ -293,6 +301,7 @@ watch([startTime, endTime], () => {
                 v-model:value="modelName"
                 :options="[{ label: '全部模型', value: 'all' }, ...(filterOptions?.models ?? []).map((m) => ({ label: m.modelName, value: m.modelName }))]"
                 filterable
+                tag
               />
             </label>
             <label class="analytics-filter-field">

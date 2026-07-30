@@ -473,6 +473,7 @@ onUnmounted(() => {
               </div>
               <div class="detail-line">站点：{{ attempt.siteName || '-' }}</div>
               <div class="detail-line">时间：{{ formatDateTime(attempt.requestedAt) }}</div>
+              <div class="detail-line">思考等级：{{ attempt.reasoningEffort || '-' }}</div>
               <div class="detail-line">Tokens：{{ formatNumber(attempt.totalTokens) }}</div>
               <div class="detail-line">错误：{{ attempt.errorMessage || '-' }}</div>
             </NCard>

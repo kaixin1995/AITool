@@ -353,7 +353,7 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
     fixed: 'right',
     render: (row) =>
       h(NSpace, { size: 6, wrap: false, class: 'site-actions' }, () => [
-        h(NButton, { size: 'small', secondary: true, loading: catalogLoading.value, onClick: () => handleFetchModels(row) }, () => '拉取'),
+        h(NButton, { size: 'small', secondary: true, disabled: !row.isEnabled, loading: catalogLoading.value, onClick: () => handleFetchModels(row) }, () => '拉取'),
         h(NButton, { size: 'small', secondary: true, onClick: () => openEdit(row) }, () => '编辑'),
         h(NButton, { size: 'small', secondary: true, onClick: () => handleToggle(row) }, () =>
           row.isEnabled ? '禁用' : '启用'
@@ -378,20 +378,22 @@ onBeforeUnmount(handleCatalogClosed)
   <div class="page-container sites-page">
     <PageHeader title="站点管理" subtitle="管理所有代理站点及其配置">
       <template #actions>
-        <NPopconfirm v-if="checkedRowKeys.length > 0" @positive-click="handleBulkDelete">
-          <template #trigger>
-            <NButton type="error" quaternary>批量删除（{{ checkedRowKeys.length }}）</NButton>
-          </template>
-          确认批量删除选中的 {{ checkedRowKeys.length }} 个站点？关联映射和路由规则会一并清理。
-        </NPopconfirm>
-        <NButton quaternary :loading="catalogLoading" @click="handleFetchAllModels">一键拉取全部</NButton>
-        <NButton quaternary @click="handleExport">导出</NButton>
-        <NButton quaternary @click="openImport">导入</NButton>
-        <NButton type="primary" @click="openCreate">新建站点</NButton>
+        <NButton type="success" secondary :loading="catalogLoading" @click="handleFetchAllModels">一键拉取全部</NButton>
+        <NButton secondary type="success" @click="handleExport">导出</NButton>
+        <NButton secondary type="primary" @click="openImport">导入</NButton>
+        <NButton type="primary" @click="openCreate">＋ 新增站点</NButton>
       </template>
     </PageHeader>
 
     <NCard>
+      <div class="site-bulk-toolbar">
+        <NPopconfirm @positive-click="handleBulkDelete">
+          <template #trigger>
+            <NButton size="small" type="error" secondary :disabled="checkedRowKeys.length === 0">批量删除（{{ checkedRowKeys.length }}）</NButton>
+          </template>
+          确认批量删除选中的 {{ checkedRowKeys.length }} 个站点？关联映射和路由规则会一并清理。
+        </NPopconfirm>
+      </div>
       <NDataTable
         v-model:checked-row-keys="checkedRowKeys"
         :columns="columns"
@@ -431,9 +433,12 @@ onBeforeUnmount(handleCatalogClosed)
           />
         </NFormItem>
         <NFormItem label="协议支持">
-          <NSpace>
-            <NSwitch v-model:value="form.supportsOpenAi" /> OpenAI
-            <NSwitch v-model:value="form.supportsAnthropic" /> Anthropic
+          <NSpace vertical :size="6">
+            <NSpace>
+              <NSwitch v-model:value="form.supportsOpenAi" /> OpenAI
+              <NSwitch v-model:value="form.supportsAnthropic" /> Anthropic
+            </NSpace>
+            <span class="site-form-tip">如果两个都不勾选，则按仅支持 Responses 的站点处理。</span>
           </NSpace>
         </NFormItem>
         <NFormItem label="启用">
@@ -543,6 +548,17 @@ onBeforeUnmount(handleCatalogClosed)
   text-overflow: ellipsis;
   vertical-align: bottom;
   white-space: nowrap;
+}
+
+.site-bulk-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.site-form-tip {
+  color: var(--text-color-secondary);
+  font-size: 12px;
 }
 
 .site-actions {

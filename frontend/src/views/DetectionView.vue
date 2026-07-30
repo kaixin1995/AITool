@@ -10,6 +10,9 @@ const loading = ref(false)
 const groups = ref<DetectionModelGroup[]>([])
 const modelKeyword = ref('')
 const probeProgress = ref<{ taskId: string; total: number; completed: number; isCompleted: boolean } | null>(null)
+const probingMappingId = ref<string | null>(null)
+const probingModelId = ref<string | null>(null)
+const probingAll = ref(false)
 let progressTimer: number | undefined
 
 const filteredGroups = computed(() => {
@@ -32,29 +35,40 @@ async function load(): Promise<void> {
 }
 
 async function handleProbe(mappingId: string): Promise<void> {
+  probingMappingId.value = mappingId
   try {
     const result = await api.probeMapping(mappingId)
-    message.success(`探测完成：${result.status}（${result.durationMs}ms）`)
+    message.success(`检测完成：${result.status}（${result.durationMs}ms）`)
     await load()
   } catch (e) {
     message.error((e as Error).message)
+  } finally {
+    probingMappingId.value = null
   }
 }
 
 async function handleProbeModel(modelId: string): Promise<void> {
+  probingModelId.value = modelId
   try {
     const resp = await api.probeModel(modelId)
-    message.info(`已提交批量探测任务 ${resp.taskId}`)
+    message.info(`已提交批量检测任务 ${resp.taskId}`)
     startProgressPolling(resp.taskId)
-  } catch (e) { message.error((e as Error).message) }
+  } catch (e) {
+    probingModelId.value = null
+    message.error((e as Error).message)
+  }
 }
 
 async function handleProbeAll(): Promise<void> {
+  probingAll.value = true
   try {
     const resp = await api.probeAll()
-    message.info(`已提交全量探测任务 ${resp.taskId}`)
+    message.info(`已提交全量检测任务 ${resp.taskId}`)
     startProgressPolling(resp.taskId)
-  } catch (e) { message.error((e as Error).message) }
+  } catch (e) {
+    probingAll.value = false
+    message.error((e as Error).message)
+  }
 }
 
 function startProgressPolling(taskId: string): void {
@@ -68,9 +82,23 @@ async function pollProgress(): Promise<void> {
   if (!probeProgress.value) return
   const progress = await api.getProbeProgress(probeProgress.value.taskId)
   probeProgress.value = progress
+  for (const result of progress.newResults ?? []) {
+    for (const group of groups.value) {
+      const site = group.sites.find((item) => item.mappingId === result.mappingId)
+      if (site) {
+        site.lastStatus = result.status
+        site.lastCheckedAt = new Date().toISOString()
+      }
+    }
+  }
   if (progress.isCompleted) {
     if (progressTimer) window.clearInterval(progressTimer)
     progressTimer = undefined
+    probingAll.value = false
+    probingModelId.value = null
+    const success = groups.value.flatMap((g) => g.sites).filter((s) => s.lastStatus === 'success').length
+    const failed = groups.value.flatMap((g) => g.sites).filter((s) => s.lastStatus === 'fail').length
+    message.success(`检测完成：${success} 成功，${failed} 失败`)
     await load()
   }
 }
@@ -94,17 +122,17 @@ onBeforeUnmount(() => {
       <template #actions>
         <NInput v-model:value="modelKeyword" clearable size="small" placeholder="搜索模型" style="width: 180px" />
         <NTag v-if="groups.length" round :bordered="false" size="small">{{ filteredGroups.length }} / {{ groups.length }} 个模型</NTag>
-        <NButton size="small" type="primary" quaternary :disabled="groups.length === 0" @click="handleProbeAll">全部探测</NButton>
+        <NButton size="small" type="primary" quaternary :loading="probingAll" :disabled="groups.length === 0" @click="handleProbeAll">全部检测</NButton>
         <NButton size="small" @click="load">刷新</NButton>
       </template>
     </PageHeader>
     <NCard v-if="probeProgress" class="detection-progress-card" size="small">
-      <div class="progress-title">批量探测进度：{{ probeProgress.completed }} / {{ probeProgress.total }}</div>
+      <div class="progress-title">批量检测进度：{{ probeProgress.completed }} / {{ probeProgress.total }}</div>
       <NProgress type="line" :percentage="progressPercent" :show-indicator="false" />
     </NCard>
 
     <NCard class="detection-matrix-card">
-      <NEmpty v-if="!loading && filteredGroups.length === 0" description="暂无模型映射" />
+      <NEmpty v-if="!loading && filteredGroups.length === 0" description="📭 暂无模型映射" />
       <NSpace v-else vertical :size="12">
         <NCard v-for="g in filteredGroups" :key="g.modelLibraryItemId" size="small" class="model-group-card">
           <template #header>
@@ -114,12 +142,12 @@ onBeforeUnmount(() => {
                 <NTag size="tiny" :bordered="false">{{ g.modelName }}</NTag>
                 <NTag size="tiny" :bordered="false">{{ g.sites.length }} 站点</NTag>
               </div>
-              <NButton size="tiny" quaternary type="primary" @click="handleProbeModel(g.modelLibraryItemId)">探测此模型</NButton>
+              <NButton size="tiny" quaternary type="primary" :loading="probingModelId === g.modelLibraryItemId" :disabled="!!probingModelId || probingAll" @click="handleProbeModel(g.modelLibraryItemId)">{{ probingModelId === g.modelLibraryItemId ? '检测中...' : '检测该模型' }}</NButton>
             </div>
           </template>
           <div class="detection-table">
             <div class="detection-table-head">
-              <span>站点</span><span>站点模型</span><span>状态</span><span>耗时</span><span>最近检测</span><span>操作</span>
+              <span>站点</span><span>站点模型</span><span>最近状态</span><span>耗时</span><span>最近检测</span><span>操作</span>
             </div>
             <div v-for="s in g.sites" :key="s.mappingId" class="detection-row">
               <span class="site-name">{{ s.siteName }}</span>
@@ -127,7 +155,7 @@ onBeforeUnmount(() => {
               <NTag size="small" :type="statusType(s.lastStatus)" :bordered="false">{{ s.lastStatus || '未知' }}</NTag>
               <span class="muted">{{ s.lastDurationMs ? `${s.lastDurationMs}ms` : '-' }}</span>
               <span class="muted">{{ s.lastCheckedAt ? new Date(s.lastCheckedAt).toLocaleString('zh-CN') : '-' }}</span>
-              <NButton size="tiny" quaternary @click="handleProbe(s.mappingId)">探测</NButton>
+              <NButton size="tiny" quaternary :loading="probingMappingId === s.mappingId" :disabled="!!probingMappingId || probingAll || !!probingModelId" @click="handleProbe(s.mappingId)">{{ probingMappingId === s.mappingId ? '检测中...' : '检测' }}</NButton>
             </div>
           </div>
         </NCard>

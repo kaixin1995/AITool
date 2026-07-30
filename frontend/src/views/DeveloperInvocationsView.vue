@@ -138,6 +138,22 @@ function bodyText(value: unknown): string {
   return JSON.stringify(value, null, 2)
 }
 
+function headersText(headers: Record<string, string> | null | undefined): string {
+  if (!headers || Object.keys(headers).length === 0) return '无'
+  return Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join('\n')
+}
+
+function attemptStats(entry: DeveloperInvocationSummary): string {
+  const success = entry.successAttemptCount ?? 0
+  const failed = entry.failedAttemptCount ?? 0
+  const pending = entry.pendingAttemptCount ?? 0
+  return `成功 ${success} / 失败 ${failed} / 等待 ${pending}`
+}
+
+function canShowDetailBody(value: unknown): boolean {
+  return bodyText(value) !== '无'
+}
+
 function configureAutoRefresh(): void {
   if (pollTimer) {
     clearInterval(pollTimer)
@@ -335,6 +351,7 @@ onUnmounted(() => {
                     <div class="trace-meta-chip"><span class="trace-meta-label">HTTP</span><strong>{{ entry.statusCode || '-' }}</strong></div>
                     <div class="trace-meta-chip"><span class="trace-meta-label">耗时</span><strong>{{ formatDuration(entry.totalDurationMs) }}</strong></div>
                     <div class="trace-meta-chip"><span class="trace-meta-label">尝试次数</span><strong>{{ entry.attemptCount }}</strong></div>
+                    <div class="trace-meta-chip"><span class="trace-meta-label">尝试统计</span><strong>{{ attemptStats(entry) }}</strong></div>
                   </div>
                 </div>
               </button>
@@ -343,6 +360,30 @@ onUnmounted(() => {
                 <div v-if="detailLoading[entry.traceId]" class="trace-loading-text">调用详情加载中...</div>
                 <template v-else-if="details[entry.traceId]">
                   <div class="trace-chain-tip">TraceId: {{ details[entry.traceId].traceId }} · RequestId: {{ details[entry.traceId].requestId || '-' }}</div>
+                  <div class="trace-detail-grid">
+                    <div class="trace-code-panel">
+                      <div class="trace-section-title">基础信息</div>
+                      <div class="trace-basic-grid">
+                        <div><span>来源</span><strong>{{ details[entry.traceId].source || '-' }}</strong></div>
+                        <div><span>客户端 IP</span><strong>{{ details[entry.traceId].clientIp || '-' }}</strong></div>
+                        <div><span>协议</span><strong>{{ details[entry.traceId].protocolType || '-' }}</strong></div>
+                        <div><span>路径</span><strong>{{ details[entry.traceId].requestPath || '-' }}</strong></div>
+                        <div><span>模型</span><strong>{{ details[entry.traceId].requestModel || '-' }}</strong></div>
+                        <div><span>User-Agent</span><strong>{{ details[entry.traceId].userAgent || '-' }}</strong></div>
+                      </div>
+                    </div>
+                    <div class="trace-code-panel">
+                      <div class="trace-panel-header">
+                        <div class="trace-section-title">请求头</div>
+                        <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(headersText(details[entry.traceId].requestHeaders))">复制</NButton>
+                      </div>
+                      <pre class="trace-pre trace-pre-compact">{{ headersText(details[entry.traceId].requestHeaders) }}</pre>
+                    </div>
+                  </div>
+                  <div v-if="details[entry.traceId].errorMessage" class="trace-code-panel trace-code-panel-danger trace-final-error">
+                    <div class="trace-section-title trace-section-title-danger">最终错误信息</div>
+                    <pre class="trace-pre">{{ details[entry.traceId].errorMessage }}</pre>
+                  </div>
                   <div class="trace-attempt-list">
                     <article
                       v-for="(attempt, index) in details[entry.traceId].attempts"
@@ -368,6 +409,22 @@ onUnmounted(() => {
                       <div v-if="attempt.errorMessage" class="trace-code-panel trace-code-panel-danger">
                         <div class="trace-section-title trace-section-title-danger">错误信息</div>
                         <pre class="trace-pre">{{ attempt.errorMessage }}</pre>
+                      </div>
+                      <div class="trace-attempt-body-grid">
+                        <div v-if="canShowDetailBody(attempt.preparedRequestBody)" class="trace-code-panel">
+                          <div class="trace-panel-header">
+                            <div class="trace-section-title">转换后请求体（发往上游）</div>
+                            <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.preparedRequestBody))">复制</NButton>
+                          </div>
+                          <pre class="trace-pre">{{ bodyText(attempt.preparedRequestBody) }}</pre>
+                        </div>
+                        <div v-if="canShowDetailBody(attempt.responseBody)" class="trace-code-panel">
+                          <div class="trace-panel-header">
+                            <div class="trace-section-title">尝试返回体</div>
+                            <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.responseBody))">复制</NButton>
+                          </div>
+                          <pre class="trace-pre">{{ bodyText(attempt.responseBody) }}</pre>
+                        </div>
                       </div>
                     </article>
                   </div>
@@ -708,11 +765,53 @@ onUnmounted(() => {
   color: #334155;
 }
 
-.trace-error-stack {
+.trace-detail-grid,
+.trace-error-stack,
+.trace-attempt-body-grid {
   display: grid;
   gap: 12px;
   min-width: 0;
   margin-top: 12px;
+}
+
+.trace-detail-grid,
+.trace-attempt-body-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.trace-final-error {
+  margin: 12px 0;
+}
+
+.trace-basic-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.trace-basic-grid div {
+  min-width: 0;
+}
+
+.trace-basic-grid span {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--text-color-secondary);
+  font-size: 12px;
+}
+
+.trace-basic-grid strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trace-pre-compact {
+  max-height: 180px;
 }
 
 .trace-code-panel {
@@ -836,6 +935,14 @@ onUnmounted(() => {
 [data-theme='dark'] .trace-source-pill,
 [data-theme='dark'] .trace-attempt-order {
   background: rgba(255, 255, 255, 0.05);
+}
+
+@media (max-width: 900px) {
+  .trace-detail-grid,
+  .trace-attempt-body-grid,
+  .trace-basic-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 640px) {

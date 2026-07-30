@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { NCard, NButton, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/codex'
@@ -41,7 +41,15 @@ const modelModal = ref(false)
 const modelAccount = ref<CodexAccount | null>(null)
 const modelList = ref<Array<{ id: string; name: string }>>([])
 const checkedModels = ref<string[]>([])
+const modelSearch = ref('')
 const modelLoading = ref(false)
+
+const filteredModelList = computed(() => {
+  const keyword = modelSearch.value.trim().toLowerCase()
+  if (!keyword) return modelList.value
+  return modelList.value.filter((model) => `${model.id} ${model.name}`.toLowerCase().includes(keyword))
+})
+const allVisibleModelsChecked = computed(() => filteredModelList.value.length > 0 && filteredModelList.value.every((model) => checkedModels.value.includes(model.id)))
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -162,8 +170,18 @@ async function openFetchModels(acc: CodexAccount): Promise<void> {
   modelModal.value = true
   modelLoading.value = true
   try {
+    modelSearch.value = ''
     modelList.value = await api.fetchCodexModels(acc.id)
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
+}
+
+function toggleVisibleModels(checked: boolean): void {
+  const visibleIds = filteredModelList.value.map((model) => model.id)
+  if (checked) {
+    checkedModels.value = Array.from(new Set([...checkedModels.value, ...visibleIds]))
+  } else {
+    checkedModels.value = checkedModels.value.filter((id) => !visibleIds.includes(id))
+  }
 }
 async function handleImportModels(): Promise<void> {
   if (!modelAccount.value || checkedModels.value.length === 0) { message.warning('请选择要导入的模型'); return }
@@ -196,6 +214,33 @@ async function handleExportCredentials(): Promise<void> {
   } catch (e) { message.error((e as Error).message) }
 }
 
+async function copyText(text: string): Promise<void> {
+  if (!text) return
+  if (window.isSecureContext && navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text)
+      message.success('已复制到剪贴板')
+      return
+    } catch {
+      // HTTP 或权限受限时使用传统复制方式。
+    }
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  try {
+    document.execCommand('copy')
+    message.success('已复制到剪贴板')
+  } catch {
+    message.error('复制失败，请手动复制')
+  } finally {
+    document.body.removeChild(textarea)
+  }
+}
+
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '从未'
   return new Date(value).toLocaleString('zh-CN')
@@ -208,11 +253,11 @@ function formatQuotaPercent(value: number | null | undefined): string {
 
 function accountQuotaPercent(acc: CodexAccount): number | null {
   if (acc.windows && acc.windows.length > 0) {
-    return Math.max(...acc.windows.map((w) => Number(w.usedPercent || 0)))
+    return Math.min(...acc.windows.map((w) => Math.max(0, 100 - Number(w.usedPercent || 0))))
   }
   const percents = [acc.fiveHourUsedPercent, acc.weeklyUsedPercent]
     .filter((value): value is number => value != null && Number.isFinite(Number(value)))
-  return percents.length ? Math.max(...percents) : null
+  return percents.length ? Math.min(...percents.map((value) => Math.max(0, 100 - value))) : null
 }
 
 function accountStatusLabel(acc: CodexAccount): string {
@@ -228,8 +273,8 @@ function accountStatusType(acc: CodexAccount): 'success' | 'warning' | 'default'
 // 额度进度条颜色
 function quotaColor(percent: number | null | undefined): 'success' | 'warning' | 'error' {
   if (percent == null) return 'success'
-  if (percent >= 95) return 'error'
-  if (percent >= 80) return 'warning'
+  if (percent <= 5) return 'error'
+  if (percent <= 20) return 'warning'
   return 'success'
 }
 
@@ -291,7 +336,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
             <div class="account-kpi-row">
               <div class="account-kpi">
-                <span class="account-kpi-label">最高额度</span>
+                <span class="account-kpi-label">剩余额度</span>
                 <strong :class="['account-kpi-value', quotaColor(accountQuotaPercent(acc))]">{{ formatQuotaPercent(accountQuotaPercent(acc)) }}</strong>
               </div>
               <div class="account-kpi">
@@ -310,13 +355,13 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               <div v-for="w in acc.windows" :key="w.id" class="codex-window">
                 <div class="codex-window-label">{{ w.label }}</div>
                 <NProgress
-                  :percentage="Math.round(w.usedPercent)"
-                  :status="quotaColor(w.usedPercent)"
+                  :percentage="Math.max(0, 100 - Math.round(w.usedPercent))"
+                  :status="quotaColor(100 - w.usedPercent)"
                   :show-indicator="false"
                   :height="6"
                   :border-radius="3"
                 />
-                <span class="codex-window-percent">{{ Math.round(w.usedPercent) }}%</span>
+                <span class="codex-window-percent">剩余 {{ Math.max(0, 100 - Math.round(w.usedPercent)) }}%</span>
                 <div v-if="w.resetLabel" class="codex-window-reset">重置于 {{ w.resetLabel }}</div>
               </div>
             </div>
@@ -344,7 +389,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       <div style="margin-bottom: 12px">
         <p style="margin: 0 0 8px; font-weight: 600">第 1 步：打开授权链接</p>
         <NInput :value="oauthUrl" readonly type="textarea" :autosize="{ minRows: 2 }" />
-        <NButton size="small" style="margin-top: 8px" tag="a" :href="oauthUrl" target="_blank">在新标签打开</NButton>
+        <NSpace style="margin-top: 8px">
+          <NButton size="small" secondary @click="copyText(oauthUrl)">复制授权链接</NButton>
+          <NButton size="small" tag="a" :href="oauthUrl" target="_blank">在新标签打开</NButton>
+        </NSpace>
       </div>
       <div>
         <p style="margin: 0 0 8px; font-weight: 600">第 2 步：完成授权后，粘贴回调后的完整 URL</p>
@@ -420,16 +468,22 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     <NModal v-model:show="modelModal" :title="`拉取模型 - ${modelAccount?.displayName ?? ''}`" preset="card" style="width: 560px; max-width: 92vw">
       <NSpin :show="modelLoading">
         <NEmpty v-if="!modelLoading && modelList.length === 0" description="该账号无可用模型" size="small" />
-        <NSpace v-else vertical :size="6">
-          <NCheckbox
-            v-for="m in modelList"
-            :key="m.id"
-            :checked="checkedModels.includes(m.id)"
-            @update:checked="(v: boolean) => v ? checkedModels.push(m.id) : (checkedModels = checkedModels.filter(x => x !== m.id))"
-          >
-            {{ m.name }}
-          </NCheckbox>
-        </NSpace>
+        <template v-else>
+          <div class="codex-model-toolbar">
+            <NInput v-model:value="modelSearch" size="small" clearable placeholder="搜索模型" />
+            <NCheckbox :checked="allVisibleModelsChecked" @update:checked="toggleVisibleModels">全选当前结果</NCheckbox>
+          </div>
+          <NSpace vertical :size="6" class="codex-model-list">
+            <NCheckbox
+              v-for="m in filteredModelList"
+              :key="m.id"
+              :checked="checkedModels.includes(m.id)"
+              @update:checked="(v: boolean) => v ? checkedModels.push(m.id) : (checkedModels = checkedModels.filter(x => x !== m.id))"
+            >
+              {{ m.name }}
+            </NCheckbox>
+          </NSpace>
+        </template>
       </NSpin>
       <template #footer>
         <NSpace justify="end">
@@ -444,6 +498,22 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 </template>
 
 <style scoped>
+.codex-model-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.codex-model-toolbar :deep(.n-input) {
+  flex: 1;
+}
+
+.codex-model-list {
+  max-height: 420px;
+  overflow: auto;
+}
+
 .codex-stack {
   display: flex;
   flex-direction: column;

@@ -61,6 +61,15 @@ export async function toggleModel(id: string): Promise<{ isEnabled: boolean }> {
 export async function deleteModel(id: string): Promise<void> {
   await httpDelete(`/api/admin/models/${id}`)
 }
+export async function clearAllModels(): Promise<{ deletedModels: number; deletedMappings: number; deletedMonitors: number }> {
+  return httpPost<{ deletedModels: number; deletedMappings: number; deletedMonitors: number }>('/api/admin/models/clear-all')
+}
+export async function getVendorCatalog(): Promise<ModelVendorCatalog> {
+  return httpGet<ModelVendorCatalog>('/api/admin/models/vendor-catalog')
+}
+export async function saveVendorCatalog(payload: ModelVendorCatalog): Promise<void> {
+  await httpPut('/api/admin/models/vendor-catalog', payload)
+}
 
 // 模型详情 + 映射管理（原 Models/Edit 功能）
 export interface ModelSiteMapping {

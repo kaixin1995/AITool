@@ -2,7 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import {
   NCard, NButton, NSpace, NTag, NModal, NForm, NFormItem, NInput, NInputNumber,
-  NSwitch, NSelect, NPopconfirm, NEmpty, NDrawer, NDrawerContent, NSpin, useMessage
+  NSwitch, NSelect, NPopconfirm, NEmpty, NDrawer, NDrawerContent, NSpin, NTabs, NTabPane, useMessage
 } from 'naive-ui'
 import * as modelsApi from '@/api/models'
 import * as compatApi from '@/api/compatibility'
@@ -14,6 +14,11 @@ const loading = ref(false)
 const vendorGroups = ref<modelsApi.ModelVendorGroup[]>([])
 const profileOptions = ref<{ label: string; value: string }[]>([])
 const modelSearch = ref('')
+const activeTab = ref('gallery')
+const vendorRuleSearch = ref('')
+const vendorCatalog = ref<modelsApi.ModelVendorCatalog>({ vendors: [], rules: [] })
+const vendorCatalogJson = ref('')
+const savingVendorCatalog = ref(false)
 
 const showModal = ref(false)
 const editingId = ref<string | null>(null)
@@ -50,12 +55,22 @@ const filteredVendorGroups = computed(() => {
     .filter((group) => group.models.length > 0)
 })
 const visibleModelCount = computed(() => filteredVendorGroups.value.reduce((sum, group) => sum + group.models.length, 0))
+const filteredVendorCatalog = computed(() => {
+  const keyword = vendorRuleSearch.value.trim().toLowerCase()
+  if (!keyword) return vendorCatalog.value
+  return {
+    vendors: vendorCatalog.value.vendors.filter((vendor) => vendor.vendorName.toLowerCase().includes(keyword)),
+    rules: vendorCatalog.value.rules.filter((rule) => `${rule.vendorName} ${rule.matchType} ${rule.pattern}`.toLowerCase().includes(keyword))
+  }
+})
 
 async function loadModels(): Promise<void> {
   loading.value = true
   try {
-    const [resp, profiles] = await Promise.all([modelsApi.listModels(), compatApi.listProfiles()])
+    const [resp, profiles, catalog] = await Promise.all([modelsApi.listModels(), compatApi.listProfiles(), modelsApi.getVendorCatalog()])
     vendorGroups.value = resp.vendorGroups
+    vendorCatalog.value = catalog
+    vendorCatalogJson.value = JSON.stringify(catalog, null, 2)
     profileOptions.value = [
       { label: '无', value: '' },
       ...profiles.map((p) => ({ label: p.name, value: p.id }))
@@ -118,6 +133,34 @@ async function handleDelete(model: ModelListItem): Promise<void> {
   await loadModels()
 }
 
+async function handleClearAllModels(): Promise<void> {
+  const result = await modelsApi.clearAllModels()
+  message.success(`已清空 ${result.deletedModels} 个模型、${result.deletedMappings} 条映射`)
+  await loadModels()
+}
+
+function restoreVendorCatalogJson(): void {
+  vendorCatalogJson.value = JSON.stringify(vendorCatalog.value, null, 2)
+}
+
+async function handleSaveVendorCatalog(): Promise<void> {
+  let nextCatalog: modelsApi.ModelVendorCatalog
+  try {
+    nextCatalog = JSON.parse(vendorCatalogJson.value)
+  } catch (e) {
+    message.error(`厂商规则 JSON 格式无效：${(e as Error).message}`)
+    return
+  }
+  savingVendorCatalog.value = true
+  try {
+    await modelsApi.saveVendorCatalog(nextCatalog)
+    message.success('厂商规则已保存')
+    await loadModels()
+  } finally {
+    savingVendorCatalog.value = false
+  }
+}
+
 async function openMappingDrawer(model: ModelListItem): Promise<void> {
   mappingModel.value = model
   mappingDrawer.value = true
@@ -170,26 +213,32 @@ onMounted(loadModels)
     <PageHeader title="模型库管理" subtitle="支持按厂商分组浏览模型，并维护模型与厂商的匹配规则">
       <template #actions>
         <NTag v-if="allModels.length" round :bordered="false" size="small">共 {{ allModels.length }} 个</NTag>
+        <NPopconfirm @positive-click="handleClearAllModels">
+          <template #trigger><NButton secondary type="error">清空模型</NButton></template>
+          确认清空全部模型、映射和健康监控？
+        </NPopconfirm>
         <NButton type="primary" @click="openCreate">＋ 新增模型</NButton>
       </template>
     </PageHeader>
 
-    <NCard class="models-tab-card" :content-style="{ padding: '16px' }">
-      <div class="model-toolbar">
-        <div class="model-search-box">
-          <NInput v-model:value="modelSearch" placeholder="搜索模型名称或显示名" clearable />
-        </div>
-        <div class="model-toolbar-summary">
-          共 <strong>{{ visibleModelCount }}</strong> / <span>{{ allModels.length }}</span> 个模型
-        </div>
-      </div>
+    <NCard class="models-tab-card" :content-style="{ padding: '0' }">
+      <NTabs v-model:value="activeTab" type="line" class="models-tabs" pane-class="models-tab-pane">
+        <NTabPane name="gallery" tab="模型分组">
+          <div class="model-toolbar">
+            <div class="model-search-box">
+              <NInput v-model:value="modelSearch" placeholder="搜索模型名称或显示名" clearable />
+            </div>
+            <div class="model-toolbar-summary">
+              共 <strong>{{ visibleModelCount }}</strong> / <span>{{ allModels.length }}</span> 个模型
+            </div>
+          </div>
 
-      <NEmpty v-if="!loading && vendorGroups.length === 0" description="暂无模型，点击上方按钮新增" />
-      <div v-else-if="filteredVendorGroups.length === 0" class="table-empty model-empty-state">
-        <div class="table-empty-text">没有匹配的模型</div>
-      </div>
+        <NEmpty v-if="!loading && vendorGroups.length === 0" description="暂无模型，点击上方按钮新增" />
+        <div v-else-if="filteredVendorGroups.length === 0" class="table-empty model-empty-state">
+          <div class="table-empty-text">没有匹配的模型</div>
+        </div>
 
-      <div v-else class="vendor-groups">
+        <div v-else class="vendor-groups">
         <section v-for="group in filteredVendorGroups" :key="group.vendorName" class="vendor-group">
           <div class="vendor-group-header" :style="{ background: group.headerBackground || undefined }">
             <div class="vendor-group-title-wrap">
@@ -240,6 +289,40 @@ onMounted(loadModels)
           </div>
         </section>
       </div>
+        </NTabPane>
+        <NTabPane name="rules" tab="厂商规则">
+          <div class="vendor-editor-toolbar">
+            <div class="vendor-editor-help">
+              默认展示厂商定义和模型规则摘要；可直接编辑 JSON，支持 exact / wildcard / regex 匹配。
+            </div>
+            <div class="vendor-editor-actions">
+              <NInput v-model:value="vendorRuleSearch" size="small" clearable placeholder="搜索厂商名或规则，如 Gemini / qwen*" />
+              <NButton size="small" secondary @click="restoreVendorCatalogJson">恢复当前文件内容</NButton>
+              <NButton size="small" type="primary" :loading="savingVendorCatalog" @click="handleSaveVendorCatalog">保存厂商规则</NButton>
+            </div>
+          </div>
+          <div class="vendor-rule-summary-grid">
+            <section class="vendor-rule-summary-card">
+              <h4>厂商定义</h4>
+              <div v-if="filteredVendorCatalog.vendors.length === 0" class="vendor-rule-empty">没有匹配的厂商</div>
+              <div v-for="vendor in filteredVendorCatalog.vendors" :key="vendor.vendorName" class="vendor-rule-line">
+                <strong>{{ vendor.vendorName }}</strong>
+                <span>排序 {{ vendor.sortOrder }}</span>
+              </div>
+            </section>
+            <section class="vendor-rule-summary-card">
+              <h4>匹配规则</h4>
+              <div v-if="filteredVendorCatalog.rules.length === 0" class="vendor-rule-empty">没有匹配的规则</div>
+              <div v-for="(rule, index) in filteredVendorCatalog.rules" :key="`${rule.vendorName}-${rule.pattern}-${index}`" class="vendor-rule-line">
+                <strong>{{ rule.vendorName }}</strong>
+                <code>{{ rule.matchType }}: {{ rule.pattern }}</code>
+                <span>优先级 {{ rule.priority }}</span>
+              </div>
+            </section>
+          </div>
+          <NInput v-model:value="vendorCatalogJson" type="textarea" class="vendor-catalog-json" :autosize="{ minRows: 16, maxRows: 28 }" />
+        </NTabPane>
+      </NTabs>
     </NCard>
 
     <NModal
@@ -335,6 +418,14 @@ onMounted(loadModels)
 
 .models-tab-card :deep(.n-card__content) {
   min-width: 0;
+}
+
+.models-tabs :deep(.n-tabs-nav) {
+  padding: 0 12px;
+}
+
+.models-tab-pane {
+  padding: 16px;
 }
 
 .model-toolbar {
@@ -500,6 +591,95 @@ onMounted(loadModels)
   border: 1px dashed var(--border-color-global);
   border-radius: 16px;
   background: var(--bg-card);
+}
+
+.vendor-editor-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+
+.vendor-editor-help {
+  max-width: 520px;
+  color: var(--text-color-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.vendor-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.vendor-editor-actions :deep(.n-input) {
+  width: 260px;
+}
+
+.vendor-rule-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.vendor-rule-summary-card {
+  min-width: 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+
+.vendor-rule-summary-card h4 {
+  margin: 0 0 12px;
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.vendor-rule-line {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.8fr) minmax(0, 1.5fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-top: 1px solid rgba(148, 163, 184, 0.18);
+  color: var(--text-color-secondary);
+  font-size: 13px;
+}
+
+.vendor-rule-line:first-of-type {
+  border-top: 0;
+}
+
+.vendor-rule-line strong,
+.vendor-rule-line code {
+  overflow: hidden;
+  color: var(--text-primary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.vendor-rule-empty {
+  padding: 18px;
+  color: var(--text-color-secondary);
+  text-align: center;
+}
+
+.vendor-catalog-json :deep(textarea) {
+  font-family: Consolas, Monaco, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .table-empty-text {

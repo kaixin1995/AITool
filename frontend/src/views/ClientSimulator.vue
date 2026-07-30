@@ -15,7 +15,7 @@ interface SimulatorTab {
 const message = useMessage()
 const baseUrl = ref('')
 const accessKey = ref('')
-const models = ref<Array<{ modelName: string; canUseOpenAi: boolean; canUseAnthropic: boolean }>>([])
+const models = ref<Array<{ modelName: string; routeCount?: number; canUseOpenAi: boolean; canUseAnthropic: boolean; supportsOpenAi?: boolean; supportsAnthropic?: boolean; supportsResponses?: boolean }>>([])
 const selectedModel = ref<string | null>(null)
 const inputText = ref('你好，请简单介绍一下你自己。')
 const activeTab = ref('models')
@@ -30,8 +30,12 @@ const supportHint = computed(() => {
   const model = models.value.find((m) => m.modelName === selectedModel.value)
   if (!model) return '请选择支持当前协议的模型。'
   const parts = []
+  if (model.supportsOpenAi) parts.push('OpenAI 原生')
+  if (model.supportsAnthropic) parts.push('Anthropic 原生')
+  if (model.supportsResponses) parts.push('Responses 原生')
   if (model.canUseOpenAi) parts.push('OpenAI 兼容')
   if (model.canUseAnthropic) parts.push('Anthropic 兼容')
+  if (model.routeCount !== undefined) parts.push(`路由 ${model.routeCount}`)
   return parts.length ? `当前模型支持：${parts.join(' / ')}` : '当前模型暂无可用协议。'
 })
 
@@ -58,10 +62,62 @@ function endpointUrl(tab: SimulatorTab): string {
   return `${normalizedBaseUrl.value}${tab.endpoint}`
 }
 
+function requestHeaders(tab: SimulatorTab): Record<string, string> {
+  if (tab.key === 'anthropic' || tab.key === 'countTokens') {
+    return {
+      'x-api-key': accessKey.value,
+      'anthropic-version': '2023-06-01',
+      ...(tab.method === 'POST' ? { 'Content-Type': 'application/json' } : {})
+    }
+  }
+  return {
+    Authorization: `Bearer ${accessKey.value}`,
+    ...(tab.method === 'POST' ? { 'Content-Type': 'application/json' } : {})
+  }
+}
+
 function requestExample(tab: SimulatorTab): string {
-  const headers: Record<string, string> = { Authorization: 'Bearer ***' }
-  if (tab.method === 'POST') headers['Content-Type'] = 'application/json'
+  const headers = requestHeaders(tab)
+  if (headers.Authorization) headers.Authorization = 'Bearer ***'
+  if (headers['x-api-key']) headers['x-api-key'] = '***'
   return JSON.stringify({ method: tab.method, url: endpointUrl(tab), headers, body: tab.method === 'POST' ? tab.buildBody() : undefined }, null, 2)
+}
+
+function protocolSupported(tab: SimulatorTab): boolean {
+  const model = models.value.find((m) => m.modelName === selectedModel.value)
+  if (!model || tab.method === 'GET') return true
+  if (tab.key === 'anthropic' || tab.key === 'countTokens') return model.canUseAnthropic
+  return model.canUseOpenAi
+}
+
+function ensureProtocolModel(tab: SimulatorTab): boolean {
+  if (protocolSupported(tab)) return true
+  const fallback = models.value.find((m) => (tab.key === 'anthropic' || tab.key === 'countTokens') ? m.canUseAnthropic : m.canUseOpenAi)
+  if (fallback) {
+    selectedModel.value = fallback.modelName
+    message.info(`已自动切换到支持当前协议的模型：${fallback.modelName}`)
+    return true
+  }
+  message.warning('当前没有支持该协议的模型')
+  return false
+}
+
+async function readStreamingResponse(resp: Response, tabKey: string): Promise<void> {
+  if (!resp.body) {
+    responses.value[tabKey] = `HTTP ${resp.status}`
+    return
+  }
+  const reader = resp.body.getReader()
+  const decoder = new TextDecoder()
+  responses.value[tabKey] = ''
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    responses.value[tabKey] += decoder.decode(value, { stream: true })
+  }
+  const tail = decoder.decode()
+  if (tail) responses.value[tabKey] += tail
+  if (!responses.value[tabKey]) responses.value[tabKey] = `HTTP ${resp.status}`
 }
 
 async function copyText(text: string): Promise<void> {
@@ -94,29 +150,43 @@ async function copyText(text: string): Promise<void> {
 
 async function sendRequest(tabKey = activeTab.value): Promise<void> {
   const tab = getTab(tabKey)
-  if (!baseUrl.value || !accessKey.value || sendingTab.value) return
-  if (tab.method === 'POST' && !modelName()) {
-    message.warning('请选择模型')
+  if (sendingTab.value) return
+  if (!baseUrl.value.trim()) {
+    message.warning('请先填写代理根地址')
     return
   }
+  if (!accessKey.value.trim()) {
+    message.warning('请先填写访问密钥')
+    return
+  }
+  if (tab.method === 'POST' && !modelName()) {
+    message.warning('请先填写模型名')
+    return
+  }
+  if (tab.method === 'POST' && !inputText.value.trim()) {
+    message.warning('请输入测试消息')
+    return
+  }
+  if (!ensureProtocolModel(tab)) return
   sendingTab.value = tab.key
   responses.value[tab.key] = '请求中...'
   abortController = new AbortController()
   try {
     const resp = await fetch(endpointUrl(tab), {
       method: tab.method,
-      headers: {
-        Authorization: `Bearer ${accessKey.value}`,
-        ...(tab.method === 'POST' ? { 'Content-Type': 'application/json' } : {})
-      },
+      headers: requestHeaders(tab),
       body: tab.method === 'POST' ? JSON.stringify(tab.buildBody()) : undefined,
       signal: abortController.signal
     })
-    const text = await resp.text()
-    try {
-      responses.value[tab.key] = JSON.stringify(JSON.parse(text), null, 2)
-    } catch {
-      responses.value[tab.key] = text || `HTTP ${resp.status}`
+    if (tab.streamable && streamEnabled.value[tab.key] === true) {
+      await readStreamingResponse(resp, tab.key)
+    } else {
+      const text = await resp.text()
+      try {
+        responses.value[tab.key] = JSON.stringify(JSON.parse(text), null, 2)
+      } catch {
+        responses.value[tab.key] = text || `HTTP ${resp.status}`
+      }
     }
     if (!resp.ok) responses.value[tab.key] = `HTTP ${resp.status}\n${responses.value[tab.key]}`
   } catch (e) {

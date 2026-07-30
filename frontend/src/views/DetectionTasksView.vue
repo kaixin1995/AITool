@@ -61,14 +61,20 @@ function historyDuration(startedAt: string, finishedAt: string | null): string {
   return `${Math.round((new Date(finishedAt).getTime() - new Date(startedAt).getTime()) / 1000)}s`
 }
 
+function historyStatusType(status: string): 'success' | 'error' | 'warning' {
+  if (status === 'completed') return 'success'
+  if (status === 'failed') return 'error'
+  return 'warning'
+}
+
 onMounted(load)
 </script>
 
 <template>
   <div class="page-container detection-tasks-page">
-    <PageHeader title="检测任务" subtitle="配置定时检测任务，自动监控模型可用性" />
+    <PageHeader title="检测任务管理" subtitle="配置定时检测任务，自动监控模型可用性" />
 
-    <NCard title="新建检测任务" class="create-task-card">
+    <NCard class="create-task-card">
       <NForm label-placement="top">
         <div class="task-form-grid">
           <NFormItem label="任务名称"><NInput v-model:value="form.name" placeholder="如：全量模型半小时检测" /></NFormItem>
@@ -80,17 +86,20 @@ onMounted(load)
     </NCard>
 
     <div class="task-card-list">
-      <NEmpty v-if="!loading && tasks.length === 0" description="暂无检测任务，请先在上方创建任务" />
+      <NEmpty v-if="!loading && tasks.length === 0" description="⏰ 暂无检测任务，请在上方创建" />
       <NCard v-for="task in tasks" :key="task.id" class="task-card" size="small">
         <template #header>
           <div class="task-card-header">
             <div>
               <strong>{{ task.name }}</strong>
-              <div class="task-meta">Cron：{{ task.cronExpression }} · 模型：{{ task.modelName || '全部' }}</div>
+              <div class="task-meta">
+                <NTag size="tiny" :bordered="false">Cron：{{ task.cronExpression }}</NTag>
+                <NTag size="tiny" :bordered="false">模型：{{ task.modelName || '全部' }}</NTag>
+              </div>
             </div>
             <NSpace :wrap="false">
               <NTag size="small" :type="task.isEnabled ? 'success' : 'default'" :bordered="false">{{ task.isEnabled ? '启用' : '禁用' }}</NTag>
-              <NButton size="tiny" quaternary :loading="executing === task.id" @click="handleExecute(task)">执行</NButton>
+              <NButton size="tiny" quaternary :loading="executing === task.id" @click="handleExecute(task)">立即执行</NButton>
               <NButton size="tiny" quaternary @click="handleToggle(task)">{{ task.isEnabled ? '禁用' : '启用' }}</NButton>
               <NPopconfirm @positive-click="handleDelete(task)">
                 <template #trigger><NButton size="tiny" quaternary type="error">删除</NButton></template>
@@ -105,7 +114,7 @@ onMounted(load)
           <div v-for="(h, idx) in task.executionHistory" :key="idx" class="history-row">
             <span>{{ formatDateTime(h.startedAt) }}</span>
             <span>{{ historyDuration(h.startedAt, h.finishedAt) }}</span>
-            <NTag size="tiny" :type="h.status === 'completed' ? 'success' : 'warning'" :bordered="false">{{ h.status }}</NTag>
+            <NTag size="tiny" :type="historyStatusType(h.status)" :bordered="false">{{ h.status }}</NTag>
             <span class="history-summary">{{ h.summary || '-' }}</span>
           </div>
           <div v-if="task.executionHistory.length === 0" class="history-empty">暂无执行历史</div>
@@ -118,10 +127,12 @@ onMounted(load)
 <style scoped>
 .detection-tasks-page { min-width: 0; }
 .create-task-card { margin-bottom: 16px; }
-.task-form-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr auto; gap: 16px; align-items: end; }
+.create-task-card :deep(.n-card__content) { padding: 16px; }
+.task-form-grid { display: grid; grid-template-columns: 1.2fr 1fr 1fr auto; gap: 12px; align-items: end; }
 .task-card-list { display: grid; gap: 12px; }
 .task-card-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .task-meta, .task-last-line, .history-summary { color: var(--text-color-secondary); font-size: 12px; }
+.task-meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
 .task-last-line { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
 .history-table { min-width: 640px; overflow-x: auto; }
 .history-head, .history-row { display: grid; grid-template-columns: 180px 80px 90px minmax(180px, 1fr); gap: 12px; align-items: center; padding: 7px 0; font-size: 13px; }

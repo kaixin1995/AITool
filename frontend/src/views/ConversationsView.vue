@@ -5,12 +5,14 @@ import {
   NModal, NForm, NFormItem, useMessage, type SelectOption
 } from 'naive-ui'
 import * as api from '@/api/conversations'
+import * as routesApi from '@/api/routes'
 import type { ConversationSession, ConversationTurn } from '@/api/conversations'
 import { renderSafeMarkdown } from './conversationsMarkdown'
 
 const message = useMessage()
 const loading = ref(false)
 const sessions = ref<ConversationSession[]>([])
+const routeEntries = ref<routesApi.RouteEntry[]>([])
 const totalCount = ref(0)
 const selectedGroupKey = ref<string | null>(null)
 const selectedSessionTitle = ref('对话详情')
@@ -18,9 +20,19 @@ const turns = ref<ConversationTurn[]>([])
 const turnsLoading = ref(false)
 const truncated = ref(false)
 
+function formatDateTimeLocal(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0')
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`
+}
+
+const todayStart = new Date()
+todayStart.setHours(0, 0, 0, 0)
+const todayEnd = new Date()
+todayEnd.setHours(23, 59, 0, 0)
+
 const rangeType = ref('day')
-const startTime = ref('')
-const endTime = ref('')
+const startTime = ref(formatDateTimeLocal(todayStart))
+const endTime = ref(formatDateTimeLocal(todayEnd))
 const sourceTool = ref<string | null>(null)
 const requestModel = ref<string | null>(null)
 const roleFilter = ref('all')
@@ -39,6 +51,7 @@ const sourceOptions: SelectOption[] = [
   { label: '代理', value: 'proxy' },
   { label: '对话测试', value: 'chat' },
   { label: 'Claude Code', value: 'claude-code' },
+  { label: 'ZCode', value: 'zcode' },
   { label: 'Codex', value: 'codex' },
   { label: 'Open Code', value: 'open-code' }
 ]
@@ -54,13 +67,10 @@ const roleOptions: SelectOption[] = [
   { label: 'AI', value: 'assistant' }
 ]
 
-const requestModelOptions = computed<SelectOption[]>(() => {
-  const values = new Set(sessions.value.map((s) => s.preview).filter(Boolean))
-  return [
-    { label: '全部路由入口', value: '' },
-    ...Array.from(values).slice(0, 40).map((value) => ({ label: value, value }))
-  ]
-})
+const requestModelOptions = computed<SelectOption[]>(() => [
+  { label: '全部路由入口', value: '' },
+  ...routeEntries.value.map((entry) => ({ label: entry.entryName, value: entry.entryName }))
+])
 
 const selectedSession = computed(() => sessions.value.find((s) => s.groupKey === selectedGroupKey.value) ?? null)
 
@@ -88,6 +98,9 @@ async function loadSessions(resetPage = false): Promise<void> {
       selectedGroupKey.value = null
       selectedSessionTitle.value = '对话详情'
       turns.value = []
+    }
+    if (!selectedGroupKey.value && sessions.value.length > 0) {
+      await loadTurns(sessions.value[0].groupKey, sessions.value[0].title)
     }
   } finally { loading.value = false }
 }
@@ -147,7 +160,14 @@ function tokenText(turn: ConversationTurn): string {
   return `输入 ${turn.inputTokens}${cached} / 输出 ${turn.outputTokens}`
 }
 
-onMounted(loadSessions)
+onMounted(async () => {
+  try {
+    routeEntries.value = await routesApi.getRouteEntries()
+  } catch {
+    routeEntries.value = []
+  }
+  await loadSessions()
+})
 </script>
 
 <template>

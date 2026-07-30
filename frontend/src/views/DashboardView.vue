@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { NButton, NCard, NEmpty, NGrid, NGi, NSpin } from 'naive-ui'
+import { NCard, NEmpty, NGrid, NGi, NSpin } from 'naive-ui'
 import { getDashboardStats, type DashboardStats } from '@/api/dashboard'
 
 const router = useRouter()
@@ -19,23 +19,6 @@ const statCards = computed(() => {
     { label: '启用检测任务', value: s?.detectionTaskCount ?? 0, icon: '⏰', tone: 'purple', route: 'detection-tasks' }
   ]
 })
-
-const statusCards = computed(() => [
-  {
-    label: 'Core 连接状态',
-    value: stats.value?.coreStatusText || '加载中',
-    detail: stats.value?.coreBaseUrl || '-',
-    icon: '⚙️',
-    tone: 'info'
-  },
-  {
-    label: '最近同步状态',
-    value: stats.value?.coreSyncStatusText || '加载中',
-    detail: stats.value?.coreSyncDetailText || '-',
-    icon: '🔄',
-    tone: 'warning'
-  }
-])
 
 const quickActions = [
   { label: '新增站点', icon: '＋', tone: 'primary', route: 'sites' },
@@ -69,7 +52,6 @@ onMounted(loadStats)
     <div class="welcome-banner">
       <h1>欢迎使用 AI Tool 管理平台</h1>
       <p>统一管理站点、模型、代理路由与密钥</p>
-      <NButton size="small" tertiary @click="loadStats">刷新数据</NButton>
     </div>
 
     <NSpin :show="loading">
@@ -81,21 +63,6 @@ onMounted(loadStats)
               <span class="stat-card-value">{{ card.value }}</span>
               <span class="stat-card-label">{{ card.label }}</span>
             </button>
-          </NGi>
-        </NGrid>
-
-        <NGrid :cols="2" :x-gap="16" :y-gap="16" responsive="screen" item-responsive class="dashboard-status-grid">
-          <NGi v-for="card in statusCards" :key="card.label" span="2 m:1">
-            <NCard class="status-card">
-              <div class="status-card-content">
-                <span class="stat-card-icon" :class="card.tone">{{ card.icon }}</span>
-                <div class="status-card-main">
-                  <div class="status-card-value">{{ card.value }}</div>
-                  <div class="status-card-label">{{ card.label }}</div>
-                  <div class="status-card-detail">{{ card.detail }}</div>
-                </div>
-              </div>
-            </NCard>
           </NGi>
         </NGrid>
 

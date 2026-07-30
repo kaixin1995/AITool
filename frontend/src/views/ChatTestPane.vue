@@ -4,7 +4,7 @@ import { NCard, NSelect, NInput, NButton, NSwitch, useMessage, type SelectOption
 import * as chatApi from '@/api/chat'
 import type { ChatModelTarget, ChatAttemptResult, ChatSendResult } from '@/api/chat'
 
-interface Message { role: 'user' | 'assistant'; content: string; reasoning?: string; meta?: ChatSendResult; error?: boolean }
+interface Message { role: 'user' | 'assistant'; content: string; reasoning?: string; meta?: ChatSendResult; error?: boolean; createdAt: number; streaming?: boolean; reasoningEnabled?: boolean; durationMs?: number }
 
 const message = useMessage()
 const selectedModelId = ref<string | null>(null)
@@ -17,7 +17,7 @@ const messages = ref<Message[]>([])
 const streamingContent = ref('')
 const enableReasoning = ref(false)
 const reasoningEffort = ref('high')
-const enableStreaming = ref(true)
+const enableStreaming = ref(false)
 const reasoningOptions: SelectOption[] = [
   { label: '低', value: 'low' },
   { label: '中', value: 'medium' },
@@ -75,8 +75,9 @@ async function handleSend(): Promise<void> {
     return
   }
   input.value = ''
-  messages.value.push({ role: 'user', content: text })
-  messages.value.push({ role: 'assistant', content: '' })
+  const startedAt = Date.now()
+  messages.value.push({ role: 'user', content: text, createdAt: startedAt })
+  messages.value.push({ role: 'assistant', content: '', createdAt: startedAt, streaming: enableStreaming.value, reasoningEnabled: enableReasoning.value })
   const assistantIdx = messages.value.length - 1
   streamingContent.value = ''
   streamingReasoning.value = ''
@@ -116,6 +117,7 @@ async function handleSend(): Promise<void> {
       },
       onDone: () => {
         sending.value = false
+        messages.value[assistantIdx].durationMs = Date.now() - startedAt
         if (!streamingContent.value) {
           messages.value[assistantIdx].content = '(空回复)'
         }
@@ -134,6 +136,7 @@ async function handleSend(): Promise<void> {
       sending.value = false
       messages.value[assistantIdx].meta = result
       lastAttempts.value = result.attempts ?? []
+      messages.value[assistantIdx].durationMs = result.totalDurationMs || result.durationMs || (Date.now() - startedAt)
       if (result.success) {
         messages.value[assistantIdx].content = result.content || '(空回复)'
         if (result.reasoningContent) messages.value[assistantIdx].reasoning = result.reasoningContent
@@ -194,6 +197,20 @@ function attemptError(att: ChatAttemptResult): string {
   return att.errorMessage || ''
 }
 
+function formatTime(value: number | null | undefined): string {
+  if (!value) return '-'
+  return new Date(value).toLocaleTimeString('zh-CN', { hour12: false })
+}
+
+function messageMeta(msg: Message): string {
+  if (msg.role === 'user') return `我 · ${formatTime(msg.createdAt)}`
+  const parts = ['AI', formatTime(msg.createdAt)]
+  if (msg.durationMs) parts.push(`耗时 ${formatDuration(msg.durationMs)}`)
+  parts.push(msg.streaming ? '流式' : '非流式')
+  parts.push(msg.reasoningEnabled ? '思考开启' : '思考关闭')
+  return parts.join(' · ')
+}
+
 function toggleAttemptDetail(index: number): void {
   const next = new Set(expandedAttemptIndexes.value)
   if (next.has(index)) next.delete(index)
@@ -247,7 +264,7 @@ onMounted(loadModels)
             <div v-for="(msg, idx) in messages" :key="idx" :class="['chat-msg', msg.role]">
               <div :class="['chat-bubble', msg.role === 'user' ? 'chat-bubble-user' : msg.error ? 'chat-bubble-error' : 'chat-bubble-ai']">
                 <div class="chat-text">{{ msg.content || (sending && idx === messages.length - 1 ? '正在输入...' : '') }}</div>
-                <div class="chat-bubble-meta">{{ msg.role === 'user' ? '我' : 'AI' }}</div>
+                <div class="chat-bubble-meta">{{ messageMeta(msg) }}</div>
               </div>
             </div>
           </div>
@@ -285,14 +302,17 @@ onMounted(loadModels)
             <article v-for="(att, aIdx) in lastAttempts" :key="aIdx" class="chat-attempt-card">
               <div class="chat-attempt-head">
                 <div>
-                  <div class="chat-attempt-title">{{ att.siteName || '未知站点' }}</div>
-                  <div class="chat-attempt-meta">{{ att.attemptedModel || att.siteModelName || '未知模型' }}</div>
+                  <div class="chat-attempt-title">第 {{ att.attemptIndex ?? (aIdx + 1) }} 次尝试 · {{ att.siteName || '未知站点' }}</div>
+                  <div class="chat-attempt-meta">{{ att.attemptedModel || '未知模型' }} / {{ att.siteModelName || '-' }}</div>
                 </div>
                 <span :class="['chat-attempt-status', `chat-attempt-status-${attemptStatusClass(att)}`]">{{ attemptStatusLabel(att) }}</span>
               </div>
               <div class="chat-attempt-tokens">
                 <span class="chat-attempt-token-chip">耗时 {{ formatDuration(att.totalDurationMs) }}</span>
                 <span class="chat-attempt-token-chip">首字 {{ formatDuration(att.firstTokenLatencyMs) }}</span>
+                <span class="chat-attempt-token-chip">流式 {{ att.isStreaming ? '是' : '否' }}</span>
+                <span class="chat-attempt-token-chip">转发 {{ att.forwardingMode || '-' }}</span>
+                <span class="chat-attempt-token-chip">协议 {{ att.upstreamProtocolType || '-' }}</span>
                 <span class="chat-attempt-token-chip">输入 {{ formatNumber(att.inputTokens) }}</span>
                 <span class="chat-attempt-token-chip">缓存 {{ formatNumber(att.cachedTokens) }}</span>
                 <span class="chat-attempt-token-chip">输出 {{ formatNumber(att.outputTokens) }}</span>

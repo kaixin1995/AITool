@@ -6,7 +6,7 @@ export interface DeveloperInit {
   pendingCount: number
   defaultBaseUrl: string
   defaultAccessKey: string
-  models: Array<{ modelName: string; routeCount: number; canUseOpenAi: boolean; canUseAnthropic: boolean }>
+  models: Array<{ modelName: string; routeCount: number; canUseOpenAi: boolean; canUseAnthropic: boolean; supportsOpenAi?: boolean; supportsAnthropic?: boolean; supportsResponses?: boolean }>
   defaultOpenAiModel: string
   defaultAnthropicModel: string
 }
@@ -23,6 +23,9 @@ export interface DeveloperInvocationSummary {
   statusCode: number
   totalDurationMs: number
   attemptCount: number
+  successAttemptCount?: number
+  failedAttemptCount?: number
+  pendingAttemptCount?: number
 }
 export interface DeveloperConcurrencyItem {
   siteId: string
