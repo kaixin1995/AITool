@@ -21,6 +21,7 @@ export interface UsageLogItem {
   attemptIndex: number
   isFinalResult: boolean
   fallbackTriggered: boolean
+  errorMessage: string
   inputTokens: number
   cachedTokens: number
   outputTokens: number
@@ -30,17 +31,48 @@ export interface UsageLogItem {
   firstTokenLatencyMs: number
   streamDurationMs: number
   totalDurationMs: number
+  reasoningEffort: string
   requestedAt: string
+}
+
+export interface UsageLogSummary {
+  totalRequests: number
+  failedRequests: number
+  successRate: number
+  totalTokens: number
+  maxDurationMs: number
+}
+
+export interface UsageLogRequestDetail {
+  requestId: string
+  requestModel: string
+  routeEntry: string
+  protocolType: string
+  forwardingMode: string
+  reasoningEffort: string
+  attempts: UsageLogItem[]
 }
 
 export async function getUsageLogFilters(): Promise<UsageLogFilters> {
   return httpGet<UsageLogFilters>('/api/admin/usage-logs/filters')
 }
 
-export async function listUsageLogs(params: Record<string, unknown>): Promise<{ items: UsageLogItem[]; totalCount: number }> {
+function buildQuery(params: Record<string, unknown>): string {
   const query = new URLSearchParams()
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') query.append(k, String(v))
   }
-  return httpGet(`/api/admin/usage-logs/list?${query.toString()}`)
+  return query.toString()
+}
+
+export async function listUsageLogs(params: Record<string, unknown>): Promise<{ items: UsageLogItem[]; totalCount: number }> {
+  return httpGet(`/api/admin/usage-logs/list?${buildQuery(params)}`)
+}
+
+export async function getUsageLogSummary(params: Record<string, unknown>): Promise<UsageLogSummary> {
+  return httpGet(`/api/admin/usage-logs/summary?${buildQuery(params)}`)
+}
+
+export async function getUsageLogRequestDetail(requestId: string): Promise<UsageLogRequestDetail> {
+  return httpGet(`/api/admin/usage-logs/request-detail/${encodeURIComponent(requestId)}`)
 }

@@ -16,6 +16,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'codex', name: 'codex', component: () => import('@/views/CodexView.vue'), meta: { title: 'OAuth 管理', requiresCodex: true } },
       { path: 'models', name: 'models', component: () => import('@/views/ModelsView.vue'), meta: { title: '模型库' } },
       { path: 'routes', name: 'routes', component: () => import('@/views/RoutesView.vue'), meta: { title: '路由规则' } },
+      { path: 'route-fallback', name: 'route-fallback', component: () => import('@/views/RouteFallbackView.vue'), meta: { title: '路由回退' } },
       { path: 'compatibility', name: 'compatibility', component: () => import('@/views/CompatibilityView.vue'), meta: { title: '兼容规则集' } },
       { path: 'access-keys', name: 'access-keys', component: () => import('@/views/AccessKeysView.vue'), meta: { title: '访问密钥' } },
       { path: 'detection', name: 'detection', component: () => import('@/views/DetectionView.vue'), meta: { title: '模型检测' } },

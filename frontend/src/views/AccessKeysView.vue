@@ -47,6 +47,29 @@ async function handleCreate(): Promise<void> {
   } finally { saving.value = false }
 }
 
+async function copyText(text: string): Promise<void> {
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    message.success('已复制到剪贴板')
+  } catch {
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    try {
+      document.execCommand('copy')
+      message.success('已复制到剪贴板')
+    } catch {
+      message.error('复制失败，请手动复制')
+    } finally {
+      document.body.removeChild(textarea)
+    }
+  }
+}
+
 async function handleToggle(row: AccessKeyItem): Promise<void> {
   await api.toggleAccessKey(row.id)
   row.isEnabled = !row.isEnabled
@@ -64,6 +87,20 @@ function openEditRoutes(row: AccessKeyItem): void {
   editRoutes.value = Array.isArray(val) ? val : (typeof val === 'string' && val.trim() ? (() => { try { return JSON.parse(val) as string[] } catch { return [] } })() : [])
   editRoutesVisible.value = true
 }
+
+function selectAllRoutes(): void {
+  editRoutes.value = [...routeEntries.value]
+}
+
+function clearSelectedRoutes(): void {
+  editRoutes.value = []
+}
+
+const editRoutesLabel = computed(() => {
+  if (editRoutes.value.length === 0) return '当前: 全部'
+  if (editRoutes.value.length <= 3) return `当前: ${editRoutes.value.join(', ')}`
+  return `当前: 已选择 ${editRoutes.value.length} 个路由`
+})
 
 async function handleSaveRoutes(): Promise<void> {
   if (!editKey.value) return
@@ -114,8 +151,13 @@ onMounted(load)
 
     <NModal v-model:show="showModal" title="新建访问密钥" preset="card" style="width: 480px; max-width: 92vw" :mask-closable="false">
       <NAlert v-if="newKeyPlain" type="success" :show-icon="true" style="margin-bottom: 16px">
-        密钥已创建（仅展示一次，请立即复制）：
-        <NInput :value="newKeyPlain" readonly type="textarea" :autosize="{ minRows: 2 }" style="margin-top: 8px" />
+        <div class="created-key-alert">
+          <div class="created-key-title">密钥已创建（仅展示一次，请立即复制）：</div>
+          <NInput :value="newKeyPlain" readonly type="textarea" :autosize="{ minRows: 2 }" />
+          <NSpace justify="end">
+            <NButton size="small" type="primary" secondary @click="copyText(newKeyPlain)">复制</NButton>
+          </NSpace>
+        </div>
       </NAlert>
       <NForm v-else label-placement="top">
         <NFormItem label="密钥名称">
@@ -139,13 +181,18 @@ onMounted(load)
 
     <!-- 编辑路由权限弹窗 -->
     <NModal v-model:show="editRoutesVisible" :title="`编辑路由权限 - ${editKey?.keyName ?? ''}`" preset="card" style="width: 480px; max-width: 92vw">
+      <NTag size="small" :bordered="false" style="margin-bottom: 12px">{{ editRoutesLabel }}</NTag>
       <p style="margin: 0 0 12px; color: var(--text-color-secondary); font-size: 13px">
-        勾选该密钥允许访问的路由入口（不勾选=允许全部）。
+        勾选该密钥允许访问的路由入口。不勾选任何项 = 允许全部路由（包括后续新增的）。
       </p>
+      <NSpace size="small" style="margin-bottom: 12px">
+        <NButton size="small" secondary type="primary" @click="selectAllRoutes">全选</NButton>
+        <NButton size="small" secondary @click="clearSelectedRoutes">清空（=全部路由）</NButton>
+      </NSpace>
       <NCheckboxGroup v-model:value="editRoutes">
-        <NSpace>
+        <div class="route-checkbox-grid">
           <NCheckbox v-for="r in routeEntries" :key="r" :value="r" :label="r" />
-        </NSpace>
+        </div>
       </NCheckboxGroup>
       <NEmpty v-if="routeEntries.length === 0" description="暂无路由入口" size="small" />
       <template #footer>
@@ -157,3 +204,32 @@ onMounted(load)
     </NModal>
   </div>
 </template>
+
+<style scoped>
+.created-key-alert {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.created-key-title {
+  font-weight: 600;
+}
+
+.route-checkbox-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px 12px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding: 10px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 8px;
+}
+
+@media (max-width: 640px) {
+  .route-checkbox-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

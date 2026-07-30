@@ -37,8 +37,8 @@ export interface DeveloperConcurrencyItem {
 export async function getDeveloperInit(): Promise<DeveloperInit> {
   return httpGet<DeveloperInit>('/api/admin/developer/invocations/init')
 }
-export async function getDeveloperList(): Promise<{ totalCount: number; failedCount: number; pendingCount: number; entries: DeveloperInvocationSummary[] }> {
-  return httpGet('/api/admin/developer/invocations/list')
+export async function getDeveloperList(page = 1, pageSize = 20): Promise<{ page: number; pageSize: number; totalPages: number; totalCount: number; failedCount: number; pendingCount: number; entries: DeveloperInvocationSummary[] }> {
+  return httpGet(`/api/admin/developer/invocations/list?page=${page}&pageSize=${pageSize}`)
 }
 export async function getDeveloperDetail(traceId: string, summarize = false): Promise<unknown> {
   return httpGet(`/api/admin/developer/invocations/${traceId}?summarize=${summarize}`)

@@ -1,4 +1,4 @@
-import { httpGet, httpDelete } from './http'
+import { httpGet, httpDelete, httpPost } from './http'
 
 // 与后端 ConversationsApiController 的 sessions 端点返回对齐。
 export interface ConversationSession {
@@ -10,8 +10,10 @@ export interface ConversationSession {
   lastActivityAtText: string
   turnCount: number
   totalTokens: number
+  totalTokensText?: string
   preview: string
   title: string
+  defaultTitle?: string
   isCustomTitle: boolean
 }
 export interface ConversationSessionListResponse {
@@ -50,6 +52,14 @@ export async function deleteSession(groupKey: string): Promise<void> {
   await httpDelete(`/api/admin/conversations/sessions?groupKey=${encodeURIComponent(groupKey)}`)
 }
 
-export async function getTurns(groupKey: string): Promise<ConversationTurnListResponse> {
-  return httpGet<ConversationTurnListResponse>(`/api/admin/conversations/turns?groupKey=${encodeURIComponent(groupKey)}`)
+export async function updateSessionTitle(groupKey: string, title: string): Promise<{ title: string }> {
+  return httpPost<{ title: string }>('/api/admin/conversations/sessions/title', { groupKey, title })
+}
+
+export async function getTurns(groupKey: string, params: Record<string, unknown> = {}): Promise<ConversationTurnListResponse> {
+  const query = new URLSearchParams({ groupKey })
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== '') query.append(k, String(v))
+  }
+  return httpGet<ConversationTurnListResponse>(`/api/admin/conversations/turns?${query.toString()}`)
 }

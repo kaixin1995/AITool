@@ -4,10 +4,12 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Proxy;
+using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -81,6 +83,217 @@ public sealed class ProxyFallbackFlowTests
 
         remaining.Should().Be(0);
     }
+
+    /// <summary>
+    /// 验证删除完全不存在的入口时返回 404，而不是因查询异常返回 500。
+    /// </summary>
+    [Fact]
+    public async Task Delete_missing_entry_returns_not_found()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/route-rules/entries/delete",
+            new StringContent("{\"entryName\":\"missing-entry\"}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    /// <summary>
+    /// 验证仅遗留规则而没有入口记录时仍可删除。
+    /// </summary>
+    [Fact]
+    public async Task Delete_legacy_rules_without_entry_still_succeeds()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var entry = await db.ProxyRouteEntries.SingleAsync(x => x.EntryName == "chat-prod");
+            db.ProxyRouteEntries.Remove(entry);
+        }
+
+        var response = await client.PostAsync(
+            "/api/admin/route-rules/entries/delete",
+            new StringContent("{\"entryName\":\"chat-prod\"}", Encoding.UTF8, "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var verificationScope = factory.Services.CreateAsyncScope();
+        var verificationDb = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        (await verificationDb.ProxyRouteRules.CountAsync(x => x.ExternalModelName == "chat-prod")).Should().Be(0);
+    }
+
+    /// <summary>
+    /// 验证保存到尚不存在的入口时会创建入口记录。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_creates_missing_master_entry()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/route-rules/save",
+            new StringContent(
+                "{\"externalModelName\":\"new-entry\",\"rules\":[{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\"}]}",
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        (await db.ProxyRouteEntries.AnyAsync(x => x.EntryName == "new-entry")).Should().BeTrue();
+        (await db.ProxyRouteRules.CountAsync(x => x.ExternalModelName == "new-entry")).Should().Be(1);
+    }
+
+    /// <summary>
+    /// 验证保存请求引用不存在的站点时返回 400，且不会覆盖原有规则。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_rejects_missing_site_without_changing_existing_rules()
+    {
+        await AssertInvalidSiteDoesNotChangeExistingRulesAsync("99999999-9999-9999-9999-999999999999");
+    }
+
+    /// <summary>
+    /// 验证保存请求引用空站点标识时返回 400，且不会覆盖原有规则。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_rejects_empty_site_id_without_changing_existing_rules()
+    {
+        await AssertInvalidSiteDoesNotChangeExistingRulesAsync(Guid.Empty.ToString());
+    }
+
+    /// <summary>
+    /// 验证 A、B、A 交错候选按全局、模型组和组内实例分别编号。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_assigns_priorities_for_interleaved_model_groups()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/route-rules/save",
+            new StringContent(
+                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"model-a\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"model-a-1\"},{\"upstreamModelName\":\"model-b\",\"siteId\":\"22222222-2222-2222-2222-222222222222\",\"siteModelName\":\"model-b-1\"},{\"upstreamModelName\":\"model-a\",\"siteId\":\"44444444-4444-4444-4444-444444444444\",\"siteModelName\":\"model-a-2\"}]}",
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var rules = await db.ProxyRouteRules
+            .Where(x => x.ExternalModelName == "chat-prod")
+            .OrderBy(x => x.Priority)
+            .ToListAsync();
+
+        rules.Select(x => (
+                x.UpstreamModelName,
+                x.SiteModelName,
+                x.Priority,
+                x.ModelPriority,
+                x.InstancePriority))
+            .Should()
+            .Equal(
+                ("model-a", "model-a-1", 0, 0, 0),
+                ("model-b", "model-b-1", 1, 1, 0),
+                ("model-a", "model-a-2", 2, 0, 1));
+    }
+
+    /// <summary>
+    /// 验证合法站点包含 null 时间范围时返回 400，且不会破坏已有路由配置。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_rejects_null_time_range_without_changing_existing_state()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var before = await LoadRouteStateAsync(factory.Services, "chat-prod");
+
+        var response = await client.PostAsync(
+            "/api/admin/route-rules/save",
+            new StringContent(
+                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\",\"availabilityMode\":\"AvailableOnly\",\"timeRangesJson\":\"[null]\"}]}",
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var after = await LoadRouteStateAsync(factory.Services, "chat-prod");
+        after.Should().BeEquivalentTo(before, options => options.WithStrictOrdering());
+    }
+
+    /// <summary>
+    /// 验证无效站点请求在失败前不会破坏已有路由配置。
+    /// </summary>
+    private static async Task AssertInvalidSiteDoesNotChangeExistingRulesAsync(string siteId)
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+        var before = await LoadRouteStateAsync(factory.Services, "chat-prod");
+
+        var response = await client.PostAsync(
+            "/api/admin/route-rules/save",
+            new StringContent(
+                $"{{\"externalModelName\":\"chat-prod\",\"rules\":[{{\"upstreamModelName\":\"invalid\",\"siteId\":\"{siteId}\",\"siteModelName\":\"invalid-model\"}}]}}",
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var after = await LoadRouteStateAsync(factory.Services, "chat-prod");
+        after.Should().BeEquivalentTo(before, options => options.WithStrictOrdering());
+    }
+
+    private static async Task<RouteStateSnapshot> LoadRouteStateAsync(IServiceProvider services, string entryName)
+    {
+        await using var scope = services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var entry = await db.ProxyRouteEntries.FirstAsync(x => x.EntryName == entryName);
+        var rules = await db.ProxyRouteRules
+            .Where(x => x.ExternalModelName == entryName)
+            .OrderBy(x => x.Priority)
+            .ThenBy(x => x.Id)
+            .ToListAsync();
+
+        return new RouteStateSnapshot(
+            entry is null ? null : new RouteEntrySnapshot(entry.Id, entry.EntryName, entry.CreatedAt),
+            rules.Select(x => new RouteRuleSnapshot(
+                    x.Id,
+                    x.ExternalModelName,
+                    x.UpstreamModelName,
+                    x.SiteId,
+                    x.SiteModelName,
+                    x.Priority,
+                    x.ModelPriority,
+                    x.InstancePriority,
+                    x.IsEnabled,
+                    x.AvailabilityMode,
+                    x.TimeRangesJson))
+                .ToList());
+    }
+
+    private sealed record RouteStateSnapshot(RouteEntrySnapshot? Entry, IReadOnlyList<RouteRuleSnapshot> Rules);
+
+    private sealed record RouteEntrySnapshot(Guid Id, string EntryName, DateTimeOffset CreatedAt);
+
+    private sealed record RouteRuleSnapshot(
+        Guid Id,
+        string ExternalModelName,
+        string UpstreamModelName,
+        Guid SiteId,
+        string SiteModelName,
+        int Priority,
+        int ModelPriority,
+        int InstancePriority,
+        bool IsEnabled,
+        string AvailabilityMode,
+        string TimeRangesJson);
 
     /// <summary>
     /// 验证保存路由时支持为同一入口配置多组上游模型。
@@ -177,6 +390,71 @@ public sealed class ProxyFallbackFlowTests
     }
 
     /// <summary>
+    /// 验证仅指定时间可用模式保存后仍能从列表接口重新读回。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_persists_available_only_time_range_for_reload()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/route-rules/save",
+            new StringContent(
+                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\",\"availabilityMode\":\"AvailableOnly\",\"timeRangesJson\":\"[{\\\"start\\\":\\\"09:00\\\",\\\"end\\\":\\\"12:00\\\"}]\"}]}",
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var rule = await db.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod");
+
+        rule.AvailabilityMode.Should().Be("AvailableOnly");
+        rule.TimeRangesJson.Should().Contain("\"start\":\"09:00\"");
+        rule.TimeRangesJson.Should().Contain("\"end\":\"12:00\"");
+
+        var listResponse = await client.GetAsync("/api/admin/route-rules/list?modelName=chat-prod");
+        var listBody = await listResponse.Content.ReadAsStringAsync();
+
+        listResponse.StatusCode.Should().Be(HttpStatusCode.OK, listBody);
+        listBody.Should().Contain("\"availabilityMode\":\"AvailableOnly\"");
+        listBody.Should().Contain("\\\"start\\\":\\\"09:00\\\"");
+        listBody.Should().Contain("\\\"end\\\":\\\"12:00\\\"");
+    }
+
+    /// <summary>
+    /// 验证保存禁用的候选规则后，数据库和刷新后的列表都会保留禁用状态。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_preserves_disabled_state_for_reload()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/route-rules/save",
+            new StringContent(
+                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"gpt-5.5\",\"siteId\":\"11111111-1111-1111-1111-111111111111\",\"siteModelName\":\"gpt-5.5-a\",\"isEnabled\":false}]}",
+                Encoding.UTF8,
+                "application/json"));
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var rule = await db.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod");
+        rule.IsEnabled.Should().BeFalse();
+
+        var listResponse = await client.GetAsync("/api/admin/route-rules/list?modelName=chat-prod");
+        var listBody = await listResponse.Content.ReadAsStringAsync();
+
+        listResponse.StatusCode.Should().Be(HttpStatusCode.OK, listBody);
+        listBody.Should().Contain("\"isEnabled\":false");
+    }
+
+    /// <summary>
     /// 验证规则列表在首次读取后，再次保存路由仍会立即返回最新顺序。
     /// </summary>
     [Fact]
@@ -236,6 +514,75 @@ public sealed class ProxyFallbackFlowTests
         logs[1].AttemptedModel.Should().Be("glm-5.1");
         logs[1].Status.Should().Be("success");
         logs[1].IsFinalResult.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 验证路由保存触发延迟刷新时，旧运行时快照仍保留转发元数据。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_deferred_previous_snapshot_preserves_forwarding_metadata()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var firstSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var profileId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        await using (var setupScope = factory.Services.CreateAsyncScope())
+        {
+            var db = setupScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var firstSite = await db.Sites.SingleAsync(x => x.Id == firstSiteId);
+            firstSite.ExtraHeadersJson = "{\"X-Codex-Originator\":\"route-test\"}";
+            await db.UpdateAsync(firstSite);
+            db.CompatibilityProfiles.Add(new CompatibilityProfile
+            {
+                Id = profileId,
+                Name = "Deferred Snapshot Profile",
+                Description = "Used by deferred route snapshot metadata tests",
+                IsEnabled = true,
+                RulesJson = "[{\"op\":\"strip\",\"target\":\"reasoning_content\",\"scope\":\"all\"}]"
+            });
+            db.ModelLibraryItems.Add(new ModelLibraryItem
+            {
+                Id = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+                ModelName = "gpt-5.5",
+                DisplayName = "GPT 5.5",
+                OverrideReasoningEffort = "high",
+                CompatibilityProfileId = profileId,
+                IsEnabled = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var limiter = factory.Services.GetRequiredService<ModelConcurrencyLimiter>();
+        var cache = factory.Services.GetRequiredService<ProxyRequestMetadataCache>();
+        using var activeHandle = await limiter.AcquireAsync(
+            factory.Services,
+            firstSiteId,
+            "gpt-5.5-a",
+            ConcurrencyAcquireMode.WaitForSlot,
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+        activeHandle.Acquired.Should().BeTrue();
+
+        var saveResponse = await client.PostAsync(
+            "/api/admin/route-rules/save",
+            new StringContent(
+                "{\"externalModelName\":\"chat-prod\",\"rules\":[{\"upstreamModelName\":\"glm-5.1\",\"siteId\":\"22222222-2222-2222-2222-222222222222\",\"siteModelName\":\"glm-5.1-a\"}]}",
+                Encoding.UTF8,
+                "application/json"));
+        var saveBody = await saveResponse.Content.ReadAsStringAsync();
+
+        saveResponse.StatusCode.Should().Be(HttpStatusCode.OK, saveBody);
+        saveBody.Should().Contain("调用中的模型会在当前请求结束后生效");
+
+        var deferredTargets = await cache.GetRouteTargetsForModelAsync("OpenAI", "chat-prod", CancellationToken.None);
+        var oldTarget = deferredTargets.Should().ContainSingle(x => x.SiteModelName == "gpt-5.5-a").Subject;
+        oldTarget.ExtraHeaders.Should().ContainKey("X-Codex-Originator").WhoseValue.Should().Be("route-test");
+        oldTarget.OverrideReasoningEffort.Should().Be("high");
+        oldTarget.CompatibilityRules.Should().ContainSingle(rule =>
+            rule.Op == "strip"
+            && rule.Target == "reasoning_content"
+            && rule.Scope == "all");
     }
 
     /// <summary>

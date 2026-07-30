@@ -71,6 +71,9 @@ export async function getModelDetail(id: string): Promise<ModelDetail> {
 export async function addModelMapping(id: string, siteId: string, remoteModelName: string, isEnabled = true): Promise<void> {
   await httpPost(`/api/admin/models/${id}/mappings`, { siteId, remoteModelName, isEnabled })
 }
+export async function updateMappingConcurrency(mappingId: string, maxConcurrency: number): Promise<{ maxConcurrency: number }> {
+  return httpPut<{ maxConcurrency: number }>(`/api/admin/models/mappings/${mappingId}/concurrency`, { maxConcurrency })
+}
 export async function deleteModelMapping(id: string, mappingId: string): Promise<void> {
   await httpDelete(`/api/admin/models/${id}/mappings/${mappingId}`)
 }

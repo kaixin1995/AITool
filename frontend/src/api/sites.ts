@@ -37,6 +37,36 @@ export interface SitePayload {
   isEnabled?: boolean
 }
 
+export interface RemoteModelInfo {
+  remoteModelName: string
+  existingMappingId?: string | null
+  isEnabled: boolean
+  existingDisplayName?: string | null
+}
+
+export interface SiteFetchResult {
+  siteId: string
+  siteName: string
+  status: 'pending' | 'running' | 'success' | 'fail'
+  error?: string | null
+  models: RemoteModelInfo[]
+}
+
+export interface FetchAllProgress {
+  taskId: string
+  totalSites: number
+  completedSites: number
+  isCompleted: boolean
+  sites: SiteFetchResult[]
+}
+
+export interface ModelSelectionItem {
+  siteId: string
+  remoteModelName: string
+  displayName: string
+  selected: boolean
+}
+
 export async function listSites(): Promise<SiteListItem[]> {
   return httpGet<SiteListItem[]>('/api/admin/sites')
 }
@@ -71,4 +101,20 @@ export async function exportSites(): Promise<unknown[]> {
 
 export async function importSites(items: SitePayload[]): Promise<{ importedCount: number }> {
   return httpPost<{ importedCount: number }>('/api/admin/sites/import', items)
+}
+
+export async function fetchSiteModels(siteId: string): Promise<RemoteModelInfo[] | { success: false; message: string }> {
+  return httpGet<RemoteModelInfo[] | { success: false; message: string }>(`/api/admin/site-catalog/fetch-models/${siteId}`)
+}
+
+export async function fetchAllSiteModels(): Promise<{ taskId: string; message?: string }> {
+  return httpPost<{ taskId: string; message?: string }>('/api/admin/site-catalog/fetch-all-models')
+}
+
+export async function getFetchAllProgress(taskId: string): Promise<FetchAllProgress> {
+  return httpGet<FetchAllProgress>(`/api/admin/site-catalog/fetch-all-progress/${taskId}`)
+}
+
+export async function importSelectedModels(selections: ModelSelectionItem[]): Promise<{ importedCount: number }> {
+  return httpPost<{ importedCount: number }>('/api/admin/site-catalog/import-selected', { selections })
 }

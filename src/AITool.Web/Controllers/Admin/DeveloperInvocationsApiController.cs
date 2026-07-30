@@ -81,7 +81,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     /// 获取调用记录列表（不分页，最多 40 条由 TraceStore 上限控制）。
     /// </summary>
     [HttpGet("list")]
-    public async Task<IActionResult> GetList(CancellationToken cancellationToken)
+    public async Task<IActionResult> GetList([FromQuery] int page = 1, [FromQuery] int pageSize = 20, CancellationToken cancellationToken = default)
     {
         if (!await IsDeveloperEnabledAsync(cancellationToken))
         {
@@ -89,7 +89,10 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         }
 
         var entries = _traceStore.List();
-        var summaries = entries.Select(e => new
+        pageSize = Math.Clamp(pageSize, 1, 100);
+        var totalPages = entries.Count == 0 ? 0 : (int)Math.Ceiling(entries.Count / (double)pageSize);
+        var currentPage = totalPages == 0 ? 1 : Math.Min(Math.Max(1, page), totalPages);
+        var summaries = entries.Skip((currentPage - 1) * pageSize).Take(pageSize).Select(e => new
         {
             traceId = e.TraceId,
             createdAt = e.CreatedAt,
@@ -111,6 +114,9 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
 
         return Ok(ApiResponse.Ok(new
         {
+            page = currentPage,
+            pageSize,
+            totalPages,
             totalCount = entries.Count,
             failedCount = entries.Count(x => x.Attempts.Any(a => !IsSuccessOrPending(a.Status))),
             pendingCount = entries.Count(x => x.Attempts.Any(a => IsPending(a.Status))),

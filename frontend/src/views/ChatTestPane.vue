@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref, watch } from 'vue'
-import { NCard, NSpace, NSelect, NInput, NButton, NTag, NSwitch, NCollapse, NCollapseItem, useMessage, type SelectOption } from 'naive-ui'
+import { NCard, NSelect, NInput, NButton, NTag, NSwitch, useMessage, type SelectOption } from 'naive-ui'
 import * as chatApi from '@/api/chat'
 import type { ChatModel, ChatModelTarget } from '@/api/chat'
 
-interface Message { role: 'user' | 'assistant'; content: string; reasoning?: string; meta?: unknown }
+interface Message { role: 'user' | 'assistant'; content: string; reasoning?: string; meta?: unknown; error?: boolean }
 
 const message = useMessage()
 const models = ref<ChatModel[]>([])
@@ -12,6 +12,7 @@ const selectedModelId = ref<string | null>(null)
 // 指定具体站点+模型组合（mappingId）。空=走完整 fallback 链。
 const targets = ref<ChatModelTarget[]>([])
 const selectedMappingId = ref<string | null>(null)
+const modelSearch = ref('')
 const input = ref('')
 const sending = ref(false)
 const messages = ref<Message[]>([])
@@ -20,11 +21,11 @@ const enableReasoning = ref(false)
 const reasoningEffort = ref('high')
 const enableStreaming = ref(true)
 const reasoningOptions: SelectOption[] = [
-  { label: '低 (low)', value: 'low' },
-  { label: '中 (medium)', value: 'medium' },
-  { label: '高 (high)', value: 'high' },
-  { label: '超高 (xhigh)', value: 'xhigh' },
-  { label: '最大 (max)', value: 'max' }
+  { label: '低', value: 'low' },
+  { label: '中', value: 'medium' },
+  { label: '高', value: 'high' },
+  { label: '超高', value: 'xhigh' },
+  { label: '最大', value: 'max' }
 ]
 const streamingReasoning = ref('')
 // 最近一次的调用链路（meta 事件携带的路由尝试明细）
@@ -34,7 +35,7 @@ let abortController: AbortController | null = null
 
 async function loadModels(): Promise<void> {
   models.value = await chatApi.getChatModels()
-  if (models.value.length > 0) selectedModelId.value = models.value[0].modelId
+  if (models.value.length > 0 && !selectedModelId.value) selectedModelId.value = models.value[0].modelId
 }
 
 // 模型变化时加载该模型的可用站点+模型目标列表。
@@ -50,11 +51,20 @@ watch(selectedModelId, async (id) => {
   }
 }, { immediate: false })
 
+const modelOptions = computed<SelectOption[]>(() => {
+  const keyword = modelSearch.value.trim().toLowerCase()
+  return models.value
+    .filter((m) => !keyword || `${m.displayName} ${m.modelId}`.toLowerCase().includes(keyword))
+    .map((m) => ({ label: `${m.displayName} (${m.availableSiteCount}站点)`, value: m.modelId }))
+})
+
 // targets 是 ref，需要用 computed 保证选项随 targets 变化更新
 const targetOptionsComputed = computed<SelectOption[]>(() => [
   { label: '自动（走完整 fallback 链）', value: '' },
-  ...targets.value.map((t) => ({ label: `${t.siteName} · ${t.siteModelName}`, value: t.mappingId }))
+  ...targets.value.map((t) => ({ label: `${t.modelDisplayName} / ${t.siteName} / ${t.siteModelName}`, value: t.mappingId }))
 ])
+
+const currentReasoning = computed(() => streamingReasoning.value || [...messages.value].reverse().find((m) => m.reasoning)?.reasoning || '')
 
 async function scrollToBottom(): Promise<void> {
   await nextTick()
@@ -73,6 +83,7 @@ async function handleSend(): Promise<void> {
   lastAttempts.value = null
   sending.value = true
   abortController = new AbortController()
+  await scrollToBottom()
 
   // mappingId：空字符串表示不指定（走完整 fallback 链）
   const mappingId = selectedMappingId.value || undefined
@@ -112,6 +123,7 @@ async function handleSend(): Promise<void> {
       },
       onError: (err) => {
         sending.value = false
+        messages.value[assistantIdx].error = true
         messages.value[assistantIdx].content = `(错误：${err.message})`
         message.error(err.message)
       }
@@ -125,12 +137,16 @@ async function handleSend(): Promise<void> {
         messages.value[assistantIdx].content = result.content || '(空回复)'
         if (result.reasoningContent) messages.value[assistantIdx].reasoning = result.reasoningContent
       } else {
+        messages.value[assistantIdx].error = true
         messages.value[assistantIdx].content = `(错误：${result.error || '未知错误'})`
       }
     } catch (e) {
       sending.value = false
+      messages.value[assistantIdx].error = true
       messages.value[assistantIdx].content = `(错误：${(e as Error).message})`
       message.error((e as Error).message)
+    } finally {
+      await scrollToBottom()
     }
   }
 }
@@ -147,110 +163,525 @@ function handleClear(): void {
   lastAttempts.value = null
 }
 
+function attemptStatusClass(att: Record<string, unknown>): string {
+  const status = String(att.status ?? '').toLowerCase()
+  return status === 'success' || status === 'ok' ? 'success' : 'fail'
+}
+
+function attemptStatusLabel(att: Record<string, unknown>): string {
+  const status = String(att.status ?? '')
+  return status || '未知'
+}
+
 onMounted(loadModels)
 </script>
 
 <template>
-  <NCard style="flex: 1; display: flex; flex-direction: column" content-style="flex: 1; display: flex; flex-direction: column; padding: 0">
-    <template #header>
-      <div class="chat-header">
-        <div class="chat-header-controls">
-          <NSelect
-            v-model:value="selectedModelId"
-            :options="models.map(m => ({ label: `${m.displayName} (${m.availableSiteCount}站点)`, value: m.modelId }))"
-            placeholder="选择模型"
-            style="width: 220px"
-          />
-          <NSelect
-            v-model:value="selectedMappingId"
-            :options="targetOptionsComputed"
-            placeholder="目标站点"
-            style="width: 200px"
-          />
-          <NSelect
-            v-if="enableReasoning"
-            v-model:value="reasoningEffort"
-            :options="reasoningOptions"
-            size="small"
-            style="width: 110px"
-          />
-        </div>
-        <div class="chat-header-toggles">
-          <NSpace align="center" :size="4">
-            <NSwitch v-model:value="enableReasoning" size="small" />
-            <span style="font-size: 13px">思考</span>
-          </NSpace>
-          <NSpace align="center" :size="4">
-            <NSwitch v-model:value="enableStreaming" size="small" />
-            <span style="font-size: 13px">流式</span>
-          </NSpace>
-          <NButton size="small" quaternary @click="handleClear">清空</NButton>
-        </div>
-      </div>
-    </template>
+  <div class="chat-admin-shell">
+    <div class="chat-admin-page">
+      <div class="chat-admin-main">
+        <NCard class="chat-card" :content-style="{ padding: '0', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }">
+          <div class="chat-toolbar">
+            <label class="chat-toolbar-field chat-toolbar-field-search">
+              <span class="chat-toolbar-field-label">模型搜索</span>
+              <NInput v-model:value="modelSearch" placeholder="搜索模型" clearable />
+            </label>
+            <label class="chat-toolbar-field chat-toolbar-field-model">
+              <span class="chat-toolbar-field-label">模型</span>
+              <NSelect v-model:value="selectedModelId" :options="modelOptions" placeholder="选择模型" filterable />
+            </label>
+            <label class="chat-toolbar-field chat-toolbar-field-target">
+              <span class="chat-toolbar-field-label">模型 / 站点 / 站点模型</span>
+              <NSelect v-model:value="selectedMappingId" :options="targetOptionsComputed" placeholder="目标站点" filterable />
+            </label>
+            <div class="chat-toolbar-toggle-group">
+              <label class="chat-toolbar-switch">
+                <NSwitch v-model:value="enableStreaming" size="small" />
+                <span>启用流式</span>
+              </label>
+              <label class="chat-toolbar-switch">
+                <NSwitch v-model:value="enableReasoning" size="small" />
+                <span>开启思考</span>
+              </label>
+              <label v-if="enableReasoning" class="chat-reasoning-effort">
+                <span class="chat-reasoning-effort-label">思考等级</span>
+                <NSelect v-model:value="reasoningEffort" :options="reasoningOptions" size="small" class="chat-reasoning-effort-select" />
+              </label>
+            </div>
+            <div class="chat-toolbar-actions">
+              <NButton secondary @click="loadModels">刷新候选</NButton>
+              <NButton secondary @click="handleClear">清空</NButton>
+            </div>
+          </div>
 
-    <div ref="messagesContainer" class="chat-messages">
-      <div v-if="messages.length === 0" class="chat-empty">
-        <NTag size="large" :bordered="false">输入消息开始对话（走代理链路，含故障转移）</NTag>
+          <div ref="messagesContainer" class="chat-messages">
+            <div v-if="messages.length === 0" class="chat-empty">
+              <div class="chat-empty-icon">💬</div>
+              <div>选择站点模型后输入问题开始对话</div>
+            </div>
+            <div v-for="(msg, idx) in messages" :key="idx" :class="['chat-msg', msg.role]">
+              <div :class="['chat-bubble', msg.role === 'user' ? 'chat-bubble-user' : msg.error ? 'chat-bubble-error' : 'chat-bubble-ai']">
+                <div class="chat-text">{{ msg.content || (sending && idx === messages.length - 1 ? '正在输入...' : '') }}</div>
+                <div class="chat-bubble-meta">{{ msg.role === 'user' ? '我' : 'AI' }}</div>
+              </div>
+            </div>
+          </div>
+
+          <template #footer>
+            <div class="chat-input-area">
+              <div class="chat-input-wrapper">
+                <NInput
+                  v-model:value="input"
+                  class="chat-input"
+                  type="textarea"
+                  :autosize="{ minRows: 3, maxRows: 6 }"
+                  placeholder="输入消息...（Enter 发送，Shift+Enter 换行）"
+                  @keydown.enter.exact.prevent="handleSend"
+                />
+                <NButton v-if="!sending" class="chat-send-btn" type="primary" :disabled="!input.trim()" @click="handleSend">发送</NButton>
+                <NButton v-else class="chat-send-btn" type="error" @click="handleStop">停止</NButton>
+              </div>
+            </div>
+          </template>
+        </NCard>
       </div>
-      <div v-for="(msg, idx) in messages" :key="idx" :class="['chat-msg', msg.role]">
-        <div class="chat-bubble">
-          <div class="chat-role">{{ msg.role === 'user' ? '我' : 'AI' }}</div>
-          <div v-if="msg.reasoning" class="chat-reasoning">{{ msg.reasoning }}</div>
-          <div class="chat-text">{{ msg.content || (sending && idx === messages.length - 1 ? '正在输入...' : '') }}</div>
-        </div>
+
+      <div class="chat-admin-side">
+        <NCard class="chat-side-card" :bordered="false">
+          <template #header>思考内容</template>
+          <div v-if="!currentReasoning" class="chat-side-empty">开启思考模式并且上游返回思考内容后，这里会展示。</div>
+          <pre v-else class="chat-side-pre">{{ currentReasoning }}</pre>
+        </NCard>
+
+        <NCard class="chat-side-card chat-attempts-card" :bordered="false">
+          <template #header>调用详细过程</template>
+          <div v-if="!lastAttempts || (lastAttempts as unknown[]).length === 0" class="chat-side-empty">发送一条消息后显示本次请求的每次尝试。</div>
+          <div v-else class="chat-attempt-list">
+            <article v-for="(att, aIdx) in (lastAttempts as any[])" :key="aIdx" class="chat-attempt-card">
+              <div class="chat-attempt-head">
+                <div>
+                  <div class="chat-attempt-title">{{ att.siteName || att.site || '未知站点' }}</div>
+                  <div class="chat-attempt-meta">{{ att.modelName || att.model || att.siteModelName || '未知模型' }}</div>
+                </div>
+                <span :class="['chat-attempt-status', `chat-attempt-status-${attemptStatusClass(att)}`]">{{ attemptStatusLabel(att) }}</span>
+              </div>
+              <div class="chat-attempt-tokens">
+                <span v-if="att.durationMs" class="chat-attempt-token-chip">{{ att.durationMs }}ms</span>
+                <span v-if="att.inputTokens" class="chat-attempt-token-chip">输入 {{ att.inputTokens }}</span>
+                <span v-if="att.outputTokens" class="chat-attempt-token-chip">输出 {{ att.outputTokens }}</span>
+              </div>
+              <div v-if="att.error" class="chat-attempt-error">{{ att.error }}</div>
+            </article>
+          </div>
+        </NCard>
       </div>
     </div>
-
-    <!-- 调用链路明细（meta 事件的路由尝试） -->
-    <NCollapse v-if="lastAttempts && (lastAttempts as unknown[]).length > 0" class="attempts-panel" :default-expanded-names="[]">
-      <NCollapseItem title="调用详细过程（路由尝试链路）" name="attempts">
-        <div v-for="(att, aIdx) in (lastAttempts as any[])" :key="aIdx" class="attempt-row">
-          <NTag size="tiny" :type="att.status === 'success' ? 'success' : att.status === 'fail' ? 'error' : 'warning'" :bordered="false">
-            {{ att.status || '未知' }}
-          </NTag>
-          <span>{{ att.siteName || att.site }} · {{ att.modelName || att.model }}</span>
-          <span v-if="att.durationMs" style="font-size: 12px; color: var(--text-color-secondary)">{{ att.durationMs }}ms</span>
-          <span v-if="att.error" style="font-size: 12px; color: var(--text-color-secondary)">{{ att.error }}</span>
-        </div>
-      </NCollapseItem>
-    </NCollapse>
-
-    <div class="chat-input-area">
-      <div class="chat-input-row">
-        <NInput
-          v-model:value="input"
-          type="textarea"
-          :autosize="{ minRows: 1, maxRows: 4 }"
-          placeholder="输入消息，Enter 发送，Shift+Enter 换行"
-          style="flex: 1"
-          @keydown.enter.exact.prevent="handleSend"
-        />
-        <NButton v-if="!sending" type="primary" :disabled="!input.trim()" @click="handleSend">发送</NButton>
-        <NButton v-else type="error" @click="handleStop">停止</NButton>
-      </div>
-    </div>
-  </NCard>
+  </div>
 </template>
 
 <style scoped>
-.chat-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
-.chat-header-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.chat-header-toggles { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-.chat-messages { flex: 1; overflow-y: auto; padding: 16px 24px; }
-.chat-empty { display: flex; justify-content: center; align-items: center; height: 100%; }
-.chat-msg { display: flex; margin-bottom: 16px; }
-.chat-msg.user { justify-content: flex-end; }
-.chat-msg.assistant { justify-content: flex-start; }
-.chat-bubble { max-width: 70%; padding: 10px 14px; border-radius: 12px; }
-.chat-msg.user .chat-bubble { background: #6C9EFF; color: white; }
-.chat-msg.assistant .chat-bubble { background: var(--bg-input, #f0f0f0); }
-[data-theme='dark'] .chat-msg.assistant .chat-bubble { background: rgba(255,255,255,0.08); }
-.chat-role { font-size: 11px; opacity: 0.7; margin-bottom: 4px; }
-.chat-reasoning { font-size: 12px; opacity: 0.6; margin-bottom: 6px; padding: 4px 8px; border-left: 2px solid currentColor; white-space: pre-wrap; }
-.chat-text { white-space: pre-wrap; word-break: break-word; line-height: 1.5; }
-.chat-input-area { padding: 12px 24px; border-top: 1px solid var(--border-color-global); }
-.chat-input-row { display: flex; align-items: flex-end; gap: 8px; }
-.attempts-panel { border-top: 1px solid var(--border-color-global); max-height: 200px; overflow-y: auto; }
-.attempt-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; }
+.chat-admin-shell {
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  padding-bottom: 8px;
+}
+
+.chat-admin-page {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(300px, 1fr);
+  gap: 16px;
+  align-items: stretch;
+  width: 100%;
+  height: calc(100vh - 180px);
+  min-height: 620px;
+  overflow: hidden;
+}
+
+.chat-admin-main,
+.chat-admin-side,
+.chat-card {
+  min-height: 0;
+  min-width: 0;
+}
+
+.chat-admin-main,
+.chat-admin-side {
+  overflow: hidden;
+}
+
+.chat-admin-side {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.chat-card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chat-toolbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 18px 20px 16px;
+  border-bottom: 1px solid var(--border-color-global);
+  flex-shrink: 0;
+}
+
+.chat-toolbar-field {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-width: 190px;
+  gap: 8px;
+}
+
+.chat-toolbar-field-model {
+  min-width: 220px;
+}
+
+.chat-toolbar-field-target {
+  min-width: 280px;
+  flex: 1 1 280px;
+}
+
+.chat-toolbar-field-label {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.chat-toolbar-toggle-group,
+.chat-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  flex-wrap: nowrap;
+}
+
+.chat-toolbar-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.chat-reasoning-effort {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 10px;
+  background: var(--bg-input, #f8fafc);
+  flex: 0 0 auto;
+}
+
+.chat-reasoning-effort-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-color-secondary);
+  white-space: nowrap;
+}
+
+.chat-reasoning-effort-select {
+  width: 82px;
+}
+
+.chat-messages {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--bg-card);
+  position: relative;
+}
+
+.chat-empty {
+  position: absolute;
+  inset: 16px 0 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-color-secondary);
+  pointer-events: none;
+}
+
+.chat-empty-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.chat-msg {
+  display: flex;
+}
+
+.chat-msg.user {
+  justify-content: flex-end;
+}
+
+.chat-msg.assistant {
+  justify-content: flex-start;
+}
+
+.chat-bubble {
+  max-width: 82%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  font-size: 14px;
+  line-height: 1.7;
+  word-break: break-word;
+  white-space: pre-wrap;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
+}
+
+.chat-bubble-user {
+  background: #0d6efd;
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+
+.chat-bubble-ai {
+  background: #f8fafc;
+  color: #1f2937;
+  border: 1px solid #e5e7eb;
+  border-bottom-left-radius: 4px;
+}
+
+.chat-bubble-error {
+  background: #fff1f2;
+  color: #be123c;
+  border: 1px solid #fecdd3;
+  border-bottom-left-radius: 4px;
+}
+
+.chat-bubble-meta {
+  margin-top: 6px;
+  color: rgba(100, 116, 139, 0.9);
+  font-size: 11px;
+}
+
+.chat-bubble-user .chat-bubble-meta {
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.chat-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.chat-input-area {
+  background: var(--bg-card);
+  flex-shrink: 0;
+}
+
+.chat-input-wrapper {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.chat-input {
+  flex: 1;
+}
+
+.chat-send-btn {
+  white-space: nowrap;
+  min-width: 82px;
+}
+
+.chat-side-card {
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-color-global);
+  border-radius: 14px;
+  background: var(--bg-card);
+}
+
+.chat-attempts-card {
+  flex: 1;
+}
+
+.chat-attempts-card :deep(.n-card__content),
+.chat-side-card :deep(.n-card__content) {
+  min-height: 0;
+  overflow: auto;
+}
+
+.chat-side-empty {
+  color: var(--text-color-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.chat-side-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.65;
+  max-height: 260px;
+  overflow: auto;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.chat-attempt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-attempt-card {
+  border: 1px solid #e5e7eb;
+  border-radius: 10px;
+  padding: 12px;
+  background: #fff;
+  min-width: 0;
+}
+
+.chat-attempt-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  margin-bottom: 8px;
+}
+
+.chat-attempt-title {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-word;
+}
+
+.chat-attempt-meta {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.chat-attempt-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.chat-attempt-status-success {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.chat-attempt-status-fail {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.chat-attempt-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.chat-attempt-token-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 12px;
+}
+
+.chat-attempt-error {
+  margin-top: 8px;
+  color: #b91c1c;
+  background: #fff1f2;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+[data-theme='dark'] .chat-bubble-ai,
+[data-theme='dark'] .chat-side-pre,
+[data-theme='dark'] .chat-attempt-card {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text-primary);
+}
+
+@media (max-width: 1200px) {
+  .chat-admin-page {
+    grid-template-columns: 1fr;
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .chat-card {
+    min-height: 620px;
+  }
+
+  .chat-admin-side {
+    overflow: visible;
+  }
+}
+
+@media (max-width: 768px) {
+  .chat-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .chat-toolbar-field,
+  .chat-toolbar-field-model,
+  .chat-toolbar-field-target {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .chat-toolbar-toggle-group,
+  .chat-toolbar-actions {
+    flex-wrap: wrap;
+  }
+
+  .chat-bubble {
+    max-width: 100%;
+  }
+
+  .chat-input-wrapper {
+    flex-direction: column;
+  }
+
+  .chat-send-btn {
+    min-height: 40px;
+  }
+}
 </style>

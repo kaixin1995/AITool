@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
 import { echarts, initChart as initThemedChart, type ECharts } from '@/composables/useEcharts'
-import { NCard, NSpace, NSelect, NDatePicker, NButton, NStatistic, NEmpty, NSpin } from 'naive-ui'
+import { NCard, NSelect, NDatePicker, NButton, NEmpty, NSpin, type SelectOption } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
-import { formatCompact } from '@/composables/useFormat'
+import { formatCompact, formatDuration } from '@/composables/useFormat'
 import * as api from '@/api/analytics'
 import type { AnalyticsDashboard, AnalyticsFilterOptions } from '@/api/analytics'
 
@@ -13,6 +13,7 @@ const filterOptions = ref<AnalyticsFilterOptions | null>(null)
 
 // 筛选条件
 const rangeType = ref('week')
+const bucketType = ref('auto')
 const protocolType = ref('all')
 const modelName = ref('all')
 const siteId = ref<string | null>(null)
@@ -20,16 +21,28 @@ const accessKeyId = ref<string | null>(null)
 const startTime = ref<number | null>(null)
 const endTime = ref<number | null>(null)
 
-const rangeOptions = [
-  { label: '今天', value: 'day' }, { label: '本周', value: 'week' },
-  { label: '本月', value: 'month' }, { label: '自定义', value: 'custom' }, { label: '全部', value: 'all' }
+const rangeOptions: SelectOption[] = [
+  { label: '按天', value: 'day' },
+  { label: '按周', value: 'week' },
+  { label: '按月', value: 'month' },
+  { label: '指定时间范围', value: 'custom' }
 ]
-const protocolOptions = [
-  { label: '全部协议', value: 'all' }, { label: 'OpenAI', value: 'openai' }, { label: 'Anthropic', value: 'anthropic' }
+const bucketOptions: SelectOption[] = [
+  { label: '自动', value: 'auto' },
+  { label: '按小时', value: 'hour' },
+  { label: '按天', value: 'day' },
+  { label: '按周', value: 'week' },
+  { label: '按月', value: 'month' }
+]
+const protocolOptions: SelectOption[] = [
+  { label: '全部', value: 'all' },
+  { label: 'OpenAI', value: 'OpenAI' },
+  { label: 'Anthropic', value: 'Anthropic' },
+  { label: 'Responses', value: 'Responses' }
 ]
 
 // 8 个图表的 DOM 引用与 ECharts 实例
-type ChartKey = 'requestTrend' | 'resultTrend' | 'tokenTrend' | 'durationTrend' | 'fallbackTrend' | 'cacheRatio' | 'siteDist' | 'modelDist'
+ type ChartKey = 'requestTrend' | 'resultTrend' | 'tokenTrend' | 'durationTrend' | 'fallbackTrend' | 'cacheRatio' | 'siteDist' | 'modelDist'
 const chartEls = ref<Record<ChartKey, HTMLElement | null>>({
   requestTrend: null, resultTrend: null, tokenTrend: null, durationTrend: null,
   fallbackTrend: null, cacheRatio: null, siteDist: null, modelDist: null
@@ -37,6 +50,16 @@ const chartEls = ref<Record<ChartKey, HTMLElement | null>>({
 const charts = shallowRef<Record<ChartKey, ECharts | null>>({
   requestTrend: null, resultTrend: null, tokenTrend: null, durationTrend: null,
   fallbackTrend: null, cacheRatio: null, siteDist: null, modelDist: null
+})
+
+const summary = computed(() => dashboard.value?.summary)
+const totalTokens = computed(() => summary.value?.totalTokens ?? ((summary.value?.totalInputTokens ?? 0) + (summary.value?.totalCachedTokens ?? 0) + (summary.value?.totalOutputTokens ?? 0)))
+const tokenSplit = computed(() => `${formatCompact((summary.value?.totalInputTokens ?? 0) + (summary.value?.totalCachedTokens ?? 0))} / ${formatCompact(summary.value?.totalOutputTokens ?? 0)}`)
+const filterSummary = computed(() => {
+  const parts = [rangeOptions.find((o) => o.value === rangeType.value)?.label, bucketOptions.find((o) => o.value === bucketType.value)?.label]
+  if (protocolType.value !== 'all') parts.push(String(protocolType.value))
+  if (modelName.value !== 'all') parts.push(modelName.value)
+  return parts.filter(Boolean).join(' · ')
 })
 
 function setEl(key: ChartKey, el: HTMLElement | null) {
@@ -54,6 +77,7 @@ async function loadFilters(): Promise<void> {
 function buildParams(): Record<string, unknown> {
   const params: Record<string, unknown> = {
     rangeType: rangeType.value,
+    bucketType: bucketType.value,
     protocolType: protocolType.value,
     modelName: modelName.value
   }
@@ -69,8 +93,7 @@ function buildParams(): Record<string, unknown> {
 async function load(): Promise<void> {
   loading.value = true
   try {
-    // analytics 后端是异步查询队列：首次请求返回 202 {status:"pending",retryAfterMs}，
-    // 需要等待后重试拿真实结果。最多重试 5 次。
+    // analytics 后端是异步查询队列：首次请求返回 202 {status:"pending",retryAfterMs}，需要等待后重试拿真实结果。
     let result = await api.getAnalyticsDashboard(buildParams())
     for (let i = 0; i < 5 && result && (result as { status?: string }).status === 'pending'; i++) {
       const retryAfter = (result as { retryAfterMs?: number }).retryAfterMs ?? 1500
@@ -85,11 +108,11 @@ async function load(): Promise<void> {
   }
 }
 
-const PRIMARY = '#6C9EFF'
-const SUCCESS = '#34D399'
-const WARNING = '#FBBF24'
-const DANGER = '#F87171'
-const CACHED = '#A5B4FC'
+const PRIMARY = '#3b82f6'
+const SUCCESS = '#10b981'
+const WARNING = '#f59e0b'
+const DANGER = '#ef4444'
+const CACHED = '#6366f1'
 // 饼图分隔色随明暗主题（亮色卡片白底、暗色卡片深底）
 const pieBorderColor = computed(() => (document.documentElement.getAttribute('data-theme') === 'dark' ? '#18181C' : '#FFFFFF'))
 
@@ -105,19 +128,20 @@ function renderCharts(): void {
   const d = dashboard.value
   if (!d) return
 
-  // 1. 请求量趋势（折线）
+  const tokenAxisLabel = { formatter: (value: number) => formatCompact(value) }
+  const durationAxisLabel = { formatter: (value: number) => formatDuration(value) }
+
   const c1 = initChart('requestTrend')
   if (c1 && d.requestTrend) {
     c1.setOption({
       tooltip: { trigger: 'axis' },
       grid: { left: 40, right: 20, top: 20, bottom: 30 },
       xAxis: { type: 'category', data: d.requestTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
-      yAxis: { type: 'value', minInterval: 1 },
+      yAxis: { type: 'value', minInterval: 1, axisLabel: tokenAxisLabel },
       series: [{ name: '请求数', type: 'line', smooth: true, data: d.requestTrend.map((t) => t.requestCount), areaStyle: { opacity: 0.15 }, itemStyle: { color: PRIMARY } }]
     }, true)
   }
 
-  // 2. 结果趋势（成功/失败堆叠柱）
   const c2 = initChart('resultTrend')
   if (c2 && d.resultTrend) {
     c2.setOption({
@@ -125,7 +149,7 @@ function renderCharts(): void {
       legend: { data: ['成功', '失败'], top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 40, right: 20, top: 30, bottom: 30 },
       xAxis: { type: 'category', data: d.resultTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
-      yAxis: { type: 'value', minInterval: 1 },
+      yAxis: { type: 'value', minInterval: 1, axisLabel: tokenAxisLabel },
       series: [
         { name: '成功', type: 'bar', stack: 'total', data: d.resultTrend.map((t) => t.successCount), itemStyle: { color: SUCCESS } },
         { name: '失败', type: 'bar', stack: 'total', data: d.resultTrend.map((t) => t.failCount), itemStyle: { color: DANGER } }
@@ -133,15 +157,14 @@ function renderCharts(): void {
     }, true)
   }
 
-  // 3. Token 用量趋势（输入/缓存/输出折线）
   const c3 = initChart('tokenTrend')
   if (c3 && d.tokenTrend) {
     c3.setOption({
-      tooltip: { trigger: 'axis' },
+      tooltip: { trigger: 'axis', valueFormatter: (v: number | string) => formatCompact(Number(v)) },
       legend: { data: ['输入', '缓存', '输出'], top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 50, right: 20, top: 30, bottom: 30 },
       xAxis: { type: 'category', data: d.tokenTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
-      yAxis: { type: 'value' },
+      yAxis: { type: 'value', axisLabel: tokenAxisLabel },
       series: [
         { name: '输入', type: 'line', smooth: true, data: d.tokenTrend.map((t) => t.inputTokens), itemStyle: { color: PRIMARY } },
         { name: '缓存', type: 'line', smooth: true, data: d.tokenTrend.map((t) => t.cachedTokens), itemStyle: { color: CACHED } },
@@ -150,23 +173,21 @@ function renderCharts(): void {
     }, true)
   }
 
-  // 4. 耗时趋势（总耗时/首Token延迟折线）
   const c4 = initChart('durationTrend')
   if (c4 && d.durationTrend) {
     c4.setOption({
-      tooltip: { trigger: 'axis', valueFormatter: (v: number | string) => `${v} ms` },
-      legend: { data: ['总耗时', '首Token'], top: 0, textStyle: { fontSize: 11 } },
+      tooltip: { trigger: 'axis', valueFormatter: (v: number | string) => formatDuration(Number(v)) },
+      legend: { data: ['总耗时', '首字耗时'], top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 50, right: 20, top: 30, bottom: 30 },
       xAxis: { type: 'category', data: d.durationTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
-      yAxis: { type: 'value', axisLabel: { formatter: '{value} ms' } },
+      yAxis: { type: 'value', axisLabel: durationAxisLabel },
       series: [
         { name: '总耗时', type: 'line', smooth: true, data: d.durationTrend.map((t) => t.averageTotalDurationMs), itemStyle: { color: PRIMARY } },
-        { name: '首Token', type: 'line', smooth: true, data: d.durationTrend.map((t) => t.averageFirstTokenLatencyMs), itemStyle: { color: WARNING } }
+        { name: '首字耗时', type: 'line', smooth: true, data: d.durationTrend.map((t) => t.averageFirstTokenLatencyMs), itemStyle: { color: WARNING } }
       ]
     }, true)
   }
 
-  // 5. 回退趋势（柱状 + 回退率折线，双 Y 轴）
   const c5 = initChart('fallbackTrend')
   if (c5 && d.fallbackTrend) {
     c5.setOption({
@@ -175,7 +196,7 @@ function renderCharts(): void {
       grid: { left: 40, right: 50, top: 30, bottom: 30 },
       xAxis: { type: 'category', data: d.fallbackTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
       yAxis: [
-        { type: 'value', name: '次数', position: 'left', minInterval: 1 },
+        { type: 'value', name: '次数', position: 'left', minInterval: 1, axisLabel: tokenAxisLabel },
         { type: 'value', name: '%', position: 'right', max: 100, axisLabel: { formatter: '{value}%' } }
       ],
       series: [
@@ -185,11 +206,10 @@ function renderCharts(): void {
     }, true)
   }
 
-  // 6. 缓存命中率（模型维度柱状）
   const c6 = initChart('cacheRatio')
   if (c6 && d.modelCacheRatioDistribution) {
     c6.setOption({
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: (v: number | string) => `${v}%` },
       grid: { left: 50, right: 20, top: 20, bottom: 60 },
       xAxis: { type: 'category', data: d.modelCacheRatioDistribution.map((t) => t.label), axisLabel: { fontSize: 10, rotate: 30, interval: 0 } },
       yAxis: { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
@@ -197,20 +217,18 @@ function renderCharts(): void {
     }, true)
   }
 
-  // 7. 站点请求分布（横向柱状 Top10）
   const c7 = initChart('siteDist')
   if (c7 && d.siteDistribution) {
     const data = [...d.siteDistribution].sort((a, b) => b.requestCount - a.requestCount).slice(0, 10).reverse()
     c7.setOption({
       tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
       grid: { left: 10, right: 30, top: 20, bottom: 20, containLabel: true },
-      xAxis: { type: 'value', minInterval: 1 },
+      xAxis: { type: 'value', minInterval: 1, axisLabel: tokenAxisLabel },
       yAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10 } },
       series: [{ name: '请求数', type: 'bar', data: data.map((t) => t.requestCount), itemStyle: { color: PRIMARY }, barMaxWidth: 20 }]
     }, true)
   }
 
-  // 8. 模型调用分布（饼图）
   const c8 = initChart('modelDist')
   if (c8 && d.modelDistribution) {
     c8.setOption({
@@ -219,7 +237,7 @@ function renderCharts(): void {
       series: [{
         type: 'pie', radius: ['40%', '70%'], center: ['40%', '50%'],
         data: d.modelDistribution.map((m) => ({ name: m.label, value: m.requestCount })),
-        label: { show: false }, itemStyle: { borderRadius: 6, borderColor: pieBorderColor, borderWidth: 2 }
+        label: { show: false }, itemStyle: { borderRadius: 6, borderColor: pieBorderColor.value, borderWidth: 2 }
       }]
     }, true)
   }
@@ -239,133 +257,359 @@ onUnmounted(() => {
 })
 
 // 筛选条件变化时自动查询（自定义范围需两个时间都填）
-watch([rangeType, protocolType, modelName, siteId, accessKeyId], () => load())
+watch([rangeType, bucketType, protocolType, modelName, siteId, accessKeyId], () => load())
 watch([startTime, endTime], () => {
   if (rangeType.value !== 'custom' || (startTime.value && endTime.value)) load()
 })
 </script>
 
 <template>
-  <div class="page-container">
-    <PageHeader title="可视化分析" subtitle="请求量、Token 用量、成功率、回退、缓存命中等趋势分析" />
+  <div class="page-container analytics-page">
+    <PageHeader title="可视化分析" subtitle="聚合请求量、成功率、tokens 用量、耗时与路由分布，面向日常观察和排障">
+      <template #actions>
+        <NButton type="primary" :loading="loading" @click="load">刷新数据</NButton>
+      </template>
+    </PageHeader>
+
     <NSpin :show="loading">
-      <NCard>
-        <template #header>
-          <NSpace align="center" wrap :size="12">
-            <NSelect v-model:value="rangeType" :options="rangeOptions" placeholder="时间范围" style="width: 120px" />
-            <template v-if="rangeType === 'custom'">
-              <NDatePicker v-model:value="startTime" type="datetime" placeholder="开始时间" />
-              <NDatePicker v-model:value="endTime" type="datetime" placeholder="结束时间" />
-            </template>
+      <section class="analytics-filter card mb-4">
+        <div class="analytics-filter-body">
+          <div class="analytics-filter-grid">
+            <label class="analytics-filter-field">
+              <span class="form-label">时间范围</span>
+              <NSelect v-model:value="rangeType" :options="rangeOptions" />
+            </label>
+            <label class="analytics-filter-field">
+              <span class="form-label">统计粒度</span>
+              <NSelect v-model:value="bucketType" :options="bucketOptions" />
+            </label>
+            <label class="analytics-filter-field">
+              <span class="form-label">协议类型</span>
+              <NSelect v-model:value="protocolType" :options="protocolOptions" />
+            </label>
+            <label class="analytics-filter-field">
+              <span class="form-label">调用模型</span>
               <NSelect
-                v-if="filterOptions"
-                v-model:value="protocolType"
-                :options="protocolOptions"
-                placeholder="协议"
-                style="width: 130px"
-              />
-              <NSelect
-                v-if="filterOptions && filterOptions.sites.length"
-                v-model:value="siteId"
-                :options="filterOptions.sites.map((s) => ({ label: s.siteName, value: s.siteId }))"
-                placeholder="站点"
-                clearable
-                style="width: 160px"
-              />
-              <NSelect
-                v-if="filterOptions && filterOptions.models.length"
                 v-model:value="modelName"
-                :options="[{ label: '全部模型', value: 'all' }, ...filterOptions.models.map((m) => ({ label: m.modelName, value: m.modelName }))]"
-                placeholder="模型"
+                :options="[{ label: '全部模型', value: 'all' }, ...(filterOptions?.models ?? []).map((m) => ({ label: m.modelName, value: m.modelName }))]"
                 filterable
-                style="width: 180px"
               />
+            </label>
+            <label class="analytics-filter-field">
+              <span class="form-label">站点</span>
               <NSelect
-                v-if="filterOptions && filterOptions.accessKeys.length"
-                v-model:value="accessKeyId"
-                :options="filterOptions.accessKeys.map((k) => ({ label: k.accessKeyLabel, value: k.accessKeyId }))"
-                placeholder="密钥"
+                v-model:value="siteId"
+                :options="(filterOptions?.sites ?? []).map((s) => ({ label: s.siteName, value: s.siteId }))"
+                placeholder="全部站点"
                 clearable
-                style="width: 160px"
               />
-              <NButton type="primary" @click="load">查询</NButton>
-          </NSpace>
-        </template>
-
-        <NEmpty v-if="!loading && !dashboard" description="暂无统计数据" style="padding: 80px 0" />
-
-        <template v-if="dashboard?.summary">
-          <!-- 汇总 KPI 卡片 -->
-          <div class="kpi-grid">
-            <NCard size="small"><NStatistic label="总请求" :value="formatCompact(dashboard.summary.totalRequests)" /></NCard>
-            <NCard size="small"><NStatistic label="成功" :value="formatCompact(dashboard.summary.successRequests)" /></NCard>
-            <NCard size="small"><NStatistic label="失败" :value="formatCompact(dashboard.summary.failedRequests)" /></NCard>
-            <NCard size="small"><NStatistic label="成功率" :value="`${dashboard.summary.successRate ?? 0}%`" /></NCard>
-            <NCard size="small"><NStatistic label="回退触发" :value="dashboard.summary.fallbackRequestCount ?? 0" /></NCard>
-            <NCard size="small"><NStatistic label="输入 Token" :value="formatCompact(dashboard.summary.totalInputTokens)" /></NCard>
-            <NCard size="small"><NStatistic label="输出 Token" :value="formatCompact(dashboard.summary.totalOutputTokens)" /></NCard>
-            <NCard size="small"><NStatistic label="缓存 Token" :value="formatCompact(dashboard.summary.totalCachedTokens)" /></NCard>
+            </label>
+            <label class="analytics-filter-field">
+              <span class="form-label">访问密钥</span>
+              <NSelect
+                v-model:value="accessKeyId"
+                :options="(filterOptions?.accessKeys ?? []).map((k) => ({ label: k.accessKeyLabel, value: k.accessKeyId }))"
+                placeholder="全部访问密钥"
+                clearable
+              />
+            </label>
+            <div class="analytics-filter-meta">{{ filterSummary }}</div>
           </div>
-
-          <!-- 图表网格 -->
-          <div class="chart-grid">
-            <NCard size="small">
-              <template #header><span class="chart-title">请求量趋势</span></template>
-              <div :ref="(el) => setEl('requestTrend', el as HTMLElement | null)" class="chart-body" />
-            </NCard>
-            <NCard size="small">
-              <template #header><span class="chart-title">结果趋势（成功/失败）</span></template>
-              <div :ref="(el) => setEl('resultTrend', el as HTMLElement | null)" class="chart-body" />
-            </NCard>
-            <NCard size="small">
-              <template #header><span class="chart-title">Tokens 用量趋势</span></template>
-              <div :ref="(el) => setEl('tokenTrend', el as HTMLElement | null)" class="chart-body" />
-            </NCard>
-            <NCard size="small">
-              <template #header><span class="chart-title">耗时趋势</span></template>
-              <div :ref="(el) => setEl('durationTrend', el as HTMLElement | null)" class="chart-body" />
-            </NCard>
-            <NCard size="small">
-              <template #header><span class="chart-title">回退触发趋势</span></template>
-              <div :ref="(el) => setEl('fallbackTrend', el as HTMLElement | null)" class="chart-body" />
-            </NCard>
-            <NCard size="small">
-              <template #header><span class="chart-title">缓存命中率（按模型）</span></template>
-              <div :ref="(el) => setEl('cacheRatio', el as HTMLElement | null)" class="chart-body" />
-            </NCard>
-            <NCard size="small">
-              <template #header><span class="chart-title">站点请求分布（Top10）</span></template>
-              <div :ref="(el) => setEl('siteDist', el as HTMLElement | null)" class="chart-body" />
-            </NCard>
-            <NCard size="small">
-              <template #header><span class="chart-title">模型调用分布</span></template>
-              <div :ref="(el) => setEl('modelDist', el as HTMLElement | null)" class="chart-body" />
-            </NCard>
+          <div v-if="rangeType === 'custom'" class="analytics-custom-range-row">
+            <label class="analytics-filter-field analytics-custom-range-field">
+              <span class="form-label">开始时间</span>
+              <NDatePicker v-model:value="startTime" type="datetime" placeholder="开始时间" clearable />
+            </label>
+            <label class="analytics-filter-field analytics-custom-range-field">
+              <span class="form-label">结束时间</span>
+              <NDatePicker v-model:value="endTime" type="datetime" placeholder="结束时间" clearable />
+            </label>
+            <NButton secondary type="primary" class="analytics-apply-range" @click="load">应用时间范围</NButton>
+            <div class="analytics-range-tip">选择开始和结束时间后，点击“应用时间范围”确认生效。</div>
           </div>
-        </template>
-      </NCard>
+        </div>
+      </section>
+
+      <NEmpty v-if="!loading && !dashboard" description="暂无统计数据" class="analytics-empty" />
+
+      <template v-if="summary">
+        <section class="analytics-kpi-grid mb-4">
+          <article class="analytics-kpi-card">
+            <span class="analytics-kpi-label">总请求数</span>
+            <strong class="analytics-kpi-value">{{ formatCompact(summary.totalRequests) }}</strong>
+          </article>
+          <article class="analytics-kpi-card">
+            <span class="analytics-kpi-label">成功率</span>
+            <strong class="analytics-kpi-value success">{{ summary.successRate ?? 0 }}%</strong>
+          </article>
+          <article class="analytics-kpi-card">
+            <span class="analytics-kpi-label">失败率</span>
+            <strong class="analytics-kpi-value danger">{{ summary.failureRate ?? 0 }}%</strong>
+          </article>
+          <article class="analytics-kpi-card">
+            <span class="analytics-kpi-label">总 Tokens</span>
+            <strong class="analytics-kpi-value">{{ formatCompact(totalTokens) }}</strong>
+          </article>
+          <article class="analytics-kpi-card">
+            <span class="analytics-kpi-label">平均总耗时</span>
+            <strong class="analytics-kpi-value">{{ formatDuration(summary.averageTotalDurationMs) }}</strong>
+          </article>
+          <article class="analytics-kpi-card">
+            <span class="analytics-kpi-label">平均首字耗时</span>
+            <strong class="analytics-kpi-value">{{ formatDuration(summary.averageFirstTokenLatencyMs) }}</strong>
+          </article>
+          <article class="analytics-kpi-card">
+            <span class="analytics-kpi-label">回退触发数</span>
+            <strong class="analytics-kpi-value warning">{{ formatCompact(summary.fallbackRequestCount ?? 0) }}</strong>
+          </article>
+          <article class="analytics-kpi-card">
+            <span class="analytics-kpi-label">输入（含缓存） / 输出 Tokens</span>
+            <strong class="analytics-kpi-value compact">{{ tokenSplit }}</strong>
+          </article>
+        </section>
+
+        <div class="analytics-grid">
+          <section class="analytics-panel analytics-panel-wide card">
+            <div class="analytics-panel-header">
+              <div>
+                <h5 class="analytics-panel-title">请求量趋势</h5>
+                <div class="analytics-panel-subtitle">按时间桶观察请求量波动</div>
+              </div>
+            </div>
+            <div class="analytics-chart-body"><div :ref="(el) => setEl('requestTrend', el as HTMLElement | null)" class="chart-body" /></div>
+          </section>
+
+          <section class="analytics-panel card">
+            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">成功 / 失败趋势</h5><div class="analytics-panel-subtitle">同时展示数量与比率</div></div></div>
+            <div class="analytics-chart-body"><div :ref="(el) => setEl('resultTrend', el as HTMLElement | null)" class="chart-body" /></div>
+          </section>
+
+          <section class="analytics-panel card">
+            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">Tokens 用量趋势</h5><div class="analytics-panel-subtitle">输入、输出、缓存三条趋势线，总量保留在顶部汇总卡片</div></div></div>
+            <div class="analytics-chart-body"><div :ref="(el) => setEl('tokenTrend', el as HTMLElement | null)" class="chart-body" /></div>
+          </section>
+
+          <section class="analytics-panel card">
+            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">缓存命中比例</h5><div class="analytics-panel-subtitle">公式：缓存命中 Token ÷ 总输入 Token（总输入 = 未命中输入 + 缓存命中）</div></div></div>
+            <div class="analytics-chart-body"><div :ref="(el) => setEl('cacheRatio', el as HTMLElement | null)" class="chart-body" /></div>
+          </section>
+
+          <section class="analytics-panel card">
+            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">平均耗时趋势</h5><div class="analytics-panel-subtitle">总耗时与首字耗时双指标</div></div></div>
+            <div class="analytics-chart-body"><div :ref="(el) => setEl('durationTrend', el as HTMLElement | null)" class="chart-body" /></div>
+          </section>
+
+          <section class="analytics-panel card">
+            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">回退触发趋势</h5><div class="analytics-panel-subtitle">观察 fallback 频率和占比</div></div></div>
+            <div class="analytics-chart-body"><div :ref="(el) => setEl('fallbackTrend', el as HTMLElement | null)" class="chart-body" /></div>
+          </section>
+
+          <section class="analytics-panel card">
+            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">站点请求分布</h5><div class="analytics-panel-subtitle">各站点请求量对比</div></div></div>
+            <div class="analytics-chart-body"><div :ref="(el) => setEl('siteDist', el as HTMLElement | null)" class="chart-body" /></div>
+          </section>
+
+          <section class="analytics-panel card">
+            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">模型调用分布</h5><div class="analytics-panel-subtitle">Top 模型调用热度与用量</div></div></div>
+            <div class="analytics-chart-body"><div :ref="(el) => setEl('modelDist', el as HTMLElement | null)" class="chart-body" /></div>
+          </section>
+        </div>
+      </template>
     </NSpin>
   </div>
 </template>
 
 <style scoped>
-.kpi-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
-  margin-bottom: 20px;
+.analytics-page {
+  min-width: 0;
 }
-.chart-grid {
+
+.analytics-filter {
+  margin-bottom: 24px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 18px;
+  background: var(--bg-card);
+}
+
+.analytics-filter-body {
+  padding: 18px 20px;
+}
+
+.analytics-filter-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr)) minmax(120px, 0.8fr);
   gap: 16px;
+  align-items: end;
 }
-.chart-title {
-  font-size: 14px;
+
+.analytics-filter-field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.form-label {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 13px;
   font-weight: 600;
 }
+
+.analytics-filter-meta {
+  color: var(--text-color-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.analytics-custom-range-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr)) minmax(160px, auto) minmax(240px, 1.2fr);
+  gap: 16px;
+  align-items: end;
+  margin-top: 16px;
+}
+
+.analytics-range-tip {
+  color: var(--text-color-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.analytics-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.analytics-kpi-card {
+  min-width: 0;
+  padding: 18px 20px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 18px;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+}
+
+.analytics-kpi-label {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--text-color-secondary);
+  font-size: 13px;
+}
+
+.analytics-kpi-value {
+  display: block;
+  color: var(--text-primary);
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1.1;
+}
+
+.analytics-kpi-value.compact {
+  overflow: hidden;
+  font-size: 22px;
+  letter-spacing: -0.02em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-kpi-value.success { color: #099268; }
+.analytics-kpi-value.danger { color: #e03131; }
+.analytics-kpi-value.warning { color: #d97706; }
+
+.analytics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.analytics-panel {
+  overflow: hidden;
+  border: 1px solid var(--border-color-global);
+  border-radius: 18px;
+  background: var(--bg-card);
+}
+
+.analytics-panel-wide {
+  grid-column: span 2;
+}
+
+.analytics-panel-header {
+  padding: 18px 20px 0;
+}
+
+.analytics-panel-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.analytics-panel-subtitle {
+  margin-top: 4px;
+  color: var(--text-color-secondary);
+  font-size: 13px;
+}
+
+.analytics-chart-body {
+  padding: 12px 16px 16px;
+  height: 320px;
+}
+
 .chart-body {
-  height: 280px;
   width: 100%;
+  height: 100%;
+}
+
+.analytics-empty {
+  padding: 80px 0;
+  border: 1px solid var(--border-color-global);
+  border-radius: 18px;
+  background: var(--bg-card);
+}
+
+[data-theme='dark'] .analytics-kpi-card {
+  background: linear-gradient(180deg, rgba(31, 41, 55, 0.95) 0%, rgba(17, 24, 39, 0.95) 100%);
+}
+
+@media (max-width: 1280px) {
+  .analytics-filter-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 1200px) {
+  .analytics-kpi-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-kpi-value.compact {
+    font-size: 20px;
+  }
+}
+
+@media (max-width: 991px) {
+  .analytics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-panel-wide {
+    grid-column: auto;
+  }
+
+  .analytics-custom-range-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 767px) {
+  .analytics-filter-grid,
+  .analytics-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .analytics-chart-body {
+    height: 280px;
+  }
 }
 </style>

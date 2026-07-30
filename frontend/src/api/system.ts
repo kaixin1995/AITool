@@ -31,6 +31,12 @@ export async function updateSystemSettings(payload: SystemSettings): Promise<voi
   await httpPut('/api/admin/system/settings', payload)
 }
 
-export async function clearUsageLogs(clearAll: boolean): Promise<{ deletedCount: number }> {
-  return httpPost<{ deletedCount: number }>(`/api/admin/system/clear-usage-logs?clearAll=${clearAll}`, {})
+export interface ClearUsageLogsPayload {
+  source?: string
+  startTime?: string
+  endTime?: string
+}
+
+export async function clearUsageLogs(clearAll: boolean, payload: ClearUsageLogsPayload = {}): Promise<{ deletedCount: number }> {
+  return httpPost<{ deletedCount: number }>(`/api/admin/system/clear-usage-logs?clearAll=${clearAll}`, payload)
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { NCard, NButton, NSpace, NTag, NGrid, NGi, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, useMessage } from 'naive-ui'
+import { NCard, NButton, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/codex'
 import type { CodexAccount, CodexInspectionStatus } from '@/api/codex'
@@ -196,6 +196,35 @@ async function handleExportCredentials(): Promise<void> {
   } catch (e) { message.error((e as Error).message) }
 }
 
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return '从未'
+  return new Date(value).toLocaleString('zh-CN')
+}
+
+function formatQuotaPercent(value: number | null | undefined): string {
+  if (value == null || !Number.isFinite(Number(value))) return '-'
+  return `${Math.round(Number(value))}%`
+}
+
+function accountQuotaPercent(acc: CodexAccount): number | null {
+  if (acc.windows && acc.windows.length > 0) {
+    return Math.max(...acc.windows.map((w) => Number(w.usedPercent || 0)))
+  }
+  const percents = [acc.fiveHourUsedPercent, acc.weeklyUsedPercent]
+    .filter((value): value is number => value != null && Number.isFinite(Number(value)))
+  return percents.length ? Math.max(...percents) : null
+}
+
+function accountStatusLabel(acc: CodexAccount): string {
+  if (acc.isQuotaCooling) return '冷却中'
+  return acc.isEnabled ? '启用' : '禁用'
+}
+
+function accountStatusType(acc: CodexAccount): 'success' | 'warning' | 'default' {
+  if (acc.isQuotaCooling) return 'warning'
+  return acc.isEnabled ? 'success' : 'default'
+}
+
 // 额度进度条颜色
 function quotaColor(percent: number | null | undefined): 'success' | 'warning' | 'error' {
   if (percent == null) return 'success'
@@ -225,78 +254,98 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       </template>
     </PageHeader>
     <NSpin :show="loading">
-      <NCard>
-
-        <!-- 巡检状态 -->
-        <NCard v-if="inspection" size="small" style="margin-bottom: 16px">
-          <NSpace :size="24" align="center">
-            <NTag :type="inspection.isRunning ? 'warning' : 'success'" :bordered="false">
-              {{ inspection.isRunning ? '巡检中' : '空闲' }}
-            </NTag>
-            <span v-if="inspection.lastRun" style="font-size: 13px; color: var(--text-color-secondary)">
-              上次：{{ inspection.lastRun.totalAccounts }} 账号，禁用 {{ inspection.lastRun.disabledAccounts }} 个
-            </span>
-          </NSpace>
+      <div class="codex-stack">
+        <NCard v-if="inspection" class="inspection-card" size="small">
+          <div class="inspection-content">
+            <div class="inspection-main">
+              <NTag :type="inspection.isRunning ? 'warning' : 'success'" :bordered="false">
+                {{ inspection.isRunning ? '巡检中' : '空闲' }}
+              </NTag>
+              <div>
+                <div class="inspection-title">Codex 巡检状态</div>
+                <div v-if="inspection.lastRun" class="inspection-meta">
+                  上次：{{ inspection.lastRun.totalAccounts }} 账号，禁用 {{ inspection.lastRun.disabledAccounts }} 个 · 完成于 {{ formatDateTime(inspection.lastRun.finishedAt) }}
+                </div>
+                <div v-else class="inspection-meta">尚未执行过自动巡检</div>
+              </div>
+            </div>
+            <div v-if="inspection.nextScheduledAt" class="inspection-meta">下次：{{ formatDateTime(inspection.nextScheduledAt) }}</div>
+          </div>
         </NCard>
 
         <NEmpty v-if="featureDisabled" description="Codex 功能未开启，请在系统设置中开启" />
         <NEmpty v-else-if="accounts.length === 0" description="暂无 Codex 账号，点击右上角 OAuth 登录" />
 
-        <NGrid v-else :cols="3" :x-gap="16" :y-gap="16" responsive="screen" item-responsive>
-          <NGi v-for="acc in accounts" :key="acc.id" span="3 m:1 l:1">
-            <NCard size="small">
-              <template #header>
-                <NSpace align="center" :size="8">
-                  <span style="font-weight: 600">{{ acc.displayName }}</span>
-                  <NTag v-if="acc.email" size="tiny" :bordered="false">{{ acc.email }}</NTag>
-                  <NTag v-if="acc.planType" size="tiny" type="info" :bordered="false">{{ acc.planType }}</NTag>
-                  <NTag size="tiny" :type="acc.isEnabled ? 'success' : 'default'" :bordered="false">
-                    {{ acc.isEnabled ? '启用' : '禁用' }}
-                  </NTag>
-                  <NTag v-if="acc.isQuotaCooling" size="tiny" type="warning" :bordered="false">冷却中</NTag>
-                </NSpace>
-              </template>
-              <div style="font-size: 12px; color: var(--text-color-secondary); margin-bottom: 8px">
-                上次额度检查：{{ acc.lastQuotaCheckedAt ? new Date(acc.lastQuotaCheckedAt).toLocaleString('zh-CN') : '从未' }}
-              </div>
-
-              <!-- 额度窗口进度条 -->
-              <div v-if="acc.windows && acc.windows.length > 0" class="quota-windows">
-                <div v-for="w in acc.windows" :key="w.id" class="quota-window">
-                  <div class="quota-label">
-                    <span>{{ w.label }}</span>
-                    <span v-if="w.resetLabel" style="font-size: 11px; color: var(--text-color-secondary)">重置于 {{ w.resetLabel }}</span>
+        <div v-else class="codex-account-grid">
+          <article v-for="acc in accounts" :key="acc.id" class="codex-account-card" :class="{ disabled: !acc.isEnabled }">
+            <div class="account-card-header">
+              <div class="account-title-block">
+                <div class="account-avatar">{{ acc.displayName.slice(0, 1).toUpperCase() }}</div>
+                <div class="account-title-text">
+                  <div class="account-name-row">
+                    <h3 class="account-name">{{ acc.displayName }}</h3>
+                    <NTag size="small" :type="accountStatusType(acc)" :bordered="false">{{ accountStatusLabel(acc) }}</NTag>
                   </div>
-                  <NProgress
-                    :percentage="Math.round(w.usedPercent)"
-                    :status="quotaColor(w.usedPercent)"
-                    :show-indicator="false"
-                    :height="8"
-                    :border-radius="4"
-                  />
-                  <span class="quota-percent">{{ Math.round(w.usedPercent) }}%</span>
+                  <div class="account-subtitle">{{ acc.email || acc.accountId || '未记录账号标识' }}</div>
                 </div>
               </div>
-              <div v-if="acc.resetCreditsAvailableCount != null && acc.resetCreditsAvailableCount > 0" style="font-size: 12px; margin: 6px 0; color: #6C9EFF">
-                剩余 {{ acc.resetCreditsAvailableCount }} 次手动重置
-              </div>
+              <NTag v-if="acc.planType" size="small" type="info" :bordered="false">{{ acc.planType }}</NTag>
+            </div>
 
-              <NSpace :size="4" wrap>
-                <NButton size="tiny" quaternary @click="handleRefreshQuota(acc)">刷新额度</NButton>
-                <NButton size="tiny" quaternary @click="handleRefreshToken(acc)">刷新Token</NButton>
-                <NButton size="tiny" quaternary @click="openEdit(acc)">编辑</NButton>
-                <NButton size="tiny" quaternary @click="openFetchModels(acc)">拉取模型</NButton>
-                <NButton v-if="acc.resetCreditsAvailableCount != null && acc.resetCreditsAvailableCount > 0" size="tiny" quaternary @click="openResetCredit(acc)">重置额度</NButton>
-                <NButton size="tiny" quaternary @click="handleToggle(acc)">{{ acc.isEnabled ? '禁用' : '启用' }}</NButton>
-                <NPopconfirm @positive-click="handleDelete(acc)">
-                  <template #trigger><NButton size="tiny" quaternary type="error">删除</NButton></template>
-                  删除账号「{{ acc.displayName }}」？关联站点和路由会一并清理。
-                </NPopconfirm>
-              </NSpace>
-            </NCard>
-          </NGi>
-        </NGrid>
-      </NCard>
+            <div class="account-kpi-row">
+              <div class="account-kpi">
+                <span class="account-kpi-label">最高额度</span>
+                <strong :class="['account-kpi-value', quotaColor(accountQuotaPercent(acc))]">{{ formatQuotaPercent(accountQuotaPercent(acc)) }}</strong>
+              </div>
+              <div class="account-kpi">
+                <span class="account-kpi-label">重置信用</span>
+                <strong class="account-kpi-value">{{ acc.resetCreditsAvailableCount ?? 0 }}</strong>
+              </div>
+              <div class="account-kpi">
+                <span class="account-kpi-label">Token 过期</span>
+                <strong class="account-kpi-value small">{{ formatDateTime(acc.tokenExpiresAt) }}</strong>
+              </div>
+            </div>
+
+            <div class="account-meta-grid">
+              <div><span>上次额度检查</span><strong>{{ formatDateTime(acc.lastQuotaCheckedAt) }}</strong></div>
+              <div><span>自动禁用阈值</span><strong>{{ formatQuotaPercent(acc.autoDisableThreshold) }}</strong></div>
+              <div v-if="acc.quotaCoolingUntil"><span>冷却至</span><strong>{{ formatDateTime(acc.quotaCoolingUntil) }}</strong></div>
+            </div>
+
+            <div v-if="acc.windows && acc.windows.length > 0" class="quota-windows">
+              <div v-for="w in acc.windows" :key="w.id" class="quota-window">
+                <div class="quota-label">
+                  <span>{{ w.label }}</span>
+                  <span v-if="w.resetLabel">重置于 {{ w.resetLabel }}</span>
+                </div>
+                <NProgress
+                  :percentage="Math.round(w.usedPercent)"
+                  :status="quotaColor(w.usedPercent)"
+                  :show-indicator="false"
+                  :height="8"
+                  :border-radius="4"
+                />
+                <span class="quota-percent">{{ Math.round(w.usedPercent) }}%</span>
+              </div>
+            </div>
+            <div v-else class="quota-empty">暂无额度窗口数据，刷新额度后显示。</div>
+
+            <div class="account-actions">
+              <NButton size="small" secondary @click="handleRefreshQuota(acc)">刷新额度</NButton>
+              <NButton size="small" secondary @click="handleRefreshToken(acc)">刷新 Token</NButton>
+              <NButton size="small" secondary @click="openEdit(acc)">编辑</NButton>
+              <NButton size="small" secondary @click="openFetchModels(acc)">拉取模型</NButton>
+              <NButton v-if="acc.resetCreditsAvailableCount != null && acc.resetCreditsAvailableCount > 0" size="small" secondary @click="openResetCredit(acc)">重置额度</NButton>
+              <NButton size="small" secondary :type="acc.isEnabled ? 'warning' : 'success'" @click="handleToggle(acc)">{{ acc.isEnabled ? '禁用' : '启用' }}</NButton>
+              <NPopconfirm @positive-click="handleDelete(acc)">
+                <template #trigger><NButton size="small" secondary type="error">删除</NButton></template>
+                删除账号「{{ acc.displayName }}」？关联站点和路由会一并清理。
+              </NPopconfirm>
+            </div>
+          </article>
+        </div>
+      </div>
     </NSpin>
 
     <!-- OAuth 弹窗 -->
@@ -404,9 +453,246 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 </template>
 
 <style scoped>
-.quota-windows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
-.quota-window { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; }
-.quota-window .n-progress { grid-column: 1 / 2; }
-.quota-label { grid-column: 1 / 3; display: flex; justify-content: space-between; font-size: 12px; color: var(--text-color-secondary); }
-.quota-percent { grid-column: 2 / 3; font-size: 12px; font-weight: 600; min-width: 36px; text-align: right; }
+.codex-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+.inspection-card,
+.codex-account-card {
+  min-width: 0;
+}
+
+.inspection-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.inspection-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.inspection-title {
+  color: var(--text-primary);
+  font-weight: 700;
+}
+
+.inspection-meta,
+.account-subtitle,
+.account-kpi-label,
+.account-meta-grid span,
+.quota-label,
+.quota-empty {
+  color: var(--text-color-secondary);
+  font-size: 12px;
+}
+
+.codex-account-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.codex-account-card {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 18px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 20px;
+  background: var(--bg-card);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.06);
+}
+
+.codex-account-card.disabled {
+  opacity: 0.72;
+}
+
+.account-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.account-title-block {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.account-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex: 0 0 auto;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #6C9EFF 0%, #A5B4FC 100%);
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+  box-shadow: 0 8px 20px rgba(108, 158, 255, 0.28);
+}
+
+.account-title-text {
+  min-width: 0;
+}
+
+.account-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.account-name {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 800;
+  word-break: break-word;
+}
+
+.account-subtitle {
+  margin-top: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-kpi-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.account-kpi {
+  min-width: 0;
+  padding: 12px;
+  border-radius: 14px;
+  background: #f8fafc;
+  border: 1px solid rgba(226, 232, 240, 0.95);
+}
+
+.account-kpi-value {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-primary);
+  font-size: 20px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-kpi-value.small {
+  font-size: 12px;
+}
+
+.account-kpi-value.success { color: #18a058; }
+.account-kpi-value.warning { color: #f0a020; }
+.account-kpi-value.error { color: #d03050; }
+
+.account-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.account-meta-grid div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.account-meta-grid strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quota-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.quota-window {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.quota-window .n-progress {
+  grid-column: 1 / 2;
+}
+
+.quota-label {
+  grid-column: 1 / 3;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.quota-percent {
+  grid-column: 2 / 3;
+  min-width: 40px;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: right;
+}
+
+.quota-empty {
+  padding: 12px;
+  border: 1px dashed var(--border-color-global);
+  border-radius: 12px;
+  text-align: center;
+}
+
+.account-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+}
+
+[data-theme='dark'] .account-kpi {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+@media (max-width: 1280px) {
+  .codex-account-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .codex-account-grid,
+  .account-kpi-row,
+  .account-meta-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .account-card-header,
+  .inspection-content {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
 </style>

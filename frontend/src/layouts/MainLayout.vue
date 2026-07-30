@@ -43,6 +43,7 @@ const navGroups = computed<NavGroup[]>(() => {
       title: '代理配置',
       items: [
         { label: '路由规则', key: 'routes', icon: '🔀' },
+        { label: '路由回退', key: 'route-fallback', icon: '↩️' },
         { label: '兼容规则集', key: 'compatibility', icon: '🧩' },
         { label: '访问密钥', key: 'access-keys', icon: '🔑' }
       ]
@@ -210,11 +211,12 @@ onMounted(async () => {
 
 /* ===== 主内容区 ===== */
 .app-main {
-  flex: 1; margin-left: 260px;
+  flex: 1 1 auto; margin-left: 260px;
+  width: calc(100% - 260px); min-width: 0;
   display: flex; flex-direction: column; min-height: 100vh;
-  transition: margin-left 0.2s ease;
+  transition: margin-left 0.2s ease, width 0.2s ease;
 }
-.app-wrapper.sidebar-collapsed .app-main { margin-left: 72px; }
+.app-wrapper.sidebar-collapsed .app-main { margin-left: 72px; width: calc(100% - 72px); }
 
 /* 顶部栏 */
 .app-topbar {
@@ -236,8 +238,112 @@ onMounted(async () => {
 .app-content { flex: 1; background: var(--bg-page); overflow: hidden; }
 .app-content-scroll { height: 100%; }
 
+@media (max-width: 991.98px) {
+  .app-wrapper {
+    display: block;
+    min-height: 100vh;
+  }
+
+  .app-sidebar,
+  .app-wrapper.sidebar-collapsed .app-sidebar {
+    position: static;
+    width: 100%;
+    max-width: 100vw;
+    border-right: 0;
+    border-bottom: 1px solid var(--border-color-global);
+    overflow: hidden;
+  }
+
+  .sidebar-brand,
+  .app-wrapper.sidebar-collapsed .sidebar-brand {
+    padding: 12px 16px;
+    flex-direction: row;
+    justify-content: space-between;
+  }
+
+  .app-wrapper.sidebar-collapsed .sidebar-brand-main {
+    justify-content: flex-start;
+  }
+
+  .brand-text {
+    display: inline;
+  }
+
+  .sidebar-collapse-toggle {
+    display: none;
+  }
+
+  .sidebar-nav,
+  .app-wrapper.sidebar-collapsed .sidebar-nav {
+    display: flex;
+    gap: 8px;
+    padding: 10px 12px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .sidebar-section {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 0;
+    flex-shrink: 0;
+  }
+
+  .sidebar-section-title {
+    display: none;
+  }
+
+  .sidebar-link,
+  .app-wrapper.sidebar-collapsed .sidebar-link {
+    gap: 6px;
+    margin-bottom: 0;
+    padding: 8px 10px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  .app-wrapper.sidebar-collapsed .sidebar-link-icon {
+    width: 20px;
+    font-size: 15px;
+  }
+
+  .app-main,
+  .app-wrapper.sidebar-collapsed .app-main {
+    margin-left: 0;
+    width: 100%;
+    min-height: auto;
+  }
+
+  .app-topbar {
+    min-height: 56px;
+    height: auto;
+    padding: 10px 16px;
+    gap: 12px;
+  }
+
+  .app-topbar-right {
+    gap: 10px;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-topbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .app-topbar-right {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .topbar-version {
+    display: none;
+  }
+}
+
 /* 滚动条 */
-.sidebar-nav::-webkit-scrollbar { width: 4px; }
+.sidebar-nav::-webkit-scrollbar { width: 4px; height: 4px; }
 .sidebar-nav::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 2px; }
 [data-theme='dark'] .sidebar-nav::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); }
 </style>

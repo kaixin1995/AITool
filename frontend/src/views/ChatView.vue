@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { NTabs, NTabPane } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import { useAuthStore } from '@/stores/auth'
@@ -12,15 +12,52 @@ const conversationLogEnabled = computed(() => auth.status?.features?.conversatio
 </script>
 
 <template>
-  <div class="page-container" style="height: calc(100vh - 88px); display: flex; flex-direction: column">
+  <div class="page-container chat-page">
     <PageHeader title="对话" subtitle="对话测试与对话记录" />
-    <NTabs type="line" animated size="large" style="flex: 1; display: flex; flex-direction: column">
-      <NTabPane name="chat" tab="对话测试" style="flex: 1; display: flex; flex-direction: column">
+    <NTabs class="chat-tabs" type="line" animated size="large">
+      <NTabPane name="chat" tab="对话测试" display-directive="show" class="chat-tab-pane">
         <ChatTestPane />
       </NTabPane>
-      <NTabPane v-if="conversationLogEnabled" name="conversations" tab="对话记录" style="flex: 1; display: flex; flex-direction: column">
+      <NTabPane v-if="conversationLogEnabled" name="conversations" tab="对话记录" display-directive="show" class="chat-tab-pane">
         <ConversationsView />
       </NTabPane>
     </NTabs>
   </div>
 </template>
+
+<style scoped>
+.chat-page {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 88px);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.chat-tabs {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.chat-tabs :deep(.n-tabs-pane-wrapper),
+.chat-tabs :deep(.n-tab-pane) {
+  flex: 1;
+  min-height: 0;
+}
+
+.chat-tab-pane {
+  height: 100%;
+  min-height: 0;
+}
+
+@media (max-width: 1200px) {
+  .chat-page {
+    height: auto;
+    min-height: calc(100vh - 88px);
+    overflow: visible;
+  }
+}
+</style>
