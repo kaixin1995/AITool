@@ -170,14 +170,19 @@ async function refreshSilently(): Promise<void> {
   ])
 }
 
+function openOAuthModal(): void {
+  oauthUrl.value = ''
+  oauthCallbackInput.value = ''
+  oauthDisplayName.value = ''
+  oauthModal.value = true
+}
+
 async function handleStartOAuth(): Promise<void> {
   oauthStartLoading.value = true
   try {
     const result = await api.startCodexOAuth()
     oauthUrl.value = result.url
     oauthCallbackInput.value = ''
-    oauthDisplayName.value = ''
-    oauthModal.value = true
   } catch (e) {
     message.error((e as Error).message)
   } finally {
@@ -206,20 +211,6 @@ async function handleRefreshQuota(acc: CodexAccount): Promise<void> {
   try {
     await api.refreshCodexQuota(acc.id)
     message.success('已刷新额度')
-    await load()
-  } catch (e) { message.error((e as Error).message) }
-}
-async function handleRefreshToken(acc: CodexAccount): Promise<void> {
-  try {
-    await api.refreshCodexToken(acc.id)
-    message.success('已刷新 Token')
-    await load()
-  } catch (e) { message.error((e as Error).message) }
-}
-async function handleResetQuota(acc: CodexAccount): Promise<void> {
-  try {
-    await api.resetCodexQuota(acc.id)
-    message.success('已清除额度冷却并恢复账号')
     await load()
   } catch (e) { message.error((e as Error).message) }
 }
@@ -558,63 +549,61 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 <template>
   <div class="page-container">
-    <PageHeader title="OAuth 管理" subtitle="管理 Codex OAuth 登录账号、凭证导入、额度、巡检与自动禁用">
-      <template #actions>
-        <template v-if="activeTab === 'accounts'">
-          <template v-if="exportMode">
-            <NTag round :bordered="false" size="small">已选 {{ selectedExportAccountIds.length }} 个</NTag>
-            <NButton size="small" @click="cancelExportCredentials">取消选择</NButton>
-            <NButton size="small" type="primary" :loading="exportLoading" @click="handleExportCredentials">导出选中</NButton>
-          </template>
-          <template v-else>
-            <NTag v-if="accounts.length" round :bordered="false" size="small">{{ accounts.length }} 个</NTag>
-            <NButton size="small" quaternary @click="openImportCredential">导入凭证</NButton>
-            <NButton size="small" quaternary :disabled="accounts.length === 0" @click="beginExportCredentials">导出凭证</NButton>
-            <NButton size="small" type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">OAuth 登录</NButton>
-          </template>
-        </template>
-      </template>
-    </PageHeader>
+    <PageHeader title="OAuth 管理" subtitle="管理 Codex OAuth 登录账号、凭证导入、额度、巡检与自动禁用" />
     <NSpin :show="loading">
       <NTabs v-model:value="activeTab" type="line" animated>
         <NTabPane name="accounts" tab="账号额度">
+          <div class="codex-account-toolbar">
+            <template v-if="!exportMode">
+              <NButton secondary :disabled="accounts.length === 0" @click="beginExportCredentials">导出凭证</NButton>
+              <NButton type="primary" @click="openOAuthModal">＋ OAuth 登录</NButton>
+              <NButton secondary type="primary" @click="openImportCredential">上传凭证</NButton>
+            </template>
+          </div>
+          <div v-if="exportMode" class="codex-export-toolbar">
+            <strong>已选中 {{ selectedExportAccountIds.length }} 个账号</strong>
+            <NButton size="small" type="warning" :loading="exportLoading" :disabled="selectedExportAccountIds.length === 0" @click="handleExportCredentials">下载凭证 JSON</NButton>
+            <NButton size="small" secondary @click="cancelExportCredentials">取消</NButton>
+          </div>
           <div class="codex-stack">
             <NEmpty v-if="featureDisabled" description="Codex 功能未开启，请在系统设置中开启" />
             <NEmpty v-else-if="accounts.length === 0" description="暂无 Codex 账号，可使用右上角 OAuth 登录或导入凭证" />
 
-            <div v-else class="codex-grid">
-              <article v-for="acc in accounts" :key="acc.id" class="codex-card" :class="{ disabled: !acc.isEnabled, selected: selectedExportAccountIds.includes(acc.id) }">
+            <div v-else class="codex-grid" :class="{ 'export-mode': exportMode }">
+              <article
+                v-for="acc in accounts"
+                :key="acc.id"
+                class="codex-card"
+                :class="{ disabled: !acc.isEnabled, selected: selectedExportAccountIds.includes(acc.id) }"
+                @click="exportMode && toggleExportAccount(acc.id, !selectedExportAccountIds.includes(acc.id))"
+              >
+                <NCheckbox
+                  v-if="exportMode"
+                  class="codex-export-checkbox"
+                  :checked="selectedExportAccountIds.includes(acc.id)"
+                  @click.stop
+                  @update:checked="(checked: boolean) => toggleExportAccount(acc.id, checked)"
+                />
                 <div class="codex-card-header">
-                  <NCheckbox
-                    v-if="exportMode"
-                    :checked="selectedExportAccountIds.includes(acc.id)"
-                    @update:checked="(checked: boolean) => toggleExportAccount(acc.id, checked)"
-                  />
                   <div class="codex-card-header-main">
-                    <div class="codex-account-name">
-                      <span>{{ acc.displayName }}</span>
-                      <NTag size="small" :type="accountStatusType(acc)" :bordered="false">{{ accountStatusLabel(acc) }}</NTag>
+                    <div class="codex-account-name">{{ acc.displayName }}</div>
+                    <div class="codex-account-email">
+                      {{ acc.email || '' }}
+                      <button
+                        v-if="(acc.resetCreditsAvailableCount ?? 0) > 0"
+                        type="button"
+                        class="codex-reset-credits-hint"
+                        title="点击查看详情"
+                        @click.stop="openResetCredit(acc)"
+                      >
+                        剩余 {{ acc.resetCreditsAvailableCount }} 次手动重置
+                      </button>
                     </div>
-                    <div class="codex-account-email">{{ acc.email || acc.accountId || '未记录账号标识' }}</div>
+                    <div class="codex-badges">
+                      <NTag size="small" :type="accountStatusType(acc)" :bordered="false">{{ accountStatusLabel(acc) }}</NTag>
+                      <span v-if="acc.planType" class="codex-plan">{{ acc.planType }}</span>
+                    </div>
                   </div>
-                  <span v-if="acc.planType" class="codex-plan">{{ acc.planType }}</span>
-                </div>
-
-                <div class="account-kpi-row">
-                  <div class="account-kpi">
-                    <span class="account-kpi-label">剩余额度</span>
-                    <strong :class="['account-kpi-value', quotaColor(accountQuotaPercent(acc))]">{{ formatQuotaPercent(accountQuotaPercent(acc)) }}</strong>
-                  </div>
-                  <div class="account-kpi">
-                    <span class="account-kpi-label">重置信用</span>
-                    <strong class="account-kpi-value">{{ acc.resetCreditsAvailableCount ?? '-' }}</strong>
-                  </div>
-                </div>
-
-                <div class="account-meta-grid">
-                  <div><span>上次额度检查</span><strong>{{ formatDateTime(acc.lastQuotaCheckedAt) }}</strong></div>
-                  <div><span>自动禁用阈值</span><strong>{{ formatQuotaPercent(acc.autoDisableThreshold) }}</strong></div>
-                  <div v-if="acc.quotaCoolingUntil"><span>冷却至</span><strong>{{ formatDateTime(acc.quotaCoolingUntil) }}</strong></div>
                 </div>
 
                 <div v-if="acc.windows && acc.windows.length > 0" class="codex-windows-container">

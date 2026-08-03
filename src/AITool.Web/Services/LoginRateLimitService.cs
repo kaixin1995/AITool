@@ -51,12 +51,14 @@ public sealed class LoginRateLimitService
         var now = DateTimeOffset.UtcNow;
         _failures.AddOrUpdate(
             ip,
-            _ => new FailureRecord(1, now, now.Add(LockDuration)),
+            // 首次失败：count=1，未达到阈值不锁定
+            _ => new FailureRecord(1, now, now),
             (_, existing) =>
             {
                 // 如果之前的锁定已过期，重新计数
                 var count = existing.LockedUntil > now ? existing.Count + 1 : 1;
-                var lockedUntil = count >= MaxFailedAttempts ? now.Add(LockDuration) : existing.LockedUntil;
+                // 只有达到阈值才设置锁定截止时间，否则设为当前时间（表示未锁定）
+                var lockedUntil = count >= MaxFailedAttempts ? now.Add(LockDuration) : now;
                 return new FailureRecord(count, now, lockedUntil);
             });
     }
