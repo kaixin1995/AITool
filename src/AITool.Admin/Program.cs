@@ -68,6 +68,15 @@ builder.Services.AddSingleton<LoginRateLimitService>();
 builder.Services.AddSingleton<AdminAuthService>();
 
 // 认证：纯 JWT Bearer。/api/* 用 Bearer token 验证；代理端点 /v1/* 不走 ASP.NET 认证（AccessKey 自校验）。
+// Testing 环境使用匿名方案放行所有请求，避免集成测试需要签发真实 JWT。
+if (builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services
+        .AddAuthentication("Testing")
+        .AddScheme<Microsoft.AspNetCore.Authentication.AuthenticationSchemeOptions, AITool.Admin.TestingAuthHandler>("Testing", _ => { });
+}
+else
+{
 builder.Services
     .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
     .AddJwtBearer(options =>
@@ -101,6 +110,7 @@ builder.Services
             }
         };
     });
+}
 builder.Services.AddAuthorization();
 
 // Admin 侧 ConversationTurn 事件消费器，将 Core 代理产生的对话记录事件写入 Admin 本地 JSONL 存储。
