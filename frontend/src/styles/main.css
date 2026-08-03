@@ -1,0 +1,136 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 极少量全局样式，主要靠 Naive UI 组件库。这里只补充 Naive UI 不覆盖的细节。 */
+
+/* 全局次要文字色变量：亮色 #888，暗色自动调亮为 #999（暗色下 #888 太暗）。
+   替代散落在各视图的硬编码 color:#888/#666，确保暗色模式可读。 */
+:root {
+  --text-color-secondary: #888;
+  --bg-page: #F8FAFC;
+  --bg-card: #FFFFFF;
+  --bg-input: #FFFFFF;
+  --border-color-global: #E2E8F0;
+  --text-primary: #1E293B;
+  --layout-gutter-x: 32px;
+  --layout-gutter-y: 28px;
+}
+[data-theme='dark'] {
+  --text-color-secondary: #999;
+  --bg-page: #101014;
+  --bg-card: #18181C;
+  --bg-input: #1F1F24;
+  --border-color-global: #2D2D33;
+  --text-primary: rgba(255, 255, 255, 0.82);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-size: 14px;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  /* 默认跟随主题的页面背景，避免暗色模式下 body 透出白色。 */
+  background: var(--bg-page);
+  color: var(--text-primary);
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  line-height: 1.6;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+/* 滚动条样式（与原 theme.css 一致的细滚动条） */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.25);
+}
+[data-theme='dark'] ::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* 页面内容区通用容器：对齐原设计的内边距和背景 */
+.page-container {
+  padding: var(--layout-gutter-y) var(--layout-gutter-x);
+}
+
+@media (max-width: 991.98px) {
+  :root {
+    --layout-gutter-x: 16px;
+    --layout-gutter-y: 20px;
+  }
+}
+
+/* ===== 全局 NaiveUI 组件覆写：让表格/卡片外观接近原 Bootstrap 设计 ===== */
+
+/* 表格：复刻原 .table 的表头灰底、大写小字、行间距 */
+.n-data-table .n-data-table-thead {
+  background: var(--bg-page) !important;
+}
+.n-data-table .n-data-table-th {
+  background: transparent !important;
+  color: var(--text-color-secondary) !important;
+  font-weight: 600 !important;
+  font-size: 12px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 12px 16px !important;
+}
+.n-data-table .n-data-table-td {
+  padding: 14px 16px !important;
+  font-size: 13.5px !important;
+}
+/* 表格行 hover 高亮（复刻原 primary-50） */
+.n-data-table .n-data-table-tr:hover .n-data-table-td {
+  background: rgba(108, 158, 255, 0.04) !important;
+}
+/* 斑马纹颜色 */
+.n-data-table .n-data-table-tr.n-data-table-tr--striped .n-data-table-td {
+  background: rgba(0, 0, 0, 0.015) !important;
+}
+[data-theme='dark'] .n-data-table .n-data-table-tr.n-data-table-tr--striped .n-data-table-td {
+  background: rgba(255, 255, 255, 0.02) !important;
+}
+
+/* 卡片：圆角和阴影接近原 .card */
+.n-card {
+  border-radius: 12px !important;
+}
+.n-card-header {
+  padding: 16px 20px !important;
+}
+.n-card__content {
+  padding: 20px !important;
+}
+
+/* 卡片间距工具类（Tailwind preflight 关闭后，用自定义类补间距） */
+.flex-gap-12 {
+  gap: 12px;
+}
+.flex-gap-16 {
+  gap: 16px;
+}
