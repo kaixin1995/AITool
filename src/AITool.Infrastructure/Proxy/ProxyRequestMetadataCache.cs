@@ -135,6 +135,20 @@ public sealed partial class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 创建一个独立的 SqlSugarClient（有自己的连接），用完即释放。
+    /// 所有缓存未命中时的查库都走这个方法，避免与单例 SqlSugarScope 并发竞态。
+    /// <para>性能说明：缓存为 NeverRemove，仅在首次加载或显式失效时触发查库，
+    /// CopyNew 开销（创建连接 + 查询 + 关闭连接）约 1-3ms，可忽略。</para>
+    /// </summary>
+    private SqlSugar.ISqlSugarClient CreateIndependentClient()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        // CopyNew 创建独立连接实例，不共享单例 SqlSugarScope 的连接
+        return dbContext.Client.CopyNew();
+    }
+
+    /// <summary>
     /// Core 运行时元数据入口。
     /// 这里聚合的缓存会直接影响访问密钥校验、运行时设置、路由目标选择和兜底行为，当前必须继续保持在代理主链路可直接访问的位置。
     /// </summary>
@@ -230,11 +244,8 @@ public sealed partial class ProxyRequestMetadataCache
                 {
                     entry.Priority = CacheItemPriority.NeverRemove;
 
-                    // 用 CopyNew() 创建独立连接实例，彻底避免与单例 SqlSugarScope 并发竞态。
-                    // 配置数据读取频率极低（缓存 NeverRemove，仅首次或失效时查库），开销可忽略。
-                    using var scope = _scopeFactory.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var independentClient = dbContext.Client.CopyNew();
+                    // 用独立连接查库，避免与单例 SqlSugarScope 并发竞态
+                    using var independentClient = CreateIndependentClient();
                     var settings = await independentClient.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>()
                         .Where(x => x.Id == 1)
                         .FirstAsync(cancellationToken);
@@ -390,9 +401,8 @@ public sealed partial class ProxyRequestMetadataCache
                     // 与其他路由/模型缓存一致采用 NeverRemove：账号变更时通过 InvalidateCodexAccounts 显式失效。
                     entry.Priority = CacheItemPriority.NeverRemove;
 
-                    using var scope = _scopeFactory.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    return await dbContext.CodexAccounts
+                    using var independentClient = CreateIndependentClient();
+                    return await independentClient.Queryable<Domain.Codex.CodexAccount>()
                         .Where(a => !a.DisabledByFeatureToggle)
                         .OrderBy(a => a.LastQuotaCheckedAt)
                         .ToListAsync(cancellationToken);
@@ -682,10 +692,8 @@ public sealed partial class ProxyRequestMetadataCache
                 {
                     entry.Priority = CacheItemPriority.NeverRemove;
 
-                    using var scope = _scopeFactory.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var accessKeys = await dbContext.ProxyAccessKeys
-                        
+                    using var independentClient = CreateIndependentClient();
+                    var accessKeys = await independentClient.Queryable<Domain.Proxy.ProxyAccessKey>()
                         .Where(x => x.IsEnabled)
                         .Select(x => new CachedProxyAccessKey
                         {
@@ -764,15 +772,14 @@ public sealed partial class ProxyRequestMetadataCache
                 {
                     entry.Priority = CacheItemPriority.NeverRemove;
 
-                    using var scope = _scopeFactory.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    using var independentClient = CreateIndependentClient();
 
                     // SqlSugar 不支持 LINQ query syntax 的多表 join，改为先各自读出再在内存连接。
-                    var routeRows = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
-                    var routeSiteRows = await dbContext.Sites.ToListAsync(cancellationToken);
-                    var models = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    var routeRows = await independentClient.Queryable<Domain.Proxy.ProxyRouteRule>().ToListAsync(cancellationToken);
+                    var routeSiteRows = await independentClient.Queryable<Domain.Sites.Site>().ToListAsync(cancellationToken);
+                    var models = await independentClient.Queryable<Domain.Models.ModelLibraryItem>().ToListAsync(cancellationToken);
                     // 一次性加载所有启用的兼容规则集，构建 Id→规则列表字典，供路由目标投影时查（避免 N+1）。
-                    var profiles = await dbContext.CompatibilityProfiles
+                    var profiles = await independentClient.Queryable<Domain.Proxy.CompatibilityProfile>()
                         .Where(p => p.IsEnabled)
                         .ToListAsync(cancellationToken);
                     var profileRules = profiles.ToDictionary(
@@ -855,11 +862,9 @@ public sealed partial class ProxyRequestMetadataCache
                 {
                     entry.Priority = CacheItemPriority.NeverRemove;
 
-                    using var scope = _scopeFactory.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    using var independentClient = CreateIndependentClient();
 
-                    var models = await dbContext.ModelLibraryItems
-                        
+                    var models = await independentClient.Queryable<Domain.Models.ModelLibraryItem>()
                         .Where(x => x.IsEnabled)
                         .Select(x => new CachedEnabledModel
                         {
@@ -951,13 +956,12 @@ public sealed partial class ProxyRequestMetadataCache
                 {
                     entry.Priority = CacheItemPriority.NeverRemove;
 
-                    using var scope = _scopeFactory.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    using var independentClient = CreateIndependentClient();
 
                     // SqlSugar 不支持 LINQ query syntax 的多表 join，改为先各自读出再在内存连接。
-                    var fbMappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
-                    var fbSites = await dbContext.Sites.ToListAsync(cancellationToken);
-                    var fbModels = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    var fbMappings = await independentClient.Queryable<Domain.SiteCatalog.SiteModelMapping>().ToListAsync(cancellationToken);
+                    var fbSites = await independentClient.Queryable<Domain.Sites.Site>().ToListAsync(cancellationToken);
+                    var fbModels = await independentClient.Queryable<Domain.Models.ModelLibraryItem>().ToListAsync(cancellationToken);
                     var rawMappings = (
                             from mapping in fbMappings
                             join site in fbSites on mapping.SiteId equals site.Id
