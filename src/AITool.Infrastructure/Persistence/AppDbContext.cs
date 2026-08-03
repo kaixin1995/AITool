@@ -235,6 +235,7 @@ public static class SqlSugarSetup
             typeof(ProxyUsageLog),
             typeof(ModelHealthMonitor),
             typeof(SystemRuntimeSettings),
-            typeof(CompatibilityProfile));
+            typeof(CompatibilityProfile),
+            typeof(AITool.Domain.Auth.RefreshTokenRecord));
     }
 }

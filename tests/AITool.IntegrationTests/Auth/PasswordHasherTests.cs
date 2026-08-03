@@ -1,6 +1,8 @@
+using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.Extensions.Options;
+using SqlSugar;
 
 namespace AITool.IntegrationTests.Auth;
 
@@ -102,7 +104,16 @@ public sealed class JwtTokenServiceTests
             AccessTokenMinutes = 15,
             RefreshTokenDays = 7
         });
-        return new JwtTokenService(options);
+        // 用内存 SQLite 做测试 DB
+        var sqlSugar = new SqlSugarScope(new ConnectionConfig
+        {
+            ConnectionString = "DataSource=:memory:",
+            DbType = DbType.Sqlite,
+            IsAutoCloseConnection = false
+        }, _ => { });
+        sqlSugar.CodeFirst.InitTables(typeof(AITool.Domain.Auth.RefreshTokenRecord));
+        var dbContext = new AppDbContext(sqlSugar, new SemaphoreSlim(1, 1));
+        return new JwtTokenService(options, dbContext);
     }
 
     /// <summary>

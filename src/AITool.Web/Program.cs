@@ -63,7 +63,9 @@ builder.Services.AddScoped<HttpExceptionLoggingFilter>();
 
 // 注册 JWT 配置选项与 token 服务。
 builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
-builder.Services.AddSingleton<JwtTokenService>();
+builder.Services.AddScoped<JwtTokenService>();
+// LoginRateLimitService: 登录暴力破解防护（IP 失败计数 + 锁定）
+builder.Services.AddSingleton<LoginRateLimitService>();
 
 // 认证：纯 JWT（SPA 分离后不再需要 Cookie）。
 // /api/* 用 Bearer token 验证；代理端点 /v1/* 不走 ASP.NET 认证（自己用 AccessKey 校验）。
@@ -103,6 +105,7 @@ builder.Services
     });
 builder.Services.AddAuthorization();
 builder.Services.AddSingleton<AdminAuthService>();
+builder.Services.AddSingleton<LoginRateLimitService>();
 
 // Swagger：仅开发环境启用，方便本地测试接口。测试环境（Testing）与生产都不暴露文档。
 if (builder.Environment.IsDevelopment())

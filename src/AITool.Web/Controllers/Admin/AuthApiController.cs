@@ -25,26 +25,20 @@ public sealed class AuthApiController : ControllerBase
     /// 后台认证服务（密码校验/设置）。
     /// </summary>
     private readonly AdminAuthService _adminAuthService;
-    /// <summary>
-    /// JWT token 签发与刷新服务。
-    /// </summary>
     private readonly JwtTokenService _tokenService;
-    /// <summary>
-    /// 系统运行时设置服务，用于查询功能开关。
-    /// </summary>
     private readonly ISystemRuntimeSettingsService _settingsService;
+    private readonly LoginRateLimitService _rateLimiter;
 
-    /// <summary>
-    /// 初始化认证 API 控制器。
-    /// </summary>
     public AuthApiController(
         AdminAuthService adminAuthService,
         JwtTokenService tokenService,
-        ISystemRuntimeSettingsService settingsService)
+        ISystemRuntimeSettingsService settingsService,
+        LoginRateLimitService rateLimiter)
     {
         _adminAuthService = adminAuthService;
         _tokenService = tokenService;
         _settingsService = settingsService;
+        _rateLimiter = rateLimiter;
     }
 
     /// <summary>
@@ -85,6 +79,18 @@ public sealed class AuthApiController : ControllerBase
     [HttpPost("login")]
     public async Task<IActionResult> Login([FromBody] LoginRequest request, CancellationToken cancellationToken)
     {
+        var clientIp = GetClientIp();
+
+        // 暴力破解防护：检查 IP 是否被锁定
+        if (clientIp != null)
+        {
+            var lockRemaining = _rateLimiter.CheckLocked(clientIp);
+            if (lockRemaining != null)
+            {
+                return Ok(ApiResponse.Fail($"登录失败次数过多，请 {lockRemaining} 秒后再试", "rate_limited"));
+            }
+        }
+
         if (string.IsNullOrWhiteSpace(request?.Password))
         {
             return BadRequest(ApiResponse.Fail("密码不能为空", "password_required"));
@@ -97,8 +103,13 @@ public sealed class AuthApiController : ControllerBase
 
         if (!_adminAuthService.VerifyPassword(request.Password, out var needsUpgrade))
         {
+            // 记录失败
+            if (clientIp != null) _rateLimiter.RecordFailure(clientIp);
             return Ok(ApiResponse.Fail("密码错误", "invalid_credentials"));
         }
+
+        // 登录成功：清除失败记录
+        if (clientIp != null) _rateLimiter.RecordSuccess(clientIp);
 
         // 旧 MD5 密码透明升级为 PBKDF2。
         if (needsUpgrade)
@@ -199,6 +210,20 @@ public sealed class AuthApiController : ControllerBase
             accessTokenExpiresAt = tokens.AccessTokenExpiresAt,
             refreshTokenExpiresAt = tokens.RefreshTokenExpiresAt
         }, "密码设置成功"));
+    }
+
+    /// <summary>
+    /// 获取客户端 IP（支持反向代理场景）。
+    /// </summary>
+    private string? GetClientIp()
+    {
+        // 反向代理场景：X-Forwarded-For 第一个 IP
+        var forwarded = Request.Headers["X-Forwarded-For"].FirstOrDefault();
+        if (!string.IsNullOrWhiteSpace(forwarded))
+        {
+            return forwarded.Split(',')[0].Trim();
+        }
+        return HttpContext.Connection.RemoteIpAddress?.ToString();
     }
 }
 
