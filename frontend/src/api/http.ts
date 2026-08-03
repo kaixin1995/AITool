@@ -58,13 +58,17 @@ async function refreshAccessToken(): Promise<boolean> {
 
   refreshPromise = (async () => {
     try {
-      const resp = await axios.post<TokenPair & { success: boolean }>('/api/auth/refresh', { refreshToken })
-      if (resp.data?.success && resp.data.accessToken) {
+      // 注意：这里用裸 axios.post（不经过实例拦截器），因为拦截器在 401 时会递归触发刷新。
+      // 后端返回 ApiResponse 包装：{ success: true, data: { accessToken, refreshToken, ... } }
+      // token 在 resp.data.data 里，不是 resp.data 里。
+      const resp = await axios.post<{ success: boolean; data?: { accessToken: string; refreshToken: string; accessTokenExpiresAt: string; refreshTokenExpiresAt: string } }>('/api/auth/refresh', { refreshToken })
+      const tokenData = resp.data?.data
+      if (resp.data?.success && tokenData?.accessToken) {
         saveTokens({
-          accessToken: resp.data.accessToken,
-          refreshToken: resp.data.refreshToken,
-          accessTokenExpiresAt: resp.data.accessTokenExpiresAt,
-          refreshTokenExpiresAt: resp.data.refreshTokenExpiresAt
+          accessToken: tokenData.accessToken,
+          refreshToken: tokenData.refreshToken,
+          accessTokenExpiresAt: tokenData.accessTokenExpiresAt,
+          refreshTokenExpiresAt: tokenData.refreshTokenExpiresAt
         })
         return true
       }
