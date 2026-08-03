@@ -29,6 +29,14 @@ const routes: RouteRecordRaw[] = [
     })
   },
   {
+    path: '/Admin/Analytics',
+    redirect: to => ({
+      path: '/analytics',
+      query: to.query,
+      hash: to.hash
+    })
+  },
+  {
     path: '/Admin/Conversations',
     redirect: to => ({
       path: '/chat',

@@ -234,8 +234,26 @@ function handleVisibilityChange(): void {
 }
 
 function handleSummarizeChange(): void {
-  details.value = {}
-  expandedTraceIds.value = new Set()
+  const traceIds = [...expandedTraceIds.value]
+  if (traceIds.length === 0) return
+
+  // 切换精简模式后保持详情展开，并以新模式原地重新加载正文。
+  const nextDetails = { ...details.value }
+  traceIds.forEach((traceId) => delete nextDetails[traceId])
+  details.value = nextDetails
+  traceIds.forEach((traceId) => { void loadDetail(traceId) })
+}
+
+async function loadDetail(traceId: string): Promise<void> {
+  detailLoading.value = { ...detailLoading.value, [traceId]: true }
+  try {
+    const detail = await api.getDeveloperDetail(traceId, summarizeDetail.value) as DeveloperInvocationDetail
+    details.value = { ...details.value, [traceId]: detail }
+  } catch (e) {
+    message.error((e as Error).message)
+  } finally {
+    detailLoading.value = { ...detailLoading.value, [traceId]: false }
+  }
 }
 
 async function toggleDetail(traceId: string): Promise<void> {
@@ -249,15 +267,7 @@ async function toggleDetail(traceId: string): Promise<void> {
   expandedTraceIds.value = next
   if (details.value[traceId]) return
 
-  detailLoading.value = { ...detailLoading.value, [traceId]: true }
-  try {
-    const detail = await api.getDeveloperDetail(traceId, summarizeDetail.value) as DeveloperInvocationDetail
-    details.value = { ...details.value, [traceId]: detail }
-  } catch (e) {
-    message.error((e as Error).message)
-  } finally {
-    detailLoading.value = { ...detailLoading.value, [traceId]: false }
-  }
+  await loadDetail(traceId)
 }
 
 async function copyText(text: string): Promise<void> {

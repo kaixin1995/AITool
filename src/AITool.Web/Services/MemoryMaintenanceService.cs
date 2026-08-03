@@ -43,7 +43,7 @@ internal sealed class MemoryMaintenanceService : BackgroundService
             return;
         }
 
-        _logger.LogInformation("内存维护服务已启动，每 {Interval} 触发一次 LOH 压缩", CompactionInterval);
+        // _logger.LogInformation("内存维护服务已启动，每 {Interval} 触发一次 LOH 压缩", CompactionInterval);
 
         while (!stoppingToken.IsCancellationRequested)
         {

@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } fr
 import { echarts, initChart as initThemedChart, type ECharts } from '@/composables/useEcharts'
 import { NCard, NSelect, NDatePicker, NButton, NEmpty, NSpin, type SelectOption } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
-import { formatCompact, formatDuration } from '@/composables/useFormat'
+import { formatCompact, formatDuration, formatPercentage } from './analyticsFormat'
 import * as api from '@/api/analytics'
 import type {
   AnalyticsBusyResult,
@@ -209,6 +209,30 @@ const SUCCESS = '#10b981'
 const WARNING = '#f59e0b'
 const DANGER = '#ef4444'
 const CACHED = '#6366f1'
+const CYAN = '#06b6d4'
+
+type TooltipItem = {
+  axisValueLabel?: string
+  dataIndex: number
+  marker: string
+  seriesName: string
+  value: number | string
+}
+
+function asTooltipItems(value: unknown): TooltipItem[] {
+  return Array.isArray(value) ? value as TooltipItem[] : []
+}
+
+// 与旧统计页一致：坐标轴类图表在提示层统一展示时间桶、指标名和格式化后的数值。
+function formatAxisTooltip(value: unknown, valueFormatter: (item: TooltipItem) => string): string {
+  const items = asTooltipItems(value)
+  if (items.length === 0) return ''
+
+  return [
+    items[0].axisValueLabel,
+    ...items.map((item) => `${item.marker}${item.seriesName}：${valueFormatter(item)}`)
+  ].join('<br/>')
+}
 
 function initChart(key: ChartKey): ECharts | null {
   const el = chartEls.value[key]
@@ -228,7 +252,10 @@ function renderCharts(): void {
   const c1 = initChart('requestTrend')
   if (c1 && d.requestTrend) {
     c1.setOption({
-      tooltip: { trigger: 'axis' },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (items: unknown) => formatAxisTooltip(items, (item) => formatCompact(Number(item.value)))
+      },
       grid: { left: 40, right: 20, top: 20, bottom: 30 },
       xAxis: { type: 'category', data: d.requestTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
       yAxis: { type: 'value', minInterval: 1, axisLabel: tokenAxisLabel },
@@ -239,7 +266,13 @@ function renderCharts(): void {
   const c2 = initChart('resultTrend')
   if (c2 && d.resultTrend) {
     c2.setOption({
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (items: unknown) => formatAxisTooltip(items, (item) => item.seriesName === '成功率'
+          ? formatPercentage(Number(item.value))
+          : formatCompact(Number(item.value)))
+      },
       legend: { data: ['成功', '失败', '成功率'], top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 40, right: 50, top: 30, bottom: 30 },
       xAxis: { type: 'category', data: d.resultTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
@@ -248,25 +281,34 @@ function renderCharts(): void {
         { type: 'value', name: '%', position: 'right', min: 0, max: 100, axisLabel: { formatter: '{value}%' } }
       ],
       series: [
-        { name: '成功', type: 'bar', stack: 'total', data: d.resultTrend.map((t) => t.successCount), itemStyle: { color: SUCCESS } },
-        { name: '失败', type: 'bar', stack: 'total', data: d.resultTrend.map((t) => t.failCount), itemStyle: { color: DANGER } },
-        { name: '成功率', type: 'line', yAxisIndex: 1, smooth: true, data: d.resultTrend.map((t) => t.successRate ?? 0), itemStyle: { color: PRIMARY } }
+        { name: '成功', type: 'bar', data: d.resultTrend.map((t) => t.successCount), itemStyle: { color: SUCCESS } },
+        { name: '失败', type: 'bar', data: d.resultTrend.map((t) => t.failCount), itemStyle: { color: DANGER } },
+        { name: '成功率', type: 'line', yAxisIndex: 1, smooth: true, data: d.resultTrend.map((t) => t.successRate ?? 0), itemStyle: { color: CACHED } }
       ]
     }, true)
   }
 
   const c3 = initChart('tokenTrend')
   if (c3 && d.tokenTrend) {
+    const data = d.tokenTrend
     c3.setOption({
-      tooltip: { trigger: 'axis', valueFormatter: (v: number | string) => formatCompact(Number(v)) },
-      legend: { data: ['输入', '缓存', '输出'], top: 0, textStyle: { fontSize: 11 } },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (items: unknown) => {
+          const values = asTooltipItems(items)
+          const index = values[0]?.dataIndex ?? 0
+          const total = data[index]?.totalTokens ?? 0
+          return `${formatAxisTooltip(values, (item) => formatCompact(Number(item.value)))}<br/>总量：${formatCompact(total)}`
+        }
+      },
+      legend: { data: ['输入', '输出', '缓存'], top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 50, right: 20, top: 30, bottom: 30 },
-      xAxis: { type: 'category', data: d.tokenTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
+      xAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10 } },
       yAxis: { type: 'value', axisLabel: tokenAxisLabel },
       series: [
-        { name: '输入', type: 'line', smooth: true, data: d.tokenTrend.map((t) => t.inputTokens), itemStyle: { color: PRIMARY } },
-        { name: '缓存', type: 'line', smooth: true, data: d.tokenTrend.map((t) => t.cachedTokens), itemStyle: { color: CACHED } },
-        { name: '输出', type: 'line', smooth: true, data: d.tokenTrend.map((t) => t.outputTokens), itemStyle: { color: SUCCESS } }
+        { name: '输入', type: 'line', smooth: true, data: data.map((t) => t.inputTokens), itemStyle: { color: PRIMARY } },
+        { name: '输出', type: 'line', smooth: true, data: data.map((t) => t.outputTokens), itemStyle: { color: SUCCESS } },
+        { name: '缓存', type: 'line', smooth: true, data: data.map((t) => t.cachedTokens), itemStyle: { color: CYAN } }
       ]
     }, true)
   }
@@ -274,14 +316,17 @@ function renderCharts(): void {
   const c4 = initChart('durationTrend')
   if (c4 && d.durationTrend) {
     c4.setOption({
-      tooltip: { trigger: 'axis', valueFormatter: (v: number | string) => formatDuration(Number(v)) },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (items: unknown) => formatAxisTooltip(items, (item) => formatDuration(Number(item.value)))
+      },
       legend: { data: ['总耗时', '首字耗时'], top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 50, right: 20, top: 30, bottom: 30 },
       xAxis: { type: 'category', data: d.durationTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
       yAxis: { type: 'value', axisLabel: durationAxisLabel },
       series: [
-        { name: '总耗时', type: 'line', smooth: true, data: d.durationTrend.map((t) => t.averageTotalDurationMs), itemStyle: { color: PRIMARY } },
-        { name: '首字耗时', type: 'line', smooth: true, data: d.durationTrend.map((t) => t.averageFirstTokenLatencyMs), itemStyle: { color: WARNING } }
+        { name: '总耗时', type: 'line', smooth: true, data: d.durationTrend.map((t) => t.averageTotalDurationMs), areaStyle: { opacity: 0.15 }, itemStyle: { color: WARNING } },
+        { name: '首字耗时', type: 'line', smooth: true, data: d.durationTrend.map((t) => t.averageFirstTokenLatencyMs), itemStyle: { color: CYAN } }
       ]
     }, true)
   }
@@ -289,7 +334,12 @@ function renderCharts(): void {
   const c5 = initChart('fallbackTrend')
   if (c5 && d.fallbackTrend) {
     c5.setOption({
-      tooltip: { trigger: 'axis' },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (items: unknown) => formatAxisTooltip(items, (item) => item.seriesName === '回退率'
+          ? formatPercentage(Number(item.value))
+          : formatCompact(Number(item.value)))
+      },
       legend: { data: ['回退次数', '回退率'], top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 40, right: 50, top: 30, bottom: 30 },
       xAxis: { type: 'category', data: d.fallbackTrend.map((t) => t.label), axisLabel: { fontSize: 10 } },
@@ -306,43 +356,80 @@ function renderCharts(): void {
 
   const c6 = initChart('cacheRatio')
   if (c6 && d.modelCacheRatioDistribution) {
+    const data = d.modelCacheRatioDistribution
     c6.setOption({
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (items: unknown) => {
+          const values = asTooltipItems(items)
+          const index = values[0]?.dataIndex ?? 0
+          const point = data[index]
+          const details = point
+            ? `<br/>总输入：${formatCompact(point.totalInputScope)}<br/>缓存：${formatCompact(point.cachedTokens)}<br/>未命中输入：${formatCompact(point.inputTokens)}`
+            : ''
+          return `${formatAxisTooltip(values, (item) => item.seriesName === '缓存命中率'
+            ? formatPercentage(Number(item.value))
+            : formatCompact(Number(item.value)))}${details}`
+        }
+      },
       legend: { data: ['缓存命中率', '缓存命中 Token'], top: 0, textStyle: { fontSize: 11 } },
       grid: { left: 50, right: 58, top: 30, bottom: 60 },
-      xAxis: { type: 'category', data: d.modelCacheRatioDistribution.map((t) => t.label), axisLabel: { fontSize: 10, rotate: 30, interval: 0 } },
+      xAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10, rotate: 30, interval: 0 } },
       yAxis: [
         { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } },
         { type: 'value', position: 'right', axisLabel: tokenAxisLabel }
       ],
       series: [
-        { name: '缓存命中率', type: 'bar', data: d.modelCacheRatioDistribution.map((t) => t.cacheHitRate), itemStyle: { color: CACHED }, barMaxWidth: 32 },
-        { name: '缓存命中 Token', type: 'line', yAxisIndex: 1, smooth: true, data: d.modelCacheRatioDistribution.map((t) => t.cachedTokens), itemStyle: { color: SUCCESS } }
+        { name: '缓存命中率', type: 'bar', data: data.map((t) => t.cacheHitRate), itemStyle: { color: CYAN }, barMaxWidth: 32 },
+        { name: '缓存命中 Token', type: 'line', yAxisIndex: 1, smooth: true, data: data.map((t) => t.cachedTokens), itemStyle: { color: CACHED } }
       ]
     }, true)
   }
 
   const c7 = initChart('siteDist')
   if (c7 && d.siteDistribution) {
-    const data = [...d.siteDistribution].sort((a, b) => b.requestCount - a.requestCount).slice(0, 10).reverse()
+    const data = d.siteDistribution
     c7.setOption({
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      grid: { left: 10, right: 30, top: 20, bottom: 20, containLabel: true },
-      xAxis: { type: 'value', minInterval: 1, axisLabel: tokenAxisLabel },
-      yAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10 } },
-      series: [{ name: '请求数', type: 'bar', data: data.map((t) => t.requestCount), itemStyle: { color: PRIMARY }, barMaxWidth: 20 }]
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (items: unknown) => {
+          const values = asTooltipItems(items)
+          const point = data[values[0]?.dataIndex ?? 0]
+          const details = point
+            ? `<br/>成功：${formatCompact(point.successCount)}<br/>失败：${formatCompact(point.failedCount)}<br/>平均耗时：${formatDuration(point.averageTotalDurationMs)}`
+            : ''
+          return `${formatAxisTooltip(values, (item) => formatCompact(Number(item.value)))}${details}`
+        }
+      },
+      grid: { left: 44, right: 20, top: 20, bottom: 62 },
+      xAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10, rotate: 30, interval: 0 } },
+      yAxis: { type: 'value', minInterval: 1, axisLabel: tokenAxisLabel },
+      series: [{ name: '请求数', type: 'bar', data: data.map((t) => t.requestCount), itemStyle: { color: CACHED }, barMaxWidth: 32 }]
     }, true)
   }
 
   const c8 = initChart('modelDist')
   if (c8 && d.modelDistribution) {
-    const data = [...d.modelDistribution].sort((a, b) => (b.totalTokens ?? 0) - (a.totalTokens ?? 0)).slice(0, 10).reverse()
+    const data = d.modelDistribution
     c8.setOption({
-      tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-      grid: { left: 10, right: 30, top: 20, bottom: 20, containLabel: true },
-      xAxis: { type: 'value', axisLabel: tokenAxisLabel },
-      yAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10 } },
-      series: [{ name: 'Token 用量', type: 'bar', data: data.map((t) => t.totalTokens ?? 0), itemStyle: { color: CACHED }, barMaxWidth: 20 }]
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (items: unknown) => {
+          const values = asTooltipItems(items)
+          const point = data[values[0]?.dataIndex ?? 0]
+          const details = point
+            ? `<br/>缓存：${formatCompact(point.cachedTokens)}<br/>未命中输入：${formatCompact(point.inputTokens)}<br/>输出：${formatCompact(point.outputTokens)}<br/>调用次数：${formatCompact(point.requestCount)}<br/>成功：${formatCompact(point.successCount)}<br/>失败：${formatCompact(point.failedCount)}`
+            : ''
+          return `${formatAxisTooltip(values, (item) => formatCompact(Number(item.value)))}${details}`
+        }
+      },
+      grid: { left: 50, right: 20, top: 20, bottom: 62 },
+      xAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10, rotate: 30, interval: 0 } },
+      yAxis: { type: 'value', axisLabel: tokenAxisLabel },
+      series: [{ name: 'Token 用量', type: 'bar', data: data.map((t) => t.totalTokens ?? 0), itemStyle: { color: SUCCESS }, barMaxWidth: 32 }]
     }, true)
   }
 }
@@ -461,9 +548,13 @@ watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void l
         </div>
       </section>
 
-      <NEmpty v-if="!loading && !dashboard" description="暂无统计数据" class="analytics-empty" />
+      <NEmpty
+        v-if="!loading && !waitingForResult && (!dashboard || summary?.totalRequests === 0)"
+        description="当前筛选条件下暂无可视化数据"
+        class="analytics-empty"
+      />
 
-      <template v-if="summary">
+      <template v-if="summary && summary.totalRequests > 0">
         <section class="analytics-kpi-grid mb-4">
           <article class="analytics-kpi-card">
             <span class="analytics-kpi-label">总请求数</span>
@@ -471,11 +562,11 @@ watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void l
           </article>
           <article class="analytics-kpi-card">
             <span class="analytics-kpi-label">成功率</span>
-            <strong class="analytics-kpi-value success">{{ summary.successRate ?? 0 }}%</strong>
+            <strong class="analytics-kpi-value success">{{ formatPercentage(summary.successRate) }}</strong>
           </article>
           <article class="analytics-kpi-card">
             <span class="analytics-kpi-label">失败率</span>
-            <strong class="analytics-kpi-value danger">{{ summary.failureRate ?? 0 }}%</strong>
+            <strong class="analytics-kpi-value danger">{{ formatPercentage(summary.failureRate) }}</strong>
           </article>
           <article class="analytics-kpi-card">
             <span class="analytics-kpi-label">总 Tokens</span>
@@ -541,7 +632,7 @@ watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void l
           </section>
 
           <section class="analytics-panel card">
-            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">模型调用分布</h5><div class="analytics-panel-subtitle">Top 模型调用热度与用量</div></div></div>
+            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">模型调用分布</h5><div class="analytics-panel-subtitle">按调用次数排序的模型 Token 用量</div></div></div>
             <div class="analytics-chart-body"><div :ref="(el) => setEl('modelDist', el as HTMLElement | null)" class="chart-body" /></div>
           </section>
         </div>
