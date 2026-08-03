@@ -107,11 +107,13 @@ public sealed class CoreRuntimeSite
     /// 是否启用。
     /// </summary>
     public bool IsEnabled { get; set; }
-}
 
-/// <summary>
-/// Core 运行时模型项。
-/// </summary>
+    /// <summary>
+    /// 自定义请求头 JSON（Codex 隐藏 Site 注入 Originator/Chatgpt-Account-Id/User-Agent 等）。
+    /// Core 转发时通过 MergeExtraHeaders 解析并注入上游请求，缺失会导致 Codex 请求被上游拒绝。
+    /// </summary>
+    public string? ExtraHeadersJson { get; set; }
+}
 public sealed class CoreRuntimeModel
 {
     /// <summary>

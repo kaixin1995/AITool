@@ -108,8 +108,12 @@ public sealed class ModelsApiController : ControllerBase
         mapping.MaxConcurrency = Math.Max(0, request.MaxConcurrency);
         await _dbContext.UpdateAsync(mapping, cancellationToken);
 
-        // 配置保存后立即失效缓存，并同步更新运行中的限制器状态，仅影响后续新请求。
+        // 配置保存后立即失效缓存并推送到 Core。
+        // MaxConcurrency 存在 SiteModelMappings 里，必须推 SiteModelMappings 类别（InvalidateModelMetadataAsync），
+        // 否则 Core 端 ModelConcurrencyLimiter 读不到新值，并发限制不生效。
+        await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
         await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        // Admin 进程内的 limiter 立即更新（Core 端靠上面的 patch 同步）。
         _concurrencyLimiter.UpdateLimit(mapping.SiteId, mapping.RemoteModelName, mapping.MaxConcurrency);
 
         return Ok(ApiResponse.Ok(new { maxConcurrency = mapping.MaxConcurrency }));

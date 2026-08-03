@@ -396,14 +396,14 @@ public sealed class AdminUsageLogSummaryDto
     public double SuccessRate { get; set; }
 
     /// <summary>
-    /// Token 总数。
+    /// Token 总数（用 long 避免大窗口累计超 Int32.MaxValue 溢出）。
     /// </summary>
-    public int TotalTokens { get; set; }
+    public long TotalTokens { get; set; }
 
     /// <summary>
     /// 最大耗时。
     /// </summary>
-    public int MaxDurationMs { get; set; }
+    public long MaxDurationMs { get; set; }
 }
 
 /// <summary>
@@ -526,8 +526,8 @@ public sealed class UsageLogsApiController : ControllerBase
             ? 0d
             : Math.Round(successRequests * 100d / totalRequests, 2, MidpointRounding.AwayFromZero);
 
-        var totalTokens = (int)(row.TotalTokens ?? 0);
-        var maxDurationMs = (int)(row.MaxDurationMs ?? 0);
+        var totalTokens = row.TotalTokens ?? 0;
+        var maxDurationMs = row.MaxDurationMs ?? 0;
 
         return Ok(new AdminUsageLogSummaryDto
         {

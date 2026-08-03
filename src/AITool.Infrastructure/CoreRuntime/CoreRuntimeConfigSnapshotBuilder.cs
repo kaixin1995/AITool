@@ -63,7 +63,8 @@ public static class CoreRuntimeConfigSnapshotBuilder
                     ProtocolType = x.ProtocolType,
                     SupportsOpenAi = x.SupportsOpenAi,
                     SupportsAnthropic = x.SupportsAnthropic,
-                    IsEnabled = x.IsEnabled
+                    IsEnabled = x.IsEnabled,
+                    ExtraHeadersJson = x.ExtraHeadersJson
                 })
                 .ToList(),
             Models = modelList

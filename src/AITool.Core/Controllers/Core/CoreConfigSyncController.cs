@@ -1,7 +1,6 @@
 using AITool.Application.CoreRuntime;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.CoreRuntime;
-using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Core.Controllers.Core;

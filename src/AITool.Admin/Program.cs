@@ -353,7 +353,8 @@ app.UseAuthentication();
 app.UseAuthorization();
 
 // 映射健康检查端点，作为集成测试的验证入口。
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+// 健康检查端点必须允许匿名访问（负载均衡/k8s 探针不带 JWT），否则 FallbackPolicy 会返回 401。
+app.MapGet("/health", () => Results.Ok(new { status = "ok" })).AllowAnonymous();
 
 // 启用 Hangfire 仪表盘。鉴权策略：本地/开发/测试环境放行；远程生产环境要求已认证用户。
 // JWT 存 localStorage 无法自动带到 /hangfire 页面，远程访问走前端管理界面或被拒绝。

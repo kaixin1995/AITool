@@ -753,6 +753,9 @@ public sealed partial class ProxyRequestMetadataCache
                                 SiteModelName = rule.SiteModelName,
                                 BaseUrl = site.BaseUrl,
                                 ApiKey = site.ApiKey,
+                                // Codex 隐藏 Site 的自定义请求头（Originator/Chatgpt-Account-Id 等），
+                                // Core 转发时通过 MergeExtraHeaders 注入上游，缺失会导致 Codex 请求被拒绝。
+                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
                                 ModelPriority = rule.ModelPriority,
                                 InstancePriority = rule.InstancePriority,
                                 Priority = rule.Priority,
