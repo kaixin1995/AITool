@@ -41,36 +41,9 @@ public static class AdminInfrastructureExtensions
     {
         services.AddRazorPages();
 
-        // 注册 Cookie 认证，配置登录页面和重定向逻辑。
-        // Web 和 Admin 共用相同的认证方案和 Cookie 名称。
-        services
-            .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
-            .AddCookie(options =>
-            {
-                options.LoginPath = "/Login";
-                options.AccessDeniedPath = "/Login";
-                options.Cookie.Name = "AITool.AdminAuth";
-                options.SlidingExpiration = true;
-                options.Events = new CookieAuthenticationEvents
-                {
-                    OnRedirectToLogin = context =>
-                    {
-                        if (AdminRequestMatcher.IsAdminAuthRequest(context.Request))
-                        {
-                            var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
-                            var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
-                                ? "/Login"
-                                : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
-                            context.Response.Redirect(loginUrl);
-                            return Task.CompletedTask;
-                        }
-
-                        context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                        return Task.CompletedTask;
-                    }
-                };
-            });
-        services.AddAuthorization();
+        // 认证授权由 Admin 宿主的 Program.cs 配置（JWT Bearer）。
+        // Infrastructure 层不再绑定具体认证方案，保持与宿主解耦。
+        // 代理端点 /v1/* 不走 ASP.NET 认证（自己用 AccessKey 校验）。
 
         // 注册 SqlSugar 数据库访问层（替代原 EF Core）。
         // SqlSugarSetup.AddSqlSugar 注册 SqlSugarScope（线程安全单例）+ AppDbContext（Scoped 适配）。

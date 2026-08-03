@@ -1,4 +1,5 @@
 using System.Linq.Expressions;
+using AITool.Domain.Auth;
 using AITool.Domain.Codex;
 using AITool.Domain.Detection;
 using AITool.Domain.Models;
@@ -215,6 +216,7 @@ public static class SqlSugarSetup
             typeof(ProxyUsageLog),
             typeof(ModelHealthMonitor),
             typeof(SystemRuntimeSettings),
-            typeof(CompatibilityProfile));
+            typeof(CompatibilityProfile),
+            typeof(RefreshTokenRecord));
     }
 }

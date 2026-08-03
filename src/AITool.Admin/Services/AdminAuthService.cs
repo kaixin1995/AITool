@@ -1,20 +1,14 @@
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AITool.Application.Common;
-using Microsoft.AspNetCore.Hosting;
+using AITool.Infrastructure.Hosting;
 using Microsoft.Extensions.Configuration;
 
-namespace AITool.Infrastructure.Hosting;
+namespace AITool.Admin.Services;
 
 /// <summary>
 /// 提供后台登录密码的读取、校验和初始化写入能力。
-/// <para>
-/// 管理后台认证服务，支持密码哈希校验和首次密码设置。
-/// 密码哈希存储在 appsettings.json 的 AdminAuth 配置节中，
-/// 修改后触发配置热重载使新密码立即生效。
-/// </para>
 /// </summary>
 public sealed class AdminAuthService
 {
@@ -48,24 +42,39 @@ public sealed class AdminAuthService
 
     /// <summary>
     /// 校验输入密码是否与配置中的哈希值一致。
+    /// 自动兼容新旧两种格式：pbkdf2$（新）和无盐 MD5（旧）。
     /// </summary>
     public bool VerifyPassword(string password)
+    {
+        return VerifyPassword(password, out _);
+    }
+
+    /// <summary>
+    /// 校验输入密码是否与配置中的哈希值一致，并指示是否需要透明升级（旧 MD5 → PBKDF2）。
+    /// 调用方（如 AuthApiController）在校验通过且 <paramref name="needsUpgrade"/> 为 true 时，
+    /// 应调用 <see cref="UpgradePasswordAsync"/> 用同一明文密码重算 PBKDF2 写回。
+    /// </summary>
+    public bool VerifyPassword(string password, out bool needsUpgrade)
     {
         var passwordHash = GetPasswordHash();
         if (string.IsNullOrWhiteSpace(passwordHash) || string.IsNullOrWhiteSpace(password))
         {
+            needsUpgrade = false;
             return false;
         }
 
-        // 使用恒定时间比较，避免通过响应耗时推断哈希前缀的 timing 侧信道攻击。
-        // 统一小写后再转字节比较（ComputeMd5 输出小写）。
-        var expected = Encoding.UTF8.GetBytes(passwordHash.ToLowerInvariant());
-        var actual = Encoding.UTF8.GetBytes(ComputeMd5(password));
-        return CryptographicOperations.FixedTimeEquals(expected, actual);
+        return PasswordHasher.Verify(password, passwordHash, out needsUpgrade);
     }
 
     /// <summary>
-    /// 首次设置后台密码，并将哈希值写入配置文件。
+    /// 用明文密码重新计算 PBKDF2 哈希并写回配置（透明升级旧 MD5）。
+    /// 仅在 <see cref="VerifyPassword(string, out bool)"/> 返回 true 且 needsUpgrade=true 时调用。
+    /// </summary>
+    public Task UpgradePasswordAsync(string password, CancellationToken cancellationToken = default)
+        => SetPasswordAsync(password, cancellationToken);
+
+    /// <summary>
+    /// 首次设置后台密码，并将哈希值写入配置文件（PBKDF2 加盐格式）。
     /// </summary>
     public async Task SetPasswordAsync(string password, CancellationToken cancellationToken = default)
     {
@@ -78,7 +87,7 @@ public sealed class AdminAuthService
         var rootNode = JsonNode.Parse(await File.ReadAllTextAsync(_appSettingsPath, cancellationToken))?.AsObject()
             ?? new JsonObject();
         var authNode = rootNode[AdminAuthOptions.SectionName] as JsonObject ?? new JsonObject();
-        authNode[nameof(AdminAuthOptions.PasswordHash)] = ComputeMd5(password);
+        authNode[nameof(AdminAuthOptions.PasswordHash)] = PasswordHasher.Hash(password);
         rootNode[AdminAuthOptions.SectionName] = authNode;
 
         var json = rootNode.ToJsonString(JsonSerializerPresets.WriteIndented);
@@ -96,15 +105,5 @@ public sealed class AdminAuthService
     private string GetPasswordHash()
     {
         return _configuration.GetSection(AdminAuthOptions.SectionName)[nameof(AdminAuthOptions.PasswordHash)]?.Trim() ?? string.Empty;
-    }
-
-    /// <summary>
-    /// 计算字符串的 MD5 值，并按小写十六进制输出。
-    /// </summary>
-    private static string ComputeMd5(string value)
-    {
-        var bytes = Encoding.UTF8.GetBytes(value);
-        var hashBytes = MD5.HashData(bytes);
-        return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 }

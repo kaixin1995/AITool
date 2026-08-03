@@ -11,8 +11,12 @@ using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
 using AITool.Admin.Services;
 using Hangfire;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.IdentityModel.Tokens;
 using NLog;
 using NLog.Web;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -55,8 +59,49 @@ var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection") ?? $"Data Source={Path.GetFullPath(dbPath)}";
 builder.Services.AddAdminInfrastructure(connectionString);
 
-// 管理后台认证服务，用于 Login 页面密码验证和 AdminAuthenticationMiddleware。
+// ===== JWT 认证（替换原 Cookie 方案，适配 Vue SPA 前端）=====
+// 配置 JwtOptions 绑定 + 签发/刷新服务 + 登录暴力破解防护。
+builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+builder.Services.AddScoped<JwtTokenService>();
+builder.Services.AddSingleton<LoginRateLimitService>();
+// 管理后台认证服务（PBKDF2 密码哈希，兼容旧 MD5 透明升级）。
 builder.Services.AddSingleton<AdminAuthService>();
+
+// 认证：纯 JWT Bearer。/api/* 用 Bearer token 验证；代理端点 /v1/* 不走 ASP.NET 认证（AccessKey 自校验）。
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwt.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwt.Audience,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwt.SigningKey)),
+            ClockSkew = TimeSpan.FromSeconds(30)
+        };
+        // /api/* 未携带有效 token 时统一返回 401 JSON（前端按 401 + errorCode 处理）。
+        options.Events = new JwtBearerEvents
+        {
+            OnChallenge = context =>
+            {
+                context.HandleResponse();
+                context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                context.Response.ContentType = "application/json; charset=utf-8";
+                return context.Response.WriteAsJsonAsync(new
+                {
+                    success = false,
+                    message = "未登录或登录已过期，请重新登录",
+                    errorCode = "unauthenticated"
+                });
+            }
+        };
+    });
+builder.Services.AddAuthorization();
 
 // Admin 侧 ConversationTurn 事件消费器，将 Core 代理产生的对话记录事件写入 Admin 本地 JSONL 存储。
 builder.Services.AddScoped<AdminConversationTurnEventIngestor>();
@@ -226,7 +271,6 @@ app.UseStaticFiles(new StaticFileOptions
 });
 app.UseAuthentication();
 app.UseAuthorization();
-app.UseAdminAuthentication();
 
 // 映射健康检查端点，作为集成测试的验证入口。
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));

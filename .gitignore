@@ -386,3 +386,7 @@ FodyWeavers.xsd
 /子页面文档
 /nul
 /.zcode/plans
+
+# 前端构建产物（由 vite build 生成，不跟踪）
+src/AITool.Admin/wwwroot/
+src/AITool.Web/
