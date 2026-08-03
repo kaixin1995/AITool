@@ -54,6 +54,12 @@ public sealed class InspectionRunResult
 
     /// <summary>巡检是否自动执行（否则为手动触发）。用于状态展示。</summary>
     public bool AutoTriggered { get; set; }
+
+    /// <summary>
+    /// 本轮是否有 Site 状态被变更（禁用/启用）。
+    /// 用于在 SerialExecuteAsync 锁外统一触发缓存失效推送 Core，避免持锁等 HTTP。
+    /// </summary>
+    public bool AnySiteChanged { get; set; }
 }
 
 /// <summary>

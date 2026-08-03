@@ -79,14 +79,15 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
 
         // 用全局 SQLite 串行化锁包裹"查 due → 更新账号/站点"完整块，
         // 避免与巡检/日志写等后台服务并发踩 SqlSugarScope 竞态。
-        await dbContext.SerialExecuteAsync(async () =>
+        // 缓存失效（含 HTTP 推送 Core）在锁外执行，避免持锁等 Core 响应阻塞其他后台 DB 写。
+        var anySiteRecovered = await dbContext.SerialExecuteAsync(async () =>
         {
             var now = DateTimeOffset.UtcNow;
             var due = await dbContext.CodexAccounts
                 .Where(a => a.IsQuotaCooling && a.QuotaCoolingUntil != null && a.QuotaCoolingUntil <= now)
                 .ToListAsync(ct);
 
-            if (due.Count == 0) return;
+            if (due.Count == 0) return false;
 
             var anyRecovered = false;
             foreach (var account in due)
@@ -109,12 +110,18 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
                 _logger.LogInformation("Codex account {Id} cooldown recovered", account.Id);
             }
 
+            // CodexAccounts 缓存只在 Admin 端（Core 不缓存账号实体），本地内存失效即可，无 HTTP。
             if (anyRecovered)
             {
-                // 路由目标缓存（含 Site.IsEnabled）必须推送到 Core，否则 Core 仍把冷却恢复后的 Site 视为禁用。
-                await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
                 cache.InvalidateCodexAccounts();
             }
+            return anyRecovered;
         }, ct);
+
+        // 锁外：仅当有 Site 恢复时才推送 Core。
+        if (anySiteRecovered)
+        {
+            await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+        }
     }
 }

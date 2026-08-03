@@ -92,9 +92,15 @@ public sealed class CodexInspectionService : BackgroundService
             var interval = TimeSpan.FromMinutes(Math.Max(5, runtime.CodexInspectionIntervalMinutes));
             _nextScheduledAt = now + interval;
             // 用全局 SQLite 串行化锁包裹巡检的 DB 访问，避免与其他后台服务（日志写/冷却恢复）并发踩 SqlSugar Scope 竞态。
-            await dbContext.SerialExecuteAsync(() =>
-                RunInspectionAsync(dbContext, cache, adminCacheInvalidation, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh: false, autoTriggered: true, ct),
+            // 缓存失效（含 HTTP 推送 Core）在锁外执行，避免持锁等 Core 响应阻塞其他后台 DB 写。
+            var runResult = await dbContext.SerialExecuteAsync(() =>
+                RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh: false, autoTriggered: true, ct),
                 ct);
+            // 锁外：仅当有 Site 状态变更时才推送 Core（避免每轮巡检都打 HTTP）。
+            if (runResult is { AnySiteChanged: true })
+            {
+                await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+            }
         }
         finally
         {
@@ -121,9 +127,15 @@ public sealed class CodexInspectionService : BackgroundService
             var adminCacheInvalidation = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
             var quotaService = scope.ServiceProvider.GetRequiredService<ICodexQuotaService>();
             var runtime = await cache.GetRuntimeSettingsAsync(ct);
-            return await dbContext.SerialExecuteAsync(() =>
-                RunInspectionAsync(dbContext, cache, adminCacheInvalidation, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh, autoTriggered: false, ct),
+            // 锁内只做 DB 写；锁外做缓存失效推送 Core（避免持锁等 HTTP）。
+            var runResult = await dbContext.SerialExecuteAsync(() =>
+                RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh, autoTriggered: false, ct),
                 ct);
+            if (runResult is { AnySiteChanged: true })
+            {
+                await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+            }
+            return runResult;
         }
         finally
         {
@@ -156,7 +168,7 @@ public sealed class CodexInspectionService : BackgroundService
 
     // —— 核心 ——
     private async Task<InspectionRunResult> RunInspectionAsync(
-        AppDbContext dbContext, ProxyRequestMetadataCache cache, AdminCacheInvalidationService adminCacheInvalidation, ICodexQuotaService quotaService, int maxCacheHours,
+        AppDbContext dbContext, ProxyRequestMetadataCache cache, ICodexQuotaService quotaService, int maxCacheHours,
         int autoDisableThresholdPercent,
         bool forceRefresh, bool autoTriggered, CancellationToken ct)
     {
@@ -177,7 +189,7 @@ public sealed class CodexInspectionService : BackgroundService
             foreach (var account in accounts)
             {
                 if (ct.IsCancellationRequested) break;
-                var ar = await InspectAccountAsync(dbContext, cache, adminCacheInvalidation, quotaService, account, maxCacheHours, autoDisableThresholdPercent, forceRefresh, ct);
+                var ar = await InspectAccountAsync(dbContext, cache, quotaService, result, account, maxCacheHours, autoDisableThresholdPercent, forceRefresh, ct);
                 result.Accounts.Add(ar);
             }
 
@@ -197,7 +209,7 @@ public sealed class CodexInspectionService : BackgroundService
     }
 
     private async Task<InspectionAccountResult> InspectAccountAsync(
-        AppDbContext dbContext, ProxyRequestMetadataCache cache, AdminCacheInvalidationService adminCacheInvalidation, ICodexQuotaService quotaService,
+        AppDbContext dbContext, ProxyRequestMetadataCache cache, ICodexQuotaService quotaService, InspectionRunResult result,
         CodexAccount account, int maxCacheHours, int autoDisableThresholdPercent, bool forceRefresh, CancellationToken ct)
     {
         var ar = new InspectionAccountResult { AccountId = account.Id, DisplayName = account.DisplayName };
@@ -248,14 +260,16 @@ public sealed class CodexInspectionService : BackgroundService
 
         if (info.Success && checkPercent.HasValue && checkPercent.Value >= threshold && account.IsEnabled)
         {
-            await DisableAccountAsync(dbContext, cache, adminCacheInvalidation, account, ct, $"额度使用 {checkPercent.Value:F1}% 达到阈值 {threshold}");
+            var siteChanged = await DisableAccountAsync(dbContext, cache, account, ct, $"额度使用 {checkPercent.Value:F1}% 达到阈值 {threshold}");
+            if (siteChanged) result.AnySiteChanged = true;
             ar.Action = "disable";
             ar.Reason = (ar.Reason + "；").Replace("；；", "；") + $"额度 {checkPercent.Value:F1}%≥{threshold}，已自动禁用";
         }
         else if (info.Success && account.IsEnabled == false && !account.IsQuotaCooling && !account.DisabledByFeatureToggle
                  && checkPercent.HasValue && checkPercent.Value < threshold)
         {
-            await EnableAccountAsync(dbContext, cache, adminCacheInvalidation, account, ct, "额度已恢复");
+            var siteChanged = await EnableAccountAsync(dbContext, cache, account, ct, "额度已恢复");
+            if (siteChanged) result.AnySiteChanged = true;
             ar.Action = "enable";
             ar.Reason = (ar.Reason + "；").Replace("；；", "；") + "额度已恢复，已自动启用";
         }
@@ -302,7 +316,12 @@ public sealed class CodexInspectionService : BackgroundService
         catch { return null; }
     }
 
-    private static async Task DisableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, AdminCacheInvalidationService adminCacheInvalidation, CodexAccount account, CancellationToken ct, string reason)
+    /// <summary>
+    /// 禁用账号 + 关联隐藏 Site。仅做 DB 写，返回是否有 Site 状态变更。
+    /// 缓存失效（含 HTTP 推送 Core）由调用方在 SerialExecuteAsync 锁外统一处理，避免持锁等 HTTP。
+    /// </summary>
+    /// <returns>true 表示 Site.IsEnabled 被改（需要推送 Core）；false 表示 Site 本就禁用。</returns>
+    private static async Task<bool> DisableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
     {
         account.IsEnabled = false;
         await dbContext.UpdateAsync(account, ct);
@@ -312,12 +331,17 @@ public sealed class CodexInspectionService : BackgroundService
             site.IsEnabled = false;
             await dbContext.UpdateAsync(site, ct);
         }
-        // 路由目标缓存（含 Site.IsEnabled）必须推送到 Core，否则 Core 仍把禁用账号当可用转发。
-        await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+        // CodexAccounts 缓存只在 Admin 端（Core 不缓存账号实体），本地内存失效即可，无 HTTP。
         cache.InvalidateCodexAccounts();
+        return site != null && !site.IsEnabled;
     }
 
-    private static async Task EnableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, AdminCacheInvalidationService adminCacheInvalidation, CodexAccount account, CancellationToken ct, string reason)
+    /// <summary>
+    /// 启用账号 + 关联隐藏 Site。仅做 DB 写，返回是否有 Site 状态变更。
+    /// 缓存失效（含 HTTP 推送 Core）由调用方在 SerialExecuteAsync 锁外统一处理，避免持锁等 HTTP。
+    /// </summary>
+    /// <returns>true 表示 Site.IsEnabled 被改（需要推送 Core）；returns false 表示 Site 本就启用。</returns>
+    private static async Task<bool> EnableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
     {
         account.IsEnabled = true;
         await dbContext.UpdateAsync(account, ct);
@@ -327,9 +351,8 @@ public sealed class CodexInspectionService : BackgroundService
             site.IsEnabled = true;
             await dbContext.UpdateAsync(site, ct);
         }
-        // 路由目标缓存（含 Site.IsEnabled）必须推送到 Core，否则 Core 仍把启用账号当禁用跳过。
-        await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
         cache.InvalidateCodexAccounts();
+        return site != null && site.IsEnabled;
     }
 
     private void AddLog(string category, string message)
