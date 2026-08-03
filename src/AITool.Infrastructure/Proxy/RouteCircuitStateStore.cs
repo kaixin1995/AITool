@@ -152,4 +152,70 @@ public sealed class RouteCircuitStateStore
         }
         return false;
     }
+
+    /// <summary>
+    /// 返回所有当前被熔断的路由和正在累计失败但尚未熔断的路由。
+    /// 供熔断监控页展示全局状态。
+    /// </summary>
+    public IReadOnlyDictionary<Guid, CircuitRouteInfo> GetAllCircuitStates()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var result = new Dictionary<Guid, CircuitRouteInfo>();
+        // 先清理已过期的熔断
+        foreach (var pair in _blockedRoutes)
+        {
+            if (pair.Value <= now)
+            {
+                _blockedRoutes.TryRemove(pair.Key, out _);
+                _failCounts.TryRemove(pair.Key, out _);
+            }
+        }
+        // 收集当前被熔断的路由
+        foreach (var pair in _blockedRoutes)
+        {
+            var failCount = _failCounts.GetValueOrDefault(pair.Key, 0);
+            result[pair.Key] = new CircuitRouteInfo(IsBlocked: true, FailureCount: failCount,
+                BlockedUntil: pair.Value, RemainingTime: pair.Value > now ? pair.Value - now : TimeSpan.Zero);
+        }
+        // 收集正在累计失败但尚未熔断的路由
+        var failThreshold = Volatile.Read(ref _failThreshold);
+        foreach (var pair in _failCounts)
+        {
+            if (result.ContainsKey(pair.Key)) continue;
+            result[pair.Key] = new CircuitRouteInfo(IsBlocked: false, FailureCount: pair.Value,
+                BlockedUntil: null, RemainingTime: null);
+        }
+        return result;
+    }
+
+    /// <summary>
+    /// 手动解除指定路由的熔断状态（同时清除失败计数）。
+    /// </summary>
+    public bool Reset(Guid routeId)
+    {
+        var removed = false;
+        removed |= _blockedRoutes.TryRemove(routeId, out _);
+        removed |= _failCounts.TryRemove(routeId, out _);
+        return removed;
+    }
+
+    /// <summary>
+    /// 解除所有路由的熔断状态。
+    /// </summary>
+    public int ResetAll()
+    {
+        var count = _blockedRoutes.Count;
+        _blockedRoutes.Clear();
+        _failCounts.Clear();
+        return count;
+    }
 }
+
+/// <summary>
+/// 单条路由的熔断状态摘要，供监控页展示。
+/// </summary>
+public sealed record CircuitRouteInfo(
+    bool IsBlocked,
+    int FailureCount,
+    DateTimeOffset? BlockedUntil,
+    TimeSpan? RemainingTime);

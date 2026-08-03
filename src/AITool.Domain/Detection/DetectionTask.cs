@@ -36,4 +36,9 @@ public sealed class DetectionTask
     /// </summary>
     [SugarColumn(IsNullable = true)]
     public Guid? ModelLibraryItemId { get; set; }
+
+    /// <summary>
+    /// 检测任务创建时间，用于记录该任务何时被加入系统。
+    /// </summary>
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
