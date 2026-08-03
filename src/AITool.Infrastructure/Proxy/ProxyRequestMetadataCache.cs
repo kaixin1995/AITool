@@ -98,6 +98,11 @@ public sealed partial class ProxyRequestMetadataCache
     /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
     /// <summary>
+    /// 数据库连接字符串（仅 Web/Admin 宿主）。
+    /// 缓存未命中时用 CopyNew() 创建独立连接查库，避免与 SqlSugarScope 单例连接并发竞态。
+    /// </summary>
+    private readonly string? _connectionString;
+    /// <summary>
     /// Core 运行时配置提供者。
     /// 仅在 Core 宿主中注册，用于从 Admin 下发的配置快照读取代理运行时数据。
     /// 在 Web/Admin 宿主中为 null，此时回退到数据库查询。
@@ -120,11 +125,13 @@ public sealed partial class ProxyRequestMetadataCache
     public ProxyRequestMetadataCache(
         IMemoryCache memoryCache,
         IServiceScopeFactory scopeFactory,
-        ICoreRuntimeConfigProvider? configProvider = null)
+        ICoreRuntimeConfigProvider? configProvider = null,
+        string? connectionString = null)
     {
         _memoryCache = memoryCache;
         _scopeFactory = scopeFactory;
         _configProvider = configProvider;
+        _connectionString = connectionString;
     }
 
     /// <summary>
@@ -215,17 +222,22 @@ public sealed partial class ProxyRequestMetadataCache
                 ?? new CachedProxyRuntimeSettings();
         }
 
-        // Web/Admin 宿主：从数据库查询完整的运行时设置（包含检测相关字段）
+        // Web/Admin 宿主：从数据库查询完整的运行时设置（包含检测相关字段）。
+        // 缓存未命中时用独立连接（CopyNew）查库，不碰单例 SqlSugarScope 连接，避免并发竞态。
         return await _memoryCache.GetOrCreateAsync(
                 RuntimeSettingsCacheKey,
                 async entry =>
                 {
                     entry.Priority = CacheItemPriority.NeverRemove;
 
+                    // 用 CopyNew() 创建独立连接实例，彻底避免与单例 SqlSugarScope 并发竞态。
+                    // 配置数据读取频率极低（缓存 NeverRemove，仅首次或失效时查库），开销可忽略。
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var settings = await dbContext.SystemRuntimeSettings
-                        .FirstAsync(x => x.Id == 1, cancellationToken);
+                    var independentClient = dbContext.Client.CopyNew();
+                    var settings = await independentClient.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>()
+                        .Where(x => x.Id == 1)
+                        .FirstAsync(cancellationToken);
 
                     return settings is null
                         ? new CachedProxyRuntimeSettings()
