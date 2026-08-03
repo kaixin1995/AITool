@@ -40,9 +40,10 @@ watch(activeTab, (value) => {
 .chat-page {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 112px);
+  height: 100%;
   min-width: 0;
   min-height: 0;
+  box-sizing: border-box;
   overflow: hidden;
 }
 
@@ -73,8 +74,6 @@ watch(activeTab, (value) => {
 
 @media (max-width: 1200px) {
   .chat-page {
-    height: auto;
-    min-height: calc(100vh - 112px);
     overflow: visible;
   }
 }

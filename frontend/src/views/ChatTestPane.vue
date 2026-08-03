@@ -350,7 +350,9 @@ onMounted(loadModels)
 <style scoped>
 .chat-admin-shell {
   width: 100%;
+  height: 100%;
   min-width: 0;
+  min-height: 0;
   overflow-x: auto;
   overflow-y: hidden;
   padding-bottom: 8px;
@@ -358,7 +360,9 @@ onMounted(loadModels)
 
 .chat-admin-stage {
   width: 100%;
+  height: 100%;
   min-width: 0;
+  min-height: 0;
   transform-origin: top left;
 }
 
@@ -370,7 +374,7 @@ onMounted(loadModels)
   align-items: stretch;
   width: 100%;
   min-width: 1080px;
-  height: calc(100vh - 180px);
+  height: 100%;
   min-height: 620px;
   overflow: hidden;
 }
