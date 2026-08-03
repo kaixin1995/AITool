@@ -549,17 +549,18 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 <template>
   <div class="page-container">
-    <PageHeader title="OAuth 管理" subtitle="管理 Codex OAuth 登录账号、凭证导入、额度、巡检与自动禁用" />
+    <PageHeader title="OAuth 管理" subtitle="管理 Codex OAuth 登录账号、凭证导入、额度、巡检与自动禁用">
+      <template #actions>
+        <template v-if="!exportMode">
+          <NButton secondary :disabled="accounts.length === 0" @click="beginExportCredentials">导出凭证</NButton>
+          <NButton type="primary" @click="openOAuthModal">＋ OAuth 登录</NButton>
+          <NButton secondary type="primary" @click="openImportCredential">上传凭证</NButton>
+        </template>
+      </template>
+    </PageHeader>
     <NSpin :show="loading">
       <NTabs v-model:value="activeTab" type="line" animated>
         <NTabPane name="accounts" tab="账号额度">
-          <div class="codex-account-toolbar">
-            <template v-if="!exportMode">
-              <NButton secondary :disabled="accounts.length === 0" @click="beginExportCredentials">导出凭证</NButton>
-              <NButton type="primary" @click="openOAuthModal">＋ OAuth 登录</NButton>
-              <NButton secondary type="primary" @click="openImportCredential">上传凭证</NButton>
-            </template>
-          </div>
           <div v-if="exportMode" class="codex-export-toolbar">
             <strong>已选中 {{ selectedExportAccountIds.length }} 个账号</strong>
             <NButton size="small" type="warning" :loading="exportLoading" :disabled="selectedExportAccountIds.length === 0" @click="handleExportCredentials">下载凭证 JSON</NButton>
@@ -616,27 +617,41 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                       :height="6"
                       :border-radius="3"
                     />
-                    <span class="codex-window-percent">剩余 {{ Math.max(0, 100 - Math.round(w.usedPercent)) }}%</span>
+                    <span class="codex-window-percent">{{ Math.max(0, 100 - Math.round(w.usedPercent)) }}%</span>
                     <div v-if="w.resetLabel" class="codex-window-reset">重置于 {{ w.resetLabel }}</div>
                   </div>
                 </div>
-                <div v-else class="codex-window-placeholder">暂无额度窗口数据，刷新额度后显示。</div>
+                <div v-else class="codex-window-placeholder">
+                  {{ acc.lastQuotaCheckedAt ? '暂无额度窗口数据' : '未刷新额度，点击下方「刷新额度」获取' }}
+                </div>
 
-                <div v-if="!exportMode" class="account-actions codex-card-actions">
-                  <NButton size="small" secondary @click="handleRefreshQuota(acc)">刷新额度</NButton>
-                  <NButton size="small" secondary @click="handleRefreshToken(acc)">刷新 Token</NButton>
-                  <NButton size="small" secondary @click="openEdit(acc)">编辑</NButton>
-                  <NButton size="small" secondary @click="openFetchModels(acc)">拉取模型</NButton>
-                  <NPopconfirm v-if="acc.isQuotaCooling" @positive-click="handleResetQuota(acc)">
-                    <template #trigger><NButton size="small" secondary type="warning">清除冷却</NButton></template>
-                    清除本地额度冷却、刷新 Token 并恢复该账号？
-                  </NPopconfirm>
-                  <NButton size="small" secondary @click="openResetCredit(acc)">重置信用</NButton>
-                  <NButton size="small" secondary :type="acc.isEnabled ? 'warning' : 'success'" @click="handleToggle(acc)">{{ acc.isEnabled ? '禁用' : '启用' }}</NButton>
-                  <NPopconfirm @positive-click="handleDelete(acc)">
-                    <template #trigger><NButton size="small" secondary type="error">删除</NButton></template>
-                    删除账号「{{ acc.displayName }}」？关联站点和路由会一并清理。
-                  </NPopconfirm>
+                <div v-if="!exportMode" class="codex-card-meta">
+                  <div class="codex-source-meta">
+                    <div v-if="acc.lastQuotaCheckedAt">刷新时间：{{ formatDateTime(acc.lastQuotaCheckedAt) }}</div>
+                  </div>
+                  <div class="codex-card-actions">
+                    <NButton class="codex-icon-button" circle secondary title="刷新额度" aria-label="刷新额度" @click="handleRefreshQuota(acc)">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
+                    </NButton>
+                    <NButton class="codex-icon-button" circle secondary :title="acc.isEnabled ? '禁用账号' : '启用账号'" :aria-label="acc.isEnabled ? '禁用账号' : '启用账号'" @click="handleToggle(acc)">
+                      <svg v-if="acc.isEnabled" viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                      <svg v-else viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
+                    </NButton>
+                    <NButton class="codex-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" @click="openEdit(acc)">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                    </NButton>
+                    <NButton class="codex-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+                    </NButton>
+                    <NPopconfirm @positive-click="handleDelete(acc)">
+                      <template #trigger>
+                        <NButton class="codex-icon-button danger" circle secondary title="删除账号" aria-label="删除账号">
+                          <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
+                        </NButton>
+                      </template>
+                      删除账号「{{ acc.displayName }}」？关联站点和路由会一并清理。
+                    </NPopconfirm>
+                  </div>
                 </div>
               </article>
             </div>
@@ -727,26 +742,32 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       </NTabs>
     </NSpin>
 
-    <!-- OAuth 弹窗 -->
-    <NModal v-model:show="oauthModal" title="Codex OAuth 登录" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false">
-      <div style="margin-bottom: 12px">
-        <p style="margin: 0 0 8px; font-weight: 600">第 1 步：打开授权链接</p>
-        <NInput :value="oauthUrl" readonly type="textarea" :autosize="{ minRows: 2 }" />
-        <NSpace style="margin-top: 8px">
-          <NButton size="small" secondary @click="copyText(oauthUrl)">复制授权链接</NButton>
-          <NButton size="small" tag="a" :href="oauthUrl" target="_blank">在新标签打开</NButton>
-        </NSpace>
+    <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序。 -->
+    <NModal v-model:show="oauthModal" title="Codex OAuth 登录" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false">
+      <div class="oauth-form-group">
+        <p class="oauth-form-label">账号显示名称（可选）</p>
+        <NInput v-model:value="oauthDisplayName" placeholder="留空则用邮箱" />
       </div>
-      <div>
-        <p style="margin: 0 0 8px; font-weight: 600">第 2 步：完成授权后，粘贴回调后的完整 URL</p>
-        <p class="oauth-callback-hint">
-          浏览器跳转到 localhost 后无法连接是正常现象，请复制地址栏中包含 code 和 state 的完整地址。
-        </p>
-        <NInput v-model:value="oauthCallbackInput" placeholder="http://localhost:1455/auth/callback?code=...&state=..." type="textarea" :autosize="{ minRows: 2 }" />
-      </div>
-      <div style="margin-top: 12px">
-        <p style="margin: 0 0 8px; font-weight: 600">显示名称（可选）</p>
-        <NInput v-model:value="oauthDisplayName" placeholder="给这个账号起个好认的名字" />
+      <NButton type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">开始登录</NButton>
+
+      <div v-if="oauthUrl" class="oauth-auth-area">
+        <NAlert type="info" :show-icon="false">
+          <strong>操作步骤：</strong>
+          <ol class="oauth-steps">
+            <li>点击下方链接，在新标签页中登录 OpenAI 账号。</li>
+            <li>登录后浏览器跳转到 localhost 并显示无法访问是正常现象。</li>
+            <li>复制浏览器地址栏中的完整 URL，粘贴到下方输入框。</li>
+            <li>点击“完成登录”。</li>
+          </ol>
+        </NAlert>
+        <p class="oauth-form-label">授权链接</p>
+        <div class="oauth-url-row">
+          <NInput :value="oauthUrl" readonly />
+          <NButton secondary @click="copyText(oauthUrl)">复制</NButton>
+          <NButton tag="a" :href="oauthUrl" target="_blank" secondary type="primary">打开</NButton>
+        </div>
+        <p class="oauth-form-label">粘贴登录后跳转的完整 URL</p>
+        <NInput v-model:value="oauthCallbackInput" placeholder="http://localhost:1455/auth/callback?code=...&state=..." type="textarea" :autosize="{ minRows: 3 }" />
       </div>
       <template #footer>
         <NSpace justify="end">
@@ -927,11 +948,34 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   white-space: nowrap;
 }
 
-.oauth-callback-hint {
-  margin: 0 0 8px;
-  color: var(--text-color-secondary);
+.oauth-form-group {
+  margin-bottom: 12px;
+}
+
+.oauth-form-label {
+  margin: 14px 0 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.oauth-auth-area {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.oauth-steps {
+  margin: 8px 0 0;
+  padding-left: 20px;
   font-size: 13px;
-  line-height: 1.6;
+  line-height: 1.8;
+}
+
+.oauth-url-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
 }
 
 .credential-import-label {
@@ -1029,6 +1073,18 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 .reset-credit-expiry strong {
   color: #c4612f;
+}
+
+.codex-export-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid #ffc107;
+  border-radius: 8px;
+  background: #fff3cd;
+  color: #856404;
 }
 
 .codex-stack {
@@ -1160,8 +1216,6 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 .inspection-meta,
 .account-subtitle,
-.account-kpi-label,
-.account-meta-grid span,
 .quota-label,
 .quota-empty {
   color: var(--text-color-secondary);
@@ -1197,9 +1251,21 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   opacity: 0.72;
 }
 
+.export-mode .codex-card {
+  padding-left: 48px;
+  cursor: pointer;
+}
+
 .codex-card.selected {
-  border-color: #6c9eff;
-  box-shadow: 0 0 0 2px rgba(108, 158, 255, 0.16);
+  border-color: #c4612f;
+  background: rgba(196, 97, 47, 0.02);
+  box-shadow: 0 0 0 3px rgba(196, 97, 47, 0.15);
+}
+
+.codex-export-checkbox {
+  position: absolute;
+  top: 18px;
+  left: 16px;
 }
 
 .codex-card-header {
@@ -1230,10 +1296,36 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .codex-account-email {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
   margin-top: 4px;
   color: #6c757d;
   font-size: 12px;
   word-break: break-all;
+}
+
+.codex-badges {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+}
+
+.codex-reset-credits-hint {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #6c757d;
+  cursor: pointer;
+  font: inherit;
+  text-decoration: underline dotted;
+}
+
+.codex-reset-credits-hint:hover {
+  color: #0d6efd;
 }
 
 .codex-plan {
@@ -1244,60 +1336,6 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   color: #c4612f;
   font-size: 11px;
   font-weight: 500;
-}
-
-.account-kpi-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.account-kpi {
-  min-width: 0;
-  padding: 12px;
-  border-radius: 14px;
-  background: #f8fafc;
-  border: 1px solid rgba(226, 232, 240, 0.95);
-}
-
-.account-kpi-value {
-  display: block;
-  margin-top: 4px;
-  color: var(--text-primary);
-  font-size: 20px;
-  font-weight: 800;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.account-kpi-value.small {
-  font-size: 12px;
-}
-
-.account-kpi-value.success { color: #18a058; }
-.account-kpi-value.warning { color: #f0a020; }
-.account-kpi-value.error { color: #d03050; }
-
-.account-meta-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.account-meta-grid div {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-}
-
-.account-meta-grid strong {
-  overflow: hidden;
-  color: var(--text-primary);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .codex-windows-container {
@@ -1357,15 +1395,72 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   text-align: center;
 }
 
-.account-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: auto;
+.codex-card-meta {
+  margin-top: 12px;
+  padding-top: 16px;
+  border-top: 1px solid #e7e1d7;
 }
 
-[data-theme='dark'] .account-kpi {
-  background: rgba(255, 255, 255, 0.05);
+.codex-source-meta {
+  min-height: 16px;
+  margin-bottom: 12px;
+  color: #9ca3af;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.codex-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.codex-icon-button {
+  width: 36px;
+  height: 36px;
+}
+
+.codex-icon-button :deep(.n-button__content) {
+  line-height: 0;
+}
+
+.codex-icon-button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.codex-icon-button.primary { color: #c4612f; }
+.codex-icon-button.info { color: #0ea5e9; }
+.codex-icon-button.danger { color: #dc2626; }
+
+:global([data-theme='dark']) .codex-card {
+  border-color: var(--border-color-global);
+  background: var(--bg-card);
+}
+
+:global([data-theme='dark']) .codex-card-header,
+:global([data-theme='dark']) .codex-card-meta {
+  border-color: var(--border-color-global);
+}
+
+:global([data-theme='dark']) .codex-account-name {
+  color: var(--text-primary);
+}
+
+:global([data-theme='dark']) .codex-window-placeholder {
+  border-color: var(--border-color-global);
+  background: var(--bg-input);
+}
+
+:global([data-theme='dark']) .codex-export-toolbar {
+  border-color: rgba(240, 160, 32, 0.5);
+  background: rgba(240, 160, 32, 0.12);
+  color: #f0a020;
 }
 
 @media (max-width: 720px) {
@@ -1387,6 +1482,15 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   .reset-credit-item {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .codex-export-toolbar,
+  .codex-card-actions {
+    flex-wrap: wrap;
+  }
+
+  .oauth-url-row {
+    grid-template-columns: 1fr;
   }
 
   .codex-model-row {

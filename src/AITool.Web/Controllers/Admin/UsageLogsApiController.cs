@@ -549,7 +549,7 @@ public sealed class UsageLogsApiController : ControllerBase
             var successRate = totalCount == 0
                 ? 0d
                 : Math.Round(successRequests * 100d / totalCount, 2, MidpointRounding.AwayFromZero);
-            var totalTokens = totalCount == 0 ? 0L : await baseQuery.SumAsync(x => x.TotalTokens);
+            var totalTokens = totalCount == 0 ? 0L : await baseQuery.SumAsync(x => (long)x.TotalTokens);
             var maxDurationMs = totalCount == 0
                 ? 0
                 : await baseQuery.MaxAsync(x => x.TotalDurationMs, cancellationToken);
