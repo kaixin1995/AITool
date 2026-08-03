@@ -69,7 +69,10 @@ public sealed class SiteCascadeDeleter
     /// <summary>
     /// 删除失去全部候选规则的路由入口，避免路由管理页继续看到空壳入口。
     /// </summary>
-    private async Task CleanupEmptyRouteEntriesAsync(IEnumerable<string> entryNames, CancellationToken cancellationToken)
+    public Task CleanupEmptyRouteEntriesAsync(IEnumerable<string> entryNames, CancellationToken cancellationToken)
+        => CleanupEmptyRouteEntriesAsyncCore(entryNames, cancellationToken);
+
+    private async Task CleanupEmptyRouteEntriesAsyncCore(IEnumerable<string> entryNames, CancellationToken cancellationToken)
     {
         var normalizedNames = entryNames
             .Where(x => !string.IsNullOrWhiteSpace(x))

@@ -201,6 +201,28 @@ public sealed class RouteRulesApiController : ControllerBase
     }
 
     /// <summary>
+    /// 获取可配置路由的模型。
+    /// </summary>
+    [HttpGet("models")]
+    public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
+    {
+        var models = await _adminQueryMetadataService.GetRouteModelsAsync(cancellationToken);
+        return Ok(models);
+    }
+
+    /// <summary>
+    /// 按模型发现可用站点。
+    /// </summary>
+    [HttpGet("discover-sites")]
+    public async Task<IActionResult> DiscoverSites(
+        [FromQuery] string modelName,
+        CancellationToken cancellationToken)
+    {
+        var results = await _adminQueryMetadataService.GetDiscoveredSitesAsync(modelName, cancellationToken);
+        return Ok(results);
+    }
+
+    /// <summary>
     /// 获取指定模型的路由规则列表。
     /// </summary>
     [HttpGet("list")]

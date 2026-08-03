@@ -92,6 +92,74 @@ public sealed class DetectionApiController : ControllerBase
     }
 
     /// <summary>
+    /// 获取检测矩阵：按模型分组，展示每个站点映射的最新检测状态。
+    /// 供前端检测页的矩阵视图使用。
+    /// </summary>
+    [HttpGet("matrix")]
+    public async Task<IActionResult> GetMatrix(CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        // 只取最终结果日志，按 (站点, 请求模型) 取最新一条。
+        var allLogs = await dbContext.ProxyUsageLogs
+            .Where(x => x.IsFinalResult)
+            .ToListAsync(cancellationToken);
+        var latestLogs = allLogs
+            .GroupBy(d => (d.TargetSiteId, d.RequestModel))
+            .ToDictionary(g => g.Key, g => g.OrderByDescending(d => d.RequestedAt).First());
+
+        // SqlSugar 的 ToDictionaryAsync 需要 key+value 两个 selector，这里用 ToListAsync + 内存 ToDictionary。
+        var models = (await dbContext.ModelLibraryItems.ToListAsync(cancellationToken))
+            .ToDictionary(m => m.Id);
+        var sites = (await dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .ToListAsync(cancellationToken))
+            .ToDictionary(s => s.Id);
+        var mappings = await dbContext.SiteModelMappings
+            .Where(m => m.IsEnabled)
+            .ToListAsync(cancellationToken);
+
+        // 静默丢弃孤儿映射（指向已删除模型或站点），不解绑不删除。
+        var modelGroups = mappings
+            .Where(m => models.ContainsKey(m.ModelLibraryItemId) && sites.ContainsKey(m.SiteId))
+            .GroupBy(m => m.ModelLibraryItemId)
+            .Select(g =>
+            {
+                var model = models[g.Key];
+                return new
+                {
+                    modelLibraryItemId = g.Key,
+                    modelName = model.ModelName,
+                    displayName = model.DisplayName,
+                    sites = g.Select(m =>
+                    {
+                        latestLogs.TryGetValue((m.SiteId, model.ModelName), out var log);
+                        var site = sites[m.SiteId];
+                        return new
+                        {
+                            mappingId = m.Id,
+                            siteName = site.Name,
+                            remoteModelName = m.RemoteModelName,
+                            lastStatus = log?.Status ?? m.LastStatus,
+                            lastCheckedAt = log?.RequestedAt,
+                            lastDurationMs = log?.TotalDurationMs
+                        };
+                    }).OrderBy(s => s.siteName).ToList()
+                };
+            })
+            .OrderBy(g => g.displayName)
+            .ToList();
+
+        var filterModels = modelGroups
+            .Select(g => new { id = g.modelLibraryItemId, displayName = g.displayName })
+            .OrderBy(m => m.displayName)
+            .ToList();
+
+        return Ok(new { modelGroups, filterModels });
+    }
+
+    /// <summary>
     /// 探测单个映射。
     /// </summary>
     [HttpPost("probe/{mappingId}")]
