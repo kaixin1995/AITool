@@ -144,8 +144,12 @@ public sealed partial class ProxyRequestMetadataCache
     {
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        // CopyNew 创建独立连接实例，不共享单例 SqlSugarScope 的连接
-        return dbContext.Client.CopyNew();
+        // CopyNew 创建独立连接实例，不共享单例 SqlSugarScope 的连接。
+        // 连接级 PRAGMA（busy_timeout/cache_size）需要手动设置，CopyNew 不会继承单例连接的 PRAGMA。
+        var client = dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        client.Ado.ExecuteCommand("PRAGMA cache_size=-65536;");
+        return client;
     }
 
     /// <summary>
