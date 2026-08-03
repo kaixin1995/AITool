@@ -285,7 +285,9 @@ RecurringJob.AddOrUpdate<ILogRetentionService>(
     "0 3 * * *");
 
 app.MapControllers();
-app.MapRazorPages();
+// SPA fallback：非 /api、非 /v1 的请求统一返回前端 index.html，由 Vue Router 接管路由。
+// wwwroot 静态文件由上方的 UseStaticFiles 提供（Vite 构建产物输出到 Admin/wwwroot）。
+app.MapFallbackToFile("index.html");
 app.Run();
 
 public partial class Program;

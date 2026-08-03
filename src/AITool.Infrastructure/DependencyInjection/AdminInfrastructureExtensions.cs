@@ -39,7 +39,7 @@ public static class AdminInfrastructureExtensions
         this IServiceCollection services,
         string connectionString)
     {
-        services.AddRazorPages();
+        // Razor Pages 已移除（纯 SPA 前端）。静态文件服务由 Admin 宿主 Program.cs 的 UseStaticFiles 提供。
 
         // 认证授权由 Admin 宿主的 Program.cs 配置（JWT Bearer）。
         // Infrastructure 层不再绑定具体认证方案，保持与宿主解耦。
