@@ -111,7 +111,56 @@ builder.Services
         };
     });
 }
-builder.Services.AddAuthorization();
+// 默认授权策略：所有未标 [AllowAnonymous] 的端点都要求已认证用户。
+// 这样所有 Admin 控制器自动受 JWT 保护，无需逐个加 [Authorize]。
+// AuthApiController 的 status/login/refresh/logout/setup 标了 [AllowAnonymous]，不受影响。
+// 代理端点 /v1/* 在 Core 宿主，不在 Admin，不受此策略影响。
+builder.Services.AddAuthorization(options =>
+{
+    options.FallbackPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+});
+
+// Swagger：仅开发环境启用，方便本地测试接口。测试环境（Testing）与生产都不暴露文档。
+if (!builder.Environment.IsEnvironment("Testing"))
+{
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen(options =>
+    {
+        options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+        {
+            Title = "AI Tool API",
+            Version = "v1",
+            Description = "AI-Tool 后台管理 API 文档"
+        });
+
+        // 集成 JWT Bearer 认证：Swagger UI 顶部出现 Authorize 按钮，
+        // 粘贴 access token 后调测受保护接口自动带 Bearer header。
+        options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+        {
+            Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+            Scheme = "bearer",
+            BearerFormat = "JWT",
+            In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+            Description = "粘贴 access token（不含 'Bearer ' 前缀）。登录后从 /api/auth/login 响应获取。"
+        });
+        options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+        {
+            {
+                new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+                {
+                    Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                    {
+                        Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                        Id = "Bearer"
+                    }
+                },
+                Array.Empty<string>()
+            }
+        });
+    });
+}
 
 // Admin 侧 ConversationTurn 事件消费器，将 Core 代理产生的对话记录事件写入 Admin 本地 JSONL 存储。
 builder.Services.AddScoped<AdminConversationTurnEventIngestor>();
@@ -170,6 +219,14 @@ builder.Services.AddSingleton<AdminConcurrencyControlService>();
 
 // 模型厂商目录服务（可选，在模型库页面管理厂商规则时使用）。
 builder.Services.AddSingleton<ModelVendorCatalogService>();
+
+// 以下 3 个服务原本只在 Core 宿主的 AddProxyRuntimeInfrastructure 注册，
+// 但 Admin 宿主的多个 ApiController（ModelsApi/DeveloperInvocationsApi/SystemSettingsApi）
+// 通过构造函数注入它们，必须在 Admin 也注册才能 DI 解析成功。
+// 不调用 AddProxyRuntimeInfrastructure 是因为那会带来 Core 专用的代理转发/spool 等副作用。
+builder.Services.AddSingleton<ModelConcurrencyLimiter>();
+builder.Services.AddSingleton<RouteCircuitStateStore>();
+builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
 
 // 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
@@ -270,6 +327,19 @@ app.UseGlobalExceptionHandler(app.Environment);
 // 响应压缩必须在其他产生响应的中间件（静态文件、MVC）之前注册。
 app.UseResponseCompression();
 
+// Swagger UI：仅开发环境启用。必须在 UseStaticFiles/MapFallbackToFile 之前注册，
+// 否则 /swagger 会被当作前端路由返回 index.html。
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/swagger/v1/swagger.json", "AI Tool API v1");
+        options.DocExpansion(Swashbuckle.AspNetCore.SwaggerUI.DocExpansion.None);
+        options.DefaultModelsExpandDepth(-1); // 隐藏 schema 模型区，减少冗余
+    });
+}
+
 // 静态文件配置 Cache-Control 头，让浏览器缓存 CSS/JS/图片，重复访问零往返。
 app.UseStaticFiles(new StaticFileOptions
 {
@@ -285,8 +355,12 @@ app.UseAuthorization();
 // 映射健康检查端点，作为集成测试的验证入口。
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 
-// 启用 Hangfire 仪表盘，仅限本地访问。
-app.UseHangfireDashboard("/hangfire");
+// 启用 Hangfire 仪表盘。鉴权策略：本地/开发/测试环境放行；远程生产环境要求已认证用户。
+// JWT 存 localStorage 无法自动带到 /hangfire 页面，远程访问走前端管理界面或被拒绝。
+app.UseHangfireDashboard("/hangfire", new DashboardOptions
+{
+    Authorization = [new AITool.Admin.HangfireDashboardAuthFilter(app.Environment)]
+});
 
 // 注册日志清理定时任务，每天凌晨 3 点执行。
 RecurringJob.AddOrUpdate<ILogRetentionService>(

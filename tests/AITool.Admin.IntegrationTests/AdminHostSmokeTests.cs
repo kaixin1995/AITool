@@ -27,7 +27,9 @@ public sealed class AdminHostSmokeTests
         using var client = factory.CreateClient();
 
         var response = await client.GetAsync("/not-found-smoke-check");
-        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        // SPA fallback：测试环境无 wwwroot 构建产物时返回 404，有产物时返回 200（index.html）。
+        // 关键是不返回 500，证明宿主管线正常工作。
+        response.StatusCode.Should().BeOneOf(HttpStatusCode.OK, HttpStatusCode.NotFound);
     }
 }
 

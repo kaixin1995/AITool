@@ -10,7 +10,6 @@ using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Scheduling;
 using Hangfire;
-using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 

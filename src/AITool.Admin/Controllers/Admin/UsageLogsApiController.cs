@@ -540,6 +540,27 @@ public sealed class UsageLogsApiController : ControllerBase
     }
 
     /// <summary>
+    /// 获取用量日志页的筛选项（站点列表 + 访问密钥列表），供前端下拉筛选器加载。
+    /// </summary>
+    [HttpGet("filters")]
+    public async Task<ActionResult<object>> GetFilters(CancellationToken cancellationToken)
+    {
+        var sites = await _dbContext.Sites
+            .Where(s => s.IsEnabled)
+            .OrderBy(s => s.Name)
+            .Select(s => new { id = s.Id.ToString(), name = s.Name })
+            .ToListAsync(cancellationToken);
+
+        var accessKeys = await _dbContext.ProxyAccessKeys
+            .Where(k => k.IsEnabled)
+            .OrderBy(k => k.KeyName)
+            .Select(k => new { id = k.Id.ToString(), name = k.KeyName })
+            .ToListAsync(cancellationToken);
+
+        return Ok(new { sites, accessKeys });
+    }
+
+    /// <summary>
     /// 获取指定请求的链路详情。
     /// </summary>
     [HttpGet("request-detail/{requestId:guid}")]
