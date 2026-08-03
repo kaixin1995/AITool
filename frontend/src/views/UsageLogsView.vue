@@ -40,6 +40,7 @@ const detailVisible = ref(false)
 const requestDetail = ref<UsageLogRequestDetail | null>(null)
 let refreshTimer: number | undefined
 let searchTimer: number | undefined
+let incrementalRefreshInFlight = false
 
 const query = reactive({
   page: 1,
@@ -219,6 +220,59 @@ async function load(page = query.page): Promise<void> {
   }
 }
 
+function usageLogItemSignature(item: UsageLogItem): string {
+  return JSON.stringify(item)
+}
+
+function usageLogSummarySignature(value: UsageLogSummary): string {
+  return JSON.stringify(value)
+}
+
+// 自动刷新只更新发生变化的记录，避免无变化时触发表格整体重绘。
+async function refreshIncrementally(): Promise<void> {
+  if (incrementalRefreshInFlight) return
+  incrementalRefreshInFlight = true
+  const page = query.page
+  const requestKey = JSON.stringify(buildParams(page))
+
+  try {
+    const [listResp, summaryResp] = await Promise.all([
+      api.listUsageLogs(buildParams(page)),
+      api.getUsageLogSummary(buildParams(page))
+    ])
+
+    // 筛选或分页在请求期间发生变化时，丢弃过期的自动刷新结果。
+    if (requestKey !== JSON.stringify(buildParams(query.page))) return
+
+    const nextItems = listResp.items ?? []
+    const currentItemsById = new Map(items.value.map((item) => [item.id, item]))
+    const itemsChanged = nextItems.length !== items.value.length
+      || nextItems.some((item, index) => {
+        const current = items.value[index]
+        return !current || current.id !== item.id || usageLogItemSignature(current) !== usageLogItemSignature(item)
+      })
+
+    if (itemsChanged) {
+      items.value = nextItems.map((item) => {
+        const current = currentItemsById.get(item.id)
+        return current && usageLogItemSignature(current) === usageLogItemSignature(item) ? current : item
+      })
+    }
+
+    if (query.page !== listResp.page) query.page = listResp.page
+    if (query.pageSize !== listResp.pageSize) query.pageSize = listResp.pageSize
+    if (totalCount.value !== listResp.totalCount) totalCount.value = listResp.totalCount
+    if (totalPages.value !== listResp.totalPages) totalPages.value = listResp.totalPages
+    if (usageLogSummarySignature(summary.value) !== usageLogSummarySignature(summaryResp)) {
+      summary.value = summaryResp
+    }
+  } catch (e) {
+    message.error((e as Error).message)
+  } finally {
+    incrementalRefreshInFlight = false
+  }
+}
+
 function clearSearchTimer(): void {
   if (searchTimer === undefined) return
   window.clearTimeout(searchTimer)
@@ -279,7 +333,7 @@ function configureAutoRefresh(): void {
   }
   if (autoRefresh.value) {
     refreshTimer = window.setInterval(() => {
-      void load(query.page)
+      void refreshIncrementally()
     }, 5000)
   }
 }
