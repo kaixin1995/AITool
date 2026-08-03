@@ -32,6 +32,7 @@ interface TimeRange {
   end: string
 }
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 const dialog = useDialog()
 const message = useMessage()
 const entries = ref<RouteEntry[]>([])
@@ -362,8 +363,9 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="page-container">
+  <div :class="{ 'page-container': !props.embedded }">
     <PageHeader
+      v-if="!props.embedded"
       title="路由规则管理"
       subtitle="主入口绑定有序候选实例队列，请求时按顺序失败切换、成功即停止"
     />

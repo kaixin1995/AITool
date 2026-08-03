@@ -4,6 +4,7 @@ import { NButton, NCard, NDataTable, NEmpty, NGrid, NGi, NInput, NPagination, NS
 import PageHeader from '@/components/PageHeader.vue'
 import { listRouteFallbackEvents, type RouteFallbackEvent, type RouteFallbackSummary } from '@/api/routeFallback'
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 const page = ref(1)
 const pageSize = 20
 const modelKeyword = ref('')
@@ -138,8 +139,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page-container route-fallback-page">
-    <PageHeader title="路由回退" subtitle="基于近期调用日志样本重建路由回退事件，诊断模型站点故障与降级情况" />
+  <div :class="{ 'page-container': !props.embedded, 'route-fallback-page': true }">
+    <PageHeader v-if="!props.embedded" title="路由回退" subtitle="基于近期调用日志样本重建路由回退事件，诊断模型站点故障与降级情况" />
     <div class="route-fallback-sample-note">{{ sampleDescription }}</div>
 
     <NCard class="route-fallback-filter" title="筛选条件">

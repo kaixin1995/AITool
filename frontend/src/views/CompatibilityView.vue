@@ -6,6 +6,7 @@ import type { CompatibilityProfileListItem } from '@/api/compatibility'
 import PageHeader from '@/components/PageHeader.vue'
 import { parseCompatibilityRules, serializeCompatibilityRules, type CompatibilityRuleForm } from './compatibilityState'
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 const message = useMessage()
 const loading = ref(false)
 const items = ref<CompatibilityProfileListItem[]>([])
@@ -114,8 +115,8 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page-container compatibility-page">
-    <PageHeader title="兼容规则集" subtitle="独立维护字段级兼容规则（剔除/重命名/补默认值），可被多个模型引用，避免重复配置" />
+  <div :class="{ 'page-container': !props.embedded, 'compatibility-page': true }">
+    <PageHeader v-if="!props.embedded" title="兼容规则集" subtitle="独立维护字段级兼容规则（剔除/重命名/补默认值），可被多个模型引用，避免重复配置" />
 
     <div class="compatibility-layout">
       <NCard class="profile-panel" size="small">

@@ -46,13 +46,21 @@ const routes: RouteRecordRaw[] = [
       { path: 'sites', name: 'sites', component: () => import('@/views/SitesView.vue'), meta: { title: '站点管理' } },
       { path: 'codex', name: 'codex', component: () => import('@/views/CodexView.vue'), meta: { title: 'OAuth 管理', requiresCodex: true } },
       { path: 'models', name: 'models', component: () => import('@/views/ModelsView.vue'), meta: { title: '模型库' } },
-      { path: 'routes', name: 'routes', component: () => import('@/views/RoutesView.vue'), meta: { title: '路由规则' } },
-      { path: 'route-fallback', name: 'route-fallback', component: () => import('@/views/RouteFallbackView.vue'), meta: { title: '路由回退' } },
-      { path: 'compatibility', name: 'compatibility', component: () => import('@/views/CompatibilityView.vue'), meta: { title: '兼容规则集' } },
+      { path: 'routes', name: 'routes', component: () => import('@/views/RouteManagementView.vue'), meta: { title: '路由管理' } },
+      {
+        path: 'route-fallback',
+        name: 'route-fallback',
+        redirect: to => ({ name: 'model-health', query: { ...to.query, tab: 'fallback' } })
+      },
+      {
+        path: 'compatibility',
+        name: 'compatibility',
+        redirect: to => ({ name: 'routes', query: { ...to.query, tab: 'compatibility' } })
+      },
       { path: 'access-keys', name: 'access-keys', component: () => import('@/views/AccessKeysView.vue'), meta: { title: '访问密钥' } },
       { path: 'detection', name: 'detection', component: () => import('@/views/DetectionView.vue'), meta: { title: '模型检测' } },
       { path: 'detection-tasks', name: 'detection-tasks', component: () => import('@/views/DetectionTasksView.vue'), meta: { title: '检测任务' } },
-      { path: 'model-health', name: 'model-health', component: () => import('@/views/ModelHealthView.vue'), meta: { title: '模型健康' } },
+      { path: 'model-health', name: 'model-health', component: () => import('@/views/ModelHealthManagementView.vue'), meta: { title: '模型健康' } },
       { path: 'developer/invocations', name: 'developer-invocations', component: () => import('@/views/DeveloperInvocationsView.vue'), meta: { title: '调试工具', requiresDeveloper: true } },
       { path: 'usage-logs', name: 'usage-logs', component: () => import('@/views/UsageLogsView.vue'), meta: { title: '使用日志' } },
       { path: 'system/settings', name: 'system-settings', component: () => import('@/views/SystemSettingsView.vue'), meta: { title: '系统设置' } }

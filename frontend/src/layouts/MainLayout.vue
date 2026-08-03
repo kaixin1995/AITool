@@ -44,9 +44,7 @@ const navGroups = computed<NavGroup[]>(() => {
     {
       title: '代理配置',
       items: [
-        { label: '路由规则', key: 'routes', icon: '🔀' },
-        { label: '路由回退', key: 'route-fallback', icon: '↩️' },
-        { label: '兼容规则集', key: 'compatibility', icon: '🧩' },
+        { label: '路由管理', key: 'routes', icon: '🔀' },
         { label: '访问密钥', key: 'access-keys', icon: '🔑' }
       ]
     },

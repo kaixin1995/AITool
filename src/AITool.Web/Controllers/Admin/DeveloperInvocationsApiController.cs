@@ -1,4 +1,6 @@
 using AITool.Application.Operations;
+using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using AITool.Web.Contracts;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -6,47 +8,33 @@ using Microsoft.AspNetCore.Mvc;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// 开发者调用追踪 API：查看近期代理请求的全链路详情 + 并发面板。
-/// <para>
-/// 迁移自 <c>Pages/Admin/Developer/Invocations/Index.cshtml.cs</c> 的 OnGetList/OnGetDetail/OnGetConcurrency。
-/// 数据源是内存环形缓冲区 <see cref="DeveloperInvocationTraceStore"/>（最多 40 条，20 分钟过期）。
-/// 所有端点都先检查 <c>DeveloperFeaturesEnabled</c> 开关，关闭时返回 404。
-/// </para>
+/// 开发者调用追踪 API：查看近期代理请求的全链路详情 + 并发面板 + 熔断状态。
 /// </summary>
 [ApiController]
 [Route("api/admin/developer/invocations")]
 public sealed class DeveloperInvocationsApiController : ControllerBase
 {
-    /// <summary>
-    /// 系统运行时设置服务（读取 DeveloperFeaturesEnabled 开关）。
-    /// </summary>
     private readonly ISystemRuntimeSettingsService _runtimeSettingsService;
-    /// <summary>
-    /// 开发者调用追踪存储。
-    /// </summary>
     private readonly DeveloperInvocationTraceStore _traceStore;
-    /// <summary>
-    /// 模型并发限制器（提供并发面板快照）。
-    /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
-    /// <summary>
-    /// 代理元数据缓存（提供站点名、并发限制、调试模型清单）。
-    /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly RouteCircuitStateStore _circuitStore;
+    private readonly AppDbContext _dbContext;
 
-    /// <summary>
-    /// 初始化开发者调用追踪 API 控制器。
-    /// </summary>
     public DeveloperInvocationsApiController(
         ISystemRuntimeSettingsService runtimeSettingsService,
         DeveloperInvocationTraceStore traceStore,
         ModelConcurrencyLimiter concurrencyLimiter,
-        ProxyRequestMetadataCache metadataCache)
+        ProxyRequestMetadataCache metadataCache,
+        RouteCircuitStateStore circuitStore,
+        AppDbContext dbContext)
     {
         _runtimeSettingsService = runtimeSettingsService;
         _traceStore = traceStore;
         _concurrencyLimiter = concurrencyLimiter;
         _metadataCache = metadataCache;
+        _circuitStore = circuitStore;
+        _dbContext = dbContext;
     }
 
     /// <summary>
@@ -234,6 +222,90 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         .ToList<object>();
 
         return Ok(ApiResponse.Ok(new { refreshedAt = DateTimeOffset.Now, items }));
+    }
+
+    /// <summary>
+    /// 获取当前所有熔断/失败计数中的路由状态。
+    /// </summary>
+    [HttpGet("circuit-breaker")]
+    public async Task<IActionResult> GetCircuitBreakerStates(CancellationToken cancellationToken)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var states = _circuitStore.GetAllCircuitStates();
+        if (states.Count == 0)
+        {
+            return Ok(ApiResponse.Ok(new { routes = Array.Empty<object>() }));
+        }
+
+        // 查 routeId → siteName + modelName + entryName 的映射
+        var routeIds = states.Keys.ToList();
+        var routes = await _dbContext.Client.Queryable<AITool.Domain.Proxy.ProxyRouteRule>()
+            .Where(r => routeIds.Contains(r.Id))
+            .Select(r => new { r.Id, r.ExternalModelName, r.UpstreamModelName, r.SiteId })
+            .ToListAsync(cancellationToken);
+
+        var siteIds = routes.Select(r => r.SiteId).Distinct().ToList();
+        var sites = await _dbContext.Client.Queryable<AITool.Domain.Sites.Site>()
+            .Where(s => siteIds.Contains(s.Id))
+            .Select(s => new { s.Id, s.Name })
+            .ToListAsync(cancellationToken);
+        var siteNames = sites.ToDictionary(s => s.Id, s => s.Name);
+
+        var now = DateTimeOffset.UtcNow;
+        var result = routes.Select(r =>
+        {
+            var state = states.GetValueOrDefault(r.Id);
+            var siteName = siteNames.GetValueOrDefault(r.SiteId, "未知站点");
+            return new
+            {
+                routeId = r.Id,
+                entryName = r.ExternalModelName,
+                upstreamModelName = r.UpstreamModelName,
+                siteName,
+                isBlocked = state?.IsBlocked ?? false,
+                failureCount = state?.FailureCount ?? 0,
+                blockedUntil = state?.BlockedUntil,
+                remainingSeconds = state?.RemainingTime != null
+                    ? Math.Max(0, (int)Math.Ceiling(state.RemainingTime.Value.TotalSeconds))
+                    : (int?)null
+            };
+        }).ToList();
+
+        return Ok(ApiResponse.Ok(new { routes = result }));
+    }
+
+    /// <summary>
+    /// 手动解除指定路由的熔断状态。
+    /// </summary>
+    [HttpPost("circuit-breaker/{routeId}/reset")]
+    public async Task<IActionResult> ResetCircuitBreaker(Guid routeId, CancellationToken cancellationToken)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var removed = _circuitStore.Reset(routeId);
+        return Ok(ApiResponse.Ok(new { routeId, reset = removed }, removed ? "已解除熔断" : "该路由未被熔断"));
+    }
+
+    /// <summary>
+    /// 解除所有路由的熔断状态。
+    /// </summary>
+    [HttpPost("circuit-breaker/reset-all")]
+    public async Task<IActionResult> ResetAllCircuitBreakers(CancellationToken cancellationToken)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var count = _circuitStore.ResetAll();
+        return Ok(ApiResponse.Ok(new { resetCount = count }, $"已解除 {count} 条路由的熔断"));
     }
 
     /// <summary>

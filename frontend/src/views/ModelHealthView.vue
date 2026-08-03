@@ -6,6 +6,7 @@ import type { ModelHealthMonitoredModel, ModelHealthDashboard, ModelHealthTimeli
 import PageHeader from '@/components/PageHeader.vue'
 import { modelHealthSuccessColor } from './modelHealthState'
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 const message = useMessage()
 const loading = ref(false)
 const monitored = ref<ModelHealthMonitoredModel[]>([])
@@ -138,8 +139,8 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page-container model-health-page">
-    <PageHeader title="模型健康看板" subtitle="监控指定模型在各站点的健康状态和检测历史" />
+  <div :class="{ 'page-container': !props.embedded, 'model-health-page': true }">
+    <PageHeader v-if="!props.embedded" title="模型健康看板" subtitle="监控指定模型在各站点的健康状态和检测历史" />
 
     <NCard class="form-card health-add-card" :bordered="false">
       <div class="form-section-title">添加监控模型</div>
