@@ -104,12 +104,13 @@ public sealed class JwtTokenServiceTests
             AccessTokenMinutes = 15,
             RefreshTokenDays = 7
         });
-        // 用内存 SQLite 做测试 DB
+        // 用共享内存 SQLite 做测试 DB（CopyNew 需要看到同一数据库）
+        var connString = $"DataSource=file:test-{Guid.NewGuid():N}?mode=memory&cache=shared";
         var sqlSugar = new SqlSugarScope(new ConnectionConfig
         {
-            ConnectionString = "DataSource=:memory:",
+            ConnectionString = connString,
             DbType = DbType.Sqlite,
-            IsAutoCloseConnection = false
+            IsAutoCloseConnection = true
         }, _ => { });
         sqlSugar.CodeFirst.InitTables(typeof(AITool.Domain.Auth.RefreshTokenRecord));
         var dbContext = new AppDbContext(sqlSugar, new SemaphoreSlim(1, 1));

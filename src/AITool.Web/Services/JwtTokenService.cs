@@ -51,8 +51,10 @@ public sealed class JwtTokenService
         var access = BuildAccessToken(subjectId, now, accessExpires);
         var refresh = GenerateRefreshTokenString();
 
-        // 持久化 refresh token 到数据库
-        _dbContext.Client.Insertable(new RefreshTokenRecord
+        // 用 CopyNew 独立连接写入，不碰单例 SqlSugarScope
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        client.Insertable(new RefreshTokenRecord
         {
             Token = refresh,
             SubjectId = subjectId,
@@ -73,8 +75,11 @@ public sealed class JwtTokenService
             return null;
         }
 
-        // 先查再删（轮换）
-        var record = _dbContext.Client.Queryable<RefreshTokenRecord>()
+        // 用 CopyNew 独立连接，不碰单例 SqlSugarScope
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+
+        var record = client.Queryable<RefreshTokenRecord>()
             .Where(r => r.Token == refreshToken)
             .First();
 
@@ -84,7 +89,7 @@ public sealed class JwtTokenService
         }
 
         // 删除旧 token（轮换），即使后续校验失败也作废
-        _dbContext.Client.Deleteable<RefreshTokenRecord>()
+        client.Deleteable<RefreshTokenRecord>()
             .Where(r => r.Token == refreshToken)
             .ExecuteCommand();
 
@@ -103,7 +108,9 @@ public sealed class JwtTokenService
     {
         if (!string.IsNullOrWhiteSpace(refreshToken))
         {
-            _dbContext.Client.Deleteable<RefreshTokenRecord>()
+            using var client = _dbContext.Client.CopyNew();
+            client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+            client.Deleteable<RefreshTokenRecord>()
                 .Where(r => r.Token == refreshToken)
                 .ExecuteCommand();
         }
@@ -143,7 +150,9 @@ public sealed class JwtTokenService
         try
         {
             var now = DateTimeOffset.UtcNow;
-            _dbContext.Client.Deleteable<RefreshTokenRecord>()
+            using var client = _dbContext.Client.CopyNew();
+            client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+            client.Deleteable<RefreshTokenRecord>()
                 .Where(r => r.ExpiresAt <= now)
                 .ExecuteCommand();
         }

@@ -73,12 +73,14 @@ public sealed class CodexQuotaService : ICodexQuotaService
 
             var info = await QueryUpstreamAsync(account, cancellationToken);
 
-            // 持久化（更新 LastQuotaRawJson/LastQuotaCheckedAt；自动禁用判定仍用百分比阈值）
+            // 持久化（用 CopyNew 独立连接写入）
             try
             {
+                using var writeClient = _dbContext.Client.CopyNew();
+                writeClient.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
                 account.LastQuotaRawJson = info.RawJson;
                 account.LastQuotaCheckedAt = DateTimeOffset.UtcNow;
-                await _dbContext.UpdateAsync(account, cancellationToken);
+                await writeClient.Updateable(account).ExecuteCommandAsync(cancellationToken);
                 // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
                 _metadataCache.InvalidateCodexAccounts();
 
@@ -182,14 +184,17 @@ public sealed class CodexQuotaService : ICodexQuotaService
 
     private async Task DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)
     {
+        // 用 CopyNew 独立连接写入
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         account.IsEnabled = false;
-        await _dbContext.UpdateAsync(account, ct);
+        await client.Updateable(account).ExecuteCommandAsync(ct);
 
-        var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null && site.IsEnabled)
         {
             site.IsEnabled = false;
-            await _dbContext.UpdateAsync(site, ct);
+            await client.Updateable(site).ExecuteCommandAsync(ct);
         }
 
         _metadataCache.InvalidateRouteTargets();

@@ -40,24 +40,27 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             return false;
         }
 
-        var account = (await _dbContext.CodexAccounts
+        // 用 CopyNew 独立连接，不碰单例 SqlSugarScope
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+
+        var account = (await client.Queryable<Domain.Codex.CodexAccount>()
             .Where(a => a.LinkedSiteId == linkedSiteId)
             .ToListAsync(ct)).FirstOrDefault();
         if (account == null)
         {
-            // 非 Codex Site，不处理
             return false;
         }
 
         account.IsQuotaCooling = true;
         account.QuotaCoolingUntil = coolingUntil;
-        await _dbContext.UpdateAsync(account, ct);
+        await client.Updateable(account).ExecuteCommandAsync(ct);
 
-        var site = await _dbContext.Sites.InSingleAsync(linkedSiteId);
+        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(linkedSiteId);
         if (site != null && site.IsEnabled)
         {
             site.IsEnabled = false;
-            await _dbContext.UpdateAsync(site, ct);
+            await client.Updateable(site).ExecuteCommandAsync(ct);
             _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateCodexAccounts();
         }
@@ -69,49 +72,51 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
     /// <inheritdoc />
     public async Task ResetAsync(Guid codexAccountId, CancellationToken ct)
     {
-        var account = (await _dbContext.CodexAccounts
+        // 查询用 CopyNew 独立连接
+        using var queryClient = _dbContext.Client.CopyNew();
+        queryClient.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        var account = (await queryClient.Queryable<Domain.Codex.CodexAccount>()
             .Where(a => a.Id == codexAccountId)
             .ToListAsync(ct)).FirstOrDefault()
             ?? throw new InvalidOperationException($"Codex account {codexAccountId} not found");
 
-        // 1. 刷新 token（确保用新 token 重试，避免旧 token 仍触发限制）
+        // 1. 刷新 token（HTTP，锁外）
         if (!string.IsNullOrEmpty(account.RefreshToken))
         {
             try
             {
                 var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
                 account.AccessToken = tokens.AccessToken;
-                account.RefreshToken = tokens.RefreshToken; // 兼容轮换
+                account.RefreshToken = tokens.RefreshToken;
                 if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
                 account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
                 account.LastRefreshAt = DateTimeOffset.UtcNow;
 
-                var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+                var site = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
                 if (site != null)
                 {
                     site.ApiKey = tokens.AccessToken;
-                    await _dbContext.UpdateAsync(site, ct);
+                    await queryClient.Updateable(site).ExecuteCommandAsync(ct);
                 }
             }
             catch (Exception ex)
             {
                 _logger.LogWarning(ex, "Token refresh during quota reset failed for account {Id}", codexAccountId);
-                // 刷新失败不阻断重置（仍清冷却恢复，转发时若 token 失效再处理）
             }
         }
 
-        // 2. 清冷却 + 恢复启用
+        // 2. 清冷却 + 恢复启用（CopyNew 写入）
         account.IsQuotaCooling = false;
         account.QuotaCoolingUntil = null;
         account.IsEnabled = true;
-        await _dbContext.UpdateAsync(account, ct);
+        await queryClient.Updateable(account).ExecuteCommandAsync(ct);
 
         // 3. 恢复 Site
-        var linkedSite = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+        var linkedSite = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
         if (linkedSite != null && !linkedSite.IsEnabled)
         {
             linkedSite.IsEnabled = true;
-            await _dbContext.UpdateAsync(linkedSite, ct);
+            await queryClient.Updateable(linkedSite).ExecuteCommandAsync(ct);
         }
 
         _metadataCache.InvalidateRouteTargets();
