@@ -210,7 +210,6 @@ public sealed class ProxyRequestMetadataCache
                             CircuitBreakerRecoveryMinutes = settings.CircuitBreakerRecoveryMinutes,
                             UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
                             DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled,
-                            ConversationLogEnabled = settings.ConversationLogEnabled,
                             ConcurrencyMode = settings.ConcurrencyMode,
                             ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
                             CodexFeaturesEnabled = settings.CodexFeaturesEnabled,
@@ -1510,10 +1509,6 @@ public sealed class CachedProxyRuntimeSettings
     /// 是否启用开发者功能。
     /// </summary>
     public bool DeveloperFeaturesEnabled { get; set; }
-    /// <summary>
-    /// 是否启用对话记录功能。
-    /// </summary>
-    public bool ConversationLogEnabled { get; set; } = true;
     /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
     /// </summary>

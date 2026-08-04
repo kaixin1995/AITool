@@ -62,8 +62,7 @@ public sealed class AuthApiController : ControllerBase
             {
                 codexEnabled = settings.CodexFeaturesEnabled,
                 codexInspectionEnabled = settings.CodexInspectionEnabled,
-                developerEnabled = settings.DeveloperFeaturesEnabled,
-                conversationLogEnabled = settings.ConversationLogEnabled
+                developerEnabled = settings.DeveloperFeaturesEnabled
             }
         };
 

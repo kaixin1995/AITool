@@ -2,11 +2,9 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -37,11 +35,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
         /// 保存本轮流式响应在 response.completed 中返回的 output 数组，供 Responses WebSocket 会话续传时合并上下文。
         /// </summary>
         public string CompletedOutputJson { get; init; } = "[]";
-        /// <summary>
-        /// 流式转发过程中累积的 AI 正文（text delta），不受诊断副本 64KB 上限约束，
-        /// 用于对话记录完整展示 AI 回复。非流式场景为空。
-        /// </summary>
-        public string AssistantContent { get; init; } = string.Empty;
     }
 
     /// <summary>
@@ -135,14 +128,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// </summary>
     private readonly DeveloperInvocationTraceStore _traceStore;
     /// <summary>
-    /// 负责提取结构化对话内容并识别会话。
-    /// </summary>
-    private readonly ConversationExtractionService _conversationExtractionService;
-    /// <summary>
-    /// 负责异步写入结构化对话记录。
-    /// </summary>
-    private readonly IConversationLogService _conversationLogService;
-    /// <summary>
     /// 模型并发限制器，按站点+模型粒度控制最大并发请求数。
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
@@ -160,8 +145,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
         RouteCircuitStateStore circuitStore,
         ProxyRequestMetadataCache metadataCache,
         DeveloperInvocationTraceStore traceStore,
-        ConversationExtractionService conversationExtractionService,
-        IConversationLogService conversationLogService,
         ModelConcurrencyLimiter concurrencyLimiter,
         ILogger<OpenAiProxyController> logger)
     {
@@ -170,8 +153,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
         _circuitStore = circuitStore;
         _metadataCache = metadataCache;
         _traceStore = traceStore;
-        _conversationExtractionService = conversationExtractionService;
-        _conversationLogService = conversationLogService;
         _concurrencyLimiter = concurrencyLimiter;
         _logger = logger;
     }
@@ -675,7 +656,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
                 if (streamResult.Success)
                 {
-                    await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None, streamOutcome.AssistantContent);
                     SafeSucceedRoute(route.RouteId);
                     SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                     {
@@ -756,7 +736,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
             {
                 SafeSucceedRoute(route.RouteId);
                 var responseBody = responseFactory(result, actualProtocolType, modelName);
-                await SafeLogConversationAsync(requestId, accessKey.Id, "OpenAI", requestSource, requestBody, responseBody, modelName, result.IsStreaming, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, result.TotalDurationMs)), cancellationToken);
                 SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                 {
                     Status = "success",

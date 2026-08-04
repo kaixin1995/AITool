@@ -68,7 +68,6 @@ public sealed class SystemSettingsApiController : ControllerBase
             usageLogRetentionDays = settings.UsageLogRetentionDays,
             usageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
             developerFeaturesEnabled = settings.DeveloperFeaturesEnabled,
-            conversationLogEnabled = settings.ConversationLogEnabled,
             concurrencyMode = settings.ConcurrencyMode,
             concurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
             codexFeaturesEnabled = settings.CodexFeaturesEnabled,

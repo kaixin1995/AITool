@@ -1,10 +1,8 @@
 using System.Text;
 using System.Text.Json;
-using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -31,11 +29,6 @@ public sealed class AnthropicProxyController : ControllerBase
         /// 指示当前流是否还允许继续尝试下一条候选路由。
         /// </summary>
         public bool CanFallback { get; init; }
-        /// <summary>
-        /// 流式转发过程中累积的 AI 正文（text delta），不受诊断副本 64KB 上限约束，
-        /// 用于对话记录完整展示 AI 回复。非流式场景为空。
-        /// </summary>
-        public string AssistantContent { get; init; } = string.Empty;
     }
 
     /// <summary>
@@ -63,14 +56,6 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
     /// <summary>
-    /// 负责提取结构化对话内容并识别会话。
-    /// </summary>
-    private readonly ConversationExtractionService _conversationExtractionService;
-    /// <summary>
-    /// 负责异步写入结构化对话记录。
-    /// </summary>
-    private readonly IConversationLogService _conversationLogService;
-    /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
     private readonly ILogger<AnthropicProxyController> _logger;
@@ -84,8 +69,6 @@ public sealed class AnthropicProxyController : ControllerBase
         RouteCircuitStateStore circuitStore,
         ProxyRequestMetadataCache metadataCache,
         DeveloperInvocationTraceStore traceStore,
-        ConversationExtractionService conversationExtractionService,
-        IConversationLogService conversationLogService,
         ModelConcurrencyLimiter concurrencyLimiter,
         ILogger<AnthropicProxyController> logger)
     {
@@ -94,8 +77,6 @@ public sealed class AnthropicProxyController : ControllerBase
         _circuitStore = circuitStore;
         _metadataCache = metadataCache;
         _traceStore = traceStore;
-        _conversationExtractionService = conversationExtractionService;
-        _conversationLogService = conversationLogService;
         _concurrencyLimiter = concurrencyLimiter;
         _logger = logger;
     }
@@ -316,7 +297,6 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 if (streamResult.Success)
                 {
-                    await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, streamResult.ResponseBody, modelName, true, "success", streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), CancellationToken.None, streamOutcome.AssistantContent);
                     SafeSucceedRoute(route.RouteId);
                     return new EmptyResult();
                 }
@@ -386,7 +366,6 @@ public sealed class AnthropicProxyController : ControllerBase
             {
                 // 成功时清除该路由的连续失败计数
                 SafeSucceedRoute(route.RouteId);
-                await SafeLogConversationAsync(requestId, accessKey.Id, "Anthropic", requestSource, requestBody, result.ResponseBody, modelName, false, "success", result.InputTokens, result.CachedTokens, result.OutputTokens, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, result.TotalDurationMs)), cancellationToken);
                 if (result.IsStreaming &&
                     string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
                     HttpContext.Response.HasStarted)
@@ -469,7 +448,6 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         var responseBuilder = new StringBuilder();
-        var contentCapture = new ConversationStreamCapture();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
         var receivedMessageStop = false;
@@ -511,7 +489,6 @@ public sealed class AnthropicProxyController : ControllerBase
                 {
                     UpdateAnthropicUsageFromPayload(eventName, payload, ref inputTokens, ref cachedTokens, ref outputTokens, ref receivedMessageStop);
                     // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。
-                    contentCapture.AppendAnthropicDelta(eventName, payload);
                 }
             }
 
@@ -589,8 +566,7 @@ public sealed class AnthropicProxyController : ControllerBase
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = !startedWriting,
-            AssistantContent = contentCapture.Build()
+            CanFallback = !startedWriting
         };
     }
 
@@ -614,7 +590,6 @@ public sealed class AnthropicProxyController : ControllerBase
 
         var state = new ProxyProtocolBridge.AnthropicOpenAiStreamState();
         var responseBuilder = new StringBuilder();
-        var contentCapture = new ConversationStreamCapture();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
 
@@ -649,7 +624,6 @@ public sealed class AnthropicProxyController : ControllerBase
                 }
 
                 // 累积原始 Responses 正文，不受 64KB 诊断副本限制。
-                contentCapture.AppendOpenAiResponsesDelta(responsesPayload);
 
                 var openAiSse = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
                     $"event: {responsesEventName}\ndata: {responsesPayload}\n\n",
@@ -726,7 +700,6 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             // 累积原始 OpenAI Chat 正文，不受 64KB 诊断副本限制。
-            contentCapture.AppendOpenAiChatDelta(jsonText);
 
             if (!startedWriting)
             {
@@ -798,8 +771,7 @@ public sealed class AnthropicProxyController : ControllerBase
             return new StreamForwardOutcome
             {
                 Result = result,
-                CanFallback = false,
-                AssistantContent = contentCapture.Build()
+                CanFallback = false
             };
         }
 
@@ -817,16 +789,14 @@ public sealed class AnthropicProxyController : ControllerBase
             return new StreamForwardOutcome
             {
                 Result = result,
-                CanFallback = false,
-                AssistantContent = contentCapture.Build()
+                CanFallback = false
             };
         }
 
         return new StreamForwardOutcome
         {
             Result = result,
-            CanFallback = true,
-            AssistantContent = contentCapture.Build()
+            CanFallback = true
         };
     }
 
@@ -1487,97 +1457,5 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         return string.Join(" ", element.EnumerateObject().Select(x => FlattenText(x.Value)).Where(x => !string.IsNullOrWhiteSpace(x)));
-    }
-
-    /// <summary>
-    /// 安全地写入结构化对话记录，失败时不影响主链路。
-    /// 有会话标识的工具（claude-code / codex / open-code）按会话分组，
-    /// 无会话标识的普通代理请求合并到同一个分组。
-    /// </summary>
-    /// <param name="assistantContent">流式转发时实时累积的 AI 正文（不受 64KB 诊断副本限制）；非流式或为空时回退到从 <paramref name="responseBody"/> 提取。</param>
-    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, DateTimeOffset requestedAt, CancellationToken cancellationToken, string assistantContent = "")
-    {
-        try
-        {
-            var headers = CaptureRequestHeaders();
-            var sourceTool = _conversationExtractionService.ResolveSourceTool(
-                headers.TryGetValue("X-AITool-Source", out var explicitSource) ? explicitSource : string.Empty,
-                Request.Headers.UserAgent.ToString());
-
-            var sessionId = _conversationExtractionService.ExtractSessionId(headers);
-
-            // 合并为一次 JsonDocument.Parse，避免对几 MB 的 requestBody 解析两次导致两份 LOH 副本。
-            var (userInput, toolResultOutput) = _conversationExtractionService.ExtractRequestConversationFields(requestBody, protocolType, Request.Path);
-            // 优先用流式转发时实时累积的 AI 正文（完整捕获，不受 64KB 诊断副本限制）；
-            // 为空时回退到从 responseBody 提取（非流式或兜底场景）。
-            var assistantText = !string.IsNullOrWhiteSpace(assistantContent)
-                ? assistantContent
-                : _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path);
-            var assistantOutputMarkdown = JoinConversationMarkdown(toolResultOutput, assistantText);
-            if (string.IsNullOrWhiteSpace(userInput) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
-            {
-                return;
-            }
-
-            // 有 sessionId 的按 sourceTool:sessionId 分组，无 sessionId 的合并到 sourceTool 这一组。
-            var groupKey = !string.IsNullOrWhiteSpace(sessionId)
-                ? $"{sourceTool}:{sessionId}"
-                : sourceTool;
-
-            await _conversationLogService.LogAsync(new ConversationTurnEntry
-            {
-                RequestId = requestId,
-                CreatedAt = DateTimeOffset.UtcNow,
-                UserCreatedAt = requestedAt,
-                SourceTool = sourceTool,
-                SessionId = sessionId,
-                ConversationGroupKey = groupKey,
-                AccessKeyId = accessKeyId,
-                RequestModel = requestModel,
-                ProtocolType = protocolType,
-                RequestPath = Request.Path,
-                Source = requestSource,
-                UserInputText = userInput,
-                AssistantOutputMarkdown = assistantOutputMarkdown,
-                InputTokens = inputTokens,
-                CachedTokens = cachedTokens,
-                OutputTokens = outputTokens,
-                IsStreaming = isStreaming,
-                Status = status,
-                MetadataJson = _conversationExtractionService.BuildMetadataJson(
-                    Request.Headers.UserAgent.ToString(),
-                    headers.TryGetValue("x-app", out var xApp) ? xApp : string.Empty,
-                    sessionId)
-            }, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "记录结构化对话失败，但请求继续返回。Protocol={Protocol}, RequestModel={RequestModel}",
-                protocolType,
-                requestModel);
-        }
-    }
-
-    /// <summary>
-    /// 合并工具结果和模型回复，避免展示时内容粘连。
-    /// </summary>
-    private static string JoinConversationMarkdown(params string[] values)
-    {
-        return string.Join("\n\n", values.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()));
-    }
-
-    /// <summary>
-    /// 复制当前请求头为普通字典，避免跨层依赖 ASP.NET Core 类型。
-    /// </summary>
-    private Dictionary<string, string> CaptureRequestHeaders()
-    {
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var header in Request.Headers)
-        {
-            headers[header.Key] = header.Value.ToString();
-        }
-
-        return headers;
     }
 }

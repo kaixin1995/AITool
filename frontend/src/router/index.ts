@@ -37,14 +37,6 @@ const routes: RouteRecordRaw[] = [
     })
   },
   {
-    path: '/Admin/Conversations',
-    redirect: to => ({
-      path: '/chat',
-      query: to.query,
-      hash: '#conversationLogPane'
-    })
-  },
-  {
     path: '/',
     component: () => import('@/layouts/MainLayout.vue'),
     children: [

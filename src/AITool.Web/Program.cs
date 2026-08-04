@@ -223,16 +223,6 @@ builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
 // Site 使用时间内存映射：日志入队时增量更新，Codex 巡检读它判断账号是否被使用，避免回查 DB。
 builder.Services.AddSingleton<SiteUsageTracker>();
-var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
-    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
-    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
-builder.Services.AddSingleton(new AITool.Infrastructure.Conversations.ConversationLogFileOptions
-{
-    RootPath = conversationLogRootPath
-});
-builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogStore, AITool.Infrastructure.Conversations.FileConversationLogStore>();
-builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>());
 // 定期压缩 LOH，回收大对象碎片，避免代理转发产生的大字符串碎片导致工作集居高不下。
 builder.Services.AddHostedService<MemoryMaintenanceService>();
 // 周期刷新 Codex 账号 OAuth token，写回隐藏 Site.ApiKey 并失效路由缓存。
@@ -242,8 +232,6 @@ builder.Services.AddHostedService<CodexCooldownRecoveryService>();
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
 builder.Services.AddSingleton<ModelConcurrencyLimiter>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
-builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogService, AITool.Infrastructure.Conversations.ConversationLogService>();
-builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationExtractionService>();
 
 // 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点。
 builder.Services.AddSingleton<RouteCircuitStateStore>();

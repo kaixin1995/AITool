@@ -50,7 +50,6 @@ const form = reactive<SystemSettings>({
   usageLogRetentionDays: 7,
   usageLogAutoCleanupEnabled: true,
   developerFeaturesEnabled: false,
-  conversationLogEnabled: true,
   concurrencyMode: 0,
   concurrencyQueueTimeoutSeconds: 120,
   codexFeaturesEnabled: false,
@@ -196,7 +195,6 @@ onMounted(loadSettings)
           <h5 class="settings-card-title">开发者功能</h5>
           <div class="switch-stack">
             <label class="switch-line"><NSwitch v-model:value="form.developerFeaturesEnabled" /><span class="form-label-tip">启用开发者功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后显示调试工具入口，并保留最近 100 条调用轨迹。</NTooltip></span></label>
-            <label class="switch-line"><NSwitch v-model:value="form.conversationLogEnabled" /><span class="form-label-tip">启用对话记录功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后显示对话记录界面，并允许写入结构化对话记录。</NTooltip></span></label>
             <label class="switch-line"><NSwitch v-model:value="form.codexFeaturesEnabled" /><span class="form-label-tip">启用 Codex 功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>总开关，控制 Codex OAuth 账号、凭证导入、额度与巡检功能。</NTooltip></span></label>
           </div>
         </NCard>

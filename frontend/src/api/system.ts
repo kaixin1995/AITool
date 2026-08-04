@@ -11,7 +11,6 @@ export interface SystemSettings {
   usageLogRetentionDays: number
   usageLogAutoCleanupEnabled: boolean
   developerFeaturesEnabled: boolean
-  conversationLogEnabled: boolean
   concurrencyMode: number
   concurrencyQueueTimeoutSeconds: number
   codexFeaturesEnabled: boolean
