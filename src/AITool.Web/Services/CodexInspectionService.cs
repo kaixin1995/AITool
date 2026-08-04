@@ -90,10 +90,9 @@ public sealed class CodexInspectionService : BackgroundService
         {
             var interval = TimeSpan.FromMinutes(Math.Max(5, runtime.CodexInspectionIntervalMinutes));
             _nextScheduledAt = now + interval;
-            // 用全局 SQLite 串行化锁包裹巡检的 DB 访问，避免与其他后台服务（日志写/冷却恢复）并发踩 SqlSugarScope 竞态。
-            await dbContext.SerialExecuteAsync(() =>
-                RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh: false, autoTriggered: true, ct),
-                ct);
+            // 巡检流程：HTTP 额度查询在锁外执行（避免长时间持锁阻塞其他 DB 操作），
+            // 只有 DB 写入（禁用/启用账号）在 SerialExecuteAsync 锁内。
+            await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh: false, autoTriggered: true, ct);
         }
         finally
         {
@@ -102,7 +101,7 @@ public sealed class CodexInspectionService : BackgroundService
     }
 
     /// <summary>
-    /// 手动触发一轮巡检。走与自动巡检相同的串行锁 + 重入保护。
+    /// 手动触发一轮巡检。走与自动巡检相同的重入保护。
     /// </summary>
     public async Task<InspectionRunResult> RunManualAsync(bool forceRefresh, CancellationToken ct)
     {
@@ -117,9 +116,7 @@ public sealed class CodexInspectionService : BackgroundService
             var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
             var quotaService = scope.ServiceProvider.GetRequiredService<ICodexQuotaService>();
             var runtime = await cache.GetRuntimeSettingsAsync(ct);
-            return await dbContext.SerialExecuteAsync(() =>
-                RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh, autoTriggered: false, ct),
-                ct);
+            return await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh, autoTriggered: false, ct);
         }
         finally
         {
@@ -244,7 +241,11 @@ public sealed class CodexInspectionService : BackgroundService
 
         if (info.Success && checkPercent.HasValue && checkPercent.Value >= threshold && account.IsEnabled)
         {
-            await DisableAccountAsync(dbContext, cache, account, ct, $"额度使用 {checkPercent.Value:F1}% 达到阈值 {threshold}");
+            // DB 写入用串行锁包裹，避免与日志批量写等并发竞态
+            await dbContext.SerialExecuteAsync(async () =>
+            {
+                await DisableAccountAsync(dbContext, cache, account, ct, $"额度使用 {checkPercent.Value:F1}% 达到阈值 {threshold}");
+            }, ct);
             ar.Action = "disable";
             ar.Reason = (ar.Reason + "；").Replace("；；", "；") + $"额度 {checkPercent.Value:F1}%≥{threshold}，已自动禁用";
         }
@@ -252,7 +253,10 @@ public sealed class CodexInspectionService : BackgroundService
                  && !account.ManuallyDisabled
                  && checkPercent.HasValue && checkPercent.Value < threshold)
         {
-            await EnableAccountAsync(dbContext, cache, account, ct, "额度已恢复");
+            await dbContext.SerialExecuteAsync(async () =>
+            {
+                await EnableAccountAsync(dbContext, cache, account, ct, "额度已恢复");
+            }, ct);
             ar.Action = "enable";
             ar.Reason = (ar.Reason + "；").Replace("；；", "；") + "额度已恢复，已自动启用";
         }
