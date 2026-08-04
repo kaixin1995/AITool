@@ -102,16 +102,29 @@ public sealed class CodexInspectionService : BackgroundService
     }
 
     /// <summary>
-    /// 手动触发一轮巡检（forceRefresh=true 绕过缓存全部真实刷新）。由 API 调用。
+    /// 手动触发一轮巡检。走与自动巡检相同的串行锁 + 重入保护。
     /// </summary>
     public async Task<InspectionRunResult> RunManualAsync(bool forceRefresh, CancellationToken ct)
     {
-        using var scope = _services.CreateScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-        var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
-        var quotaService = scope.ServiceProvider.GetRequiredService<ICodexQuotaService>();
-        var runtime = await cache.GetRuntimeSettingsAsync(ct);
-        return await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh, autoTriggered: false, ct);
+        if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
+        {
+            return _lastRun ?? new InspectionRunResult { FinishedAt = DateTimeOffset.UtcNow };
+        }
+        try
+        {
+            using var scope = _services.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+            var quotaService = scope.ServiceProvider.GetRequiredService<ICodexQuotaService>();
+            var runtime = await cache.GetRuntimeSettingsAsync(ct);
+            return await dbContext.SerialExecuteAsync(() =>
+                RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh, autoTriggered: false, ct),
+                ct);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _running, 0);
+        }
     }
 
     /// <summary>

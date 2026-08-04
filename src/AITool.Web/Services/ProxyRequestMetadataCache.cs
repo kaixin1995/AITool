@@ -115,6 +115,21 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 创建独立的 SqlSugarClient（有自己的连接），用完即释放。
+    /// 所有缓存未命中时的查库都走这个方法，避免与单例 SqlSugarScope 并发竞态。
+    /// </summary>
+    private SqlSugar.ISqlSugarClient CreateIndependentClient()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var client = dbContext.Client.CopyNew();
+        // 连接级 PRAGMA 不继承单例连接，需手动设置
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        client.Ado.ExecuteCommand("PRAGMA cache_size=-65536;");
+        return client;
+    }
+
+    /// <summary>
     /// 校验访问密钥。
     /// </summary>
     public async Task<CachedProxyAccessKey?> ValidateAccessKeyAsync(string accessToken, CancellationToken cancellationToken)
@@ -176,10 +191,11 @@ public sealed class ProxyRequestMetadataCache
                 {
                     entry.AbsoluteExpirationRelativeToNow = CacheDuration;
 
-                    using var scope = _scopeFactory.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var settings = await dbContext.SystemRuntimeSettings
-                        .FirstAsync(x => x.Id == 1, cancellationToken);
+                    // 用独立连接查库，避免与单例 SqlSugarScope 并发竞态
+                    using var independentClient = CreateIndependentClient();
+                    var settings = await independentClient.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>()
+                        .Where(x => x.Id == 1)
+                        .FirstAsync(cancellationToken);
 
                     return settings is null
                         ? new CachedProxyRuntimeSettings()
