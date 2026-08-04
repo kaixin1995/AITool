@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { isApiResponse, isRequestCanceled, unwrapResponseData } from './http'
+import {
+  isApiResponse,
+  isRequestCanceled,
+  prepareRequestForTokenRefreshRetry,
+  unwrapResponseData
+} from './http'
 
 describe('HTTP 响应识别', () => {
   it('识别标准 ApiResponse 包装', () => {
@@ -18,6 +23,16 @@ describe('HTTP 响应识别', () => {
   it('识别主动取消的请求错误', () => {
     expect(isRequestCanceled({ code: 'ERR_CANCELED' })).toBe(true)
     expect(isRequestCanceled(new Error('网络失败'))).toBe(false)
+  })
+
+  it('刷新 access token 后重试时移除旧 Authorization', () => {
+    const request = {
+      headers: { Authorization: 'Bearer expired-access-token' }
+    }
+
+    prepareRequestForTokenRefreshRetry(request)
+
+    expect(request.headers.Authorization).toBeUndefined()
   })
 
   it('不把带 success 字段的领域对象误判为 ApiResponse', () => {
