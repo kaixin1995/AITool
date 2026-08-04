@@ -105,12 +105,12 @@ builder.Services
     });
 builder.Services.AddAuthorization();
 builder.Services.AddSingleton<AdminAuthService>();
-builder.Services.AddSingleton<LoginRateLimitService>();
 
-// Swagger：可通过 appsettings.json 的 Swagger:Enabled 配置控制（默认 true）。
+// Swagger：可通过 appsettings.json 的 Swagger:Enabled 配置控制。
+// 未配置时：Development 环境默认开，其他环境默认关（安全优先）。
 // Testing 环境始终关闭，避免集成测试注入 Swagger 服务。
 var swaggerEnabled = !builder.Environment.IsEnvironment("Testing")
-    && (builder.Configuration.GetValue<bool?>("Swagger:Enabled") ?? true);
+    && (builder.Configuration.GetValue<bool?>("Swagger:Enabled") ?? builder.Environment.IsDevelopment());
 if (swaggerEnabled)
 {
     builder.Services.AddEndpointsApiExplorer();

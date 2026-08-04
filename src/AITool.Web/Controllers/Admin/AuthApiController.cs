@@ -213,17 +213,26 @@ public sealed class AuthApiController : ControllerBase
     }
 
     /// <summary>
-    /// 获取客户端 IP（支持反向代理场景）。
+    /// 获取客户端真实 IP。
+    /// 仅当直连 IP 是回环地址（说明前面有反向代理）时才信任 X-Forwarded-For，
+    /// 防止攻击者伪造该头绕过暴力破解防护。
     /// </summary>
     private string? GetClientIp()
     {
-        // 反向代理场景：X-Forwarded-For 第一个 IP
-        var forwarded = Request.Headers["X-Forwarded-For"].FirstOrDefault();
-        if (!string.IsNullOrWhiteSpace(forwarded))
+        var remoteIp = HttpContext.Connection.RemoteIpAddress;
+        if (remoteIp is null) return null;
+
+        // 只有请求来自本地（反向代理场景）才信任 X-Forwarded-For
+        if (System.Net.IPAddress.IsLoopback(remoteIp))
         {
-            return forwarded.Split(',')[0].Trim();
+            var forwarded = Request.Headers["X-Forwarded-For"].FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(forwarded))
+            {
+                return forwarded.Split(',')[0].Trim();
+            }
         }
-        return HttpContext.Connection.RemoteIpAddress?.ToString();
+
+        return remoteIp.ToString();
     }
 }
 
