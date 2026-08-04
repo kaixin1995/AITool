@@ -231,6 +231,9 @@ public sealed class CodexApiController : ControllerBase
         if (account == null) return NotFound(new { message = "账号不存在" });
 
         account.IsEnabled = !account.IsEnabled;
+        // 手动禁用打标记，避免巡检「额度恢复」时误自动启用；
+        // 手动启用则清除标记，恢复巡检的自动恢复能力。
+        account.ManuallyDisabled = !account.IsEnabled;
         await _dbContext.UpdateAsync(account, ct);
 
         var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);

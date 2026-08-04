@@ -57,7 +57,7 @@ public static partial class ProxyProtocolBridge
                     state.InputTokens = extracted.InputTokens;
                 }
 
-                if (extracted.CachedTokens >= 0)
+                if (extracted.CachedTokens > 0)
                 {
                     state.CachedTokens = extracted.CachedTokens;
                 }
