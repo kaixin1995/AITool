@@ -241,11 +241,7 @@ public sealed class CodexInspectionService : BackgroundService
 
         if (info.Success && checkPercent.HasValue && checkPercent.Value >= threshold && account.IsEnabled)
         {
-            // DB 写入用串行锁包裹，避免与日志批量写等并发竞态
-            await dbContext.SerialExecuteAsync(async () =>
-            {
-                await DisableAccountAsync(dbContext, cache, account, ct, $"额度使用 {checkPercent.Value:F1}% 达到阈值 {threshold}");
-            }, ct);
+            await DisableAccountAsync(dbContext, cache, account, ct, $"额度使用 {checkPercent.Value:F1}% 达到阈值 {threshold}");
             ar.Action = "disable";
             ar.Reason = (ar.Reason + "；").Replace("；；", "；") + $"额度 {checkPercent.Value:F1}%≥{threshold}，已自动禁用";
         }
@@ -253,10 +249,7 @@ public sealed class CodexInspectionService : BackgroundService
                  && !account.ManuallyDisabled
                  && checkPercent.HasValue && checkPercent.Value < threshold)
         {
-            await dbContext.SerialExecuteAsync(async () =>
-            {
-                await EnableAccountAsync(dbContext, cache, account, ct, "额度已恢复");
-            }, ct);
+            await EnableAccountAsync(dbContext, cache, account, ct, "额度已恢复");
             ar.Action = "enable";
             ar.Reason = (ar.Reason + "；").Replace("；；", "；") + "额度已恢复，已自动启用";
         }
@@ -305,13 +298,16 @@ public sealed class CodexInspectionService : BackgroundService
 
     private static async Task DisableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
     {
+        // 用 CopyNew 独立连接写入，不碰单例 SqlSugarScope，无需串行锁
+        using var client = dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         account.IsEnabled = false;
-        await dbContext.UpdateAsync(account, ct);
-        var site = await dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+        await client.Updateable(account).ExecuteCommandAsync(ct);
+        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null && site.IsEnabled)
         {
             site.IsEnabled = false;
-            await dbContext.UpdateAsync(site, ct);
+            await client.Updateable(site).ExecuteCommandAsync(ct);
         }
         cache.InvalidateRouteTargets();
         cache.InvalidateCodexAccounts();
@@ -319,16 +315,16 @@ public sealed class CodexInspectionService : BackgroundService
 
     private static async Task EnableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
     {
+        using var client = dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         account.IsEnabled = true;
-        // 自动恢复（额度恢复）时清除手动禁用标记——虽然上游 if 已确保不进到这里，
-        // 但保留幂等清除，防止状态残留。
         account.ManuallyDisabled = false;
-        await dbContext.UpdateAsync(account, ct);
-        var site = await dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+        await client.Updateable(account).ExecuteCommandAsync(ct);
+        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null && !site.IsEnabled)
         {
             site.IsEnabled = true;
-            await dbContext.UpdateAsync(site, ct);
+            await client.Updateable(site).ExecuteCommandAsync(ct);
         }
         cache.InvalidateRouteTargets();
         cache.InvalidateCodexAccounts();
