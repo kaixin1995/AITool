@@ -290,6 +290,10 @@ builder.Services.AddHostedService<CoreConfigSyncHostedService>();
 // 构成完整的事件消费闭环：Core 产生事件 → spool 兜底 → Admin 拉取 → 入库 → 确认。
 builder.Services.AddHostedService<CoreEventPullHostedService>();
 
+// LOH 碎片压缩：Admin 宿主也跑代理相关批处理（日志写入/对话日志），会产生大对象碎片。
+// 周期触发压缩式 GC 回收 LOH 碎片，避免工作集持续升高。
+builder.Services.AddHostedService<MemoryMaintenanceService>();
+
 var app = builder.Build();
 
 // 执行管理后台启动初始化：数据库创建、Schema 迁移、Hangfire 调度注册。

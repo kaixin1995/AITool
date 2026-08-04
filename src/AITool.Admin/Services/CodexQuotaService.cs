@@ -64,20 +64,46 @@ public sealed class CodexQuotaService : ICodexQuotaService
             return cached;
         }
 
-        // single-flight
+        // single-flight 锁内做上游 HTTP + DB 写；推送 Core 的 HTTP 挪到锁外，避免持锁等 Core 响应。
+        var (info, siteDisabled) = await QueryUnderSingleFlightAsync(account, forceRefresh, cacheKey, cancellationToken);
+
+        // 锁外：仅当账号被自动禁用且 Site 状态变更时，才推送 Core。
+        if (siteDisabled)
+        {
+            try
+            {
+                await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "推送 Core 路由缓存失效失败（账号 {Id} 自动禁用后）", account.Id);
+            }
+        }
+
+        return info;
+    }
+
+    /// <summary>
+    /// single-flight 锁内的核心查询逻辑。返回额度结果 + 是否触发了 Site 禁用（需锁外推送 Core）。
+    /// 上游 HTTP 必须在锁内（single-flight 的目的就是防重复打上游）；DB 写也在锁内保护并发。
+    /// </summary>
+    private async Task<(CodexQuotaInfo Info, bool SiteDisabled)> QueryUnderSingleFlightAsync(
+        CodexAccount account, bool forceRefresh, string cacheKey, CancellationToken cancellationToken)
+    {
         var gate = _locks.GetOrAdd(account.Id, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
         try
         {
             // 二次检查缓存（等待期间可能已被并发填充）
-            if (!forceRefresh && _resultCache.TryGetValue(cacheKey, out cached) && cached != null)
+            if (!forceRefresh && _resultCache.TryGetValue(cacheKey, out CodexQuotaInfo? cached) && cached != null)
             {
-                return cached;
+                return (cached, false);
             }
 
             var info = await QueryUpstreamAsync(account, cancellationToken);
 
             // 持久化（更新 LastQuotaRawJson/LastQuotaCheckedAt；自动禁用判定仍用百分比阈值）
+            bool siteDisabled = false;
             try
             {
                 account.LastQuotaRawJson = info.RawJson;
@@ -94,7 +120,7 @@ public sealed class CodexQuotaService : ICodexQuotaService
                     var threshold = (double)runtime.CodexAutoDisableThresholdPercent;
                     if (maxPercent.HasValue && maxPercent.Value >= threshold)
                     {
-                        await DisableAccountAsync(account, cancellationToken,
+                        siteDisabled = await DisableAccountAsync(account, cancellationToken,
                             $"额度使用 {maxPercent.Value:F1}% 达到全局阈值 {threshold}");
                     }
                 }
@@ -106,7 +132,7 @@ public sealed class CodexQuotaService : ICodexQuotaService
 
             // 写缓存（无论成功失败都缓存 30s，避免失败风暴）
             _resultCache.Set(cacheKey, info, ResultCacheTtl);
-            return info;
+            return (info, siteDisabled);
         }
         finally
         {
@@ -178,7 +204,12 @@ public sealed class CodexQuotaService : ICodexQuotaService
         return info.Windows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;
     }
 
-    private async Task DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)
+    /// <summary>
+    /// 禁用账号 + 关联隐藏 Site。仅做 DB 写，返回是否有 Site 状态变更。
+    /// 缓存失效（含 HTTP 推送 Core）由调用方在 single-flight 锁外统一处理，避免持锁等 HTTP。
+    /// </summary>
+    /// <returns>true 表示 Site.IsEnabled 被改（需要推送 Core）；false 表示 Site 本就禁用。</returns>
+    private async Task<bool> DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)
     {
         account.IsEnabled = false;
         await _dbContext.UpdateAsync(account, ct);
@@ -190,9 +221,9 @@ public sealed class CodexQuotaService : ICodexQuotaService
             await _dbContext.UpdateAsync(site, ct);
         }
 
-        // 路由目标缓存（含 Site.IsEnabled）必须推送到 Core，否则 Core 仍把禁用账号当可用转发。
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+        // CodexAccounts 缓存只在 Admin 端（Core 不缓存账号实体），本地内存失效即可，无 HTTP。
         _metadataCache.InvalidateCodexAccounts();
         _logger.LogWarning("Codex account {Id} auto-disabled: {Reason}", account.Id, reason);
+        return site != null && !site.IsEnabled;
     }
 }

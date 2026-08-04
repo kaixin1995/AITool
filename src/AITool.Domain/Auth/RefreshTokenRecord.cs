@@ -10,15 +10,15 @@ namespace AITool.Domain.Auth;
 public class RefreshTokenRecord
 {
     /// <summary>
-    /// refresh token 字符串（主键）。
+    /// refresh token 字符串（主键）。JWT refresh token 通常是 opaque 随机串，512 字节足够。
     /// </summary>
-    [SugarColumn(IsPrimaryKey = true, ColumnName = "Token")]
+    [SugarColumn(IsPrimaryKey = true, Length = 512, ColumnName = "Token")]
     public string Token { get; set; } = string.Empty;
 
     /// <summary>
     /// 关联的用户标识。
     /// </summary>
-    [SugarColumn(ColumnName = "SubjectId")]
+    [SugarColumn(Length = 100, ColumnName = "SubjectId")]
     public string SubjectId { get; set; } = string.Empty;
 
     /// <summary>

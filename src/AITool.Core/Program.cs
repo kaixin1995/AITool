@@ -86,6 +86,9 @@ builder.Services.AddSingleton<CoreRouteFallbackEventPublisher>();
 // 注册熔断状态变更事件发布器，当路由因连续失败达到阈值被首次熔断时发布 circuit-breaker 事件（Core 独有）。
 builder.Services.AddSingleton<CoreCircuitBreakerEventPublisher>();
 
+// LOH 碎片压缩：Core 是代理主链路，每请求产生大字符串碎片，必须定期压缩避免工作集持续升高。
+builder.Services.AddHostedService<AITool.Infrastructure.Hosting.MemoryMaintenanceService>();
+
 var app = builder.Build();
 
 // 将开发者追踪存储的完成事件连接到事件发布器。
