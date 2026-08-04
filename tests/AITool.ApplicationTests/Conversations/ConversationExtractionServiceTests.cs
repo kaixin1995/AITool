@@ -436,8 +436,9 @@ data: {"type":"message_stop"}
 }
 """;
 
+        // 最后一条 user 消息只有 tool_result，应回退到之前有自然语言文本的 user 消息
         _service.ExtractUserInputText(requestBody, "Anthropic", "/v1/messages")
-            .Should().BeEmpty();
+            .Should().Be("请继续处理这个问题");
     }
 
     [Fact]

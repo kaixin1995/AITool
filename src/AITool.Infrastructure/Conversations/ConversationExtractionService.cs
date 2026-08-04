@@ -606,6 +606,9 @@ public sealed class ConversationExtractionService
 
     private static string ExtractLastUserMessage(JsonElement messages)
     {
+        // Claude Code / Codex 等 agentic 客户端的请求体里，最后一条 user 消息往往只有 tool_result
+        //（工具执行结果），不是真正的用户输入。保留"最后一条有自然语言文本的 user 消息"，
+        // 遇到纯 tool_result 的 user 消息时跳过，不清空之前已收集的有效文本。
         string result = string.Empty;
         foreach (var message in messages.EnumerateArray())
         {
@@ -656,9 +659,12 @@ public sealed class ConversationExtractionService
                 hasNaturalUserContent = true;
             }
 
-            result = hasNaturalUserContent
-                ? string.Join("\n", parts.Where(x => !string.IsNullOrWhiteSpace(x))).Trim()
-                : string.Empty;
+            // 只有当这条 user 消息包含自然语言文本时才更新 result。
+            // 纯 tool_result 的 user 消息跳过，保留之前收集到的真正用户输入。
+            if (hasNaturalUserContent)
+            {
+                result = string.Join("\n", parts.Where(x => !string.IsNullOrWhiteSpace(x))).Trim();
+            }
         }
 
         return result;
