@@ -7,9 +7,13 @@ using AITool.Desktop.Services;
 
 namespace AITool.Desktop.ViewModels;
 
-public partial class DetectionViewModel : ViewModelBase
+public partial class DetectionViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private CancellationTokenSource? _batchCancellation;
+    private int _batchGeneration;
+    private bool _disposed;
 
     [ObservableProperty] private ObservableCollection<DetectionModelGroup> _groups = new();
     [ObservableProperty] private bool _isLoading;
@@ -79,8 +83,17 @@ public partial class DetectionViewModel : ViewModelBase
         ErrorMessage = string.Empty;
         try
         {
-            var response = await _apiService.SendAsync<DetectionMatrix>(HttpMethod.Get, "/api/admin/detection/matrix", null);
+            var response = await _apiService.SendAsync<DetectionMatrix>(
+                HttpMethod.Get,
+                "/api/admin/detection/matrix",
+                null,
+                true,
+                _lifetimeCancellation.Token);
             Groups = new ObservableCollection<DetectionModelGroup>(response.ModelGroups);
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            // 页面离开或窗口关闭时取消加载，不显示为普通错误。
         }
         catch (Exception exception)
         {
@@ -107,12 +120,18 @@ public partial class DetectionViewModel : ViewModelBase
             var result = await _apiService.SendAsync<ProbeResultItem>(
                 HttpMethod.Post,
                 $"/api/admin/detection/probe/{site.MappingId}",
-                null);
+                null,
+                true,
+                _lifetimeCancellation.Token);
             ApplyProbeResult(result);
             if (!string.Equals(result.Status, "success", StringComparison.OrdinalIgnoreCase))
             {
                 ErrorMessage = result.Error ?? "检测失败";
             }
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            // 页面离开时取消单项检测。
         }
         catch (Exception exception)
         {
@@ -141,6 +160,11 @@ public partial class DetectionViewModel : ViewModelBase
 
         IsBusy = true;
         ErrorMessage = string.Empty;
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var previousCancellation = Interlocked.Exchange(ref _batchCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        var generation = Interlocked.Increment(ref _batchGeneration);
         ProgressPercent = 0;
         ProgressTotal = 0;
         ProgressCompleted = 0;
@@ -152,7 +176,12 @@ public partial class DetectionViewModel : ViewModelBase
 
         try
         {
-            var created = await _apiService.SendAsync<Dictionary<string, string>>(HttpMethod.Post, path, null);
+            var created = await _apiService.SendAsync<Dictionary<string, string>>(
+                HttpMethod.Post,
+                path,
+                null,
+                true,
+                localCancellation.Token);
             if (!created.TryGetValue("taskId", out var taskId) || string.IsNullOrWhiteSpace(taskId))
             {
                 throw new ApiException("检测任务标识无效", string.Empty, 200);
@@ -161,11 +190,13 @@ public partial class DetectionViewModel : ViewModelBase
             var completed = false;
             for (var attempt = 0; attempt < 60; attempt++)
             {
-                await Task.Delay(1200);
+                await Task.Delay(1200, localCancellation.Token);
                 var progress = await _apiService.SendAsync<ProbeProgress>(
                     HttpMethod.Get,
                     $"/api/admin/detection/progress/{taskId}",
-                    null);
+                    null,
+                    true,
+                    localCancellation.Token);
 
                 foreach (var result in progress.NewResults)
                 {
@@ -214,6 +245,10 @@ public partial class DetectionViewModel : ViewModelBase
             ErrorMessage = "检测任务已过期，请重新发起检测";
             ProgressText = "检测任务已过期";
         }
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
+        {
+            // 页面离开或窗口关闭时取消轮询，不显示为普通错误。
+        }
         catch (HttpRequestException exception)
         {
             ErrorMessage = $"网络错误：{exception.Message}";
@@ -231,7 +266,14 @@ public partial class DetectionViewModel : ViewModelBase
         }
         finally
         {
-            IsBusy = false;
+            if (generation == Volatile.Read(ref _batchGeneration)
+                && ReferenceEquals(_batchCancellation, localCancellation))
+            {
+                IsBusy = false;
+                Interlocked.CompareExchange(ref _batchCancellation, null, localCancellation);
+            }
+
+            localCancellation.Dispose();
         }
     }
 
@@ -290,5 +332,16 @@ public partial class DetectionViewModel : ViewModelBase
         OnPropertyChanged(nameof(FilteredGroups));
         OnPropertyChanged(nameof(VisibleGroupCount));
         OnPropertyChanged(nameof(ShowNoMatchState));
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _lifetimeCancellation.Cancel();
+        _lifetimeCancellation.Dispose();
+        var batchCancellation = Interlocked.Exchange(ref _batchCancellation, null);
+        batchCancellation?.Cancel();
+        batchCancellation?.Dispose();
     }
 }
