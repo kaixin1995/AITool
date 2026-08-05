@@ -1,0 +1,79 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.AccessKeysView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:AccessKeysViewModel"
+    x:CompileBindings="False">
+  <Grid>
+    <Grid RowDefinitions="Auto,*">
+      <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,18">
+        <StackPanel Spacing="4">
+          <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="访问密钥管理" />
+          <TextBlock Classes="page-subtitle" Text="管理用于访问代理服务的密钥" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+          <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="14,8" />
+          <Button Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新建密钥" Padding="14,8" />
+        </StackPanel>
+      </Grid>
+
+      <Grid Grid.Row="1">
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding IsLoading}" Text="正在加载访问密钥..." />
+        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
+        <Border Classes="content-card" IsVisible="{Binding IsListVisible}" Padding="0">
+          <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+            <StackPanel MinWidth="760">
+              <Border Background="#F8FAFC" Padding="18,14">
+                <Grid ColumnDefinitions="2*,2.2*,2*,1*,Auto">
+                  <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="名称" />
+                  <TextBlock Grid.Column="1" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="密钥" />
+                  <TextBlock Grid.Column="2" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="允许路由" />
+                  <TextBlock Grid.Column="3" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="状态" />
+                  <TextBlock Grid.Column="4" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="操作" />
+                </Grid>
+              </Border>
+              <ItemsControl ItemsSource="{Binding Items}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,14">
+                      <Grid ColumnDefinitions="2*,2.2*,2*,1*,Auto" ColumnSpacing="12">
+                        <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding KeyName}" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Foreground="#64748B" Text="{Binding MaskedValue}" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding AllowedRoutesText}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <Border Grid.Column="3" Background="#E8F7EA" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Foreground="#166534" Text="{Binding StatusText}" /></Border>
+                        <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                          <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="切换" Padding="10,6" />
+                          <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
+                        </StackPanel>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+
+        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+          <StackPanel Spacing="14">
+            <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="新建访问密钥" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
+            <Border Background="#E8F7EA" CornerRadius="8" IsVisible="{Binding HasCreatedKey}" Padding="12">
+              <StackPanel Spacing="8">
+                <TextBlock FontWeight="SemiBold" Foreground="#166534" Text="密钥已创建，仅显示一次" />
+                <TextBox Classes="form-input" IsReadOnly="True" Text="{Binding CreatedPlainKey}" />
+                <TextBlock FontSize="12" Foreground="#64748B" Text="请立即复制并妥善保存，客户端不会再次获取明文。" TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
+            <StackPanel IsVisible="{Binding IsCreateFormVisible}" Spacing="8">
+              <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="密钥名称" />
+              <TextBox Classes="form-input" Text="{Binding NewKeyName}" Watermark="如：生产环境密钥" />
+              <TextBlock FontSize="12" Foreground="#64748B" Text="当前版本默认允许全部路由，可在后续权限页面细化。" TextWrapping="Wrap" />
+              <Button Classes="primary-button" Command="{Binding CreateCommand}" Content="创建密钥" IsEnabled="{Binding CanCreate}" HorizontalContentAlignment="Center" Padding="12,9" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
+      </Grid>
+    </Grid>
+  </Grid>
+</UserControl>

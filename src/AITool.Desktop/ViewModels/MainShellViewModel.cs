@@ -107,6 +107,20 @@ public partial class MainShellViewModel : ViewModelBase
                 await models.LoadAsync();
                 break;
             }
+            case "access-keys":
+            {
+                var accessKeys = new AccessKeysViewModel(_apiService);
+                CurrentPage = accessKeys;
+                await accessKeys.LoadAsync();
+                break;
+            }
+            case "routes":
+            {
+                var routes = new RoutesViewModel(_apiService);
+                CurrentPage = routes;
+                await routes.LoadAsync();
+                break;
+            }
             default:
             {
                 var description = item.Key switch

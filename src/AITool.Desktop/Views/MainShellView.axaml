@@ -16,6 +16,12 @@
     <DataTemplate DataType="{x:Type vm:ModelsViewModel}">
       <views:ModelsView />
     </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:AccessKeysViewModel}">
+      <views:AccessKeysView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:RoutesViewModel}">
+      <views:RoutesView />
+    </DataTemplate>
     <DataTemplate DataType="{x:Type vm:PlaceholderPageViewModel}">
       <views:PlaceholderPageView />
     </DataTemplate>
