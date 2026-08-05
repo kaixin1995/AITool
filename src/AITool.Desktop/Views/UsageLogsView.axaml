@@ -274,6 +274,12 @@
     <!-- 详情作为右侧浮层，不参与日志表格的横向测量。 -->
     <Border
         Grid.Row="1"
+        Background="{DynamicResource AppPageBackgroundBrush}"
+        Opacity="0.72"
+        IsVisible="{Binding HasDetail}"
+        ZIndex="9" />
+    <Border
+        Grid.Row="1"
         Classes="content-card"
         MaxWidth="420"
         MinWidth="300"
