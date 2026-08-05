@@ -141,7 +141,29 @@ public partial class CodexView : UserControl
         }
     }
 
-    private async Task<bool> ConfirmAsync(string message, string confirmText)
+    private async void ConfirmDeleteAccount(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel
+            || sender is not Button button
+            || button.DataContext is not CodexAccount account)
+        {
+            return;
+        }
+
+        var accountName = string.IsNullOrWhiteSpace(account.DisplayName)
+            ? account.Email
+            : account.DisplayName;
+        var message = $"确定删除 Codex 账号“{accountName}”吗？删除会同时移除关联站点、模型映射和路由规则，此操作不可撤销。";
+        if (await ConfirmAsync(message, "确认删除", "确认删除 Codex 账号"))
+        {
+            await viewModel.DeleteCommand.ExecuteAsync(account);
+        }
+    }
+
+    private async Task<bool> ConfirmAsync(
+        string message,
+        string confirmText,
+        string title = "确认重置额度")
     {
         var owner = TopLevel.GetTopLevel(this) as Window;
         if (owner is null) return false;
@@ -159,7 +181,7 @@ public partial class CodexView : UserControl
         };
         dialog = new Window
         {
-            Title = "确认重置额度",
+            Title = title,
             Width = 460,
             Height = 240,
             CanResize = false,

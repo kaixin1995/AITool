@@ -168,7 +168,7 @@
                             <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,7" Margin="0,0,6,0" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,7" />
+                            <Button Classes="secondary-button" Click="ConfirmDeleteAccount" Content="删除" Padding="10,7" />
                           </WrapPanel>
                         </Border>
                       </StackPanel>
