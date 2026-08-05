@@ -80,12 +80,12 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasConcurrencyError => !string.IsNullOrWhiteSpace(ConcurrencyError);
     public bool HasItems => Items.Count > 0;
-    public bool HasNoItems => !HasItems;
+    public bool HasNoItems => !HasItems && !IsLoading;
     public bool HasDetail => SelectedDetail is not null;
     public bool HasConcurrency => Concurrency.Count > 0;
-    public bool HasNoConcurrency => !HasConcurrency;
+    public bool HasNoConcurrency => !HasConcurrency && !IsConcurrencyLoading;
     public bool HasCircuitRoutes => CircuitRoutes.Count > 0;
-    public bool HasNoCircuitRoutes => !HasCircuitRoutes;
+    public bool HasNoCircuitRoutes => !HasCircuitRoutes && !IsCircuitLoading;
     public bool HasBlockedCircuits => CircuitRoutes.Any(x => x.IsBlocked);
     public bool CanPrevious => Page > 1 && !IsLoading;
     public bool CanNext => Page < TotalPages && !IsLoading;
@@ -885,7 +885,13 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
     partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
     partial void OnConcurrencyErrorChanged(string value) => OnPropertyChanged(nameof(HasConcurrencyError));
     partial void OnSelectedDetailChanged(DeveloperInvocationDetail? value) => OnPropertyChanged(nameof(HasDetail));
-    partial void OnIsLoadingChanged(bool value) => UpdatePaging();
+    partial void OnIsLoadingChanged(bool value)
+    {
+        UpdatePaging();
+        OnPropertyChanged(nameof(HasNoItems));
+    }
+    partial void OnIsConcurrencyLoadingChanged(bool value) => OnPropertyChanged(nameof(HasNoConcurrency));
+    partial void OnIsCircuitLoadingChanged(bool value) => OnPropertyChanged(nameof(HasNoCircuitRoutes));
     partial void OnSelectedTabIndexChanged(int value)
     {
         OnPropertyChanged(nameof(SelectedTabTitle));
