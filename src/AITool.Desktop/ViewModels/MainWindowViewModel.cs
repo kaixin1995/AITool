@@ -34,16 +34,16 @@ public partial class MainWindowViewModel : ViewModelBase
 
         if (_authViewModel.Status?.IsAuthenticated == true)
         {
-            ShowMainShell();
+            await ShowMainShellAsync();
         }
     }
 
-    private void OnLoginSucceeded(object? sender, EventArgs args)
+    private async void OnLoginSucceeded(object? sender, EventArgs args)
     {
-        ShowMainShell();
+        await ShowMainShellAsync();
     }
 
-    private void ShowMainShell()
+    private async Task ShowMainShellAsync()
     {
         if (_authViewModel?.Status is null) return;
 
@@ -53,6 +53,7 @@ public partial class MainWindowViewModel : ViewModelBase
             _authViewModel.Status);
         _mainShellViewModel.LogoutCompleted += OnLogoutCompleted;
         CurrentViewModel = _mainShellViewModel;
+        await _mainShellViewModel.InitializeAsync();
     }
 
     private void OnLogoutCompleted(object? sender, EventArgs args)

@@ -41,7 +41,7 @@ public partial class MainShellViewModel : ViewModelBase
     private readonly NavigationService _navigationService;
 
     [ObservableProperty]
-    private PlaceholderPageViewModel _currentPage = new("仪表盘", "桌面端管理界面已连接");
+    private object? _currentPage;
 
     [ObservableProperty]
     private NavigationItemViewModel? _selectedItem;
@@ -55,6 +55,7 @@ public partial class MainShellViewModel : ViewModelBase
         if (SelectedItem is not null)
         {
             SelectedItem.IsSelected = true;
+            CurrentPage = new PlaceholderPageViewModel(SelectedItem.Label, "正在加载页面...");
         }
 
         _navigationService.Navigated += OnNavigated;
@@ -64,8 +65,16 @@ public partial class MainShellViewModel : ViewModelBase
 
     public event EventHandler? LogoutCompleted;
 
+    public async Task InitializeAsync()
+    {
+        if (SelectedItem is not null)
+        {
+            await NavigateAsync(SelectedItem);
+        }
+    }
+
     [RelayCommand]
-    private void Navigate(NavigationItemViewModel? item)
+    private async Task NavigateAsync(NavigationItemViewModel? item)
     {
         if (item is null) return;
 
@@ -75,13 +84,28 @@ public partial class MainShellViewModel : ViewModelBase
         }
 
         SelectedItem = item;
-        var description = item.Key switch
+        switch (item.Key)
         {
-            "analytics" => "图表页面将在桌面端后续接入专用图表组件。",
-            "model-health" => "模型健康时间线将在桌面端后续接入专用图表组件。",
-            _ => $"{item.Label}页面正在迁移到 Avalonia 桌面端。"
-        };
-        _navigationService.Navigate(new PlaceholderPageViewModel(item.Label, description));
+            case "dashboard":
+            {
+                var dashboard = new DashboardViewModel(_apiService);
+                CurrentPage = dashboard;
+                await dashboard.LoadAsync();
+                break;
+            }
+            default:
+            {
+                var description = item.Key switch
+                {
+                    "analytics" => "图表页面将在桌面端后续接入专用图表组件。",
+                    "model-health" => "模型健康时间线将在桌面端后续接入专用图表组件。",
+                    _ => $"{item.Label}页面正在迁移到 Avalonia 桌面端。"
+                };
+                CurrentPage = new PlaceholderPageViewModel(item.Label, description);
+                _navigationService.Navigate(CurrentPage);
+                break;
+            }
+        }
     }
 
     [RelayCommand]
@@ -101,9 +125,9 @@ public partial class MainShellViewModel : ViewModelBase
 
     private void OnNavigated(object? sender, EventArgs args)
     {
-        if (_navigationService.CurrentViewModel is PlaceholderPageViewModel page)
+        if (_navigationService.CurrentViewModel is not null)
         {
-            CurrentPage = page;
+            CurrentPage = _navigationService.CurrentViewModel;
         }
     }
 

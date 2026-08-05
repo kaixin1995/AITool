@@ -1,0 +1,14 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.PlaceholderPageView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:PlaceholderPageViewModel">
+  <Border Classes="content-card" Padding="24">
+    <StackPanel Spacing="10">
+      <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Title}" />
+      <TextBlock Classes="page-subtitle" Text="{Binding Description}" TextWrapping="Wrap" />
+      <TextBlock FontSize="13" Foreground="#94A3B8" Text="该页面将在后续节点接入现有后端 API。" />
+    </StackPanel>
+  </Border>
+</UserControl>

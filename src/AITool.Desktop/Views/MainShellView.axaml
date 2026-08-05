@@ -3,8 +3,18 @@
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:AITool.Desktop.ViewModels"
+    xmlns:views="using:AITool.Desktop.Views"
     x:DataType="vm:MainShellViewModel"
     x:CompileBindings="False">
+  <UserControl.DataTemplates>
+    <DataTemplate DataType="{x:Type vm:DashboardViewModel}">
+      <views:DashboardView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:PlaceholderPageViewModel}">
+      <views:PlaceholderPageView />
+    </DataTemplate>
+  </UserControl.DataTemplates>
+
   <Grid Background="#F8FAFC" ColumnDefinitions="260,*">
     <!-- 左侧导航，结构和 Vue3 MainLayout 保持一致。 -->
     <Border
@@ -110,37 +120,7 @@
       </Border>
 
       <ScrollViewer Grid.Row="1" Padding="30">
-        <StackPanel Spacing="20">
-          <Border Classes="content-card" Padding="24">
-            <Grid ColumnDefinitions="Auto,*" ColumnSpacing="18">
-              <Border
-                  Width="52"
-                  Height="52"
-                  Background="#EEF4FF"
-                  CornerRadius="14">
-                <TextBlock
-                    HorizontalAlignment="Center"
-                    VerticalAlignment="Center"
-                    FontSize="24"
-                    Text="✨" />
-              </Border>
-              <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="5">
-                <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding CurrentPage.Title}" />
-                <TextBlock Classes="page-subtitle" Text="{Binding CurrentPage.Description}" TextWrapping="Wrap" />
-              </StackPanel>
-            </Grid>
-          </Border>
-
-          <Border Classes="content-card" Padding="24">
-            <StackPanel Spacing="10">
-              <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="功能迁移进度" />
-              <TextBlock Classes="page-subtitle" Text="桌面端基础框架已就绪，后续将按计划逐个接入现有后端 API。" TextWrapping="Wrap" />
-              <Border Background="#F1F5F9" CornerRadius="6" Height="8" Margin="0,5,0,0">
-                <Border Background="#6C9EFF" CornerRadius="6" HorizontalAlignment="Left" Width="150" />
-              </Border>
-            </StackPanel>
-          </Border>
-        </StackPanel>
+        <ContentControl Content="{Binding CurrentPage}" />
       </ScrollViewer>
     </Grid>
   </Grid>
