@@ -36,6 +36,7 @@ public partial class DashboardViewModel : ViewModelBase
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
 
     public bool HasStats => Stats is not null;
+    public bool ShowNoStats => !IsLoading && !HasError && !HasStats;
 
     public async Task LoadAsync()
     {
@@ -61,11 +62,15 @@ public partial class DashboardViewModel : ViewModelBase
     partial void OnStatsChanged(DashboardStats? value)
     {
         OnPropertyChanged(nameof(HasStats));
+        OnPropertyChanged(nameof(ShowNoStats));
     }
+
+    partial void OnIsLoadingChanged(bool value) => OnPropertyChanged(nameof(ShowNoStats));
 
     partial void OnErrorMessageChanged(string value)
     {
         OnPropertyChanged(nameof(HasError));
+        OnPropertyChanged(nameof(ShowNoStats));
     }
 
     [RelayCommand]

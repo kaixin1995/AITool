@@ -24,33 +24,40 @@
         </StackPanel>
       </Border>
 
+      <Border
+          Classes="content-card"
+          Padding="24"
+          IsVisible="{Binding ShowNoStats}">
+        <TextBlock HorizontalAlignment="Center" Foreground="#64748B" Text="暂无仪表盘数据" />
+      </Border>
+
       <ScrollViewer
           VerticalScrollBarVisibility="Auto"
           IsVisible="{Binding HasStats}">
         <StackPanel Spacing="18">
-        <UniformGrid Columns="5" Rows="1" HorizontalAlignment="Stretch">
-          <Border Classes="content-card" Margin="0,0,10,0" Padding="16">
+        <WrapPanel Orientation="Horizontal" ItemWidth="180" ItemSpacing="10" LineSpacing="10">
+          <Border Classes="content-card" Width="180" Padding="16">
             <StackPanel Spacing="8">
               <TextBlock FontSize="12" Foreground="#64748B" Text="启用站点" />
               <TextBlock FontSize="28" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Stats.SiteCount}" />
               <TextBlock FontSize="12" Foreground="#6C9EFF" Text="资源管理" />
             </StackPanel>
           </Border>
-          <Border Classes="content-card" Margin="0,0,10,0" Padding="16">
+          <Border Classes="content-card" Width="180" Padding="16">
             <StackPanel Spacing="8">
               <TextBlock FontSize="12" Foreground="#64748B" Text="模型总数" />
               <TextBlock FontSize="28" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Stats.ModelCount}" />
               <TextBlock FontSize="12" Foreground="#6C9EFF" Text="模型库" />
             </StackPanel>
           </Border>
-          <Border Classes="content-card" Margin="0,0,10,0" Padding="16">
+          <Border Classes="content-card" Width="180" Padding="16">
             <StackPanel Spacing="8">
               <TextBlock FontSize="12" Foreground="#64748B" Text="路由规则" />
               <TextBlock FontSize="28" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Stats.RouteCount}" />
               <TextBlock FontSize="12" Foreground="#6C9EFF" Text="代理配置" />
             </StackPanel>
           </Border>
-          <Border Classes="content-card" Margin="0,0,10,0" Padding="16">
+          <Border Classes="content-card" Width="180" Padding="16">
             <StackPanel Spacing="8">
               <TextBlock FontSize="12" Foreground="#64748B" Text="启用密钥" />
               <TextBlock FontSize="28" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Stats.AccessKeyCount}" />
@@ -64,7 +71,7 @@
               <TextBlock FontSize="12" Foreground="#6C9EFF" Text="监控运维" />
             </StackPanel>
           </Border>
-        </UniformGrid>
+        </WrapPanel>
 
         <Border Classes="content-card" Padding="20">
           <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="16">
