@@ -195,7 +195,7 @@
           <Border Grid.Column="2" Classes="content-card" Padding="14">
             <StackPanel Spacing="4">
               <TextBlock FontSize="12" Foreground="#64748B" Text="总 Tokens" />
-              <TextBlock FontSize="24" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Summary.TotalTokens}" />
+              <TextBlock FontSize="24" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Summary.TotalTokensText}" />
             </StackPanel>
           </Border>
           <Border Grid.Column="3" Classes="content-card" Padding="14">
@@ -291,7 +291,7 @@
             <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseDetailCommand}" Content="关闭" Padding="10,6" />
           </Grid>
           <Border Background="#F8FAFC" CornerRadius="8" Padding="12">
-            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="10" RowSpacing="7">
+            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="10" RowSpacing="7">
               <TextBlock FontSize="12" Foreground="#94A3B8" Text="请求 ID" />
               <TextBlock Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.RequestIdText}" TextWrapping="Wrap" />
               <TextBlock Grid.Row="1" FontSize="12" Foreground="#94A3B8" Text="请求模型" />
@@ -302,8 +302,10 @@
               <TextBlock Grid.Row="3" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.ProtocolTypeText}" />
               <TextBlock Grid.Row="4" FontSize="12" Foreground="#94A3B8" Text="调用方式" />
               <TextBlock Grid.Row="4" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.ForwardingModeText}" />
-              <TextBlock Grid.Row="5" FontSize="12" Foreground="#94A3B8" Text="思考等级" />
-              <TextBlock Grid.Row="5" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.ReasoningEffortText}" />
+              <TextBlock Grid.Row="5" FontSize="12" Foreground="#94A3B8" Text="访问密钥" />
+              <TextBlock Grid.Row="5" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.AccessKeyNameText}" TextWrapping="Wrap" />
+              <TextBlock Grid.Row="6" FontSize="12" Foreground="#94A3B8" Text="思考等级" />
+              <TextBlock Grid.Row="6" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.ReasoningEffortText}" />
             </Grid>
           </Border>
           <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="尝试记录" />

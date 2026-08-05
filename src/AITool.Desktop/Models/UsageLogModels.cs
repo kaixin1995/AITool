@@ -38,6 +38,7 @@ public sealed class UsageLogSummary
     public int MaxDurationMs { get; set; }
 
     public string SuccessRateText => $"{(SuccessRate <= 1 ? SuccessRate * 100 : SuccessRate):0.0}%";
+    public string TotalTokensText => AnalyticsText.Compact(TotalTokens);
 }
 
 public sealed class UsageLogItem
@@ -139,6 +140,9 @@ public sealed class UsageLogRequestDetail
     public string ProtocolTypeText => FirstNonEmpty(ProtocolType, "-");
     public string ForwardingModeText => FirstNonEmpty(ForwardingMode, "-");
     public string ReasoningEffortText => FirstNonEmpty(ReasoningEffort, "-");
+    public string AccessKeyNameText => Attempts
+        .Select(attempt => attempt.AccessKeyName)
+        .FirstOrDefault(name => !string.IsNullOrWhiteSpace(name)) ?? "-";
 
     private static string FirstNonEmpty(params string?[] values)
         => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "-";
