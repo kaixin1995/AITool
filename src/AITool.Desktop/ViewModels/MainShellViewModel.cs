@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using Avalonia;
+using Avalonia.Styling;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using AITool.Desktop.Models;
@@ -40,6 +42,7 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
     private readonly ApiService _apiService;
     private readonly SseClient _sseClient;
     private readonly NavigationService _navigationService;
+    private readonly TokenStore _tokenStore;
     private int _navigationVersion;
 
     [ObservableProperty]
@@ -48,11 +51,27 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
     [ObservableProperty]
     private NavigationItemViewModel? _selectedItem;
 
-    public MainShellViewModel(ApiService apiService, SseClient sseClient, NavigationService navigationService, AuthStatus status)
+    [ObservableProperty]
+    private bool _isDarkTheme;
+
+    public string ThemeToggleText => IsDarkTheme ? "浅色模式" : "深色模式";
+
+    public MainShellViewModel(
+        ApiService apiService,
+        SseClient sseClient,
+        NavigationService navigationService,
+        TokenStore tokenStore,
+        AuthStatus status)
     {
         _apiService = apiService;
         _sseClient = sseClient;
         _navigationService = navigationService;
+        _tokenStore = tokenStore;
+        var savedTheme = tokenStore.Settings.ThemeMode;
+        IsDarkTheme = string.Equals(savedTheme, "dark", StringComparison.OrdinalIgnoreCase)
+            || (string.Equals(savedTheme, "default", StringComparison.OrdinalIgnoreCase)
+                && Application.Current?.ActualThemeVariant == ThemeVariant.Dark);
+        ApplyTheme();
         NavigationGroups = BuildNavigationGroups(status.Features);
         SelectedItem = NavigationGroups.SelectMany(group => group.Items).FirstOrDefault();
         if (SelectedItem is not null)
@@ -263,6 +282,26 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 break;
         }
     }
+
+    [RelayCommand]
+    private void ToggleTheme()
+    {
+        IsDarkTheme = !IsDarkTheme;
+        ApplyTheme();
+        _tokenStore.SaveThemeMode(IsDarkTheme ? "dark" : "light");
+    }
+
+    private void ApplyTheme()
+    {
+        if (Application.Current is not null)
+        {
+            Application.Current.RequestedThemeVariant = IsDarkTheme
+                ? ThemeVariant.Dark
+                : ThemeVariant.Light;
+        }
+    }
+
+    partial void OnIsDarkThemeChanged(bool value) => OnPropertyChanged(nameof(ThemeToggleText));
 
     [RelayCommand]
     private async Task LogoutAsync()

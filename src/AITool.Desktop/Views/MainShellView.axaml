@@ -153,6 +153,7 @@
               </StackPanel>
             </Border>
             <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="AI Tool Desktop" VerticalAlignment="Center" />
+            <Button Classes="secondary-button" Command="{Binding ToggleThemeCommand}" Content="{Binding ThemeToggleText}" Padding="10,7" />
             <Button Classes="secondary-button" Command="{Binding LogoutCommand}" Content="退出登录" Padding="10,7" />
           </WrapPanel>
         </Grid>

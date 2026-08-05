@@ -55,6 +55,15 @@ public sealed class TokenStore
         }
     }
 
+    public void SaveThemeMode(string themeMode)
+    {
+        lock (_sync)
+        {
+            _settings.ThemeMode = themeMode;
+            SaveSettings();
+        }
+    }
+
     public void ClearTokens()
     {
         lock (_sync)
@@ -101,7 +110,8 @@ public sealed class TokenStore
             AccessToken = source.AccessToken,
             RefreshToken = source.RefreshToken,
             AccessTokenExpiresAt = source.AccessTokenExpiresAt,
-            RefreshTokenExpiresAt = source.RefreshTokenExpiresAt
+            RefreshTokenExpiresAt = source.RefreshTokenExpiresAt,
+            ThemeMode = source.ThemeMode
         };
     }
 }

@@ -7,4 +7,5 @@ public sealed class AppSettings
     public string RefreshToken { get; set; } = string.Empty;
     public DateTimeOffset? AccessTokenExpiresAt { get; set; }
     public DateTimeOffset? RefreshTokenExpiresAt { get; set; }
+    public string ThemeMode { get; set; } = "default";
 }

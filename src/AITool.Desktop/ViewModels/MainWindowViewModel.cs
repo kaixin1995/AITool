@@ -62,6 +62,7 @@ public partial class MainWindowViewModel : ViewModelBase, IDisposable
             _apiService,
             _sseClient,
             _navigationService,
+            _tokenStore,
             _authViewModel.Status);
         _mainShellViewModel.LogoutCompleted += OnLogoutCompleted;
         CurrentViewModel = _mainShellViewModel;
