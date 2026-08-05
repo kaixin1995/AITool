@@ -11,6 +11,7 @@ namespace AITool.Desktop.ViewModels;
 public partial class RoutesViewModel : ViewModelBase
 {
     private readonly ApiService _apiService;
+    private bool _pendingSaveAfterCurrent;
 
     [ObservableProperty]
     private ObservableCollection<RouteEntry> _entries = new();
@@ -294,8 +295,11 @@ public partial class RoutesViewModel : ViewModelBase
                     }).ToList()
                 });
             IsDirty = false;
-            Message = "路由候选队列已保存";
-            await LoadAsync();
+            Message = "路由候选队列已自动保存";
+            if (!_pendingSaveAfterCurrent)
+            {
+                await LoadAsync();
+            }
         }
         catch (Exception exception)
         {
@@ -305,6 +309,11 @@ public partial class RoutesViewModel : ViewModelBase
         {
             IsSavingRules = false;
             NotifyEditProperties();
+            if (_pendingSaveAfterCurrent)
+            {
+                _pendingSaveAfterCurrent = false;
+                _ = SaveRulesAsync();
+            }
         }
     }
 
@@ -388,6 +397,16 @@ public partial class RoutesViewModel : ViewModelBase
         Message = string.Empty;
         ErrorMessage = string.Empty;
         NotifyEditProperties();
+
+        // 路由队列与网页端保持一致，候选顺序和可用性变化后自动保存。
+        if (SelectedEntry is null) return;
+        if (IsSavingRules)
+        {
+            _pendingSaveAfterCurrent = true;
+            return;
+        }
+
+        _ = SaveRulesAsync();
     }
 
     private void UpdateRulePositions()
