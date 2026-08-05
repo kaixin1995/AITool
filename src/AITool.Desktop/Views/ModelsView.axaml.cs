@@ -21,13 +21,43 @@ public partial class ModelsView : UserControl
             return;
         }
 
-        if (await ConfirmAsync("删除该站点映射后，相关路由规则可能会一并清理。确定继续吗？"))
+        if (await ConfirmAsync("确认删除映射", "删除该站点映射后，相关路由规则可能会一并清理。确定继续吗？", "确认删除"))
         {
             await viewModel.DeleteMappingCommand.ExecuteAsync(mapping);
         }
     }
 
-    private async Task<bool> ConfirmAsync(string message)
+    private async void ConfirmDeleteModel(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ModelsViewModel viewModel ||
+            sender is not Button button ||
+            button.DataContext is not ModelListItem model)
+        {
+            return;
+        }
+
+        var message = $"确认删除模型“{model.DisplayName}”吗？此操作会级联清理其站点映射、路由规则和健康监控，且不可恢复。";
+        if (await ConfirmAsync("确认删除模型", message, "确认删除"))
+        {
+            await viewModel.DeleteCommand.ExecuteAsync(model);
+        }
+    }
+
+    private async void ConfirmClearAll(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not ModelsViewModel viewModel)
+        {
+            return;
+        }
+
+        const string message = "确认清空全部模型吗？此操作会清理所有模型、站点映射、路由规则和健康监控，且不可恢复。";
+        if (await ConfirmAsync("确认清空全部模型", message, "确认清空"))
+        {
+            await viewModel.ClearAllCommand.ExecuteAsync(null);
+        }
+    }
+
+    private async Task<bool> ConfirmAsync(string title, string message, string confirmText)
     {
         var owner = TopLevel.GetTopLevel(this) as Window;
         if (owner is null)
@@ -43,12 +73,12 @@ public partial class ModelsView : UserControl
         };
         var confirmButton = new Button
         {
-            Content = "确认删除",
+            Content = confirmText,
             Padding = new Avalonia.Thickness(14, 8)
         };
         dialog = new Window
         {
-            Title = "确认删除映射",
+            Title = title,
             Width = 440,
             Height = 230,
             CanResize = false,

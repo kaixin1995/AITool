@@ -15,10 +15,21 @@ public partial class ModelsViewModel : ViewModelBase
     private ObservableCollection<ModelVendorGroup> _vendorGroups = new();
 
     [ObservableProperty]
+    private ObservableCollection<ModelVendorGroup> _filteredVendorGroups = new();
+
+    [ObservableProperty]
+    private string _searchText = string.Empty;
+
+    [ObservableProperty]
+    private string _message = string.Empty;
+
+    [ObservableProperty]
     private ModelEditForm _form = new();
 
     [ObservableProperty]
     private ObservableCollection<CompatibilityProfileItem> _profileOptions = new();
+
+    private List<CompatibilityProfileItem> _allProfileOptions = new();
 
     [ObservableProperty]
     private CompatibilityProfileItem? _selectedCompatibilityProfile;
@@ -75,11 +86,17 @@ public partial class ModelsViewModel : ViewModelBase
 
     public bool IsEditMode => EditingModel is not null;
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
+    public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
     public bool IsListVisible => !IsLoading && !HasError;
     public bool HasModels => ModelCount > 0;
+    public bool HasFilteredModels => FilteredModelCount > 0;
+    public bool ShowNoModels => !IsLoading && !HasError && !HasModels;
+    public bool ShowNoSearchResults => !IsLoading && !HasError && HasModels && !HasFilteredModels;
     public bool CanSave => !IsSaving;
+    public bool CanClearAll => !IsLoading && !IsSaving && !IsMappingSaving;
     public string EditorTitle => IsEditMode ? "编辑模型" : "新增模型";
     public int ModelCount => VendorGroups.Sum(group => group.Models.Count);
+    public int FilteredModelCount => FilteredVendorGroups.Sum(group => group.Models.Count);
     public string MappingTitle => MappingModel is null ? "站点映射" : $"站点映射 - {MappingModel.DisplayName}";
     public bool HasMappingError => !string.IsNullOrWhiteSpace(MappingErrorMessage);
     public bool HasMappingMessage => !string.IsNullOrWhiteSpace(MappingMessage);
@@ -87,11 +104,14 @@ public partial class ModelsViewModel : ViewModelBase
     public bool HasNoMappingRows => !HasMappingRows;
     public bool ShowNoMappingRows => !IsMappingLoading && !HasMappingError && HasNoMappingRows;
     public bool HasAvailableSites => MappingDetail?.AvailableSites.Count > 0;
+    public bool ShowNoAvailableSites => !IsMappingLoading && !HasMappingError && MappingDetail is not null && !HasAvailableSites;
+    public string NoAvailableSitesMessage => MappingDetail?.SiteMappings.Count > 0 ? "所有启用站点都已关联" : "没有启用站点";
     public bool CanOpenMapping => !IsLoading && !IsMappingLoading;
     public bool CanEditMapping => !IsMappingLoading && !IsMappingSaving && MappingDetail is not null;
     public bool CanAddMapping => !IsMappingLoading
         && !IsMappingSaving
         && MappingDetail is not null
+        && HasAvailableSites
         && SelectedMappingSite is not null
         && !string.IsNullOrWhiteSpace(NewMappingRemoteName);
     public bool CanSaveMapping => !IsMappingLoading && !IsMappingSaving && MappingDetail is not null;
@@ -104,8 +124,11 @@ public partial class ModelsViewModel : ViewModelBase
         {
             var result = await _apiService.SendAsync<ModelListResponse>(HttpMethod.Get, "/api/admin/models", null);
             VendorGroups = new ObservableCollection<ModelVendorGroup>(result.VendorGroups);
+            UpdateFilteredVendorGroups();
             await LoadCompatibilityProfilesAsync();
             OnPropertyChanged(nameof(ModelCount));
+            OnPropertyChanged(nameof(HasModels));
+            OnPropertyChanged(nameof(CanClearAll));
         }
         catch (Exception exception)
         {
@@ -128,6 +151,7 @@ public partial class ModelsViewModel : ViewModelBase
     {
         EditingModel = null;
         Form.Reset();
+        ProfileOptions = new ObservableCollection<CompatibilityProfileItem>(_allProfileOptions.Where(profile => profile.IsEnabled));
         SelectedCompatibilityProfile = null;
         IsEditorOpen = true;
     }
@@ -145,7 +169,19 @@ public partial class ModelsViewModel : ViewModelBase
             OverrideReasoningEffort = model.OverrideReasoningEffort,
             CompatibilityProfileId = model.CompatibilityProfileId
         };
-        SelectedCompatibilityProfile = ProfileOptions.FirstOrDefault(profile =>
+
+        // 编辑时保留当前停用规则集，避免仅因下拉选项过滤而丢失关联。
+        ProfileOptions = new ObservableCollection<CompatibilityProfileItem>(_allProfileOptions.Where(profile => profile.IsEnabled));
+        var currentProfile = _allProfileOptions.FirstOrDefault(profile =>
+            string.Equals(profile.Id, model.CompatibilityProfileId, StringComparison.OrdinalIgnoreCase));
+        if (currentProfile is not null && !currentProfile.IsEnabled &&
+            !ProfileOptions.Any(profile => string.Equals(profile.Id, currentProfile.Id, StringComparison.OrdinalIgnoreCase)))
+        {
+            ProfileOptions = new ObservableCollection<CompatibilityProfileItem>(
+                ProfileOptions.Append(currentProfile));
+        }
+
+        SelectedCompatibilityProfile = currentProfile ?? ProfileOptions.FirstOrDefault(profile =>
             string.Equals(profile.Id, model.CompatibilityProfileId, StringComparison.OrdinalIgnoreCase));
         IsEditorOpen = true;
     }
@@ -164,7 +200,8 @@ public partial class ModelsViewModel : ViewModelBase
                 HttpMethod.Get,
                 "/api/admin/compatibility-profiles",
                 null);
-            ProfileOptions = new ObservableCollection<CompatibilityProfileItem>(profiles);
+            _allProfileOptions = profiles;
+            ProfileOptions = new ObservableCollection<CompatibilityProfileItem>(profiles.Where(profile => profile.IsEnabled));
         }
         catch (Exception exception)
         {
@@ -322,7 +359,37 @@ public partial class ModelsViewModel : ViewModelBase
     [RelayCommand]
     private void ClearCompatibilityProfile()
     {
+        // 只有用户明确点击清除时才移除模型当前关联的规则集。
+        Form.CompatibilityProfileId = null;
         SelectedCompatibilityProfile = null;
+    }
+
+    [RelayCommand]
+    private async Task ClearAllAsync()
+    {
+        if (!CanClearAll) return;
+
+        IsLoading = true;
+        ErrorMessage = string.Empty;
+        Message = string.Empty;
+        try
+        {
+            var result = await _apiService.SendAsync<ClearAllResult>(
+                HttpMethod.Post,
+                "/api/admin/models/clear-all",
+                null);
+            Message = $"已清空 {result.DeletedModels} 个模型、{result.DeletedMappings} 个站点映射和 {result.DeletedMonitors} 条健康监控。";
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsLoading = false;
+            OnPropertyChanged(nameof(CanClearAll));
+        }
     }
 
     [RelayCommand]
@@ -402,8 +469,22 @@ public partial class ModelsViewModel : ViewModelBase
 
     partial void OnVendorGroupsChanged(ObservableCollection<ModelVendorGroup> value)
     {
+        UpdateFilteredVendorGroups();
         OnPropertyChanged(nameof(ModelCount));
         OnPropertyChanged(nameof(HasModels));
+        OnPropertyChanged(nameof(CanClearAll));
+    }
+
+    partial void OnSearchTextChanged(string value)
+    {
+        UpdateFilteredVendorGroups();
+    }
+
+    partial void OnFilteredVendorGroupsChanged(ObservableCollection<ModelVendorGroup> value)
+    {
+        OnPropertyChanged(nameof(FilteredModelCount));
+        OnPropertyChanged(nameof(HasFilteredModels));
+        OnPropertyChanged(nameof(ShowNoSearchResults));
     }
 
     partial void OnEditingModelChanged(ModelListItem? value)
@@ -420,7 +501,11 @@ public partial class ModelsViewModel : ViewModelBase
 
     partial void OnSelectedCompatibilityProfileChanged(CompatibilityProfileItem? value)
     {
-        Form.CompatibilityProfileId = value?.Id;
+        // 下拉选项刷新或编辑回填为空时，不应意外清空已有规则集关联。
+        if (value is not null)
+        {
+            Form.CompatibilityProfileId = value.Id;
+        }
     }
 
     partial void OnMappingDetailChanged(ModelDetail? value)
@@ -429,6 +514,8 @@ public partial class ModelsViewModel : ViewModelBase
         OnPropertyChanged(nameof(HasNoMappingRows));
         OnPropertyChanged(nameof(ShowNoMappingRows));
         OnPropertyChanged(nameof(HasAvailableSites));
+        OnPropertyChanged(nameof(ShowNoAvailableSites));
+        OnPropertyChanged(nameof(NoAvailableSitesMessage));
         OnPropertyChanged(nameof(CanEditMapping));
         OnPropertyChanged(nameof(CanAddMapping));
         OnPropertyChanged(nameof(CanSaveMapping));
@@ -439,6 +526,7 @@ public partial class ModelsViewModel : ViewModelBase
     partial void OnIsMappingLoadingChanged(bool value)
     {
         OnPropertyChanged(nameof(ShowNoMappingRows));
+        OnPropertyChanged(nameof(ShowNoAvailableSites));
         OnPropertyChanged(nameof(CanOpenMapping));
         OnPropertyChanged(nameof(CanEditMapping));
         OnPropertyChanged(nameof(CanAddMapping));
@@ -447,26 +535,65 @@ public partial class ModelsViewModel : ViewModelBase
     partial void OnIsMappingSavingChanged(bool value)
     {
         OnPropertyChanged(nameof(CanAddMapping));
+        OnPropertyChanged(nameof(CanEditMapping));
         OnPropertyChanged(nameof(CanSaveMapping));
+        OnPropertyChanged(nameof(CanClearAll));
     }
-    partial void OnMappingErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasMappingError));
+    partial void OnMappingErrorMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasMappingError));
+        OnPropertyChanged(nameof(ShowNoAvailableSites));
+    }
     partial void OnMappingMessageChanged(string value) => OnPropertyChanged(nameof(HasMappingMessage));
+    partial void OnMessageChanged(string value) => OnPropertyChanged(nameof(HasMessage));
 
     partial void OnIsLoadingChanged(bool value)
     {
         OnPropertyChanged(nameof(IsListVisible));
+        OnPropertyChanged(nameof(ShowNoModels));
+        OnPropertyChanged(nameof(ShowNoSearchResults));
         OnPropertyChanged(nameof(CanOpenMapping));
+        OnPropertyChanged(nameof(CanClearAll));
     }
 
     partial void OnIsSavingChanged(bool value)
     {
         OnPropertyChanged(nameof(CanSave));
+        OnPropertyChanged(nameof(CanClearAll));
     }
 
     partial void OnErrorMessageChanged(string value)
     {
         OnPropertyChanged(nameof(HasError));
         OnPropertyChanged(nameof(IsListVisible));
+        OnPropertyChanged(nameof(ShowNoModels));
+        OnPropertyChanged(nameof(ShowNoSearchResults));
+    }
+
+    private void UpdateFilteredVendorGroups()
+    {
+        var query = SearchText.Trim();
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            FilteredVendorGroups = VendorGroups;
+            return;
+        }
+
+        var filteredGroups = VendorGroups
+            .Select(group => new ModelVendorGroup
+            {
+                VendorName = group.VendorName,
+                IconSvgBody = group.IconSvgBody,
+                HeaderBackground = group.HeaderBackground,
+                Models = new ObservableCollection<ModelListItem>(group.Models.Where(model =>
+                    group.VendorName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    model.ModelName.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                    model.DisplayName.Contains(query, StringComparison.OrdinalIgnoreCase)))
+            })
+            .Where(group => group.Models.Count > 0)
+            .ToList();
+
+        FilteredVendorGroups = new ObservableCollection<ModelVendorGroup>(filteredGroups);
     }
 
     private void NotifyMappingProperties()
@@ -482,6 +609,13 @@ public partial class ModelsViewModel : ViewModelBase
     private sealed class ToggleResult
     {
         public bool IsEnabled { get; set; }
+    }
+
+    private sealed class ClearAllResult
+    {
+        public int DeletedModels { get; set; }
+        public int DeletedMappings { get; set; }
+        public int DeletedMonitors { get; set; }
     }
 
     private sealed class ConcurrencyResult
