@@ -18,8 +18,8 @@
       </StackPanel>
     </Grid>
 
-    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-      <StackPanel MinWidth="820" Spacing="16">
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+      <StackPanel Spacing="16">
         <Border Classes="content-card" Padding="18">
           <StackPanel Spacing="12">
             <Grid ColumnDefinitions="1*,1*,1*,1*" ColumnSpacing="12">
