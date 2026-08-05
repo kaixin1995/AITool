@@ -11,6 +11,7 @@ namespace AITool.Desktop.ViewModels;
 
 public partial class UsageLogsViewModel : ViewModelBase, IDisposable
 {
+    private const int PageSize = 20;
     private readonly ApiService _apiService;
     private readonly SemaphoreSlim _pageLoadLock = new(1, 1);
     private readonly CancellationTokenSource _lifetimeCancellation = new();
@@ -95,7 +96,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     public string PageText => TotalPages == 0 ? "第 0 / 0 页" : $"第 {Page} / {TotalPages} 页";
     public string PaginationSummary => TotalCount == 0
         ? "共 0 条"
-        : $"显示第 {(Page - 1) * 20 + 1:N0} - {Math.Min(Page * 20, TotalCount):N0} 条，共 {TotalCount:N0} 条";
+        : $"显示第 {(Page - 1) * PageSize + 1:N0} - {Math.Min(Page * PageSize, TotalCount):N0} 条，共 {TotalCount:N0} 条";
 
     public async Task LoadAsync()
     {
@@ -214,7 +215,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         var values = new List<string>
         {
             $"page={page}",
-            "pageSize=20",
+            $"pageSize={PageSize}",
             $"rangeType={Uri.EscapeDataString(range)}"
         };
         if (SelectedSite is not null) values.Add($"siteId={Uri.EscapeDataString(SelectedSite.Id)}");
