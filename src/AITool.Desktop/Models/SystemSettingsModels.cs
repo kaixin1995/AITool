@@ -23,4 +23,5 @@ public partial class SystemSettings : ObservableObject
     [ObservableProperty] private int _codexAutoDisableThresholdPercent = 95;
     public string? LastUsageLogPrunedAt { get; set; }
     public int LastUsageLogPrunedCount { get; set; }
+    public string LastUsageLogPrunedText => $"最近一次自动清理数量：{LastUsageLogPrunedCount}";
 }
