@@ -28,6 +28,9 @@
     <DataTemplate DataType="{x:Type vm:DetectionTasksViewModel}">
       <views:DetectionTasksView />
     </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:ModelHealthViewModel}">
+      <views:ModelHealthView />
+    </DataTemplate>
     <DataTemplate DataType="{x:Type vm:UsageLogsViewModel}">
       <views:UsageLogsView />
     </DataTemplate>

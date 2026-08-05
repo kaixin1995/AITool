@@ -147,13 +147,20 @@ public partial class MainShellViewModel : ViewModelBase
             case "detection":
             {
                 var page = new DetectionViewModel(_apiService);
-                await page.LoadAsync();
+                // 先显示页面，再在后台加载检测矩阵，避免切换导航时等待接口返回。
+                _ = page.LoadAsync();
                 return page;
             }
             case "detection-tasks":
             {
                 var page = new DetectionTasksViewModel(_apiService);
                 await page.LoadAsync();
+                return page;
+            }
+            case "model-health":
+            {
+                var page = new ModelHealthViewModel(_apiService);
+                _ = page.LoadAsync();
                 return page;
             }
             case "usage-logs":
@@ -224,6 +231,9 @@ public partial class MainShellViewModel : ViewModelBase
                 break;
             case DetectionTasksViewModel detectionTasks:
                 await detectionTasks.LoadAsync();
+                break;
+            case ModelHealthViewModel modelHealth:
+                await modelHealth.LoadAsync();
                 break;
             case UsageLogsViewModel usageLogs:
                 await usageLogs.LoadAsync();

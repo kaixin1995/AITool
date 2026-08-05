@@ -26,6 +26,7 @@ public partial class DetectionViewModel : ViewModelBase
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasGroups => Groups.Count > 0;
     public bool HasNoGroups => !HasGroups;
+    public bool ShowEmptyState => !IsLoading && HasNoGroups;
     public bool CanProbe => !IsBusy && !IsLoading && HasGroups;
 
     public async Task LoadAsync()
@@ -38,6 +39,7 @@ public partial class DetectionViewModel : ViewModelBase
             Groups = new ObservableCollection<DetectionModelGroup>(response.ModelGroups);
             OnPropertyChanged(nameof(HasGroups));
             OnPropertyChanged(nameof(HasNoGroups));
+            OnPropertyChanged(nameof(ShowEmptyState));
             OnPropertyChanged(nameof(CanProbe));
         }
         catch (Exception exception)
@@ -128,10 +130,17 @@ public partial class DetectionViewModel : ViewModelBase
 
     partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
     partial void OnIsBusyChanged(bool value) => OnPropertyChanged(nameof(CanProbe));
+    partial void OnIsLoadingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ShowEmptyState));
+        OnPropertyChanged(nameof(CanProbe));
+    }
+
     partial void OnGroupsChanged(ObservableCollection<DetectionModelGroup> value)
     {
         OnPropertyChanged(nameof(HasGroups));
         OnPropertyChanged(nameof(HasNoGroups));
+        OnPropertyChanged(nameof(ShowEmptyState));
         OnPropertyChanged(nameof(CanProbe));
     }
 }

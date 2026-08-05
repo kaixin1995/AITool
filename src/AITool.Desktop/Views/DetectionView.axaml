@@ -15,9 +15,10 @@
     </Grid>
     <Grid Grid.Row="2">
       <StackPanel Spacing="14">
+        <Border Background="#EFF6FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}"><TextBlock Foreground="#315EA8" Text="正在加载模型检测数据..." /></Border>
         <Border Background="#E8F1FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsBusy}"><TextBlock Foreground="#315EA8" Text="{Binding ProgressText}" /></Border>
         <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
-        <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoGroups}" Text="暂无映射数据，请先配置站点和模型" Margin="0,30" />
+        <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding ShowEmptyState}" Text="暂无映射数据，请先配置站点和模型" Margin="0,30" />
         <ItemsControl ItemsSource="{Binding Groups}">
           <ItemsControl.ItemTemplate><DataTemplate>
             <Border Classes="content-card" Margin="0,0,0,14" Padding="0">
