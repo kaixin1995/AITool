@@ -93,6 +93,15 @@ describe('Analytics 细分分析状态', () => {
       'fallbackChain',
       'latencyPercentiles'
     ])
+    expect(ANALYTICS_ANALYSIS_TABS.map((tab) => tab.label)).toEqual([
+      '来源',
+      'Access Key',
+      '协议',
+      '失败原因',
+      'HTTP 状态码',
+      '回退链路',
+      '延迟分位数'
+    ])
   })
 
   it('细分 Tab 切换不清除已有筛选，且仅可筛选来源、Access Key 和协议', () => {

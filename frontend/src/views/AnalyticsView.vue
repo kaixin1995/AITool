@@ -84,14 +84,26 @@ const protocolOptions: SelectOption[] = [
 ]
 
 // 8 个图表的 DOM 引用与 ECharts 实例
- type ChartKey = 'requestTrend' | 'resultTrend' | 'tokenTrend' | 'durationTrend' | 'fallbackTrend' | 'cacheRatio' | 'siteDist' | 'modelDist'
+type ChartKey =
+  | 'requestTrend'
+  | 'resultTrend'
+  | 'tokenTrend'
+  | 'durationTrend'
+  | 'fallbackTrend'
+  | 'cacheRatio'
+  | 'siteDist'
+  | 'modelDist'
+  | 'analysisOverview'
+  | 'analysisMetrics'
 const chartEls = ref<Record<ChartKey, HTMLElement | null>>({
   requestTrend: null, resultTrend: null, tokenTrend: null, durationTrend: null,
-  fallbackTrend: null, cacheRatio: null, siteDist: null, modelDist: null
+  fallbackTrend: null, cacheRatio: null, siteDist: null, modelDist: null,
+  analysisOverview: null, analysisMetrics: null
 })
 const charts = shallowRef<Record<ChartKey, ECharts | null>>({
   requestTrend: null, resultTrend: null, tokenTrend: null, durationTrend: null,
-  fallbackTrend: null, cacheRatio: null, siteDist: null, modelDist: null
+  fallbackTrend: null, cacheRatio: null, siteDist: null, modelDist: null,
+  analysisOverview: null, analysisMetrics: null
 })
 let chartResizeObserver: ResizeObserver | null = null
 const chartClickHandlers = new Map<ChartKey, (params: { dataIndex?: number }) => void>()
@@ -383,6 +395,77 @@ const latencyColumns: DataTableColumns<AnalyticsLatencyRow> = [
   { title: '样本数', key: 'sampleCount', width: 110 }
 ]
 
+const analysisTitle = computed(() =>
+  ANALYTICS_ANALYSIS_TABS.find((tab) => tab.key === activeAnalysisDimension.value)?.label ?? '细分分析'
+)
+
+const analysisSubtitle = computed(() => {
+  switch (activeAnalysisDimension.value) {
+    case 'source': return '对比不同请求来源的调用规模、成功失败构成、Token 消耗与平均耗时。'
+    case 'accessKey': return '观察不同访问密钥的使用量和稳定性，名称保持脱敏展示。'
+    case 'protocol': return '对比不同协议入口的请求量、成功率、Token 消耗与响应耗时。'
+    case 'failureReason': return '按失败分类定位主要异常类型，优先关注数量高且成功率低的项目。'
+    case 'statusCode': return '从 HTTP 状态码分布观察上游响应和无响应异常。'
+    case 'fallbackChain': return '用链路图观察请求从首个站点到最终站点的回退路径。'
+    case 'latencyPercentiles': return '用 P50、P95、P99 对比典型延迟和长尾延迟，避免平均值掩盖问题。'
+  }
+})
+
+const activeAnalysisHasData = computed(() =>
+  activeAnalysisDimension.value === 'fallbackChain'
+    ? fallbackChainRows.value.length > 0
+    : activeAnalysisDimension.value === 'latencyPercentiles'
+      ? latencyRows.value.length > 0
+      : activeBreakdownRows.value.length > 0
+)
+
+type AnalysisMetricCard = { label: string; value: string; tone?: 'success' | 'danger' | 'warning' }
+
+const analysisMetricCards = computed<AnalysisMetricCard[]>(() => {
+  if (activeAnalysisDimension.value === 'latencyPercentiles') {
+    const total = dashboard.value?.latencyPercentiles?.totalDuration
+    const firstToken = dashboard.value?.latencyPercentiles?.firstTokenLatency
+    return [
+      { label: '总耗时 P50', value: formatDuration(total?.p50) },
+      { label: '总耗时 P95', value: formatDuration(total?.p95), tone: 'warning' },
+      { label: '总耗时 P99', value: formatDuration(total?.p99), tone: 'danger' },
+      { label: '首字延迟 P95', value: formatDuration(firstToken?.p95) }
+    ]
+  }
+
+  if (activeAnalysisDimension.value === 'fallbackChain') {
+    const rows = fallbackChainRows.value
+    const requestCount = rows.reduce((sum, row) => sum + row.requestCount, 0)
+    const successCount = rows.reduce((sum, row) => sum + row.successCount, 0)
+    const averageAttemptCount = requestCount === 0
+      ? 0
+      : rows.reduce((sum, row) => sum + row.averageAttemptCount * row.requestCount, 0) / requestCount
+    return [
+      { label: '链路数量', value: formatCompact(rows.length) },
+      { label: '回退请求', value: formatCompact(requestCount), tone: 'warning' },
+      { label: '最终成功率', value: formatPercentage(requestCount === 0 ? 0 : successCount * 100 / requestCount), tone: 'success' },
+      { label: '平均尝试次数', value: averageAttemptCount.toFixed(2) }
+    ]
+  }
+
+  const rows = activeBreakdownRows.value
+  const requestCount = rows.reduce((sum, row) => sum + row.requestCount, 0)
+  const successCount = rows.reduce((sum, row) => sum + row.successCount, 0)
+  const fallbackCount = rows.reduce((sum, row) => sum + row.fallbackRequestCount, 0)
+  const totalTokens = rows.reduce((sum, row) => sum + row.totalTokens, 0)
+  const averageDuration = requestCount === 0
+    ? 0
+    : rows.reduce((sum, row) => sum + row.averageTotalDurationMs * row.requestCount, 0) / requestCount
+  return [
+    { label: '项目数量', value: formatCompact(rows.length) },
+    { label: '请求总数', value: formatCompact(requestCount) },
+    { label: '成功率', value: formatPercentage(requestCount === 0 ? 0 : successCount * 100 / requestCount), tone: 'success' },
+    { label: '回退请求', value: formatCompact(fallbackCount), tone: 'warning' },
+    { label: 'Token 总量', value: formatCompact(totalTokens) },
+    { label: '加权平均耗时', value: formatDuration(averageDuration) }
+  ]
+})
+
 const PRIMARY = '#3b82f6'
 const SUCCESS = '#10b981'
 const WARNING = '#f59e0b'
@@ -637,6 +720,164 @@ function renderCharts(): void {
       charts.value[key]?.setOption(overrides, false)
     })
   }
+
+  renderAnalysisCharts()
+}
+
+function renderAnalysisCharts(): void {
+  if (!dashboard.value || !activeAnalysisHasData.value) return
+
+  const overviewChart = initChart('analysisOverview')
+  const metricsChart = initChart('analysisMetrics')
+  if (!overviewChart || !metricsChart) return
+
+  if (activeAnalysisDimension.value === 'fallbackChain') {
+    const data = fallbackChainRows.value
+    const nodes = new Map<string, { name: string; label: string }>()
+    const links = data.map((row) => {
+      const source = `first:${row.firstSiteKey}`
+      const target = `final:${row.finalSiteKey}`
+      nodes.set(source, { name: source, label: row.firstSiteLabel })
+      nodes.set(target, { name: target, label: row.finalSiteLabel })
+      return { source, target, value: row.requestCount }
+    })
+
+    overviewChart.setOption({
+      tooltip: {
+        trigger: 'item',
+        formatter: (params: { data?: { label?: string; source?: string; target?: string; value?: number } }) => {
+          const item = params.data
+          if (!item) return ''
+          if (item.source && item.target) {
+            const row = data.find((point) => `first:${point.firstSiteKey}` === item.source && `final:${point.finalSiteKey}` === item.target)
+            return row
+              ? `${row.firstSiteLabel} → ${row.finalSiteLabel}<br/>请求数：${formatCompact(row.requestCount)}<br/>成功率：${formatPercentage(row.successRate)}`
+              : ''
+          }
+          return item.label ?? ''
+        }
+      },
+      series: [{
+        type: 'sankey',
+        left: 12,
+        right: 12,
+        top: 12,
+        bottom: 12,
+        nodeWidth: 16,
+        nodeGap: 18,
+        draggable: false,
+        emphasis: { focus: 'adjacency' },
+        data: Array.from(nodes.values()),
+        links
+      }]
+    }, true)
+
+    metricsChart.setOption({
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (items: unknown) => formatAxisTooltip(items, (item) => item.seriesName === '成功率'
+          ? formatPercentage(Number(item.value))
+          : formatCompact(Number(item.value)))
+      },
+      legend: { data: ['请求数', '成功率'], top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 42, right: 48, top: 32, bottom: 62 },
+      xAxis: { type: 'category', data: data.map((row) => `${row.firstSiteLabel} → ${row.finalSiteLabel}`), axisLabel: { fontSize: 10, rotate: 28, interval: 0 } },
+      yAxis: [
+        { type: 'value', minInterval: 1 },
+        { type: 'value', max: 100, axisLabel: { formatter: '{value}%' } }
+      ],
+      series: [
+        { name: '请求数', type: 'bar', data: data.map((row) => row.requestCount), itemStyle: { color: WARNING }, barMaxWidth: 32 },
+        { name: '成功率', type: 'line', yAxisIndex: 1, smooth: true, data: data.map((row) => row.successRate), itemStyle: { color: SUCCESS } }
+      ]
+    }, true)
+    return
+  }
+
+  if (activeAnalysisDimension.value === 'latencyPercentiles') {
+    const data = latencyRows.value
+    overviewChart.setOption({
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (items: unknown) => formatAxisTooltip(items, (item) => formatDuration(Number(item.value)))
+      },
+      legend: { data: ['P50', 'P95', 'P99'], top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 52, right: 20, top: 32, bottom: 42 },
+      xAxis: { type: 'category', data: data.map((row) => row.label) },
+      yAxis: { type: 'value', axisLabel: { formatter: (value: number) => formatDuration(value) } },
+      series: [
+        { name: 'P50', type: 'bar', data: data.map((row) => row.p50), itemStyle: { color: PRIMARY }, barMaxWidth: 28 },
+        { name: 'P95', type: 'bar', data: data.map((row) => row.p95), itemStyle: { color: WARNING }, barMaxWidth: 28 },
+        { name: 'P99', type: 'bar', data: data.map((row) => row.p99), itemStyle: { color: DANGER }, barMaxWidth: 28 }
+      ]
+    }, true)
+    metricsChart.setOption({
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (items: unknown) => formatAxisTooltip(items, (item) => formatCompact(Number(item.value)))
+      },
+      grid: { left: 52, right: 20, top: 20, bottom: 42 },
+      xAxis: { type: 'category', data: data.map((row) => row.label) },
+      yAxis: { type: 'value', minInterval: 1 },
+      series: [{ name: '样本数', type: 'bar', data: data.map((row) => row.sampleCount), itemStyle: { color: CYAN }, barMaxWidth: 40 }]
+    }, true)
+    return
+  }
+
+  const data = activeBreakdownRows.value
+  const labels = data.map((row) => row.label)
+  overviewChart.setOption({
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (items: unknown) => {
+        const values = asTooltipItems(items)
+        const row = data[values[0]?.dataIndex ?? -1]
+        return row
+          ? `${row.label}<br/>成功：${formatCompact(row.successCount)}<br/>失败：${formatCompact(row.failedCount)}<br/>成功率：${formatPercentage(row.successRate)}`
+          : ''
+      }
+    },
+    legend: { data: ['成功', '失败'], top: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 110, right: 20, top: 32, bottom: 24 },
+    xAxis: { type: 'value', minInterval: 1 },
+    yAxis: { type: 'category', data: labels, inverse: true, axisLabel: { width: 96, overflow: 'truncate' } },
+    series: [
+      { name: '成功', type: 'bar', stack: 'request', data: data.map((row) => row.successCount), itemStyle: { color: SUCCESS }, barMaxWidth: 26 },
+      { name: '失败', type: 'bar', stack: 'request', data: data.map((row) => row.failedCount), itemStyle: { color: DANGER }, barMaxWidth: 26 }
+    ]
+  }, true)
+
+  metricsChart.setOption({
+    tooltip: {
+      trigger: 'axis',
+      axisPointer: { type: 'shadow' },
+      formatter: (items: unknown) => formatAxisTooltip(items, (item) => item.seriesName === '平均耗时'
+        ? formatDuration(Number(item.value))
+        : formatCompact(Number(item.value)))
+    },
+    legend: { data: ['Token 总量', '平均耗时'], top: 0, textStyle: { fontSize: 11 } },
+    grid: { left: 52, right: 58, top: 32, bottom: 62 },
+    xAxis: { type: 'category', data: labels, axisLabel: { fontSize: 10, rotate: 28, interval: 0 } },
+    yAxis: [
+      { type: 'value', axisLabel: { formatter: (value: number) => formatCompact(value) } },
+      { type: 'value', position: 'right', axisLabel: { formatter: (value: number) => formatDuration(value) } }
+    ],
+    series: [
+      { name: 'Token 总量', type: 'bar', data: data.map((row) => row.totalTokens), itemStyle: { color: CACHED }, barMaxWidth: 30 },
+      { name: '平均耗时', type: 'line', yAxisIndex: 1, smooth: true, data: data.map((row) => row.averageTotalDurationMs), itemStyle: { color: WARNING } }
+    ]
+  }, true)
+
+  const handleBreakdownClick = (params: { dataIndex?: number }) => {
+    const row = data[params.dataIndex ?? -1]
+    if (row) handleDimensionClick(activeAnalysisDimension.value, row.key)
+  }
+  bindChartClick('analysisOverview', overviewChart, handleBreakdownClick)
+  bindChartClick('analysisMetrics', metricsChart, handleBreakdownClick)
 }
 
 function handleResize(): void {
@@ -671,6 +912,10 @@ watch(rangeType, (value) => {
 watch([bucketType, protocolType, modelName, source, siteId, accessKeyId], () => { void load() })
 watch(isDark, () => {
   if (dashboard.value?.summary.totalRequests) renderCharts()
+})
+watch(activeAnalysisDimension, async () => {
+  await nextTick()
+  renderAnalysisCharts()
 })
 </script>
 
@@ -871,7 +1116,7 @@ watch(isDark, () => {
           <div class="analytics-panel-header analytics-analysis-header">
             <div>
               <h5 class="analytics-panel-title">细分分析</h5>
-              <div class="analytics-panel-subtitle">按请求数查看当前筛选范围内的维度分布，点击可筛选来源、Access Key 和协议</div>
+              <div class="analytics-panel-subtitle">切换维度后查看独立图表，点击可筛选来源、Access Key 和协议</div>
             </div>
           </div>
           <div class="analytics-analysis-tabs" role="tablist" aria-label="细分分析维度">
@@ -888,36 +1133,68 @@ watch(isDark, () => {
             </button>
           </div>
 
-          <div v-if="activeAnalysisDimension === 'fallbackChain'" class="analytics-analysis-table-wrap">
-            <NDataTable
-              v-if="fallbackChainRows.length > 0"
-              :columns="fallbackChainColumns"
-              :data="fallbackChainRows"
-              :single-line="false"
-              :scroll-x="760"
-            />
-            <NEmpty v-else description="暂无回退链路数据" size="small" />
-          </div>
-          <div v-else-if="activeAnalysisDimension === 'latencyPercentiles'" class="analytics-analysis-table-wrap">
-            <NDataTable
-              v-if="latencyRows.length > 0"
-              :columns="latencyColumns"
-              :data="latencyRows"
-              :single-line="false"
-              :scroll-x="620"
-            />
-            <NEmpty v-else description="暂无延迟分位数数据" size="small" />
-          </div>
-          <div v-else class="analytics-analysis-table-wrap">
-            <NDataTable
-              v-if="activeBreakdownRows.length > 0"
-              :columns="breakdownColumns"
-              :data="activeBreakdownRows"
-              :row-props="breakdownRowProps"
-              :single-line="false"
-              :scroll-x="900"
-            />
-            <NEmpty v-else description="暂无细分数据" size="small" />
+          <div class="analytics-analysis-content">
+            <div class="analytics-analysis-heading">
+              <div>
+                <h6>{{ analysisTitle }}</h6>
+                <p>{{ analysisSubtitle }}</p>
+              </div>
+              <span class="analytics-analysis-range">{{ filterSummary }}</span>
+            </div>
+
+            <div v-if="activeAnalysisHasData" class="analytics-analysis-metrics">
+              <article v-for="metric in analysisMetricCards" :key="metric.label" class="analytics-analysis-metric">
+                <span>{{ metric.label }}</span>
+                <strong :class="metric.tone">{{ metric.value }}</strong>
+              </article>
+            </div>
+
+            <div v-if="activeAnalysisHasData" class="analytics-analysis-chart-grid">
+              <div class="analytics-analysis-chart-card">
+                <div class="analytics-analysis-chart-title">{{ activeAnalysisDimension === 'fallbackChain' ? '回退路径' : activeAnalysisDimension === 'latencyPercentiles' ? '分位数对比' : '成功 / 失败构成' }}</div>
+                <div class="analytics-analysis-chart-body"><div :ref="(el) => setEl('analysisOverview', el as HTMLElement | null)" class="chart-body" /></div>
+              </div>
+              <div class="analytics-analysis-chart-card">
+                <div class="analytics-analysis-chart-title">{{ activeAnalysisDimension === 'fallbackChain' ? '链路请求与成功率' : activeAnalysisDimension === 'latencyPercentiles' ? '样本数量' : 'Token 与平均耗时' }}</div>
+                <div class="analytics-analysis-chart-body"><div :ref="(el) => setEl('analysisMetrics', el as HTMLElement | null)" class="chart-body" /></div>
+              </div>
+            </div>
+            <NEmpty v-else description="当前维度暂无可视化数据" size="small" class="analytics-analysis-empty" />
+
+            <details class="analytics-analysis-details">
+              <summary>查看明细数据</summary>
+              <div v-if="activeAnalysisDimension === 'fallbackChain'" class="analytics-analysis-table-wrap">
+                <NDataTable
+                  v-if="fallbackChainRows.length > 0"
+                  :columns="fallbackChainColumns"
+                  :data="fallbackChainRows"
+                  :single-line="false"
+                  :scroll-x="760"
+                />
+                <NEmpty v-else description="暂无回退链路数据" size="small" />
+              </div>
+              <div v-else-if="activeAnalysisDimension === 'latencyPercentiles'" class="analytics-analysis-table-wrap">
+                <NDataTable
+                  v-if="latencyRows.length > 0"
+                  :columns="latencyColumns"
+                  :data="latencyRows"
+                  :single-line="false"
+                  :scroll-x="620"
+                />
+                <NEmpty v-else description="暂无延迟分位数数据" size="small" />
+              </div>
+              <div v-else class="analytics-analysis-table-wrap">
+                <NDataTable
+                  v-if="activeBreakdownRows.length > 0"
+                  :columns="breakdownColumns"
+                  :data="activeBreakdownRows"
+                  :row-props="breakdownRowProps"
+                  :single-line="false"
+                  :scroll-x="900"
+                />
+                <NEmpty v-else description="暂无细分数据" size="small" />
+              </div>
+            </details>
           </div>
         </section>
       </template>
@@ -1134,6 +1411,121 @@ watch(isDark, () => {
   color: var(--primary-color, #3b82f6);
 }
 
+.analytics-analysis-content {
+  padding: 20px;
+}
+
+.analytics-analysis-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.analytics-analysis-heading h6 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.analytics-analysis-heading p {
+  max-width: 760px;
+  margin: 6px 0 0;
+  color: var(--text-color-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.analytics-analysis-range {
+  flex: 0 0 auto;
+  color: var(--text-color-secondary);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.analytics-analysis-metrics {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.analytics-analysis-metric {
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 12px;
+  background: var(--bg-color-secondary, rgba(148, 163, 184, 0.06));
+}
+
+.analytics-analysis-metric span {
+  display: block;
+  overflow: hidden;
+  margin-bottom: 6px;
+  color: var(--text-color-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-analysis-metric strong {
+  display: block;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 20px;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.analytics-analysis-metric strong.success { color: #099268; }
+.analytics-analysis-metric strong.danger { color: #e03131; }
+.analytics-analysis-metric strong.warning { color: #d97706; }
+
+.analytics-analysis-chart-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.analytics-analysis-chart-card {
+  min-width: 0;
+  border: 1px solid var(--border-color-global);
+  border-radius: 14px;
+  background: var(--bg-color-secondary, rgba(148, 163, 184, 0.04));
+}
+
+.analytics-analysis-chart-title {
+  padding: 14px 16px 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.analytics-analysis-chart-body {
+  height: 330px;
+  padding: 8px 12px 12px;
+}
+
+.analytics-analysis-empty {
+  padding: 48px 0;
+}
+
+.analytics-analysis-details {
+  margin-top: 16px;
+  border-top: 1px solid var(--border-color-global);
+}
+
+.analytics-analysis-details summary {
+  padding-top: 14px;
+  color: var(--text-color-secondary);
+  cursor: pointer;
+  font-size: 13px;
+  user-select: none;
+}
+
 .analytics-analysis-table-wrap {
   min-width: 0;
   overflow-x: auto;
@@ -1170,6 +1562,10 @@ watch(isDark, () => {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .analytics-analysis-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .analytics-kpi-value.compact {
     font-size: 20px;
   }
@@ -1184,6 +1580,10 @@ watch(isDark, () => {
     grid-column: auto;
   }
 
+  .analytics-analysis-chart-grid {
+    grid-template-columns: 1fr;
+  }
+
   .analytics-custom-range-row {
     grid-template-columns: 1fr;
   }
@@ -1194,6 +1594,27 @@ watch(isDark, () => {
     flex-wrap: nowrap;
     overflow-x: auto;
     white-space: nowrap;
+  }
+
+  .analytics-analysis-content {
+    padding: 16px;
+  }
+
+  .analytics-analysis-heading {
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .analytics-analysis-range {
+    white-space: normal;
+  }
+
+  .analytics-analysis-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .analytics-analysis-chart-body {
+    height: 280px;
   }
 
   .analytics-filter-grid,
