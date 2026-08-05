@@ -242,12 +242,38 @@ public sealed class ApiService
 
     private static ApiException CreateApiException(HttpStatusCode statusCode, string responseBody)
     {
+        int? retryAfterMs = null;
         try
         {
+            using var document = JsonDocument.Parse(responseBody);
+            var root = document.RootElement;
+            if (root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("retryAfterMs", out var retryElement)
+                && retryElement.TryGetInt32(out var parsedRetryAfter))
+            {
+                retryAfterMs = parsedRetryAfter;
+            }
+
             var envelope = JsonSerializer.Deserialize<ApiResponse<JsonElement>>(responseBody, JsonOptions);
             if (envelope is not null && !string.IsNullOrWhiteSpace(envelope.Message))
             {
-                return new ApiException(envelope.Message, envelope.ErrorCode ?? string.Empty, (int)statusCode);
+                return new ApiException(
+                    envelope.Message,
+                    envelope.ErrorCode ?? string.Empty,
+                    (int)statusCode,
+                    retryAfterMs);
+            }
+
+            if (root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("message", out var messageElement)
+                && messageElement.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(messageElement.GetString()))
+            {
+                return new ApiException(
+                    messageElement.GetString()!,
+                    string.Empty,
+                    (int)statusCode,
+                    retryAfterMs);
             }
         }
         catch (JsonException)
@@ -255,19 +281,25 @@ public sealed class ApiService
             // 非 JSON 错误响应继续使用状态码文本。
         }
 
-        return new ApiException($"请求失败（HTTP {(int)statusCode}）", string.Empty, (int)statusCode);
+        return new ApiException(
+            $"请求失败（HTTP {(int)statusCode}）",
+            string.Empty,
+            (int)statusCode,
+            retryAfterMs);
     }
 }
 
 public sealed class ApiException : Exception
 {
-    public ApiException(string message, string errorCode, int statusCode)
+    public ApiException(string message, string errorCode, int statusCode, int? retryAfterMs = null)
         : base(message)
     {
         ErrorCode = errorCode;
         StatusCode = statusCode;
+        RetryAfterMs = retryAfterMs;
     }
 
     public string ErrorCode { get; }
     public int StatusCode { get; }
+    public int? RetryAfterMs { get; }
 }

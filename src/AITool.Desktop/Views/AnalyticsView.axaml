@@ -1,0 +1,154 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.AnalyticsView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:AnalyticsViewModel"
+    x:CompileBindings="False">
+  <Grid RowDefinitions="Auto,*" RowSpacing="18" MinWidth="0">
+    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="14" VerticalAlignment="Center">
+      <StackPanel Spacing="4">
+        <TextBlock Classes="page-title" Text="可视化分析" />
+        <TextBlock Classes="page-subtitle" Text="聚合请求量、成功率、Tokens 用量、耗时与路由分布，面向日常观察和排障" TextWrapping="Wrap" />
+      </StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+        <Button Classes="secondary-button" Command="{Binding CancelQueryCommand}" Content="取消查询" IsVisible="{Binding CanCancel}" Padding="12,7" />
+        <Button Classes="secondary-button" Command="{Binding ContinueWaitingCommand}" Content="继续等待" IsVisible="{Binding CanContinueWaiting}" Padding="12,7" />
+        <Button Classes="primary-button" Command="{Binding RefreshCommand}" Content="刷新数据" IsEnabled="{Binding CanRefresh}" Padding="12,7" />
+      </StackPanel>
+    </Grid>
+
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+      <StackPanel Spacing="16">
+        <Border Classes="content-card" Padding="18">
+          <StackPanel Spacing="12">
+            <Grid ColumnDefinitions="1*,1*,1*,1*" ColumnSpacing="12">
+              <StackPanel Spacing="5">
+                <TextBlock FontSize="12" Foreground="#64748B" Text="时间范围" />
+                <ComboBox ItemsSource="{Binding RangeOptions}" SelectedItem="{Binding SelectedRange}">
+                  <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+              <StackPanel Grid.Column="1" Spacing="5">
+                <TextBlock FontSize="12" Foreground="#64748B" Text="统计粒度" />
+                <ComboBox ItemsSource="{Binding BucketOptions}" SelectedItem="{Binding SelectedBucket}">
+                  <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="5">
+                <TextBlock FontSize="12" Foreground="#64748B" Text="协议类型" />
+                <ComboBox ItemsSource="{Binding ProtocolOptions}" SelectedItem="{Binding SelectedProtocol}">
+                  <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+              <StackPanel Grid.Column="3" Spacing="5">
+                <TextBlock FontSize="12" Foreground="#64748B" Text="调用模型" />
+                <ComboBox ItemsSource="{Binding ModelOptions}" SelectedItem="{Binding SelectedModel}">
+                  <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" /></DataTemplate></ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+            </Grid>
+            <Grid ColumnDefinitions="1*,1*,1*,1*" ColumnSpacing="12">
+              <StackPanel Spacing="5">
+                <TextBlock FontSize="12" Foreground="#64748B" Text="来源" />
+                <ComboBox ItemsSource="{Binding SourceOptions}" SelectedItem="{Binding SelectedSource}">
+                  <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+              <StackPanel Grid.Column="1" Spacing="5">
+                <TextBlock FontSize="12" Foreground="#64748B" Text="站点" />
+                <ComboBox ItemsSource="{Binding SiteOptions}" SelectedItem="{Binding SelectedSite}">
+                  <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" /></DataTemplate></ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+              <StackPanel Grid.Column="2" Spacing="5">
+                <TextBlock FontSize="12" Foreground="#64748B" Text="访问密钥" />
+                <ComboBox ItemsSource="{Binding AccessKeyOptions}" SelectedItem="{Binding SelectedAccessKey}">
+                  <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" /></DataTemplate></ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+              <TextBlock Grid.Column="3" VerticalAlignment="Bottom" FontSize="12" Foreground="#94A3B8" Text="筛选变化后自动刷新" Margin="0,0,0,12" />
+            </Grid>
+            <Grid ColumnDefinitions="1*,1*" ColumnSpacing="12" IsVisible="{Binding IsCustomRange}">
+              <StackPanel Spacing="5">
+                <TextBlock FontSize="12" Foreground="#64748B" Text="开始时间" />
+                <TextBox Classes="form-input" Text="{Binding CustomStartTime}" Watermark="例如 2026-08-01 00:00" />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Spacing="5">
+                <TextBlock FontSize="12" Foreground="#64748B" Text="结束时间" />
+                <TextBox Classes="form-input" Text="{Binding CustomEndTime}" Watermark="例如 2026-08-06 23:59" />
+              </StackPanel>
+            </Grid>
+            <Border Background="#F8FAFC" CornerRadius="8" Padding="10,8">
+              <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding FilterSummary}" TextWrapping="Wrap" />
+            </Border>
+          </StackPanel>
+        </Border>
+
+        <Border Background="#FEE2E2" CornerRadius="10" Padding="14" IsVisible="{Binding HasError}">
+          <StackPanel Spacing="5">
+            <TextBlock FontWeight="SemiBold" Foreground="#B91C1C" Text="统计加载失败" />
+            <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
+        <Border Background="#EFF6FF" CornerRadius="10" Padding="14" IsVisible="{Binding HasQueryStatus}">
+          <TextBlock Foreground="#315EA8" Text="{Binding WaitingMessage}" TextWrapping="Wrap" />
+        </Border>
+        <Border Classes="content-card" Padding="24" IsVisible="{Binding HasNoDashboard}">
+          <StackPanel HorizontalAlignment="Center" Spacing="8">
+            <TextBlock HorizontalAlignment="Center" FontSize="30" Text="📈" />
+            <TextBlock HorizontalAlignment="Center" Foreground="#64748B" Text="暂无统计数据" />
+          </StackPanel>
+        </Border>
+
+        <UniformGrid Columns="4" Rows="2" HorizontalAlignment="Stretch" IsVisible="{Binding HasDashboard}">
+          <Border Classes="content-card" Margin="0,0,10,10" Padding="16"><StackPanel Spacing="6"><TextBlock FontSize="12" Foreground="#64748B" Text="总请求数" /><TextBlock FontSize="25" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Dashboard.Summary.TotalRequestsText}" /><TextBlock FontSize="12" Foreground="#6C9EFF" Text="当前筛选" /></StackPanel></Border>
+          <Border Classes="content-card" Margin="0,0,10,10" Padding="16"><StackPanel Spacing="6"><TextBlock FontSize="12" Foreground="#64748B" Text="成功率" /><TextBlock FontSize="25" FontWeight="Bold" Foreground="#166534" Text="{Binding Dashboard.Summary.SuccessRateText}" /><TextBlock FontSize="12" Foreground="#64748B" Text="{Binding Dashboard.Summary.SuccessCountText}" /></StackPanel></Border>
+          <Border Classes="content-card" Margin="0,0,10,10" Padding="16"><StackPanel Spacing="6"><TextBlock FontSize="12" Foreground="#64748B" Text="失败率" /><TextBlock FontSize="25" FontWeight="Bold" Foreground="#B91C1C" Text="{Binding Dashboard.Summary.FailureRateText}" /><TextBlock FontSize="12" Foreground="#64748B" Text="{Binding Dashboard.Summary.FailedCountText}" /></StackPanel></Border>
+          <Border Classes="content-card" Margin="0,0,0,10" Padding="16"><StackPanel Spacing="6"><TextBlock FontSize="12" Foreground="#64748B" Text="总 Tokens" /><TextBlock FontSize="25" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Dashboard.Summary.TotalTokensText}" /><TextBlock FontSize="12" Foreground="#64748B" Text="{Binding Dashboard.Summary.InputOutputText}" /></StackPanel></Border>
+          <Border Classes="content-card" Margin="0,0,10,0" Padding="16"><StackPanel Spacing="6"><TextBlock FontSize="12" Foreground="#64748B" Text="平均总耗时" /><TextBlock FontSize="25" FontWeight="Bold" Foreground="#B45309" Text="{Binding Dashboard.Summary.AverageTotalDurationText}" /><TextBlock FontSize="12" Foreground="#64748B" Text="最终请求" /></StackPanel></Border>
+          <Border Classes="content-card" Margin="0,0,10,0" Padding="16"><StackPanel Spacing="6"><TextBlock FontSize="12" Foreground="#64748B" Text="平均首字耗时" /><TextBlock FontSize="25" FontWeight="Bold" Foreground="#B45309" Text="{Binding Dashboard.Summary.AverageFirstTokenLatencyText}" /><TextBlock FontSize="12" Foreground="#64748B" Text="首 Token 延迟" /></StackPanel></Border>
+          <Border Classes="content-card" Margin="0,0,10,0" Padding="16"><StackPanel Spacing="6"><TextBlock FontSize="12" Foreground="#64748B" Text="回退触发数" /><TextBlock FontSize="25" FontWeight="Bold" Foreground="#7C3AED" Text="{Binding Dashboard.Summary.FallbackRequestCountText}" /><TextBlock FontSize="12" Foreground="#64748B" Text="发生过站点回退" /></StackPanel></Border>
+          <Border Classes="content-card" Padding="16"><StackPanel Spacing="6"><TextBlock FontSize="12" Foreground="#64748B" Text="缓存 Token" /><TextBlock FontSize="25" FontWeight="Bold" Foreground="#0F766E" Text="{Binding Dashboard.Summary.TotalCachedTokensText}" /><TextBlock FontSize="12" Foreground="#64748B" Text="输入侧缓存命中" /></StackPanel></Border>
+        </UniformGrid>
+
+        <Grid ColumnDefinitions="1*,1*" ColumnSpacing="16" IsVisible="{Binding HasDashboard}">
+          <Border Classes="content-card" Padding="16" IsVisible="{Binding HasRequestTrend}">
+            <StackPanel Spacing="12"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="请求量趋势" />
+              <ItemsControl ItemsSource="{Binding Dashboard.RequestTrend}"><ItemsControl.ItemTemplate><DataTemplate><Grid ColumnDefinitions="110,*,Auto" ColumnSpacing="10" Margin="0,4"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#64748B" Text="{Binding Label}" /><ProgressBar Grid.Column="1" VerticalAlignment="Center" Height="10" Maximum="100" Value="{Binding ValuePercent}" /><TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="12" Foreground="#1E293B" Text="{Binding RequestCountText}" /></Grid></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="1" Classes="content-card" Padding="16" IsVisible="{Binding HasResultTrend}">
+            <StackPanel Spacing="12"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="成功 / 失败趋势" />
+              <ItemsControl ItemsSource="{Binding Dashboard.ResultTrend}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Spacing="4" Margin="0,4"><Grid ColumnDefinitions="110,*,Auto" ColumnSpacing="10"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#64748B" Text="{Binding Label}" /><ProgressBar Grid.Column="1" VerticalAlignment="Center" Height="8" Maximum="100" Value="{Binding SuccessRate}" /><TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="11" Foreground="#166534" Text="{Binding SuccessText}" /></Grid><Grid ColumnDefinitions="110,*,Auto" ColumnSpacing="10"><TextBlock Grid.Column="1" VerticalAlignment="Center" FontSize="11" Foreground="#B91C1C" Text="失败" /><ProgressBar Grid.Column="1" VerticalAlignment="Center" Height="6" Maximum="100" Value="{Binding FailureRate}" /><TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="11" Foreground="#B91C1C" Text="{Binding FailText}" /></Grid></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+            </StackPanel>
+          </Border>
+        </Grid>
+
+        <Grid ColumnDefinitions="1*,1*" ColumnSpacing="16" IsVisible="{Binding HasDashboard}">
+          <Border Classes="content-card" Padding="16" IsVisible="{Binding HasTokenTrend}"><StackPanel Spacing="12"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="Tokens 用量趋势" /><ItemsControl ItemsSource="{Binding Dashboard.TokenTrend}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Spacing="4" Margin="0,4"><Grid ColumnDefinitions="110,*,Auto" ColumnSpacing="10"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#64748B" Text="{Binding Label}" /><ProgressBar Grid.Column="1" VerticalAlignment="Center" Height="10" Maximum="100" Value="{Binding ValuePercent}" /><TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="12" Foreground="#1E293B" Text="{Binding TotalTokensText}" /></Grid><TextBlock Margin="110,0,0,0" FontSize="11" Foreground="#94A3B8" Text="{Binding SplitText}" /></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border>
+          <Border Grid.Column="1" Classes="content-card" Padding="16" IsVisible="{Binding HasCacheRatio}"><StackPanel Spacing="12"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="缓存命中比例" /><ItemsControl ItemsSource="{Binding Dashboard.ModelCacheRatioDistribution}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Spacing="4" Margin="0,4"><Grid ColumnDefinitions="110,*,Auto" ColumnSpacing="10"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#64748B" Text="{Binding Label}" TextTrimming="CharacterEllipsis" /><ProgressBar Grid.Column="1" VerticalAlignment="Center" Height="10" Maximum="100" Value="{Binding ValuePercent}" /><TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="12" Foreground="#0F766E" Text="{Binding RateText}" /></Grid><TextBlock Margin="110,0,0,0" FontSize="11" Foreground="#94A3B8" Text="{Binding TokenText}" /></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border>
+        </Grid>
+
+        <Grid ColumnDefinitions="1*,1*" ColumnSpacing="16" IsVisible="{Binding HasDashboard}">
+          <Border Classes="content-card" Padding="16" IsVisible="{Binding HasDurationTrend}"><StackPanel Spacing="12"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="平均耗时趋势" /><ItemsControl ItemsSource="{Binding Dashboard.DurationTrend}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Spacing="4" Margin="0,4"><Grid ColumnDefinitions="110,*,Auto" ColumnSpacing="10"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#64748B" Text="{Binding Label}" /><ProgressBar Grid.Column="1" VerticalAlignment="Center" Height="10" Maximum="100" Value="{Binding ValuePercent}" /><TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="12" Foreground="#B45309" Text="{Binding DurationText}" /></Grid><TextBlock Margin="110,0,0,0" FontSize="11" Foreground="#94A3B8" Text="{Binding DetailText}" /></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border>
+          <Border Grid.Column="1" Classes="content-card" Padding="16" IsVisible="{Binding HasFallbackTrend}"><StackPanel Spacing="12"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="回退触发趋势" /><ItemsControl ItemsSource="{Binding Dashboard.FallbackTrend}"><ItemsControl.ItemTemplate><DataTemplate><Grid ColumnDefinitions="110,*,Auto" ColumnSpacing="10" Margin="0,4"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#64748B" Text="{Binding Label}" /><ProgressBar Grid.Column="1" VerticalAlignment="Center" Height="10" Maximum="100" Value="{Binding ValuePercent}" /><TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="12" Foreground="#7C3AED" Text="{Binding FallbackText}" /></Grid></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border>
+        </Grid>
+
+        <Grid ColumnDefinitions="1*,1*" ColumnSpacing="16" IsVisible="{Binding HasDashboard}">
+          <Border Classes="content-card" Padding="16" IsVisible="{Binding HasSiteDistribution}"><StackPanel Spacing="12"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="站点请求分布" /><ItemsControl ItemsSource="{Binding Dashboard.SiteDistribution}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Spacing="4" Margin="0,4"><Grid ColumnDefinitions="110,*,Auto" ColumnSpacing="10"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#64748B" Text="{Binding Label}" TextTrimming="CharacterEllipsis" /><ProgressBar Grid.Column="1" VerticalAlignment="Center" Height="10" Maximum="100" Value="{Binding ValuePercent}" /><TextBlock Grid.Column="2" FontSize="12" Foreground="#1E293B" Text="{Binding RequestCountText}" /></Grid><TextBlock Margin="110,0,0,0" FontSize="11" Foreground="#94A3B8" Text="{Binding DetailText}" /></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border>
+          <Border Grid.Column="1" Classes="content-card" Padding="16" IsVisible="{Binding HasModelDistribution}"><StackPanel Spacing="12"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="模型调用分布" /><ItemsControl ItemsSource="{Binding Dashboard.ModelDistribution}"><ItemsControl.ItemTemplate><DataTemplate><StackPanel Spacing="4" Margin="0,4"><Grid ColumnDefinitions="110,*,Auto" ColumnSpacing="10"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#64748B" Text="{Binding Label}" TextTrimming="CharacterEllipsis" /><ProgressBar Grid.Column="1" VerticalAlignment="Center" Height="10" Maximum="100" Value="{Binding ValuePercent}" /><TextBlock Grid.Column="2" FontSize="12" Foreground="#1E293B" Text="{Binding RequestCountText}" /></Grid><TextBlock Margin="110,0,0,0" FontSize="11" Foreground="#94A3B8" Text="{Binding DetailText}" /></StackPanel></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border>
+        </Grid>
+
+        <Border Classes="content-card" Padding="16" IsVisible="{Binding HasDashboard}">
+          <StackPanel Spacing="14">
+            <Grid ColumnDefinitions="*,220" ColumnSpacing="12"><StackPanel Spacing="3"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="细分分析" /><TextBlock FontSize="12" Foreground="#64748B" Text="按来源、协议、失败原因和回退链路查看请求构成" /></StackPanel><ComboBox Grid.Column="1" ItemsSource="{Binding AnalysisOptions}" SelectedItem="{Binding SelectedAnalysis}"><ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate></ComboBox></Grid>
+            <StackPanel IsVisible="{Binding IsBreakdownAnalysis}" Spacing="8"><ItemsControl ItemsSource="{Binding AnalysisBreakdown}"><ItemsControl.ItemTemplate><DataTemplate><Grid ColumnDefinitions="150,*,Auto" ColumnSpacing="10" Margin="0,4"><StackPanel Grid.Column="0" Spacing="2"><TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Label}" TextTrimming="CharacterEllipsis" /><TextBlock FontSize="11" Foreground="#94A3B8" Text="{Binding MetricText}" TextTrimming="CharacterEllipsis" /></StackPanel><ProgressBar Grid.Column="1" VerticalAlignment="Center" Height="10" Maximum="100" Value="{Binding ValuePercent}" /><TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="12" Foreground="#1E293B" Text="{Binding RequestCountText}" /></Grid></DataTemplate></ItemsControl.ItemTemplate></ItemsControl><TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoAnalysisBreakdown}" Text="该维度暂无数据" /></StackPanel>
+            <StackPanel IsVisible="{Binding IsFallbackChainAnalysis}" Spacing="8"><ItemsControl ItemsSource="{Binding AnalysisFallbackChains}"><ItemsControl.ItemTemplate><DataTemplate><Grid ColumnDefinitions="*,Auto" ColumnSpacing="12" Margin="0,4"><StackPanel Spacing="2"><TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding ChainText}" /><TextBlock FontSize="11" Foreground="#94A3B8" Text="{Binding MetricText}" /></StackPanel><TextBlock Grid.Column="1" VerticalAlignment="Center" FontSize="14" FontWeight="SemiBold" Foreground="#7C3AED" Text="{Binding RequestCount}" /></Grid></DataTemplate></ItemsControl.ItemTemplate></ItemsControl><TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoFallbackChains}" Text="暂无回退链路数据" /></StackPanel>
+            <StackPanel IsVisible="{Binding IsLatencyAnalysis}" Spacing="10"><Grid ColumnDefinitions="1*,1*" ColumnSpacing="12"><Border Background="#F8FAFC" CornerRadius="8" Padding="14"><StackPanel Spacing="8"><TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="总耗时" /><Grid ColumnDefinitions="Auto,*,Auto"><TextBlock Foreground="#64748B" Text="P50" /><TextBlock Grid.Column="1" HorizontalAlignment="Center" FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding AnalysisLatencyPercentiles.TotalDuration.P50Text}" /><TextBlock Grid.Column="2" Foreground="#64748B" Text="P95 / P99" /></Grid><TextBlock Foreground="#94A3B8" Text="{Binding AnalysisLatencyPercentiles.TotalDuration.DetailText}" /></StackPanel></Border><Border Grid.Column="1" Background="#F8FAFC" CornerRadius="8" Padding="14"><StackPanel Spacing="8"><TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="首 Token 延迟" /><Grid ColumnDefinitions="Auto,*,Auto"><TextBlock Foreground="#64748B" Text="P50" /><TextBlock Grid.Column="1" HorizontalAlignment="Center" FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding AnalysisLatencyPercentiles.FirstTokenLatency.P50Text}" /><TextBlock Grid.Column="2" Foreground="#64748B" Text="P95 / P99" /></Grid><TextBlock Foreground="#94A3B8" Text="{Binding AnalysisLatencyPercentiles.FirstTokenLatency.DetailText}" /></StackPanel></Border></Grid></StackPanel>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

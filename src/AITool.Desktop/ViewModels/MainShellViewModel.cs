@@ -121,6 +121,13 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 await page.LoadAsync();
                 return page;
             }
+            case "analytics":
+            {
+                var page = new AnalyticsViewModel(_apiService);
+                // 先显示页面，再在后台查询统计数据，避免大范围统计阻塞导航切换。
+                _ = page.LoadAsync();
+                return page;
+            }
             case "sites":
             {
                 var page = new SitesViewModel(_apiService);
@@ -214,6 +221,9 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
         {
             case DashboardViewModel dashboard:
                 await dashboard.LoadAsync();
+                break;
+            case AnalyticsViewModel analytics:
+                await analytics.LoadAsync();
                 break;
             case SitesViewModel sites:
                 await sites.LoadAsync();
