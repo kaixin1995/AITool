@@ -9,18 +9,18 @@
           HorizontalAlignment="Center"
           VerticalAlignment="Top"
           Margin="0,35,0,0"
-          Foreground="#64748B"
+          Foreground="{DynamicResource AppTextSecondaryBrush}"
           IsVisible="{Binding IsLoading}"
           Text="正在加载仪表盘数据..." />
 
       <Border
-          Background="#FEE2E2"
+          Background="{DynamicResource AppDangerSoftBrush}"
           CornerRadius="8"
           Padding="14"
           IsVisible="{Binding HasError}">
         <StackPanel Spacing="8">
-          <TextBlock FontWeight="SemiBold" Foreground="#B91C1C" Text="加载失败" />
-          <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+          <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppDangerTextBrush}" Text="加载失败" />
+          <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
         </StackPanel>
       </Border>
 
@@ -28,7 +28,7 @@
           Classes="content-card"
           Padding="24"
           IsVisible="{Binding ShowNoStats}">
-        <TextBlock HorizontalAlignment="Center" Foreground="#64748B" Text="暂无仪表盘数据" />
+        <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="暂无仪表盘数据" />
       </Border>
 
       <ScrollViewer
@@ -38,61 +38,61 @@
         <WrapPanel Orientation="Horizontal" ItemWidth="180" ItemSpacing="10" LineSpacing="10">
           <Border Classes="content-card" Width="180" Padding="16">
             <StackPanel Spacing="8">
-              <TextBlock FontSize="12" Foreground="#64748B" Text="启用站点" />
-              <TextBlock FontSize="28" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Stats.SiteCount}" />
-              <TextBlock FontSize="12" Foreground="#6C9EFF" Text="资源管理" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="启用站点" />
+              <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.SiteCount}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="资源管理" />
             </StackPanel>
           </Border>
           <Border Classes="content-card" Width="180" Padding="16">
             <StackPanel Spacing="8">
-              <TextBlock FontSize="12" Foreground="#64748B" Text="模型总数" />
-              <TextBlock FontSize="28" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Stats.ModelCount}" />
-              <TextBlock FontSize="12" Foreground="#6C9EFF" Text="模型库" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型总数" />
+              <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.ModelCount}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="模型库" />
             </StackPanel>
           </Border>
           <Border Classes="content-card" Width="180" Padding="16">
             <StackPanel Spacing="8">
-              <TextBlock FontSize="12" Foreground="#64748B" Text="路由规则" />
-              <TextBlock FontSize="28" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Stats.RouteCount}" />
-              <TextBlock FontSize="12" Foreground="#6C9EFF" Text="代理配置" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="路由规则" />
+              <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.RouteCount}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="代理配置" />
             </StackPanel>
           </Border>
           <Border Classes="content-card" Width="180" Padding="16">
             <StackPanel Spacing="8">
-              <TextBlock FontSize="12" Foreground="#64748B" Text="启用密钥" />
-              <TextBlock FontSize="28" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Stats.AccessKeyCount}" />
-              <TextBlock FontSize="12" Foreground="#6C9EFF" Text="访问控制" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="启用密钥" />
+              <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.AccessKeyCount}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="访问控制" />
             </StackPanel>
           </Border>
           <Border Classes="content-card" Padding="16">
             <StackPanel Spacing="8">
-              <TextBlock FontSize="12" Foreground="#64748B" Text="检测任务" />
-              <TextBlock FontSize="28" FontWeight="Bold" Foreground="#1E293B" Text="{Binding Stats.DetectionTaskCount}" />
-              <TextBlock FontSize="12" Foreground="#6C9EFF" Text="监控运维" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="检测任务" />
+              <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.DetectionTaskCount}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="监控运维" />
             </StackPanel>
           </Border>
         </WrapPanel>
 
         <Border Classes="content-card" Padding="20">
           <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="16">
-            <Border Width="46" Height="46" Background="#E8F7EA" CornerRadius="12">
-              <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" Text="✓" Foreground="#166534" />
+            <Border Width="46" Height="46" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12">
+              <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" Text="✓" Foreground="{DynamicResource AppSuccessTextBrush}" />
             </Border>
             <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
-              <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="核心服务状态" />
+              <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="核心服务状态" />
               <TextBlock Classes="page-subtitle" Text="{Binding Stats.CoreStatusText}" />
-              <TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding Stats.CoreSyncDetailText}" TextWrapping="Wrap" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding Stats.CoreSyncDetailText}" TextWrapping="Wrap" />
             </StackPanel>
             <StackPanel Grid.Column="2" HorizontalAlignment="Right" Spacing="4" VerticalAlignment="Center">
-              <TextBlock FontSize="12" Foreground="#64748B" Text="同步状态" />
-              <TextBlock FontWeight="SemiBold" Foreground="#166534" Text="{Binding Stats.CoreSyncStatusText}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="同步状态" />
+              <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding Stats.CoreSyncStatusText}" />
             </StackPanel>
           </Grid>
         </Border>
 
         <Border Classes="content-card" Padding="20">
           <StackPanel Spacing="10">
-            <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="快捷操作" />
+            <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="快捷操作" />
             <WrapPanel Orientation="Horizontal" ItemSpacing="10" LineSpacing="10">
               <Button Classes="primary-button" Content="新增站点" Padding="16,8" Command="{Binding NavigateToSitesCommand}" />
               <Button Classes="secondary-button" Content="新增模型" Padding="16,8" Command="{Binding NavigateToModelsCommand}" />
