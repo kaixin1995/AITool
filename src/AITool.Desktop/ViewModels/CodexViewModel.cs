@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Net.Http;
+using System.Text.Json;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -34,6 +35,10 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _accountRefreshToken = string.Empty;
     [ObservableProperty] private bool _isAccountEditorOpen;
     [ObservableProperty] private bool _isAccountSaving;
+    [ObservableProperty] private bool _isCredentialImportOpen;
+    [ObservableProperty] private bool _isCredentialImporting;
+    [ObservableProperty] private string _credentialJson = string.Empty;
+    [ObservableProperty] private string _credentialImportResultText = string.Empty;
 
     public CodexViewModel(ApiService apiService)
     {
@@ -59,6 +64,8 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         : $"{InspectionLastRun.RunModeText} · {InspectionLastRun.RefreshModeText}";
     public bool CanSaveAccount => !IsAccountSaving && EditingAccount is not null && !string.IsNullOrWhiteSpace(AccountDisplayName);
     public string EditingAccountEmailText => string.IsNullOrWhiteSpace(EditingAccount?.Email) ? "未提供邮箱" : $"账号：{EditingAccount.Email}";
+    public bool CanImportCredentials => !IsCredentialImporting && !string.IsNullOrWhiteSpace(CredentialJson);
+    public bool HasCredentialImportResult => !string.IsNullOrWhiteSpace(CredentialImportResultText);
 
     public async Task LoadAsync()
     {
@@ -278,6 +285,61 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             IsOAuthBusy = false;
             OnPropertyChanged(nameof(CanCompleteOAuth));
+        }
+    }
+
+    [RelayCommand]
+    private void OpenCredentialImport()
+    {
+        CredentialJson = string.Empty;
+        CredentialImportResultText = string.Empty;
+        IsCredentialImportOpen = true;
+        OnPropertyChanged(nameof(CanImportCredentials));
+    }
+
+    [RelayCommand]
+    private void CloseCredentialImport()
+    {
+        IsCredentialImportOpen = false;
+        CredentialJson = string.Empty;
+        OnPropertyChanged(nameof(CanImportCredentials));
+    }
+
+    [RelayCommand]
+    private async Task ImportCredentialsAsync()
+    {
+        if (!CanImportCredentials) return;
+        CredentialImportResultText = string.Empty;
+        IsCredentialImporting = true;
+        ErrorMessage = string.Empty;
+        try
+        {
+            using var document = JsonDocument.Parse(CredentialJson);
+            var result = await _apiService.SendAsync<CodexCredentialImportResult>(
+                HttpMethod.Post,
+                "/api/admin/codex/import-credential?name=imported.json",
+                document.RootElement);
+            CredentialImportResultText = $"成功导入 {result.Successes.Count} 个账号，失败 {result.Failures.Count} 个。";
+            if (result.Failures.Count > 0)
+            {
+                CredentialImportResultText += "\n" + string.Join("\n", result.Failures.Select(f => $"{f.FileName ?? "凭证"}：{f.Error}"));
+            }
+            Message = $"已导入 {result.Successes.Count} 个 Codex 账号";
+            await LoadAsync();
+        }
+        catch (JsonException)
+        {
+            ErrorMessage = "凭证 JSON 格式无效，请粘贴完整的 JSON 对象。";
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsCredentialImporting = false;
+            OnPropertyChanged(nameof(CanImportCredentials));
+            OnPropertyChanged(nameof(HasCredentialImportResult));
         }
     }
 

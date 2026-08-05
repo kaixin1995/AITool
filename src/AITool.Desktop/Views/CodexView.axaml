@@ -11,12 +11,18 @@
         <TextBlock Classes="page-title" Text="OAuth 管理" />
         <TextBlock Classes="page-subtitle" Text="管理 Codex OAuth 账号、额度窗口、凭证和自动巡检" />
       </StackPanel>
-      <Button
-          Grid.Column="1"
-          Classes="primary-button"
-          Command="{Binding StartOAuthCommand}"
-          Content="＋ OAuth 登录"
-          Padding="16,9" />
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+        <Button
+            Classes="secondary-button"
+            Command="{Binding OpenCredentialImportCommand}"
+            Content="导入凭证 JSON"
+            Padding="14,9" />
+        <Button
+            Classes="primary-button"
+            Command="{Binding StartOAuthCommand}"
+            Content="＋ OAuth 登录"
+            Padding="16,9" />
+      </StackPanel>
     </Grid>
 
     <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
@@ -258,6 +264,40 @@
         <TextBlock FontSize="12" Foreground="#64748B" Text="Refresh Token 仅用于本次请求，不会写入桌面端配置文件或源码。" TextWrapping="Wrap" />
         <Button Classes="primary-button" Command="{Binding SaveAccountCommand}" Content="保存账号" IsEnabled="{Binding CanSaveAccount}" HorizontalContentAlignment="Center" Padding="12,9" />
       </StackPanel>
+    </Border>
+
+    <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsCredentialImportOpen}" Padding="24" Margin="12" MaxWidth="720" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="11">
+      <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="导入 Codex 凭证 JSON" />
+          <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseCredentialImportCommand}" Content="关闭" Padding="10,6" />
+        </Grid>
+        <StackPanel Grid.Row="1" Spacing="5">
+          <TextBlock Foreground="#334155" Text="粘贴凭证 JSON" />
+          <TextBlock FontSize="12" Foreground="#64748B" Text="凭证只用于本次导入请求，不会写入桌面端配置文件或源码。" TextWrapping="Wrap" />
+        </StackPanel>
+        <TextBox
+            Grid.Row="2"
+            Classes="form-input"
+            AcceptsReturn="True"
+            MinHeight="260"
+            Text="{Binding CredentialJson, Mode=TwoWay}"
+            TextWrapping="Wrap"
+            VerticalContentAlignment="Top"
+            Watermark="请粘贴完整的凭证 JSON" />
+        <StackPanel Grid.Row="3" Spacing="10">
+          <Border Background="#EFF6FF" CornerRadius="8" Padding="12" IsVisible="{Binding HasCredentialImportResult}">
+            <TextBlock Foreground="#315EA8" Text="{Binding CredentialImportResultText}" TextWrapping="Wrap" />
+          </Border>
+          <Button
+              Classes="primary-button"
+              Command="{Binding ImportCredentialsCommand}"
+              Content="开始导入"
+              IsEnabled="{Binding CanImportCredentials}"
+              HorizontalContentAlignment="Center"
+              Padding="12,9" />
+        </StackPanel>
+      </Grid>
     </Border>
   </Grid>
 </UserControl>

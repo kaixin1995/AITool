@@ -94,6 +94,18 @@ public sealed class CodexOAuthResult
     public string State { get; set; } = string.Empty;
 }
 
+public sealed class CodexCredentialImportResult
+{
+    public List<CodexAccount> Successes { get; set; } = new();
+    public List<CodexCredentialImportFailure> Failures { get; set; } = new();
+}
+
+public sealed class CodexCredentialImportFailure
+{
+    public string? FileName { get; set; }
+    public string Error { get; set; } = string.Empty;
+}
+
 public sealed class CodexInspectionStatus
 {
     public bool IsRunning { get; set; }
