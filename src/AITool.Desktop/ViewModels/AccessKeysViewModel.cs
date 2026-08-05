@@ -53,6 +53,11 @@ public partial class AccessKeysViewModel : ViewModelBase
     [ObservableProperty]
     private string _message = string.Empty;
 
+    [ObservableProperty]
+    private int _page = 1;
+
+    public const int PageSize = 20;
+
     public AccessKeysViewModel(ApiService apiService)
     {
         _apiService = apiService;
@@ -70,6 +75,11 @@ public partial class AccessKeysViewModel : ViewModelBase
     public bool CanCreate => !IsCreating && CanOpenEditor;
     public bool CanSaveRoutes => !IsRouteSaving && !IsRouteLoading && !HasRouteError && EditingRoutesKey is not null;
     public string RoutesEditorTitle => EditingRoutesKey is null ? "编辑路由权限" : $"编辑路由权限 - {EditingRoutesKey.KeyName}";
+    public IEnumerable<AccessKeyItem> PagedItems => Items.Skip((Page - 1) * PageSize).Take(PageSize);
+    public int TotalPages => Math.Max(1, (int)Math.Ceiling(Items.Count / (double)PageSize));
+    public string PageText => $"第 {Page} / {TotalPages} 页";
+    public bool CanPreviousPage => Page > 1 && !IsLoading;
+    public bool CanNextPage => Page < TotalPages && !IsLoading;
 
     public async Task LoadAsync()
     {
@@ -93,6 +103,24 @@ public partial class AccessKeysViewModel : ViewModelBase
 
     [RelayCommand]
     private Task RefreshAsync() => LoadAsync();
+
+    [RelayCommand]
+    private void PreviousPage()
+    {
+        if (CanPreviousPage)
+        {
+            Page--;
+        }
+    }
+
+    [RelayCommand]
+    private void NextPage()
+    {
+        if (CanNextPage)
+        {
+            Page++;
+        }
+    }
 
     [RelayCommand]
     private void OpenCreate()
@@ -295,7 +323,27 @@ public partial class AccessKeysViewModel : ViewModelBase
     partial void OnIsLoadingChanged(bool value)
     {
         OnPropertyChanged(nameof(IsListVisible));
+        OnPropertyChanged(nameof(CanPreviousPage));
+        OnPropertyChanged(nameof(CanNextPage));
         NotifyRouteProperties();
+    }
+
+    partial void OnItemsChanged(ObservableCollection<AccessKeyItem> value)
+    {
+        Page = Math.Min(Page, TotalPages);
+        OnPropertyChanged(nameof(PagedItems));
+        OnPropertyChanged(nameof(TotalPages));
+        OnPropertyChanged(nameof(PageText));
+        OnPropertyChanged(nameof(CanPreviousPage));
+        OnPropertyChanged(nameof(CanNextPage));
+    }
+
+    partial void OnPageChanged(int value)
+    {
+        OnPropertyChanged(nameof(PagedItems));
+        OnPropertyChanged(nameof(PageText));
+        OnPropertyChanged(nameof(CanPreviousPage));
+        OnPropertyChanged(nameof(CanNextPage));
     }
 
     partial void OnIsCreatingChanged(bool value) => OnPropertyChanged(nameof(CanCreate));
