@@ -12,12 +12,13 @@
           <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="访问密钥" />
           <TextBlock Classes="page-subtitle" Text="管理客户端访问凭证和允许的路由范围" />
         </StackPanel>
-        <Button Grid.Column="1" Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新建密钥" Padding="14,8" />
+        <Button Grid.Column="1" Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新建密钥" IsEnabled="{Binding CanOpenEditor}" Padding="14,8" />
       </Grid>
 
       <Grid Grid.Row="2">
         <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding IsLoading}" Text="正在加载访问密钥..." />
         <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
+        <Border Background="#FFF7ED" CornerRadius="8" Padding="14" IsVisible="{Binding HasRouteError}"><TextBlock Foreground="#9A3412" Text="{Binding RouteErrorMessage}" TextWrapping="Wrap" /></Border>
         <Border Classes="content-card" IsVisible="{Binding IsListVisible}" Padding="0">
           <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
             <StackPanel MinWidth="760">
@@ -40,6 +41,7 @@
                         <TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding AllowedRoutesText}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
                         <Border Grid.Column="3" Background="#E8F7EA" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Foreground="#166534" Text="{Binding StatusText}" /></Border>
                         <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                          <Button Classes="secondary-button" Command="{Binding DataContext.OpenRoutesEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑路由" IsEnabled="{Binding DataContext.CanOpenEditor, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="10,6" />
                           <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,6" />
                           <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
                         </StackPanel>
@@ -65,9 +67,42 @@
             <StackPanel IsVisible="{Binding IsCreateFormVisible}" Spacing="8">
               <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="密钥名称" />
               <TextBox Classes="form-input" Text="{Binding NewKeyName}" Watermark="如：生产环境密钥" />
-              <TextBlock FontSize="12" Foreground="#64748B" Text="当前版本默认允许全部路由，可在后续权限页面细化。" TextWrapping="Wrap" />
+              <TextBlock FontSize="12" Foreground="#64748B" Text="不勾选任何路由表示允许全部路由；勾选后仅允许访问选中的路由入口。" TextWrapping="Wrap" />
+              <StackPanel Spacing="6" IsVisible="{Binding HasRouteEntries}">
+                <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="允许路由（不选=全部）" />
+                <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
+                  <ItemsControl ItemsSource="{Binding RouteEntries}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <CheckBox Content="{Binding EntryName}" IsChecked="{Binding IsSelected, Mode=TwoWay}" Margin="0,3" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </ScrollViewer>
+              </StackPanel>
               <Button Classes="primary-button" Command="{Binding CreateCommand}" Content="创建密钥" IsEnabled="{Binding CanCreate}" HorizontalContentAlignment="Center" Padding="12,9" />
             </StackPanel>
+          </StackPanel>
+        </Border>
+
+        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsRoutesEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="11">
+          <StackPanel Spacing="14">
+            <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding RoutesEditorTitle}" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseRoutesEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
+            <TextBlock FontSize="12" Foreground="#64748B" Text="勾选允许访问的路由入口。不勾选任何项表示允许全部路由。" TextWrapping="Wrap" />
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Classes="secondary-button" Command="{Binding SelectAllRoutesCommand}" Content="全选" Padding="10,6" />
+              <Button Classes="secondary-button" Command="{Binding ClearSelectedRoutesCommand}" Content="清空（全部路由）" Padding="10,6" />
+            </StackPanel>
+            <ScrollViewer MaxHeight="280" VerticalScrollBarVisibility="Auto">
+              <ItemsControl ItemsSource="{Binding RouteEntries}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <CheckBox Content="{Binding EntryName}" IsChecked="{Binding IsSelected, Mode=TwoWay}" Margin="0,3" />
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+            <Button Classes="primary-button" Command="{Binding SaveRoutesCommand}" Content="保存路由权限" IsEnabled="{Binding CanSaveRoutes}" HorizontalContentAlignment="Center" Padding="12,9" />
           </StackPanel>
         </Border>
       </Grid>

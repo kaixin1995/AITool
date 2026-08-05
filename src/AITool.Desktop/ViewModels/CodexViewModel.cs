@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Net.Http;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using AITool.Desktop.Models;
@@ -10,6 +11,7 @@ namespace AITool.Desktop.ViewModels;
 public partial class CodexViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
+    private readonly SemaphoreSlim _tokenRefreshLock = new(1, 1);
     private Timer? _tokenRefreshTimer;
     private bool _disposed;
 
@@ -97,40 +99,51 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
 
     private async Task RefreshExpiringTokensAsync()
     {
-        var expirationThreshold = DateTimeOffset.UtcNow.AddMinutes(10);
-        var expiringAccounts = Accounts
-            .Where(account => account.IsEnabled
-                && !string.IsNullOrWhiteSpace(account.TokenExpiresAt)
-                && DateTimeOffset.TryParse(account.TokenExpiresAt, out var expiresAt)
-                && expiresAt <= expirationThreshold)
-            .ToList();
-
-        if (expiringAccounts.Count == 0) return;
-
-        // 并行刷新所有即将过期的账号；后台服务也会周期刷新，单个账号刷新失败不阻断其他账号展示。
-        // 只并行执行网络请求；对 Accounts（UI 绑定的集合）与 Message 的写入集中在 WhenAll 之后，避免并发修改。
-        var refreshTasks = expiringAccounts
-            .Select<CodexAccount, Task<(CodexAccount? Account, string? Message)>>(async account =>
-            {
-                try
-                {
-                    return (await RefreshTokenCoreAsync(account), $"已自动刷新账号“{account.DisplayName}”的凭证");
-                }
-                catch
-                {
-                    return (null, null);
-                }
-            })
-            .ToArray();
-
-        var results = await Task.WhenAll(refreshTasks);
-        foreach (var (refreshedAccount, message) in results)
+        if (!await _tokenRefreshLock.WaitAsync(0)) return;
+        try
         {
-            if (refreshedAccount is not null)
+            var expirationThreshold = DateTimeOffset.UtcNow.AddMinutes(10);
+            // Timer 回调运行在线程池，读取绑定集合前切回 UI 线程，避免跨线程访问 ObservableCollection。
+            var expiringAccounts = await Dispatcher.UIThread.InvokeAsync(() => Accounts
+                .Where(account => account.IsEnabled
+                    && !string.IsNullOrWhiteSpace(account.TokenExpiresAt)
+                    && DateTimeOffset.TryParse(account.TokenExpiresAt, out var expiresAt)
+                    && expiresAt <= expirationThreshold)
+                .ToList());
+
+            if (expiringAccounts.Count == 0) return;
+
+            // 网络刷新保持并行，绑定集合和提示消息统一在 UI 线程提交。
+            var refreshTasks = expiringAccounts
+                .Select<CodexAccount, Task<(CodexAccount? Account, string? Message)>>(async account =>
+                {
+                    try
+                    {
+                        return (await RefreshTokenCoreAsync(account), $"已自动刷新账号“{account.DisplayName}”的凭证");
+                    }
+                    catch
+                    {
+                        return (null, null);
+                    }
+                })
+                .ToArray();
+
+            var results = await Task.WhenAll(refreshTasks);
+            await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                ReplaceAccount(refreshedAccount);
-                Message = message!;
-            }
+                foreach (var (refreshedAccount, message) in results)
+                {
+                    if (refreshedAccount is not null)
+                    {
+                        ReplaceAccount(refreshedAccount);
+                        Message = message!;
+                    }
+                }
+            });
+        }
+        finally
+        {
+            _tokenRefreshLock.Release();
         }
     }
 
@@ -409,5 +422,6 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         _disposed = true;
         _tokenRefreshTimer?.Dispose();
         _tokenRefreshTimer = null;
+        _tokenRefreshLock.Dispose();
     }
 }
