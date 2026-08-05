@@ -30,6 +30,11 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
     private ObservableCollection<SiteListItem> _sites = new();
 
     [ObservableProperty]
+    private int _page = 1;
+
+    public const int PageSize = 20;
+
+    [ObservableProperty]
     private SiteEditForm _form = new();
 
     [ObservableProperty]
@@ -127,6 +132,11 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
     public bool IsListVisible => !IsLoading && (Sites.Count > 0 || !HasError);
     public bool HasSites => Sites.Count > 0;
     public bool NoSites => !HasSites;
+    public IEnumerable<SiteListItem> PagedSites => Sites.Skip((Page - 1) * PageSize).Take(PageSize);
+    public int TotalPages => Math.Max(1, (int)Math.Ceiling(Sites.Count / (double)PageSize));
+    public string PageText => $"第 {Page} / {TotalPages} 页";
+    public bool CanPreviousPage => Page > 1 && !IsLoading;
+    public bool CanNextPage => Page < TotalPages && !IsLoading;
     public bool CanSave => !IsSaving && !IsEditorLoading;
     public string EditorTitle => IsEditMode ? "编辑站点" : "新增站点";
     public int SelectedSiteCount => Sites.Count(site => site.IsSelected);
@@ -207,6 +217,18 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
 
     [RelayCommand]
     private Task RefreshAsync() => LoadAsync();
+
+    [RelayCommand]
+    private void PreviousPage()
+    {
+        if (CanPreviousPage) Page--;
+    }
+
+    [RelayCommand]
+    private void NextPage()
+    {
+        if (CanNextPage) Page++;
+    }
 
     [RelayCommand]
     private void OpenCreate()
@@ -832,8 +854,14 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
             _siteSelectionSubscriptions.Add(site);
         }
 
+        Page = Math.Min(Page, TotalPages);
         OnPropertyChanged(nameof(HasSites));
         OnPropertyChanged(nameof(NoSites));
+        OnPropertyChanged(nameof(PagedSites));
+        OnPropertyChanged(nameof(TotalPages));
+        OnPropertyChanged(nameof(PageText));
+        OnPropertyChanged(nameof(CanPreviousPage));
+        OnPropertyChanged(nameof(CanNextPage));
         OnPropertyChanged(nameof(SelectedSiteCount));
         OnPropertyChanged(nameof(HasSelectedSites));
         OnPropertyChanged(nameof(CanBulkDelete));
@@ -844,6 +872,16 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
     {
         OnPropertyChanged(nameof(IsListVisible));
         OnPropertyChanged(nameof(CanBulkDelete));
+        OnPropertyChanged(nameof(CanPreviousPage));
+        OnPropertyChanged(nameof(CanNextPage));
+    }
+
+    partial void OnPageChanged(int value)
+    {
+        OnPropertyChanged(nameof(PagedSites));
+        OnPropertyChanged(nameof(PageText));
+        OnPropertyChanged(nameof(CanPreviousPage));
+        OnPropertyChanged(nameof(CanNextPage));
     }
 
     partial void OnIsSavingChanged(bool value) => OnPropertyChanged(nameof(CanSave));

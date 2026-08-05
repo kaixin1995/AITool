@@ -64,7 +64,7 @@
                   </StackPanel>
                 </Grid>
               </Border>
-              <ItemsControl ItemsSource="{Binding Sites}">
+              <ItemsControl ItemsSource="{Binding PagedSites}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
                     <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,12">
@@ -102,6 +102,13 @@
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>
               </ItemsControl>
+              <Border Background="#FFFFFF" Padding="18,12" IsVisible="{Binding HasSites}">
+                <Grid ColumnDefinitions="*,Auto,*">
+                  <Button Classes="secondary-button" Command="{Binding PreviousPageCommand}" Content="上一页" IsEnabled="{Binding CanPreviousPage}" HorizontalAlignment="Left" Padding="10,6" />
+                  <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#64748B" Text="{Binding PageText}" />
+                  <Button Grid.Column="2" Classes="secondary-button" Command="{Binding NextPageCommand}" Content="下一页" IsEnabled="{Binding CanNextPage}" HorizontalAlignment="Right" Padding="10,6" />
+                </Grid>
+              </Border>
               <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding NoSites}" Margin="20" Text="暂无站点" />
             </StackPanel>
           </ScrollViewer>
