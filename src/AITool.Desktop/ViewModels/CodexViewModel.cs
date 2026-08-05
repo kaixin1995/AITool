@@ -306,30 +306,65 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand]
-    private async Task ImportCredentialsAsync()
+    private Task ImportCredentialsAsync()
     {
-        if (!CanImportCredentials) return;
+        if (!CanImportCredentials) return Task.CompletedTask;
+        return ImportCredentialFilesAsync([("imported.json", CredentialJson)]);
+    }
+
+    public async Task ImportCredentialFilesAsync(
+        IReadOnlyList<(string FileName, string JsonText)> files)
+    {
+        if (IsCredentialImporting || files.Count == 0) return;
+
         CredentialImportResultText = string.Empty;
         IsCredentialImporting = true;
         ErrorMessage = string.Empty;
         try
         {
-            using var document = JsonDocument.Parse(CredentialJson);
-            var result = await _apiService.SendAsync<CodexCredentialImportResult>(
-                HttpMethod.Post,
-                "/api/admin/codex/import-credential?name=imported.json",
-                document.RootElement);
-            CredentialImportResultText = $"成功导入 {result.Successes.Count} 个账号，失败 {result.Failures.Count} 个。";
-            if (result.Failures.Count > 0)
+            var successes = new List<CodexAccount>();
+            var failures = new List<CodexCredentialImportFailure>();
+
+            foreach (var (fileName, jsonText) in files)
             {
-                CredentialImportResultText += "\n" + string.Join("\n", result.Failures.Select(f => $"{f.FileName ?? "凭证"}：{f.Error}"));
+                try
+                {
+                    using var document = JsonDocument.Parse(jsonText);
+                    var result = await _apiService.SendAsync<CodexCredentialImportResult>(
+                        HttpMethod.Post,
+                        $"/api/admin/codex/import-credential?name={Uri.EscapeDataString(fileName)}",
+                        document.RootElement);
+                    successes.AddRange(result.Successes);
+                    failures.AddRange(result.Failures);
+                }
+                catch (JsonException)
+                {
+                    failures.Add(new CodexCredentialImportFailure
+                    {
+                        FileName = fileName,
+                        Error = "JSON 格式无效"
+                    });
+                }
+                catch (Exception exception)
+                {
+                    failures.Add(new CodexCredentialImportFailure
+                    {
+                        FileName = fileName,
+                        Error = exception.Message
+                    });
+                }
             }
-            Message = $"已导入 {result.Successes.Count} 个 Codex 账号";
+
+            CredentialImportResultText = $"成功导入 {successes.Count} 个账号，失败 {failures.Count} 个。";
+            if (failures.Count > 0)
+            {
+                CredentialImportResultText += "\n" + string.Join(
+                    "\n",
+                    failures.Select(f => $"{f.FileName ?? "凭证"}：{f.Error}"));
+            }
+
+            Message = $"已导入 {successes.Count} 个 Codex 账号";
             await LoadAsync();
-        }
-        catch (JsonException)
-        {
-            ErrorMessage = "凭证 JSON 格式无效，请粘贴完整的 JSON 对象。";
         }
         catch (Exception exception)
         {
@@ -559,6 +594,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     partial void OnOAuthUrlChanged(string value) => OnPropertyChanged(nameof(HasOAuthSession));
     partial void OnIsOAuthBusyChanged(bool value) => OnPropertyChanged(nameof(CanCompleteOAuth));
     partial void OnIsAccountSavingChanged(bool value) => OnPropertyChanged(nameof(CanSaveAccount));
+    partial void OnCredentialJsonChanged(string value) => OnPropertyChanged(nameof(CanImportCredentials));
     partial void OnAccountDisplayNameChanged(string value) => OnPropertyChanged(nameof(CanSaveAccount));
     partial void OnEditingAccountChanged(CodexAccount? value)
     {

@@ -1,5 +1,6 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Platform.Storage;
 using AITool.Desktop.Models;
 using AITool.Desktop.ViewModels;
 
@@ -8,6 +9,48 @@ namespace AITool.Desktop.Views;
 public partial class CodexView : UserControl
 {
     public CodexView() => InitializeComponent();
+
+    private async void ImportCredentialFiles(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel
+            || TopLevel.GetTopLevel(this)?.StorageProvider is not { } storageProvider)
+        {
+            return;
+        }
+
+        var files = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "选择 Codex 凭证 JSON 文件",
+            AllowMultiple = true,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("JSON 文件")
+                {
+                    Patterns = ["*.json"]
+                }
+            ]
+        });
+
+        if (files.Count == 0) return;
+
+        var contents = new List<(string FileName, string JsonText)>();
+        foreach (var file in files)
+        {
+            try
+            {
+                await using var stream = await file.OpenReadAsync();
+                using var reader = new StreamReader(stream);
+                contents.Add((file.Name, await reader.ReadToEndAsync()));
+            }
+            catch
+            {
+                // 让服务端统一返回该文件的解析失败结果，界面不会显示文件内容。
+                contents.Add((file.Name, string.Empty));
+            }
+        }
+
+        await viewModel.ImportCredentialFilesAsync(contents);
+    }
 
     private async void ConfirmResetQuota(object? sender, RoutedEventArgs e)
     {
