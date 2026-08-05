@@ -314,6 +314,12 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
     public void Dispose()
     {
         _navigationService.Navigated -= OnNavigated;
+        if (CurrentPage is IDisposable disposablePage)
+        {
+            disposablePage.Dispose();
+        }
+
+        CurrentPage = null;
     }
 
     private static ObservableCollection<NavigationGroupViewModel> BuildNavigationGroups(AuthFeatures features)
