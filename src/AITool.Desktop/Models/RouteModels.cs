@@ -3,6 +3,15 @@ using System.Text.Json;
 namespace AITool.Desktop.Models;
 
 /// <summary>
+/// 路由可用性选项，值使用后端契约，标签用于界面显示。
+/// </summary>
+public sealed class RouteAvailabilityOption
+{
+    public string Value { get; init; } = string.Empty;
+    public string Label { get; init; } = string.Empty;
+}
+
+/// <summary>
 /// 可添加到路由候选队列的站点模型实例。
 /// </summary>
 public sealed class SiteInstanceItem
@@ -115,6 +124,10 @@ public partial class RouteRuleItem : CommunityToolkit.Mvvm.ComponentModel.Observ
     public string PriorityText => (Priority + 1).ToString();
     public string StatusText => IsEnabled ? "已启用" : "已停用";
     public string ToggleActionText => IsEnabled ? "停用" : "启用";
+    // 停用状态使用中性灰色，避免与启用状态的成功色混淆。
+    public string StatusBackground => IsEnabled ? "#E8F7EA" : "#F1F5F9";
+    public string StatusForeground => IsEnabled ? "#166534" : "#64748B";
+    public bool CanToggle => !string.IsNullOrWhiteSpace(RuleId);
 
     public void SetPriority(int value)
     {
@@ -163,6 +176,8 @@ public partial class RouteRuleItem : CommunityToolkit.Mvvm.ComponentModel.Observ
     {
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(ToggleActionText));
+        OnPropertyChanged(nameof(StatusBackground));
+        OnPropertyChanged(nameof(StatusForeground));
     }
 }
 

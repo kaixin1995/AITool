@@ -95,12 +95,16 @@
                               <StackPanel Orientation="Horizontal" Spacing="8">
                                 <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding SiteName}" />
                                 <Border Background="#FEE2E2" CornerRadius="10" IsVisible="{Binding IsSiteDisabled}" Padding="7,2"><TextBlock FontSize="11" Foreground="#B91C1C" Text="站点已禁用" /></Border>
-                                <Border Background="#E8F7EA" CornerRadius="10" Padding="7,2"><TextBlock FontSize="11" Foreground="#166534" Text="{Binding StatusText}" /></Border>
+                                <Border Background="{Binding StatusBackground}" CornerRadius="10" Padding="7,2"><TextBlock FontSize="11" Foreground="{Binding StatusForeground}" Text="{Binding StatusText}" /></Border>
                               </StackPanel>
                               <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding InstanceSummary}" TextTrimming="CharacterEllipsis" />
                               <StackPanel Orientation="Horizontal" Spacing="7">
                                 <TextBlock FontSize="12" Foreground="#64748B" Text="可用性" VerticalAlignment="Center" />
-                                <ComboBox Width="130" ItemsSource="{Binding DataContext.AvailabilityOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding AvailabilityMode, Mode=TwoWay}" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                <ComboBox Width="130" ItemsSource="{Binding DataContext.AvailabilityOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedValue="{Binding AvailabilityMode, Mode=TwoWay}" SelectedValueBinding="{Binding Value}" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}">
+                                  <ComboBox.ItemTemplate>
+                                    <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+                                  </ComboBox.ItemTemplate>
+                                </ComboBox>
                                 <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding HasTimeRange}">
                                   <TextBox Classes="form-input" Width="76" Text="{Binding TimeRangeStart}" Watermark="00:00" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
                                   <TextBlock Foreground="#64748B" Text="至" VerticalAlignment="Center" />
@@ -109,6 +113,7 @@
                               </StackPanel>
                             </StackPanel>
                             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                              <Button Classes="secondary-button" Command="{Binding DataContext.ToggleRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" IsEnabled="{Binding CanToggle}" Padding="8,5" />
                               <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleUpCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="上移" IsEnabled="{Binding CanMoveUp}" Padding="8,5" />
                               <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleDownCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="下移" IsEnabled="{Binding CanMoveDown}" Padding="8,5" />
                               <Button Classes="secondary-button" Command="{Binding DataContext.RemoveCandidateCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="移除" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="8,5" />

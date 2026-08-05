@@ -66,6 +66,7 @@ public partial class AccessKeysViewModel : ViewModelBase
     public bool HasRouteError => !string.IsNullOrWhiteSpace(RouteErrorMessage);
     public bool HasRouteEntries => RouteEntries.Count > 0;
     public bool CanOpenEditor => !IsLoading && !IsRouteLoading && !HasRouteError;
+    public bool CanRetryRouteLoad => !IsRouteLoading;
     public bool CanCreate => !IsCreating && CanOpenEditor;
     public bool CanSaveRoutes => !IsRouteSaving && !IsRouteLoading && !HasRouteError && EditingRoutesKey is not null;
     public string RoutesEditorTitle => EditingRoutesKey is null ? "编辑路由权限" : $"编辑路由权限 - {EditingRoutesKey.KeyName}";
@@ -298,7 +299,11 @@ public partial class AccessKeysViewModel : ViewModelBase
     }
 
     partial void OnIsCreatingChanged(bool value) => OnPropertyChanged(nameof(CanCreate));
-    partial void OnIsRouteLoadingChanged(bool value) => NotifyRouteProperties();
+    partial void OnIsRouteLoadingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanRetryRouteLoad));
+        NotifyRouteProperties();
+    }
     partial void OnIsRouteSavingChanged(bool value) => OnPropertyChanged(nameof(CanSaveRoutes));
     partial void OnRouteErrorMessageChanged(string value)
     {

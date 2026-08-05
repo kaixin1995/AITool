@@ -59,8 +59,13 @@ public partial class RoutesViewModel : ViewModelBase
         _apiService = apiService;
     }
 
-    public IReadOnlyList<string> AvailabilityOptions { get; } =
-        new[] { "AllDay", "AvailableOnly", "UnavailableOnly" };
+    public IReadOnlyList<RouteAvailabilityOption> AvailabilityOptions { get; } =
+        new[]
+        {
+            new RouteAvailabilityOption { Value = "AllDay", Label = "全天" },
+            new RouteAvailabilityOption { Value = "AvailableOnly", Label = "仅可用" },
+            new RouteAvailabilityOption { Value = "Unavailable", Label = "不可用" }
+        };
 
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasMessage => !string.IsNullOrWhiteSpace(Message);

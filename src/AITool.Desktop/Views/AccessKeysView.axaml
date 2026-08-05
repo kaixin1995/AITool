@@ -18,7 +18,12 @@
       <Grid Grid.Row="2">
         <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding IsLoading}" Text="正在加载访问密钥..." />
         <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
-        <Border Background="#FFF7ED" CornerRadius="8" Padding="14" IsVisible="{Binding HasRouteError}"><TextBlock Foreground="#9A3412" Text="{Binding RouteErrorMessage}" TextWrapping="Wrap" /></Border>
+        <Border Background="#FFF7ED" CornerRadius="8" Padding="14" IsVisible="{Binding HasRouteError}">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <TextBlock Foreground="#9A3412" Text="{Binding RouteErrorMessage}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="重试" IsEnabled="{Binding CanRetryRouteLoad}" Padding="10,6" />
+          </Grid>
+        </Border>
         <Border Classes="content-card" IsVisible="{Binding IsListVisible}" Padding="0">
           <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
             <StackPanel MinWidth="760">
@@ -39,11 +44,11 @@
                         <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding KeyName}" VerticalAlignment="Center" />
                         <TextBlock Grid.Column="1" Foreground="#64748B" Text="{Binding MaskedValue}" VerticalAlignment="Center" />
                         <TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding AllowedRoutesText}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                        <Border Grid.Column="3" Background="#E8F7EA" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Foreground="#166534" Text="{Binding StatusText}" /></Border>
+                        <Border Grid.Column="3" Background="{Binding StatusBackground}" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Foreground="{Binding StatusForeground}" Text="{Binding StatusText}" /></Border>
                         <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                           <Button Classes="secondary-button" Command="{Binding DataContext.OpenRoutesEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑路由" IsEnabled="{Binding DataContext.CanOpenEditor, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="10,6" />
                           <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,6" />
-                          <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
+                          <Button Classes="secondary-button" Click="ConfirmDeleteAccessKey" Content="删除" Padding="10,6" />
                         </StackPanel>
                       </Grid>
                     </Border>
@@ -60,8 +65,11 @@
             <Border Background="#E8F7EA" CornerRadius="8" IsVisible="{Binding HasCreatedKey}" Padding="12">
               <StackPanel Spacing="8">
                 <TextBlock FontWeight="SemiBold" Foreground="#166534" Text="密钥已创建，仅显示一次" />
-                <TextBox Classes="form-input" IsReadOnly="True" Text="{Binding CreatedPlainKey}" />
-                <TextBlock FontSize="12" Foreground="#64748B" Text="请立即复制并妥善保存，客户端不会再次获取明文。" TextWrapping="Wrap" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                  <TextBox Classes="form-input" IsReadOnly="True" Text="{Binding CreatedPlainKey}" />
+                  <Button Grid.Column="1" Classes="secondary-button" Click="CopyCreatedPlainKey" Content="复制" Padding="10,6" />
+                </Grid>
+                <TextBlock FontSize="12" Foreground="#64748B" Text="请立即复制并妥善保存，客户端不会再次获取明文。列表中的密钥仅显示脱敏值，无法复制完整密钥。" TextWrapping="Wrap" />
               </StackPanel>
             </Border>
             <StackPanel IsVisible="{Binding IsCreateFormVisible}" Spacing="8">
