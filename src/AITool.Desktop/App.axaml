@@ -19,6 +19,8 @@
           <SolidColorBrush x:Key="AppCodeBackgroundBrush" Color="#F8FAFC" />
           <SolidColorBrush x:Key="AppCodeForegroundBrush" Color="#334155" />
           <SolidColorBrush x:Key="AppResponseBackgroundBrush" Color="#FFF7ED" />
+          <SolidColorBrush x:Key="AppPrimaryBrush" Color="#6C9EFF" />
+          <SolidColorBrush x:Key="AppPrimaryHoverBrush" Color="#5B8DEF" />
           <SolidColorBrush x:Key="AppPrimarySoftBrush" Color="#EEF4FF" />
           <SolidColorBrush x:Key="AppOnPrimaryBrush" Color="#FFFFFF" />
           <SolidColorBrush x:Key="AppSuccessSoftBrush" Color="#E8F7EA" />
@@ -45,6 +47,8 @@
           <SolidColorBrush x:Key="AppCodeBackgroundBrush" Color="#141418" />
           <SolidColorBrush x:Key="AppCodeForegroundBrush" Color="#D8D8E0" />
           <SolidColorBrush x:Key="AppResponseBackgroundBrush" Color="#2A211A" />
+          <SolidColorBrush x:Key="AppPrimaryBrush" Color="#557FCB" />
+          <SolidColorBrush x:Key="AppPrimaryHoverBrush" Color="#6B9BE6" />
           <SolidColorBrush x:Key="AppPrimarySoftBrush" Color="#263A63" />
           <SolidColorBrush x:Key="AppOnPrimaryBrush" Color="#FFFFFF" />
           <SolidColorBrush x:Key="AppSuccessSoftBrush" Color="#193423" />
@@ -99,7 +103,7 @@
     </Style>
 
     <Style Selector="Button.primary-button">
-      <Setter Property="Background" Value="#6C9EFF" />
+      <Setter Property="Background" Value="{DynamicResource AppPrimaryBrush}" />
       <Setter Property="Foreground" Value="{DynamicResource AppOnPrimaryBrush}" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="MinHeight" Value="42" />
@@ -107,7 +111,7 @@
     </Style>
 
     <Style Selector="Button.primary-button:pointerover">
-      <Setter Property="Background" Value="#5B8DEF" />
+      <Setter Property="Background" Value="{DynamicResource AppPrimaryHoverBrush}" />
     </Style>
 
     <Style Selector="Button.secondary-button">

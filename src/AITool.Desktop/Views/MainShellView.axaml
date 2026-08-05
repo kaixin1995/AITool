@@ -70,14 +70,14 @@
             <Border
                 Width="38"
                 Height="38"
-                Background="#6C9EFF"
+                Background="{DynamicResource AppPrimaryBrush}"
                 CornerRadius="10">
               <TextBlock
                   HorizontalAlignment="Center"
                   VerticalAlignment="Center"
                   FontSize="15"
                   FontWeight="Bold"
-                  Foreground="White"
+                  Foreground="{DynamicResource AppOnPrimaryBrush}"
                   Text="AI" />
             </Border>
             <TextBlock
@@ -144,12 +144,12 @@
           <WrapPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal" VerticalAlignment="Center">
             <Button Classes="secondary-button" Command="{Binding RefreshCurrentPageCommand}" Content="刷新当前页" Padding="12,7" />
             <Border
-                Background="#E8F7EA"
+                Background="{DynamicResource AppSuccessSoftBrush}"
                 CornerRadius="14"
                 Padding="10,5">
               <StackPanel Orientation="Horizontal" Spacing="6">
-                <Ellipse Width="7" Height="7" Fill="#22C55E" VerticalAlignment="Center" />
-                <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#166534" Text="服务已连接" />
+                <Ellipse Width="7" Height="7" Fill="{DynamicResource AppSuccessTextBrush}" VerticalAlignment="Center" />
+                <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppSuccessTextBrush}" Text="服务已连接" />
               </StackPanel>
             </Border>
             <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="AI Tool Desktop" VerticalAlignment="Center" />
