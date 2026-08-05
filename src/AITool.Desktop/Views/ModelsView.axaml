@@ -45,6 +45,7 @@
                               </Border>
                               <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                                 <Button Classes="secondary-button" Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,6" />
+                                <Button Classes="secondary-button" Command="{Binding DataContext.OpenMappingCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="映射" IsEnabled="{Binding DataContext.CanOpenMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="10,6" />
                                 <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,6" />
                                 <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
                               </StackPanel>
@@ -70,6 +71,72 @@
             <TextBlock Foreground="#B91C1C" IsVisible="{Binding HasError}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
             <Button Classes="primary-button" Command="{Binding SaveCommand}" Content="保存模型" IsEnabled="{Binding CanSave}" HorizontalContentAlignment="Center" Padding="12,9" />
           </StackPanel>
+        </Border>
+
+        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsMappingOpen}" Padding="24" Width="560" MaxHeight="720" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="11">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="14">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding MappingTitle}" />
+                <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseMappingCommand}" Content="关闭" Padding="10,6" />
+              </Grid>
+
+              <Border Background="#EFF6FF" CornerRadius="8" IsVisible="{Binding IsMappingLoading}" Padding="12">
+                <TextBlock Foreground="#315EA8" Text="正在加载站点映射..." />
+              </Border>
+              <Border Background="#FEE2E2" CornerRadius="8" IsVisible="{Binding HasMappingError}" Padding="12">
+                <TextBlock Foreground="#B91C1C" Text="{Binding MappingErrorMessage}" TextWrapping="Wrap" />
+              </Border>
+              <Border Background="#E8F7EA" CornerRadius="8" IsVisible="{Binding HasMappingMessage}" Padding="12">
+                <TextBlock Foreground="#166534" Text="{Binding MappingMessage}" TextWrapping="Wrap" />
+              </Border>
+
+              <StackPanel IsVisible="{Binding HasMappingRows}" Spacing="8">
+                <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="已关联站点" />
+                <ItemsControl ItemsSource="{Binding MappingDetail.SiteMappings}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Background="#F8FAFC" BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="8" Margin="0,0,0,8" Padding="12">
+                        <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto" RowSpacing="10">
+                          <StackPanel Spacing="3">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                              <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding SiteName}" />
+                              <Border Background="#FEE2E2" CornerRadius="10" IsVisible="{Binding IsDisabled}" Padding="7,2">
+                                <TextBlock FontSize="11" Foreground="#B91C1C" Text="{Binding StatusText}" />
+                              </Border>
+                            </StackPanel>
+                            <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding RemoteModelName}" TextWrapping="Wrap" />
+                          </StackPanel>
+                          <Button Grid.Column="1" Classes="secondary-button" Click="ConfirmDeleteMapping" Content="删除" Padding="9,5" />
+                          <Grid Grid.Row="1" Grid.ColumnSpan="2" ColumnDefinitions="Auto,100,Auto" ColumnSpacing="8">
+                            <TextBlock Foreground="#64748B" Text="最大并发" VerticalAlignment="Center" />
+                            <NumericUpDown Grid.Column="1" Minimum="0" Maximum="100000" Value="{Binding MaxConcurrency, Mode=TwoWay}" Padding="5,2" />
+                            <Button Grid.Column="2" Classes="secondary-button" Command="{Binding DataContext.UpdateMappingConcurrencyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="保存" IsEnabled="{Binding DataContext.CanSaveMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="9,5" />
+                          </Grid>
+                        </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+              <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding ShowNoMappingRows}" Text="暂无关联站点" />
+
+              <Border Background="#F8FAFC" CornerRadius="8" Padding="14">
+                <StackPanel Spacing="9">
+                  <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="添加站点映射" />
+                  <TextBlock FontSize="12" Foreground="#64748B" Text="同一站点可配置站点侧实际使用的模型名称；最大并发为 0 时表示不限制。" TextWrapping="Wrap" />
+                  <ComboBox ItemsSource="{Binding MappingDetail.AvailableSites}" SelectedItem="{Binding SelectedMappingSite}" IsEnabled="{Binding CanEditMapping}">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <TextBox Classes="form-input" Text="{Binding NewMappingRemoteName}" Watermark="站点上的模型名" />
+                  <CheckBox Content="启用映射" IsChecked="{Binding NewMappingEnabled}" />
+                  <Button Classes="primary-button" Command="{Binding AddMappingCommand}" Content="添加映射" IsEnabled="{Binding CanAddMapping}" HorizontalContentAlignment="Center" Padding="12,8" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
         </Border>
       </Grid>
     </Grid>

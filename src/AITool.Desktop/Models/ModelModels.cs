@@ -42,6 +42,51 @@ public sealed class ModelListResponse
     public List<ModelVendorGroup> VendorGroups { get; set; } = new();
 }
 
+/// <summary>
+/// 模型详情及其站点映射，用于桌面端映射管理面板。
+/// </summary>
+public sealed class ModelDetail
+{
+    public string Id { get; set; } = string.Empty;
+    public string ModelName { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public bool IsEnabled { get; set; }
+    public string OverrideReasoningEffort { get; set; } = string.Empty;
+    public string? CompatibilityProfileId { get; set; }
+    public List<ModelSiteMapping> SiteMappings { get; set; } = new();
+    public List<ModelAvailableSite> AvailableSites { get; set; } = new();
+}
+
+/// <summary>
+/// 模型与站点之间的远程模型映射。
+/// </summary>
+public sealed partial class ModelSiteMapping : CommunityToolkit.Mvvm.ComponentModel.ObservableObject
+{
+    public string MappingId { get; set; } = string.Empty;
+    public string SiteId { get; set; } = string.Empty;
+    public string SiteName { get; set; } = string.Empty;
+    public string RemoteModelName { get; set; } = string.Empty;
+    public bool IsEnabled { get; set; }
+    public bool IsDisabled => !IsEnabled;
+    public string StatusText => IsEnabled ? "已启用" : "已停用";
+
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    private int _maxConcurrency;
+
+    public string ConcurrencyText => MaxConcurrency == 0 ? "不限制" : MaxConcurrency.ToString();
+
+    partial void OnMaxConcurrencyChanged(int value) => OnPropertyChanged(nameof(ConcurrencyText));
+}
+
+/// <summary>
+/// 可供模型新增映射的启用站点。
+/// </summary>
+public sealed class ModelAvailableSite
+{
+    public string Id { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+}
+
 public sealed class ModelPayload
 {
     public string ModelName { get; set; } = string.Empty;
