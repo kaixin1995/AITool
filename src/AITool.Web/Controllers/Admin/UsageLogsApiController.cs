@@ -358,6 +358,25 @@ public sealed class UsageLogsApiController : ControllerBase
     }
 
     /// <summary>
+    /// 获取筛选项（全部站点 + 全部访问密钥，供筛选下拉框）。
+    /// 迁移自 UsageLogs/Index.cshtml.cs 的 OnGetAsync。
+    /// </summary>
+    [HttpGet("filters")]
+    public async Task<IActionResult> GetFilters(CancellationToken cancellationToken)
+    {
+        var sites = await _dbContext.Sites
+            .OrderBy(s => s.Name)
+            .Select(s => new { id = s.Id, name = s.Name })
+            .ToListAsync(cancellationToken);
+        var accessKeys = await _dbContext.ProxyAccessKeys
+            .OrderBy(k => k.KeyName)
+            .Select(k => new { id = k.Id, name = k.KeyName })
+            .ToListAsync(cancellationToken);
+
+        return Ok(new { sites, accessKeys });
+    }
+
+    /// <summary>
     /// 获取用量日志列表。
     /// </summary>
     [HttpGet("list")]
@@ -530,7 +549,7 @@ public sealed class UsageLogsApiController : ControllerBase
             var successRate = totalCount == 0
                 ? 0d
                 : Math.Round(successRequests * 100d / totalCount, 2, MidpointRounding.AwayFromZero);
-            var totalTokens = totalCount == 0 ? 0L : await baseQuery.SumAsync(x => x.TotalTokens);
+            var totalTokens = totalCount == 0 ? 0L : await baseQuery.SumAsync(x => (long)x.TotalTokens);
             var maxDurationMs = totalCount == 0
                 ? 0
                 : await baseQuery.MaxAsync(x => x.TotalDurationMs, cancellationToken);

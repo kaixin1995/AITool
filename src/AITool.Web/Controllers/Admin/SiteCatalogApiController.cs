@@ -218,8 +218,9 @@ public sealed class SiteCatalogApiController : ControllerBase
     [HttpPost("fetch-all-models")]
     public async Task<IActionResult> FetchAllModels(CancellationToken cancellationToken)
     {
+        // 仅拉取用户自建站点；Codex 等托管 Site 的 baseUrl 不兼容 OpenAI catalog 接口，跳过避免误报。
         var sites = await _dbContext.Sites
-            .Where(s => s.IsEnabled)
+            .Where(s => s.IsEnabled && string.IsNullOrEmpty(s.ManagedSource))
             .OrderBy(s => s.Name)
             .ToListAsync(cancellationToken);
 

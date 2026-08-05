@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AITool.Application.Common;
+using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
@@ -205,6 +206,10 @@ public sealed class SaveRouteRuleEntry
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
     /// <summary>
+    /// 是否启用，未传时默认启用以兼容旧调用方。
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
+    /// <summary>
     /// 时间可用性模式，未传时默认全天可用。
     /// </summary>
     public string AvailabilityMode { get; set; } = "AllDay";
@@ -392,29 +397,30 @@ public sealed class RouteRulesApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(entryName))
             return BadRequest(new { message = "模型名称不能为空" });
 
-        var existingEntry = await _dbContext.ProxyRouteEntries
-            .FirstAsync(x => x.EntryName == entryName, cancellationToken);
-        if (existingEntry is null)
+        var requestedSiteIds = request.Rules
+            .Select(x => x.SiteId)
+            .Distinct()
+            .ToList();
+        if (requestedSiteIds.Contains(Guid.Empty))
+            return BadRequest(new { message = "站点标识不能为空" });
+
+        if (requestedSiteIds.Count > 0)
         {
-            _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
-            {
-                EntryName = entryName
-            });
+            var existingSiteIds = await _dbContext.Sites
+                .Where(x => requestedSiteIds.Contains(x.Id))
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken);
+            if (existingSiteIds.Count != requestedSiteIds.Count)
+                return BadRequest(new { message = "包含不存在的站点" });
         }
 
-        // 删除该模型的所有旧规则
-        var existingRules = await _dbContext.ProxyRouteRules
-            .Where(r => r.ExternalModelName == entryName)
-            .ToListAsync(cancellationToken);
-        var previousRouteTargets = await LoadPreviousRouteTargetsAsync(existingRules, cancellationToken);
-        _dbContext.ProxyRouteRules.RemoveRange(existingRules);
-
-        // 按列表顺序创建新规则，Priority = 全局顺序，ModelPriority/InstancePriority = 分组顺序
+        // 在任何写入前完成全部候选的规范化和校验，避免 SqlSugar 立即写入导致旧规则被部分覆盖。
         var upstreamOrder = request.Rules
             .Select(r => r.UpstreamModelName)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct()
             .ToList();
+        var newRules = new List<ProxyRouteRule>(request.Rules.Count);
 
         for (int i = 0; i < request.Rules.Count; i++)
         {
@@ -435,8 +441,10 @@ public sealed class RouteRulesApiController : ControllerBase
                 upstreamOrder.Add(normalizedUpstreamModelName);
             }
 
-            var availability = NormalizeAvailability(entry.AvailabilityMode, entry.TimeRangesJson);
-            _dbContext.ProxyRouteRules.Add(new ProxyRouteRule
+            if (!TryNormalizeAvailability(entry.AvailabilityMode, entry.TimeRangesJson, out var availability))
+                return BadRequest(new { message = "时间范围配置无效" });
+
+            newRules.Add(new ProxyRouteRule
             {
                 ExternalModelName = entryName,
                 UpstreamModelName = normalizedUpstreamModelName,
@@ -445,11 +453,29 @@ public sealed class RouteRulesApiController : ControllerBase
                 Priority = i,
                 ModelPriority = modelPriority,
                 InstancePriority = sameModelEarlierCount,
-                IsEnabled = true,
+                IsEnabled = entry.IsEnabled,
                 AvailabilityMode = availability.Mode,
                 TimeRangesJson = availability.TimeRangesJson
             });
         }
+
+        var existingEntry = await _dbContext.ProxyRouteEntries
+            .FirstAsync(x => x.EntryName == entryName, cancellationToken);
+        if (existingEntry is null)
+        {
+            _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
+            {
+                EntryName = entryName
+            });
+        }
+
+        // 删除该模型的所有旧规则
+        var existingRules = await _dbContext.ProxyRouteRules
+            .Where(r => r.ExternalModelName == entryName)
+            .ToListAsync(cancellationToken);
+        var previousRouteTargets = await LoadPreviousRouteTargetsAsync(existingRules, cancellationToken);
+        _dbContext.ProxyRouteRules.RemoveRange(existingRules);
+        _dbContext.ProxyRouteRules.AddRange(newRules);
 
         var affectedRouteTargets = BuildAffectedRouteTargets(existingRules, request.Rules);
 
@@ -477,15 +503,36 @@ public sealed class RouteRulesApiController : ControllerBase
 
         var siteIds = existingRules.Select(x => x.SiteId).Distinct().ToList();
         var sites = await _dbContext.Sites
-            
+
             .Where(x => siteIds.Contains(x.Id) && x.IsEnabled)
             .ToDictionaryAsync(x => x.Id, x => x, cancellationToken);
+        var upstreamModelNames = existingRules
+            .Select(x => x.UpstreamModelName)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct()
+            .ToList();
+        var models = await _dbContext.ModelLibraryItems
+            .Where(x => upstreamModelNames.Contains(x.ModelName))
+            .ToDictionaryAsync(x => x.ModelName, x => x, cancellationToken);
+        var compatibilityProfileIds = models.Values
+            .Select(x => x.CompatibilityProfileId)
+            .Where(x => x is not null && x.Value != Guid.Empty)
+            .Select(x => x!.Value)
+            .Distinct()
+            .ToList();
+        var profiles = compatibilityProfileIds.Count == 0
+            ? new Dictionary<Guid, IReadOnlyList<CompatibilityRule>>()
+            : (await _dbContext.CompatibilityProfiles
+                .Where(x => x.IsEnabled && compatibilityProfileIds.Contains(x.Id))
+                .ToListAsync(cancellationToken))
+            .ToDictionary(x => x.Id, x => ParseCompatibilityRules(x.RulesJson));
 
         return existingRules
             .Where(x => x.IsEnabled && sites.ContainsKey(x.SiteId))
             .Select(x =>
             {
                 var site = sites[x.SiteId];
+                models.TryGetValue(x.UpstreamModelName, out var model);
                 return new CachedProxyRouteTarget
                 {
                     RouteId = x.Id,
@@ -500,9 +547,12 @@ public sealed class RouteRulesApiController : ControllerBase
                     SiteModelName = x.SiteModelName,
                     BaseUrl = site.BaseUrl,
                     ApiKey = site.ApiKey,
+                    ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
                     ModelPriority = x.ModelPriority,
                     InstancePriority = x.InstancePriority,
                     Priority = x.Priority,
+                    OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
+                    CompatibilityRules = GetRulesForModel(model, profiles),
                     AvailabilityMode = x.AvailabilityMode,
                     TimeRangesJson = x.TimeRangesJson
                 };
@@ -511,6 +561,58 @@ public sealed class RouteRulesApiController : ControllerBase
             .ThenBy(x => x.InstancePriority)
             .ThenBy(x => x.Priority)
             .ToList();
+    }
+
+    /// <summary>
+    /// 解析兼容规则 JSON，保持与运行时路由目标投影一致的容错行为。
+    /// </summary>
+    private static IReadOnlyList<CompatibilityRule> ParseCompatibilityRules(string? rulesJson)
+    {
+        if (string.IsNullOrWhiteSpace(rulesJson)) return Array.Empty<CompatibilityRule>();
+        try
+        {
+            var rules = JsonSerializer.Deserialize<List<CompatibilityRule>>(rulesJson);
+            return rules is null || rules.Count == 0 ? Array.Empty<CompatibilityRule>() : rules;
+        }
+        catch
+        {
+            return Array.Empty<CompatibilityRule>();
+        }
+    }
+
+    /// <summary>
+    /// 读取模型关联的兼容规则集。
+    /// </summary>
+    private static IReadOnlyList<CompatibilityRule> GetRulesForModel(
+        ModelLibraryItem? model,
+        IReadOnlyDictionary<Guid, IReadOnlyList<CompatibilityRule>> profileRules)
+    {
+        var profileId = model?.CompatibilityProfileId;
+        if (profileId is null || profileId == Guid.Empty) return Array.Empty<CompatibilityRule>();
+        return profileRules.TryGetValue(profileId.Value, out var rules) ? rules : Array.Empty<CompatibilityRule>();
+    }
+
+    /// <summary>
+    /// 解析站点额外请求头，保持与运行时路由目标投影一致的容错行为。
+    /// </summary>
+    private static Dictionary<string, string> TryParseExtraHeaders(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        try
+        {
+            var headers = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonSerializerPresets.CaseInsensitive);
+            return headers is null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     /// <summary>
@@ -529,7 +631,10 @@ public sealed class RouteRulesApiController : ControllerBase
     /// <summary>
     /// 规范化时间可用性配置，空配置和无效配置都回落为全天可用以兼容旧规则。
     /// </summary>
-    private static (string Mode, string TimeRangesJson) NormalizeAvailability(string? mode, string? timeRangesJson)
+    private static bool TryNormalizeAvailability(
+        string? mode,
+        string? timeRangesJson,
+        out (string Mode, string TimeRangesJson) availability)
     {
         var normalizedMode = string.Equals(mode, "AvailableOnly", StringComparison.Ordinal)
             ? "AvailableOnly"
@@ -538,23 +643,32 @@ public sealed class RouteRulesApiController : ControllerBase
                 : "AllDay";
         if (normalizedMode == "AllDay" || string.IsNullOrWhiteSpace(timeRangesJson))
         {
-            return ("AllDay", string.Empty);
+            availability = ("AllDay", string.Empty);
+            return true;
         }
 
         try
         {
-            var ranges = JsonSerializer.Deserialize<List<RouteTimeRange>>(timeRangesJson, JsonSerializerPresets.CaseInsensitive) ?? [];
-            ranges = ranges
-                .Where(x => IsValidTimeText(x.Start) && IsValidTimeText(x.End))
-                .Select(x => new RouteTimeRange { Start = x.Start.Trim(), End = x.End.Trim() })
+            var ranges = JsonSerializer.Deserialize<List<RouteTimeRange?>>(timeRangesJson, JsonSerializerPresets.CaseInsensitive) ?? [];
+            if (ranges.Any(x => x is null))
+            {
+                availability = default;
+                return false;
+            }
+
+            var validRanges = ranges
+                .Where(x => IsValidTimeText(x!.Start) && IsValidTimeText(x.End))
+                .Select(x => new RouteTimeRange { Start = x!.Start.Trim(), End = x.End.Trim() })
                 .ToList();
-            return ranges.Count == 0
+            availability = validRanges.Count == 0
                 ? ("AllDay", string.Empty)
-                : (normalizedMode, JsonSerializer.Serialize(ranges, JsonSerializerPresets.CamelCase));
+                : (normalizedMode, JsonSerializer.Serialize(validRanges, JsonSerializerPresets.CamelCase));
+            return true;
         }
         catch (JsonException)
         {
-            return ("AllDay", string.Empty);
+            availability = ("AllDay", string.Empty);
+            return true;
         }
     }
 

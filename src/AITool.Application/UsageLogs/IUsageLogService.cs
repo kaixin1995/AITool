@@ -87,6 +87,16 @@ public sealed class UsageLogEntry
     public string ErrorMessage { get; set; } = string.Empty;
 
     /// <summary>
+    /// 记录上游响应的 HTTP 状态码；网络异常等未收到响应时为空。
+    /// </summary>
+    public int? HttpStatusCode { get; set; }
+
+    /// <summary>
+    /// 保存错误分类；成功请求和兼容旧数据时可以为空。
+    /// </summary>
+    public string? ErrorCategory { get; set; }
+
+    /// <summary>
     /// 记录输入消耗的 Token 数。
     /// </summary>
     public int InputTokens { get; set; }

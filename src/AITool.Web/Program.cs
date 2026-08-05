@@ -1,10 +1,12 @@
 using System.Data.Common;
 using System.Net.Http;
+using AITool.Application.Codex;
 using AITool.Application.Common;
 using AITool.Application.Operations;
 using AITool.Application.Proxy;
 using AITool.Application.SiteCatalog;
 using AITool.Application.UsageLogs;
+using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.OpenAI;
@@ -14,7 +16,7 @@ using AITool.Infrastructure.Retention;
 using AITool.Infrastructure.Scheduling;
 using AITool.Web.Services;
 using Hangfire;
-using Microsoft.AspNetCore.Authentication.Cookies;
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Diagnostics;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
@@ -31,10 +33,10 @@ builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
 
-var applicationVersion = "1.0.1.4";
+var applicationVersion = "1.0.1.7";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 
-var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
+var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 15029;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
 
 // 配置 Kestrel 连接与请求体限制，确保代理大请求体（长对话、base64 图片）和可预测的并发行为。
@@ -51,10 +53,7 @@ builder.Services.AddResponseCompression(options =>
     options.EnableForHttps = true;
 });
 
-// 注册 Razor Pages，作为管理后台的页面框架。
-builder.Services.AddRazorPages();
-
-// 注册 API 控制器，用于代理转发端点。
+// 注册 API 控制器，用于代理转发端点 + 后台管理 API。
 builder.Services.AddControllers(options =>
 {
     options.Filters.Add<HttpExceptionLoggingFilter>();
@@ -62,35 +61,118 @@ builder.Services.AddControllers(options =>
 builder.Services.AddMemoryCache();
 builder.Services.AddScoped<HttpExceptionLoggingFilter>();
 
-builder.Services
-    .AddAuthentication(CookieAuthenticationDefaults.AuthenticationScheme)
-    .AddCookie(options =>
-    {
-        options.LoginPath = "/Login";
-        options.AccessDeniedPath = "/Login";
-        options.Cookie.Name = "AITool.AdminAuth";
-        options.SlidingExpiration = true;
-        options.Events = new CookieAuthenticationEvents
-        {
-            OnRedirectToLogin = context =>
-            {
-                if (IsAdminRequest(context.Request))
-                {
-                    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
-                    var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
-                        ? "/Login"
-                        : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
-                    context.Response.Redirect(loginUrl);
-                    return Task.CompletedTask;
-                }
+// 注册 JWT 配置选项与 token 服务。
+builder.Services.Configure<JwtOptions>(builder.Configuration.GetSection(JwtOptions.SectionName));
+builder.Services.AddScoped<JwtTokenService>();
+// LoginRateLimitService: 登录暴力破解防护（IP 失败计数 + 锁定）
+builder.Services.AddSingleton<LoginRateLimitService>();
 
+// 认证：纯 JWT（SPA 分离后不再需要 Cookie）。
+// /api/* 用 Bearer token 验证；代理端点 /v1/* 不走 ASP.NET 认证（自己用 AccessKey 校验）。
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        var jwt = builder.Configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
+        options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = jwt.Issuer,
+            ValidateAudience = true,
+            ValidAudience = jwt.Audience,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
+                System.Text.Encoding.UTF8.GetBytes(jwt.SigningKey)),
+            ClockSkew = TimeSpan.FromSeconds(30)
+        };
+        // /api/* 未携带有效 token 时统一返回 401 JSON（前端按 401 + errorCode 处理）。
+        options.Events = new JwtBearerEvents
+        {
+            OnChallenge = context =>
+            {
+                context.HandleResponse();
                 context.Response.StatusCode = StatusCodes.Status401Unauthorized;
-                return Task.CompletedTask;
+                context.Response.ContentType = "application/json; charset=utf-8";
+                return context.Response.WriteAsJsonAsync(new
+                {
+                    success = false,
+                    message = "未登录或登录已过期，请重新登录",
+                    errorCode = "unauthenticated"
+                });
             }
         };
     });
 builder.Services.AddAuthorization();
 builder.Services.AddSingleton<AdminAuthService>();
+
+// Swagger：可通过 appsettings.json 的 Swagger:Enabled 配置控制。
+// 未配置时默认所有环境可用，可设置为 false 关闭。
+// Testing 环境始终关闭，避免集成测试注入 Swagger 服务。
+var swaggerEnabled = !builder.Environment.IsEnvironment("Testing")
+    && (builder.Configuration.GetValue<bool?>("Swagger:Enabled") ?? true);
+if (swaggerEnabled)
+{
+    builder.Services.AddEndpointsApiExplorer();
+    builder.Services.AddSwaggerGen(options =>
+    {
+        options.SwaggerDoc("v1", new Microsoft.OpenApi.Models.OpenApiInfo
+        {
+            Title = "AI Tool API",
+            Version = "v1",
+            Description = "AI-Tool 后台管理与代理 API 文档"
+        });
+
+        // 集成 JWT Bearer 认证：Swagger UI 顶部出现 Authorize 按钮，
+        // 粘贴 access token 后调测受保护接口自动带 Bearer header。
+        options.AddSecurityDefinition("Bearer", new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+        {
+            Type = Microsoft.OpenApi.Models.SecuritySchemeType.Http,
+            Scheme = "bearer",
+            BearerFormat = "JWT",
+            In = Microsoft.OpenApi.Models.ParameterLocation.Header,
+            Description = "粘贴 access token（不含 'Bearer ' 前缀）。登录后从 /api/auth/login 响应获取。"
+        });
+        options.AddSecurityRequirement(new Microsoft.OpenApi.Models.OpenApiSecurityRequirement
+        {
+            {
+                new Microsoft.OpenApi.Models.OpenApiSecurityScheme
+                {
+                    Reference = new Microsoft.OpenApi.Models.OpenApiReference
+                    {
+                        Type = Microsoft.OpenApi.Models.ReferenceType.SecurityScheme,
+                        Id = "Bearer"
+                    }
+                },
+                Array.Empty<string>()
+            }
+        });
+
+        // 排除代理转发端点（/v1/*）：它们是 SSE 流式转发，请求体任意、响应是流，
+        // Swagger UI 无法有效测试，且会污染文档列表。
+        options.DocInclusionPredicate((docName, apiDesc) =>
+        {
+            apiDesc.ActionDescriptor.RouteValues.TryGetValue("controller", out var controller);
+            return controller != "OpenAiProxy" && controller != "AnthropicProxy";
+        });
+
+        // 注入 XML 注释：控制器自身的注释 + Application/Infrastructure 层的 DTO 注释，
+        // 让 Swagger 展示接口描述。XML 文件路径基于对应程序集的 dll 路径推断。
+        var xmlFiles = new[]
+        {
+            // Web：控制器注释
+            typeof(Program).Assembly.Location.Replace(".dll", ".xml"),
+            // Application：DTO / Command / 操作类注释
+            typeof(AITool.Application.Operations.ISystemRuntimeSettingsService).Assembly.Location.Replace(".dll", ".xml"),
+            // Infrastructure：领域实体与基础设施类型注释
+            typeof(AITool.Infrastructure.Persistence.AppDbContext).Assembly.Location.Replace(".dll", ".xml")
+        };
+        foreach (var path in xmlFiles.Where(File.Exists))
+        {
+            options.IncludeXmlComments(path);
+        }
+    });
+}
 
 // 数据库文件放在软件根目录下。
 var dbPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "aitool.db");
@@ -105,6 +187,27 @@ builder.Services.Configure<ProxyForwardingOptions>(
 // 注册站点目录客户端，用于拉取远程站点模型列表。
 builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 
+// 注册 Codex OAuth 客户端，用于 PKCE 授权、token 交换与刷新（复用连接池）。
+builder.Services.AddHttpClient<ICodexOAuthClient, CodexOAuthClient>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+});
+
+// 注册 Codex 静态模型目录（进程内只读）。
+builder.Services.AddSingleton<ICodexModelCatalog, CodexModelCatalog>();
+
+// 注册 Codex 动态模型拉取客户端（chatgpt.com/backend-api/codex/models）。
+builder.Services.AddHttpClient<ICodexModelFetcher, CodexModelFetcher>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// 注册 Codex 额度主动查询服务（30s 结果缓存防抖 + single-flight）。
+builder.Services.AddHttpClient<ICodexQuotaService, CodexQuotaService>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(20);
+});
+
 // 注册代理主入口实体配置，配置 SocketsHttpHandler 连接池提高并发能力。
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>()
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
@@ -118,28 +221,40 @@ builder.Services.AddScoped<ModelHealthRequestService>();
 // 注册使用日志服务，记录每次代理调用的 Token 用量。
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
-var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
-    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
-    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
-builder.Services.AddSingleton(new AITool.Infrastructure.Conversations.ConversationLogFileOptions
-{
-    RootPath = conversationLogRootPath
-});
-builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogStore, AITool.Infrastructure.Conversations.FileConversationLogStore>();
-builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<AITool.Infrastructure.Conversations.ConversationLogBatchWriter>());
+// Site 使用时间内存映射：日志入队时增量更新，Codex 巡检读它判断账号是否被使用，避免回查 DB。
+builder.Services.AddSingleton<SiteUsageTracker>();
 // 定期压缩 LOH，回收大对象碎片，避免代理转发产生的大字符串碎片导致工作集居高不下。
 builder.Services.AddHostedService<MemoryMaintenanceService>();
+// 周期刷新 Codex 账号 OAuth token，写回隐藏 Site.ApiKey 并失效路由缓存。
+builder.Services.AddHostedService<CodexTokenRefreshService>();
+// 周期恢复冷却到期的 Codex 账号（清除冷却，恢复 Site，若未被手动禁用）。
+builder.Services.AddHostedService<CodexCooldownRecoveryService>();
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
 builder.Services.AddSingleton<ModelConcurrencyLimiter>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
-builder.Services.AddSingleton<AITool.Application.Conversations.IConversationLogService, AITool.Infrastructure.Conversations.ConversationLogService>();
-builder.Services.AddSingleton<AITool.Infrastructure.Conversations.ConversationExtractionService>();
 
 // 注册熔断状态存储，跟踪因连续失败而被临时屏蔽的站点。
 builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<ProxyRequestMetadataCache>();
 builder.Services.AddSingleton<ModelVendorCatalogService>();
+
+// 注册 Codex 账号供给相关服务（站点级联删除工具 + 账号工厂）。
+builder.Services.AddScoped<SiteCascadeDeleter>();
+builder.Services.AddScoped<CodexAccountProvisioner>();
+// Codex 额度被动冷却与重置服务。
+builder.Services.AddScoped<ICodexQuotaCooldownService, CodexQuotaCooldownService>();
+// Codex 手动重置 credits 服务（查询剩余次数/过期时间 + 消耗一张 credit 执行真实重置）。
+builder.Services.AddHttpClient<ICodexResetCreditsService, CodexResetCreditsService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+// Codex 功能总开关过滤器（控制器级 gating）。
+builder.Services.AddScoped<CodexFeatureToggleAttribute>();
+// Codex 巡检开关过滤器（仅巡检相关 action 使用，关闭时返回 404）。
+builder.Services.AddScoped<CodexInspectionToggleAttribute>();
+// Codex 巡检后台服务（周期额度巡检 + 缓存策略 + 自动禁用）。单例，供 API 与后台共用状态。
+builder.Services.AddSingleton<CodexInspectionService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CodexInspectionService>());
 
 // 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
@@ -167,6 +282,11 @@ using (var scope = app.Services.CreateScope())
     // CodeFirst 建表 + 补齐历史库缺失列（差量更新，只增不删）+ 持久化 PRAGMA（WAL、synchronous）。
     // 替代原 EF 的 EnsureCreated + 手写 ALTER TABLE 升级脚本：SqlSugar 的 InitTables 会自动补齐缺失列。
     SqlSugarSetup.InitializeDatabase(sqlSugarClient);
+
+    // 预热 SiteUsageTracker：从 DB 读每个 Site 最近一次使用时间，避免重启后历史丢失。
+    var siteUsageTracker = scope.ServiceProvider.GetRequiredService<SiteUsageTracker>();
+    var warmupDbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+    await siteUsageTracker.WarmupAsync(warmupDbContext);
 
     var scheduler = scope.ServiceProvider.GetRequiredService<HangfireDetectionScheduler>();
     try
@@ -252,15 +372,35 @@ app.UseStaticFiles(new StaticFileOptions
 {
     OnPrepareResponse = ctx =>
     {
-        ctx.Context.Response.Headers["Cache-Control"] = "public, max-age=86400";
+        // 已 hash 的资源（assets/）长期缓存；index.html 不缓存，确保发版即时生效。
+        var path = ctx.Context.Request.Path.Value ?? string.Empty;
+        ctx.Context.Response.Headers["Cache-Control"] = path.StartsWith("/assets/", StringComparison.OrdinalIgnoreCase)
+            ? "public, max-age=31536000, immutable"
+            : "no-cache";
     }
 });
 app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();
+
+// Swagger UI：由 swaggerEnabled 控制（配置 Swagger:Enabled，默认 true）。
+// 必须位于 SPA fallback（MapFallbackToFile）之前，否则 /swagger 会被当作前端路由返回 index.html。
+if (swaggerEnabled)
+{
+    app.UseSwagger();
+    app.UseSwaggerUI(options =>
+    {
+        options.SwaggerEndpoint("/swagger/v1/swagger.json", "AI Tool API v1");
+        options.DocExpansion(Swashbuckle.AspNetCore.SwaggerUI.DocExpansion.None); // 默认折叠分组
+        options.DefaultModelsExpandDepth(-1); // 隐藏 schema 模型区，减少冗余
+    });
+}
+
 app.Use(async (context, next) =>
 {
-    if (app.Environment.IsEnvironment("Testing") || !IsAdminRequest(context.Request) || IsLoginPageRequest(context.Request))
+    // SPA 分离后：只有 /api/admin/* 和 /hangfire 需要服务端鉴权拦截。
+    // 其余路径（/sites、/login 等前端路由）交给 SPA fallback + 前端 router 处理。
+    if (app.Environment.IsEnvironment("Testing") || (!IsAdminApiRequest(context.Request) && !IsHangfireRequest(context.Request)))
     {
         await next();
         return;
@@ -272,35 +412,27 @@ app.Use(async (context, next) =>
         return;
     }
 
-    var authService = context.RequestServices.GetRequiredService<AdminAuthService>();
-    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
-    var loginUrl = string.IsNullOrWhiteSpace(returnUrl)
-        ? "/Login"
-        : $"/Login?returnUrl={Uri.EscapeDataString(returnUrl)}";
-
+    // 未认证的后台 API：返回 401 JSON（前端拦截器统一处理）。
     if (IsAdminApiRequest(context.Request))
     {
         context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        await context.Response.WriteAsJsonAsync(new
+        {
+            success = false,
+            message = "未登录或登录已过期，请重新登录",
+            errorCode = "unauthenticated"
+        });
         return;
     }
 
-    if (IsHangfireRequest(context.Request))
-    {
-        context.Response.Redirect(loginUrl);
-        return;
-    }
-
-    if (authService.HasPasswordConfigured())
-    {
-        context.Response.Redirect(loginUrl);
-        return;
-    }
-
-    context.Response.Redirect(loginUrl);
+    // 未认证的 Hangfire 仪表盘：重定向到前端登录页。
+    var returnUrl = context.Request.PathBase + context.Request.Path + context.Request.QueryString;
+    context.Response.Redirect($"/login?returnUrl={Uri.EscapeDataString(returnUrl)}");
 });
 
 // 映射健康检查端点，作为集成测试的验证入口。
-app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
+app.MapGet("/health", () => Results.Ok(new { status = "ok" })).WithTags("Health");
 
 // 启用 Hangfire 仪表盘，仅限本地访问。
 app.UseHangfireDashboard("/hangfire");
@@ -311,41 +443,20 @@ RecurringJob.AddOrUpdate<ILogRetentionService>(
     svc => svc.PruneAsync(CancellationToken.None),
     "0 3 * * *");
 
-// 映射 Razor Pages 路由。
-app.MapRazorPages();
-
-// 映射 API 控制器路由，用于代理转发端点。
+// 映射 API 控制器路由，用于代理转发端点 + 后台管理 API。
 app.MapControllers();
+
+// SPA fallback：非 /api、/v1、/health、/hangfire 的请求全部返回 index.html，
+// 交给前端 Vue Router 处理（history 模式）。MapFallbackToFile 会自动排除已映射的端点。
+if (!app.Environment.IsEnvironment("Testing"))
+{
+    app.MapFallbackToFile("index.html");
+}
 
 app.Run();
 
 /// <summary>
-/// 判断是否为后台请求。
-/// </summary>
-static bool IsAdminRequest(HttpRequest request)
-{
-    return IsAdminPageRequest(request) || IsAdminApiRequest(request) || IsHangfireRequest(request);
-}
-
-/// <summary>
-/// 判断是否为后台页面请求。
-/// </summary>
-static bool IsAdminPageRequest(HttpRequest request)
-{
-    var path = request.Path;
-    return path == "/" || path.StartsWithSegments("/Admin", StringComparison.OrdinalIgnoreCase);
-}
-
-/// <summary>
-/// 判断是否为登录页请求。
-/// </summary>
-static bool IsLoginPageRequest(HttpRequest request)
-{
-    return request.Path == "/Login";
-}
-
-/// <summary>
-/// 判断是否为后台接口请求。
+/// 判断是否为后台接口请求（/api/admin 前缀）。
 /// </summary>
 static bool IsAdminApiRequest(HttpRequest request)
 {

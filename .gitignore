@@ -384,3 +384,15 @@ FodyWeavers.xsd
 /protocol-sync-report.md
 /docs/protocol-sync-report.md
 /子页面文档
+/nul
+/.zcode/plans
+
+# 前端工程
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/
+
+# 前端构建产物（由 npm run build 生成，不入库）
+/src/AITool.Web/wwwroot/assets/
+/src/AITool.Web/wwwroot/index.html
+src/AITool.Admin/wwwroot/

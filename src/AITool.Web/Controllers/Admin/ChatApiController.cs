@@ -2,14 +2,13 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Web.Services;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Web.Controllers.Admin;
@@ -328,14 +327,6 @@ public sealed class ChatApiController : ControllerBase
     /// 模型并发限制器。
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
-    /// <summary>
-    /// 结构化对话内容提取服务。
-    /// </summary>
-    private readonly ConversationExtractionService _conversationExtractionService;
-    /// <summary>
-    /// 结构化对话写入服务。
-    /// </summary>
-    private readonly IConversationLogService _conversationLogService;
 
     /// <summary>
     /// 创建调试对话控制器。
@@ -347,9 +338,7 @@ public sealed class ChatApiController : ControllerBase
         IUsageLogService usageLogService,
         ProxyRequestMetadataCache metadataCache,
         IHttpClientFactory httpClientFactory,
-        ModelConcurrencyLimiter concurrencyLimiter,
-        ConversationExtractionService conversationExtractionService,
-        IConversationLogService conversationLogService)
+        ModelConcurrencyLimiter concurrencyLimiter)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
@@ -358,8 +347,6 @@ public sealed class ChatApiController : ControllerBase
         _metadataCache = metadataCache;
         _httpClientFactory = httpClientFactory;
         _concurrencyLimiter = concurrencyLimiter;
-        _conversationExtractionService = conversationExtractionService;
-        _conversationLogService = conversationLogService;
     }
 
     /// <summary>
@@ -444,10 +431,12 @@ public sealed class ChatApiController : ControllerBase
         {
             var requestId = Guid.NewGuid();
             var attemptIndex = 0;
+            var routeIndex = -1;
             var attempts = new List<ChatAttemptResult>();
 
             foreach (var route in allRoutes)
             {
+                routeIndex++;
                 if (_circuitStore.IsBlocked(route.RouteId))
                     continue;
 
@@ -467,6 +456,11 @@ public sealed class ChatApiController : ControllerBase
                 }
 
                 var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
+                // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数。
+                if (string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+                {
+                    requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(route.BaseUrl));
+                }
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = route.BaseUrl,
@@ -479,12 +473,15 @@ public sealed class ChatApiController : ControllerBase
                     EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                     RetryCount = runtimeSettings.ProxyRetryCount,
+                    ForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(route.ExtraHeaders),
                     TargetPath = string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                         ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
                         : null
                 }, cancellationToken);
 
                 attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success, requestBody, forwardResult.ResponseBody ?? ""));
+                var canFallback = !forwardResult.Success
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.RouteId));
 
                 await _usageLogService.LogAsync(new UsageLogEntry
                 {
@@ -498,9 +495,10 @@ public sealed class ChatApiController : ControllerBase
                     Source = "chat",
                     RetryCount = forwardResult.Success ? attemptIndex - 1 : attemptIndex,
                     AttemptIndex = attemptIndex,
-                    IsFinalResult = forwardResult.Success,
-                    FallbackTriggered = !forwardResult.Success,
+                    IsFinalResult = forwardResult.Success || !canFallback,
+                    FallbackTriggered = canFallback,
                     ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+                    HttpStatusCode = forwardResult.StatusCode > 0 ? forwardResult.StatusCode : null,
                     InputTokens = forwardResult.InputTokens,
                     CachedTokens = forwardResult.CachedTokens,
                     OutputTokens = forwardResult.OutputTokens,
@@ -517,7 +515,6 @@ public sealed class ChatApiController : ControllerBase
                     sw.Stop();
                     _circuitStore.Succeed(route.RouteId);
                     var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, route.ProtocolType);
-                    await SafeLogChatConversationAsync(requestId, model.ModelName, route.ProtocolType, request.Message, payload.Content, forwardResult.InputTokens, forwardResult.CachedTokens, forwardResult.OutputTokens, false, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, forwardResult.TotalDurationMs)), cancellationToken);
                     return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
                 }
 
@@ -546,10 +543,13 @@ public sealed class ChatApiController : ControllerBase
     [HttpPost("send-stream")]
     public async Task SendStream([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
     {
-        Response.StatusCode = 200;
-        Response.ContentType = "text/event-stream";
-        Response.Headers.CacheControl = "no-cache";
+        Response.StatusCode = StatusCodes.Status200OK;
+        Response.ContentType = "text/event-stream; charset=utf-8";
+        Response.Headers.CacheControl = "no-cache, no-transform";
         Response.Headers["X-Accel-Buffering"] = "no";
+        HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+        await Response.StartAsync(cancellationToken);
+        await Response.Body.FlushAsync(cancellationToken);
 
         if (string.IsNullOrWhiteSpace(request.Message))
         {
@@ -597,10 +597,12 @@ public sealed class ChatApiController : ControllerBase
 
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
+        var routeIndex = -1;
         var attempts = new List<ChatAttemptResult>();
 
         foreach (var route in allRoutes)
         {
+            routeIndex++;
             if (_circuitStore.IsBlocked(route.RouteId))
                 continue;
 
@@ -631,6 +633,7 @@ public sealed class ChatApiController : ControllerBase
                 async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
                 async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
                 runtimeSettings.ProxyRequestTimeoutSeconds,
+                route.ExtraHeaders,
                 cancellationToken);
 
             var attemptResult = BuildAttemptResult(
@@ -654,6 +657,9 @@ public sealed class ChatApiController : ControllerBase
                 streamResult.RequestBody,
                 streamResult.ResponseBody);
             attempts.Add(attemptResult);
+            var canFallback = !streamResult.Success
+                && !streamResult.HadAnyContent
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.RouteId));
 
             await _usageLogService.LogAsync(new UsageLogEntry
             {
@@ -666,9 +672,10 @@ public sealed class ChatApiController : ControllerBase
                 Source = "chat",
                 RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
-                IsFinalResult = streamResult.Success,
-                FallbackTriggered = !streamResult.Success,
+                IsFinalResult = streamResult.Success || !canFallback,
+                FallbackTriggered = canFallback,
                 ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+                HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
                 InputTokens = streamResult.InputTokens,
                 CachedTokens = streamResult.CachedTokens,
                 OutputTokens = streamResult.OutputTokens,
@@ -699,7 +706,6 @@ public sealed class ChatApiController : ControllerBase
                     TotalDurationMs = streamResult.TotalDurationMs,
                     Attempts = attempts
                 };
-                await SafeLogChatConversationAsync(requestId, model.ModelName, route.ProtocolType, request.Message, streamResult.Content, streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, true, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), cancellationToken);
                 await WriteSseEventAsync("meta", finalResult, cancellationToken);
                 await WriteSseEventAsync("done", new { requestId }, cancellationToken);
                 _circuitStore.Succeed(route.RouteId);
@@ -777,8 +783,14 @@ public sealed class ChatApiController : ControllerBase
             SiteName = selectedTarget.SiteName,
             ProtocolType = selectedTarget.ProtocolType,
             BaseUrl = selectedTarget.BaseUrl,
+            // EndpointPathMode 必须复制：Codex 隐藏站点为 versioned-base，
+            // 缺失会回落到 standard-root，导致 URL 变成 /codex/v1/responses（多出 /v1/，被 Cloudflare 拦截）。
+            EndpointPathMode = selectedTarget.EndpointPathMode,
             ApiKey = selectedTarget.ApiKey,
-            SiteModelName = selectedTarget.SiteModelName
+            SiteModelName = selectedTarget.SiteModelName,
+            // ExtraHeaders 必须复制：Codex 的 Originator / Chatgpt-Account-Id / User-Agent，
+            // 缺失会让上游请求不带任何 Codex 专属头，触发 Cloudflare 拦截页。
+            ExtraHeaders = selectedTarget.ExtraHeaders
         };
     }
 
@@ -820,6 +832,12 @@ public sealed class ChatApiController : ControllerBase
         }
 
         var requestBody = BuildChatRequestBody(mapping.ProtocolType, mapping.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
+        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数（max_output_tokens / metadata 等），
+        // 否则会返回 {"detail":"Unsupported parameter: xxx"}（400）。
+        if (string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(mapping.BaseUrl));
+        }
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = mapping.BaseUrl,
@@ -832,6 +850,7 @@ public sealed class ChatApiController : ControllerBase
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount,
+            ForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(mapping.ExtraHeaders),
             TargetPath = string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                 ? SiteEndpointPathResolver.ResolvePath(mapping.EndpointPathMode, "responses")
                 : null
@@ -854,6 +873,7 @@ public sealed class ChatApiController : ControllerBase
             IsFinalResult = true,
             FallbackTriggered = false,
             ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+            HttpStatusCode = forwardResult.StatusCode > 0 ? forwardResult.StatusCode : null,
             InputTokens = forwardResult.InputTokens,
             CachedTokens = forwardResult.CachedTokens,
             OutputTokens = forwardResult.OutputTokens,
@@ -885,7 +905,6 @@ public sealed class ChatApiController : ControllerBase
         }
 
         var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, mapping.ProtocolType);
-        await SafeLogChatConversationAsync(requestId, model.ModelName, mapping.ProtocolType, request.Message, payload.Content, forwardResult.InputTokens, forwardResult.CachedTokens, forwardResult.OutputTokens, false, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, forwardResult.TotalDurationMs)), cancellationToken);
         return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
     }
 
@@ -930,6 +949,7 @@ public sealed class ChatApiController : ControllerBase
             async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
             async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
             runtimeSettings.ProxyRequestTimeoutSeconds,
+            mapping.ExtraHeaders,
             cancellationToken);
 
         var attemptResult = BuildAttemptResult(
@@ -969,6 +989,7 @@ public sealed class ChatApiController : ControllerBase
             IsFinalResult = true,
             FallbackTriggered = false,
             ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+            HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
             InputTokens = streamResult.InputTokens,
             CachedTokens = streamResult.CachedTokens,
             OutputTokens = streamResult.OutputTokens,
@@ -986,7 +1007,6 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        await SafeLogChatConversationAsync(requestId, model.ModelName, mapping.ProtocolType, request.Message, streamResult.Content, streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, true, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), cancellationToken);
 
         var finalResult = new ChatSendResult
         {
@@ -1025,10 +1045,19 @@ public sealed class ChatApiController : ControllerBase
         Func<string, Task> onContentChunk,
         Func<string, Task> onReasoningChunk,
         int requestTimeoutSeconds,
+        Dictionary<string, string>? extraHeaders,
         CancellationToken cancellationToken)
     {
         // 提前构建请求体，供调用方记录到尝试详情
+        // BuildChatRequestBody 内部已按协议类型完成转换（Responses 会调用 ConvertChatRequestToResponses），
+        // 这里不能再二次转换——否则传入的已是 Responses 体（无 messages 字段），二次转换会得到空 input 数组，
+        // 导致上游返回 "One of input or previous_response_id ... must be provided."。
         var requestBody = BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort);
+        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数（max_output_tokens / metadata 等）。
+        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(baseUrl));
+        }
 
         var client = _httpClientFactory.CreateClient();
         // 这里同样交给运行时设置控制超时，避免落回 HttpClient 默认 100 秒。
@@ -1057,6 +1086,15 @@ public sealed class ChatApiController : ControllerBase
             else
             {
                 httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            }
+
+            // 注入 Site.ExtraHeadersJson 中的自定义请求头（Codex 的 Originator / Chatgpt-Account-Id / User-Agent 等）
+            if (extraHeaders != null && extraHeaders.Count > 0)
+            {
+                foreach (var header in extraHeaders)
+                {
+                    httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
             }
 
             using var response = await client.SendAsync(httpRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
@@ -1142,7 +1180,10 @@ public sealed class ChatApiController : ControllerBase
             var responseBodySummary = $"[SSE streaming] content={contentBuilder.Length} chars, reasoning={reasoningBuilder.Length} chars, input={state.InputTokens}, output={state.OutputTokens}";
             return new ChatStreamForwardResult
             {
-                Success = state.HadAnyContent || contentBuilder.Length > 0 || reasoningBuilder.Length > 0,
+                // 收到 [DONE]（done=true）或收到过内容都算成功
+                // Responses 协议的 SSE 格式与 Chat 不同，内容可能无法被 Chat 解析器提取，
+                // 但只要流正常结束（收到 [DONE]），就认为成功
+                Success = done || state.HadAnyContent || contentBuilder.Length > 0 || reasoningBuilder.Length > 0,
                 HadAnyContent = state.HadAnyContent,
                 Content = contentBuilder.ToString(),
                 ReasoningContent = reasoningBuilder.ToString(),
@@ -1739,50 +1780,6 @@ public sealed class ChatApiController : ControllerBase
         if (!string.IsNullOrWhiteSpace(value))
         {
             values.Add(value.Trim());
-        }
-    }
-
-    /// <summary>
-    /// 将对话测试的请求与响应写入结构化对话记录。
-    /// 对话测试没有会话概念，所有记录归入同一个分组，便于在对话记录页面集中查看。
-    /// 写入失败时静默吞掉异常，不阻断对话测试的正常返回。
-    /// </summary>
-    private async Task SafeLogChatConversationAsync(Guid requestId, string requestModel, string protocolType, string userInputText, string assistantOutputMarkdown, int inputTokens, int cachedTokens, int outputTokens, bool isStreaming, DateTimeOffset requestedAt, CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(userInputText) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
-            {
-                return;
-            }
-
-            // 对话测试没有多轮会话的概念，全部归到同一个 groupKey 下。
-            await _conversationLogService.LogAsync(new ConversationTurnEntry
-            {
-                RequestId = requestId,
-                CreatedAt = DateTimeOffset.UtcNow,
-                UserCreatedAt = requestedAt,
-                SourceTool = "chat",
-                SessionId = string.Empty,
-                ConversationGroupKey = "chat",
-                AccessKeyId = Guid.Empty,
-                RequestModel = requestModel,
-                ProtocolType = protocolType,
-                RequestPath = "/api/admin/chat",
-                Source = "chat",
-                UserInputText = userInputText,
-                AssistantOutputMarkdown = assistantOutputMarkdown,
-                InputTokens = inputTokens,
-                CachedTokens = cachedTokens,
-                OutputTokens = outputTokens,
-                IsStreaming = isStreaming,
-                Status = "success",
-                MetadataJson = "{}"
-            }, cancellationToken);
-        }
-        catch
-        {
-            // 写入失败不影响对话测试主流程
         }
     }
 }

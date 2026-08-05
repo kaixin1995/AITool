@@ -21,46 +21,7 @@ namespace AITool.IntegrationTests.Auth;
 public sealed class AdminAuthTests
 {
     /// <summary>
-    /// 验证未登录访问首页时会跳转到登录页。
-    /// </summary>
-    [Fact]
-    public async Task Get_root_redirects_to_login_when_not_authenticated()
-    {
-        await using var factory = new AdminAuthWebApplicationFactory(passwordHash: ComputeMd5("admin123"));
-        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            AllowAutoRedirect = false
-        });
-
-        var response = await client.GetAsync("/");
-
-        response.StatusCode.Should().Be(HttpStatusCode.Redirect);
-        response.Headers.Location.Should().NotBeNull();
-        response.Headers.Location!.OriginalString.Should().StartWith("/Login?returnUrl=");
-    }
-
-    /// <summary>
-    /// 验证未配置后台密码时，登录页会提示先完成初始化设置。
-    /// </summary>
-    [Fact]
-    public async Task Get_login_shows_setup_message_when_password_not_configured()
-    {
-        await using var factory = new AdminAuthWebApplicationFactory(passwordHash: string.Empty);
-        using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            AllowAutoRedirect = false
-        });
-
-        var response = await client.GetAsync("/Login");
-        var html = await response.Content.ReadAsStringAsync();
-
-        response.StatusCode.Should().Be(HttpStatusCode.OK);
-        html.Should().Contain("&#x9996;&#x6B21;&#x8BBF;&#x95EE;&#xFF0C;&#x8BF7;&#x5148;&#x8BBE;&#x7F6E;&#x540E;&#x53F0;&#x767B;&#x5F55;&#x5BC6;&#x7801;&#x3002;");
-        html.Should().Contain("保存并登录");
-    }
-
-    /// <summary>
-    /// 验证未登录访问后台接口时会返回未授权。
+    /// 验证未登录访问后台接口时会返回未授权（SPA 分离后不再重定向，直接 401 JSON）。
     /// </summary>
     [Fact]
     public async Task Get_admin_api_returns_unauthorized_when_not_authenticated()
@@ -164,15 +125,15 @@ internal sealed class AdminAuthWebApplicationFactory : WebApplicationFactory<Pro
     protected override void ConfigureClient(HttpClient client)
     {
         base.ConfigureClient(client);
-        SeedAsync().GetAwaiter().GetResult();
+        Seed();
     }
 
     /// <summary>
     /// 准备当前测试场景所需的数据。
     /// </summary>
-    private async Task SeedAsync()
+    private void Seed()
     {
-        await using var scope = Services.CreateAsyncScope();
+        using var scope = Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         SqlSugarSetup.InitializeDatabase(db.Client);
 
@@ -240,7 +201,7 @@ internal sealed class AdminAuthWebApplicationFactory : WebApplicationFactory<Pro
             UsageLogAutoCleanupEnabled = true
         });
 
-        await db.SaveChangesAsync();
+        // SqlSugar 的 Add 是立即执行的扩展方法（同步 ExecuteCommand），无需 SaveChanges。
     }
 }
 

@@ -79,11 +79,6 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public bool DeveloperFeaturesEnabled { get; set; }
 
     /// <summary>
-    /// 控制对话记录页面及记录写入功能是否启用。
-    /// </summary>
-    public bool ConversationLogEnabled { get; set; }
-
-    /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
     /// </summary>
     public int ConcurrencyMode { get; set; }
@@ -92,6 +87,32 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     /// 并发排队等待的最大时间（秒），仅在 WaitForSlot 模式下生效。
     /// </summary>
     public int ConcurrencyQueueTimeoutSeconds { get; set; }
+
+    /// <summary>
+    /// Codex 功能总开关（含 OAuth 账号、凭证导入、巡检）。关闭后隐藏 Codex 页面并禁用所有 Codex 托管站点。
+    /// </summary>
+    public bool CodexFeaturesEnabled { get; set; }
+
+    /// <summary>
+    /// Codex 巡检自动执行开关。
+    /// </summary>
+    public bool CodexInspectionEnabled { get; set; }
+
+    /// <summary>
+    /// Codex 巡检周期（分钟），下限 5。
+    /// </summary>
+    public int CodexInspectionIntervalMinutes { get; set; }
+
+    /// <summary>
+    /// Codex 额度缓存最大小时数，超过则强制真实刷新。
+    /// </summary>
+    public int CodexQuotaMaxCacheHours { get; set; }
+
+    /// <summary>
+    /// Codex 自动禁用阈值（百分比，1-100）。
+    /// 当任一关键额度窗口的已使用百分比达到该阈值时，账号自动禁用。
+    /// </summary>
+    public int CodexAutoDisableThresholdPercent { get; set; }
 }
 
 /// <summary>

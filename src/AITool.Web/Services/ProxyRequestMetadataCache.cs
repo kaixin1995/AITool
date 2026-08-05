@@ -2,9 +2,12 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Common;
+using AITool.Domain.Codex;
+using AITool.Domain.Models;
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Controllers.Admin;
-using AITool.Web.Pages.Admin.ClientSimulator;
+using AITool.Web.Contracts;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace AITool.Web.Services;
@@ -42,6 +45,10 @@ public sealed class ProxyRequestMetadataCache
     /// 模型并发限制缓存键。
     /// </summary>
     private const string ModelConcurrencyLimitsCacheKey = "model-concurrency-limits";
+    /// <summary>
+    /// Codex 账号列表缓存键（账号少且低频变更，巡检高频读，适合缓存）。
+    /// </summary>
+    private const string CodexAccountsCacheKey = "codex-accounts";
     /// <summary>
     /// 启用站点名称缓存键。
     /// </summary>
@@ -108,6 +115,21 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 创建独立的 SqlSugarClient（有自己的连接），用完即释放。
+    /// 所有缓存未命中时的查库都走这个方法，避免与单例 SqlSugarScope 并发竞态。
+    /// </summary>
+    private SqlSugar.ISqlSugarClient CreateIndependentClient()
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var client = dbContext.Client.CopyNew();
+        // 连接级 PRAGMA 不继承单例连接，需手动设置
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        client.Ado.ExecuteCommand("PRAGMA cache_size=-65536;");
+        return client;
+    }
+
+    /// <summary>
     /// 校验访问密钥。
     /// </summary>
     public async Task<CachedProxyAccessKey?> ValidateAccessKeyAsync(string accessToken, CancellationToken cancellationToken)
@@ -169,11 +191,11 @@ public sealed class ProxyRequestMetadataCache
                 {
                     entry.AbsoluteExpirationRelativeToNow = CacheDuration;
 
-                    using var scope = _scopeFactory.CreateScope();
-                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                    var settings = await dbContext.SystemRuntimeSettings
-                        
-                        .FirstAsync(x => x.Id == 1, cancellationToken);
+                    // 用独立连接查库，避免与单例 SqlSugarScope 并发竞态
+                    using var independentClient = CreateIndependentClient();
+                    var settings = await independentClient.Queryable<AITool.Domain.Operations.SystemRuntimeSettings>()
+                        .Where(x => x.Id == 1)
+                        .FirstAsync(cancellationToken);
 
                     return settings is null
                         ? new CachedProxyRuntimeSettings()
@@ -188,9 +210,13 @@ public sealed class ProxyRequestMetadataCache
                             CircuitBreakerRecoveryMinutes = settings.CircuitBreakerRecoveryMinutes,
                             UsageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
                             DeveloperFeaturesEnabled = settings.DeveloperFeaturesEnabled,
-                            ConversationLogEnabled = settings.ConversationLogEnabled,
                             ConcurrencyMode = settings.ConcurrencyMode,
-                            ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds
+                            ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
+                            CodexFeaturesEnabled = settings.CodexFeaturesEnabled,
+                            CodexInspectionEnabled = settings.CodexInspectionEnabled,
+                            CodexInspectionIntervalMinutes = settings.CodexInspectionIntervalMinutes,
+                            CodexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours,
+                            CodexAutoDisableThresholdPercent = settings.CodexAutoDisableThresholdPercent
                         };
                 })
             ?? new CachedProxyRuntimeSettings();
@@ -321,7 +347,8 @@ public sealed class ProxyRequestMetadataCache
                                 BaseUrl = site.BaseUrl,
                                 EndpointPathMode = site.EndpointPathMode,
                                 ApiKey = site.ApiKey,
-                                SiteModelName = mapping.RemoteModelName
+                                SiteModelName = mapping.RemoteModelName,
+                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson)
                             })
                         .ToList();
                 })
@@ -768,6 +795,44 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 清除 Codex 账号列表缓存。账号发生增删改（额度更新/启停/token刷新/冷却/管理后台操作）后调用。
+    /// </summary>
+    public void InvalidateCodexAccounts()
+    {
+        _memoryCache.Remove(CodexAccountsCacheKey);
+    }
+
+    /// <summary>
+    /// 兼容规则集发生增删改后调用。规则随路由目标一起缓存，故复用路由缓存失效。
+    /// </summary>
+    public void InvalidateCompatibilityProfiles()
+    {
+        InvalidateRouteTargets();
+    }
+
+    /// <summary>
+    /// 获取待巡检的 Codex 账号列表（未被功能总开关禁用，按最近检查时间升序）。
+    /// 走缓存，账号变更后需调 <see cref="InvalidateCodexAccounts"/> 失效。
+    /// </summary>
+    public async Task<List<CodexAccount>> GetCodexAccountsAsync(CancellationToken cancellationToken)
+    {
+        return await _memoryCache.GetOrCreateAsync(
+                CodexAccountsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    return await dbContext.CodexAccounts
+                        .Where(a => !a.DisabledByFeatureToggle)
+                        .OrderBy(a => a.LastQuotaCheckedAt)
+                        .ToListAsync(cancellationToken);
+                })
+            ?? [];
+    }
+
+    /// <summary>
     /// 清除运行时设置缓存。
     /// </summary>
     public void InvalidateRuntimeSettings()
@@ -1033,6 +1098,13 @@ public sealed class ProxyRequestMetadataCache
                     var routes = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
                     var sites = await dbContext.Sites.ToListAsync(cancellationToken);
                     var models = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    // 一次性加载所有启用的兼容规则集，构建 Id→规则列表字典，供路由目标投影时查（避免 N+1）。
+                    var profiles = await dbContext.CompatibilityProfiles
+                        .Where(p => p.IsEnabled)
+                        .ToListAsync(cancellationToken);
+                    var profileRules = profiles.ToDictionary(
+                        p => p.Id,
+                        p => ParseCompatibilityRules(p.RulesJson));
 
                     return (
                             from route in routes
@@ -1054,10 +1126,12 @@ public sealed class ProxyRequestMetadataCache
                                 SiteModelName = route.SiteModelName,
                                 BaseUrl = site.BaseUrl,
                                 ApiKey = site.ApiKey,
+                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
                                 ModelPriority = route.ModelPriority,
                                 InstancePriority = route.InstancePriority,
                                 Priority = route.Priority,
                                 OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
+                                CompatibilityRules = GetRulesForModel(model, profileRules),
                                 AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
                             })
@@ -1130,7 +1204,8 @@ public sealed class ProxyRequestMetadataCache
                                 site.BaseUrl,
                                 site.EndpointPathMode,
                                 site.ApiKey,
-                                SiteModelName = mapping.RemoteModelName
+                                SiteModelName = mapping.RemoteModelName,
+                                site.ExtraHeadersJson
                             })
                         .ToList();
 
@@ -1152,7 +1227,8 @@ public sealed class ProxyRequestMetadataCache
                                 BaseUrl = first.BaseUrl,
                                 EndpointPathMode = first.EndpointPathMode,
                                 ApiKey = first.ApiKey,
-                                SiteModelName = first.SiteModelName
+                                SiteModelName = first.SiteModelName,
+                                ExtraHeaders = TryParseExtraHeaders(first.ExtraHeadersJson)
                             };
                         })
                         .ToList();
@@ -1197,6 +1273,33 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 解析规则集的 RulesJson 为规则列表。解析失败返回空列表，不影响转发。
+    /// </summary>
+    private static IReadOnlyList<CompatibilityRule> ParseCompatibilityRules(string? rulesJson)
+    {
+        if (string.IsNullOrWhiteSpace(rulesJson)) return Array.Empty<CompatibilityRule>();
+        try
+        {
+            var rules = JsonSerializer.Deserialize<List<CompatibilityRule>>(rulesJson);
+            return rules is null || rules.Count == 0 ? Array.Empty<CompatibilityRule>() : rules;
+        }
+        catch
+        {
+            return Array.Empty<CompatibilityRule>();
+        }
+    }
+
+    /// <summary>
+    /// 取模型关联的兼容规则集（按 CompatibilityProfileId 查字典）。模型或 profileId 为空、或字典里没有则返回空。
+    /// </summary>
+    private static IReadOnlyList<CompatibilityRule> GetRulesForModel(ModelLibraryItem? model, Dictionary<Guid, IReadOnlyList<CompatibilityRule>> profileRules)
+    {
+        var profileId = model?.CompatibilityProfileId;
+        if (profileId is null || profileId == Guid.Empty) return Array.Empty<CompatibilityRule>();
+        return profileRules.TryGetValue(profileId.Value, out var rules) ? rules : Array.Empty<CompatibilityRule>();
+    }
+
+    /// <summary>
     /// 根据站点能力推导协议类型。
     /// </summary>
     private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
@@ -1207,6 +1310,30 @@ public sealed class ProxyRequestMetadataCache
         }
 
         return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
+    }
+
+    /// <summary>
+    /// 反序列化 Site.ExtraHeadersJson 为大小写不敏感的请求头字典。
+    /// 空或非法 JSON 返回空字典（容错：坏数据不阻断转发，仅该 Site 不带额外头）。
+    /// 仅在缓存构建期调用（5s 一次），不在每请求路径。
+    /// </summary>
+    private static Dictionary<string, string> TryParseExtraHeaders(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+        try
+        {
+            var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonSerializerPresets.CaseInsensitive);
+            return dict != null
+                ? new Dictionary<string, string>(dict, StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
     }
 
     /// <summary>
@@ -1383,10 +1510,6 @@ public sealed class CachedProxyRuntimeSettings
     /// </summary>
     public bool DeveloperFeaturesEnabled { get; set; }
     /// <summary>
-    /// 是否启用对话记录功能。
-    /// </summary>
-    public bool ConversationLogEnabled { get; set; } = true;
-    /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
     /// </summary>
     public int ConcurrencyMode { get; set; }
@@ -1394,6 +1517,26 @@ public sealed class CachedProxyRuntimeSettings
     /// 并发排队等待的最大时间（秒）。
     /// </summary>
     public int ConcurrencyQueueTimeoutSeconds { get; set; } = 120;
+    /// <summary>
+    /// Codex 功能总开关。
+    /// </summary>
+    public bool CodexFeaturesEnabled { get; set; }
+    /// <summary>
+    /// Codex 巡检自动执行开关。
+    /// </summary>
+    public bool CodexInspectionEnabled { get; set; }
+    /// <summary>
+    /// Codex 巡检周期（分钟）。
+    /// </summary>
+    public int CodexInspectionIntervalMinutes { get; set; } = 30;
+    /// <summary>
+    /// Codex 额度缓存最大小时数。
+    /// </summary>
+    public int CodexQuotaMaxCacheHours { get; set; } = 6;
+    /// <summary>
+    /// Codex 自动禁用阈值（百分比，1-100）。
+    /// </summary>
+    public int CodexAutoDisableThresholdPercent { get; set; } = 95;
 }
 
 /// <summary>
@@ -1465,6 +1608,11 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public string ApiKey { get; set; } = string.Empty;
     /// <summary>
+    /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头（大小写不敏感）。
+    /// 空字典表示无额外头。Codex 隐藏 Site 用它携带 Originator / Chatgpt-Account-Id / User-Agent。
+    /// </summary>
+    public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
     /// 模型优先级。
     /// </summary>
     public int ModelPriority { get; set; }
@@ -1480,6 +1628,11 @@ public sealed class CachedProxyRouteTarget
     /// 强制覆盖的思考等级。空=不干预，非空=强制覆盖转发给上游的思考等级。
     /// </summary>
     public string OverrideReasoningEffort { get; set; } = string.Empty;
+    /// <summary>
+    /// 该模型关联的兼容规则集（已解析的规则列表）。转发时按 isPassthrough 筛选 scope 后应用。
+    /// 为空表示不应用任何规则。
+    /// </summary>
+    public IReadOnlyList<CompatibilityRule> CompatibilityRules { get; set; } = Array.Empty<CompatibilityRule>();
     /// <summary>
     /// 时间可用性模式，空值兼容为全天可用。
     /// </summary>
@@ -1632,6 +1785,10 @@ public sealed class CachedChatTarget
     /// 站点模型名称。
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头。
+    /// </summary>
+    public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -1694,4 +1851,9 @@ public sealed class CachedFallbackTarget
     /// 站点模型名称。
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头。
+    /// </summary>
+    public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 }
+

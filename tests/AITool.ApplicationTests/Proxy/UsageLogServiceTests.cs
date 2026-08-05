@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Threading.Channels;
 using AITool.Application.UsageLogs;
 using AITool.ApplicationTests;
 using AITool.Domain.Proxy;
@@ -58,7 +60,8 @@ public sealed class UsageLogServiceTests : IDisposable
         var batchWriter = new ProxyUsageLogBatchWriter(
             _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
             NullLogger<ProxyUsageLogBatchWriter>.Instance,
-            new TestHostEnvironment());
+            new TestHostEnvironment(),
+            new SiteUsageTracker());
         _service = new UsageLogService(batchWriter);
 
         _disposeDatabase = () =>
@@ -100,6 +103,8 @@ public sealed class UsageLogServiceTests : IDisposable
         log.Status.Should().Be("success");
         log.CachedTokens.Should().Be(25);
         log.TotalTokens.Should().Be(175);
+        log.HttpStatusCode.Should().BeNull();
+        log.ErrorCategory.Should().BeNull();
         log.IsStreaming.Should().BeTrue();
         log.FirstTokenLatencyMs.Should().Be(5400);
         log.TotalDurationMs.Should().Be(8000);
@@ -129,6 +134,8 @@ public sealed class UsageLogServiceTests : IDisposable
             FallbackTriggered = true,
             RequestId = requestId,
             ErrorMessage = "upstream timeout",
+            HttpStatusCode = 504,
+            ErrorCategory = "upstream-error",
             InputTokens = 0,
             CachedTokens = 8704,
             OutputTokens = 0,
@@ -148,6 +155,29 @@ public sealed class UsageLogServiceTests : IDisposable
         log.IsFinalResult.Should().BeFalse();
         log.FallbackTriggered.Should().BeTrue();
         log.ErrorMessage.Should().Be("upstream timeout");
+        log.HttpStatusCode.Should().Be(504);
+        log.ErrorCategory.Should().Be("upstream-error");
+    }
+
+    /// <summary>
+    /// 未显式提供错误分类时，批量写入器应根据日志字段补齐分类。
+    /// </summary>
+    [Fact]
+    public async Task LogAsync_classifies_failure_when_category_is_missing()
+    {
+        await _service.LogAsync(new UsageLogEntry
+        {
+            AccessKeyId = Guid.NewGuid(),
+            ProtocolType = "OpenAI",
+            RequestModel = "gpt-5",
+            TargetSiteId = Guid.NewGuid(),
+            Status = "fail",
+            HttpStatusCode = 401,
+            ErrorMessage = "invalid credentials"
+        });
+
+        var log = await _dbContext.ProxyUsageLogs.SingleAsync();
+        log.ErrorCategory.Should().Be("authentication");
     }
 
     /// <summary>
@@ -174,6 +204,41 @@ public sealed class UsageLogServiceTests : IDisposable
         // 取回全部记录，确认累计生成了三条独立日志。
         var logs = await _dbContext.ProxyUsageLogs.ToListAsync();
         logs.Should().HaveCount(3);
+    }
+
+    /// <summary>
+    /// 验证后台日志队列满时会等待消费者腾出空间，而不是直接丢弃日志。
+    /// </summary>
+    [Fact]
+    public async Task EnqueueAsync_waits_for_space_instead_of_dropping_entry()
+    {
+        var writer = new ProxyUsageLogBatchWriter(
+            _serviceProvider.GetRequiredService<IServiceScopeFactory>(),
+            NullLogger<ProxyUsageLogBatchWriter>.Instance,
+            new TestHostEnvironment { EnvironmentName = "Production" },
+            new SiteUsageTracker());
+        var channelField = typeof(ProxyUsageLogBatchWriter).GetField(
+            "_channel",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        channelField.Should().NotBeNull();
+        var channel = (Channel<UsageLogEntry>)channelField!.GetValue(writer)!;
+        var entry = new UsageLogEntry
+        {
+            RequestId = Guid.NewGuid(),
+            TargetSiteId = Guid.NewGuid(),
+            Status = "success"
+        };
+
+        for (var index = 0; index < 4096; index++)
+        {
+            (await writer.EnqueueAsync(entry, CancellationToken.None)).Should().BeTrue();
+        }
+
+        var pendingWrite = writer.EnqueueAsync(entry, CancellationToken.None).AsTask();
+        pendingWrite.IsCompleted.Should().BeFalse();
+
+        channel!.Reader.TryRead(out _).Should().BeTrue();
+        (await pendingWrite.WaitAsync(TimeSpan.FromSeconds(1))).Should().BeTrue();
     }
 
     /// <summary>

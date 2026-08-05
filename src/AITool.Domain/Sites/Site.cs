@@ -66,4 +66,18 @@ public sealed class Site
     /// 站点配置创建时间，用于记录该接入项何时被加入系统。
     /// </summary>
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 托管来源标识。null 表示用户自建站点（默认）；"Codex" 表示由 Codex 账号自动创建的隐藏 Site。
+    /// 站点管理页面据此过滤掉托管 Site，避免污染用户视图。
+    /// </summary>
+    [SugarColumn(Length = 50, IsNullable = true)]
+    public string? ManagedSource { get; set; }
+
+    /// <summary>
+    /// 自定义转发请求头的 JSON 字典。Codex 隐藏 Site 用它存储 Originator / Chatgpt-Account-Id / User-Agent 等特殊头。
+    /// 该字段为通用设计，未来其它需要特殊请求头的站点也可复用。缓存层会在构建路由目标时反序列化。
+    /// </summary>
+    [SugarColumn(Length = 2000, IsNullable = true)]
+    public string? ExtraHeadersJson { get; set; }
 }
