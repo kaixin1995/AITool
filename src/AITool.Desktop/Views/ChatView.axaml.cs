@@ -1,6 +1,8 @@
 using System.Collections.Specialized;
 using System.ComponentModel;
 using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Interactivity;
 using Avalonia.Threading;
 using AITool.Desktop.Models;
 using AITool.Desktop.ViewModels;
@@ -15,6 +17,20 @@ public partial class ChatView : UserControl
     {
         InitializeComponent();
         DataContextChanged += OnDataContextChanged;
+    }
+
+    private void HandleInputKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter
+            || e.KeyModifiers.HasFlag(KeyModifiers.Shift)
+            || DataContext is not ChatViewModel viewModel
+            || !viewModel.SendCommand.CanExecute(null))
+        {
+            return;
+        }
+
+        e.Handled = true;
+        viewModel.SendCommand.Execute(null);
     }
 
     private void OnDataContextChanged(object? sender, EventArgs e)
