@@ -6,51 +6,93 @@
     x:DataType="vm:SitesViewModel"
     x:CompileBindings="False">
   <Grid>
-    <Grid RowDefinitions="Auto,Auto,*" RowSpacing="24">
+    <Grid RowDefinitions="Auto,Auto,*" RowSpacing="16">
       <Grid ColumnDefinitions="*,Auto">
         <StackPanel Spacing="4">
-          <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="站点管理" />
-          <TextBlock Classes="page-subtitle" Text="管理上游服务地址、协议和启用状态" />
+          <TextBlock Classes="page-title" Text="站点管理" />
+          <TextBlock Classes="page-subtitle" Text="管理上游服务地址、协议、模型目录和启用状态" />
         </StackPanel>
-        <Button Grid.Column="1" Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增站点" Padding="14,8" />
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+          <Button Classes="secondary-button" Command="{Binding FetchAllModelsCommand}" Content="一键拉取全部" IsEnabled="{Binding CanFetchModels}" Padding="12,7" />
+          <Button Classes="secondary-button" Click="ExportSites" Content="导出 JSON" Padding="12,7" />
+          <Button Classes="secondary-button" Click="ImportSites" Content="导入 JSON" Padding="12,7" />
+          <Button Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增站点" Padding="14,8" />
+        </StackPanel>
       </Grid>
 
-      <Grid Grid.Row="2">
-        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding IsLoading}" Text="正在加载站点..." />
+      <StackPanel Grid.Row="1" Spacing="8">
         <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}">
           <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
         </Border>
+        <Border Background="#FFF7ED" CornerRadius="8" Padding="14" IsVisible="{Binding HasOperationError}">
+          <TextBlock Foreground="#C2410C" Text="{Binding OperationErrorMessage}" TextWrapping="Wrap" />
+        </Border>
+        <Border Background="#FFF7ED" CornerRadius="8" Padding="14" IsVisible="{Binding HasEditorError}">
+          <TextBlock Foreground="#C2410C" Text="{Binding EditorErrorMessage}" TextWrapping="Wrap" />
+        </Border>
+      </StackPanel>
+
+      <Grid Grid.Row="2">
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding IsLoading}" Text="正在加载站点..." />
 
         <Border Classes="content-card" IsVisible="{Binding IsListVisible}" Padding="0">
           <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-            <StackPanel MinWidth="860">
-              <Border Background="#F8FAFC" Padding="18,14">
-                <Grid ColumnDefinitions="2*,2.5*,1.2*,1.2*,Auto">
-                  <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="站点名称" />
-                  <TextBlock Grid.Column="1" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="服务地址" />
-                  <TextBlock Grid.Column="2" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="协议" />
-                  <TextBlock Grid.Column="3" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="状态" />
-                  <TextBlock Grid.Column="4" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="操作" />
+            <StackPanel MinWidth="1180">
+              <Border Background="#F8FAFC" Padding="18,12">
+                <Grid ColumnDefinitions="Auto,2*,2.5*,1.25*,1.15*,1.35*,1.2*,Auto" ColumnSpacing="10">
+                  <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="选择" />
+                  <TextBlock Grid.Column="1" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="站点名称" />
+                  <TextBlock Grid.Column="2" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="服务地址" />
+                  <TextBlock Grid.Column="3" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="协议能力" />
+                  <TextBlock Grid.Column="4" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="状态" />
+                  <TextBlock Grid.Column="5" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="创建时间" />
+                  <TextBlock Grid.Column="6" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="路径模式" />
+                  <TextBlock Grid.Column="7" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="操作" />
+                </Grid>
+              </Border>
+              <Border Background="#FFFFFF" Padding="18,10" IsVisible="{Binding HasSites}">
+                <Grid ColumnDefinitions="Auto,*,Auto">
+                  <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="已选择：" />
+                  <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#334155" Text="{Binding SelectedSiteCount}" />
+                  <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8">
+                    <Button Classes="secondary-button" Command="{Binding SelectAllSitesCommand}" Content="全选" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding ClearSiteSelectionCommand}" Content="清空选择" Padding="10,5" />
+                    <Button Classes="secondary-button" Click="ConfirmBulkDeleteSites" Content="批量删除" IsEnabled="{Binding CanBulkDelete}" Padding="10,5" />
+                  </StackPanel>
                 </Grid>
               </Border>
               <ItemsControl ItemsSource="{Binding Sites}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
-                    <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,14">
-                      <Grid ColumnDefinitions="2*,2.5*,1.2*,1.2*,Auto" ColumnSpacing="12">
-                        <StackPanel Spacing="3">
+                    <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,12">
+                      <Grid ColumnDefinitions="Auto,2*,2.5*,1.25*,1.15*,1.35*,1.2*,Auto" ColumnSpacing="10">
+                        <CheckBox VerticalAlignment="Center" IsChecked="{Binding IsSelected, Mode=TwoWay}" />
+                        <StackPanel Grid.Column="1" Spacing="3">
                           <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Name}" />
                           <TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding ApiKeyMasked}" />
                         </StackPanel>
-                        <TextBlock Grid.Column="1" Foreground="#475569" Text="{Binding BaseUrl}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding ProtocolType}" VerticalAlignment="Center" />
-                        <Border Grid.Column="3" Background="#E8F7EA" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center">
-                          <TextBlock Foreground="#166534" Text="{Binding StatusText}" />
+                        <TextBlock Grid.Column="2" Foreground="#475569" Text="{Binding BaseUrl}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+                          <Border Background="#E8F7EA" CornerRadius="10" Padding="6,3" IsVisible="{Binding SupportsOpenAi}">
+                            <TextBlock FontSize="11" Foreground="#166534" Text="OpenAI" />
+                          </Border>
+                          <Border Background="#E0F2FE" CornerRadius="10" Padding="6,3" IsVisible="{Binding SupportsAnthropic}">
+                            <TextBlock FontSize="11" Foreground="#0369A1" Text="Anthropic" />
+                          </Border>
+                          <Border Background="#FEF3C7" CornerRadius="10" Padding="6,3" IsVisible="{Binding SupportsResponses}">
+                            <TextBlock FontSize="11" Foreground="#92400E" Text="Responses" />
+                          </Border>
+                        </StackPanel>
+                        <Border Grid.Column="4" Background="{Binding StatusBackground}" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center">
+                          <TextBlock Foreground="{Binding StatusForeground}" Text="{Binding StatusText}" />
                         </Border>
-                        <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                          <Button Classes="secondary-button" Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,6" />
-                          <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,6" />
-                          <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
+                        <TextBlock Grid.Column="5" Foreground="#64748B" Text="{Binding CreatedAtText}" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="6" Foreground="#64748B" Text="{Binding EndpointPathMode}" VerticalAlignment="Center" />
+                        <StackPanel Grid.Column="7" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                          <Button Classes="secondary-button" Command="{Binding DataContext.FetchModelsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取" IsEnabled="{Binding DataContext.CanFetchModels, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="9,5" />
+                          <Button Classes="secondary-button" Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="9,5" />
+                          <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="9,5" />
+                          <Button Classes="secondary-button" Click="ConfirmDeleteSite" Content="删除" Padding="9,5" />
                         </StackPanel>
                       </Grid>
                     </Border>
@@ -62,26 +104,102 @@
           </ScrollViewer>
         </Border>
 
-        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
-          <ScrollViewer MaxHeight="650">
+        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Width="540" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+          <ScrollViewer MaxHeight="680">
             <StackPanel Spacing="14">
               <Grid ColumnDefinitions="*,Auto">
                 <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding EditorTitle}" />
                 <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseEditorCommand}" Content="关闭" Padding="10,6" />
               </Grid>
-              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="名称" /><TextBox Classes="form-input" Text="{Binding Form.Name}" /></StackPanel>
-              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="服务地址" /><TextBox Classes="form-input" Text="{Binding Form.BaseUrl}" Watermark="https://api.example.com" /></StackPanel>
-              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="API 密钥" /><TextBox Classes="form-input" PasswordChar="●" Text="{Binding Form.ApiKey}" Watermark="编辑时留空表示保留原密钥" /></StackPanel>
-              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="路径模式" /><TextBox Classes="form-input" Text="{Binding Form.EndpointPathMode}" Watermark="standard-root 或 versioned-base" /></StackPanel>
-              <StackPanel Orientation="Horizontal" Spacing="18">
-                <CheckBox Content="支持 OpenAI" IsChecked="{Binding Form.SupportsOpenAi}" />
-                <CheckBox Content="支持 Anthropic" IsChecked="{Binding Form.SupportsAnthropic}" />
-                <CheckBox Content="启用" IsChecked="{Binding Form.IsEnabled}" />
+              <TextBlock Foreground="#64748B" IsVisible="{Binding IsEditorLoading}" Text="正在加载站点详情..." />
+              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="名称" /><TextBox Classes="form-input" Text="{Binding Form.Name, Mode=TwoWay}" /></StackPanel>
+              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="服务地址" /><TextBox Classes="form-input" Text="{Binding Form.BaseUrl, Mode=TwoWay}" Watermark="https://api.example.com" /></StackPanel>
+              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="API 密钥" /><TextBox Classes="form-input" PasswordChar="●" Text="{Binding Form.ApiKey, Mode=TwoWay}" Watermark="编辑时留空表示保留原密钥" /></StackPanel>
+              <StackPanel Spacing="6">
+                <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="路径模式" />
+                <ComboBox ItemsSource="{Binding EndpointPathModeOptions}" SelectedValue="{Binding Form.EndpointPathMode, Mode=TwoWay}" SelectedValueBinding="{Binding Value}">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
               </StackPanel>
-              <TextBlock Foreground="#B91C1C" IsVisible="{Binding HasError}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+              <StackPanel Orientation="Horizontal" Spacing="18">
+                <CheckBox Content="支持 OpenAI" IsChecked="{Binding Form.SupportsOpenAi, Mode=TwoWay}" />
+                <CheckBox Content="支持 Anthropic" IsChecked="{Binding Form.SupportsAnthropic, Mode=TwoWay}" />
+                <CheckBox Content="启用" IsChecked="{Binding Form.IsEnabled, Mode=TwoWay}" />
+              </StackPanel>
+              <TextBlock Foreground="#64748B" FontSize="12" Text="两个协议均未勾选时，后端按仅支持 Responses 处理。" TextWrapping="Wrap" />
               <Button Classes="primary-button" Command="{Binding SaveCommand}" Content="保存站点" IsEnabled="{Binding CanSave}" HorizontalContentAlignment="Center" Padding="12,9" />
             </StackPanel>
           </ScrollViewer>
+        </Border>
+
+        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding CatalogVisible}" Padding="24" HorizontalAlignment="Center" VerticalAlignment="Center" Width="920" MaxHeight="760" ZIndex="20">
+          <Grid RowDefinitions="Auto,Auto,Auto,Auto,*,Auto" RowSpacing="14">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="模型目录" />
+              <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseCatalogCommand}" Content="关闭" Padding="10,6" />
+            </Grid>
+            <Border Grid.Row="1" Background="#FFF7ED" CornerRadius="6" Padding="10" IsVisible="{Binding HasCatalogError}">
+              <TextBlock Foreground="#C2410C" Text="{Binding CatalogErrorMessage}" TextWrapping="Wrap" />
+            </Border>
+            <StackPanel Grid.Row="2" Spacing="6" IsVisible="{Binding HasCatalogProgress}">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock Foreground="#64748B" Text="{Binding CatalogProgressText}" />
+                <TextBlock Grid.Column="1" Foreground="#64748B" Text="{Binding CatalogProgressPercent, StringFormat={}{0}%}" />
+              </Grid>
+              <ProgressBar Minimum="0" Maximum="100" Value="{Binding CatalogProgressPercent}" Height="8" />
+            </StackPanel>
+            <Grid Grid.Row="3" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+              <TextBox Classes="form-input" Text="{Binding CatalogSearch, Mode=TwoWay}" Watermark="搜索站点或模型" />
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <Button Classes="secondary-button" Command="{Binding SelectAllCatalogCommand}" Content="全选" Padding="10,6" />
+                <Button Classes="secondary-button" Command="{Binding ClearCatalogSelectionCommand}" Content="清空" Padding="10,6" />
+                <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding SelectedCatalogCount, StringFormat='已选 {0}'}" />
+              </StackPanel>
+            </Grid>
+            <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto">
+              <StackPanel Spacing="10">
+                <ItemsControl ItemsSource="{Binding FilteredCatalogSites}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Background="#F8FAFC" BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="8" Padding="14">
+                        <StackPanel Spacing="10">
+                          <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                            <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding SiteName}" />
+                            <Border Grid.Column="1" Background="#E2E8F0" CornerRadius="10" Padding="7,3">
+                              <TextBlock FontSize="11" Foreground="#475569" Text="{Binding StatusText}" />
+                            </Border>
+                            <TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding Models.Count, StringFormat={}{0} 个模型}" VerticalAlignment="Center" />
+                          </Grid>
+                          <Border Background="#FEE2E2" CornerRadius="6" Padding="10" IsVisible="{Binding HasError}">
+                            <TextBlock Foreground="#B91C1C" Text="{Binding Error}" TextWrapping="Wrap" />
+                          </Border>
+                          <ItemsControl ItemsSource="{Binding Models}" IsVisible="{Binding HasModels}">
+                            <ItemsControl.ItemTemplate>
+                              <DataTemplate>
+                                <Grid ColumnDefinitions="Auto,2*,2* ,Auto" ColumnSpacing="8" Margin="0,3">
+                                  <CheckBox VerticalAlignment="Center" IsChecked="{Binding IsSelected, Mode=TwoWay}" />
+                                  <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#334155" Text="{Binding RemoteModelName}" TextTrimming="CharacterEllipsis" />
+                                  <TextBox Grid.Column="2" Classes="form-input" MinHeight="34" Padding="8,5" Text="{Binding DisplayName, Mode=TwoWay}" Watermark="显示名称 / 别名" />
+                                  <TextBlock Grid.Column="3" VerticalAlignment="Center" Foreground="#64748B" FontSize="12" Text="{Binding ExistingStatusText}" />
+                                </Grid>
+                              </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                          </ItemsControl>
+                        </StackPanel>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding NoCatalogSites}" Margin="20" Text="暂无可导入模型" />
+              </StackPanel>
+            </ScrollViewer>
+            <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+              <Button Classes="secondary-button" Command="{Binding CloseCatalogCommand}" Content="取消" Padding="12,7" />
+              <Button Classes="primary-button" Command="{Binding ImportSelectedModelsCommand}" Content="导入选中" IsEnabled="{Binding CanImportCatalog}" Padding="12,7" />
+            </StackPanel>
+          </Grid>
         </Border>
       </Grid>
     </Grid>
