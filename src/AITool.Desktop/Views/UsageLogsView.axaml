@@ -276,7 +276,8 @@
     <Border
         Grid.Row="1"
         Classes="content-card"
-        Width="420"
+        MaxWidth="420"
+        MinWidth="300"
         Padding="20"
         HorizontalAlignment="Right"
         IsVisible="{Binding HasDetail}"

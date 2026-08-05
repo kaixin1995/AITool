@@ -251,7 +251,7 @@
       </TabItem>
     </TabControl>
 
-    <Border Grid.Row="1" Classes="content-card" Width="560" Padding="20" HorizontalAlignment="Right" IsVisible="{Binding HasDetail}" ZIndex="20">
+    <Border Grid.Row="1" Classes="content-card" MaxWidth="560" MinWidth="320" Padding="20" HorizontalAlignment="Right" IsVisible="{Binding HasDetail}" ZIndex="20">
       <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Spacing="14">
           <Border Background="#EFF6FF" CornerRadius="10" Padding="12" IsVisible="{Binding IsDetailLoading}">
