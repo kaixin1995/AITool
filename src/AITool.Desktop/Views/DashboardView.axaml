@@ -24,7 +24,10 @@
         </StackPanel>
       </Border>
 
-      <StackPanel IsVisible="{Binding HasStats}" Spacing="18">
+      <ScrollViewer
+          VerticalScrollBarVisibility="Auto"
+          IsVisible="{Binding HasStats}">
+        <StackPanel Spacing="18">
         <UniformGrid Columns="5" Rows="1" HorizontalAlignment="Stretch">
           <Border Classes="content-card" Margin="0,0,10,0" Padding="16">
             <StackPanel Spacing="8">
@@ -91,6 +94,7 @@
             </WrapPanel>
           </StackPanel>
         </Border>
-      </StackPanel>
+        </StackPanel>
+      </ScrollViewer>
   </Grid>
 </UserControl>

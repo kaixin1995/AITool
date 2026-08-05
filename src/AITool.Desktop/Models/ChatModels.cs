@@ -40,4 +40,10 @@ public partial class ChatMessage : ObservableObject
     [ObservableProperty] private bool _isError;
     [ObservableProperty] private bool _isStreaming;
     public string RoleText => IsUser ? "我" : "AI";
+    public bool HasReasoning => !string.IsNullOrWhiteSpace(Reasoning);
+
+    partial void OnReasoningChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasReasoning));
+    }
 }

@@ -14,6 +14,7 @@
       <Button Grid.Column="1" Classes="primary-button" Command="{Binding ProbeAllCommand}" Content="全部检测" IsEnabled="{Binding CanProbe}" Padding="14,8" />
     </Grid>
     <Grid Grid.Row="2">
+      <ScrollViewer VerticalScrollBarVisibility="Auto">
       <StackPanel Spacing="14">
         <Border Background="#EFF6FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}"><TextBlock Foreground="#315EA8" Text="正在加载模型检测数据..." /></Border>
         <Border Background="#E8F1FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsBusy}"><TextBlock Foreground="#315EA8" Text="{Binding ProgressText}" /></Border>
@@ -32,6 +33,7 @@
           </DataTemplate></ItemsControl.ItemTemplate>
         </ItemsControl>
       </StackPanel>
+      </ScrollViewer>
     </Grid>
   </Grid>
 </UserControl>

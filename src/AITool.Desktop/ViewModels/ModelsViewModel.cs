@@ -39,7 +39,7 @@ public partial class ModelsViewModel : ViewModelBase
 
     public bool IsEditMode => EditingModel is not null;
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
-    public bool IsListVisible => !IsLoading;
+    public bool IsListVisible => !IsLoading && !HasError;
     public bool HasModels => ModelCount > 0;
     public bool CanSave => !IsSaving;
     public string EditorTitle => IsEditMode ? "编辑模型" : "新增模型";
@@ -197,6 +197,7 @@ public partial class ModelsViewModel : ViewModelBase
     partial void OnErrorMessageChanged(string value)
     {
         OnPropertyChanged(nameof(HasError));
+        OnPropertyChanged(nameof(IsListVisible));
     }
 
     private sealed class ToggleResult

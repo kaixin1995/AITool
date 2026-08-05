@@ -123,7 +123,7 @@
                         </Grid>
 
                         <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="0,12,0,0">
-                          <WrapPanel HorizontalAlignment="Right" ItemWidth="0">
+                          <WrapPanel HorizontalAlignment="Right">
                             <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,7" Margin="0,0,6,0" />
@@ -185,7 +185,7 @@
                     <Border Background="#EFF6FF" CornerRadius="8" Padding="12" Margin="0,0,8,0"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#315EA8" Text="缓存命中" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#315EA8" Text="{Binding InspectionLastRun.CacheCount}" /></StackPanel></Border>
                     <Border Background="#FFF7ED" CornerRadius="8" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#9A3412" Text="真实刷新" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#9A3412" Text="{Binding InspectionLastRun.RealRefreshCount}" /></StackPanel></Border>
                   </UniformGrid>
-                  <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding InspectionLastRun.RunModeText} · {Binding InspectionLastRun.RefreshModeText}" />
+                  <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding InspectionRunSummary}" />
                   <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
                     <StackPanel MinWidth="800">
                       <Border Background="#F8FAFC" Padding="12,10">

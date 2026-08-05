@@ -13,7 +13,7 @@
           <TextBox Classes="form-input" IsReadOnly="True" Text="{Binding EndpointUrl}" TextWrapping="Wrap" />
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
             <ToggleSwitch IsVisible="{Binding IsStreamable}" IsChecked="{Binding StreamEnabled, Mode=TwoWay}" OnContent="流式" OffContent="非流式" />
-            <Button Classes="secondary-button" Content="复制 URL" Padding="10,7" />
+            <Button Classes="secondary-button" Click="CopyEndpointUrl" Content="复制 URL" Padding="10,7" />
             <Button Classes="primary-button" Command="{Binding DataContext.SendSimulatorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="发送请求" IsVisible="{Binding CanSend}" Padding="12,7" />
             <Button Classes="secondary-button" Command="{Binding DataContext.StopSimulatorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="停止" IsVisible="{Binding IsRunning}" Padding="12,7" />
           </StackPanel>

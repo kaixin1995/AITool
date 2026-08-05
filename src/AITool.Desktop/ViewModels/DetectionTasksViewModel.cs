@@ -29,6 +29,7 @@ public partial class DetectionTasksViewModel : ViewModelBase
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasTasks => Tasks.Count > 0;
     public bool HasNoTasks => !HasTasks;
+    public bool ShowEmptyState => !IsLoading && !HasError && HasNoTasks;
     public bool CanCreate => !IsSaving && !string.IsNullOrWhiteSpace(TaskName) && !string.IsNullOrWhiteSpace(CronExpression);
 
     public async Task LoadAsync()
@@ -123,7 +124,24 @@ public partial class DetectionTasksViewModel : ViewModelBase
         catch (Exception exception) { ErrorMessage = exception.Message; }
     }
 
-    partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
+    partial void OnErrorMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasError));
+        OnPropertyChanged(nameof(ShowEmptyState));
+    }
+
+    partial void OnTasksChanged(ObservableCollection<DetectionTaskItem> value)
+    {
+        OnPropertyChanged(nameof(HasTasks));
+        OnPropertyChanged(nameof(HasNoTasks));
+        OnPropertyChanged(nameof(ShowEmptyState));
+    }
+
+    partial void OnIsLoadingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(ShowEmptyState));
+    }
+
     partial void OnTaskNameChanged(string value) => OnPropertyChanged(nameof(CanCreate));
     partial void OnCronExpressionChanged(string value) => OnPropertyChanged(nameof(CanCreate));
     partial void OnIsSavingChanged(bool value) => OnPropertyChanged(nameof(CanCreate));

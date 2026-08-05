@@ -36,7 +36,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
     public bool HasAccounts => Accounts.Count > 0;
-    public bool HasNoAccounts => !HasAccounts;
+    public bool HasNoAccounts => !IsLoading && !HasError && !HasAccounts;
     public bool CanCompleteOAuth => !IsOAuthBusy;
     public bool HasOAuthSession => !string.IsNullOrWhiteSpace(OAuthUrl);
     public bool HasInspection => InspectionStatus is not null && !InspectionDisabled;
@@ -47,6 +47,9 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     public bool IsInspectionIdle => !InspectionRunning && InspectionStatus?.IsRunning != true;
     public string InspectionStateText => InspectionRunning || InspectionStatus?.IsRunning == true ? "巡检中" : "空闲";
     public string InspectionActionButtonText => InspectionRunning ? "巡检中..." : "手动巡检";
+    public string InspectionRunSummary => InspectionLastRun is null
+        ? string.Empty
+        : $"{InspectionLastRun.RunModeText} · {InspectionLastRun.RefreshModeText}";
 
     public async Task LoadAsync()
     {
@@ -382,8 +385,19 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(InspectionActionButtonText));
     }
 
-    partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
+    partial void OnErrorMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasError));
+        OnPropertyChanged(nameof(HasNoAccounts));
+    }
+
     partial void OnMessageChanged(string value) => OnPropertyChanged(nameof(HasMessage));
+    partial void OnIsLoadingChanged(bool value) => OnPropertyChanged(nameof(HasNoAccounts));
+    partial void OnInspectionLastRunChanged(CodexInspectionRunResult? value)
+    {
+        OnPropertyChanged(nameof(HasInspectionLastRun));
+        OnPropertyChanged(nameof(InspectionRunSummary));
+    }
     partial void OnOAuthUrlChanged(string value) => OnPropertyChanged(nameof(HasOAuthSession));
     partial void OnIsOAuthBusyChanged(bool value) => OnPropertyChanged(nameof(CanCompleteOAuth));
     partial void OnInspectionRunningChanged(bool value) => NotifyInspectionProperties();

@@ -111,6 +111,7 @@ public partial class AnalyticsViewModel : ViewModelBase
     public bool CanCancel => IsLoading;
     public bool CanRefresh => !IsLoading;
     public bool CanContinueWaiting => IsWaitingForResult && !IsLoading;
+    public bool CanApplyCustomRange => IsCustomRange && !IsLoading && TryParseDate(CustomStartTime, out _) && TryParseDate(CustomEndTime, out _);
     public bool HasQueryStatus => IsLoading || IsWaitingForResult;
     public bool IsCustomRange => string.Equals(SelectedRange?.Value, "custom", StringComparison.OrdinalIgnoreCase);
     public bool HasRequestTrend => Dashboard?.RequestTrend.Count > 0;
@@ -234,6 +235,19 @@ public partial class AnalyticsViewModel : ViewModelBase
 
     [RelayCommand]
     private Task ContinueWaitingAsync() => LoadAsync();
+
+    [RelayCommand]
+    private async Task ApplyCustomRangeAsync()
+    {
+        if (!IsCustomRange) return;
+        if (!TryParseDate(CustomStartTime, out _) || !TryParseDate(CustomEndTime, out _))
+        {
+            ErrorMessage = "请输入有效的开始时间和结束时间，例如 2026-08-01 00:00。";
+            return;
+        }
+
+        await LoadAsync();
+    }
 
     private async Task LoadDashboardAsync(CancellationToken cancellationToken)
     {
@@ -410,6 +424,7 @@ public partial class AnalyticsViewModel : ViewModelBase
         OnPropertyChanged(nameof(CanCancel));
         OnPropertyChanged(nameof(CanRefresh));
         OnPropertyChanged(nameof(CanContinueWaiting));
+        OnPropertyChanged(nameof(CanApplyCustomRange));
         OnPropertyChanged(nameof(HasQueryStatus));
         OnPropertyChanged(nameof(HasNoDashboard));
     }
@@ -418,6 +433,9 @@ public partial class AnalyticsViewModel : ViewModelBase
         OnPropertyChanged(nameof(CanContinueWaiting));
         OnPropertyChanged(nameof(HasQueryStatus));
     }
+    partial void OnCustomStartTimeChanged(string value) => OnPropertyChanged(nameof(CanApplyCustomRange));
+    partial void OnCustomEndTimeChanged(string value) => OnPropertyChanged(nameof(CanApplyCustomRange));
+
     partial void OnSelectedAnalysisChanged(AnalyticsSelectOption? value)
     {
         OnPropertyChanged(nameof(AnalysisBreakdown));

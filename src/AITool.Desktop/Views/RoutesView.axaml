@@ -5,7 +5,7 @@
     xmlns:vm="using:AITool.Desktop.ViewModels"
     x:DataType="vm:RoutesViewModel"
     x:CompileBindings="False">
-  <Grid RowDefinitions="Auto,Auto" RowSpacing="24" ColumnDefinitions="260,*" ColumnSpacing="18" VerticalAlignment="Top">
+  <Grid RowDefinitions="Auto,*" RowSpacing="24" ColumnDefinitions="260,*" ColumnSpacing="18">
       <StackPanel Grid.ColumnSpan="2" Spacing="4">
         <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="路由规则管理" />
         <TextBlock Classes="page-subtitle" Text="主入口绑定有序候选实例队列，请求时按顺序失败切换、成功即停止" TextWrapping="Wrap" />

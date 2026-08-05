@@ -39,7 +39,7 @@ public partial class SitesViewModel : ViewModelBase
 
     public bool IsEditMode => EditingSite is not null;
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
-    public bool IsListVisible => !IsLoading;
+    public bool IsListVisible => !IsLoading && !HasError;
     public bool HasSites => Sites.Count > 0;
     public bool NoSites => !HasSites;
     public bool CanSave => !IsSaving;
@@ -221,6 +221,7 @@ public partial class SitesViewModel : ViewModelBase
     partial void OnErrorMessageChanged(string value)
     {
         OnPropertyChanged(nameof(HasError));
+        OnPropertyChanged(nameof(IsListVisible));
     }
 
     private sealed class ToggleResult

@@ -39,7 +39,7 @@ public partial class AccessKeysViewModel : ViewModelBase
 
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasCreatedKey => !string.IsNullOrWhiteSpace(CreatedPlainKey);
-    public bool IsListVisible => !IsLoading;
+    public bool IsListVisible => !IsLoading && !HasError;
     public bool IsCreateFormVisible => !HasCreatedKey;
     public bool CanCreate => !IsCreating;
 
@@ -139,7 +139,11 @@ public partial class AccessKeysViewModel : ViewModelBase
         }
     }
 
-    partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
+    partial void OnErrorMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasError));
+        OnPropertyChanged(nameof(IsListVisible));
+    }
 
     partial void OnCreatedPlainKeyChanged(string value)
     {

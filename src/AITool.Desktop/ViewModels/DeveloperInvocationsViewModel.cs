@@ -155,6 +155,9 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
         }
         catch (ApiException exception) when (exception.StatusCode == 404)
         {
+            Concurrency.Clear();
+            OnPropertyChanged(nameof(HasConcurrency));
+            OnPropertyChanged(nameof(HasNoConcurrency));
             ConcurrencyError = string.Empty;
         }
         catch (Exception exception)

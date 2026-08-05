@@ -16,6 +16,7 @@ public partial class SystemSettingsViewModel : ViewModelBase
     [ObservableProperty] private string _clearEndTime = string.Empty;
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private bool _isSaving;
+    [ObservableProperty] private bool _isClearingLogs;
     [ObservableProperty] private string _message = string.Empty;
     [ObservableProperty] private string _errorMessage = string.Empty;
 
@@ -27,6 +28,7 @@ public partial class SystemSettingsViewModel : ViewModelBase
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
     public bool CanSave => !IsLoading && !IsSaving;
+    public bool CanClearLogs => !IsLoading && !IsSaving && !IsClearingLogs;
 
     public async Task LoadAsync()
     {
@@ -60,6 +62,9 @@ public partial class SystemSettingsViewModel : ViewModelBase
     [RelayCommand]
     private async Task ClearFilteredLogsAsync()
     {
+        if (!CanClearLogs) return;
+        IsClearingLogs = true;
+        ErrorMessage = string.Empty;
         try
         {
             var result = await _apiService.SendAsync<Dictionary<string, int>>(HttpMethod.Post, "/api/admin/system/clear-usage-logs?clearAll=false", new
@@ -72,11 +77,18 @@ public partial class SystemSettingsViewModel : ViewModelBase
             await LoadAsync();
         }
         catch (Exception exception) { ErrorMessage = exception.Message; }
+        finally
+        {
+            IsClearingLogs = false;
+        }
     }
 
     [RelayCommand]
     private async Task ClearAllLogsAsync()
     {
+        if (!CanClearLogs) return;
+        IsClearingLogs = true;
+        ErrorMessage = string.Empty;
         try
         {
             var result = await _apiService.SendAsync<Dictionary<string, int>>(HttpMethod.Post, "/api/admin/system/clear-usage-logs?clearAll=true", null);
@@ -84,10 +96,20 @@ public partial class SystemSettingsViewModel : ViewModelBase
             await LoadAsync();
         }
         catch (Exception exception) { ErrorMessage = exception.Message; }
+        finally
+        {
+            IsClearingLogs = false;
+        }
     }
 
     partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
     partial void OnMessageChanged(string value) => OnPropertyChanged(nameof(HasMessage));
     partial void OnIsLoadingChanged(bool value) => OnPropertyChanged(nameof(CanSave));
-    partial void OnIsSavingChanged(bool value) => OnPropertyChanged(nameof(CanSave));
+    partial void OnIsSavingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanSave));
+        OnPropertyChanged(nameof(CanClearLogs));
+    }
+
+    partial void OnIsClearingLogsChanged(bool value) => OnPropertyChanged(nameof(CanClearLogs));
 }

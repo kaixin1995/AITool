@@ -69,7 +69,7 @@
               </StackPanel>
               <TextBlock Grid.Column="3" VerticalAlignment="Bottom" FontSize="12" Foreground="#94A3B8" Text="筛选变化后自动刷新" Margin="0,0,0,12" />
             </Grid>
-            <Grid ColumnDefinitions="1*,1*" ColumnSpacing="12" IsVisible="{Binding IsCustomRange}">
+            <Grid ColumnDefinitions="1*,1*,Auto" ColumnSpacing="12" IsVisible="{Binding IsCustomRange}">
               <StackPanel Spacing="5">
                 <TextBlock FontSize="12" Foreground="#64748B" Text="开始时间" />
                 <TextBox Classes="form-input" Text="{Binding CustomStartTime}" Watermark="例如 2026-08-01 00:00" />
@@ -78,6 +78,7 @@
                 <TextBlock FontSize="12" Foreground="#64748B" Text="结束时间" />
                 <TextBox Classes="form-input" Text="{Binding CustomEndTime}" Watermark="例如 2026-08-06 23:59" />
               </StackPanel>
+              <Button Grid.Column="2" Classes="primary-button" Command="{Binding ApplyCustomRangeCommand}" Content="应用时间" IsEnabled="{Binding CanApplyCustomRange}" Padding="12,7" VerticalAlignment="Bottom" />
             </Grid>
             <Border Background="#F8FAFC" CornerRadius="8" Padding="10,8">
               <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding FilterSummary}" TextWrapping="Wrap" />

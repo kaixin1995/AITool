@@ -11,6 +11,7 @@ namespace AITool.Desktop.ViewModels;
 public partial class UsageLogsViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
+    private readonly SemaphoreSlim _pageLoadLock = new(1, 1);
     private Timer? _refreshTimer;
     private int _refreshInFlight;
     private bool _disposed;
@@ -77,7 +78,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
 
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasItems => Items.Count > 0;
-    public bool HasNoItems => !HasItems;
+    public bool HasNoItems => !IsLoading && !HasError && !HasItems;
     public bool HasDetail => SelectedDetail is not null;
     public bool CanPrevious => Page > 1 && !IsLoading;
     public bool CanNext => Page < TotalPages && !IsLoading;
@@ -101,7 +102,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
                 null);
             Sites = new ObservableCollection<UsageLogFilterItem>(filters.Sites);
             AccessKeys = new ObservableCollection<UsageLogFilterItem>(filters.AccessKeys);
-            await LoadPageAsync(Page);
+            await LoadPageAsync(Page, showLoading: false);
         }
         catch (Exception exception)
         {
@@ -115,8 +116,17 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         }
     }
 
-    private async Task LoadPageAsync(int page)
+    private async Task LoadPageAsync(int page, bool showLoading = true)
     {
+        await _pageLoadLock.WaitAsync();
+        if (showLoading)
+        {
+            IsLoading = true;
+            ErrorMessage = string.Empty;
+        }
+
+        try
+        {
         var query = BuildQuery(page);
         var listTask = _apiService.SendAsync<UsageLogListResponse>(
             HttpMethod.Get,
@@ -137,6 +147,17 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(HasItems));
         OnPropertyChanged(nameof(HasNoItems));
         UpdatePagingProperties();
+        }
+        finally
+        {
+            if (showLoading)
+            {
+                IsLoading = false;
+            }
+
+            _pageLoadLock.Release();
+            UpdatePagingProperties();
+        }
     }
 
     private string BuildQuery(int page)
@@ -171,7 +192,17 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
             var current = Items[i];
             var incoming = next[i];
             if (!string.Equals(current.RequestId, incoming.RequestId, StringComparison.Ordinal)
-                || !string.Equals(current.RequestedAt, incoming.RequestedAt, StringComparison.Ordinal))
+                || !string.Equals(current.RequestedAt, incoming.RequestedAt, StringComparison.Ordinal)
+                || !string.Equals(current.Status, incoming.Status, StringComparison.Ordinal)
+                || !string.Equals(current.ErrorMessage, incoming.ErrorMessage, StringComparison.Ordinal)
+                || current.TotalDurationMs != incoming.TotalDurationMs
+                || current.FirstTokenLatencyMs != incoming.FirstTokenLatencyMs
+                || current.InputTokens != incoming.InputTokens
+                || current.CachedTokens != incoming.CachedTokens
+                || current.OutputTokens != incoming.OutputTokens
+                || current.TotalTokens != incoming.TotalTokens
+                || current.FallbackTriggered != incoming.FallbackTriggered
+                || current.IsStreamInterrupted != incoming.IsStreamInterrupted)
             {
                 return true;
             }
@@ -184,6 +215,12 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     {
         if (_disposed || !AutoRefresh || IsLoading || Interlocked.Exchange(ref _refreshInFlight, 1) == 1)
         {
+            return;
+        }
+
+        if (!await _pageLoadLock.WaitAsync(0))
+        {
+            Interlocked.Exchange(ref _refreshInFlight, 0);
             return;
         }
 
@@ -214,7 +251,11 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
                 Items = new ObservableCollection<UsageLogItem>(list.Items);
             }
 
-            if (Summary.TotalRequests != summary.TotalRequests || Summary.TotalTokens != summary.TotalTokens)
+            if (Summary.TotalRequests != summary.TotalRequests
+                || Summary.FailedRequests != summary.FailedRequests
+                || Summary.SuccessRate != summary.SuccessRate
+                || Summary.TotalTokens != summary.TotalTokens
+                || Summary.MaxDurationMs != summary.MaxDurationMs)
             {
                 Summary = summary;
             }
@@ -229,6 +270,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         }
         finally
         {
+            _pageLoadLock.Release();
             Interlocked.Exchange(ref _refreshInFlight, 0);
         }
     }
@@ -357,12 +399,20 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         _refreshTimer = null;
     }
 
-    partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
+    partial void OnErrorMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasError));
+        OnPropertyChanged(nameof(HasNoItems));
+    }
     partial void OnSelectedDetailChanged(UsageLogRequestDetail? value) => OnPropertyChanged(nameof(HasDetail));
     partial void OnSelectedRangeChanged(UsageLogOption value) => OnPropertyChanged(nameof(IsCustomRange));
     partial void OnPageChanged(int value) => UpdatePagingProperties();
     partial void OnTotalPagesChanged(int value) => UpdatePagingProperties();
     partial void OnTotalCountChanged(int value) => UpdatePagingProperties();
-    partial void OnIsLoadingChanged(bool value) => UpdatePagingProperties();
+    partial void OnIsLoadingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(HasNoItems));
+        UpdatePagingProperties();
+    }
     partial void OnAutoRefreshChanged(bool value) => ConfigureAutoRefresh();
 }
