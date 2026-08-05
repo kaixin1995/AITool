@@ -13,9 +13,9 @@
 
     <ScrollViewer
         Grid.Row="1"
-        HorizontalScrollBarVisibility="Auto"
+        HorizontalScrollBarVisibility="Disabled"
         VerticalScrollBarVisibility="Auto">
-      <StackPanel MinWidth="820" Spacing="14">
+      <StackPanel Spacing="14">
         <Border Classes="content-card" Padding="0">
           <StackPanel>
             <!-- 顶部工具栏保持单行，筛选标题和自动刷新互不挤压。 -->
@@ -26,8 +26,7 @@
                     Command="{Binding ToggleFiltersCommand}"
                     HorizontalAlignment="Left"
                     HorizontalContentAlignment="Left"
-                    Padding="0"
-                    Focusable="False">
+                    Padding="0">
                   <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="筛选与汇总" />
                 </Button>
                 <StackPanel
