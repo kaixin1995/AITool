@@ -10,12 +10,14 @@ describe('Developer Invocations 页签深链接', () => {
     expect(developerTabFromHash('#developerInvocationsPane')).toBe('invocations')
     expect(developerTabFromHash('#developerSimulatorPane')).toBe('simulator')
     expect(developerTabFromHash('#developerConcurrencyPane')).toBe('concurrency')
+    expect(developerTabFromHash('#developerCircuitBreakerPane')).toBe('circuit-breaker')
   })
 
   it('页签切换时生成旧入口兼容 hash', () => {
     expect(developerHashForTab('invocations')).toBe('#developerInvocationsPane')
     expect(developerHashForTab('simulator')).toBe('#developerSimulatorPane')
     expect(developerHashForTab('concurrency')).toBe('#developerConcurrencyPane')
+    expect(developerHashForTab('circuit-breaker')).toBe('#developerCircuitBreakerPane')
   })
 
   it('兼容旧页面的 Responses 原生能力推断', () => {
