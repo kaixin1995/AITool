@@ -249,6 +249,30 @@ public partial class RoutesViewModel : ViewModelBase
         MoveRule(rule, 1);
     }
 
+    public void MoveRuleByDrag(RouteRuleItem draggedRule, RouteRuleItem targetRule)
+    {
+        if (!CanEdit || ReferenceEquals(draggedRule, targetRule)) return;
+
+        var sourceIndex = Rules.IndexOf(draggedRule);
+        var targetIndex = Rules.IndexOf(targetRule);
+        if (sourceIndex < 0 || targetIndex < 0 || sourceIndex == targetIndex) return;
+
+        Rules.Move(sourceIndex, targetIndex);
+        IsDirty = true;
+        Message = string.Empty;
+        ErrorMessage = string.Empty;
+        UpdateRulePositions();
+        NotifyEditProperties();
+    }
+
+    public void CompleteRuleDrag()
+    {
+        if (IsDirty)
+        {
+            MarkDirty();
+        }
+    }
+
     private void MoveRule(RouteRuleItem? rule, int direction)
     {
         if (!CanEdit || rule is null) return;

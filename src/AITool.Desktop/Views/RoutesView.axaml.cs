@@ -1,6 +1,9 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.Primitives;
+using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.VisualTree;
 using AITool.Desktop.Models;
 using AITool.Desktop.ViewModels;
 
@@ -8,9 +11,91 @@ namespace AITool.Desktop.Views;
 
 public partial class RoutesView : UserControl
 {
+    private RouteRuleItem? _draggedRule;
+    private Point _dragStartPoint;
+    private bool _isDraggingRule;
+
     public RoutesView()
     {
         InitializeComponent();
+    }
+
+    private void StartRuleDrag(object? sender, PointerPressedEventArgs e)
+    {
+        if (e.GetCurrentPoint(this).Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonPressed
+            || FindInteractiveAncestor(e.Source as Visual) is not null
+            || FindRule(e.Source as Visual) is not RouteRuleItem rule)
+        {
+            return;
+        }
+
+        _draggedRule = rule;
+        _dragStartPoint = e.GetPosition(this);
+        _isDraggingRule = false;
+    }
+
+    private void MoveRuleDrag(object? sender, PointerEventArgs e)
+    {
+        if (_draggedRule is null
+            || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        {
+            return;
+        }
+
+        var point = e.GetPosition(this);
+        if (!_isDraggingRule
+            && Math.Abs(point.X - _dragStartPoint.X) + Math.Abs(point.Y - _dragStartPoint.Y) < 8)
+        {
+            return;
+        }
+
+        _isDraggingRule = true;
+        if (DataContext is RoutesViewModel viewModel
+            && FindRule(e.Source as Visual) is RouteRuleItem targetRule)
+        {
+            viewModel.MoveRuleByDrag(_draggedRule, targetRule);
+        }
+    }
+
+    private void EndRuleDrag(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_draggedRule is not null && _isDraggingRule && DataContext is RoutesViewModel viewModel)
+        {
+            viewModel.CompleteRuleDrag();
+        }
+
+        _draggedRule = null;
+        _isDraggingRule = false;
+    }
+
+    private static RouteRuleItem? FindRule(Visual? visual)
+    {
+        while (visual is not null)
+        {
+            if (visual.DataContext is RouteRuleItem rule)
+            {
+                return rule;
+            }
+
+            visual = visual.GetVisualParent();
+        }
+
+        return null;
+    }
+
+    private static Visual? FindInteractiveAncestor(Visual? visual)
+    {
+        while (visual is not null)
+        {
+            if (visual is Button or ToggleButton or ComboBox or TextBox or CheckBox)
+            {
+                return visual;
+            }
+
+            visual = visual.GetVisualParent();
+        }
+
+        return null;
     }
 
     private async void SelectEntry(object? sender, RoutedEventArgs e)

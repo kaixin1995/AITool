@@ -4,7 +4,10 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:AITool.Desktop.ViewModels"
     x:DataType="vm:RoutesViewModel"
-    x:CompileBindings="False">
+    x:CompileBindings="False"
+    PointerPressed="StartRuleDrag"
+    PointerMoved="MoveRuleDrag"
+    PointerReleased="EndRuleDrag">
   <Grid RowDefinitions="Auto,*" RowSpacing="24" ColumnDefinitions="260,*" ColumnSpacing="18">
       <StackPanel Grid.ColumnSpan="2" Spacing="4">
         <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="路由规则管理" />
@@ -76,7 +79,7 @@
               <Border BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="8" Padding="0">
                 <StackPanel>
                   <Border Background="#F8FAFC" Padding="14,11">
-                    <TextBlock FontSize="12" Foreground="#64748B" Text="候选队列（可使用上移/下移调整顺序，修改后自动保存）" />
+                    <TextBlock FontSize="12" Foreground="#64748B" Text="候选队列（可拖拽或使用上移/下移调整顺序，修改后自动保存）" TextWrapping="Wrap" />
                   </Border>
                   <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoRules}" Margin="20" Text="当前主入口暂无候选实例，请从上方实例池添加。" TextWrapping="Wrap" />
                   <ItemsControl ItemsSource="{Binding Rules}">
