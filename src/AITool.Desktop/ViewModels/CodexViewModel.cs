@@ -312,6 +312,32 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         return ImportCredentialFilesAsync([("imported.json", CredentialJson)]);
     }
 
+    public async Task<string?> ExportCredentialsJsonAsync()
+    {
+        if (Accounts.Count == 0)
+        {
+            Message = "暂无可导出的 Codex 账号";
+            return null;
+        }
+
+        ErrorMessage = string.Empty;
+        try
+        {
+            var result = await _apiService.SendAsync<JsonElement>(
+                HttpMethod.Post,
+                "/api/admin/codex/accounts/export-credentials",
+                new { accountIds = Accounts.Select(account => account.Id).ToList() });
+            return JsonSerializer.Serialize(
+                result,
+                new JsonSerializerOptions { WriteIndented = true });
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+            return null;
+        }
+    }
+
     public async Task ImportCredentialFilesAsync(
         IReadOnlyList<(string FileName, string JsonText)> files)
     {

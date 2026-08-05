@@ -23,6 +23,16 @@
             Content="导入凭证文件"
             Padding="14,9" />
         <Button
+            Classes="secondary-button"
+            Click="ExportCredentials"
+            Content="导出凭证"
+            Padding="14,9" />
+        <Button
+            Classes="secondary-button"
+            Click="CopyCredentials"
+            Content="复制凭证 JSON"
+            Padding="14,9" />
+        <Button
             Classes="primary-button"
             Command="{Binding StartOAuthCommand}"
             Content="＋ OAuth 登录"

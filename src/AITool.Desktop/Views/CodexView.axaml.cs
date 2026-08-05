@@ -1,3 +1,4 @@
+using System.Text;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
@@ -8,7 +9,64 @@ namespace AITool.Desktop.Views;
 
 public partial class CodexView : UserControl
 {
+    private static readonly IReadOnlyList<FilePickerFileType> JsonFileTypes =
+    [
+        new FilePickerFileType("JSON 文件")
+        {
+            Patterns = ["*.json"],
+            MimeTypes = ["application/json"]
+        }
+    ];
+
     public CodexView() => InitializeComponent();
+
+    private async void ExportCredentials(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel
+            || TopLevel.GetTopLevel(this)?.StorageProvider is not { } storageProvider)
+        {
+            return;
+        }
+
+        var json = await viewModel.ExportCredentialsJsonAsync();
+        if (string.IsNullOrWhiteSpace(json)) return;
+
+        try
+        {
+            var file = await storageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = "导出 Codex 凭证",
+                SuggestedFileName = $"codex_credentials_{DateTime.Now:yyyyMMdd}.json",
+                DefaultExtension = "json",
+                FileTypeChoices = JsonFileTypes
+            });
+            if (file is null) return;
+
+            await using var stream = await file.OpenWriteAsync();
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+            await writer.WriteAsync(json);
+            viewModel.Message = "Codex 凭证已导出到所选文件";
+        }
+        catch (Exception exception)
+        {
+            viewModel.ErrorMessage = exception.Message;
+        }
+    }
+
+    private async void CopyCredentials(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel)
+        {
+            return;
+        }
+
+        var json = await viewModel.ExportCredentialsJsonAsync();
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (string.IsNullOrWhiteSpace(json) || clipboard is null) return;
+
+        await clipboard.SetTextAsync(json);
+        viewModel.Message = "Codex 凭证 JSON 已复制到剪贴板";
+    }
 
     private async void ImportCredentialFiles(object? sender, RoutedEventArgs e)
     {
