@@ -11,6 +11,15 @@ namespace AITool.Desktop.Views;
 
 public partial class RoutesView : UserControl
 {
+    public static readonly StyledProperty<bool> ShowPageHeaderProperty =
+        AvaloniaProperty.Register<RoutesView, bool>(nameof(ShowPageHeader), true);
+
+    public bool ShowPageHeader
+    {
+        get => GetValue(ShowPageHeaderProperty);
+        set => SetValue(ShowPageHeaderProperty, value);
+    }
+
     private RouteRuleItem? _draggedRule;
     private Point _dragStartPoint;
     private bool _isDraggingRule;

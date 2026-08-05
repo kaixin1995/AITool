@@ -7,7 +7,7 @@
     x:CompileBindings="False">
   <Grid>
     <Grid RowDefinitions="Auto,*" RowSpacing="24">
-      <Grid ColumnDefinitions="*,Auto">
+      <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding ShowPageHeader, RelativeSource={RelativeSource AncestorType=UserControl}}">
         <StackPanel Spacing="4">
           <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="兼容规则集" />
           <TextBlock Classes="page-subtitle" Text="维护字段级剔除、重命名和默认值规则，可被多个模型引用" TextWrapping="Wrap" />

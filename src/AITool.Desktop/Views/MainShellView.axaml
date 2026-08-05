@@ -22,11 +22,8 @@
     <DataTemplate DataType="{x:Type vm:AccessKeysViewModel}">
       <views:AccessKeysView />
     </DataTemplate>
-    <DataTemplate DataType="{x:Type vm:RoutesViewModel}">
-      <views:RoutesView />
-    </DataTemplate>
-    <DataTemplate DataType="{x:Type vm:CompatibilityViewModel}">
-      <views:CompatibilityView />
+    <DataTemplate DataType="{x:Type vm:RouteManagementViewModel}">
+      <views:RouteManagementView />
     </DataTemplate>
     <DataTemplate DataType="{x:Type vm:DetectionViewModel}">
       <views:DetectionView />

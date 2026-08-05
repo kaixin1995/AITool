@@ -1,3 +1,4 @@
+using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using AITool.Desktop.Models;
@@ -7,6 +8,15 @@ namespace AITool.Desktop.Views;
 
 public partial class CompatibilityView : UserControl
 {
+    public static readonly StyledProperty<bool> ShowPageHeaderProperty =
+        AvaloniaProperty.Register<CompatibilityView, bool>(nameof(ShowPageHeader), true);
+
+    public bool ShowPageHeader
+    {
+        get => GetValue(ShowPageHeaderProperty);
+        set => SetValue(ShowPageHeaderProperty, value);
+    }
+
     public CompatibilityView() => InitializeComponent();
 
     private async void ConfirmDeleteProfile(object? sender, RoutedEventArgs e)
