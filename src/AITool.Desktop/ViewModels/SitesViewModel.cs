@@ -401,9 +401,8 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
     private async Task FetchModelsAsync(SiteListItem? site)
     {
         if (site is null) return;
-        CancelCatalogRequest();
-        _catalogCancellation = new CancellationTokenSource();
-        var cancellationToken = _catalogCancellation.Token;
+        var localCancellation = BeginCatalogRequest();
+        var cancellationToken = localCancellation.Token;
         CatalogVisible = true;
         CatalogLoading = true;
         CatalogErrorMessage = string.Empty;
@@ -419,6 +418,7 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
                 $"/api/admin/site-catalog/fetch-models/{Uri.EscapeDataString(site.Id)}",
                 null,
                 cancellationToken: cancellationToken);
+            if (!IsCurrentCatalogRequest(localCancellation)) return;
             ApplyCatalogResults(
             [
                 new SiteFetchResult
@@ -434,7 +434,7 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
         {
             // 关闭目录窗口或重新发起拉取时，忽略已取消的单站点请求。
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsCurrentCatalogRequest(localCancellation))
         {
             ApplyCatalogResults(
             [
@@ -450,17 +450,22 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
         }
         finally
         {
-            CatalogCompletedSites = 1;
-            CatalogLoading = false;
+            if (IsCurrentCatalogRequest(localCancellation))
+            {
+                CatalogCompletedSites = 1;
+                CatalogLoading = false;
+                Interlocked.CompareExchange(ref _catalogCancellation, null, localCancellation);
+            }
+
+            localCancellation.Dispose();
         }
     }
 
     [RelayCommand]
     private async Task FetchAllModelsAsync()
     {
-        CancelCatalogRequest();
-        _catalogCancellation = new CancellationTokenSource();
-        var cancellationToken = _catalogCancellation.Token;
+        var localCancellation = BeginCatalogRequest();
+        var cancellationToken = localCancellation.Token;
         CatalogVisible = true;
         CatalogLoading = true;
         CatalogErrorMessage = string.Empty;
@@ -476,6 +481,7 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
                 "/api/admin/site-catalog/fetch-all-models",
                 null,
                 cancellationToken: cancellationToken);
+            if (!IsCurrentCatalogRequest(localCancellation)) return;
             if (string.IsNullOrWhiteSpace(start.TaskId))
             {
                 CatalogErrorMessage = start.Message ?? "没有可拉取的启用站点";
@@ -490,6 +496,7 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
                     $"/api/admin/site-catalog/fetch-all-progress/{Uri.EscapeDataString(CatalogTaskId)}",
                     null,
                     cancellationToken: cancellationToken);
+                if (!IsCurrentCatalogRequest(localCancellation)) return;
                 ApplyCatalogProgress(progress);
                 if (progress.IsCompleted) break;
                 await Task.Delay(1200, cancellationToken);
@@ -499,13 +506,19 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
         {
             // 关闭目录窗口或重新发起拉取时，安静地结束旧轮询。
         }
-        catch (Exception exception)
+        catch (Exception exception) when (IsCurrentCatalogRequest(localCancellation))
         {
             CatalogErrorMessage = exception.Message;
         }
         finally
         {
-            CatalogLoading = false;
+            if (IsCurrentCatalogRequest(localCancellation))
+            {
+                CatalogLoading = false;
+                Interlocked.CompareExchange(ref _catalogCancellation, null, localCancellation);
+            }
+
+            localCancellation.Dispose();
         }
     }
 
@@ -728,11 +741,23 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
         NotifyCatalogStateChanged();
     }
 
+    private CancellationTokenSource BeginCatalogRequest()
+    {
+        var localCancellation = new CancellationTokenSource();
+        var previousCancellation = Interlocked.Exchange(ref _catalogCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        return localCancellation;
+    }
+
+    private bool IsCurrentCatalogRequest(CancellationTokenSource localCancellation)
+        => ReferenceEquals(_catalogCancellation, localCancellation);
+
     private void CancelCatalogRequest()
     {
-        _catalogCancellation?.Cancel();
-        _catalogCancellation?.Dispose();
-        _catalogCancellation = null;
+        var cancellation = Interlocked.Exchange(ref _catalogCancellation, null);
+        cancellation?.Cancel();
+        cancellation?.Dispose();
     }
 
     private void ClearTransientErrors()
