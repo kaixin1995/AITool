@@ -40,28 +40,28 @@
       </WrapPanel>
     </Grid>
 
-    <Border Grid.Row="1" Background="#F8FAFC" CornerRadius="10" Padding="12" IsVisible="{Binding HasAccounts}">
+    <Border Grid.Row="1" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="10" Padding="12" IsVisible="{Binding HasAccounts}">
       <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8" RowSpacing="6">
-        <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding SelectedExportText}" />
+        <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SelectedExportText}" />
         <Button Grid.Column="1" Classes="secondary-button" Command="{Binding SelectAllExportsCommand}" Content="全选账号" Padding="10,6" />
         <Button Grid.Column="2" Classes="secondary-button" Command="{Binding ClearExportSelectionCommand}" Content="清空选择" Padding="10,6" />
-        <TextBlock Grid.Row="1" Grid.ColumnSpan="3" FontSize="12" Foreground="#9A3412" Text="导出/复制仅处理已选账号" />
+        <TextBlock Grid.Row="1" Grid.ColumnSpan="3" FontSize="12" Foreground="{DynamicResource AppWarningTextBrush}" Text="导出/复制仅处理已选账号" />
       </Grid>
     </Border>
 
     <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
       <StackPanel Spacing="16">
-        <Border Background="#FFF7ED" CornerRadius="10" Padding="14" IsVisible="{Binding HasFeatureDisabled}">
+        <Border Background="{DynamicResource AppResponseBackgroundBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasFeatureDisabled}">
           <StackPanel Spacing="4">
-            <TextBlock FontWeight="SemiBold" Foreground="#9A3412" Text="Codex 功能未启用" />
-            <TextBlock Foreground="#9A3412" Text="请先在系统设置中启用 Codex 功能后再管理 OAuth 账号。" TextWrapping="Wrap" />
+            <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="Codex 功能未启用" />
+            <TextBlock Foreground="{DynamicResource AppWarningTextBrush}" Text="请先在系统设置中启用 Codex 功能后再管理 OAuth 账号。" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
-        <Border Background="#E8F7EA" CornerRadius="10" Padding="14" IsVisible="{Binding HasMessage}">
-          <TextBlock Foreground="#166534" Text="{Binding Message}" TextWrapping="Wrap" />
+        <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasMessage}">
+          <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding Message}" TextWrapping="Wrap" />
         </Border>
-        <Border Background="#FEE2E2" CornerRadius="10" Padding="14" IsVisible="{Binding HasError}">
-          <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+        <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasError}">
+          <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
         </Border>
 
         <TabControl TabStripPlacement="Top">
@@ -69,16 +69,16 @@
             <StackPanel Margin="0,16,0,0" Spacing="16">
               <Border
                   Classes="content-card"
-                  Background="#EFF6FF"
+                  Background="{DynamicResource AppInfoSoftBrush}"
                   Padding="16"
                   IsVisible="{Binding HasOAuthSession}">
                 <StackPanel Spacing="10">
                   <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
                     <StackPanel Spacing="3">
-                      <TextBlock FontWeight="SemiBold" Foreground="#315EA8" Text="OAuth 授权" />
-                      <TextBlock FontSize="12" Foreground="#64748B" Text="完成授权后粘贴浏览器回调地址" />
+                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppInfoTextBrush}" Text="OAuth 授权" />
+                      <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="完成授权后粘贴浏览器回调地址" />
                     </StackPanel>
-                    <TextBlock Grid.Column="1" FontSize="12" Foreground="#64748B" Text="授权进行中" />
+                    <TextBlock Grid.Column="1" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="授权进行中" />
                   </Grid>
                   <TextBox Classes="form-input" IsReadOnly="True" Text="{Binding OAuthUrl}" Watermark="授权地址" />
                   <Grid ColumnDefinitions="1.5*,1*,Auto" ColumnSpacing="10">
@@ -89,7 +89,7 @@
                 </StackPanel>
               </Border>
 
-              <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoAccounts}" Margin="0,35" Text="暂无 Codex 账号，请点击右上角 OAuth 登录" />
+              <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoAccounts}" Margin="0,35" Text="暂无 Codex 账号，请点击右上角 OAuth 登录" />
               <ItemsControl ItemsSource="{Binding Accounts}">
                 <ItemsControl.ItemsPanel>
                   <ItemsPanelTemplate>
@@ -104,62 +104,62 @@
                         <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" VerticalAlignment="Top">
                           <CheckBox VerticalAlignment="Top" IsChecked="{Binding IsExportSelected, Mode=TwoWay}" ToolTip.Tip="选择该账号用于导出或复制凭证" />
                           <StackPanel Grid.Column="1" Spacing="5" MinWidth="0">
-                            <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
-                            <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding Email}" TextTrimming="CharacterEllipsis" />
+                            <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
+                            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Email}" TextTrimming="CharacterEllipsis" />
                             <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,3,0,0">
-                              <Border Background="#E8F7EA" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsEnabled}">
-                                <TextBlock FontSize="11" Foreground="#166534" Text="正常" />
+                              <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsEnabled}">
+                                <TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="正常" />
                               </Border>
-                              <Border Background="#FEF3C7" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsQuotaCooling}">
-                                <TextBlock FontSize="11" Foreground="#92400E" Text="冷却中" />
+                              <Border Background="{DynamicResource AppWarningSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsQuotaCooling}">
+                                <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="冷却中" />
                               </Border>
-                              <Border Background="#F1F5F9" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsDisabled}">
-                                <TextBlock FontSize="11" Foreground="#64748B" Text="已禁用" />
+                              <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsDisabled}">
+                                <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="已禁用" />
                               </Border>
-                              <Border Background="#FEE2E2" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsTokenExpired}">
-                                <TextBlock FontSize="11" Foreground="#991B1B" Text="Token 已过期" />
+                              <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsTokenExpired}">
+                                <TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="Token 已过期" />
                               </Border>
-                              <Border Background="#FEF3C7" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsTokenExpiringSoon}">
-                                <TextBlock FontSize="11" Foreground="#92400E" Text="Token 即将过期" />
+                              <Border Background="{DynamicResource AppWarningSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsTokenExpiringSoon}">
+                                <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="Token 即将过期" />
                               </Border>
                             </StackPanel>
                           </StackPanel>
-                          <Border Grid.Column="2" Background="#FFF7ED" CornerRadius="12" Padding="10,5" VerticalAlignment="Top">
-                            <TextBlock FontSize="11" Foreground="#9A3412" Text="{Binding PlanType}" />
+                          <Border Grid.Column="2" Background="{DynamicResource AppResponseBackgroundBrush}" CornerRadius="12" Padding="10,5" VerticalAlignment="Top">
+                            <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding PlanType}" />
                           </Border>
                         </Grid>
 
-                        <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="0,14,0,0">
+                        <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,14,0,0">
                           <StackPanel Spacing="2">
                             <ItemsControl ItemsSource="{Binding Windows}" IsVisible="{Binding HasWindows}">
                               <ItemsControl.ItemTemplate>
                                 <DataTemplate>
                                   <Grid ColumnDefinitions="96,*,58" RowDefinitions="Auto,Auto" RowSpacing="6" Margin="0,0,0,12">
-                                    <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding Label}" VerticalAlignment="Center" />
+                                    <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Label}" VerticalAlignment="Center" />
                                     <ProgressBar Grid.Column="1" Maximum="100" Value="{Binding UsedPercentValue}" Height="8" VerticalAlignment="Center" />
-                                    <TextBlock Grid.Column="2" HorizontalAlignment="Right" FontSize="12" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding UsedPercentText}" VerticalAlignment="Center" />
-                                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" FontSize="11" Foreground="#94A3B8" Text="{Binding ResetText}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="2" HorizontalAlignment="Right" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding UsedPercentText}" VerticalAlignment="Center" />
+                                    <TextBlock Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding ResetText}" TextTrimming="CharacterEllipsis" />
                                   </Grid>
                                 </DataTemplate>
                               </ItemsControl.ItemTemplate>
                             </ItemsControl>
-                            <Border Background="#F8FAFC" CornerRadius="8" Padding="12" IsVisible="{Binding HasNoWindows}">
-                              <TextBlock FontSize="12" Foreground="#64748B" Text="暂无额度数据，请点击下方刷新额度" />
+                            <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12" IsVisible="{Binding HasNoWindows}">
+                              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="暂无额度数据，请点击下方刷新额度" />
                             </Border>
                           </StackPanel>
                         </Border>
 
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" VerticalAlignment="Center">
                           <StackPanel Spacing="3">
-                            <TextBlock FontSize="11" Foreground="#94A3B8" Text="最近刷新" />
-                            <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding LastQuotaCheckedText}" TextTrimming="CharacterEllipsis" />
-                            <TextBlock FontSize="11" Foreground="#94A3B8" Text="Token 过期" />
-                            <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding TokenExpiresText}" TextTrimming="CharacterEllipsis" />
+                            <TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="最近刷新" />
+                            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding LastQuotaCheckedText}" TextTrimming="CharacterEllipsis" />
+                            <TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="Token 过期" />
+                            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding TokenExpiresText}" TextTrimming="CharacterEllipsis" />
                           </StackPanel>
-                          <TextBlock Grid.Column="1" VerticalAlignment="Center" FontSize="13" FontWeight="SemiBold" Foreground="#315EA8" Text="{Binding QuotaText}" />
+                          <TextBlock Grid.Column="1" VerticalAlignment="Center" FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding QuotaText}" />
                         </Grid>
 
-                        <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="0,12,0,0">
+                        <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,12,0,0">
                           <WrapPanel HorizontalAlignment="Right">
                             <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Padding="10,7" Margin="0,0,6,0" />
@@ -181,31 +181,31 @@
 
           <TabItem Header="Codex 巡检">
             <StackPanel Margin="0,16,0,0" Spacing="16">
-              <Border Background="#FEE2E2" CornerRadius="10" Padding="14" IsVisible="{Binding HasInspectionError}">
-                <TextBlock Foreground="#B91C1C" Text="{Binding InspectionError}" TextWrapping="Wrap" />
+              <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasInspectionError}">
+                <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding InspectionError}" TextWrapping="Wrap" />
               </Border>
               <Border Classes="content-card" Padding="18" IsVisible="{Binding InspectionDisabled}">
                 <StackPanel HorizontalAlignment="Center" Spacing="10">
-                  <TextBlock HorizontalAlignment="Center" Foreground="#64748B" Text="Codex 巡检功能未开启" />
+                  <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="Codex 巡检功能未开启" />
                   <Button Classes="secondary-button" Command="{Binding RefreshInspectionCommand}" Content="重新检测" Padding="12,7" />
                 </StackPanel>
               </Border>
               <Border Classes="content-card" Padding="18" IsVisible="{Binding HasInspection}">
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16" VerticalAlignment="Center">
                   <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-                    <Border Background="#FEF3C7" CornerRadius="14" Padding="10,5" IsVisible="{Binding InspectionRunning}">
-                      <TextBlock FontSize="11" Foreground="#92400E" Text="巡检中" />
+                    <Border Background="{DynamicResource AppWarningSoftBrush}" CornerRadius="14" Padding="10,5" IsVisible="{Binding InspectionRunning}">
+                      <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="巡检中" />
                     </Border>
-                    <Border Background="#E8F7EA" CornerRadius="14" Padding="10,5" IsVisible="{Binding IsInspectionIdle}">
-                      <TextBlock FontSize="11" Foreground="#166534" Text="空闲" />
+                    <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="14" Padding="10,5" IsVisible="{Binding IsInspectionIdle}">
+                      <TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="空闲" />
                     </Border>
                     <StackPanel Spacing="3">
-                      <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="Codex 巡检状态" />
-                      <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding InspectionStatus.LastFinishedText, FallbackValue=从未完成}" />
+                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="Codex 巡检状态" />
+                      <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InspectionStatus.LastFinishedText, FallbackValue=从未完成}" />
                     </StackPanel>
                   </StackPanel>
                   <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                    <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#64748B" Text="{Binding InspectionStatus.NextScheduledText, FallbackValue=未安排}" />
+                    <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InspectionStatus.NextScheduledText, FallbackValue=未安排}" />
                     <Button Classes="secondary-button" Command="{Binding RunManualInspectionCommand}" Content="手动巡检" Height="36" MinHeight="36" Padding="11,6" />
                     <Button Classes="primary-button" Command="{Binding RunRealInspectionCommand}" Content="真实巡检" Height="36" MinHeight="36" Padding="11,6" />
                     <Button Classes="secondary-button" Command="{Binding RefreshInspectionCommand}" Content="刷新状态" Height="36" MinHeight="36" Padding="11,6" />
@@ -216,40 +216,40 @@
               <Border Classes="content-card" Padding="18" IsVisible="{Binding HasInspectionLastRun}">
                 <StackPanel Spacing="12">
                   <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
-                    <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="上次巡检结果" />
-                    <TextBlock Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding InspectionLastRun.FinishedText}" />
+                    <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="上次巡检结果" />
+                    <TextBlock Grid.Column="1" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InspectionLastRun.FinishedText}" />
                   </Grid>
                   <UniformGrid Columns="5" Rows="1">
-                    <Border Background="#F8FAFC" CornerRadius="8" Padding="12" Margin="0,0,8,0"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="保留" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding InspectionLastRun.KeepCount}" /></StackPanel></Border>
-                    <Border Background="#FEF2F2" CornerRadius="8" Padding="12" Margin="0,0,8,0"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#B91C1C" Text="禁用" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#B91C1C" Text="{Binding InspectionLastRun.DisableCount}" /></StackPanel></Border>
-                    <Border Background="#ECFDF5" CornerRadius="8" Padding="12" Margin="0,0,8,0"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#166534" Text="启用" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#166534" Text="{Binding InspectionLastRun.EnableCount}" /></StackPanel></Border>
-                    <Border Background="#EFF6FF" CornerRadius="8" Padding="12" Margin="0,0,8,0"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#315EA8" Text="缓存命中" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#315EA8" Text="{Binding InspectionLastRun.CacheCount}" /></StackPanel></Border>
-                    <Border Background="#FFF7ED" CornerRadius="8" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#9A3412" Text="真实刷新" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#9A3412" Text="{Binding InspectionLastRun.RealRefreshCount}" /></StackPanel></Border>
+                    <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12" Margin="0,0,8,0"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="保留" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding InspectionLastRun.KeepCount}" /></StackPanel></Border>
+                    <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="12" Margin="0,0,8,0"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="禁用" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding InspectionLastRun.DisableCount}" /></StackPanel></Border>
+                    <Border Background="#ECFDF5" CornerRadius="8" Padding="12" Margin="0,0,8,0"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="启用" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding InspectionLastRun.EnableCount}" /></StackPanel></Border>
+                    <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" Padding="12" Margin="0,0,8,0"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppInfoTextBrush}" Text="缓存命中" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding InspectionLastRun.CacheCount}" /></StackPanel></Border>
+                    <Border Background="{DynamicResource AppWarningSoftBrush}" CornerRadius="8" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="真实刷新" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding InspectionLastRun.RealRefreshCount}" /></StackPanel></Border>
                   </UniformGrid>
-                  <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding InspectionRunSummary}" />
+                  <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InspectionRunSummary}" />
                   <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
                     <StackPanel MinWidth="800">
-                      <Border Background="#F8FAFC" Padding="12,10">
+                      <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="12,10">
                         <Grid ColumnDefinitions="1.4*,80,80,70,70,2*" ColumnSpacing="12">
-                          <TextBlock FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="账号" />
-                          <TextBlock Grid.Column="1" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="5 小时" />
-                          <TextBlock Grid.Column="2" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="周额度" />
-                          <TextBlock Grid.Column="3" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="来源" />
-                          <TextBlock Grid.Column="4" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="动作" />
-                          <TextBlock Grid.Column="5" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="原因" />
+                          <TextBlock FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="账号" />
+                          <TextBlock Grid.Column="1" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="5 小时" />
+                          <TextBlock Grid.Column="2" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="周额度" />
+                          <TextBlock Grid.Column="3" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="来源" />
+                          <TextBlock Grid.Column="4" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="动作" />
+                          <TextBlock Grid.Column="5" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="原因" />
                         </Grid>
                       </Border>
                       <ItemsControl ItemsSource="{Binding InspectionLastRun.Accounts}">
                         <ItemsControl.ItemTemplate>
                           <DataTemplate>
-                            <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="12,10">
+                            <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="12,10">
                               <Grid ColumnDefinitions="1.4*,80,80,70,70,2*" ColumnSpacing="12" VerticalAlignment="Center">
-                                <TextBlock VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
-                                <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#64748B" Text="{Binding FiveHourText}" />
-                                <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="#64748B" Text="{Binding WeeklyText}" />
-                                <Border Grid.Column="3" Background="#EFF6FF" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left"><TextBlock FontSize="11" Foreground="#315EA8" Text="{Binding SourceText}" /></Border>
-                                <Border Grid.Column="4" Background="#E8F7EA" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left"><TextBlock FontSize="11" Foreground="#166534" Text="{Binding ActionText}" /></Border>
-                                <TextBlock Grid.Column="5" VerticalAlignment="Center" Foreground="#64748B" Text="{Binding Reason}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding FiveHourText}" />
+                                <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding WeeklyText}" />
+                                <Border Grid.Column="3" Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left"><TextBlock FontSize="11" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding SourceText}" /></Border>
+                                <Border Grid.Column="4" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding ActionText}" /></Border>
+                                <TextBlock Grid.Column="5" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Reason}" TextTrimming="CharacterEllipsis" />
                               </Grid>
                             </Border>
                           </DataTemplate>
@@ -262,16 +262,16 @@
 
               <Border Classes="content-card" Padding="18">
                 <StackPanel Spacing="10">
-                  <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="巡检日志" />
-                  <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoInspectionLogs}" Text="暂无巡检日志" />
+                  <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="巡检日志" />
+                  <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoInspectionLogs}" Text="暂无巡检日志" />
                   <ItemsControl ItemsSource="{Binding InspectionLogs}" IsVisible="{Binding HasInspectionLogs}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
-                        <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="0,10">
+                        <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,10">
                           <Grid ColumnDefinitions="170,90,*" ColumnSpacing="12" VerticalAlignment="Center">
-                            <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding AtText}" />
-                            <Border Grid.Column="1" Background="#F1F5F9" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left"><TextBlock FontSize="11" Foreground="#64748B" Text="{Binding Category}" /></Border>
-                            <TextBlock Grid.Column="2" Foreground="#1E293B" Text="{Binding Message}" TextWrapping="Wrap" />
+                            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding AtText}" />
+                            <Border Grid.Column="1" Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Category}" /></Border>
+                            <TextBlock Grid.Column="2" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Message}" TextWrapping="Wrap" />
                           </Grid>
                         </Border>
                       </DataTemplate>
@@ -285,29 +285,29 @@
       </StackPanel>
     </ScrollViewer>
 
-    <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsAccountEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+    <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsAccountEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
       <StackPanel Spacing="14">
         <Grid ColumnDefinitions="*,Auto">
-          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="编辑 Codex 账号" />
+          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="编辑 Codex 账号" />
           <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseAccountEditorCommand}" Content="关闭" Padding="10,6" />
         </Grid>
-        <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding EditingAccountEmailText}" TextWrapping="Wrap" />
-        <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="显示名称" /><TextBox Classes="form-input" Text="{Binding AccountDisplayName, Mode=TwoWay}" /></StackPanel>
-        <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="新的 Refresh Token（可选）" /><TextBox Classes="form-input" PasswordChar="●" Text="{Binding AccountRefreshToken, Mode=TwoWay}" Watermark="留空表示保留当前凭证" /></StackPanel>
-        <TextBlock FontSize="12" Foreground="#64748B" Text="Refresh Token 仅用于本次请求，不会写入桌面端配置文件或源码。" TextWrapping="Wrap" />
+        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding EditingAccountEmailText}" TextWrapping="Wrap" />
+        <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="显示名称" /><TextBox Classes="form-input" Text="{Binding AccountDisplayName, Mode=TwoWay}" /></StackPanel>
+        <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="新的 Refresh Token（可选）" /><TextBox Classes="form-input" PasswordChar="●" Text="{Binding AccountRefreshToken, Mode=TwoWay}" Watermark="留空表示保留当前凭证" /></StackPanel>
+        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="Refresh Token 仅用于本次请求，不会写入桌面端配置文件或源码。" TextWrapping="Wrap" />
         <Button Classes="primary-button" Command="{Binding SaveAccountCommand}" Content="保存账号" IsEnabled="{Binding CanSaveAccount}" HorizontalContentAlignment="Center" Padding="12,9" />
       </StackPanel>
     </Border>
 
-    <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsCredentialImportOpen}" Padding="24" Margin="12" MaxWidth="720" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="11">
+    <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsCredentialImportOpen}" Padding="24" Margin="12" MaxWidth="720" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="11">
       <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
         <Grid ColumnDefinitions="*,Auto">
-          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="导入 Codex 凭证 JSON" />
+          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="导入 Codex 凭证 JSON" />
           <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseCredentialImportCommand}" Content="关闭" Padding="10,6" />
         </Grid>
         <StackPanel Grid.Row="1" Spacing="5">
-          <TextBlock Foreground="#334155" Text="粘贴凭证 JSON" />
-          <TextBlock FontSize="12" Foreground="#64748B" Text="凭证只用于本次导入请求，不会写入桌面端配置文件或源码。" TextWrapping="Wrap" />
+          <TextBlock Foreground="{DynamicResource AppCodeForegroundBrush}" Text="粘贴凭证 JSON" />
+          <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="凭证只用于本次导入请求，不会写入桌面端配置文件或源码。" TextWrapping="Wrap" />
         </StackPanel>
         <TextBox
             Grid.Row="2"
@@ -319,8 +319,8 @@
             VerticalContentAlignment="Top"
             Watermark="请粘贴完整的凭证 JSON" />
         <StackPanel Grid.Row="3" Spacing="10">
-          <Border Background="#EFF6FF" CornerRadius="8" Padding="12" IsVisible="{Binding HasCredentialImportResult}">
-            <TextBlock Foreground="#315EA8" Text="{Binding CredentialImportResultText}" TextWrapping="Wrap" />
+          <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" Padding="12" IsVisible="{Binding HasCredentialImportResult}">
+            <TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding CredentialImportResultText}" TextWrapping="Wrap" />
           </Border>
           <Button
               Classes="primary-button"
@@ -333,12 +333,12 @@
       </Grid>
     </Border>
 
-    <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsModelEditorOpen}" Padding="24" Margin="12" MaxWidth="760" MaxHeight="760" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="12">
+    <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsModelEditorOpen}" Padding="24" Margin="12" MaxWidth="760" MaxHeight="760" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="12">
       <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
         <Grid ColumnDefinitions="*,Auto">
           <StackPanel Spacing="3">
-            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="拉取 Codex 模型" />
-            <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding ModelAccount.DisplayName, FallbackValue=当前账号}" />
+            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="拉取 Codex 模型" />
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding ModelAccount.DisplayName, FallbackValue=当前账号}" />
           </StackPanel>
           <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseModelEditorCommand}" Content="关闭" Padding="10,6" />
         </Grid>
@@ -346,20 +346,20 @@
           <TextBox Classes="form-input" Text="{Binding ModelSearchText, Mode=TwoWay}" Watermark="搜索模型名称或别名" />
           <CheckBox Grid.Column="1" Content="全选当前结果" IsChecked="{Binding AllVisibleModelsSelected, Mode=TwoWay}" VerticalAlignment="Center" />
         </Grid>
-        <Border Grid.Row="2" Background="#F8FAFC" CornerRadius="8" Padding="10">
+        <Border Grid.Row="2" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="10">
           <Grid RowDefinitions="Auto,*" RowSpacing="8">
             <ProgressBar Height="5" IsIndeterminate="True" IsVisible="{Binding IsModelLoading}" />
             <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
               <ItemsControl ItemsSource="{Binding FilteredRemoteModels}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
-                    <Border BorderBrush="#E2E8F0" BorderThickness="0,0,0,1" Padding="8,10">
+                    <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,0,0,1" Padding="8,10">
                       <Grid ColumnDefinitions="Auto,2*,1.2*,Auto" ColumnSpacing="10" MinWidth="620">
                         <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#1E293B" Text="{Binding RemoteModelName}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RemoteModelName}" />
+                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding RemoteModelName}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RemoteModelName}" />
                         <TextBox Grid.Column="2" Classes="form-input" Text="{Binding Alias, Mode=TwoWay}" Watermark="显示别名" />
-                        <Border Grid.Column="3" Background="#EFF6FF" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left">
-                          <TextBlock FontSize="11" Foreground="#315EA8" Text="{Binding ExistingMappingId}" />
+                        <Border Grid.Column="3" Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left">
+                          <TextBlock FontSize="11" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding ExistingMappingId}" />
                         </Border>
                       </Grid>
                     </Border>
@@ -370,43 +370,43 @@
           </Grid>
         </Border>
         <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
-          <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding SelectedModelText}" />
+          <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SelectedModelText}" />
           <Button Classes="secondary-button" Command="{Binding CloseModelEditorCommand}" Content="取消" Padding="12,8" />
           <Button Classes="primary-button" Command="{Binding ImportSelectedModelsCommand}" Content="导入选中" IsEnabled="{Binding CanImportSelectedModels}" Padding="12,8" />
         </StackPanel>
       </Grid>
     </Border>
 
-    <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsResetCreditOpen}" Padding="24" Margin="12" MaxWidth="560" MaxHeight="680" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="13">
+    <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsResetCreditOpen}" Padding="24" Margin="12" MaxWidth="560" MaxHeight="680" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="13">
       <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
         <Grid ColumnDefinitions="*,Auto">
           <StackPanel Spacing="3">
-            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="重置额度信用" />
-            <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding ResetCreditAccountText}" />
+            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="重置额度信用" />
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding ResetCreditAccountText}" />
           </StackPanel>
           <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseResetCreditCommand}" Content="关闭" Padding="10,6" />
         </Grid>
         <ProgressBar Grid.Row="1" Height="5" IsIndeterminate="True" IsVisible="{Binding IsResetCreditLoading}" />
         <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
           <StackPanel Spacing="10">
-            <Border Background="#EFF6FF" CornerRadius="8" Padding="12" IsVisible="{Binding HasResetCreditInfo}">
-              <TextBlock Foreground="#315EA8" Text="{Binding ResetCreditInfo.AvailableCountText}" />
+            <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" Padding="12" IsVisible="{Binding HasResetCreditInfo}">
+              <TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding ResetCreditInfo.AvailableCountText}" />
             </Border>
-            <Border Background="#FEE2E2" CornerRadius="8" Padding="12" IsVisible="{Binding HasResetCreditError}">
-              <TextBlock Foreground="#B91C1C" Text="{Binding ResetCreditInfo.Error, FallbackValue=重置信用加载失败}" TextWrapping="Wrap" />
+            <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="12" IsVisible="{Binding HasResetCreditError}">
+              <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ResetCreditInfo.Error, FallbackValue=重置信用加载失败}" TextWrapping="Wrap" />
             </Border>
             <ItemsControl ItemsSource="{Binding ResetCreditInfo.Credits}" IsVisible="{Binding ResetCreditInfo.Success}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                  <Border BorderBrush="#E2E8F0" BorderThickness="0,0,0,1" Padding="0,8">
+                  <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,0,0,1" Padding="0,8">
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
                       <StackPanel Spacing="3">
-                        <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="手动重置额度" />
-                        <TextBlock FontSize="12" Foreground="#64748B" Text="发放：{Binding GrantedAtText}" />
+                        <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="手动重置额度" />
+                        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="发放：{Binding GrantedAtText}" />
                       </StackPanel>
                       <StackPanel Grid.Column="1" Spacing="3" HorizontalAlignment="Right">
-                        <TextBlock FontSize="12" Foreground="#64748B" Text="过期时间" />
-                        <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding ExpiresAtText}" />
+                        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="过期时间" />
+                        <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding ExpiresAtText}" />
                       </StackPanel>
                     </Grid>
                   </Border>

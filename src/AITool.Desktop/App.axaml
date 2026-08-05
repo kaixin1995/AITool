@@ -21,6 +21,14 @@
           <SolidColorBrush x:Key="AppResponseBackgroundBrush" Color="#FFF7ED" />
           <SolidColorBrush x:Key="AppPrimarySoftBrush" Color="#EEF4FF" />
           <SolidColorBrush x:Key="AppOnPrimaryBrush" Color="#FFFFFF" />
+          <SolidColorBrush x:Key="AppSuccessSoftBrush" Color="#E8F7EA" />
+          <SolidColorBrush x:Key="AppSuccessTextBrush" Color="#166534" />
+          <SolidColorBrush x:Key="AppWarningSoftBrush" Color="#FEF3C7" />
+          <SolidColorBrush x:Key="AppWarningTextBrush" Color="#92400E" />
+          <SolidColorBrush x:Key="AppDangerSoftBrush" Color="#FEE2E2" />
+          <SolidColorBrush x:Key="AppDangerTextBrush" Color="#B91C1C" />
+          <SolidColorBrush x:Key="AppInfoSoftBrush" Color="#EFF6FF" />
+          <SolidColorBrush x:Key="AppInfoTextBrush" Color="#315EA8" />
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
           <SolidColorBrush x:Key="AppPageBackgroundBrush" Color="#101014" />
@@ -37,6 +45,14 @@
           <SolidColorBrush x:Key="AppResponseBackgroundBrush" Color="#2A211A" />
           <SolidColorBrush x:Key="AppPrimarySoftBrush" Color="#263A63" />
           <SolidColorBrush x:Key="AppOnPrimaryBrush" Color="#FFFFFF" />
+          <SolidColorBrush x:Key="AppSuccessSoftBrush" Color="#193423" />
+          <SolidColorBrush x:Key="AppSuccessTextBrush" Color="#9BE2AD" />
+          <SolidColorBrush x:Key="AppWarningSoftBrush" Color="#3A3015" />
+          <SolidColorBrush x:Key="AppWarningTextBrush" Color="#F4D77D" />
+          <SolidColorBrush x:Key="AppDangerSoftBrush" Color="#3A2024" />
+          <SolidColorBrush x:Key="AppDangerTextBrush" Color="#FFB4BC" />
+          <SolidColorBrush x:Key="AppInfoSoftBrush" Color="#1E3152" />
+          <SolidColorBrush x:Key="AppInfoTextBrush" Color="#AFC8FF" />
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
     </ResourceDictionary>
