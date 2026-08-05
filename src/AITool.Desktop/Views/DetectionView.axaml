@@ -36,9 +36,9 @@
 
     <ScrollViewer
         Grid.Row="2"
-        HorizontalScrollBarVisibility="Auto"
+        HorizontalScrollBarVisibility="Disabled"
         VerticalScrollBarVisibility="Auto">
-      <StackPanel MinWidth="980" Spacing="14">
+      <StackPanel Spacing="14">
         <Border Background="#EFF6FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}">
           <TextBlock Foreground="#315EA8" Text="正在加载模型检测数据..." />
         </Border>
@@ -76,7 +76,7 @@
         <ItemsControl ItemsSource="{Binding FilteredGroups}">
           <ItemsControl.ItemTemplate>
             <DataTemplate>
-              <Border Classes="content-card" MinWidth="980" Margin="0,0,0,14" Padding="0">
+              <Border Classes="content-card" Margin="0,0,0,14" Padding="0">
                 <StackPanel>
                   <Border Background="#F8FAFC" Padding="18,13">
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">

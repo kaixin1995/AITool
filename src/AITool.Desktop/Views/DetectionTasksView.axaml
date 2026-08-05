@@ -65,10 +65,10 @@
             Text="暂无检测任务" />
 
         <ScrollViewer
-            HorizontalScrollBarVisibility="Auto"
+            HorizontalScrollBarVisibility="Disabled"
             VerticalScrollBarVisibility="Auto"
             IsVisible="{Binding IsListVisible}">
-          <StackPanel MinWidth="760">
+          <StackPanel>
             <ItemsControl ItemsSource="{Binding Tasks}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
