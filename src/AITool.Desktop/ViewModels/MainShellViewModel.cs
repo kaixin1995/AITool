@@ -35,7 +35,7 @@ public sealed class NavigationGroupViewModel
     public ObservableCollection<NavigationItemViewModel> Items { get; }
 }
 
-public partial class MainShellViewModel : ViewModelBase
+public partial class MainShellViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
     private readonly SseClient _sseClient;
@@ -117,6 +117,7 @@ public partial class MainShellViewModel : ViewModelBase
             case "dashboard":
             {
                 var page = new DashboardViewModel(_apiService);
+                page.SetNavigateCallback(NavigateByDashboardKey);
                 await page.LoadAsync();
                 return page;
             }
@@ -274,6 +275,26 @@ public partial class MainShellViewModel : ViewModelBase
         {
             CurrentPage = _navigationService.CurrentViewModel;
         }
+    }
+
+    /// <summary>
+    /// 由 DashboardViewModel 的快捷按钮回调触发：根据导航 Key 找到对应的导航项并切换页面。
+    /// </summary>
+    private void NavigateByDashboardKey(string key)
+    {
+        var target = NavigationGroups
+            .SelectMany(group => group.Items)
+            .FirstOrDefault(item => string.Equals(item.Key, key, StringComparison.Ordinal));
+
+        if (target is not null)
+        {
+            NavigateCommand.Execute(target);
+        }
+    }
+
+    public void Dispose()
+    {
+        _navigationService.Navigated -= OnNavigated;
     }
 
     private static ObservableCollection<NavigationGroupViewModel> BuildNavigationGroups(AuthFeatures features)

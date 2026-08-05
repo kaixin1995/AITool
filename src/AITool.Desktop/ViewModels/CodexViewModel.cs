@@ -52,47 +52,66 @@ public partial class CodexViewModel : ViewModelBase
         ErrorMessage = string.Empty;
         try
         {
-            var accounts = await _apiService.SendAsync<List<CodexAccount>>(
-                HttpMethod.Get,
-                "/api/admin/codex/accounts",
-                null);
+            try
+            {
+                var accounts = await _apiService.SendAsync<List<CodexAccount>>(
+                    HttpMethod.Get,
+                    "/api/admin/codex/accounts",
+                    null);
 
-            Accounts = new ObservableCollection<CodexAccount>(accounts);
-            await RefreshExpiringTokensAsync();
-            OnPropertyChanged(nameof(HasAccounts));
-            OnPropertyChanged(nameof(HasNoAccounts));
+                Accounts = new ObservableCollection<CodexAccount>(accounts);
+                await RefreshExpiringTokensAsync();
+                OnPropertyChanged(nameof(HasAccounts));
+                OnPropertyChanged(nameof(HasNoAccounts));
+            }
+            catch (Exception exception)
+            {
+                ErrorMessage = exception.Message;
+            }
+
+            await LoadInspectionAsync();
         }
-        catch (Exception exception)
+        finally
         {
-            ErrorMessage = exception.Message;
+            IsLoading = false;
         }
-
-        await LoadInspectionAsync();
-        IsLoading = false;
     }
 
     private async Task RefreshExpiringTokensAsync()
     {
         var expirationThreshold = DateTimeOffset.UtcNow.AddMinutes(10);
-        foreach (var account in Accounts.ToList())
-        {
-            if (!account.IsEnabled
-                || string.IsNullOrWhiteSpace(account.TokenExpiresAt)
-                || !DateTimeOffset.TryParse(account.TokenExpiresAt, out var expiresAt)
-                || expiresAt > expirationThreshold)
-            {
-                continue;
-            }
+        var expiringAccounts = Accounts
+            .Where(account => account.IsEnabled
+                && !string.IsNullOrWhiteSpace(account.TokenExpiresAt)
+                && DateTimeOffset.TryParse(account.TokenExpiresAt, out var expiresAt)
+                && expiresAt <= expirationThreshold)
+            .ToList();
 
-            try
+        if (expiringAccounts.Count == 0) return;
+
+        // 并行刷新所有即将过期的账号；后台服务也会周期刷新，单个账号刷新失败不阻断其他账号展示。
+        // 只并行执行网络请求；对 Accounts（UI 绑定的集合）与 Message 的写入集中在 WhenAll 之后，避免并发修改。
+        var refreshTasks = expiringAccounts
+            .Select<CodexAccount, Task<(CodexAccount? Account, string? Message)>>(async account =>
             {
-                var refreshed = await RefreshTokenCoreAsync(account);
-                ReplaceAccount(refreshed);
-                Message = $"已自动刷新账号“{account.DisplayName}”的凭证";
-            }
-            catch
+                try
+                {
+                    return (await RefreshTokenCoreAsync(account), $"已自动刷新账号“{account.DisplayName}”的凭证");
+                }
+                catch
+                {
+                    return (null, null);
+                }
+            })
+            .ToArray();
+
+        var results = await Task.WhenAll(refreshTasks);
+        foreach (var (refreshedAccount, message) in results)
+        {
+            if (refreshedAccount is not null)
             {
-                // 后台服务也会周期刷新；单个账号刷新失败不阻断其他账号展示。
+                ReplaceAccount(refreshedAccount);
+                Message = message!;
             }
         }
     }

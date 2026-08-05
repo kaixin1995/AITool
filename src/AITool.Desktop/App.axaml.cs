@@ -1,8 +1,11 @@
+using System;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
+using Avalonia.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using AITool.Desktop.Services;
 using AITool.Desktop.ViewModels;
@@ -23,6 +26,8 @@ public partial class App : Application
 
     public override void OnFrameworkInitializationCompleted()
     {
+        RegisterGlobalExceptionHandlers();
+
         var services = new ServiceCollection();
         services.AddSingleton<TokenStore>();
         services.AddSingleton<HttpClient>();
@@ -82,6 +87,34 @@ public partial class App : Application
     private static WindowIcon LoadIcon()
     {
         return new WindowIcon(AssetLoader.Open(new Uri("avares://AITool.Desktop/Assets/app-icon.png")));
+    }
+
+    private static void RegisterGlobalExceptionHandlers()
+    {
+        // 捕获主线程和非托管线程上的未处理异常（例如 async void 抛出的异常）。
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (e.ExceptionObject is Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"[未捕获异常] {ex}");
+                Console.Error.WriteLine($"[未捕获异常] {ex}");
+            }
+        };
+
+        // 捕获未观察的 Task 异常，标记为已观察，避免进程崩溃。
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+        {
+            System.Diagnostics.Debug.WriteLine($"[未观察的Task异常] {e.Exception}");
+            Console.Error.WriteLine($"[未观察的Task异常] {e.Exception}");
+            e.SetObserved();
+        };
+
+        // Avalonia UI 线程上的未处理异常。
+        Dispatcher.UIThread.UnhandledException += (_, e) =>
+        {
+            System.Diagnostics.Debug.WriteLine($"[UI线程异常] {e.Exception}");
+            Console.Error.WriteLine($"[UI线程异常] {e.Exception}");
+        };
     }
 
     private static void ShowMainWindow(MainWindow window)

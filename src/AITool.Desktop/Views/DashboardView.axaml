@@ -84,10 +84,10 @@
           <StackPanel Spacing="10">
             <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="快捷操作" />
             <WrapPanel Orientation="Horizontal" ItemSpacing="10" LineSpacing="10">
-              <Button Classes="primary-button" Content="新增站点" Padding="16,8" />
-              <Button Classes="secondary-button" Content="新增模型" Padding="16,8" />
-              <Button Classes="secondary-button" Content="配置路由" Padding="16,8" />
-              <Button Classes="secondary-button" Content="查看日志" Padding="16,8" />
+              <Button Classes="primary-button" Content="新增站点" Padding="16,8" Command="{Binding NavigateToSitesCommand}" />
+              <Button Classes="secondary-button" Content="新增模型" Padding="16,8" Command="{Binding NavigateToModelsCommand}" />
+              <Button Classes="secondary-button" Content="配置路由" Padding="16,8" Command="{Binding NavigateToRoutesCommand}" />
+              <Button Classes="secondary-button" Content="查看日志" Padding="16,8" Command="{Binding NavigateToLogsCommand}" />
             </WrapPanel>
           </StackPanel>
         </Border>

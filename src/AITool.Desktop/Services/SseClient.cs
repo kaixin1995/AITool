@@ -24,6 +24,75 @@ public sealed class SseClient
         object requestBody,
         [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
     {
+        var (response, error) = await SendSseRequestAsync(path, requestBody, cancellationToken);
+        // 401 时刷新 token 重试一次。
+        if (response is null && error is { StatusCode: 401 })
+        {
+            var refreshed = await _apiService.RefreshAccessTokenAsync(cancellationToken);
+            if (refreshed)
+            {
+                (response, error) = await SendSseRequestAsync(path, requestBody, cancellationToken);
+            }
+        }
+
+        if (response is null)
+        {
+            throw new ApiException(
+                error?.Message ?? $"流式请求失败",
+                string.Empty,
+                error?.StatusCode ?? 0);
+        }
+
+        using (response)
+        {
+            // 校验 Content-Type 是否为 text/event-stream。
+            var contentType = response.Content.Headers.ContentType?.MediaType;
+            if (!string.Equals(contentType, "text/event-stream", StringComparison.OrdinalIgnoreCase))
+            {
+                var body = await response.Content.ReadAsStringAsync(cancellationToken);
+                throw new ApiException(
+                    $"预期 SSE 响应，实际收到 {contentType ?? "未知"} 内容",
+                    string.Empty,
+                    (int)response.StatusCode);
+            }
+
+            await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var reader = new StreamReader(responseStream);
+            var block = new StringBuilder();
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync(cancellationToken);
+                if (line is null) break;
+
+                if (line.Length == 0)
+                {
+                    var parsedEvent = ParseBlock(block.ToString());
+                    block.Clear();
+                    if (parsedEvent is not null)
+                    {
+                        yield return parsedEvent;
+                    }
+
+                    continue;
+                }
+
+                block.AppendLine(line);
+            }
+
+            var lastEvent = ParseBlock(block.ToString());
+            if (lastEvent is not null)
+            {
+                yield return lastEvent;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 发起 SSE 请求，返回响应或错误信息。
+    /// </summary>
+    private async Task<(HttpResponseMessage? Response, ApiException? Error)> SendSseRequestAsync(
+        string path, object requestBody, CancellationToken cancellationToken)
+    {
         using var request = new HttpRequestMessage(HttpMethod.Post, _apiService.CreateRequestUri(path))
         {
             Content = new StringContent(
@@ -39,47 +108,19 @@ public sealed class SseClient
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         }
 
-        using var response = await _httpClient.SendAsync(
+        var response = await _httpClient.SendAsync(
             request,
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken);
+
         if (!response.IsSuccessStatusCode)
         {
-            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new ApiException(
-                $"流式请求失败（HTTP {(int)response.StatusCode}）",
-                string.Empty,
-                (int)response.StatusCode);
+            var statusCode = (int)response.StatusCode;
+            response.Dispose();
+            return (null, new ApiException($"流式请求失败（HTTP {statusCode}）", string.Empty, statusCode));
         }
 
-        await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-        using var reader = new StreamReader(responseStream);
-        var block = new StringBuilder();
-        while (!reader.EndOfStream)
-        {
-            var line = await reader.ReadLineAsync(cancellationToken);
-            if (line is null) break;
-
-            if (line.Length == 0)
-            {
-                var parsedEvent = ParseBlock(block.ToString());
-                block.Clear();
-                if (parsedEvent is not null)
-                {
-                    yield return parsedEvent;
-                }
-
-                continue;
-            }
-
-            block.AppendLine(line);
-        }
-
-        var lastEvent = ParseBlock(block.ToString());
-        if (lastEvent is not null)
-        {
-            yield return lastEvent;
-        }
+        return (response, null);
     }
 
     private static SseEvent? ParseBlock(string block)

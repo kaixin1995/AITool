@@ -50,6 +50,13 @@ public partial class MainWindowViewModel : ViewModelBase
     {
         if (_authViewModel?.Status is null) return;
 
+        // 若已有 MainShellViewModel，先取消旧的登出订阅，避免回调多次挂载。
+        if (_mainShellViewModel is not null)
+        {
+            _mainShellViewModel.LogoutCompleted -= OnLogoutCompleted;
+            (_mainShellViewModel as IDisposable)?.Dispose();
+        }
+
         _mainShellViewModel = new MainShellViewModel(
             _apiService,
             _sseClient,
@@ -62,7 +69,19 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private void OnLogoutCompleted(object? sender, EventArgs args)
     {
+        // 取消旧的 MainShellViewModel 登出订阅并释放其资源（含 Navigated 订阅）。
+        if (_mainShellViewModel is not null)
+        {
+            _mainShellViewModel.LogoutCompleted -= OnLogoutCompleted;
+            (_mainShellViewModel as IDisposable)?.Dispose();
+        }
         _mainShellViewModel = null;
+
+        // 取消旧的 AuthViewModel 登录订阅，避免回调多次挂载。
+        if (_authViewModel is not null)
+        {
+            _authViewModel.LoginSucceeded -= OnLoginSucceeded;
+        }
         _authViewModel = new AuthViewModel(_apiService, _tokenStore);
         _authViewModel.LoginSucceeded += OnLoginSucceeded;
         CurrentViewModel = _authViewModel;

@@ -8,6 +8,7 @@ namespace AITool.Desktop.ViewModels;
 public partial class DashboardViewModel : ViewModelBase
 {
     private readonly ApiService _apiService;
+    private Action<string>? _navigateCallback;
 
     [ObservableProperty]
     private DashboardStats? _stats;
@@ -21,6 +22,15 @@ public partial class DashboardViewModel : ViewModelBase
     public DashboardViewModel(ApiService apiService)
     {
         _apiService = apiService;
+    }
+
+    /// <summary>
+    /// 注入导航回调，回调参数为目标页面的导航 Key（例如 "sites"），
+    /// 由 MainShellViewModel 提供以触发实际页面切换。
+    /// </summary>
+    public void SetNavigateCallback(Action<string> navigateCallback)
+    {
+        _navigateCallback = navigateCallback;
     }
 
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
@@ -62,5 +72,34 @@ public partial class DashboardViewModel : ViewModelBase
     private Task RefreshAsync()
     {
         return LoadAsync();
+    }
+
+    [RelayCommand]
+    private void NavigateToSites()
+    {
+        NavigateTo("sites");
+    }
+
+    [RelayCommand]
+    private void NavigateToModels()
+    {
+        NavigateTo("models");
+    }
+
+    [RelayCommand]
+    private void NavigateToRoutes()
+    {
+        NavigateTo("routes");
+    }
+
+    [RelayCommand]
+    private void NavigateToLogs()
+    {
+        NavigateTo("usage-logs");
+    }
+
+    private void NavigateTo(string key)
+    {
+        _navigateCallback?.Invoke(key);
     }
 }

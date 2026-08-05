@@ -97,6 +97,14 @@
             Padding="14,10" />
 
         <TextBlock
+            FontSize="13"
+            FontWeight="SemiBold"
+            Foreground="#6C9EFF"
+            HorizontalAlignment="Center"
+            IsVisible="{Binding IsBusy}"
+            Text="正在登录，请稍候..." />
+
+        <TextBlock
             FontSize="12"
             Foreground="#94A3B8"
             HorizontalAlignment="Center"

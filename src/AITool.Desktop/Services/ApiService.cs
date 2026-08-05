@@ -42,8 +42,8 @@ public sealed class ApiService
 
     public Task<AuthStatus> GetAuthStatusAsync(CancellationToken cancellationToken = default)
     {
-        // 启动时也允许用 refresh token 换发新凭证，避免仅因 access token 过期被迫重新登录。
-        return SendAsync<AuthStatus>(HttpMethod.Get, "/api/auth/status", null, true, cancellationToken);
+        // /api/auth/status 是公开端点，不需要 token，也不应该触发 401 刷新逻辑。
+        return SendAsync<AuthStatus>(HttpMethod.Get, "/api/auth/status", null, false, cancellationToken);
     }
 
     public Task<TokenPair> LoginAsync(string password, CancellationToken cancellationToken = default)
@@ -111,7 +111,7 @@ public sealed class ApiService
         return DeserializeResponse<T>(responseBody);
     }
 
-    private async Task<bool> RefreshAccessTokenAsync(CancellationToken cancellationToken)
+    internal async Task<bool> RefreshAccessTokenAsync(CancellationToken cancellationToken)
     {
         var refreshToken = _tokenStore.Settings.RefreshToken;
         if (string.IsNullOrWhiteSpace(refreshToken)) return false;
@@ -209,7 +209,8 @@ public sealed class ApiService
         var root = document.RootElement;
         if (root.ValueKind == JsonValueKind.Object
             && root.TryGetProperty("success", out var successElement)
-            && successElement.ValueKind is JsonValueKind.True or JsonValueKind.False)
+            && successElement.ValueKind is JsonValueKind.True or JsonValueKind.False
+            && IsApiResponseShape(root))
         {
             var envelope = JsonSerializer.Deserialize<ApiResponse<T>>(responseBody, JsonOptions)
                 ?? throw new ApiException("服务端响应无效", string.Empty, 0);
@@ -222,6 +223,21 @@ public sealed class ApiService
         }
 
         return JsonSerializer.Deserialize<T>(responseBody, JsonOptions)!;
+    }
+
+    /// <summary>
+    /// 判断 JSON 对象是否符合 ApiResponse 信封结构（只含 success/data/message/errorCode 四个 key），
+    /// 避免误判恰好含 success 布尔字段的领域对象。
+    /// </summary>
+    private static bool IsApiResponseShape(JsonElement root)
+    {
+        var allowedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "success", "data", "message", "errorCode" };
+        foreach (var property in root.EnumerateObject())
+        {
+            if (!allowedKeys.Contains(property.Name))
+                return false;
+        }
+        return true;
     }
 
     private static ApiException CreateApiException(HttpStatusCode statusCode, string responseBody)

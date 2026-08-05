@@ -1,6 +1,5 @@
 using System.Collections.ObjectModel;
 using System.Net.Http;
-using System.Text.Json;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -163,6 +162,24 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         return string.Join('&', values);
     }
 
+    // 用 RequestId（唯一标识）+ RequestedAt（时间戳）轻量比对，避免逐行 JSON 序列化。
+    private bool ItemsChanged(IList<UsageLogItem> next)
+    {
+        if (next.Count != Items.Count) return true;
+        for (var i = 0; i < Items.Count; i++)
+        {
+            var current = Items[i];
+            var incoming = next[i];
+            if (!string.Equals(current.RequestId, incoming.RequestId, StringComparison.Ordinal)
+                || !string.Equals(current.RequestedAt, incoming.RequestedAt, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private async Task RefreshIncrementallyAsync()
     {
         if (_disposed || !AutoRefresh || IsLoading || Interlocked.Exchange(ref _refreshInFlight, 1) == 1)
@@ -192,13 +209,12 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
                 TotalCount = list.TotalCount;
                 Items = new ObservableCollection<UsageLogItem>(list.Items);
             }
-            else if (Items.Count != list.Items.Count || list.Items.Select((item, index) =>
-                         index >= Items.Count || JsonSerializer.Serialize(item) != JsonSerializer.Serialize(Items[index])).Any(changed => changed))
+            else if (Items.Count != list.Items.Count || ItemsChanged(list.Items))
             {
                 Items = new ObservableCollection<UsageLogItem>(list.Items);
             }
 
-            if (JsonSerializer.Serialize(Summary) != JsonSerializer.Serialize(summary))
+            if (Summary.TotalRequests != summary.TotalRequests || Summary.TotalTokens != summary.TotalTokens)
             {
                 Summary = summary;
             }

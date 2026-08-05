@@ -8,7 +8,7 @@ using AITool.Desktop.Services;
 
 namespace AITool.Desktop.ViewModels;
 
-public partial class ChatViewModel : ViewModelBase
+public partial class ChatViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
     private readonly SseClient _sseClient;
@@ -114,4 +114,11 @@ public partial class ChatViewModel : ViewModelBase
     partial void OnInputChanged(string value) => OnPropertyChanged(nameof(CanSend));
     partial void OnSelectedTargetChanged(ChatModelTarget? value) => OnPropertyChanged(nameof(CanSend));
     partial void OnIsSendingChanged(bool value) => OnPropertyChanged(nameof(CanSend));
+
+    public void Dispose()
+    {
+        _streamCancellation?.Cancel();
+        _streamCancellation?.Dispose();
+        _streamCancellation = null;
+    }
 }

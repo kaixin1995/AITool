@@ -15,7 +15,7 @@ public partial class CodexAccount : ObservableObject
     public bool IsQuotaCooling { get; set; }
     public DateTimeOffset? QuotaCoolingUntil { get; set; }
     public int? ResetCreditsAvailableCount { get; set; }
-    public List<CodexQuotaWindow> Windows { get; set; } = new();
+    public List<CodexQuotaWindow>? Windows { get; set; }
 
     [ObservableProperty]
     private bool _isEnabled;
@@ -29,7 +29,7 @@ public partial class CodexAccount : ObservableObject
     public string StatusText => IsQuotaCooling ? "冷却中" : IsEnabled ? "正常" : "已禁用";
     public string ToggleActionText => IsEnabled ? "停用" : "启用";
     public bool IsDisabled => !IsEnabled;
-    public bool HasWindows => Windows.Count > 0;
+    public bool HasWindows => Windows is { Count: > 0 };
     public bool HasNoWindows => !HasWindows;
     public string QuotaText => WeeklyUsedPercent.HasValue
         ? $"周额度剩余 {Math.Max(0, 100 - WeeklyUsedPercent.Value):0.#}%"
