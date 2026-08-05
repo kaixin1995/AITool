@@ -47,7 +47,17 @@ public sealed class CompatibilityRuleForm : ObservableObject
     private string _scope = "all";
 
     [JsonPropertyName("op")]
-    public string Operation { get => _operation; set => SetProperty(ref _operation, value); }
+    public string Operation
+    {
+        get => _operation;
+        set
+        {
+            if (!SetProperty(ref _operation, value)) return;
+            OnPropertyChanged(nameof(IsTargetVisible));
+            OnPropertyChanged(nameof(IsRenameVisible));
+            OnPropertyChanged(nameof(IsDefaultVisible));
+        }
+    }
     [JsonPropertyName("target")]
     public string Target { get => _target; set => SetProperty(ref _target, value); }
     [JsonPropertyName("from")]
@@ -60,6 +70,15 @@ public sealed class CompatibilityRuleForm : ObservableObject
     public string Value { get => _value; set => SetProperty(ref _value, value); }
     [JsonPropertyName("scope")]
     public string Scope { get => _scope; set => SetProperty(ref _scope, value); }
+
+    [JsonIgnore]
+    public bool IsTargetVisible => string.Equals(Operation, "strip", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsRenameVisible => string.Equals(Operation, "rename", StringComparison.OrdinalIgnoreCase);
+
+    [JsonIgnore]
+    public bool IsDefaultVisible => string.Equals(Operation, "default", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class CompatibilityProfileEditForm : ObservableObject

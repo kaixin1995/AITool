@@ -78,11 +78,11 @@
                           <ComboBox ItemsSource="{Binding DataContext.OperationOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding Operation}" />
                           <ComboBox Grid.Column="1" ItemsSource="{Binding DataContext.ScopeOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding Scope}" />
                           <Button Grid.Column="2" Classes="secondary-button" Command="{Binding DataContext.RemoveRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="8,5" />
-                          <TextBox Grid.Row="1" Text="{Binding Target}" Watermark="target（strip）" />
-                          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding From}" Watermark="from（rename）" />
-                          <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding To}" Watermark="to（rename）" />
-                          <TextBox Grid.Row="2" Text="{Binding Key}" Watermark="key（default）" />
-                          <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding Value}" Watermark="value（default）" />
+                          <TextBox Grid.Row="1" Text="{Binding Target}" Watermark="target（strip）" IsVisible="{Binding IsTargetVisible}" />
+                          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding From}" Watermark="from（rename）" IsVisible="{Binding IsRenameVisible}" />
+                          <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding To}" Watermark="to（rename）" IsVisible="{Binding IsRenameVisible}" />
+                          <TextBox Grid.Row="2" Text="{Binding Key}" Watermark="key（default）" IsVisible="{Binding IsDefaultVisible}" />
+                          <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding Value}" Watermark="value（default）" IsVisible="{Binding IsDefaultVisible}" />
                         </Grid>
                       </Border>
                     </DataTemplate>
