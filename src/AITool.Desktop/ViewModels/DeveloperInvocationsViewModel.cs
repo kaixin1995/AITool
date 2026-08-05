@@ -13,8 +13,22 @@ namespace AITool.Desktop.ViewModels;
 public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
+    private readonly SemaphoreSlim _listLoadLock = new(1, 1);
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private readonly object _simulatorCancellationLock = new();
+    private readonly Dictionary<DeveloperSimulatorTab, CancellationTokenSource> _simulatorCancellations = new();
     private Timer? _refreshTimer;
-    private CancellationTokenSource? _simulatorCancellation;
+    private CancellationTokenSource? _initializationCancellation;
+    private CancellationTokenSource? _listCancellation;
+    private CancellationTokenSource? _detailCancellation;
+    private CancellationTokenSource? _concurrencyCancellation;
+    private CancellationTokenSource? _circuitCancellation;
+    private int _initializationGeneration;
+    private int _listGeneration;
+    private int _detailGeneration;
+    private int _concurrencyGeneration;
+    private int _circuitGeneration;
+    private int _refreshInFlight;
     private bool _disposed;
 
     [ObservableProperty] private ObservableCollection<DeveloperInvocationSummary> _items = new();
@@ -89,14 +103,27 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
 
     public async Task LoadAsync()
     {
+        if (_disposed) return;
+
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var previousCancellation = Interlocked.Exchange(ref _initializationCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        var generation = Interlocked.Increment(ref _initializationGeneration);
+        CancelCurrentListRequest();
         IsLoading = true;
         ErrorMessage = string.Empty;
+
         try
         {
             var init = await _apiService.SendAsync<DeveloperInitResponse>(
                 HttpMethod.Get,
                 "/api/admin/developer/invocations/init",
-                null);
+                null,
+                true,
+                localCancellation.Token);
+            if (!IsCurrentInitialization(generation, localCancellation)) return;
+
             BaseUrl = init.DefaultBaseUrl;
             AccessKey = init.DefaultAccessKey;
             Models = new ObservableCollection<DeveloperSimulatorModel>(init.Models);
@@ -109,102 +136,260 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
 
             UpdateSimulatorExamples();
             UpdateSupportHint();
-            await LoadInvocationsAsync();
+            await LoadInvocationsAsync(null, localCancellation.Token);
+        }
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
+        {
+            // 页面销毁或新一轮加载会取消旧请求，不显示为普通错误。
         }
         catch (Exception exception)
         {
-            ErrorMessage = exception.Message;
+            if (IsCurrentInitialization(generation, localCancellation))
+            {
+                ErrorMessage = exception.Message;
+            }
         }
         finally
         {
-            IsLoading = false;
-            UpdatePaging();
-            ConfigureAutoRefresh();
+            if (IsCurrentInitialization(generation, localCancellation))
+            {
+                if (_listCancellation is null) IsLoading = false;
+                Interlocked.CompareExchange(ref _initializationCancellation, null, localCancellation);
+                UpdatePaging();
+                ConfigureAutoRefresh();
+            }
+
+            localCancellation.Dispose();
         }
     }
 
-    private async Task LoadInvocationsAsync()
+    private async Task LoadInvocationsAsync(int? requestedPage = null, CancellationToken parentCancellation = default)
     {
-        var response = await _apiService.SendAsync<DeveloperListResponse>(
-            HttpMethod.Get,
-            $"/api/admin/developer/invocations/list?page={Page}&pageSize=40",
-            null);
-        Items = new ObservableCollection<DeveloperInvocationSummary>(response.Entries);
-        Page = response.Page;
-        TotalPages = response.TotalPages;
-        TotalCount = response.TotalCount;
-        FailedCount = response.FailedCount;
-        PendingCount = response.PendingCount;
-        OnPropertyChanged(nameof(HasItems));
-        OnPropertyChanged(nameof(HasNoItems));
+        if (_disposed) return;
+
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(
+            _lifetimeCancellation.Token,
+            parentCancellation);
+        var previousCancellation = Interlocked.Exchange(ref _listCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        var generation = Interlocked.Increment(ref _listGeneration);
+        var lockAcquired = false;
+        IsLoading = true;
+        ErrorMessage = string.Empty;
         UpdatePaging();
+
+        try
+        {
+            await _listLoadLock.WaitAsync(localCancellation.Token);
+            lockAcquired = true;
+
+            var response = await _apiService.SendAsync<DeveloperListResponse>(
+                HttpMethod.Get,
+                $"/api/admin/developer/invocations/list?page={requestedPage ?? Page}&pageSize=40",
+                null,
+                true,
+                localCancellation.Token);
+            if (!IsCurrentListRequest(generation, localCancellation)) return;
+
+            Items = new ObservableCollection<DeveloperInvocationSummary>(response.Entries);
+            Page = response.Page;
+            TotalPages = response.TotalPages;
+            TotalCount = response.TotalCount;
+            FailedCount = response.FailedCount;
+            PendingCount = response.PendingCount;
+            OnPropertyChanged(nameof(HasItems));
+            OnPropertyChanged(nameof(HasNoItems));
+            UpdatePaging();
+        }
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
+        {
+            // 页面销毁或新一轮列表请求会取消旧请求。
+        }
+        catch (Exception exception)
+        {
+            if (IsCurrentListRequest(generation, localCancellation))
+            {
+                ErrorMessage = exception.Message;
+            }
+        }
+        finally
+        {
+            if (IsCurrentListRequest(generation, localCancellation))
+            {
+                IsLoading = false;
+                Interlocked.CompareExchange(ref _listCancellation, null, localCancellation);
+                UpdatePaging();
+            }
+
+            if (lockAcquired) _listLoadLock.Release();
+            localCancellation.Dispose();
+        }
+    }
+
+    private bool IsCurrentInitialization(int generation, CancellationTokenSource localCancellation)
+        => !_disposed
+            && generation == Volatile.Read(ref _initializationGeneration)
+            && ReferenceEquals(_initializationCancellation, localCancellation);
+
+    private bool IsCurrentListRequest(int generation, CancellationTokenSource localCancellation)
+        => !_disposed
+            && generation == Volatile.Read(ref _listGeneration)
+            && ReferenceEquals(_listCancellation, localCancellation);
+
+    private void CancelCurrentListRequest()
+    {
+        Interlocked.Increment(ref _listGeneration);
+        var cancellation = Interlocked.Exchange(ref _listCancellation, null);
+        cancellation?.Cancel();
+        cancellation?.Dispose();
     }
 
     private async Task LoadConcurrencyAsync()
     {
+        if (_disposed) return;
+
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var previousCancellation = Interlocked.Exchange(ref _concurrencyCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        var generation = Interlocked.Increment(ref _concurrencyGeneration);
         IsConcurrencyLoading = true;
         ConcurrencyError = string.Empty;
+
         try
         {
             var response = await _apiService.SendAsync<DeveloperConcurrencyResponse>(
                 HttpMethod.Get,
                 "/api/admin/developer/invocations/concurrency",
-                null);
+                null,
+                true,
+                localCancellation.Token);
+            if (!IsCurrentConcurrencyRequest(generation, localCancellation)) return;
+
             Concurrency = new ObservableCollection<DeveloperConcurrencyItem>(response.Items);
-            OnPropertyChanged(nameof(HasConcurrency));
+            NotifyConcurrencyProperties();
         }
-        catch (ApiException exception) when (exception.StatusCode == 404)
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
         {
-            Concurrency.Clear();
-            OnPropertyChanged(nameof(HasConcurrency));
-            OnPropertyChanged(nameof(HasNoConcurrency));
+            // 页面销毁或新一轮并发请求会取消旧请求。
+        }
+        catch (ApiException exception) when (exception.StatusCode == 404 && IsCurrentConcurrencyRequest(generation, localCancellation))
+        {
+            Concurrency = new ObservableCollection<DeveloperConcurrencyItem>();
             ConcurrencyError = string.Empty;
+            NotifyConcurrencyProperties();
         }
         catch (Exception exception)
         {
-            ConcurrencyError = exception.Message;
+            if (IsCurrentConcurrencyRequest(generation, localCancellation))
+            {
+                ConcurrencyError = exception.Message;
+            }
         }
         finally
         {
-            IsConcurrencyLoading = false;
+            if (IsCurrentConcurrencyRequest(generation, localCancellation))
+            {
+                IsConcurrencyLoading = false;
+                Interlocked.CompareExchange(ref _concurrencyCancellation, null, localCancellation);
+            }
+
+            localCancellation.Dispose();
         }
     }
 
     private async Task LoadCircuitAsync()
     {
+        if (_disposed) return;
+
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var previousCancellation = Interlocked.Exchange(ref _circuitCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        var generation = Interlocked.Increment(ref _circuitGeneration);
         IsCircuitLoading = true;
+
         try
         {
             var response = await _apiService.SendAsync<CircuitBreakerResponse>(
                 HttpMethod.Get,
                 "/api/admin/developer/invocations/circuit-breaker",
-                null);
+                null,
+                true,
+                localCancellation.Token);
+            if (!IsCurrentCircuitRequest(generation, localCancellation)) return;
+
             CircuitRoutes = new ObservableCollection<CircuitBreakerRoute>(response.Routes);
-            OnPropertyChanged(nameof(HasCircuitRoutes));
-            OnPropertyChanged(nameof(HasBlockedCircuits));
+            NotifyCircuitProperties();
         }
-        catch (ApiException exception) when (exception.StatusCode == 404)
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
         {
-            CircuitRoutes.Clear();
-            OnPropertyChanged(nameof(HasCircuitRoutes));
-            OnPropertyChanged(nameof(HasBlockedCircuits));
+            // 页面销毁或新一轮熔断请求会取消旧请求。
+        }
+        catch (ApiException exception) when (exception.StatusCode == 404 && IsCurrentCircuitRequest(generation, localCancellation))
+        {
+            CircuitRoutes = new ObservableCollection<CircuitBreakerRoute>();
+            ErrorMessage = string.Empty;
+            NotifyCircuitProperties();
         }
         catch (Exception exception)
         {
-            ErrorMessage = exception.Message;
+            if (IsCurrentCircuitRequest(generation, localCancellation))
+            {
+                ErrorMessage = exception.Message;
+            }
         }
         finally
         {
-            IsCircuitLoading = false;
+            if (IsCurrentCircuitRequest(generation, localCancellation))
+            {
+                IsCircuitLoading = false;
+                Interlocked.CompareExchange(ref _circuitCancellation, null, localCancellation);
+            }
+
+            localCancellation.Dispose();
         }
+    }
+
+    private bool IsCurrentConcurrencyRequest(int generation, CancellationTokenSource localCancellation)
+        => !_disposed
+            && generation == Volatile.Read(ref _concurrencyGeneration)
+            && ReferenceEquals(_concurrencyCancellation, localCancellation);
+
+    private bool IsCurrentCircuitRequest(int generation, CancellationTokenSource localCancellation)
+        => !_disposed
+            && generation == Volatile.Read(ref _circuitGeneration)
+            && ReferenceEquals(_circuitCancellation, localCancellation);
+
+    private void NotifyConcurrencyProperties()
+    {
+        OnPropertyChanged(nameof(HasConcurrency));
+        OnPropertyChanged(nameof(HasNoConcurrency));
+    }
+
+    private void NotifyCircuitProperties()
+    {
+        OnPropertyChanged(nameof(HasCircuitRoutes));
+        OnPropertyChanged(nameof(HasNoCircuitRoutes));
+        OnPropertyChanged(nameof(HasBlockedCircuits));
     }
 
     private async Task LoadActiveTabAsync()
     {
+        if (_disposed) return;
+
         if (SelectedTabIndex == 0)
         {
             try { await LoadInvocationsAsync(); }
-            catch (Exception exception) { ErrorMessage = exception.Message; }
+            catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+            {
+                // 页面销毁时取消列表请求，不显示为普通错误。
+            }
+            catch (Exception exception) when (!_disposed)
+            {
+                ErrorMessage = exception.Message;
+            }
         }
         else if (SelectedTabIndex == 2)
         {
@@ -233,18 +418,38 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
 
     private async Task RefreshActiveTabAsync()
     {
-        if (_disposed || IsLoading || IsDetailLoading) return;
-        if (SelectedTabIndex == 0 && AutoRefresh)
+        if (_disposed
+            || IsLoading
+            || IsDetailLoading
+            || (SelectedTabIndex == 2 && IsConcurrencyLoading)
+            || (SelectedTabIndex == 3 && IsCircuitLoading)
+            || Interlocked.Exchange(ref _refreshInFlight, 1) == 1)
         {
-            try { await LoadInvocationsAsync(); } catch { /* 自动刷新失败时保留当前页面 */ }
+            return;
         }
-        else if (SelectedTabIndex == 2)
+
+        try
         {
-            await LoadConcurrencyAsync();
+            if (SelectedTabIndex == 0 && AutoRefresh)
+            {
+                await LoadInvocationsAsync();
+            }
+            else if (SelectedTabIndex == 2)
+            {
+                await LoadConcurrencyAsync();
+            }
+            else if (SelectedTabIndex == 3)
+            {
+                await LoadCircuitAsync();
+            }
         }
-        else if (SelectedTabIndex == 3)
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
         {
-            await LoadCircuitAsync();
+            // 页面销毁时取消自动刷新，不显示为普通错误。
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _refreshInFlight, 0);
         }
     }
 
@@ -266,83 +471,133 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
     private async Task PreviousPageAsync()
     {
         if (!CanPrevious) return;
-        Page--;
-        await LoadInvocationsAsync();
+        await LoadInvocationsAsync(Page - 1);
     }
 
     [RelayCommand]
     private async Task NextPageAsync()
     {
         if (!CanNext) return;
-        Page++;
-        await LoadInvocationsAsync();
+        await LoadInvocationsAsync(Page + 1);
     }
 
     [RelayCommand]
     private async Task OpenDetailAsync(DeveloperInvocationSummary? item)
     {
-        if (item is null) return;
+        if (item is null || _disposed) return;
+
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var previousCancellation = Interlocked.Exchange(ref _detailCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        var generation = Interlocked.Increment(ref _detailGeneration);
         IsDetailLoading = true;
         ErrorMessage = string.Empty;
+
         try
         {
-            SelectedDetail = await _apiService.SendAsync<DeveloperInvocationDetail>(
+            var detail = await _apiService.SendAsync<DeveloperInvocationDetail>(
                 HttpMethod.Get,
                 $"/api/admin/developer/invocations/{Uri.EscapeDataString(item.TraceId)}?summarize={SummarizeDetail.ToString().ToLowerInvariant()}",
-                null);
+                null,
+                true,
+                localCancellation.Token);
+            if (!IsCurrentDetailRequest(generation, localCancellation)) return;
+
+            SelectedDetail = detail;
+        }
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
+        {
+            // 切换详情或页面销毁时取消旧详情请求。
         }
         catch (Exception exception)
         {
-            ErrorMessage = exception.Message;
+            if (IsCurrentDetailRequest(generation, localCancellation))
+            {
+                ErrorMessage = exception.Message;
+            }
         }
         finally
         {
-            IsDetailLoading = false;
+            if (IsCurrentDetailRequest(generation, localCancellation))
+            {
+                IsDetailLoading = false;
+                Interlocked.CompareExchange(ref _detailCancellation, null, localCancellation);
+            }
+
+            localCancellation.Dispose();
         }
     }
 
+    private bool IsCurrentDetailRequest(int generation, CancellationTokenSource localCancellation)
+        => !_disposed
+            && generation == Volatile.Read(ref _detailGeneration)
+            && ReferenceEquals(_detailCancellation, localCancellation);
+
     [RelayCommand]
-    private void CloseDetail() => SelectedDetail = null;
+    private void CloseDetail()
+    {
+        // 关闭详情时取消未完成请求，避免响应返回后重新打开旧详情。
+        Interlocked.Increment(ref _detailGeneration);
+        var cancellation = Interlocked.Exchange(ref _detailCancellation, null);
+        cancellation?.Cancel();
+        cancellation?.Dispose();
+        IsDetailLoading = false;
+        SelectedDetail = null;
+    }
 
     [RelayCommand]
     private async Task ResetCircuitAsync(CircuitBreakerRoute? route)
     {
-        if (route is null) return;
+        if (route is null || _disposed) return;
         try
         {
             await _apiService.SendAsync<JsonElement>(
                 HttpMethod.Post,
                 $"/api/admin/developer/invocations/circuit-breaker/{Uri.EscapeDataString(route.RouteId)}/reset",
-                null);
+                null,
+                true,
+                _lifetimeCancellation.Token);
             await LoadCircuitAsync();
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            // 页面销毁时取消熔断操作。
         }
         catch (Exception exception)
         {
-            ErrorMessage = exception.Message;
+            if (!_disposed) ErrorMessage = exception.Message;
         }
     }
 
     [RelayCommand]
     private async Task ResetAllCircuitsAsync()
     {
+        if (_disposed) return;
         try
         {
             await _apiService.SendAsync<JsonElement>(
                 HttpMethod.Post,
                 "/api/admin/developer/invocations/circuit-breaker/reset-all",
-                null);
+                null,
+                true,
+                _lifetimeCancellation.Token);
             await LoadCircuitAsync();
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            // 页面销毁时取消熔断操作。
         }
         catch (Exception exception)
         {
-            ErrorMessage = exception.Message;
+            if (!_disposed) ErrorMessage = exception.Message;
         }
     }
 
     [RelayCommand]
     private async Task SendSimulatorAsync(DeveloperSimulatorTab? tab)
     {
-        if (tab is null || tab.IsRunning) return;
+        if (tab is null || tab.IsRunning || _disposed) return;
         if (!Uri.TryCreate(BaseUrl.TrimEnd('/') + "/", UriKind.Absolute, out var baseUri))
         {
             tab.Response = "请求失败：代理根地址无效";
@@ -368,9 +623,18 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
         var requestBody = BuildSimulatorBody(tab);
         var headers = BuildSimulatorHeaders(tab);
         var requestUri = new Uri(baseUri, tab.Endpoint.TrimStart('/'));
-        _simulatorCancellation?.Cancel();
-        _simulatorCancellation?.Dispose();
-        _simulatorCancellation = new CancellationTokenSource();
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        lock (_simulatorCancellationLock)
+        {
+            if (_simulatorCancellations.ContainsKey(tab))
+            {
+                localCancellation.Dispose();
+                return;
+            }
+
+            _simulatorCancellations[tab] = localCancellation;
+        }
+
         tab.IsRunning = true;
         tab.Response = tab.StreamEnabled ? "正在接收流式响应..." : "请求中...";
         try
@@ -380,33 +644,52 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
                 requestUri,
                 headers,
                 requestBody,
-                _simulatorCancellation.Token);
-            tab.Response = FormatSimulatorResponse(response);
+                localCancellation.Token);
+            if (!_disposed) tab.Response = FormatSimulatorResponse(response);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
         {
-            tab.Response = "请求已取消";
+            if (!_disposed) tab.Response = "请求已取消";
         }
         catch (Exception exception)
         {
-            tab.Response = $"请求失败：{exception.Message}";
+            if (!_disposed) tab.Response = $"请求失败：{exception.Message}";
         }
         finally
         {
-            tab.IsRunning = false;
-            _simulatorCancellation?.Dispose();
-            _simulatorCancellation = null;
+            var isCurrentRequest = false;
+            lock (_simulatorCancellationLock)
+            {
+                if (_simulatorCancellations.TryGetValue(tab, out var currentCancellation)
+                    && ReferenceEquals(currentCancellation, localCancellation))
+                {
+                    _simulatorCancellations.Remove(tab);
+                    isCurrentRequest = true;
+                }
+            }
+
+            if (isCurrentRequest)
+            {
+                if (!_disposed) tab.IsRunning = false;
+                localCancellation.Dispose();
+            }
         }
     }
 
     [RelayCommand]
     private void StopSimulator(DeveloperSimulatorTab? tab)
     {
-        if (tab?.IsRunning == true)
+        if (tab?.IsRunning != true) return;
+
+        lock (_simulatorCancellationLock)
         {
-            _simulatorCancellation?.Cancel();
-            tab.Response = "请求已取消";
+            if (_simulatorCancellations.TryGetValue(tab, out var cancellation))
+            {
+                cancellation.Cancel();
+            }
         }
+
+        if (!_disposed) tab.Response = "请求已取消";
     }
 
     private bool EnsureProtocolModel(DeveloperSimulatorTab tab)
@@ -539,14 +822,42 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
         if (_disposed) return;
         _disposed = true;
         _refreshTimer?.Dispose();
-        _simulatorCancellation?.Cancel();
-        _simulatorCancellation?.Dispose();
-        _simulatorCancellation = null;
+        _refreshTimer = null;
+        CancelCurrentListRequest();
+
+        var initializationCancellation = Interlocked.Exchange(ref _initializationCancellation, null);
+        initializationCancellation?.Cancel();
+        initializationCancellation?.Dispose();
+        var detailCancellation = Interlocked.Exchange(ref _detailCancellation, null);
+        detailCancellation?.Cancel();
+        detailCancellation?.Dispose();
+        var concurrencyCancellation = Interlocked.Exchange(ref _concurrencyCancellation, null);
+        concurrencyCancellation?.Cancel();
+        concurrencyCancellation?.Dispose();
+        var circuitCancellation = Interlocked.Exchange(ref _circuitCancellation, null);
+        circuitCancellation?.Cancel();
+        circuitCancellation?.Dispose();
+
+        _lifetimeCancellation.Cancel();
+        lock (_simulatorCancellationLock)
+        {
+            foreach (var cancellation in _simulatorCancellations.Values)
+            {
+                cancellation.Cancel();
+                cancellation.Dispose();
+            }
+
+            _simulatorCancellations.Clear();
+        }
+
+        // 取消后仍可能有请求进入 finally 释放分页锁，因此不在这里销毁 SemaphoreSlim。
+        _lifetimeCancellation.Dispose();
     }
 
     partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
     partial void OnConcurrencyErrorChanged(string value) => OnPropertyChanged(nameof(HasConcurrencyError));
     partial void OnSelectedDetailChanged(DeveloperInvocationDetail? value) => OnPropertyChanged(nameof(HasDetail));
+    partial void OnIsLoadingChanged(bool value) => UpdatePaging();
     partial void OnSelectedTabIndexChanged(int value)
     {
         OnPropertyChanged(nameof(SelectedTabTitle));
