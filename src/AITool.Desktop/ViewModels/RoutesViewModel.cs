@@ -18,6 +18,27 @@ public partial class RoutesViewModel : ViewModelBase
     private ObservableCollection<RouteRuleItem> _rules = new();
 
     [ObservableProperty]
+    private ObservableCollection<SiteInstanceItem> _siteInstances = new();
+
+    [ObservableProperty]
+    private SiteInstanceItem? _selectedSiteInstance;
+
+    [ObservableProperty]
+    private string _candidateSearch = string.Empty;
+
+    [ObservableProperty]
+    private bool _isRefreshingPool;
+
+    [ObservableProperty]
+    private bool _isSavingRules;
+
+    [ObservableProperty]
+    private bool _isDirty;
+
+    [ObservableProperty]
+    private string _message = string.Empty;
+
+    [ObservableProperty]
     private RouteEntry? _selectedEntry;
 
     [ObservableProperty]
@@ -38,9 +59,23 @@ public partial class RoutesViewModel : ViewModelBase
     }
 
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
+    public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
     public bool HasSelectedEntry => SelectedEntry is not null;
     public bool HasNoSelectedEntry => !HasSelectedEntry;
-    public bool CanCreate => !IsCreating;
+    public bool HasRules => Rules.Count > 0;
+    public bool HasNoRules => !HasRules;
+    public bool HasSiteInstances => FilteredSiteInstances.Any();
+    public bool HasNoSiteInstances => !HasSiteInstances;
+    public bool CanCreate => !IsCreating && !IsSavingRules;
+    public bool CanEdit => HasSelectedEntry && !IsLoading && !IsSavingRules;
+    public bool CanAddCandidate => CanEdit && SelectedSiteInstance is not null;
+    public bool CanSaveRules => CanEdit && IsDirty;
+    public bool CanRefreshPool => !IsRefreshingPool && !IsSavingRules;
+    public IEnumerable<SiteInstanceItem> FilteredSiteInstances => SiteInstances
+        .Where(instance => string.IsNullOrWhiteSpace(CandidateSearch)
+            || instance.SiteName.Contains(CandidateSearch.Trim(), StringComparison.OrdinalIgnoreCase)
+            || instance.SiteModelName.Contains(CandidateSearch.Trim(), StringComparison.OrdinalIgnoreCase))
+        .ToList();
 
     public async Task LoadAsync()
     {
@@ -48,8 +83,17 @@ public partial class RoutesViewModel : ViewModelBase
         ErrorMessage = string.Empty;
         try
         {
-            var entries = await _apiService.SendAsync<List<RouteEntry>>(HttpMethod.Get, "/api/admin/route-rules/entries", null);
-            Entries = new ObservableCollection<RouteEntry>(entries);
+            var entriesTask = _apiService.SendAsync<List<RouteEntry>>(
+                HttpMethod.Get,
+                "/api/admin/route-rules/entries",
+                null);
+            var instancesTask = _apiService.SendAsync<List<SiteInstanceItem>>(
+                HttpMethod.Get,
+                "/api/admin/route-rules/site-instances",
+                null);
+
+            Entries = new ObservableCollection<RouteEntry>(await entriesTask);
+            SiteInstances = new ObservableCollection<SiteInstanceItem>(await instancesTask);
             if (SelectedEntry is not null && Entries.All(entry => entry.EntryName != SelectedEntry.EntryName))
             {
                 SelectedEntry = null;
@@ -106,6 +150,154 @@ public partial class RoutesViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    private async Task DeleteEntryAsync()
+    {
+        if (!CanEdit || SelectedEntry is null) return;
+        try
+        {
+            await _apiService.SendAsync<object>(
+                HttpMethod.Post,
+                "/api/admin/route-rules/entries/delete",
+                new { entryName = SelectedEntry.EntryName });
+            IsDirty = false;
+            SelectedEntry = null;
+            Message = "路由入口已删除";
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+    }
+
+    [RelayCommand]
+    private async Task RefreshSiteInstancesAsync()
+    {
+        if (!CanRefreshPool) return;
+        IsRefreshingPool = true;
+        ErrorMessage = string.Empty;
+        try
+        {
+            var instances = await _apiService.SendAsync<List<SiteInstanceItem>>(
+                HttpMethod.Get,
+                "/api/admin/route-rules/site-instances",
+                null);
+            SiteInstances = new ObservableCollection<SiteInstanceItem>(instances);
+            Message = "实例池已刷新";
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsRefreshingPool = false;
+            NotifyPoolProperties();
+        }
+    }
+
+    [RelayCommand]
+    private void AddSelectedCandidate()
+    {
+        if (!CanEdit || SelectedEntry is null || SelectedSiteInstance is null) return;
+        if (Rules.Any(rule => rule.SiteId == SelectedSiteInstance.SiteId
+            && rule.SiteModelName == SelectedSiteInstance.SiteModelName))
+        {
+            ErrorMessage = "该站点实例已在当前候选队列中";
+            return;
+        }
+
+        Rules.Add(new RouteRuleItem
+        {
+            SiteId = SelectedSiteInstance.SiteId,
+            SiteName = SelectedSiteInstance.SiteName,
+            SiteEnabled = SelectedSiteInstance.SiteEnabled,
+            UpstreamModelName = SelectedSiteInstance.SiteModelName,
+            SiteModelName = SelectedSiteInstance.SiteModelName,
+            Priority = Rules.Count,
+            ModelPriority = 0,
+            InstancePriority = 0,
+            IsEnabled = true,
+            AvailabilityMode = "AllDay"
+        });
+        SelectedSiteInstance = null;
+        MarkDirty();
+        UpdateRulePositions();
+    }
+
+    [RelayCommand]
+    private void MoveRuleUp(RouteRuleItem? rule)
+    {
+        MoveRule(rule, -1);
+    }
+
+    [RelayCommand]
+    private void MoveRuleDown(RouteRuleItem? rule)
+    {
+        MoveRule(rule, 1);
+    }
+
+    private void MoveRule(RouteRuleItem? rule, int direction)
+    {
+        if (!CanEdit || rule is null) return;
+        var index = Rules.IndexOf(rule);
+        var target = index + direction;
+        if (index < 0 || target < 0 || target >= Rules.Count) return;
+
+        Rules.Move(index, target);
+        MarkDirty();
+        UpdateRulePositions();
+    }
+
+    [RelayCommand]
+    private void RemoveCandidate(RouteRuleItem? rule)
+    {
+        if (!CanEdit || rule is null) return;
+        Rules.Remove(rule);
+        MarkDirty();
+        UpdateRulePositions();
+    }
+
+    [RelayCommand]
+    private async Task SaveRulesAsync()
+    {
+        if (!CanSaveRules || SelectedEntry is null) return;
+        IsSavingRules = true;
+        ErrorMessage = string.Empty;
+        try
+        {
+            await _apiService.SendAsync<object>(
+                HttpMethod.Post,
+                "/api/admin/route-rules/save",
+                new
+                {
+                    externalModelName = SelectedEntry.EntryName,
+                    rules = Rules.Select(rule => new
+                    {
+                        siteId = rule.SiteId,
+                        siteModelName = rule.SiteModelName,
+                        upstreamModelName = rule.UpstreamModelName,
+                        isEnabled = rule.IsEnabled,
+                        availabilityMode = rule.AvailabilityMode,
+                        timeRangesJson = rule.TimeRangesJson
+                    }).ToList()
+                });
+            IsDirty = false;
+            Message = "路由候选队列已保存";
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsSavingRules = false;
+            NotifyEditProperties();
+        }
+    }
+
+    [RelayCommand]
     private async Task ToggleRuleAsync(RouteRuleItem? rule)
     {
         if (rule is null) return;
@@ -140,14 +332,30 @@ public partial class RoutesViewModel : ViewModelBase
         if (SelectedEntry is null)
         {
             Rules = new ObservableCollection<RouteRuleItem>();
+            IsDirty = false;
+            UpdateRulePositions();
+            NotifyEditProperties();
             return;
         }
 
-        var rules = await _apiService.SendAsync<List<RouteRuleItem>>(
-            HttpMethod.Get,
-            $"/api/admin/route-rules/list?modelName={Uri.EscapeDataString(SelectedEntry.EntryName)}",
-            null);
-        Rules = new ObservableCollection<RouteRuleItem>(rules.OrderBy(rule => rule.Priority));
+        try
+        {
+            var rules = await _apiService.SendAsync<List<RouteRuleItem>>(
+                HttpMethod.Get,
+                $"/api/admin/route-rules/list?modelName={Uri.EscapeDataString(SelectedEntry.EntryName)}",
+                null);
+            Rules = new ObservableCollection<RouteRuleItem>(rules.OrderBy(rule => rule.Priority));
+            IsDirty = false;
+            UpdateRulePositions();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            NotifyEditProperties();
+        }
     }
 
     partial void OnSelectedEntryChanged(RouteEntry? value)
@@ -157,10 +365,76 @@ public partial class RoutesViewModel : ViewModelBase
             entry.IsSelected = ReferenceEquals(entry, value);
         }
 
+        SelectedSiteInstance = null;
         OnPropertyChanged(nameof(HasSelectedEntry));
         OnPropertyChanged(nameof(HasNoSelectedEntry));
+        NotifyEditProperties();
     }
 
-    partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
-    partial void OnIsCreatingChanged(bool value) => OnPropertyChanged(nameof(CanCreate));
+    private void MarkDirty()
+    {
+        IsDirty = true;
+        Message = string.Empty;
+        ErrorMessage = string.Empty;
+        NotifyEditProperties();
+    }
+
+    private void UpdateRulePositions()
+    {
+        if (SelectedEntry is not null)
+        {
+            SelectedEntry.CandidateCount = Rules.Count;
+        }
+
+        for (var index = 0; index < Rules.Count; index++)
+        {
+            Rules[index].SetPriority(index);
+            Rules[index].CanMoveUp = index > 0;
+            Rules[index].CanMoveDown = index < Rules.Count - 1;
+        }
+
+        OnPropertyChanged(nameof(HasRules));
+        OnPropertyChanged(nameof(HasNoRules));
+    }
+
+    private void NotifyPoolProperties()
+    {
+        OnPropertyChanged(nameof(FilteredSiteInstances));
+        OnPropertyChanged(nameof(HasSiteInstances));
+        OnPropertyChanged(nameof(HasNoSiteInstances));
+        OnPropertyChanged(nameof(CanRefreshPool));
+        OnPropertyChanged(nameof(CanEdit));
+        OnPropertyChanged(nameof(CanAddCandidate));
+    }
+
+    private void NotifyEditProperties()
+    {
+        OnPropertyChanged(nameof(CanCreate));
+        OnPropertyChanged(nameof(CanEdit));
+        OnPropertyChanged(nameof(CanAddCandidate));
+        OnPropertyChanged(nameof(CanSaveRules));
+        OnPropertyChanged(nameof(CanRefreshPool));
+    }
+
+    partial void OnRulesChanged(ObservableCollection<RouteRuleItem> value)
+    {
+        UpdateRulePositions();
+        OnPropertyChanged(nameof(HasRules));
+        OnPropertyChanged(nameof(HasNoRules));
+    }
+
+    partial void OnSiteInstancesChanged(ObservableCollection<SiteInstanceItem> value) => NotifyPoolProperties();
+    partial void OnCandidateSearchChanged(string value) => NotifyPoolProperties();
+    partial void OnSelectedSiteInstanceChanged(SiteInstanceItem? value) => NotifyEditProperties();
+    partial void OnIsLoadingChanged(bool value) => NotifyEditProperties();
+    partial void OnIsSavingRulesChanged(bool value) => NotifyEditProperties();
+    partial void OnIsRefreshingPoolChanged(bool value) => NotifyPoolProperties();
+    partial void OnIsDirtyChanged(bool value) => OnPropertyChanged(nameof(CanSaveRules));
+    partial void OnMessageChanged(string value) => OnPropertyChanged(nameof(HasMessage));
+    partial void OnErrorMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasError));
+    }
+
+    partial void OnIsCreatingChanged(bool value) => NotifyEditProperties();
 }
