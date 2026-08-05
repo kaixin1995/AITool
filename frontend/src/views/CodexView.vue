@@ -1095,13 +1095,16 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .codex-token-expired {
-  color: #e03131;
+  color: var(--status-danger-text, #e03131);
   font-weight: 600;
 }
 
 .codex-token-warning {
-  color: #d97706;
+  color: var(--status-warning-text, #d97706);
 }
+
+:global([data-theme='dark']) .codex-token-expired { color: #f87171; }
+:global([data-theme='dark']) .codex-token-warning { color: #fbbf24; }
 
 .reset-credit-list-title {
   margin: 0 0 8px;
@@ -1308,7 +1311,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .codex-card:hover {
-  border-color: color-mix(in srgb, var(--status-warning-text) 42%, var(--border-color-global));
+  border-color: color-mix(in srgb, var(--primary-color, #3b82f6) 42%, var(--border-color-global));
   box-shadow: 0 4px 16px rgba(15, 23, 42, 0.1);
 }
 
@@ -1322,9 +1325,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .codex-card.selected {
-  border-color: var(--status-warning-text);
-  background: color-mix(in srgb, var(--status-warning-bg) 42%, var(--bg-card));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-warning-text) 25%, transparent);
+  border-color: var(--primary-color, #3b82f6);
+  background: color-mix(in srgb, var(--primary-color, #3b82f6) 10%, var(--bg-card));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color, #3b82f6) 20%, transparent);
 }
 
 .codex-export-checkbox {
@@ -1410,13 +1413,17 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .codex-token-expiry.codex-token-expired {
-  color: #e03131;
+  color: var(--status-danger-text, #e03131);
   font-weight: 600;
 }
 
 .codex-token-expiry.codex-token-warning {
-  color: #d97706;
+  color: var(--status-warning-text, #d97706);
 }
+
+:global([data-theme='dark']) .codex-token-expiry.codex-token-expired { color: #f87171; }
+:global([data-theme='dark']) .codex-token-expiry.codex-token-warning { color: #fbbf24; }
+:global([data-theme='dark']) .codex-token-expiry { color: rgba(255, 255, 255, 0.5); }
 
 .codex-windows-container {
   min-height: 60px;
@@ -1514,9 +1521,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   stroke-linejoin: round;
 }
 
-.codex-icon-button.primary { color: var(--status-warning-text); }
-.codex-icon-button.info { color: var(--status-info-text); }
-.codex-icon-button.danger { color: var(--status-danger-text); }
+.codex-icon-button.primary { color: var(--primary-color, #3b82f6); }
+.codex-icon-button.info { color: var(--status-info-text, #3b82f6); }
+.codex-icon-button.danger { color: var(--status-danger-text, #e03131); }
+
+/* 暗色模式下确保图标按钮在深色背景上清晰可见 */
+:global([data-theme='dark']) .codex-icon-button.primary { color: #60a5fa; }
+:global([data-theme='dark']) .codex-icon-button.info { color: #38bdf8; }
+:global([data-theme='dark']) .codex-icon-button.danger { color: #f87171; }
 
 :global([data-theme='dark']) .codex-card {
   border-color: var(--border-color-global);
