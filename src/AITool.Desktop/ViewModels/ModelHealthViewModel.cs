@@ -7,11 +7,15 @@ using AITool.Desktop.Services;
 
 namespace AITool.Desktop.ViewModels;
 
-public partial class ModelHealthViewModel : ViewModelBase
+public partial class ModelHealthViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
     private readonly SemaphoreSlim _loadLock = new(1, 1);
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private CancellationTokenSource? _loadCancellation;
+    private int _loadGeneration;
     private bool _suppressRangeReload;
+    private bool _disposed;
 
     [ObservableProperty] private ObservableCollection<ModelHealthMonitoredModel> _monitoredModels = new();
     [ObservableProperty] private ObservableCollection<ModelHealthModelOption> _availableModels = new();
@@ -73,19 +77,34 @@ public partial class ModelHealthViewModel : ViewModelBase
 
     public async Task LoadAsync()
     {
-        await _loadLock.WaitAsync();
-        IsLoading = true;
-        ErrorMessage = string.Empty;
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var previousCancellation = Interlocked.Exchange(ref _loadCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        var generation = Interlocked.Increment(ref _loadGeneration);
+        var lockAcquired = false;
+
         try
         {
+            await _loadLock.WaitAsync(localCancellation.Token);
+            lockAcquired = true;
+            if (IsCurrentLoad(generation, localCancellation))
+            {
+                IsLoading = true;
+                ErrorMessage = string.Empty;
+            }
+
             var range = string.IsNullOrWhiteSpace(SelectedRange?.Value)
                 ? "7d"
                 : SelectedRange.Value;
             var dashboard = await _apiService.SendAsync<ModelHealthDashboard>(
                 HttpMethod.Get,
                 $"/api/admin/model-health?range={Uri.EscapeDataString(range)}",
-                null);
+                null,
+                true,
+                localCancellation.Token);
 
+            if (!IsCurrentLoad(generation, localCancellation)) return;
             foreach (var model in dashboard.MonitoredModels)
             {
                 if (dashboard.HealthData.TryGetValue(model.ModelLibraryItemId, out var sites))
@@ -109,17 +128,32 @@ public partial class ModelHealthViewModel : ViewModelBase
             _suppressRangeReload = false;
             NotifyCollectionProperties();
         }
-        catch (Exception exception)
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
+        {
+            // 时间范围切换或页面销毁时取消旧请求，不显示为普通错误。
+        }
+        catch (Exception exception) when (IsCurrentLoad(generation, localCancellation))
         {
             ErrorMessage = exception.Message;
         }
         finally
         {
-            IsLoading = false;
-            _loadLock.Release();
-            NotifyCanAddMonitor();
+            if (IsCurrentLoad(generation, localCancellation))
+            {
+                IsLoading = false;
+                Interlocked.CompareExchange(ref _loadCancellation, null, localCancellation);
+                NotifyCanAddMonitor();
+            }
+
+            if (lockAcquired) _loadLock.Release();
+            localCancellation.Dispose();
         }
     }
+
+    private bool IsCurrentLoad(int generation, CancellationTokenSource localCancellation)
+        => !_disposed
+            && generation == Volatile.Read(ref _loadGeneration)
+            && ReferenceEquals(_loadCancellation, localCancellation);
 
     [RelayCommand]
     private Task RefreshAsync() => LoadAsync();
@@ -262,5 +296,19 @@ public partial class ModelHealthViewModel : ViewModelBase
         {
             _ = LoadAsync();
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+
+        _disposed = true;
+        var loadCancellation = Interlocked.Exchange(ref _loadCancellation, null);
+        loadCancellation?.Cancel();
+        loadCancellation?.Dispose();
+
+        _lifetimeCancellation.Cancel();
+        _lifetimeCancellation.Dispose();
+        _loadLock.Dispose();
     }
 }
