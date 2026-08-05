@@ -1,0 +1,160 @@
+using System.Collections.ObjectModel;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using AITool.Desktop.Models;
+using AITool.Desktop.Services;
+
+namespace AITool.Desktop.ViewModels;
+
+public partial class NavigationItemViewModel : ObservableObject
+{
+    public NavigationItemViewModel(string key, string label, string icon)
+    {
+        Key = key;
+        Label = label;
+        Icon = icon;
+    }
+
+    public string Key { get; }
+    public string Label { get; }
+    public string Icon { get; }
+
+    [ObservableProperty]
+    private bool _isSelected;
+}
+
+public sealed class NavigationGroupViewModel
+{
+    public NavigationGroupViewModel(string title, IEnumerable<NavigationItemViewModel> items)
+    {
+        Title = title;
+        Items = new ObservableCollection<NavigationItemViewModel>(items);
+    }
+
+    public string Title { get; }
+    public ObservableCollection<NavigationItemViewModel> Items { get; }
+}
+
+public partial class MainShellViewModel : ViewModelBase
+{
+    private readonly ApiService _apiService;
+    private readonly NavigationService _navigationService;
+
+    [ObservableProperty]
+    private PlaceholderPageViewModel _currentPage = new("仪表盘", "桌面端管理界面已连接");
+
+    [ObservableProperty]
+    private NavigationItemViewModel? _selectedItem;
+
+    public MainShellViewModel(ApiService apiService, NavigationService navigationService, AuthStatus status)
+    {
+        _apiService = apiService;
+        _navigationService = navigationService;
+        NavigationGroups = BuildNavigationGroups(status.Features);
+        SelectedItem = NavigationGroups.SelectMany(group => group.Items).FirstOrDefault();
+        if (SelectedItem is not null)
+        {
+            SelectedItem.IsSelected = true;
+        }
+
+        _navigationService.Navigated += OnNavigated;
+    }
+
+    public ObservableCollection<NavigationGroupViewModel> NavigationGroups { get; }
+
+    public event EventHandler? LogoutCompleted;
+
+    [RelayCommand]
+    private void Navigate(NavigationItemViewModel? item)
+    {
+        if (item is null) return;
+
+        foreach (var navigationItem in NavigationGroups.SelectMany(group => group.Items))
+        {
+            navigationItem.IsSelected = ReferenceEquals(navigationItem, item);
+        }
+
+        SelectedItem = item;
+        var description = item.Key switch
+        {
+            "analytics" => "图表页面将在桌面端后续接入专用图表组件。",
+            "model-health" => "模型健康时间线将在桌面端后续接入专用图表组件。",
+            _ => $"{item.Label}页面正在迁移到 Avalonia 桌面端。"
+        };
+        _navigationService.Navigate(new PlaceholderPageViewModel(item.Label, description));
+    }
+
+    [RelayCommand]
+    private async Task LogoutAsync()
+    {
+        try
+        {
+            await _apiService.LogoutAsync();
+        }
+        catch
+        {
+            // 登出失败时仍然回到认证页面，避免本地会话残留。
+        }
+
+        LogoutCompleted?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnNavigated(object? sender, EventArgs args)
+    {
+        if (_navigationService.CurrentViewModel is PlaceholderPageViewModel page)
+        {
+            CurrentPage = page;
+        }
+    }
+
+    private static ObservableCollection<NavigationGroupViewModel> BuildNavigationGroups(AuthFeatures features)
+    {
+        var groups = new ObservableCollection<NavigationGroupViewModel>
+        {
+            new(
+                "概览",
+                new[]
+                {
+                    new NavigationItemViewModel("dashboard", "仪表盘", "📊"),
+                    new NavigationItemViewModel("analytics", "可视化分析", "🛰️"),
+                    new NavigationItemViewModel("chat", "对话", "💬")
+                }),
+            new(
+                "资源管理",
+                new[]
+                {
+                    new NavigationItemViewModel("sites", "站点管理", "🌐"),
+                    new NavigationItemViewModel("models", "模型库", "🧠")
+                }),
+            new(
+                "代理配置",
+                new[]
+                {
+                    new NavigationItemViewModel("routes", "路由管理", "🔀"),
+                    new NavigationItemViewModel("access-keys", "访问密钥", "🔑")
+                }),
+            new(
+                "监控运维",
+                new[]
+                {
+                    new NavigationItemViewModel("detection", "模型检测", "🔍"),
+                    new NavigationItemViewModel("detection-tasks", "检测任务", "⏰"),
+                    new NavigationItemViewModel("model-health", "模型健康", "💊"),
+                    new NavigationItemViewModel("usage-logs", "使用日志", "📋"),
+                    new NavigationItemViewModel("system-settings", "系统设置", "⚙️")
+                })
+        };
+
+        if (features.CodexEnabled)
+        {
+            groups[1].Items.Insert(1, new NavigationItemViewModel("codex", "OAuth 管理", "🔐"));
+        }
+
+        if (features.DeveloperEnabled)
+        {
+            groups[3].Items.Insert(3, new NavigationItemViewModel("developer-invocations", "调试工具", "🛠️"));
+        }
+
+        return groups;
+    }
+}

@@ -1,0 +1,22 @@
+<Window
+    x:Class="AITool.Desktop.Views.MainWindow"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    xmlns:views="using:AITool.Desktop.Views"
+    x:CompileBindings="False"
+    Width="1280"
+    Height="800"
+    MinWidth="960"
+    MinHeight="640"
+    Title="AI Tool">
+  <Window.DataTemplates>
+    <DataTemplate DataType="{x:Type vm:AuthViewModel}">
+      <views:LoginView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:MainShellViewModel}">
+      <views:MainShellView />
+    </DataTemplate>
+  </Window.DataTemplates>
+  <ContentControl Content="{Binding CurrentViewModel}" />
+</Window>

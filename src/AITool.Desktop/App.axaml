@@ -1,0 +1,94 @@
+<Application
+    x:Class="AITool.Desktop.App"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <Application.Styles>
+    <FluentTheme />
+
+    <!-- 颜色和间距对齐 frontend/src/styles/main.css。 -->
+    <Style Selector="Window">
+      <Setter Property="Background" Value="#F8FAFC" />
+      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="FontFamily" Value="Microsoft YaHei, Segoe UI, sans-serif" />
+    </Style>
+
+    <Style Selector="TextBlock.page-title">
+      <Setter Property="FontSize" Value="24" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="Foreground" Value="#1E293B" />
+    </Style>
+
+    <Style Selector="TextBlock.page-subtitle">
+      <Setter Property="Foreground" Value="#64748B" />
+      <Setter Property="FontSize" Value="14" />
+    </Style>
+
+    <Style Selector="TextBox.form-input">
+      <Setter Property="Background" Value="#F8FAFC" />
+      <Setter Property="BorderBrush" Value="#E2E8F0" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="FontSize" Value="14" />
+      <Setter Property="MinHeight" Value="42" />
+      <Setter Property="Padding" Value="12,9" />
+    </Style>
+
+    <Style Selector="TextBox.form-input:focus">
+      <Setter Property="BorderBrush" Value="#6C9EFF" />
+      <Setter Property="Background" Value="#FFFFFF" />
+    </Style>
+
+    <Style Selector="Button.primary-button">
+      <Setter Property="Background" Value="#6C9EFF" />
+      <Setter Property="Foreground" Value="#FFFFFF" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="MinHeight" Value="42" />
+      <Setter Property="CornerRadius" Value="8" />
+    </Style>
+
+    <Style Selector="Button.primary-button:pointerover">
+      <Setter Property="Background" Value="#5B8DEF" />
+    </Style>
+
+    <Style Selector="Button.secondary-button">
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="BorderBrush" Value="#E2E8F0" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Foreground" Value="#475569" />
+      <Setter Property="CornerRadius" Value="8" />
+    </Style>
+
+    <Style Selector="Button.secondary-button:pointerover">
+      <Setter Property="Background" Value="#F1F5F9" />
+      <Setter Property="BorderBrush" Value="#CBD5E1" />
+    </Style>
+
+    <Style Selector="ToggleButton.nav-item">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Foreground" Value="#64748B" />
+      <Setter Property="HorizontalContentAlignment" Value="Left" />
+      <Setter Property="Padding" Value="12,10" />
+      <Setter Property="Margin" Value="0,2" />
+      <Setter Property="CornerRadius" Value="8" />
+    </Style>
+
+    <Style Selector="ToggleButton.nav-item:pointerover">
+      <Setter Property="Background" Value="#F1F5F9" />
+      <Setter Property="Foreground" Value="#1E293B" />
+    </Style>
+
+    <Style Selector="ToggleButton.nav-item:checked">
+      <Setter Property="Background" Value="#EEF4FF" />
+      <Setter Property="Foreground" Value="#5B8DEF" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <Style Selector="Border.content-card">
+      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="BorderBrush" Value="#E2E8F0" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="12" />
+    </Style>
+  </Application.Styles>
+</Application>
