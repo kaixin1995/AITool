@@ -30,6 +30,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private ObservableCollection<CodexInspectionLog> _inspectionLogs = new();
     [ObservableProperty] private bool _inspectionRunning;
     [ObservableProperty] private bool _inspectionDisabled;
+    [ObservableProperty] private bool _featureDisabled;
     [ObservableProperty] private string _inspectionError = string.Empty;
     [ObservableProperty] private CodexAccount? _editingAccount;
     [ObservableProperty] private string _accountDisplayName = string.Empty;
@@ -56,7 +57,8 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         _apiService = apiService;
     }
 
-    public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
+    public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage) && !FeatureDisabled;
+    public bool HasFeatureDisabled => FeatureDisabled;
     public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
     public bool HasAccounts => Accounts.Count > 0;
     public bool HasNoAccounts => !IsLoading && !HasError && !HasAccounts;
@@ -122,6 +124,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                     "/api/admin/codex/accounts",
                     null);
 
+                FeatureDisabled = false;
                 foreach (var account in accounts)
                 {
                     account.IsExportSelected = true;
@@ -134,8 +137,16 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                 OnPropertyChanged(nameof(HasAccounts));
                 OnPropertyChanged(nameof(HasNoAccounts));
             }
+            catch (ApiException exception) when (exception.StatusCode == 404)
+            {
+                FeatureDisabled = true;
+                ErrorMessage = string.Empty;
+                Accounts.Clear();
+                NotifyAccountProperties();
+            }
             catch (Exception exception)
             {
+                FeatureDisabled = false;
                 ErrorMessage = exception.Message;
             }
 
@@ -294,6 +305,13 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(SelectedExportText));
         OnPropertyChanged(nameof(HasSelectedExports));
         OnPropertyChanged(nameof(AllAccountsSelected));
+    }
+
+    private void NotifyAccountProperties()
+    {
+        OnPropertyChanged(nameof(HasAccounts));
+        OnPropertyChanged(nameof(HasNoAccounts));
+        NotifyExportSelectionProperties();
     }
 
     [RelayCommand]
@@ -912,6 +930,12 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     {
         OnPropertyChanged(nameof(HasError));
         OnPropertyChanged(nameof(HasNoAccounts));
+    }
+
+    partial void OnFeatureDisabledChanged(bool value)
+    {
+        OnPropertyChanged(nameof(HasFeatureDisabled));
+        OnPropertyChanged(nameof(HasError));
     }
 
     partial void OnMessageChanged(string value) => OnPropertyChanged(nameof(HasMessage));

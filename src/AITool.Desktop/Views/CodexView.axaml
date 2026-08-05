@@ -51,6 +51,12 @@
 
     <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
       <StackPanel Spacing="16">
+        <Border Background="#FFF7ED" CornerRadius="10" Padding="14" IsVisible="{Binding HasFeatureDisabled}">
+          <StackPanel Spacing="4">
+            <TextBlock FontWeight="SemiBold" Foreground="#9A3412" Text="Codex 功能未启用" />
+            <TextBlock Foreground="#9A3412" Text="请先在系统设置中启用 Codex 功能后再管理 OAuth 账号。" TextWrapping="Wrap" />
+          </StackPanel>
+        </Border>
         <Border Background="#E8F7EA" CornerRadius="10" Padding="14" IsVisible="{Binding HasMessage}">
           <TextBlock Foreground="#166534" Text="{Binding Message}" TextWrapping="Wrap" />
         </Border>
