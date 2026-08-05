@@ -66,7 +66,7 @@ public sealed class SiteDetail
     public DateTimeOffset CreatedAt { get; set; }
 }
 
-public class SitePayload
+public partial class SitePayload : ObservableObject
 {
     public string Name { get; set; } = string.Empty;
     public string BaseUrl { get; set; } = string.Empty;
@@ -77,14 +77,18 @@ public class SitePayload
     public bool IsEnabled { get; set; } = true;
 }
 
-public sealed class SiteExportItem : SitePayload
+public sealed partial class SiteExportItem : SitePayload
 {
     public string Id { get; set; } = string.Empty;
+
+    [ObservableProperty]
+    private bool _isSelected = true;
 }
 
-public sealed class SiteImportPreviewItem : SitePayload
+public sealed partial class SiteImportPreviewItem : SitePayload
 {
-    public bool IsSelected { get; set; } = true;
+    [ObservableProperty]
+    private bool _isSelected = true;
 
     public string ProtocolType => !SupportsOpenAi && !SupportsAnthropic
         ? "Responses"

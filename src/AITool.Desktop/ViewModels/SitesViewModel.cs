@@ -23,6 +23,8 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
     private CancellationTokenSource? _catalogCancellation;
     private readonly HashSet<SiteListItem> _siteSelectionSubscriptions = new();
     private readonly HashSet<SiteCatalogModelItem> _catalogSelectionSubscriptions = new();
+    private readonly HashSet<SiteImportPreviewItem> _importPreviewSubscriptions = new();
+    private readonly HashSet<SiteExportItem> _exportPreviewSubscriptions = new();
 
     [ObservableProperty]
     private ObservableCollection<SiteListItem> _sites = new();
@@ -53,6 +55,30 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty]
     private string _operationErrorMessage = string.Empty;
+
+    [ObservableProperty]
+    private string _operationMessage = string.Empty;
+
+    [ObservableProperty]
+    private bool _isImportPreviewOpen;
+
+    [ObservableProperty]
+    private ObservableCollection<SiteImportPreviewItem> _importPreviewItems = new();
+
+    [ObservableProperty]
+    private string _importJsonText = string.Empty;
+
+    [ObservableProperty]
+    private bool _isImporting;
+
+    [ObservableProperty]
+    private bool _isExportPreviewOpen;
+
+    [ObservableProperty]
+    private ObservableCollection<SiteExportItem> _exportPreviewItems = new();
+
+    [ObservableProperty]
+    private bool _isExportLoading;
 
     [ObservableProperty]
     private ObservableCollection<SiteCatalogSiteItem> _catalogSites = new();
@@ -96,6 +122,7 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasEditorError => !string.IsNullOrWhiteSpace(EditorErrorMessage);
     public bool HasOperationError => !string.IsNullOrWhiteSpace(OperationErrorMessage);
+    public bool HasOperationMessage => !string.IsNullOrWhiteSpace(OperationMessage);
     public bool HasCatalogError => !string.IsNullOrWhiteSpace(CatalogErrorMessage);
     public bool IsListVisible => !IsLoading && (Sites.Count > 0 || !HasError);
     public bool HasSites => Sites.Count > 0;
@@ -134,6 +161,30 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
     public string CatalogProgressText => CatalogTotalSites <= 0
         ? string.Empty
         : $"拉取进度：{CatalogCompletedSites} / {CatalogTotalSites}";
+    public bool HasImportPreviewItems => ImportPreviewItems.Count > 0;
+    public bool HasNoImportPreviewItems => !HasImportPreviewItems;
+    public int SelectedImportCount => ImportPreviewItems.Count(item => item.IsSelected);
+    public bool CanConfirmImport => !IsImporting && SelectedImportCount > 0;
+    public bool AllImportItemsSelected => HasImportPreviewItems
+        && ImportPreviewItems.All(item => item.IsSelected);
+    public bool HasExportPreviewItems => ExportPreviewItems.Count > 0;
+    public int SelectedExportCount => ExportPreviewItems.Count(item => item.IsSelected);
+    public bool CanExportPreview => !IsExportLoading && SelectedExportCount > 0;
+    public bool AllExportItemsSelected => HasExportPreviewItems
+        && ExportPreviewItems.All(item => item.IsSelected);
+    public string ExportPreviewJson => JsonSerializer.Serialize(
+        ExportPreviewItems.Where(item => item.IsSelected).Select(item => new SiteExportItem
+        {
+            Id = item.Id,
+            Name = item.Name,
+            BaseUrl = item.BaseUrl,
+            EndpointPathMode = item.EndpointPathMode,
+            ApiKey = item.ApiKey,
+            SupportsOpenAi = item.SupportsOpenAi,
+            SupportsAnthropic = item.SupportsAnthropic,
+            IsEnabled = item.IsEnabled
+        }).ToList(),
+        JsonOptions);
 
     public async Task LoadAsync()
     {
@@ -344,57 +395,171 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
         }
     }
 
-    public async Task ImportJsonAsync(string json)
+    public async Task LoadExportPreviewAsync()
+    {
+        IsExportPreviewOpen = true;
+        IsExportLoading = true;
+        OperationErrorMessage = string.Empty;
+        try
+        {
+            var items = await _apiService.SendAsync<List<SiteExportItem>>(
+                HttpMethod.Get,
+                "/api/admin/sites/export",
+                null);
+            SetExportPreviewItems(items ?? []);
+        }
+        catch (Exception exception)
+        {
+            OperationErrorMessage = exception.Message;
+            SetExportPreviewItems([]);
+        }
+        finally
+        {
+            IsExportLoading = false;
+            NotifyPreviewProperties();
+        }
+    }
+
+    public void CloseExportPreview() => IsExportPreviewOpen = false;
+
+    public void OpenImportPreview()
+    {
+        OperationErrorMessage = string.Empty;
+        ImportJsonText = string.Empty;
+        SetImportPreviewItems([]);
+        IsImportPreviewOpen = true;
+    }
+
+    public void CloseImportPreview()
+    {
+        IsImportPreviewOpen = false;
+        ImportJsonText = string.Empty;
+        SetImportPreviewItems([]);
+    }
+
+    public bool ParseImportPreview(string json)
     {
         OperationErrorMessage = string.Empty;
         if (string.IsNullOrWhiteSpace(json))
         {
             OperationErrorMessage = "导入文件为空";
-            return;
+            return false;
         }
 
-        List<SiteImportPreviewItem>? importedItems;
         try
         {
-            importedItems = JsonSerializer.Deserialize<List<SiteImportPreviewItem>>(json, JsonOptions);
+            var importedItems = JsonSerializer.Deserialize<List<SiteImportPreviewItem>>(json, JsonOptions) ?? [];
+            foreach (var item in importedItems)
+            {
+                item.IsSelected = !string.IsNullOrWhiteSpace(item.Name)
+                    && !string.IsNullOrWhiteSpace(item.BaseUrl)
+                    && !string.IsNullOrWhiteSpace(item.ApiKey);
+            }
+
+            SetImportPreviewItems(importedItems);
+            if (!HasImportPreviewItems)
+            {
+                OperationErrorMessage = "JSON 中没有站点记录";
+                return false;
+            }
+
+            return true;
         }
         catch (JsonException exception)
         {
             OperationErrorMessage = $"JSON 解析失败：{exception.Message}";
-            return;
+            SetImportPreviewItems([]);
+            return false;
         }
+    }
 
-        var payloads = importedItems?
-            .Where(item => !string.IsNullOrWhiteSpace(item.Name)
-                && !string.IsNullOrWhiteSpace(item.BaseUrl)
-                && !string.IsNullOrWhiteSpace(item.ApiKey))
-            .Select(item => new SitePayload
-            {
-                Name = item.Name.Trim(),
-                BaseUrl = item.BaseUrl.Trim(),
-                EndpointPathMode = NormalizeEndpointPathMode(item.EndpointPathMode),
-                ApiKey = item.ApiKey.Trim(),
-                SupportsOpenAi = item.SupportsOpenAi,
-                SupportsAnthropic = item.SupportsAnthropic,
-                IsEnabled = item.IsEnabled
-            })
-            .ToList() ?? [];
+    [RelayCommand]
+    private void SelectAllImport()
+    {
+        foreach (var item in ImportPreviewItems) item.IsSelected = true;
+        NotifyPreviewProperties();
+    }
 
-        if (payloads.Count == 0)
-        {
-            OperationErrorMessage = "未找到包含名称、地址和 API 密钥的有效站点";
-            return;
-        }
+    [RelayCommand]
+    private void ClearImportSelection()
+    {
+        foreach (var item in ImportPreviewItems) item.IsSelected = false;
+        NotifyPreviewProperties();
+    }
 
+    [RelayCommand]
+    private void SelectAllExport()
+    {
+        foreach (var item in ExportPreviewItems) item.IsSelected = true;
+        NotifyPreviewProperties();
+    }
+
+    [RelayCommand]
+    private void ClearExportSelection()
+    {
+        foreach (var item in ExportPreviewItems) item.IsSelected = false;
+        NotifyPreviewProperties();
+    }
+
+    [RelayCommand]
+    private async Task ImportSelectedSitesAsync()
+    {
+        if (!CanConfirmImport) return;
+
+        IsImporting = true;
+        OperationMessage = string.Empty;
+        OperationErrorMessage = string.Empty;
         try
         {
-            await _apiService.SendAsync<ImportSitesResult>(HttpMethod.Post, "/api/admin/sites/import", payloads);
+            var payloads = ImportPreviewItems
+                .Where(item => item.IsSelected
+                    && !string.IsNullOrWhiteSpace(item.Name)
+                    && !string.IsNullOrWhiteSpace(item.BaseUrl)
+                    && !string.IsNullOrWhiteSpace(item.ApiKey))
+                .Select(item => new SitePayload
+                {
+                    Name = item.Name.Trim(),
+                    BaseUrl = item.BaseUrl.Trim(),
+                    EndpointPathMode = NormalizeEndpointPathMode(item.EndpointPathMode),
+                    ApiKey = item.ApiKey.Trim(),
+                    SupportsOpenAi = item.SupportsOpenAi,
+                    SupportsAnthropic = item.SupportsAnthropic,
+                    IsEnabled = item.IsEnabled
+                })
+                .ToList();
+
+            if (payloads.Count == 0)
+            {
+                OperationErrorMessage = "请至少选择一条有效站点记录";
+                return;
+            }
+
+            var result = await _apiService.SendAsync<ImportSitesResult>(
+                HttpMethod.Post,
+                "/api/admin/sites/import",
+                payloads);
+            OperationErrorMessage = string.Empty;
+            IsImportPreviewOpen = false;
             await LoadAsync();
+            OperationMessage = $"已导入 {result.ImportedCount} 个站点";
         }
         catch (Exception exception)
         {
             OperationErrorMessage = exception.Message;
         }
+        finally
+        {
+            IsImporting = false;
+            NotifyPreviewProperties();
+        }
+    }
+
+    public async Task ImportJsonAsync(string json)
+    {
+        OpenImportPreview();
+        ImportJsonText = json;
+        ParseImportPreview(json);
+        await Task.CompletedTask;
     }
 
     [RelayCommand]
@@ -583,6 +748,74 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
         }
     }
 
+    private void SetImportPreviewItems(IEnumerable<SiteImportPreviewItem> items)
+    {
+        foreach (var item in _importPreviewSubscriptions)
+        {
+            item.PropertyChanged -= OnImportPreviewItemPropertyChanged;
+        }
+        _importPreviewSubscriptions.Clear();
+
+        ImportPreviewItems = new ObservableCollection<SiteImportPreviewItem>(items);
+        foreach (var item in ImportPreviewItems)
+        {
+            item.PropertyChanged += OnImportPreviewItemPropertyChanged;
+            _importPreviewSubscriptions.Add(item);
+        }
+        NotifyPreviewProperties();
+    }
+
+    private void SetExportPreviewItems(IEnumerable<SiteExportItem> items)
+    {
+        foreach (var item in _exportPreviewSubscriptions)
+        {
+            item.PropertyChanged -= OnExportPreviewItemPropertyChanged;
+        }
+        _exportPreviewSubscriptions.Clear();
+
+        ExportPreviewItems = new ObservableCollection<SiteExportItem>(items);
+        foreach (var item in ExportPreviewItems)
+        {
+            item.PropertyChanged += OnExportPreviewItemPropertyChanged;
+            _exportPreviewSubscriptions.Add(item);
+        }
+        NotifyPreviewProperties();
+    }
+
+    private void OnImportPreviewItemPropertyChanged(
+        object? sender,
+        System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(SiteImportPreviewItem.IsSelected))
+        {
+            NotifyPreviewProperties();
+        }
+    }
+
+    private void OnExportPreviewItemPropertyChanged(
+        object? sender,
+        System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(SiteExportItem.IsSelected))
+        {
+            NotifyPreviewProperties();
+        }
+    }
+
+    private void NotifyPreviewProperties()
+    {
+        OnPropertyChanged(nameof(HasImportPreviewItems));
+        OnPropertyChanged(nameof(HasNoImportPreviewItems));
+        OnPropertyChanged(nameof(SelectedImportCount));
+        OnPropertyChanged(nameof(CanConfirmImport));
+        OnPropertyChanged(nameof(AllImportItemsSelected));
+        OnPropertyChanged(nameof(HasExportPreviewItems));
+        OnPropertyChanged(nameof(SelectedExportCount));
+        OnPropertyChanged(nameof(CanExportPreview));
+        OnPropertyChanged(nameof(AllExportItemsSelected));
+        OnPropertyChanged(nameof(ExportPreviewJson));
+    }
+
     partial void OnEditingSiteChanged(SiteListItem? value)
     {
         OnPropertyChanged(nameof(IsEditMode));
@@ -623,6 +856,11 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
     }
     partial void OnEditorErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasEditorError));
     partial void OnOperationErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasOperationError));
+    partial void OnOperationMessageChanged(string value) => OnPropertyChanged(nameof(HasOperationMessage));
+    partial void OnImportPreviewItemsChanged(ObservableCollection<SiteImportPreviewItem> value) => NotifyPreviewProperties();
+    partial void OnExportPreviewItemsChanged(ObservableCollection<SiteExportItem> value) => NotifyPreviewProperties();
+    partial void OnIsImportingChanged(bool value) => OnPropertyChanged(nameof(CanConfirmImport));
+    partial void OnIsExportLoadingChanged(bool value) => OnPropertyChanged(nameof(CanExportPreview));
     partial void OnCatalogErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasCatalogError));
     partial void OnCatalogSearchChanged(string value) => OnPropertyChanged(nameof(FilteredCatalogSites));
     partial void OnCatalogSitesChanged(ObservableCollection<SiteCatalogSiteItem> value)
@@ -765,6 +1003,7 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
         ErrorMessage = string.Empty;
         EditorErrorMessage = string.Empty;
         OperationErrorMessage = string.Empty;
+        OperationMessage = string.Empty;
     }
 
     public void Dispose()

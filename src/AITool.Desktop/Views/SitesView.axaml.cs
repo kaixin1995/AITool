@@ -55,17 +55,45 @@ public partial class SitesView : UserControl
 
     private async void ExportSites(object? sender, RoutedEventArgs e)
     {
-        if (DataContext is not SitesViewModel viewModel ||
-            TopLevel.GetTopLevel(this)?.StorageProvider is not { } storageProvider)
+        if (DataContext is not SitesViewModel viewModel) return;
+        await viewModel.LoadExportPreviewAsync();
+    }
+
+    private void CloseExportPreview(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is SitesViewModel viewModel)
+        {
+            viewModel.CloseExportPreview();
+        }
+    }
+
+    private async void CopyExportSites(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not SitesViewModel viewModel
+            || string.IsNullOrWhiteSpace(viewModel.ExportPreviewJson))
+        {
+            return;
+        }
+
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clipboard is not null)
+        {
+            await clipboard.SetTextAsync(viewModel.ExportPreviewJson);
+            viewModel.OperationMessage = "站点 JSON 已复制到剪贴板";
+        }
+    }
+
+    private async void DownloadExportSites(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not SitesViewModel viewModel
+            || TopLevel.GetTopLevel(this)?.StorageProvider is not { } storageProvider
+            || string.IsNullOrWhiteSpace(viewModel.ExportPreviewJson))
         {
             return;
         }
 
         try
         {
-            var json = await viewModel.ExportJsonAsync();
-            if (string.IsNullOrWhiteSpace(json)) return;
-
             var file = await storageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
                 Title = "导出站点 JSON",
@@ -77,12 +105,29 @@ public partial class SitesView : UserControl
 
             await using var stream = await file.OpenWriteAsync();
             await using var writer = new StreamWriter(stream, new UTF8Encoding(false));
-            await writer.WriteAsync(json);
+            await writer.WriteAsync(viewModel.ExportPreviewJson);
+            viewModel.OperationMessage = $"已导出 {viewModel.SelectedExportCount} 个站点";
         }
         catch (Exception exception)
         {
             // 文件选择或写入失败时只显示局部错误，不输出导出内容。
             viewModel.OperationErrorMessage = exception.Message;
+        }
+    }
+
+    private void ParseImportPreview(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is SitesViewModel viewModel)
+        {
+            viewModel.ParseImportPreview(viewModel.ImportJsonText);
+        }
+    }
+
+    private void CloseImportPreview(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is SitesViewModel viewModel)
+        {
+            viewModel.CloseImportPreview();
         }
     }
 
