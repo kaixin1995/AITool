@@ -8,10 +8,14 @@ using AITool.Desktop.Services;
 
 namespace AITool.Desktop.ViewModels;
 
-public partial class RouteFallbackViewModel : ViewModelBase
+public partial class RouteFallbackViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
     private readonly SemaphoreSlim _loadLock = new(1, 1);
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
+    private CancellationTokenSource? _loadCancellation;
+    private int _loadGeneration;
+    private bool _disposed;
 
     [ObservableProperty] private ObservableCollection<RouteFallbackEvent> _items = new();
     [ObservableProperty] private RouteFallbackSummary _summary = new();
@@ -56,18 +60,31 @@ public partial class RouteFallbackViewModel : ViewModelBase
 
     public async Task LoadAsync(int? targetPage = null)
     {
-        await _loadLock.WaitAsync();
-        IsLoading = true;
-        ErrorMessage = string.Empty;
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var previousCancellation = Interlocked.Exchange(ref _loadCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        var generation = Interlocked.Increment(ref _loadGeneration);
+        var lockAcquired = false;
+
         try
         {
+            await _loadLock.WaitAsync(localCancellation.Token);
+            lockAcquired = true;
+            if (!IsCurrentLoad(generation, localCancellation)) return;
+
+            IsLoading = true;
+            ErrorMessage = string.Empty;
             var page = targetPage ?? Page;
             var query = BuildQuery(page);
             var response = await _apiService.SendAsync<RouteFallbackListResponse>(
                 HttpMethod.Get,
                 $"/api/admin/route-fallback/list?{query}",
-                null);
+                null,
+                true,
+                localCancellation.Token);
 
+            if (!IsCurrentLoad(generation, localCancellation)) return;
             Items = new ObservableCollection<RouteFallbackEvent>(response.Items);
             Summary = response.Summary;
             Page = response.Page;
@@ -78,7 +95,11 @@ public partial class RouteFallbackViewModel : ViewModelBase
             SampleOldestRequestedAt = response.SampleOldestRequestedAt;
             NotifyStateProperties();
         }
-        catch (Exception exception)
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
+        {
+            // 切换筛选条件或页面销毁时取消旧请求，不显示为普通错误。
+        }
+        catch (Exception exception) when (IsCurrentLoad(generation, localCancellation))
         {
             ErrorMessage = exception.Message;
             Items = new ObservableCollection<RouteFallbackEvent>();
@@ -89,11 +110,22 @@ public partial class RouteFallbackViewModel : ViewModelBase
         }
         finally
         {
-            IsLoading = false;
-            _loadLock.Release();
-            NotifyStateProperties();
+            if (IsCurrentLoad(generation, localCancellation))
+            {
+                IsLoading = false;
+                Interlocked.CompareExchange(ref _loadCancellation, null, localCancellation);
+                NotifyStateProperties();
+            }
+
+            if (lockAcquired) _loadLock.Release();
+            localCancellation.Dispose();
         }
     }
+
+    private bool IsCurrentLoad(int generation, CancellationTokenSource localCancellation)
+        => !_disposed
+            && generation == Volatile.Read(ref _loadGeneration)
+            && ReferenceEquals(_loadCancellation, localCancellation);
 
     private string BuildQuery(int page)
     {
@@ -159,6 +191,18 @@ public partial class RouteFallbackViewModel : ViewModelBase
     {
         OnPropertyChanged(nameof(HasNoItems));
         NotifyStateProperties();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+
+        _disposed = true;
+        var loadCancellation = Interlocked.Exchange(ref _loadCancellation, null);
+        loadCancellation?.Cancel();
+        loadCancellation?.Dispose();
+        _lifetimeCancellation.Cancel();
+        _lifetimeCancellation.Dispose();
     }
 
     private static string FormatDateTime(string? value)

@@ -309,6 +309,6 @@ public partial class ModelHealthViewModel : ViewModelBase, IDisposable
 
         _lifetimeCancellation.Cancel();
         _lifetimeCancellation.Dispose();
-        _loadLock.Dispose();
+        RouteFallback.Dispose();
     }
 }
