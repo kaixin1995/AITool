@@ -58,6 +58,9 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private int _totalCount;
     [ObservableProperty] private int _failedCount;
     [ObservableProperty] private int _pendingCount;
+    [ObservableProperty] private int _concurrencyPage = 1;
+
+    private const int ConcurrencyPageSize = 20;
 
     public DeveloperInvocationsViewModel(ApiService apiService)
     {
@@ -84,6 +87,16 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
     public bool HasDetail => SelectedDetail is not null;
     public bool HasConcurrency => Concurrency.Count > 0;
     public bool HasNoConcurrency => !HasConcurrency && !IsConcurrencyLoading;
+    public ObservableCollection<DeveloperConcurrencyItem> PagedConcurrency
+        => new(Concurrency.Skip((ConcurrencyPage - 1) * ConcurrencyPageSize).Take(ConcurrencyPageSize));
+    public int ConcurrencyTotalPages
+        => Math.Max(1, (int)Math.Ceiling(Concurrency.Count / (double)ConcurrencyPageSize));
+    public string ConcurrencyPageText => Concurrency.Count == 0
+        ? "第 0 / 0 页"
+        : $"第 {ConcurrencyPage} / {ConcurrencyTotalPages} 页";
+    public bool CanPreviousConcurrencyPage => ConcurrencyPage > 1 && !IsConcurrencyLoading;
+    public bool CanNextConcurrencyPage => ConcurrencyPage < ConcurrencyTotalPages && !IsConcurrencyLoading;
+    public bool HasConcurrencyPagination => Concurrency.Count > ConcurrencyPageSize;
     public bool HasCircuitRoutes => CircuitRoutes.Count > 0;
     public bool HasNoCircuitRoutes => !HasCircuitRoutes && !IsCircuitLoading;
     public bool HasBlockedCircuits => CircuitRoutes.Any(x => x.IsBlocked);
@@ -268,6 +281,7 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
             if (!IsCurrentConcurrencyRequest(generation, localCancellation)) return;
 
             Concurrency = new ObservableCollection<DeveloperConcurrencyItem>(response.Items);
+            ConcurrencyPage = Math.Min(ConcurrencyPage, ConcurrencyTotalPages);
             NotifyConcurrencyProperties();
         }
         catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
@@ -277,6 +291,7 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
         catch (ApiException exception) when (exception.StatusCode == 404 && IsCurrentConcurrencyRequest(generation, localCancellation))
         {
             Concurrency = new ObservableCollection<DeveloperConcurrencyItem>();
+            ConcurrencyPage = 1;
             ConcurrencyError = string.Empty;
             NotifyConcurrencyProperties();
         }
@@ -366,6 +381,12 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
     {
         OnPropertyChanged(nameof(HasConcurrency));
         OnPropertyChanged(nameof(HasNoConcurrency));
+        OnPropertyChanged(nameof(PagedConcurrency));
+        OnPropertyChanged(nameof(ConcurrencyTotalPages));
+        OnPropertyChanged(nameof(ConcurrencyPageText));
+        OnPropertyChanged(nameof(CanPreviousConcurrencyPage));
+        OnPropertyChanged(nameof(CanNextConcurrencyPage));
+        OnPropertyChanged(nameof(HasConcurrencyPagination));
     }
 
     private void NotifyCircuitProperties()
@@ -481,6 +502,26 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
     {
         if (!CanNext) return;
         await LoadInvocationsAsync(Page + 1);
+    }
+
+    [RelayCommand]
+    private void PreviousConcurrencyPage()
+    {
+        if (CanPreviousConcurrencyPage)
+        {
+            ConcurrencyPage--;
+            NotifyConcurrencyProperties();
+        }
+    }
+
+    [RelayCommand]
+    private void NextConcurrencyPage()
+    {
+        if (CanNextConcurrencyPage)
+        {
+            ConcurrencyPage++;
+            NotifyConcurrencyProperties();
+        }
     }
 
     [RelayCommand]
@@ -890,7 +931,12 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
         UpdatePaging();
         OnPropertyChanged(nameof(HasNoItems));
     }
-    partial void OnIsConcurrencyLoadingChanged(bool value) => OnPropertyChanged(nameof(HasNoConcurrency));
+    partial void OnIsConcurrencyLoadingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(HasNoConcurrency));
+        NotifyConcurrencyProperties();
+    }
+    partial void OnConcurrencyPageChanged(int value) => NotifyConcurrencyProperties();
     partial void OnIsCircuitLoadingChanged(bool value) => OnPropertyChanged(nameof(HasNoCircuitRoutes));
     partial void OnSelectedTabIndexChanged(int value)
     {
