@@ -5,7 +5,7 @@
     xmlns:vm="using:AITool.Desktop.ViewModels"
     x:DataType="vm:CodexViewModel"
     x:CompileBindings="False">
-  <Grid MinWidth="0" RowDefinitions="Auto,*" RowSpacing="20">
+  <Grid MinWidth="0" RowDefinitions="Auto,Auto,*" RowSpacing="12">
     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16" VerticalAlignment="Center">
       <StackPanel Spacing="4">
         <TextBlock Classes="page-title" Text="OAuth 管理" />
@@ -40,7 +40,16 @@
       </StackPanel>
     </Grid>
 
-    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+    <Border Grid.Row="1" Background="#F8FAFC" CornerRadius="10" Padding="12" IsVisible="{Binding HasAccounts}">
+      <Grid ColumnDefinitions="*,Auto,Auto,Auto" ColumnSpacing="8">
+        <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding SelectedExportText}" />
+        <Button Grid.Column="1" Classes="secondary-button" Command="{Binding SelectAllExportsCommand}" Content="全选账号" Padding="10,6" />
+        <Button Grid.Column="2" Classes="secondary-button" Command="{Binding ClearExportSelectionCommand}" Content="清空选择" Padding="10,6" />
+        <TextBlock Grid.Column="3" VerticalAlignment="Center" FontSize="12" Foreground="#9A3412" Text="导出/复制仅处理已选账号" />
+      </Grid>
+    </Border>
+
+    <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
       <StackPanel Spacing="16">
         <Border Background="#E8F7EA" CornerRadius="10" Padding="14" IsVisible="{Binding HasMessage}">
           <TextBlock Foreground="#166534" Text="{Binding Message}" TextWrapping="Wrap" />
@@ -86,8 +95,9 @@
                     <Border Classes="content-card" Margin="0,0,14,16" Padding="20" HorizontalAlignment="Stretch">
                       <StackPanel Spacing="15">
                         <!-- 卡片头部按网页端分成账号信息、状态和套餐三层，避免内容互相挤压。 -->
-                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="14" VerticalAlignment="Top">
-                          <StackPanel Spacing="5" MinWidth="0">
+                        <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" VerticalAlignment="Top">
+                          <CheckBox VerticalAlignment="Top" IsChecked="{Binding IsExportSelected, Mode=TwoWay}" ToolTip.Tip="选择该账号用于导出或复制凭证" />
+                          <StackPanel Grid.Column="1" Spacing="5" MinWidth="0">
                             <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
                             <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding Email}" TextTrimming="CharacterEllipsis" />
                             <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,3,0,0">
@@ -108,7 +118,7 @@
                               </Border>
                             </StackPanel>
                           </StackPanel>
-                          <Border Grid.Column="1" Background="#FFF7ED" CornerRadius="12" Padding="10,5" VerticalAlignment="Top">
+                          <Border Grid.Column="2" Background="#FFF7ED" CornerRadius="12" Padding="10,5" VerticalAlignment="Top">
                             <TextBlock FontSize="11" Foreground="#9A3412" Text="{Binding PlanType}" />
                           </Border>
                         </Grid>

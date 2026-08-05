@@ -21,6 +21,9 @@ public partial class CodexAccount : ObservableObject
     private bool _isEnabled;
 
     [ObservableProperty]
+    private bool _isExportSelected = true;
+
+    [ObservableProperty]
     private double? _fiveHourUsedPercent;
 
     [ObservableProperty]

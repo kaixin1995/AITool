@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Net.Http;
 using System.Text.Json;
 using Avalonia.Threading;
@@ -59,6 +60,10 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
     public bool HasAccounts => Accounts.Count > 0;
     public bool HasNoAccounts => !IsLoading && !HasError && !HasAccounts;
+    public int SelectedExportCount => Accounts.Count(account => account.IsExportSelected);
+    public string SelectedExportText => $"已选 {SelectedExportCount} 个账号";
+    public bool HasSelectedExports => SelectedExportCount > 0;
+    public bool AllAccountsSelected => HasAccounts && Accounts.All(account => account.IsExportSelected);
     public bool CanCompleteOAuth => !IsOAuthBusy;
     public bool HasOAuthSession => !string.IsNullOrWhiteSpace(OAuthUrl);
     public bool HasInspection => InspectionStatus is not null && !InspectionDisabled;
@@ -117,8 +122,15 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                     "/api/admin/codex/accounts",
                     null);
 
+                foreach (var account in accounts)
+                {
+                    account.IsExportSelected = true;
+                    AttachAccount(account);
+                }
+
                 Accounts = new ObservableCollection<CodexAccount>(accounts);
                 await RefreshExpiringTokensAsync();
+                NotifyExportSelectionProperties();
                 OnPropertyChanged(nameof(HasAccounts));
                 OnPropertyChanged(nameof(HasNoAccounts));
             }
@@ -255,8 +267,33 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         var index = Accounts.ToList().FindIndex(item => item.Id == account.Id);
         if (index >= 0)
         {
+            AttachAccount(account);
+            account.IsExportSelected = Accounts[index].IsExportSelected;
             Accounts[index] = account;
+            NotifyExportSelectionProperties();
         }
+    }
+
+    private void AttachAccount(CodexAccount account)
+    {
+        account.PropertyChanged -= OnAccountPropertyChanged;
+        account.PropertyChanged += OnAccountPropertyChanged;
+    }
+
+    private void OnAccountPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(CodexAccount.IsExportSelected))
+        {
+            NotifyExportSelectionProperties();
+        }
+    }
+
+    private void NotifyExportSelectionProperties()
+    {
+        OnPropertyChanged(nameof(SelectedExportCount));
+        OnPropertyChanged(nameof(SelectedExportText));
+        OnPropertyChanged(nameof(HasSelectedExports));
+        OnPropertyChanged(nameof(AllAccountsSelected));
     }
 
     [RelayCommand]
@@ -351,9 +388,13 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
 
     public async Task<string?> ExportCredentialsJsonAsync()
     {
-        if (Accounts.Count == 0)
+        var selectedAccountIds = Accounts
+            .Where(account => account.IsExportSelected)
+            .Select(account => account.Id)
+            .ToList();
+        if (selectedAccountIds.Count == 0)
         {
-            Message = "暂无可导出的 Codex 账号";
+            Message = "请至少选择一个 Codex 账号后再导出";
             return null;
         }
 
@@ -363,7 +404,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             var result = await _apiService.SendAsync<JsonElement>(
                 HttpMethod.Post,
                 "/api/admin/codex/accounts/export-credentials",
-                new { accountIds = Accounts.Select(account => account.Id).ToList() });
+                new { accountIds = selectedAccountIds });
             return JsonSerializer.Serialize(
                 result,
                 new JsonSerializerOptions { WriteIndented = true });
@@ -373,6 +414,28 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             ErrorMessage = exception.Message;
             return null;
         }
+    }
+
+    [RelayCommand]
+    private void SelectAllExports()
+    {
+        foreach (var account in Accounts)
+        {
+            account.IsExportSelected = true;
+        }
+
+        NotifyExportSelectionProperties();
+    }
+
+    [RelayCommand]
+    private void ClearExportSelection()
+    {
+        foreach (var account in Accounts)
+        {
+            account.IsExportSelected = false;
+        }
+
+        NotifyExportSelectionProperties();
     }
 
     [RelayCommand]
