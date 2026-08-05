@@ -8,7 +8,7 @@
     x:CompileBindings="False">
   <Grid RowDefinitions="Auto,*" RowSpacing="16">
     <StackPanel Spacing="4">
-      <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="路由管理" />
+      <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="路由管理" />
       <TextBlock Classes="page-subtitle" Text="统一管理路由规则与兼容规则集" TextWrapping="Wrap" />
       <WrapPanel Margin="0,10,0,0" Orientation="Horizontal">
         <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="routes" Content="路由规则" IsChecked="{Binding IsRoutesTab, Mode=OneWay}" />
