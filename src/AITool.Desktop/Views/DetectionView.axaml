@@ -8,7 +8,7 @@
   <Grid RowDefinitions="Auto,Auto,*" RowSpacing="18">
     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
       <StackPanel Spacing="4">
-        <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="模型检测" />
+        <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="模型检测" />
         <TextBlock Classes="page-subtitle" Text="检测已配置模型的可用性和响应耗时" />
       </StackPanel>
       <Button
@@ -30,7 +30,7 @@
       <TextBlock
           Grid.Column="1"
           VerticalAlignment="Center"
-          Foreground="#64748B"
+          Foreground="{DynamicResource AppTextSecondaryBrush}"
           Text="{Binding VisibleGroupCount, StringFormat='匹配模型：{0}'}" />
     </Grid>
 
@@ -39,36 +39,36 @@
         HorizontalScrollBarVisibility="Disabled"
         VerticalScrollBarVisibility="Auto">
       <StackPanel Spacing="14">
-        <Border Background="#EFF6FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}">
-          <TextBlock Foreground="#315EA8" Text="正在加载模型检测数据..." />
+        <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}">
+          <TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="正在加载模型检测数据..." />
         </Border>
-        <Border Background="#E8F1FF" CornerRadius="8" Padding="14" IsVisible="{Binding HasProgress}">
+        <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding HasProgress}">
           <StackPanel Spacing="8">
             <Grid ColumnDefinitions="*,Auto">
-              <TextBlock Foreground="#315EA8" Text="{Binding ProgressText}" />
-              <TextBlock Grid.Column="1" Foreground="#315EA8" Text="{Binding ProgressPercent, StringFormat={}{0}%}" />
+              <TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding ProgressText}" />
+              <TextBlock Grid.Column="1" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding ProgressPercent, StringFormat={}{0}%}" />
             </Grid>
             <ProgressBar Height="8" Minimum="0" Maximum="100" Value="{Binding ProgressPercent}" />
             <Grid ColumnDefinitions="*,*,*" ColumnSpacing="12">
-              <TextBlock Foreground="#64748B" Text="{Binding ProgressCompleted, StringFormat='已完成：{0}'}" />
-              <TextBlock Grid.Column="1" Foreground="#166534" Text="{Binding SuccessCount, StringFormat='成功：{0}'}" />
-              <TextBlock Grid.Column="2" Foreground="#B91C1C" Text="{Binding FailedCount, StringFormat='失败：{0}'}" />
+              <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding ProgressCompleted, StringFormat='已完成：{0}'}" />
+              <TextBlock Grid.Column="1" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding SuccessCount, StringFormat='成功：{0}'}" />
+              <TextBlock Grid.Column="2" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding FailedCount, StringFormat='失败：{0}'}" />
             </Grid>
           </StackPanel>
         </Border>
-        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}">
-          <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+        <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}">
+          <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
         </Border>
 
         <TextBlock
             HorizontalAlignment="Center"
-            Foreground="#94A3B8"
+            Foreground="{DynamicResource AppTextTertiaryBrush}"
             IsVisible="{Binding ShowEmptyState}"
             Margin="0,30"
             Text="暂无映射数据，请先配置站点和模型" />
         <TextBlock
             HorizontalAlignment="Center"
-            Foreground="#94A3B8"
+            Foreground="{DynamicResource AppTextTertiaryBrush}"
             IsVisible="{Binding ShowNoMatchState}"
             Margin="0,30"
             Text="没有匹配的模型或站点" />
@@ -78,11 +78,11 @@
             <DataTemplate>
               <Border Classes="content-card" Margin="0,0,0,14" Padding="0">
                 <StackPanel>
-                  <Border Background="#F8FAFC" Padding="18,13">
+                  <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="18,13">
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
                       <StackPanel Spacing="3">
-                        <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding DisplayName}" />
-                        <TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding ModelName}" />
+                        <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding DisplayName}" />
+                        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding ModelName}" />
                       </StackPanel>
                       <Button
                           Grid.Column="1"
@@ -97,21 +97,21 @@
                   <ItemsControl ItemsSource="{Binding Sites}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
-                        <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,13">
+                        <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="18,13">
                           <Grid ColumnDefinitions="2*,1.5*,1*,1.3*,Auto" ColumnSpacing="12">
                             <StackPanel Spacing="3">
-                              <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding SiteName}" />
-                              <TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding RemoteModelName}" />
+                              <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SiteName}" />
+                              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding RemoteModelName}" />
                             </StackPanel>
-                            <TextBlock Grid.Column="1" Foreground="#64748B" Text="{Binding LastCheckedAt}" VerticalAlignment="Center" />
-                            <TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding DurationText}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding LastCheckedAt}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="2" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding DurationText}" VerticalAlignment="Center" />
                             <StackPanel Grid.Column="3" Spacing="3" VerticalAlignment="Center">
                               <Border Background="{Binding StatusBackground}" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left">
                                 <TextBlock Foreground="{Binding StatusForeground}" Text="{Binding StatusText}" />
                               </Border>
                               <TextBlock
                                   FontSize="11"
-                                  Foreground="#B91C1C"
+                                  Foreground="{DynamicResource AppDangerTextBrush}"
                                   IsVisible="{Binding HasError}"
                                   MaxWidth="250"
                                   Text="{Binding LastError}"
