@@ -18,6 +18,7 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
 
     [ObservableProperty] private ObservableCollection<ChatModelTarget> _targets = new();
     [ObservableProperty] private ChatModelTarget? _selectedTarget;
+    [ObservableProperty] private string _modelSearchText = string.Empty;
     [ObservableProperty] private ObservableCollection<ChatMessage> _messages = new();
     [ObservableProperty] private string _input = string.Empty;
     [ObservableProperty] private bool _enableStreaming;
@@ -36,6 +37,10 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
     public bool HasMessages => Messages.Count > 0;
     public bool HasNoMessages => !HasMessages;
     public bool CanSend => !IsSending && SelectedTarget is not null && !string.IsNullOrWhiteSpace(Input);
+    public IEnumerable<ChatModelTarget> FilteredTargets
+        => Targets.Where(target => string.IsNullOrWhiteSpace(ModelSearchText)
+            || $"{target.ModelDisplayName} {target.SiteName} {target.SiteModelName}"
+                .Contains(ModelSearchText.Trim(), StringComparison.OrdinalIgnoreCase));
     public IReadOnlyList<string> ReasoningEffortOptions { get; } = ["low", "medium", "high", "xhigh", "max"];
 
     public async Task LoadAsync()
@@ -45,6 +50,7 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
             var targets = await _apiService.SendAsync<List<ChatModelTarget>>(HttpMethod.Get, "/api/admin/chat/targets", null);
             Targets = new ObservableCollection<ChatModelTarget>(targets);
             SelectedTarget ??= Targets.FirstOrDefault();
+            OnPropertyChanged(nameof(FilteredTargets));
         }
         catch (Exception exception) { ErrorMessage = exception.Message; }
     }
@@ -90,6 +96,8 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
                     localCancellation.Token);
                 assistant.Content = result.Success ? result.Content : $"错误：{result.Error ?? "未知错误"}";
                 assistant.Reasoning = result.ReasoningContent ?? string.Empty;
+                assistant.Attempts = new ObservableCollection<ChatAttemptResult>(result.Attempts);
+                assistant.TotalDurationMs = result.TotalDurationMs;
                 assistant.IsError = !result.Success;
             }
         }
@@ -117,11 +125,51 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
         {
             using var document = JsonDocument.Parse(item.Data);
             var root = document.RootElement;
-            if (item.EventType == "token" && root.TryGetProperty("content", out var content)) assistant.Content += content.GetString() ?? string.Empty;
-            else if (item.EventType == "reasoning" && root.TryGetProperty("content", out var reasoning)) assistant.Reasoning += reasoning.GetString() ?? string.Empty;
-            else if (item.EventType == "error" && root.TryGetProperty("message", out var error)) { assistant.Content = $"错误：{error.GetString()}"; assistant.IsError = true; }
+            if (item.EventType == "token" && root.TryGetProperty("content", out var content))
+            {
+                assistant.Content += content.GetString() ?? string.Empty;
+            }
+            else if (item.EventType == "reasoning" && root.TryGetProperty("content", out var reasoning))
+            {
+                assistant.Reasoning += reasoning.GetString() ?? string.Empty;
+            }
+            else if (item.EventType == "meta")
+            {
+                ApplyStreamMetadata(root, assistant);
+            }
+            else if (item.EventType == "error")
+            {
+                ApplyStreamMetadata(root, assistant);
+                if (root.TryGetProperty("message", out var error))
+                {
+                    assistant.Content = $"错误：{error.GetString()}";
+                }
+
+                assistant.IsError = true;
+            }
         }
-        catch (JsonException) { }
+        catch (JsonException)
+        {
+            // 非 JSON 的 SSE 数据不影响已接收的对话内容。
+        }
+    }
+
+    private static void ApplyStreamMetadata(JsonElement root, ChatMessage assistant)
+    {
+        if (root.TryGetProperty("attempts", out var attempts)
+            && attempts.ValueKind == JsonValueKind.Array)
+        {
+            var values = JsonSerializer.Deserialize<List<ChatAttemptResult>>(
+                attempts.GetRawText(),
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            assistant.Attempts = new ObservableCollection<ChatAttemptResult>(values ?? []);
+        }
+
+        if (root.TryGetProperty("totalDurationMs", out var duration)
+            && duration.TryGetInt32(out var durationMs))
+        {
+            assistant.TotalDurationMs = durationMs;
+        }
     }
 
     [RelayCommand]
@@ -136,6 +184,7 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
     }
 
     partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
+    partial void OnModelSearchTextChanged(string value) => OnPropertyChanged(nameof(FilteredTargets));
     partial void OnInputChanged(string value) => OnPropertyChanged(nameof(CanSend));
     partial void OnSelectedTargetChanged(ChatModelTarget? value) => OnPropertyChanged(nameof(CanSend));
     partial void OnIsSendingChanged(bool value) => OnPropertyChanged(nameof(CanSend));
