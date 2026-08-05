@@ -36,6 +36,13 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasMessages => Messages.Count > 0;
     public bool HasNoMessages => !HasMessages;
+    public ChatMessage? LatestAssistantMessage => Messages.LastOrDefault(message => !message.IsUser);
+    public string CurrentReasoning => LatestAssistantMessage?.Reasoning ?? string.Empty;
+    public bool HasCurrentReasoning => !string.IsNullOrWhiteSpace(CurrentReasoning);
+    public bool HasNoCurrentReasoning => !HasCurrentReasoning;
+    public IEnumerable<ChatAttemptResult> LastAttempts => LatestAssistantMessage?.Attempts ?? Enumerable.Empty<ChatAttemptResult>();
+    public bool HasLastAttempts => LastAttempts.Any();
+    public bool HasNoLastAttempts => !HasLastAttempts;
     public bool CanSend => !IsSending && SelectedTarget is not null && !string.IsNullOrWhiteSpace(Input);
     public bool CanClear => !IsSending && HasMessages;
     public IEnumerable<ChatModelTarget> FilteredTargets
@@ -72,6 +79,7 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(HasMessages));
         OnPropertyChanged(nameof(HasNoMessages));
         OnPropertyChanged(nameof(CanClear));
+        NotifySidePanel();
         IsSending = true;
         var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
         var previousCancellation = Interlocked.Exchange(ref _streamCancellation, localCancellation);
@@ -86,6 +94,7 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
                 await foreach (var item in _sseClient.StreamAsync("/api/admin/chat/send-stream", body, localCancellation.Token))
                 {
                     HandleStreamEvent(item, assistant);
+                    NotifySidePanel();
                 }
             }
             else
@@ -101,13 +110,15 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
                 assistant.Attempts = new ObservableCollection<ChatAttemptResult>(result.Attempts);
                 assistant.TotalDurationMs = result.TotalDurationMs;
                 assistant.IsError = !result.Success;
+                NotifySidePanel();
             }
         }
         catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
         {
             assistant.Content = "（已停止）";
+            NotifySidePanel();
         }
-        catch (Exception exception) { assistant.Content = $"错误：{exception.Message}"; assistant.IsError = true; ErrorMessage = exception.Message; }
+        catch (Exception exception) { assistant.Content = $"错误：{exception.Message}"; assistant.IsError = true; ErrorMessage = exception.Message; NotifySidePanel(); }
         finally
         {
             if (ReferenceEquals(_streamCancellation, localCancellation))
@@ -185,6 +196,18 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(HasMessages));
         OnPropertyChanged(nameof(HasNoMessages));
         OnPropertyChanged(nameof(CanClear));
+        NotifySidePanel();
+    }
+
+    private void NotifySidePanel()
+    {
+        OnPropertyChanged(nameof(LatestAssistantMessage));
+        OnPropertyChanged(nameof(CurrentReasoning));
+        OnPropertyChanged(nameof(HasCurrentReasoning));
+        OnPropertyChanged(nameof(HasNoCurrentReasoning));
+        OnPropertyChanged(nameof(LastAttempts));
+        OnPropertyChanged(nameof(HasLastAttempts));
+        OnPropertyChanged(nameof(HasNoLastAttempts));
     }
 
     partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
