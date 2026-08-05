@@ -34,6 +34,15 @@
     <DataTemplate DataType="{x:Type vm:SystemSettingsViewModel}">
       <views:SystemSettingsView />
     </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:CodexViewModel}">
+      <views:CodexView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:DeveloperInvocationsViewModel}">
+      <views:DeveloperInvocationsView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:ChatViewModel}">
+      <views:ChatView />
+    </DataTemplate>
     <DataTemplate DataType="{x:Type vm:PlaceholderPageViewModel}">
       <views:PlaceholderPageView />
     </DataTemplate>

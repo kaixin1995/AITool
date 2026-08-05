@@ -6,6 +6,7 @@ namespace AITool.Desktop.ViewModels;
 public partial class MainWindowViewModel : ViewModelBase
 {
     private readonly ApiService _apiService;
+    private readonly SseClient _sseClient;
     private readonly TokenStore _tokenStore;
     private readonly NavigationService _navigationService;
 
@@ -17,10 +18,12 @@ public partial class MainWindowViewModel : ViewModelBase
 
     public MainWindowViewModel(
         ApiService apiService,
+        SseClient sseClient,
         TokenStore tokenStore,
         NavigationService navigationService)
     {
         _apiService = apiService;
+        _sseClient = sseClient;
         _tokenStore = tokenStore;
         _navigationService = navigationService;
     }
@@ -49,6 +52,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
         _mainShellViewModel = new MainShellViewModel(
             _apiService,
+            _sseClient,
             _navigationService,
             _authViewModel.Status);
         _mainShellViewModel.LogoutCompleted += OnLogoutCompleted;

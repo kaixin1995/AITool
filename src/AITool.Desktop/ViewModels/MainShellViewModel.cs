@@ -38,6 +38,7 @@ public sealed class NavigationGroupViewModel
 public partial class MainShellViewModel : ViewModelBase
 {
     private readonly ApiService _apiService;
+    private readonly SseClient _sseClient;
     private readonly NavigationService _navigationService;
 
     [ObservableProperty]
@@ -46,9 +47,10 @@ public partial class MainShellViewModel : ViewModelBase
     [ObservableProperty]
     private NavigationItemViewModel? _selectedItem;
 
-    public MainShellViewModel(ApiService apiService, NavigationService navigationService, AuthStatus status)
+    public MainShellViewModel(ApiService apiService, SseClient sseClient, NavigationService navigationService, AuthStatus status)
     {
         _apiService = apiService;
+        _sseClient = sseClient;
         _navigationService = navigationService;
         NavigationGroups = BuildNavigationGroups(status.Features);
         SelectedItem = NavigationGroups.SelectMany(group => group.Items).FirstOrDefault();
@@ -147,6 +149,27 @@ public partial class MainShellViewModel : ViewModelBase
                 var systemSettings = new SystemSettingsViewModel(_apiService);
                 CurrentPage = systemSettings;
                 await systemSettings.LoadAsync();
+                break;
+            }
+            case "codex":
+            {
+                var codex = new CodexViewModel(_apiService);
+                CurrentPage = codex;
+                await codex.LoadAsync();
+                break;
+            }
+            case "developer-invocations":
+            {
+                var developer = new DeveloperInvocationsViewModel(_apiService);
+                CurrentPage = developer;
+                await developer.LoadAsync();
+                break;
+            }
+            case "chat":
+            {
+                var chat = new ChatViewModel(_apiService, _sseClient);
+                CurrentPage = chat;
+                await chat.LoadAsync();
                 break;
             }
             default:
