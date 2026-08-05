@@ -57,7 +57,7 @@
     </DataTemplate>
   </UserControl.DataTemplates>
 
-  <Grid MinWidth="0" ClipToBounds="True" Background="#F8FAFC" ColumnDefinitions="260,*">
+  <Grid MinWidth="0" ClipToBounds="False" Background="#F8FAFC" ColumnDefinitions="232,*">
     <!-- 左侧导航，结构和 Vue3 MainLayout 保持一致。 -->
     <Border
         Background="#FFFFFF"
@@ -161,7 +161,7 @@
         </Grid>
       </Border>
 
-      <Border Grid.Row="1" ClipToBounds="True" Background="#F8FAFC" Padding="32,28">
+      <Border Grid.Row="1" ClipToBounds="False" Background="#F8FAFC" Padding="24,22">
         <ContentControl
             HorizontalContentAlignment="Stretch"
             VerticalContentAlignment="Stretch"
