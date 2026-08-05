@@ -24,6 +24,22 @@ public partial class DeveloperInvocationsView : UserControl
         }
     }
 
+    private async void CopyAccessKey(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not DeveloperInvocationsViewModel viewModel
+            || string.IsNullOrWhiteSpace(viewModel.AccessKey))
+        {
+            return;
+        }
+
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clipboard is not null)
+        {
+            // 仅在用户点击复制时写入剪贴板，不将访问密钥输出到日志或界面消息。
+            await clipboard.SetTextAsync(viewModel.AccessKey);
+        }
+    }
+
     private async void CopyDetailText(object? sender, RoutedEventArgs e)
     {
         if (sender is not Button button
