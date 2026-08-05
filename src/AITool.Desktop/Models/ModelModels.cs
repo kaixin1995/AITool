@@ -43,6 +43,52 @@ public sealed class ModelListResponse
 }
 
 /// <summary>
+/// 可编辑的模型厂商定义及其匹配规则。
+/// </summary>
+public sealed partial class ModelVendorDefinitionItem : CommunityToolkit.Mvvm.ComponentModel.ObservableObject
+{
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    private string _vendorName = string.Empty;
+
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    private string _iconSvgBody = string.Empty;
+
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    private string _headerBackground = "#f8fafc";
+
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    private int _sortOrder;
+
+    public ObservableCollection<ModelVendorRuleItem> Rules { get; } = new();
+}
+
+public sealed partial class ModelVendorRuleItem : CommunityToolkit.Mvvm.ComponentModel.ObservableObject
+{
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    private string _matchType = "wildcard";
+
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    private string _pattern = string.Empty;
+
+    [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
+    private int _priority;
+}
+
+public sealed class ModelVendorCatalogResponse
+{
+    public List<ModelVendorDefinitionItem> Vendors { get; set; } = new();
+    public List<ModelVendorRuleResponse> Rules { get; set; } = new();
+}
+
+public sealed class ModelVendorRuleResponse
+{
+    public string VendorName { get; set; } = string.Empty;
+    public string MatchType { get; set; } = "wildcard";
+    public string Pattern { get; set; } = string.Empty;
+    public int Priority { get; set; }
+}
+
+/// <summary>
 /// 模型详情及其站点映射，用于桌面端映射管理面板。
 /// </summary>
 public sealed class ModelDetail

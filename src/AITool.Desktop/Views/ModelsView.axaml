@@ -18,18 +18,23 @@
         </StackPanel>
       </Grid>
 
-      <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="10">
-        <TextBox Classes="form-input" Text="{Binding SearchText}" Watermark="搜索模型名、显示名或厂商名" />
-        <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="12,7" />
+      <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+          <Button Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="gallery" Content="模型分组" IsEnabled="{Binding IsVendorRulesTab}" Padding="12,7" />
+          <Button Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="rules" Content="厂商规则" IsEnabled="{Binding IsGalleryTab}" Padding="12,7" />
+        </StackPanel>
+        <TextBox Grid.Column="1" Classes="form-input" Text="{Binding SearchText}" Watermark="搜索模型名、显示名或厂商名" IsVisible="{Binding IsGalleryTab}" />
+        <TextBox Grid.Column="1" Classes="form-input" Text="{Binding VendorSearchText}" Watermark="搜索厂商名或匹配规则" IsVisible="{Binding IsVendorRulesTab}" />
+        <Button Grid.Column="2" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="12,7" />
       </Grid>
 
       <Grid Grid.Row="2">
-        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding IsLoading}" Text="正在加载模型..." />
-        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
-        <Border Background="#E8F7EA" CornerRadius="8" Padding="14" IsVisible="{Binding HasMessage}"><TextBlock Foreground="#166534" Text="{Binding Message}" TextWrapping="Wrap" /></Border>
-        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding ShowNoModels}" Text="暂无模型，请先新增模型。" />
-        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding ShowNoSearchResults}" Text="没有匹配当前搜索条件的模型。" />
-        <ScrollViewer IsVisible="{Binding IsListVisible}" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding ShowGalleryLoading}" Text="正在加载模型..." />
+        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding ShowGalleryError}"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
+        <Border Background="#E8F7EA" CornerRadius="8" Padding="14" IsVisible="{Binding ShowGalleryMessage}"><TextBlock Foreground="#166534" Text="{Binding Message}" TextWrapping="Wrap" /></Border>
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding ShowGalleryNoModels}" Text="暂无模型，请先新增模型。" />
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding ShowGalleryNoSearchResults}" Text="没有匹配当前搜索条件的模型。" />
+        <ScrollViewer IsVisible="{Binding IsGalleryTab}" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
           <ItemsControl ItemsSource="{Binding FilteredVendorGroups}">
             <ItemsControl.ItemTemplate>
               <DataTemplate>
@@ -71,6 +76,86 @@
             </ItemsControl.ItemTemplate>
           </ItemsControl>
         </ScrollViewer>
+
+        <ScrollViewer IsVisible="{Binding IsVendorRulesTab}" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+          <StackPanel Spacing="12">
+            <Border Background="#F8FAFC" CornerRadius="8" Padding="14">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                <TextBlock Foreground="#64748B" Text="每个厂商可配置标题样式和多条匹配规则，规则按优先级从小到大匹配。" TextWrapping="Wrap" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                  <Button Classes="secondary-button" Command="{Binding AddVendorCommand}" Content="新增厂商" Padding="10,6" />
+                  <Button Classes="primary-button" Command="{Binding SaveVendorCatalogCommand}" Content="保存厂商规则" IsEnabled="{Binding CanSaveVendorCatalog}" Padding="10,6" />
+                </StackPanel>
+              </Grid>
+            </Border>
+            <Border Background="#FEE2E2" CornerRadius="8" Padding="12" IsVisible="{Binding HasVendorError}">
+              <TextBlock Foreground="#B91C1C" Text="{Binding VendorErrorMessage}" TextWrapping="Wrap" />
+            </Border>
+            <TextBlock HorizontalAlignment="Center" Foreground="#64748B" IsVisible="{Binding HasNoVendorDefinitions}" Margin="20" Text="暂无厂商配置，请先新增厂商。" />
+            <ItemsControl ItemsSource="{Binding FilteredVendorDefinitions}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Classes="content-card" Margin="0,0,0,10" Padding="14">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                      <StackPanel Spacing="4">
+                        <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding VendorName}" />
+                        <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding Rules.Count, StringFormat='规则 {0} 条'}" />
+                        <ItemsControl ItemsSource="{Binding Rules}">
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                              <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding Pattern}" TextTrimming="CharacterEllipsis" />
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                      </StackPanel>
+                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+                        <Button Classes="secondary-button" Command="{Binding DataContext.OpenVendorEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,6" />
+                        <Button Classes="secondary-button" Command="{Binding DataContext.DeleteVendorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
+                      </StackPanel>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
+
+        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsVendorEditorOpen}" Padding="24" Width="680" MaxWidth="900" MaxHeight="720" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="14">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="厂商规则编辑" />
+                <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseVendorEditorCommand}" Content="关闭" Padding="10,6" />
+              </Grid>
+              <Grid ColumnDefinitions="1.5*,1*,Auto" ColumnSpacing="10">
+                <StackPanel Spacing="5"><TextBlock FontSize="12" Foreground="#64748B" Text="厂商名称" /><TextBox Classes="form-input" Text="{Binding EditingVendor.VendorName, Mode=TwoWay}" /></StackPanel>
+                <StackPanel Grid.Column="1" Spacing="5"><TextBlock FontSize="12" Foreground="#64748B" Text="标题背景色" /><TextBox Classes="form-input" Text="{Binding EditingVendor.HeaderBackground, Mode=TwoWay}" /></StackPanel>
+                <StackPanel Grid.Column="2" Spacing="5"><TextBlock FontSize="12" Foreground="#64748B" Text="排序值" /><NumericUpDown Width="90" Value="{Binding EditingVendor.SortOrder, Mode=TwoWay}" /></StackPanel>
+              </Grid>
+              <StackPanel Spacing="5"><TextBlock FontSize="12" Foreground="#64748B" Text="标题 SVG 图标内容" /><TextBox Classes="form-input" Text="{Binding EditingVendor.IconSvgBody, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="100" Watermark="可粘贴 SVG 内容或 path/defs" /></StackPanel>
+              <Border Background="#F8FAFC" CornerRadius="8" Padding="12">
+                <StackPanel Spacing="8">
+                  <Grid ColumnDefinitions="*,Auto"><TextBlock FontWeight="SemiBold" Foreground="#334155" Text="匹配规则" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding AddVendorRuleCommand}" Content="新增规则" Padding="10,6" /></Grid>
+                  <TextBlock FontSize="12" Foreground="#64748B" Text="支持 exact、wildcard 和 regex，优先级越小越先匹配。" TextWrapping="Wrap" />
+                  <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoEditingVendorRules}" Text="暂无规则" />
+                  <ItemsControl ItemsSource="{Binding EditingVendorRules}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="8" Margin="0,4">
+                          <NumericUpDown Width="72" Value="{Binding Priority, Mode=TwoWay}" Minimum="0" />
+                          <ComboBox Grid.Column="1" Width="110" ItemsSource="{Binding DataContext.MatchTypeOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding MatchType, Mode=TwoWay}" />
+                          <TextBox Grid.Column="2" Classes="form-input" Text="{Binding Pattern, Mode=TwoWay}" Watermark="匹配表达式" />
+                          <Button Grid.Column="3" Classes="secondary-button" Command="{Binding DataContext.DeleteVendorRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="9,5" />
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+              <Button Classes="primary-button" Command="{Binding SaveVendorCatalogCommand}" Content="保存厂商规则" IsEnabled="{Binding CanSaveVendorCatalog}" HorizontalContentAlignment="Center" Padding="12,9" />
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
 
         <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
           <StackPanel Spacing="14">

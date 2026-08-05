@@ -79,6 +79,27 @@ public partial class ModelsViewModel : ViewModelBase
     [ObservableProperty]
     private string _errorMessage = string.Empty;
 
+    [ObservableProperty]
+    private string _selectedTab = "gallery";
+
+    [ObservableProperty]
+    private ObservableCollection<ModelVendorDefinitionItem> _vendorDefinitions = new();
+
+    [ObservableProperty]
+    private ModelVendorDefinitionItem? _editingVendor;
+
+    [ObservableProperty]
+    private string _vendorSearchText = string.Empty;
+
+    [ObservableProperty]
+    private bool _isVendorEditorOpen;
+
+    [ObservableProperty]
+    private bool _isVendorSaving;
+
+    [ObservableProperty]
+    private string _vendorErrorMessage = string.Empty;
+
     public ModelsViewModel(ApiService apiService)
     {
         _apiService = apiService;
@@ -115,6 +136,25 @@ public partial class ModelsViewModel : ViewModelBase
         && SelectedMappingSite is not null
         && !string.IsNullOrWhiteSpace(NewMappingRemoteName);
     public bool CanSaveMapping => !IsMappingLoading && !IsMappingSaving && MappingDetail is not null;
+    public bool IsGalleryTab => SelectedTab == "gallery";
+    public bool IsVendorRulesTab => SelectedTab == "rules";
+    public bool ShowGalleryLoading => IsGalleryTab && IsLoading;
+    public bool ShowGalleryError => IsGalleryTab && HasError;
+    public bool ShowGalleryMessage => IsGalleryTab && HasMessage;
+    public bool ShowGalleryNoModels => IsGalleryTab && ShowNoModels;
+    public bool ShowGalleryNoSearchResults => IsGalleryTab && ShowNoSearchResults;
+    public bool HasVendorDefinitions => VendorDefinitions.Count > 0;
+    public bool HasNoVendorDefinitions => !HasVendorDefinitions;
+    public bool HasVendorError => !string.IsNullOrWhiteSpace(VendorErrorMessage);
+    public bool CanSaveVendorCatalog => !IsVendorSaving && VendorDefinitions.All(v => !string.IsNullOrWhiteSpace(v.VendorName));
+    public IEnumerable<ModelVendorDefinitionItem> FilteredVendorDefinitions => VendorDefinitions
+        .Where(v => string.IsNullOrWhiteSpace(VendorSearchText)
+            || v.VendorName.Contains(VendorSearchText.Trim(), StringComparison.OrdinalIgnoreCase)
+            || v.Rules.Any(rule => rule.Pattern.Contains(VendorSearchText.Trim(), StringComparison.OrdinalIgnoreCase)))
+        .ToList();
+    public IEnumerable<ModelVendorRuleItem> EditingVendorRules => EditingVendor?.Rules ?? Enumerable.Empty<ModelVendorRuleItem>();
+    public bool HasNoEditingVendorRules => !EditingVendorRules.Any();
+    public IReadOnlyList<string> MatchTypeOptions { get; } = ["exact", "wildcard", "regex"];
 
     public async Task LoadAsync()
     {
@@ -126,6 +166,7 @@ public partial class ModelsViewModel : ViewModelBase
             VendorGroups = new ObservableCollection<ModelVendorGroup>(result.VendorGroups);
             UpdateFilteredVendorGroups();
             await LoadCompatibilityProfilesAsync();
+            await LoadVendorCatalogAsync();
             OnPropertyChanged(nameof(ModelCount));
             OnPropertyChanged(nameof(HasModels));
             OnPropertyChanged(nameof(CanClearAll));
@@ -144,6 +185,122 @@ public partial class ModelsViewModel : ViewModelBase
     private Task RefreshAsync()
     {
         return LoadAsync();
+    }
+
+    [RelayCommand]
+    private void SelectTab(string? tab)
+    {
+        SelectedTab = tab == "rules" ? "rules" : "gallery";
+    }
+
+    [RelayCommand]
+    private void OpenVendorEditor(ModelVendorDefinitionItem? vendor)
+    {
+        if (vendor is null) return;
+        EditingVendor = vendor;
+        VendorErrorMessage = string.Empty;
+        IsVendorEditorOpen = true;
+    }
+
+    [RelayCommand]
+    private void AddVendor()
+    {
+        var vendor = new ModelVendorDefinitionItem
+        {
+            SortOrder = VendorDefinitions.Count * 10
+        };
+        VendorDefinitions.Add(vendor);
+        EditingVendor = vendor;
+        VendorErrorMessage = string.Empty;
+        IsVendorEditorOpen = true;
+        NotifyVendorProperties();
+    }
+
+    [RelayCommand]
+    private void CloseVendorEditor()
+    {
+        IsVendorEditorOpen = false;
+        EditingVendor = null;
+        VendorErrorMessage = string.Empty;
+    }
+
+    [RelayCommand]
+    private void DeleteVendor(ModelVendorDefinitionItem? vendor)
+    {
+        if (vendor is null) return;
+        VendorDefinitions.Remove(vendor);
+        if (ReferenceEquals(EditingVendor, vendor))
+        {
+            IsVendorEditorOpen = false;
+            EditingVendor = null;
+        }
+
+        NotifyVendorProperties();
+    }
+
+    [RelayCommand]
+    private void AddVendorRule()
+    {
+        if (EditingVendor is null) return;
+        EditingVendor.Rules.Add(new ModelVendorRuleItem
+        {
+            MatchType = "wildcard",
+            Priority = (EditingVendor.Rules.Count + 1) * 10
+        });
+        OnPropertyChanged(nameof(EditingVendorRules));
+        OnPropertyChanged(nameof(HasNoEditingVendorRules));
+    }
+
+    [RelayCommand]
+    private void DeleteVendorRule(ModelVendorRuleItem? rule)
+    {
+        if (EditingVendor is null || rule is null) return;
+        EditingVendor.Rules.Remove(rule);
+        OnPropertyChanged(nameof(EditingVendorRules));
+        OnPropertyChanged(nameof(HasNoEditingVendorRules));
+    }
+
+    [RelayCommand]
+    private async Task SaveVendorCatalogAsync()
+    {
+        if (!CanSaveVendorCatalog) return;
+        VendorErrorMessage = string.Empty;
+        IsVendorSaving = true;
+        try
+        {
+            await _apiService.SendAsync<object>(
+                HttpMethod.Put,
+                "/api/admin/models/vendor-catalog",
+                new
+                {
+                    vendors = VendorDefinitions.Select(v => new
+                    {
+                        vendorName = v.VendorName.Trim(),
+                        iconSvgBody = v.IconSvgBody,
+                        headerBackground = v.HeaderBackground,
+                        sortOrder = v.SortOrder
+                    }).ToList(),
+                    rules = VendorDefinitions.SelectMany(v => v.Rules.Select(rule => new
+                    {
+                        vendorName = v.VendorName.Trim(),
+                        matchType = rule.MatchType,
+                        pattern = rule.Pattern,
+                        priority = rule.Priority
+                    })).ToList()
+                });
+            IsVendorEditorOpen = false;
+            EditingVendor = null;
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            VendorErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsVendorSaving = false;
+            NotifyVendorProperties();
+        }
     }
 
     [RelayCommand]
@@ -467,6 +624,46 @@ public partial class ModelsViewModel : ViewModelBase
         }
     }
 
+    private async Task LoadVendorCatalogAsync()
+    {
+        try
+        {
+            var catalog = await _apiService.SendAsync<ModelVendorCatalogResponse>(
+                HttpMethod.Get,
+                "/api/admin/models/vendor-catalog",
+                null);
+            var vendors = new ObservableCollection<ModelVendorDefinitionItem>(catalog.Vendors);
+            foreach (var vendor in vendors)
+            {
+                vendor.Rules.Clear();
+            }
+
+            foreach (var rule in catalog.Rules)
+            {
+                var vendor = vendors.FirstOrDefault(item => string.Equals(
+                    item.VendorName,
+                    rule.VendorName,
+                    StringComparison.OrdinalIgnoreCase));
+                vendor?.Rules.Add(new ModelVendorRuleItem
+                {
+                    MatchType = rule.MatchType,
+                    Pattern = rule.Pattern,
+                    Priority = rule.Priority
+                });
+            }
+
+            VendorDefinitions = vendors;
+            VendorErrorMessage = string.Empty;
+            NotifyVendorProperties();
+        }
+        catch (Exception exception)
+        {
+            VendorErrorMessage = exception.Message;
+            VendorDefinitions = new ObservableCollection<ModelVendorDefinitionItem>();
+            NotifyVendorProperties();
+        }
+    }
+
     partial void OnVendorGroupsChanged(ObservableCollection<ModelVendorGroup> value)
     {
         UpdateFilteredVendorGroups();
@@ -478,6 +675,33 @@ public partial class ModelsViewModel : ViewModelBase
     partial void OnSearchTextChanged(string value)
     {
         UpdateFilteredVendorGroups();
+    }
+
+    partial void OnSelectedTabChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsGalleryTab));
+        OnPropertyChanged(nameof(IsVendorRulesTab));
+        OnPropertyChanged(nameof(ShowGalleryLoading));
+        OnPropertyChanged(nameof(ShowGalleryError));
+        OnPropertyChanged(nameof(ShowGalleryMessage));
+        OnPropertyChanged(nameof(ShowGalleryNoModels));
+        OnPropertyChanged(nameof(ShowGalleryNoSearchResults));
+    }
+
+    partial void OnVendorDefinitionsChanged(ObservableCollection<ModelVendorDefinitionItem> value)
+    {
+        NotifyVendorProperties();
+    }
+
+    partial void OnVendorSearchTextChanged(string value)
+    {
+        OnPropertyChanged(nameof(FilteredVendorDefinitions));
+    }
+
+    partial void OnEditingVendorChanged(ModelVendorDefinitionItem? value)
+    {
+        OnPropertyChanged(nameof(EditingVendorRules));
+        OnPropertyChanged(nameof(HasNoEditingVendorRules));
     }
 
     partial void OnFilteredVendorGroupsChanged(ObservableCollection<ModelVendorGroup> value)
@@ -545,13 +769,20 @@ public partial class ModelsViewModel : ViewModelBase
         OnPropertyChanged(nameof(ShowNoAvailableSites));
     }
     partial void OnMappingMessageChanged(string value) => OnPropertyChanged(nameof(HasMappingMessage));
-    partial void OnMessageChanged(string value) => OnPropertyChanged(nameof(HasMessage));
+    partial void OnMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasMessage));
+        OnPropertyChanged(nameof(ShowGalleryMessage));
+    }
 
     partial void OnIsLoadingChanged(bool value)
     {
         OnPropertyChanged(nameof(IsListVisible));
         OnPropertyChanged(nameof(ShowNoModels));
         OnPropertyChanged(nameof(ShowNoSearchResults));
+        OnPropertyChanged(nameof(ShowGalleryLoading));
+        OnPropertyChanged(nameof(ShowGalleryNoModels));
+        OnPropertyChanged(nameof(ShowGalleryNoSearchResults));
         OnPropertyChanged(nameof(CanOpenMapping));
         OnPropertyChanged(nameof(CanClearAll));
     }
@@ -562,12 +793,25 @@ public partial class ModelsViewModel : ViewModelBase
         OnPropertyChanged(nameof(CanClearAll));
     }
 
+    partial void OnIsVendorSavingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanSaveVendorCatalog));
+    }
+
+    partial void OnVendorErrorMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasVendorError));
+    }
+
     partial void OnErrorMessageChanged(string value)
     {
         OnPropertyChanged(nameof(HasError));
         OnPropertyChanged(nameof(IsListVisible));
         OnPropertyChanged(nameof(ShowNoModels));
         OnPropertyChanged(nameof(ShowNoSearchResults));
+        OnPropertyChanged(nameof(ShowGalleryError));
+        OnPropertyChanged(nameof(ShowGalleryNoModels));
+        OnPropertyChanged(nameof(ShowGalleryNoSearchResults));
     }
 
     private void UpdateFilteredVendorGroups()
@@ -594,6 +838,17 @@ public partial class ModelsViewModel : ViewModelBase
             .ToList();
 
         FilteredVendorGroups = new ObservableCollection<ModelVendorGroup>(filteredGroups);
+    }
+
+    private void NotifyVendorProperties()
+    {
+        OnPropertyChanged(nameof(HasVendorDefinitions));
+        OnPropertyChanged(nameof(HasNoVendorDefinitions));
+        OnPropertyChanged(nameof(FilteredVendorDefinitions));
+        OnPropertyChanged(nameof(CanSaveVendorCatalog));
+        OnPropertyChanged(nameof(HasVendorError));
+        OnPropertyChanged(nameof(EditingVendorRules));
+        OnPropertyChanged(nameof(HasNoEditingVendorRules));
     }
 
     private void NotifyMappingProperties()
