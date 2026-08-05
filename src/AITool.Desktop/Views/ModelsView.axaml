@@ -34,7 +34,7 @@
         <Border Background="#E8F7EA" CornerRadius="8" Padding="14" IsVisible="{Binding ShowGalleryMessage}"><TextBlock Foreground="#166534" Text="{Binding Message}" TextWrapping="Wrap" /></Border>
         <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding ShowGalleryNoModels}" Text="暂无模型，请先新增模型。" />
         <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding ShowGalleryNoSearchResults}" Text="没有匹配当前搜索条件的模型。" />
-        <ScrollViewer IsVisible="{Binding IsGalleryTab}" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+        <ScrollViewer IsVisible="{Binding IsGalleryTab}" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
           <ItemsControl ItemsSource="{Binding FilteredVendorGroups}">
             <ItemsControl.ItemTemplate>
               <DataTemplate>
@@ -49,8 +49,8 @@
                     <ItemsControl ItemsSource="{Binding Models}">
                       <ItemsControl.ItemTemplate>
                         <DataTemplate>
-                          <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,13" MinWidth="900">
-                            <Grid ColumnDefinitions="2.2*,1.2*,1*,Auto" ColumnSpacing="14" MinWidth="860">
+                          <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,13">
+                            <Grid ColumnDefinitions="2.2*,1.2*,1*,Auto" ColumnSpacing="14">
                               <StackPanel Spacing="3">
                                 <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding DisplayName}" />
                                 <TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding ModelName}" />

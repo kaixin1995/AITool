@@ -137,14 +137,14 @@
           BorderThickness="0,0,0,1"
           Height="60"
           Padding="32,0">
-        <Grid ColumnDefinitions="*,Auto">
+        <Grid ColumnDefinitions="*,1.7*">
           <TextBlock
               VerticalAlignment="Center"
               FontSize="16"
               FontWeight="SemiBold"
               Foreground="#1E293B"
               Text="{Binding SelectedItem.Label}" />
-          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+          <WrapPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal" VerticalAlignment="Center">
             <Button Classes="secondary-button" Command="{Binding RefreshCurrentPageCommand}" Content="刷新当前页" Padding="12,7" />
             <Border
                 Background="#E8F7EA"
@@ -157,7 +157,7 @@
             </Border>
             <TextBlock FontSize="12" Foreground="#94A3B8" Text="AI Tool Desktop" VerticalAlignment="Center" />
             <Button Classes="secondary-button" Command="{Binding LogoutCommand}" Content="退出登录" Padding="10,7" />
-          </StackPanel>
+          </WrapPanel>
         </Grid>
       </Border>
 

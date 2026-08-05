@@ -39,8 +39,8 @@
       <Border Grid.Column="3" Classes="content-card" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="最近回退时间" /><TextBlock FontSize="12" Foreground="#64748B" Text="{Binding Summary.LatestOccurredAtText}" TextTrimming="CharacterEllipsis" /></StackPanel></Border>
     </Grid>
 
-    <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-      <StackPanel MinWidth="1060" Spacing="10">
+    <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+      <StackPanel Spacing="10">
         <Border Background="#F8FAFC" CornerRadius="8" Padding="12">
           <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding SampleDescription}" TextWrapping="Wrap" />
         </Border>
