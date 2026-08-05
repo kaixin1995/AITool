@@ -54,16 +54,16 @@
     </DataTemplate>
   </UserControl.DataTemplates>
 
-  <Grid MinWidth="0" ClipToBounds="False" Background="#F8FAFC" ColumnDefinitions="208,*">
+  <Grid MinWidth="0" ClipToBounds="False" Background="{DynamicResource AppPageBackgroundBrush}" ColumnDefinitions="208,*">
     <!-- 左侧导航，结构和 Vue3 MainLayout 保持一致。 -->
     <Border
-        Background="#FFFFFF"
-        BorderBrush="#E2E8F0"
+        Background="{DynamicResource AppCardBackgroundBrush}"
+        BorderBrush="{DynamicResource AppBorderBrush}"
         BorderThickness="0,0,1,0">
       <DockPanel>
         <Border
             DockPanel.Dock="Top"
-            BorderBrush="#E2E8F0"
+            BorderBrush="{DynamicResource AppBorderBrush}"
             BorderThickness="0,0,0,1"
             Padding="18,16">
           <Grid ColumnDefinitions="Auto,*">
@@ -86,7 +86,7 @@
                 VerticalAlignment="Center"
                 FontSize="16"
                 FontWeight="Bold"
-                Foreground="#1E293B"
+                Foreground="{DynamicResource AppTextPrimaryBrush}"
                 Text="AI Tool" />
           </Grid>
         </Border>
@@ -99,7 +99,7 @@
                   <TextBlock
                       FontSize="11"
                       FontWeight="SemiBold"
-                      Foreground="#94A3B8"
+                      Foreground="{DynamicResource AppTextTertiaryBrush}"
                       Margin="12,10,12,5"
                       Text="{Binding Title}" />
                   <ItemsControl ItemsSource="{Binding Items}">
@@ -129,8 +129,8 @@
     <!-- 右侧主内容区：顶部标题栏 + 页面内容。 -->
     <Grid Grid.Column="1" RowDefinitions="Auto,*">
       <Border
-          Background="#FFFFFF"
-          BorderBrush="#E2E8F0"
+          Background="{DynamicResource AppCardBackgroundBrush}"
+          BorderBrush="{DynamicResource AppBorderBrush}"
           BorderThickness="0,0,0,1"
           Height="60"
           Padding="32,0">
@@ -139,7 +139,7 @@
               VerticalAlignment="Center"
               FontSize="16"
               FontWeight="SemiBold"
-              Foreground="#1E293B"
+              Foreground="{DynamicResource AppTextPrimaryBrush}"
               Text="{Binding SelectedItem.Label}" />
           <WrapPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal" VerticalAlignment="Center">
             <Button Classes="secondary-button" Command="{Binding RefreshCurrentPageCommand}" Content="刷新当前页" Padding="12,7" />
@@ -152,13 +152,13 @@
                 <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#166534" Text="服务已连接" />
               </StackPanel>
             </Border>
-            <TextBlock FontSize="12" Foreground="#94A3B8" Text="AI Tool Desktop" VerticalAlignment="Center" />
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="AI Tool Desktop" VerticalAlignment="Center" />
             <Button Classes="secondary-button" Command="{Binding LogoutCommand}" Content="退出登录" Padding="10,7" />
           </WrapPanel>
         </Grid>
       </Border>
 
-      <Border Grid.Row="1" ClipToBounds="False" Background="#F8FAFC" Padding="24,22">
+      <Border Grid.Row="1" ClipToBounds="False" Background="{DynamicResource AppPageBackgroundBrush}" Padding="24,22">
         <ContentControl
             HorizontalContentAlignment="Stretch"
             VerticalContentAlignment="Stretch"

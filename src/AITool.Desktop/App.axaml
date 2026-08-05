@@ -1,33 +1,73 @@
 <Application
     x:Class="AITool.Desktop.App"
     xmlns="https://github.com/avaloniaui"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    RequestedThemeVariant="Default">
+  <Application.Resources>
+    <ResourceDictionary>
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="AppPageBackgroundBrush" Color="#F8FAFC" />
+          <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="#FFFFFF" />
+          <SolidColorBrush x:Key="AppSurfaceSoftBrush" Color="#F1F5F9" />
+          <SolidColorBrush x:Key="AppInputBackgroundBrush" Color="#F8FAFC" />
+          <SolidColorBrush x:Key="AppBorderBrush" Color="#E2E8F0" />
+          <SolidColorBrush x:Key="AppBorderStrongBrush" Color="#CBD5E1" />
+          <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#1E293B" />
+          <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#64748B" />
+          <SolidColorBrush x:Key="AppTextTertiaryBrush" Color="#94A3B8" />
+          <SolidColorBrush x:Key="AppCodeBackgroundBrush" Color="#F8FAFC" />
+          <SolidColorBrush x:Key="AppCodeForegroundBrush" Color="#334155" />
+          <SolidColorBrush x:Key="AppResponseBackgroundBrush" Color="#FFF7ED" />
+          <SolidColorBrush x:Key="AppPrimarySoftBrush" Color="#EEF4FF" />
+          <SolidColorBrush x:Key="AppOnPrimaryBrush" Color="#FFFFFF" />
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Dark">
+          <SolidColorBrush x:Key="AppPageBackgroundBrush" Color="#101014" />
+          <SolidColorBrush x:Key="AppCardBackgroundBrush" Color="#18181C" />
+          <SolidColorBrush x:Key="AppSurfaceSoftBrush" Color="#202026" />
+          <SolidColorBrush x:Key="AppInputBackgroundBrush" Color="#202026" />
+          <SolidColorBrush x:Key="AppBorderBrush" Color="#2D2D33" />
+          <SolidColorBrush x:Key="AppBorderStrongBrush" Color="#45454D" />
+          <SolidColorBrush x:Key="AppTextPrimaryBrush" Color="#E7E7EB" />
+          <SolidColorBrush x:Key="AppTextSecondaryBrush" Color="#B4B4BE" />
+          <SolidColorBrush x:Key="AppTextTertiaryBrush" Color="#858592" />
+          <SolidColorBrush x:Key="AppCodeBackgroundBrush" Color="#141418" />
+          <SolidColorBrush x:Key="AppCodeForegroundBrush" Color="#D8D8E0" />
+          <SolidColorBrush x:Key="AppResponseBackgroundBrush" Color="#2A211A" />
+          <SolidColorBrush x:Key="AppPrimarySoftBrush" Color="#263A63" />
+          <SolidColorBrush x:Key="AppOnPrimaryBrush" Color="#FFFFFF" />
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+    </ResourceDictionary>
+  </Application.Resources>
+
   <Application.Styles>
     <FluentTheme />
 
     <!-- 颜色和间距对齐 frontend/src/styles/main.css。 -->
     <Style Selector="Window">
-      <Setter Property="Background" Value="#F8FAFC" />
-      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="Background" Value="{DynamicResource AppPageBackgroundBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
       <Setter Property="FontFamily" Value="Microsoft YaHei, Segoe UI, sans-serif" />
     </Style>
 
     <Style Selector="TextBlock.page-title">
       <Setter Property="FontSize" Value="24" />
       <Setter Property="FontWeight" Value="SemiBold" />
-      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
     </Style>
 
     <Style Selector="TextBlock.page-subtitle">
-      <Setter Property="Foreground" Value="#64748B" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextSecondaryBrush}" />
       <Setter Property="FontSize" Value="14" />
     </Style>
 
     <Style Selector="TextBox.form-input">
-      <Setter Property="Background" Value="#F8FAFC" />
-      <Setter Property="BorderBrush" Value="#E2E8F0" />
+      <Setter Property="Background" Value="{DynamicResource AppInputBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorderBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
       <Setter Property="FontSize" Value="14" />
       <Setter Property="MinHeight" Value="42" />
       <Setter Property="Padding" Value="12,9" />
@@ -35,12 +75,12 @@
 
     <Style Selector="TextBox.form-input:focus">
       <Setter Property="BorderBrush" Value="#6C9EFF" />
-      <Setter Property="Background" Value="#FFFFFF" />
+      <Setter Property="Background" Value="{DynamicResource AppCardBackgroundBrush}" />
     </Style>
 
     <Style Selector="Button.primary-button">
       <Setter Property="Background" Value="#6C9EFF" />
-      <Setter Property="Foreground" Value="#FFFFFF" />
+      <Setter Property="Foreground" Value="{DynamicResource AppOnPrimaryBrush}" />
       <Setter Property="FontWeight" Value="SemiBold" />
       <Setter Property="MinHeight" Value="42" />
       <Setter Property="CornerRadius" Value="8" />
@@ -51,22 +91,22 @@
     </Style>
 
     <Style Selector="Button.secondary-button">
-      <Setter Property="Background" Value="#FFFFFF" />
-      <Setter Property="BorderBrush" Value="#E2E8F0" />
+      <Setter Property="Background" Value="{DynamicResource AppCardBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorderBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="Foreground" Value="#475569" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextSecondaryBrush}" />
       <Setter Property="CornerRadius" Value="8" />
     </Style>
 
     <Style Selector="Button.secondary-button:pointerover">
-      <Setter Property="Background" Value="#F1F5F9" />
-      <Setter Property="BorderBrush" Value="#CBD5E1" />
+      <Setter Property="Background" Value="{DynamicResource AppSurfaceSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorderStrongBrush}" />
     </Style>
 
     <Style Selector="ToggleButton.nav-item">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Foreground" Value="#64748B" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextSecondaryBrush}" />
       <Setter Property="HorizontalContentAlignment" Value="Left" />
       <Setter Property="Padding" Value="12,10" />
       <Setter Property="Margin" Value="0,2" />
@@ -74,31 +114,31 @@
     </Style>
 
     <Style Selector="ToggleButton.nav-item:pointerover">
-      <Setter Property="Background" Value="#F1F5F9" />
-      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="Background" Value="{DynamicResource AppSurfaceSoftBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
     </Style>
 
     <Style Selector="ToggleButton.nav-item:checked">
-      <Setter Property="Background" Value="#EEF4FF" />
+      <Setter Property="Background" Value="{DynamicResource AppPrimarySoftBrush}" />
       <Setter Property="Foreground" Value="#5B8DEF" />
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 
     <Style Selector="ToggleButton.simulator-tab">
-      <Setter Property="Background" Value="#FFFFFF" />
-      <Setter Property="BorderBrush" Value="#E2E8F0" />
+      <Setter Property="Background" Value="{DynamicResource AppCardBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorderBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="Foreground" Value="#475569" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextSecondaryBrush}" />
       <Setter Property="CornerRadius" Value="8" />
     </Style>
 
     <Style Selector="ToggleButton.simulator-tab:pointerover">
-      <Setter Property="Background" Value="#F1F5F9" />
-      <Setter Property="BorderBrush" Value="#CBD5E1" />
+      <Setter Property="Background" Value="{DynamicResource AppSurfaceSoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorderStrongBrush}" />
     </Style>
 
     <Style Selector="ToggleButton.simulator-tab:checked">
-      <Setter Property="Background" Value="#EEF4FF" />
+      <Setter Property="Background" Value="{DynamicResource AppPrimarySoftBrush}" />
       <Setter Property="BorderBrush" Value="#B9D0FF" />
       <Setter Property="Foreground" Value="#315EA8" />
       <Setter Property="FontWeight" Value="SemiBold" />
@@ -108,63 +148,63 @@
     <Style Selector="Button.filter-toggle">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="Padding" Value="0" />
     </Style>
 
     <Style Selector="Button.filter-toggle:pointerover">
-      <Setter Property="Background" Value="#F8FAFC" />
-      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="Background" Value="{DynamicResource AppPageBackgroundBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
     </Style>
 
     <Style Selector="Button.filter-toggle:pressed">
       <Setter Property="Background" Value="Transparent" />
-      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
     </Style>
 
     <Style Selector="Button.filter-toggle:focus">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
     </Style>
 
     <Style Selector="ToggleButton.filter-toggle">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Foreground" Value="#64748B" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextSecondaryBrush}" />
       <Setter Property="Padding" Value="12,7" />
       <Setter Property="CornerRadius" Value="8" />
     </Style>
 
     <Style Selector="ToggleButton.filter-toggle:pointerover">
-      <Setter Property="Background" Value="#F8FAFC" />
-      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="Background" Value="{DynamicResource AppPageBackgroundBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
     </Style>
 
     <Style Selector="ToggleButton.filter-toggle:checked">
-      <Setter Property="Background" Value="#EEF4FF" />
+      <Setter Property="Background" Value="{DynamicResource AppPrimarySoftBrush}" />
       <Setter Property="Foreground" Value="#315EA8" />
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 
     <Style Selector="TextBox.code-box">
-      <Setter Property="Background" Value="#F8FAFC" />
-      <Setter Property="BorderBrush" Value="#E2E8F0" />
+      <Setter Property="Background" Value="{DynamicResource AppCodeBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorderBrush}" />
       <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="Foreground" Value="#334155" />
+      <Setter Property="Foreground" Value="{DynamicResource AppCodeForegroundBrush}" />
       <Setter Property="FontFamily" Value="Cascadia Mono, Consolas, monospace" />
       <Setter Property="FontSize" Value="12" />
       <Setter Property="Padding" Value="10" />
     </Style>
 
     <Style Selector="TextBox.response-box">
-      <Setter Property="Background" Value="#FFF7ED" />
+      <Setter Property="Background" Value="{DynamicResource AppResponseBackgroundBrush}" />
     </Style>
 
     <Style Selector="Border.content-card">
-      <Setter Property="Background" Value="#FFFFFF" />
-      <Setter Property="BorderBrush" Value="#E2E8F0" />
+      <Setter Property="Background" Value="{DynamicResource AppCardBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorderBrush}" />
       <Setter Property="BorderThickness" Value="1" />
       <Setter Property="CornerRadius" Value="12" />
     </Style>
