@@ -7,7 +7,7 @@
     x:CompileBindings="False"
     Width="1280"
     Height="800"
-    MinWidth="960"
+    MinWidth="840"
     MinHeight="640"
     HorizontalContentAlignment="Stretch"
     VerticalContentAlignment="Stretch"
