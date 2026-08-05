@@ -10,6 +10,7 @@ const routes = ref<CircuitBreakerRoute[]>([])
 let timer: ReturnType<typeof setInterval> | null = null
 
 async function load(): Promise<void> {
+  if (loading.value) return
   loading.value = true
   try {
     const resp = await api.getCircuitBreakerStates()
