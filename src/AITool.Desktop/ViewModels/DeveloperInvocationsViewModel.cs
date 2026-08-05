@@ -456,6 +456,8 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private Task RefreshAsync() => LoadActiveTabAsync();
 
+    public Task RefreshCurrentTabAsync() => LoadActiveTabAsync();
+
     [RelayCommand]
     private void SelectSimulatorTab(DeveloperSimulatorTab? tab)
     {
@@ -861,6 +863,7 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
     partial void OnSelectedTabIndexChanged(int value)
     {
         OnPropertyChanged(nameof(SelectedTabTitle));
+        ConfigureAutoRefresh();
         _ = LoadActiveTabAsync();
     }
     partial void OnAutoRefreshChanged(bool value) => ConfigureAutoRefresh();

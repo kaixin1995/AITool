@@ -265,7 +265,7 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 await codex.LoadAsync();
                 break;
             case DeveloperInvocationsViewModel developer:
-                await developer.LoadAsync();
+                await developer.RefreshCurrentTabAsync();
                 break;
             case ChatViewModel chat:
                 await chat.LoadAsync();
