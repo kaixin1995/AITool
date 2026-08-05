@@ -81,15 +81,6 @@
           </Grid>
         </Border>
 
-        <Button
-            Classes="secondary-button"
-            Command="{Binding LogoutCommand}"
-            Content="退出登录"
-            DockPanel.Dock="Bottom"
-            HorizontalContentAlignment="Center"
-            Margin="14"
-            Padding="12,9" />
-
         <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
           <ItemsControl ItemsSource="{Binding NavigationGroups}" Margin="12,10">
             <ItemsControl.ItemTemplate>
@@ -149,6 +140,7 @@
               </StackPanel>
             </Border>
             <TextBlock FontSize="12" Foreground="#94A3B8" Text="AI Tool Desktop" VerticalAlignment="Center" />
+            <Button Classes="secondary-button" Command="{Binding LogoutCommand}" Content="退出登录" Padding="10,7" />
           </StackPanel>
         </Grid>
       </Border>

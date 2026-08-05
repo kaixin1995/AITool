@@ -56,6 +56,10 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
     /// <summary>
+    /// 负责在 Codex 上游凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly CodexCredentialRefreshService _codexCredentialRefreshService;
+    /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
     private readonly ILogger<AnthropicProxyController> _logger;
@@ -70,6 +74,7 @@ public sealed class AnthropicProxyController : ControllerBase
         ProxyRequestMetadataCache metadataCache,
         DeveloperInvocationTraceStore traceStore,
         ModelConcurrencyLimiter concurrencyLimiter,
+        CodexCredentialRefreshService codexCredentialRefreshService,
         ILogger<AnthropicProxyController> logger)
     {
         _forwardService = forwardService;
@@ -78,7 +83,22 @@ public sealed class AnthropicProxyController : ControllerBase
         _metadataCache = metadataCache;
         _traceStore = traceStore;
         _concurrencyLimiter = concurrencyLimiter;
+        _codexCredentialRefreshService = codexCredentialRefreshService;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// 仅为 Codex 隐藏站点绑定实时凭证刷新回调，普通站点的 401 不触发 OAuth 刷新。
+    /// </summary>
+    private Func<string, CancellationToken, Task<string?>>? CreateCodexCredentialRefreshCallback(
+        CachedProxyRouteTarget route)
+    {
+        return string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
+            ? (staleToken, cancellationToken) => _codexCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken)
+            : null;
     }
 
     /// <summary>
@@ -242,6 +262,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = forwardHeaders,
+                RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
                 TargetPath = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                     ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
                     : null

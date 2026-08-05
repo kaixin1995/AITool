@@ -132,6 +132,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
     /// <summary>
+    /// 负责在 Codex 上游凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly CodexCredentialRefreshService _codexCredentialRefreshService;
+    /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
     private readonly ILogger<OpenAiProxyController> _logger;
@@ -146,6 +150,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         ProxyRequestMetadataCache metadataCache,
         DeveloperInvocationTraceStore traceStore,
         ModelConcurrencyLimiter concurrencyLimiter,
+        CodexCredentialRefreshService codexCredentialRefreshService,
         ILogger<OpenAiProxyController> logger)
     {
         _forwardService = forwardService;
@@ -154,6 +159,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         _metadataCache = metadataCache;
         _traceStore = traceStore;
         _concurrencyLimiter = concurrencyLimiter;
+        _codexCredentialRefreshService = codexCredentialRefreshService;
         _logger = logger;
     }
 
@@ -606,6 +612,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
+                RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
                 TargetPath = defaultTargetPathFactory is null
                     ? (string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                         ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")

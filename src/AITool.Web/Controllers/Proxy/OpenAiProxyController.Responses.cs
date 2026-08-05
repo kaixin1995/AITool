@@ -203,6 +203,7 @@ public sealed partial class OpenAiProxyController
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
+                RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
                 TargetPath = isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
             };
 
@@ -511,6 +512,7 @@ public sealed partial class OpenAiProxyController
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
+                RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
                 TargetPath = isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
             };
 

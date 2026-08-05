@@ -29,6 +29,20 @@ public sealed partial class OpenAiProxyController
         }
         return new Dictionary<string, string>(extra, StringComparer.OrdinalIgnoreCase);
     }
+
+    /// <summary>
+    /// 仅为 Codex 隐藏站点绑定实时凭证刷新回调，普通站点的 401 不触发 OAuth 刷新。
+    /// </summary>
+    private Func<string, CancellationToken, Task<string?>>? CreateCodexCredentialRefreshCallback(
+        CachedProxyRouteTarget route)
+    {
+        return string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
+            ? (staleToken, cancellationToken) => _codexCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken)
+            : null;
+    }
     /// <summary>
     /// 接收一条完整的 WebSocket 文本消息。
     /// </summary>

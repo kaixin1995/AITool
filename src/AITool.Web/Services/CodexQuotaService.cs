@@ -30,6 +30,7 @@ public sealed class CodexQuotaService : ICodexQuotaService
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly IMemoryCache _resultCache;
+    private readonly CodexCredentialRefreshService _credentialRefreshService;
     private readonly ILogger<CodexQuotaService> _logger;
 
     /// <summary>single-flight：同 accountId 并发只一次真实请求。</summary>
@@ -40,12 +41,14 @@ public sealed class CodexQuotaService : ICodexQuotaService
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
         IMemoryCache resultCache,
+        CodexCredentialRefreshService credentialRefreshService,
         ILogger<CodexQuotaService> logger)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _resultCache = resultCache;
+        _credentialRefreshService = credentialRefreshService;
         _logger = logger;
     }
 
@@ -118,7 +121,10 @@ public sealed class CodexQuotaService : ICodexQuotaService
         }
     }
 
-    private async Task<CodexQuotaInfo> QueryUpstreamAsync(CodexAccount account, CancellationToken ct)
+    private async Task<CodexQuotaInfo> QueryUpstreamAsync(
+        CodexAccount account,
+        CancellationToken ct,
+        bool allowTokenRefresh = true)
     {
         if (string.IsNullOrEmpty(account.AccessToken))
         {
@@ -143,6 +149,19 @@ public sealed class CodexQuotaService : ICodexQuotaService
             var info = new CodexQuotaInfo { RawJson = body, CheckedAt = DateTimeOffset.UtcNow };
             if (!response.IsSuccessStatusCode)
             {
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh)
+                {
+                    var refreshedAccessToken = await _credentialRefreshService.RefreshAsync(
+                        account.LinkedSiteId,
+                        account.AccessToken,
+                        ct);
+                    if (!string.IsNullOrWhiteSpace(refreshedAccessToken))
+                    {
+                        account.AccessToken = refreshedAccessToken;
+                        return await QueryUpstreamAsync(account, ct, false);
+                    }
+                }
+
                 info.Success = false;
                 info.Error = $"上游返回 {(int)response.StatusCode}";
                 return info;

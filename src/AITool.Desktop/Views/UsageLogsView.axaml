@@ -5,11 +5,205 @@
     xmlns:vm="using:AITool.Desktop.ViewModels"
     x:DataType="vm:UsageLogsViewModel"
     x:CompileBindings="False">
-  <Grid>
-    <Grid RowDefinitions="Auto,Auto,*">
-      <Border Classes="content-card" Padding="16" Margin="0,0,0,14"><Grid ColumnDefinitions="1.2*,1.2*,1*,1*,1.5*,Auto" ColumnSpacing="10"><ComboBox ItemsSource="{Binding Sites}" SelectedItem="{Binding SelectedSite}" PlaceholderText="全部站点"><ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate></ComboBox><ComboBox Grid.Column="1" ItemsSource="{Binding AccessKeys}" SelectedItem="{Binding SelectedAccessKey}" PlaceholderText="全部密钥"><ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate></ComboBox><TextBox Grid.Column="2" Classes="form-input" Text="{Binding Source}" Watermark="来源" /><TextBox Grid.Column="3" Classes="form-input" Text="{Binding Status}" Watermark="状态" /><TextBox Grid.Column="4" Classes="form-input" Text="{Binding ModelKeyword}" Watermark="模型关键字" /><Button Grid.Column="5" Classes="primary-button" Command="{Binding SearchCommand}" Content="查询" Padding="14,8" /></Grid></Border>
-      <Grid Grid.Row="1" ColumnDefinitions="*,*,*,*" ColumnSpacing="12" Margin="0,0,0,14"><Border Classes="content-card" Padding="14"><StackPanel Spacing="3"><TextBlock FontSize="12" Foreground="#64748B" Text="请求数" /><TextBlock FontSize="22" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Summary.TotalRequests}" /></StackPanel></Border><Border Grid.Column="1" Classes="content-card" Padding="14"><StackPanel Spacing="3"><TextBlock FontSize="12" Foreground="#64748B" Text="失败数" /><TextBlock FontSize="22" FontWeight="SemiBold" Foreground="#B91C1C" Text="{Binding Summary.FailedRequests}" /></StackPanel></Border><Border Grid.Column="2" Classes="content-card" Padding="14"><StackPanel Spacing="3"><TextBlock FontSize="12" Foreground="#64748B" Text="成功率" /><TextBlock FontSize="22" FontWeight="SemiBold" Foreground="#166534" Text="{Binding Summary.SuccessRateText}" /></StackPanel></Border><Border Grid.Column="3" Classes="content-card" Padding="14"><StackPanel Spacing="3"><TextBlock FontSize="12" Foreground="#64748B" Text="Token 总数" /><TextBlock FontSize="22" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Summary.TotalTokens}" /></StackPanel></Border></Grid>
-      <Grid Grid.Row="2"><Border Classes="content-card" Padding="0"><ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto"><StackPanel MinWidth="980"><Border Background="#F8FAFC" Padding="18,14"><Grid ColumnDefinitions="1.5*,1.3*,1.2*,1*,1*,1*,Auto" ColumnSpacing="10"><TextBlock FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="请求时间" /><TextBlock Grid.Column="1" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="请求模型" /><TextBlock Grid.Column="2" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="站点" /><TextBlock Grid.Column="3" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="来源" /><TextBlock Grid.Column="4" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="状态" /><TextBlock Grid.Column="5" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="耗时" /><TextBlock Grid.Column="6" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="操作" /></Grid></Border><TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoItems}" Text="暂无调用日志" Margin="0,30" /><ItemsControl ItemsSource="{Binding Items}"><ItemsControl.ItemTemplate><DataTemplate><Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,13"><Grid ColumnDefinitions="1.5*,1.3*,1.2*,1*,1*,1*,Auto" ColumnSpacing="10"><TextBlock FontSize="12" Foreground="#64748B" Text="{Binding RequestedAt}" /><StackPanel Grid.Column="1" Spacing="2"><TextBlock Foreground="#1E293B" Text="{Binding RequestModel}" /><TextBlock FontSize="11" Foreground="#94A3B8" Text="{Binding AttemptedModel}" /></StackPanel><TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding SiteName}" /><TextBlock Grid.Column="3" Foreground="#64748B" Text="{Binding SourceText}" /><TextBlock Grid.Column="4" Foreground="#1E293B" Text="{Binding StatusText}" /><TextBlock Grid.Column="5" Foreground="#64748B" Text="{Binding DurationText}" /><Button Grid.Column="6" Classes="secondary-button" Command="{Binding DataContext.OpenDetailCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="详情" Padding="10,6" /></Grid></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></ScrollViewer></Border><StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10" Margin="0,12,0,0"><Button Classes="secondary-button" Command="{Binding PreviousPageCommand}" Content="上一页" IsEnabled="{Binding CanPrevious}" Padding="12,7" /><TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding PageText}" /><Button Classes="secondary-button" Command="{Binding NextPageCommand}" Content="下一页" IsEnabled="{Binding CanNext}" Padding="12,7" /></StackPanel><Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding HasDetail}" Padding="22" Width="680" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10"><StackPanel Spacing="12"><Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="请求详情" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseDetailCommand}" Content="关闭" Padding="10,6" /></Grid><TextBlock Foreground="#64748B" Text="{Binding SelectedDetail.RequestId}" /><TextBlock Foreground="#64748B" Text="{Binding SelectedDetail.RequestModel}" /><ItemsControl ItemsSource="{Binding SelectedDetail.Attempts}"><ItemsControl.ItemTemplate><DataTemplate><Border Background="#F8FAFC" CornerRadius="6" Padding="10"><Grid ColumnDefinitions="*,*,Auto"><TextBlock Foreground="#1E293B" Text="{Binding SiteName}" /><TextBlock Grid.Column="1" Foreground="#64748B" Text="{Binding AttemptedModel}" /><TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding StatusText}" /></Grid></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl></StackPanel></Border></Grid>
-    </Grid>
+  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+      <StackPanel Spacing="14">
+        <Border Classes="content-card" Padding="0">
+          <StackPanel>
+            <Grid ColumnDefinitions="*,Auto" Margin="18,14">
+              <ToggleButton
+                  Classes="nav-item"
+                  IsChecked="{Binding FiltersExpanded, Mode=TwoWay}"
+                  HorizontalContentAlignment="Left"
+                  Padding="0">
+                <Grid ColumnDefinitions="*,Auto" Width="300">
+                  <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="筛选与汇总" />
+                  <TextBlock Grid.Column="1" FontSize="12" Foreground="#64748B" Text="展开/收起" />
+                </Grid>
+              </ToggleButton>
+              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#64748B" Text="自动刷新" />
+                <ToggleSwitch IsChecked="{Binding AutoRefresh, Mode=TwoWay}" OnContent="开" OffContent="关" />
+                <Button Classes="secondary-button" Content="?" Padding="8,4" ToolTip.Tip="自动刷新每 5 秒更新一次当前页。" />
+              </StackPanel>
+            </Grid>
+
+            <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,14" IsVisible="{Binding FiltersExpanded}">
+              <Grid ColumnDefinitions="1*,1*,1*,1*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="12" RowSpacing="10">
+                <StackPanel Spacing="4">
+                  <TextBlock FontSize="11" Foreground="#64748B" Text="时间范围" />
+                  <ComboBox ItemsSource="{Binding RangeOptions}" SelectedItem="{Binding SelectedRange}">
+                    <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
+                  </ComboBox>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Spacing="4" IsVisible="{Binding IsCustomRange}">
+                  <TextBlock FontSize="11" Foreground="#64748B" Text="开始时间" />
+                  <DatePicker SelectedDate="{Binding StartTime}" />
+                </StackPanel>
+                <StackPanel Grid.Column="2" Spacing="4" IsVisible="{Binding IsCustomRange}">
+                  <TextBlock FontSize="11" Foreground="#64748B" Text="结束时间" />
+                  <DatePicker SelectedDate="{Binding EndTime}" />
+                </StackPanel>
+                <StackPanel Grid.Column="3" Spacing="4">
+                  <TextBlock FontSize="11" Foreground="#64748B" Text="站点" />
+                  <ComboBox ItemsSource="{Binding Sites}" SelectedItem="{Binding SelectedSite}" PlaceholderText="全部站点">
+                    <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
+                  </ComboBox>
+                </StackPanel>
+                <StackPanel Grid.Row="1" Spacing="4">
+                  <TextBlock FontSize="11" Foreground="#64748B" Text="访问密钥" />
+                  <ComboBox ItemsSource="{Binding AccessKeys}" SelectedItem="{Binding SelectedAccessKey}" PlaceholderText="全部密钥">
+                    <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
+                  </ComboBox>
+                </StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="1" Spacing="4">
+                  <TextBlock FontSize="11" Foreground="#64748B" Text="来源" />
+                  <ComboBox ItemsSource="{Binding SourceOptions}" SelectedItem="{Binding SelectedSource}">
+                    <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
+                  </ComboBox>
+                </StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="2" Spacing="4">
+                  <TextBlock FontSize="11" Foreground="#64748B" Text="状态" />
+                  <ComboBox ItemsSource="{Binding StatusOptions}" SelectedItem="{Binding SelectedStatus}">
+                    <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
+                  </ComboBox>
+                </StackPanel>
+                <StackPanel Grid.Row="1" Grid.Column="3" Spacing="4">
+                  <TextBlock FontSize="11" Foreground="#64748B" Text="模型搜索" />
+                  <TextBox Classes="form-input" Text="{Binding ModelKeyword}" Watermark="模型模糊搜索" />
+                </StackPanel>
+                <StackPanel Grid.Row="2" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                  <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="12,7" />
+                  <Button Classes="primary-button" Command="{Binding SearchCommand}" Content="查询" Padding="14,7" />
+                </StackPanel>
+              </Grid>
+            </Border>
+          </StackPanel>
+        </Border>
+
+        <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="12">
+          <Border Classes="content-card" Padding="14">
+            <StackPanel Spacing="4"><TextBlock FontSize="12" Foreground="#64748B" Text="总请求" /><TextBlock FontSize="24" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Summary.TotalRequests}" /></StackPanel>
+          </Border>
+          <Border Grid.Column="1" Classes="content-card" Padding="14">
+            <StackPanel Spacing="4"><TextBlock FontSize="12" Foreground="#64748B" Text="成功率" /><TextBlock FontSize="24" FontWeight="SemiBold" Foreground="#166534" Text="{Binding Summary.SuccessRateText}" /></StackPanel>
+          </Border>
+          <Border Grid.Column="2" Classes="content-card" Padding="14">
+            <StackPanel Spacing="4"><TextBlock FontSize="12" Foreground="#64748B" Text="总 Tokens" /><TextBlock FontSize="24" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Summary.TotalTokens}" /></StackPanel>
+          </Border>
+          <Border Grid.Column="3" Classes="content-card" Padding="14">
+            <StackPanel Spacing="4"><TextBlock FontSize="12" Foreground="#64748B" Text="失败请求" /><TextBlock FontSize="24" FontWeight="SemiBold" Foreground="#B91C1C" Text="{Binding Summary.FailedRequests}" /></StackPanel>
+          </Border>
+        </Grid>
+
+        <Border Classes="content-card" Padding="0">
+          <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" MaxHeight="560">
+            <StackPanel MinWidth="1260">
+              <Border Background="#F8FAFC" Padding="16,13">
+                <Grid ColumnDefinitions="1.2*,0.8*,1.3*,1.2*,1.1*,1*,1.4*,0.8*,0.8*,0.8*,0.9*,Auto" ColumnSpacing="10">
+                  <TextBlock FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="时间" />
+                  <TextBlock Grid.Column="1" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="来源" />
+                  <TextBlock Grid.Column="2" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="模型" />
+                  <TextBlock Grid.Column="3" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="目标站点" />
+                  <TextBlock Grid.Column="4" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="访问密钥" />
+                  <TextBlock Grid.Column="5" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="状态" />
+                  <TextBlock Grid.Column="6" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="用时/首字" />
+                  <TextBlock Grid.Column="7" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="输入" />
+                  <TextBlock Grid.Column="8" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="缓存" />
+                  <TextBlock Grid.Column="9" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="输出" />
+                  <TextBlock Grid.Column="10" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="总 Token" />
+                  <TextBlock Grid.Column="11" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="操作" />
+                </Grid>
+              </Border>
+              <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoItems}" Margin="0,30" Text="暂无调用日志" />
+              <ItemsControl ItemsSource="{Binding Items}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="16,12">
+                      <Grid ColumnDefinitions="1.2*,0.8*,1.3*,1.2*,1.1*,1*,1.4*,0.8*,0.8*,0.8*,0.9*,Auto" ColumnSpacing="10">
+                        <TextBlock FontSize="11" Foreground="#64748B" Text="{Binding RequestedAt}" TextTrimming="CharacterEllipsis" />
+                        <Border Grid.Column="1" Background="#EEF4FF" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left"><TextBlock FontSize="11" Foreground="#5B8DEF" Text="{Binding SourceLabel}" /></Border>
+                        <TextBlock Grid.Column="2" FontSize="12" Foreground="#1E293B" Text="{Binding AttemptedModel}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="3" FontSize="12" Foreground="#64748B" Text="{Binding SiteName}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="4" FontSize="12" Foreground="#64748B" Text="{Binding AccessKeyName}" TextTrimming="CharacterEllipsis" />
+                        <Border Grid.Column="5" Background="#E8F7EA" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left" IsVisible="{Binding IsSuccessfulStatus}"><TextBlock FontSize="11" Foreground="#166534" Text="{Binding StatusText}" /></Border>
+                        <Border Grid.Column="5" Background="#FEE2E2" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left" IsVisible="{Binding IsFailedStatus}"><TextBlock FontSize="11" Foreground="#B91C1C" Text="{Binding StatusText}" /></Border>
+                        <StackPanel Grid.Column="6" Orientation="Horizontal" Spacing="4">
+                          <Border Background="#F1F5F9" CornerRadius="9" Padding="6,3"><TextBlock FontSize="10" Foreground="#475569" Text="{Binding DurationText}" /></Border>
+                          <Border Background="#EFF6FF" CornerRadius="9" Padding="6,3"><TextBlock FontSize="10" Foreground="#315EA8" Text="{Binding FirstTokenText}" /></Border>
+                          <Border Background="#F8FAFC" CornerRadius="9" Padding="6,3"><TextBlock FontSize="10" Foreground="#64748B" Text="{Binding StreamingText}" /></Border>
+                        </StackPanel>
+                        <TextBlock Grid.Column="7" FontSize="12" Foreground="#64748B" Text="{Binding InputTokensText}" />
+                        <TextBlock Grid.Column="8" FontSize="12" Foreground="#64748B" Text="{Binding CachedTokensText}" />
+                        <TextBlock Grid.Column="9" FontSize="12" Foreground="#64748B" Text="{Binding OutputTokensText}" />
+                        <TextBlock Grid.Column="10" FontSize="12" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding TotalTokensText}" />
+                        <Button Grid.Column="11" Classes="secondary-button" Command="{Binding DataContext.OpenDetailCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="查看链路" Padding="9,6" />
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+
+        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12" Margin="0,0,0,8">
+          <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding PaginationSummary}" />
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
+            <Button Classes="secondary-button" Command="{Binding FirstPageCommand}" Content="首页" IsEnabled="{Binding CanFirst}" Padding="10,6" />
+            <Button Classes="secondary-button" Command="{Binding PreviousPageCommand}" Content="上一页" IsEnabled="{Binding CanPrevious}" Padding="10,6" />
+            <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding PageText}" Margin="5,0" />
+            <Button Classes="secondary-button" Command="{Binding NextPageCommand}" Content="下一页" IsEnabled="{Binding CanNext}" Padding="10,6" />
+            <Button Classes="secondary-button" Command="{Binding LastPageCommand}" Content="末页" IsEnabled="{Binding CanLast}" Padding="10,6" />
+            <TextBox Classes="form-input" Width="70" Text="{Binding PageJumpInput}" Watermark="页码" />
+            <Button Classes="secondary-button" Command="{Binding JumpPageCommand}" Content="前往" Padding="10,6" />
+          </StackPanel>
+        </Grid>
+      </StackPanel>
+    </ScrollViewer>
+
+    <Border Grid.Column="1" Classes="content-card" Width="500" Padding="20" IsVisible="{Binding HasDetail}">
+      <ScrollViewer VerticalScrollBarVisibility="Auto">
+        <StackPanel Spacing="14">
+          <Grid ColumnDefinitions="*,Auto">
+            <StackPanel Spacing="3">
+              <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="请求链路详情" />
+              <TextBlock FontSize="12" Foreground="#94A3B8" Text="查看本次请求的全部尝试记录" />
+            </StackPanel>
+            <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseDetailCommand}" Content="关闭" Padding="10,6" />
+          </Grid>
+          <Border Background="#F8FAFC" CornerRadius="8" Padding="12">
+            <StackPanel Spacing="7">
+              <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.RequestId}" TextWrapping="Wrap" />
+              <TextBlock FontSize="12" Foreground="#64748B" Text="请求模型：{Binding SelectedDetail.RequestModel}" />
+              <TextBlock FontSize="12" Foreground="#64748B" Text="路由入口：{Binding SelectedDetail.RouteEntry}" />
+              <TextBlock FontSize="12" Foreground="#64748B" Text="协议：{Binding SelectedDetail.ProtocolType}" />
+              <TextBlock FontSize="12" Foreground="#64748B" Text="调用方式：{Binding SelectedDetail.ForwardingMode}" />
+              <TextBlock FontSize="12" Foreground="#64748B" Text="思考等级：{Binding SelectedDetail.ReasoningEffort}" />
+            </StackPanel>
+          </Border>
+          <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="尝试记录" />
+          <ItemsControl ItemsSource="{Binding SelectedDetail.Attempts}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,10">
+                  <StackPanel Spacing="6">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding AttemptedModel}" />
+                      <Border Grid.Column="1" Background="#E8F7EA" CornerRadius="10" Padding="7,3" IsVisible="{Binding IsSuccessfulStatus}"><TextBlock FontSize="11" Foreground="#166534" Text="{Binding StatusText}" /></Border>
+                      <Border Grid.Column="1" Background="#FEE2E2" CornerRadius="10" Padding="7,3" IsVisible="{Binding IsFailedStatus}"><TextBlock FontSize="11" Foreground="#B91C1C" Text="{Binding StatusText}" /></Border>
+                    </Grid>
+                    <TextBlock FontSize="12" Foreground="#64748B" Text="站点：{Binding SiteName}" />
+                    <TextBlock FontSize="12" Foreground="#64748B" Text="时间：{Binding RequestedAt}" />
+                    <TextBlock FontSize="12" Foreground="#64748B" Text="Tokens：{Binding TotalTokensText}" />
+                    <TextBlock FontSize="12" Foreground="#B91C1C" Text="错误：{Binding ErrorMessage}" TextWrapping="Wrap" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </StackPanel>
+      </ScrollViewer>
+    </Border>
   </Grid>
 </UserControl>

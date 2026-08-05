@@ -1117,6 +1117,7 @@ public sealed class ProxyRequestMetadataCache
                                 RouteId = route.Id,
                                 SiteId = site.Id,
                                 SiteName = site.Name,
+                                ManagedSource = site.ManagedSource ?? string.Empty,
                                 ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
                                 EndpointPathMode = site.EndpointPathMode,
                                 SupportsOpenAi = site.SupportsOpenAi,
@@ -1571,6 +1572,10 @@ public sealed class CachedProxyRouteTarget
     /// 站点名称。
     /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点托管来源，用于识别需要特殊凭证续期的 Codex 隐藏站点。
+    /// </summary>
+    public string ManagedSource { get; set; } = string.Empty;
     /// <summary>
     /// 协议类型。
     /// </summary>

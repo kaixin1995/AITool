@@ -85,6 +85,11 @@ public partial class MainShellViewModel : ViewModelBase
             navigationItem.IsSelected = ReferenceEquals(navigationItem, item);
         }
 
+        if (CurrentPage is IDisposable disposablePage)
+        {
+            disposablePage.Dispose();
+        }
+
         SelectedItem = item;
         switch (item.Key)
         {

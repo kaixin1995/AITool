@@ -241,6 +241,8 @@ builder.Services.AddSingleton<ModelVendorCatalogService>();
 // 注册 Codex 账号供给相关服务（站点级联删除工具 + 账号工厂）。
 builder.Services.AddScoped<SiteCascadeDeleter>();
 builder.Services.AddScoped<CodexAccountProvisioner>();
+// 实时代理命中 Codex 上游 401 时立即刷新凭证并同步隐藏站点。
+builder.Services.AddScoped<CodexCredentialRefreshService>();
 // Codex 额度被动冷却与重置服务。
 builder.Services.AddScoped<ICodexQuotaCooldownService, CodexQuotaCooldownService>();
 // Codex 手动重置 credits 服务（查询剩余次数/过期时间 + 消耗一张 credit 执行真实重置）。

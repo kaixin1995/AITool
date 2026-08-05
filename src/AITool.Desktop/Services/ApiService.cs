@@ -42,7 +42,8 @@ public sealed class ApiService
 
     public Task<AuthStatus> GetAuthStatusAsync(CancellationToken cancellationToken = default)
     {
-        return SendAsync<AuthStatus>(HttpMethod.Get, "/api/auth/status", null, false, cancellationToken);
+        // 启动时也允许用 refresh token 换发新凭证，避免仅因 access token 过期被迫重新登录。
+        return SendAsync<AuthStatus>(HttpMethod.Get, "/api/auth/status", null, true, cancellationToken);
     }
 
     public Task<TokenPair> LoginAsync(string password, CancellationToken cancellationToken = default)

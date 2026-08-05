@@ -41,12 +41,14 @@ public sealed class ProxyForwardService : IProxyForwardService
     public async Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
         var attempts = Math.Max(0, request.RetryCount) + 1;
+        var maxAttempts = attempts + (request.RefreshTargetApiKeyAsync is null ? 0 : 1);
+        var tokenRefreshAttempted = false;
         var requestBody = string.IsNullOrWhiteSpace(request.PreparedRequestBody)
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
         var isStreaming = request.EnableStreaming || IsStreamingRequest(request.RequestBody);
 
-        for (var attempt = 0; attempt < attempts; attempt++)
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, request.RequestTimeoutSeconds)));
@@ -64,7 +66,23 @@ public sealed class ProxyForwardService : IProxyForwardService
                 {
                     stopwatch.Stop();
                     var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-                    if (attempt == attempts - 1)
+                    if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                        && request.RefreshTargetApiKeyAsync is not null
+                        && !tokenRefreshAttempted)
+                    {
+                        tokenRefreshAttempted = true;
+                        var refreshedApiKey = await request.RefreshTargetApiKeyAsync(
+                            request.TargetApiKey,
+                            cancellationToken);
+                        if (!string.IsNullOrWhiteSpace(refreshedApiKey))
+                        {
+                            request.TargetApiKey = refreshedApiKey;
+                            attempt--;
+                            continue;
+                        }
+                    }
+
+                    if (attempt >= attempts - 1)
                     {
                         return new ProxyForwardResult
                         {
@@ -202,11 +220,13 @@ public sealed class ProxyForwardService : IProxyForwardService
         CancellationToken cancellationToken = default)
     {
         var attempts = Math.Max(0, request.RetryCount) + 1;
+        var maxAttempts = attempts + (request.RefreshTargetApiKeyAsync is null ? 0 : 1);
+        var tokenRefreshAttempted = false;
         var requestBody = string.IsNullOrWhiteSpace(request.PreparedRequestBody)
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
 
-        for (var attempt = 0; attempt < attempts; attempt++)
+        for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(Math.Max(1, request.RequestTimeoutSeconds)));
@@ -224,7 +244,23 @@ public sealed class ProxyForwardService : IProxyForwardService
                 {
                     stopwatch.Stop();
                     var errorBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
-                    if (attempt == attempts - 1)
+                    if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized
+                        && request.RefreshTargetApiKeyAsync is not null
+                        && !tokenRefreshAttempted)
+                    {
+                        tokenRefreshAttempted = true;
+                        var refreshedApiKey = await request.RefreshTargetApiKeyAsync(
+                            request.TargetApiKey,
+                            cancellationToken);
+                        if (!string.IsNullOrWhiteSpace(refreshedApiKey))
+                        {
+                            request.TargetApiKey = refreshedApiKey;
+                            attempt--;
+                            continue;
+                        }
+                    }
+
+                    if (attempt >= attempts - 1)
                     {
                         return new ProxyForwardResult
                         {
