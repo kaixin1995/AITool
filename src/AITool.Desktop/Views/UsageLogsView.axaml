@@ -13,9 +13,9 @@
 
     <ScrollViewer
         Grid.Row="1"
-        HorizontalScrollBarVisibility="Disabled"
+        HorizontalScrollBarVisibility="Auto"
         VerticalScrollBarVisibility="Auto">
-      <StackPanel Spacing="14">
+      <StackPanel MinWidth="820" Spacing="14">
         <Border Classes="content-card" Padding="0">
           <StackPanel>
             <!-- 顶部工具栏保持单行，筛选标题和自动刷新互不挤压。 -->
