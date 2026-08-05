@@ -70,29 +70,29 @@
               </StackPanel>
             </Grid>
 
-            <Grid ColumnDefinitions="1*,1*,1*" ColumnSpacing="12">
-              <Border Classes="content-card" Padding="18">
+            <WrapPanel Orientation="Horizontal">
+              <Border Classes="content-card" Width="220" Margin="0,0,12,12" Padding="18">
                 <StackPanel Spacing="6">
                   <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="当前记录数" />
                   <TextBlock FontSize="30" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding TotalCount}" />
                   <TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="当前页最多 40 条记录" />
                 </StackPanel>
               </Border>
-              <Border Grid.Column="1" Classes="content-card" Padding="18" Background="#FFF7F7">
+              <Border Classes="content-card" Width="220" Margin="0,0,12,12" Padding="18" Background="#FFF7F7">
                 <StackPanel Spacing="6">
                   <TextBlock FontSize="12" Foreground="#991B1B" Text="失败 / 异常" />
                   <TextBlock FontSize="30" FontWeight="Bold" Foreground="#B91C1C" Text="{Binding FailedCount}" />
                   <TextBlock FontSize="11" Foreground="#991B1B" Text="优先检查红色告警记录" />
                 </StackPanel>
               </Border>
-              <Border Grid.Column="2" Classes="content-card" Padding="18" Background="#FFFBEB">
+              <Border Classes="content-card" Width="220" Margin="0,0,12,12" Padding="18" Background="#FFFBEB">
                 <StackPanel Spacing="6">
                   <TextBlock FontSize="12" Foreground="#92400E" Text="等待返回" />
                   <TextBlock FontSize="30" FontWeight="Bold" Foreground="#B45309" Text="{Binding PendingCount}" />
                   <TextBlock FontSize="11" Foreground="#92400E" Text="请求已到达但响应未补齐" />
                 </StackPanel>
               </Border>
-            </Grid>
+            </WrapPanel>
 
             <Border Background="#EFF6FF" CornerRadius="10" Padding="14" IsVisible="{Binding IsLoading}">
               <StackPanel Spacing="6">
