@@ -19,8 +19,8 @@
           </StackPanel>
         </Grid>
         <TextBlock Grid.Row="1" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Label}" />
-        <Grid Grid.Row="2" ColumnDefinitions="1*,1*" ColumnSpacing="14" MinHeight="360">
-          <StackPanel Spacing="8">
+        <WrapPanel Grid.Row="2" Orientation="Horizontal" MinHeight="360">
+          <StackPanel Width="340" Margin="0,0,14,14" Spacing="8">
             <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="请求示例" />
             <TextBox
                 Classes="code-box"
@@ -30,7 +30,7 @@
                 TextWrapping="Wrap"
                 />
           </StackPanel>
-          <StackPanel Grid.Column="1" Spacing="8">
+          <StackPanel Width="340" Margin="0,0,14,14" Spacing="8">
             <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="响应结果" />
             <TextBox
                 Classes="code-box response-box"
@@ -40,7 +40,7 @@
                 TextWrapping="Wrap"
                 />
           </StackPanel>
-        </Grid>
+        </WrapPanel>
       </Grid>
     </DataTemplate>
   </UserControl.DataTemplates>
