@@ -641,13 +641,39 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
         tab.Response = tab.StreamEnabled ? "正在接收流式响应..." : "请求中...";
         try
         {
-            var response = await _apiService.SendRawAsync(
-                new HttpMethod(tab.Method),
-                requestUri,
-                headers,
-                requestBody,
-                localCancellation.Token);
-            if (!_disposed) tab.Response = FormatSimulatorResponse(response);
+            DeveloperRawResponse response;
+            if (tab.StreamEnabled)
+            {
+                response = await _apiService.SendRawStreamingAsync(
+                    new HttpMethod(tab.Method),
+                    requestUri,
+                    headers,
+                    requestBody,
+                    chunk => Dispatcher.UIThread.InvokeAsync(() =>
+                    {
+                        if (!_disposed) tab.Response += chunk;
+                    }).GetTask(),
+                    localCancellation.Token);
+
+                if (!_disposed && response.StatusCode >= 400)
+                {
+                    tab.Response = FormatSimulatorResponse(response);
+                }
+                else if (!_disposed && string.IsNullOrEmpty(response.Body))
+                {
+                    tab.Response = "流式响应为空";
+                }
+            }
+            else
+            {
+                response = await _apiService.SendRawAsync(
+                    new HttpMethod(tab.Method),
+                    requestUri,
+                    headers,
+                    requestBody,
+                    localCancellation.Token);
+                if (!_disposed) tab.Response = FormatSimulatorResponse(response);
+            }
         }
         catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
         {

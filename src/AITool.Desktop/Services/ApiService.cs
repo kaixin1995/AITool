@@ -191,6 +191,59 @@ public sealed class ApiService
         };
     }
 
+    /// <summary>
+    /// 按响应分块读取开发者模拟器的流式响应，并在每个分块到达时通知界面。
+    /// </summary>
+    public async Task<DeveloperRawResponse> SendRawStreamingAsync(
+        HttpMethod method,
+        Uri uri,
+        IReadOnlyDictionary<string, string> headers,
+        string? body,
+        Func<string, Task> onChunk,
+        CancellationToken cancellationToken = default)
+    {
+        using var request = new HttpRequestMessage(method, uri);
+        foreach (var header in headers)
+        {
+            if (!string.Equals(header.Key, "Content-Type", StringComparison.OrdinalIgnoreCase))
+            {
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+        }
+
+        if (body is not null)
+        {
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            if (headers.TryGetValue("Content-Type", out var contentType)
+                && !string.IsNullOrWhiteSpace(contentType))
+            {
+                request.Content.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+            }
+        }
+
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        var buffer = new char[4096];
+        var builder = new StringBuilder();
+        int read;
+        while ((read = await reader.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)) > 0)
+        {
+            var chunk = new string(buffer, 0, read);
+            builder.Append(chunk);
+            await onChunk(chunk);
+        }
+
+        return new DeveloperRawResponse
+        {
+            StatusCode = (int)response.StatusCode,
+            Body = builder.ToString()
+        };
+    }
+
     public Uri CreateRequestUri(string path)
     {
         if (_baseAddress is null)
