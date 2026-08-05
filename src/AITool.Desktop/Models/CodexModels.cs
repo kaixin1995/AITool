@@ -106,6 +106,47 @@ public sealed class CodexCredentialImportFailure
     public string Error { get; set; } = string.Empty;
 }
 
+public sealed partial class CodexRemoteModelItem : ObservableObject
+{
+    public string RemoteModelName { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string? ExistingMappingId { get; set; }
+    public bool IsEnabled { get; set; }
+    public string? ExistingDisplayName { get; set; }
+
+    [ObservableProperty]
+    private string _alias = string.Empty;
+
+    [ObservableProperty]
+    private bool _isSelected;
+
+    public string EffectiveDisplayName => string.IsNullOrWhiteSpace(Alias)
+        ? RemoteModelName
+        : Alias.Trim();
+
+    partial void OnAliasChanged(string value) => OnPropertyChanged(nameof(EffectiveDisplayName));
+}
+
+public sealed class CodexResetCredit
+{
+    public string Id { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string? GrantedAt { get; set; }
+    public string? ExpiresAt { get; set; }
+    public string GrantedAtText => CodexDateText.Format(GrantedAt);
+    public string ExpiresAtText => CodexDateText.Format(ExpiresAt);
+}
+
+public sealed class CodexResetCreditsInfo
+{
+    public int AvailableCount { get; set; }
+    public List<CodexResetCredit> Credits { get; set; } = new();
+    public bool Success { get; set; }
+    public string? Error { get; set; }
+    public string? RawJson { get; set; }
+    public string AvailableCountText => $"可用重置次数：{AvailableCount}";
+}
+
 public sealed class CodexInspectionStatus
 {
     public bool IsRunning { get; set; }

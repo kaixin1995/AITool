@@ -147,8 +147,10 @@
                           <WrapPanel HorizontalAlignment="Right">
                             <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Padding="10,7" Margin="0,0,6,0" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="重置额度信用" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,7" Margin="0,0,6,0" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,7" />
                           </WrapPanel>
@@ -311,6 +313,95 @@
               IsEnabled="{Binding CanImportCredentials}"
               HorizontalContentAlignment="Center"
               Padding="12,9" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsModelEditorOpen}" Padding="24" Margin="12" MaxWidth="760" MaxHeight="760" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="12">
+      <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Spacing="3">
+            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="拉取 Codex 模型" />
+            <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding ModelAccount.DisplayName, FallbackValue=当前账号}" />
+          </StackPanel>
+          <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseModelEditorCommand}" Content="关闭" Padding="10,6" />
+        </Grid>
+        <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+          <TextBox Classes="form-input" Text="{Binding ModelSearchText, Mode=TwoWay}" Watermark="搜索模型名称或别名" />
+          <CheckBox Grid.Column="1" Content="全选当前结果" IsChecked="{Binding AllVisibleModelsSelected, Mode=TwoWay}" VerticalAlignment="Center" />
+        </Grid>
+        <Border Grid.Row="2" Background="#F8FAFC" CornerRadius="8" Padding="10">
+          <Grid RowDefinitions="Auto,*" RowSpacing="8">
+            <ProgressBar Height="5" IsIndeterminate="True" IsVisible="{Binding IsModelLoading}" />
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+              <ItemsControl ItemsSource="{Binding FilteredRemoteModels}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border BorderBrush="#E2E8F0" BorderThickness="0,0,0,1" Padding="8,10">
+                      <Grid ColumnDefinitions="Auto,2*,1.2*,Auto" ColumnSpacing="10" MinWidth="620">
+                        <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#1E293B" Text="{Binding RemoteModelName}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RemoteModelName}" />
+                        <TextBox Grid.Column="2" Classes="form-input" Text="{Binding Alias, Mode=TwoWay}" Watermark="显示别名" />
+                        <Border Grid.Column="3" Background="#EFF6FF" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left">
+                          <TextBlock FontSize="11" Foreground="#315EA8" Text="{Binding ExistingMappingId}" />
+                        </Border>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </Grid>
+        </Border>
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+          <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding SelectedModelText}" />
+          <Button Classes="secondary-button" Command="{Binding CloseModelEditorCommand}" Content="取消" Padding="12,8" />
+          <Button Classes="primary-button" Command="{Binding ImportSelectedModelsCommand}" Content="导入选中" IsEnabled="{Binding CanImportSelectedModels}" Padding="12,8" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsResetCreditOpen}" Padding="24" Margin="12" MaxWidth="560" MaxHeight="680" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="13">
+      <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Spacing="3">
+            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="重置额度信用" />
+            <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding ResetCreditAccountText}" />
+          </StackPanel>
+          <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseResetCreditCommand}" Content="关闭" Padding="10,6" />
+        </Grid>
+        <ProgressBar Grid.Row="1" Height="5" IsIndeterminate="True" IsVisible="{Binding IsResetCreditLoading}" />
+        <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+          <StackPanel Spacing="10">
+            <Border Background="#EFF6FF" CornerRadius="8" Padding="12" IsVisible="{Binding HasResetCreditInfo}">
+              <TextBlock Foreground="#315EA8" Text="{Binding ResetCreditInfo.AvailableCountText}" />
+            </Border>
+            <Border Background="#FEE2E2" CornerRadius="8" Padding="12" IsVisible="{Binding HasResetCreditError}">
+              <TextBlock Foreground="#B91C1C" Text="{Binding ResetCreditInfo.Error, FallbackValue=重置信用加载失败}" TextWrapping="Wrap" />
+            </Border>
+            <ItemsControl ItemsSource="{Binding ResetCreditInfo.Credits}" IsVisible="{Binding ResetCreditInfo.Success}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border BorderBrush="#E2E8F0" BorderThickness="0,0,0,1" Padding="0,8">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                      <StackPanel Spacing="3">
+                        <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="手动重置额度" />
+                        <TextBlock FontSize="12" Foreground="#64748B" Text="发放：{Binding GrantedAtText}" />
+                      </StackPanel>
+                      <StackPanel Grid.Column="1" Spacing="3" HorizontalAlignment="Right">
+                        <TextBlock FontSize="12" Foreground="#64748B" Text="过期时间" />
+                        <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding ExpiresAtText}" />
+                      </StackPanel>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="10">
+          <Button Classes="secondary-button" Command="{Binding CloseResetCreditCommand}" Content="取消" Padding="12,8" />
+          <Button Classes="primary-button" Click="ConfirmConsumeResetCredit" Content="消耗一次重置" IsEnabled="{Binding CanConsumeResetCredit}" Padding="12,8" />
         </StackPanel>
       </Grid>
     </Border>

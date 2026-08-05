@@ -39,6 +39,16 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private bool _isCredentialImporting;
     [ObservableProperty] private string _credentialJson = string.Empty;
     [ObservableProperty] private string _credentialImportResultText = string.Empty;
+    [ObservableProperty] private bool _isModelEditorOpen;
+    [ObservableProperty] private bool _isModelLoading;
+    [ObservableProperty] private CodexAccount? _modelAccount;
+    [ObservableProperty] private ObservableCollection<CodexRemoteModelItem> _remoteModels = new();
+    [ObservableProperty] private string _modelSearchText = string.Empty;
+    [ObservableProperty] private bool _isResetCreditOpen;
+    [ObservableProperty] private bool _isResetCreditLoading;
+    [ObservableProperty] private bool _isResetCreditSubmitting;
+    [ObservableProperty] private CodexAccount? _resetCreditAccount;
+    [ObservableProperty] private CodexResetCreditsInfo? _resetCreditInfo;
 
     public CodexViewModel(ApiService apiService)
     {
@@ -66,6 +76,33 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     public string EditingAccountEmailText => string.IsNullOrWhiteSpace(EditingAccount?.Email) ? "未提供邮箱" : $"账号：{EditingAccount.Email}";
     public bool CanImportCredentials => !IsCredentialImporting && !string.IsNullOrWhiteSpace(CredentialJson);
     public bool HasCredentialImportResult => !string.IsNullOrWhiteSpace(CredentialImportResultText);
+    public IEnumerable<CodexRemoteModelItem> FilteredRemoteModels => RemoteModels.Where(IsModelMatch);
+    public int SelectedModelCount => RemoteModels.Count(model => model.IsSelected);
+    public string SelectedModelText => $"已选 {SelectedModelCount} 个";
+    public bool CanImportSelectedModels => !IsModelLoading && SelectedModelCount > 0;
+    public bool AllVisibleModelsSelected
+    {
+        get => FilteredRemoteModels.Any()
+            && FilteredRemoteModels.All(model => model.IsSelected);
+        set
+        {
+            foreach (var model in FilteredRemoteModels)
+            {
+                model.IsSelected = value;
+            }
+
+            NotifyModelSelectionProperties();
+        }
+    }
+    public bool HasResetCreditInfo => ResetCreditInfo is not null;
+    public bool HasResetCreditError => ResetCreditInfo is not null && !ResetCreditInfo.Success;
+    public bool CanConsumeResetCredit => !IsResetCreditLoading
+        && !IsResetCreditSubmitting
+        && ResetCreditInfo?.Success == true
+        && ResetCreditInfo.AvailableCount > 0;
+    public string ResetCreditAccountText => string.IsNullOrWhiteSpace(ResetCreditAccount?.DisplayName)
+        ? string.Empty
+        : $"账号：{ResetCreditAccount.DisplayName}";
 
     public async Task LoadAsync()
     {
@@ -336,6 +373,210 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             ErrorMessage = exception.Message;
             return null;
         }
+    }
+
+    [RelayCommand]
+    private async Task OpenModelEditorAsync(CodexAccount? account)
+    {
+        if (account is null || IsModelLoading) return;
+
+        ModelAccount = account;
+        ModelSearchText = string.Empty;
+        SetRemoteModels([]);
+        IsModelEditorOpen = true;
+        IsModelLoading = true;
+        ErrorMessage = string.Empty;
+        try
+        {
+            var models = await _apiService.SendAsync<List<CodexRemoteModelItem>>(
+                HttpMethod.Get,
+                $"/api/admin/codex/accounts/{account.Id}/fetch-models",
+                null);
+            foreach (var model in models)
+            {
+                model.Alias = string.IsNullOrWhiteSpace(model.ExistingDisplayName)
+                    ? model.DisplayName
+                    : model.ExistingDisplayName!;
+                model.IsSelected = model.ExistingMappingId is null || model.IsEnabled;
+            }
+
+            SetRemoteModels(models);
+            NotifyModelSelectionProperties();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsModelLoading = false;
+            NotifyModelSelectionProperties();
+        }
+    }
+
+    [RelayCommand]
+    private void CloseModelEditor()
+    {
+        IsModelEditorOpen = false;
+        ModelAccount = null;
+        SetRemoteModels([]);
+        ModelSearchText = string.Empty;
+    }
+
+    [RelayCommand]
+    private async Task ImportSelectedModelsAsync()
+    {
+        if (!CanImportSelectedModels || ModelAccount is null) return;
+
+        IsModelLoading = true;
+        ErrorMessage = string.Empty;
+        try
+        {
+            var selections = RemoteModels.Select(model => new
+            {
+                remoteModelName = model.RemoteModelName,
+                displayName = model.EffectiveDisplayName,
+                selected = model.IsSelected
+            }).ToList();
+            await _apiService.SendAsync<object>(
+                HttpMethod.Post,
+                $"/api/admin/codex/accounts/{ModelAccount.Id}/import-selected-models",
+                new { selections });
+            Message = $"已导入 {SelectedModelCount} 个 Codex 模型";
+            CloseModelEditor();
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsModelLoading = false;
+            NotifyModelSelectionProperties();
+        }
+    }
+
+    [RelayCommand]
+    private async Task OpenResetCreditAsync(CodexAccount? account)
+    {
+        if (account is null || IsResetCreditLoading) return;
+
+        ResetCreditAccount = account;
+        ResetCreditInfo = null;
+        IsResetCreditOpen = true;
+        IsResetCreditLoading = true;
+        ErrorMessage = string.Empty;
+        try
+        {
+            ResetCreditInfo = await _apiService.SendAsync<CodexResetCreditsInfo>(
+                HttpMethod.Get,
+                $"/api/admin/codex/accounts/{account.Id}/reset-credits",
+                null);
+            if (ResetCreditInfo.Success == false
+                && !string.IsNullOrWhiteSpace(ResetCreditInfo.Error))
+            {
+                ErrorMessage = ResetCreditInfo.Error;
+            }
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsResetCreditLoading = false;
+            NotifyResetCreditProperties();
+        }
+    }
+
+    [RelayCommand]
+    private void CloseResetCredit()
+    {
+        IsResetCreditOpen = false;
+        ResetCreditAccount = null;
+        ResetCreditInfo = null;
+        NotifyResetCreditProperties();
+    }
+
+    [RelayCommand]
+    private async Task ConsumeResetCreditAsync()
+    {
+        if (!CanConsumeResetCredit || ResetCreditAccount is null) return;
+
+        IsResetCreditSubmitting = true;
+        ErrorMessage = string.Empty;
+        try
+        {
+            await _apiService.SendAsync<object>(
+                HttpMethod.Post,
+                $"/api/admin/codex/accounts/{ResetCreditAccount.Id}/consume-reset-credit",
+                null);
+            Message = "手动重置额度成功";
+            CloseResetCredit();
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsResetCreditSubmitting = false;
+            NotifyResetCreditProperties();
+        }
+    }
+
+    private bool IsModelMatch(CodexRemoteModelItem model)
+    {
+        var keyword = ModelSearchText.Trim();
+        return string.IsNullOrWhiteSpace(keyword)
+            || $"{model.RemoteModelName} {model.DisplayName} {model.Alias}"
+                .Contains(keyword, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private void SetRemoteModels(IEnumerable<CodexRemoteModelItem> models)
+    {
+        foreach (var model in RemoteModels)
+        {
+            model.PropertyChanged -= OnRemoteModelPropertyChanged;
+        }
+
+        RemoteModels = new ObservableCollection<CodexRemoteModelItem>(models);
+        foreach (var model in RemoteModels)
+        {
+            model.PropertyChanged += OnRemoteModelPropertyChanged;
+        }
+
+        NotifyModelSelectionProperties();
+    }
+
+    private void OnRemoteModelPropertyChanged(
+        object? sender,
+        System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(CodexRemoteModelItem.IsSelected)
+            or nameof(CodexRemoteModelItem.Alias))
+        {
+            NotifyModelSelectionProperties();
+        }
+    }
+
+    private void NotifyModelSelectionProperties()
+    {
+        OnPropertyChanged(nameof(FilteredRemoteModels));
+        OnPropertyChanged(nameof(SelectedModelCount));
+        OnPropertyChanged(nameof(SelectedModelText));
+        OnPropertyChanged(nameof(CanImportSelectedModels));
+        OnPropertyChanged(nameof(AllVisibleModelsSelected));
+    }
+
+    private void NotifyResetCreditProperties()
+    {
+        OnPropertyChanged(nameof(HasResetCreditInfo));
+        OnPropertyChanged(nameof(HasResetCreditError));
+        OnPropertyChanged(nameof(CanConsumeResetCredit));
+        OnPropertyChanged(nameof(ResetCreditAccountText));
     }
 
     public async Task ImportCredentialFilesAsync(
@@ -621,6 +862,12 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     partial void OnIsOAuthBusyChanged(bool value) => OnPropertyChanged(nameof(CanCompleteOAuth));
     partial void OnIsAccountSavingChanged(bool value) => OnPropertyChanged(nameof(CanSaveAccount));
     partial void OnCredentialJsonChanged(string value) => OnPropertyChanged(nameof(CanImportCredentials));
+    partial void OnModelSearchTextChanged(string value) => NotifyModelSelectionProperties();
+    partial void OnIsModelLoadingChanged(bool value) => NotifyModelSelectionProperties();
+    partial void OnIsResetCreditLoadingChanged(bool value) => NotifyResetCreditProperties();
+    partial void OnIsResetCreditSubmittingChanged(bool value) => NotifyResetCreditProperties();
+    partial void OnResetCreditInfoChanged(CodexResetCreditsInfo? value) => NotifyResetCreditProperties();
+    partial void OnResetCreditAccountChanged(CodexAccount? value) => NotifyResetCreditProperties();
     partial void OnAccountDisplayNameChanged(string value) => OnPropertyChanged(nameof(CanSaveAccount));
     partial void OnEditingAccountChanged(CodexAccount? value)
     {

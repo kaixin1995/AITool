@@ -110,6 +110,22 @@ public partial class CodexView : UserControl
         await viewModel.ImportCredentialFilesAsync(contents);
     }
 
+    private async void ConfirmConsumeResetCredit(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel
+            || !viewModel.CanConsumeResetCredit)
+        {
+            return;
+        }
+
+        if (await ConfirmAsync(
+                "消耗一张手动重置额度并执行真实额度重置？此操作不可撤销。",
+                "确认消耗"))
+        {
+            await viewModel.ConsumeResetCreditCommand.ExecuteAsync(null);
+        }
+    }
+
     private async void ConfirmResetQuota(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not CodexViewModel viewModel
