@@ -124,8 +124,7 @@ public partial class RoutesViewModel : ViewModelBase
     [RelayCommand]
     private Task RefreshAsync() => LoadAsync();
 
-    [RelayCommand]
-    private async Task SelectEntryAsync(RouteEntry? entry)
+    public async Task SelectEntryAsync(RouteEntry? entry)
     {
         if (entry is null || SelectedEntry?.EntryName == entry.EntryName) return;
         SelectedEntry = entry;

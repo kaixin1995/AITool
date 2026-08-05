@@ -24,9 +24,8 @@
                 <DataTemplate>
                   <ToggleButton
                       Classes="nav-item"
-                      Command="{Binding DataContext.SelectEntryCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
-                      CommandParameter="{Binding}"
-                      IsChecked="{Binding IsSelected, Mode=TwoWay}">
+                      Click="SelectEntry"
+                      IsChecked="{Binding IsSelected, Mode=OneWay}">
                     <Grid ColumnDefinitions="*,Auto">
                       <TextBlock Foreground="#1E293B" Text="{Binding EntryName}" TextTrimming="CharacterEllipsis" />
                       <Border Grid.Column="1" Background="#EEF4FF" CornerRadius="10" Padding="7,3"><TextBlock FontSize="11" Foreground="#5B8DEF" Text="{Binding CandidateCount}" /></Border>

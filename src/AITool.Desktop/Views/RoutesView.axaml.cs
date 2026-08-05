@@ -1,5 +1,7 @@
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
+using AITool.Desktop.Models;
 using AITool.Desktop.ViewModels;
 
 namespace AITool.Desktop.Views;
@@ -9,6 +11,24 @@ public partial class RoutesView : UserControl
     public RoutesView()
     {
         InitializeComponent();
+    }
+
+    private async void SelectEntry(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not RoutesViewModel viewModel
+            || sender is not ToggleButton button
+            || button.DataContext is not RouteEntry entry)
+        {
+            return;
+        }
+
+        if (viewModel.IsDirty
+            && !await ConfirmAsync("当前路由入口有未保存修改，切换入口会丢弃这些修改。确定继续吗？", "放弃修改"))
+        {
+            return;
+        }
+
+        await viewModel.SelectEntryAsync(entry);
     }
 
     private async void ConfirmDeleteEntry(object? sender, RoutedEventArgs e)
@@ -25,7 +45,7 @@ public partial class RoutesView : UserControl
         }
     }
 
-    private async Task<bool> ConfirmAsync(string message)
+    private async Task<bool> ConfirmAsync(string message, string confirmText = "确认删除")
     {
         var owner = TopLevel.GetTopLevel(this) as Window;
         if (owner is null)
@@ -41,12 +61,12 @@ public partial class RoutesView : UserControl
         };
         var confirmButton = new Button
         {
-            Content = "确认删除",
+            Content = confirmText,
             Padding = new Avalonia.Thickness(14, 8)
         };
         dialog = new Window
         {
-            Title = "确认删除路由入口",
+            Title = confirmText == "确认删除" ? "确认删除路由入口" : "确认放弃修改",
             Width = 440,
             Height = 230,
             CanResize = false,
