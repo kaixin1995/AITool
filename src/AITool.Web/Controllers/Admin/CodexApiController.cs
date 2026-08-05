@@ -288,15 +288,22 @@ public sealed class CodexApiController : ControllerBase
         try
         {
             var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
-            account.AccessToken = tokens.AccessToken;
-            account.RefreshToken = tokens.RefreshToken;
+            // 仅在上游返回了非空值时才覆盖，避免空响应清空有效 token 导致永久无法刷新。
+            if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
+            {
+                account.AccessToken = tokens.AccessToken;
+            }
+            if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
+            {
+                account.RefreshToken = tokens.RefreshToken;
+            }
             if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
             account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
             account.LastRefreshAt = DateTimeOffset.UtcNow;
             await _dbContext.UpdateAsync(account, ct);
 
             var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-            if (site != null)
+            if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
             {
                 site.ApiKey = tokens.AccessToken;
                 await _dbContext.UpdateAsync(site, ct);
