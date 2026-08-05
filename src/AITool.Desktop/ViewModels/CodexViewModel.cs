@@ -7,9 +7,11 @@ using AITool.Desktop.Services;
 
 namespace AITool.Desktop.ViewModels;
 
-public partial class CodexViewModel : ViewModelBase
+public partial class CodexViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
+    private Timer? _tokenRefreshTimer;
+    private bool _disposed;
 
     [ObservableProperty] private ObservableCollection<CodexAccount> _accounts = new();
     [ObservableProperty] private string _oAuthUrl = string.Empty;
@@ -75,6 +77,19 @@ public partial class CodexViewModel : ViewModelBase
         {
             IsLoading = false;
         }
+
+        // 启动后台定时刷新：每 3 分钟检查即将过期的 token 并自动刷新，避免用户手动操作。
+        StartTokenRefreshTimer();
+    }
+
+    private void StartTokenRefreshTimer()
+    {
+        _tokenRefreshTimer?.Dispose();
+        _tokenRefreshTimer = new Timer(
+            async _ => await RefreshExpiringTokensAsync(),
+            null,
+            TimeSpan.FromMinutes(3),
+            TimeSpan.FromMinutes(3));
     }
 
     private async Task RefreshExpiringTokensAsync()
@@ -373,4 +388,12 @@ public partial class CodexViewModel : ViewModelBase
     partial void OnIsOAuthBusyChanged(bool value) => OnPropertyChanged(nameof(CanCompleteOAuth));
     partial void OnInspectionRunningChanged(bool value) => NotifyInspectionProperties();
     partial void OnInspectionErrorChanged(string value) => OnPropertyChanged(nameof(HasInspectionError));
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _tokenRefreshTimer?.Dispose();
+        _tokenRefreshTimer = null;
+    }
 }

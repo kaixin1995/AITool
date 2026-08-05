@@ -29,6 +29,38 @@ public partial class CodexAccount : ObservableObject
     public string StatusText => IsQuotaCooling ? "冷却中" : IsEnabled ? "正常" : "已禁用";
     public string ToggleActionText => IsEnabled ? "停用" : "启用";
     public bool IsDisabled => !IsEnabled;
+
+    /// <summary>
+    /// Token 是否已过期或即将过期（10 分钟内）。
+    /// </summary>
+    public bool IsTokenExpiringSoon
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(TokenExpiresAt) || !DateTimeOffset.TryParse(TokenExpiresAt, out var expiresAt))
+                return false;
+            return expiresAt <= DateTimeOffset.UtcNow.AddMinutes(10);
+        }
+    }
+
+    /// <summary>
+    /// Token 是否已过期。
+    /// </summary>
+    public bool IsTokenExpired
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(TokenExpiresAt) || !DateTimeOffset.TryParse(TokenExpiresAt, out var expiresAt))
+                return false;
+            return expiresAt <= DateTimeOffset.UtcNow;
+        }
+    }
+
+    /// <summary>
+    /// Token 过期时间的可读文本。
+    /// </summary>
+    public string TokenExpiresText => CodexDateText.Format(TokenExpiresAt);
+
     public bool HasWindows => Windows is { Count: > 0 };
     public bool HasNoWindows => !HasWindows;
     public string QuotaText => WeeklyUsedPercent.HasValue
