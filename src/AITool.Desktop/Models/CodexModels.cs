@@ -46,8 +46,9 @@ public sealed class CodexQuotaWindow
     public string Label { get; set; } = string.Empty;
     public double? UsedPercent { get; set; }
     public string? ResetLabel { get; set; }
-    public double UsedPercentValue => Math.Clamp(UsedPercent ?? 0, 0, 100);
-    public string UsedPercentText => UsedPercent.HasValue ? $"{UsedPercent.Value:0.#}%" : "-";
+    // 与网页端一致，进度条和百分比展示剩余额度而不是已用额度。
+    public double UsedPercentValue => Math.Clamp(100 - (UsedPercent ?? 0), 0, 100);
+    public string UsedPercentText => UsedPercent.HasValue ? $"{Math.Max(0, 100 - UsedPercent.Value):0.#}%" : "-";
     public string ResetText => string.IsNullOrWhiteSpace(ResetLabel) ? "暂无重置时间" : $"重置于 {ResetLabel}";
 }
 

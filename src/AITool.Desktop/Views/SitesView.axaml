@@ -6,12 +6,16 @@
     x:DataType="vm:SitesViewModel"
     x:CompileBindings="False">
   <Grid>
-    <Grid RowDefinitions="Auto,*">
-      <Grid Margin="0,0,0,14">
-        <Button Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增站点" HorizontalAlignment="Right" Padding="14,8" />
+    <Grid RowDefinitions="Auto,Auto,*" RowSpacing="24">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="4">
+          <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="站点管理" />
+          <TextBlock Classes="page-subtitle" Text="管理上游服务地址、协议和启用状态" />
+        </StackPanel>
+        <Button Grid.Column="1" Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增站点" Padding="14,8" />
       </Grid>
 
-      <Grid Grid.Row="1">
+      <Grid Grid.Row="2">
         <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding IsLoading}" Text="正在加载站点..." />
         <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}">
           <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />

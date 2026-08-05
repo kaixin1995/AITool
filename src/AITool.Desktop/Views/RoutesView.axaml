@@ -5,8 +5,13 @@
     xmlns:vm="using:AITool.Desktop.ViewModels"
     x:DataType="vm:RoutesViewModel"
     x:CompileBindings="False">
-  <Grid ColumnDefinitions="260,*" ColumnSpacing="18">
-      <Border Classes="content-card" Padding="14">
+  <Grid RowDefinitions="Auto,Auto" RowSpacing="24" ColumnDefinitions="260,*" ColumnSpacing="18" VerticalAlignment="Top">
+      <StackPanel Grid.ColumnSpan="2" Spacing="4">
+        <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="路由规则管理" />
+        <TextBlock Classes="page-subtitle" Text="主入口绑定有序候选实例队列，请求时按顺序失败切换、成功即停止" TextWrapping="Wrap" />
+      </StackPanel>
+
+      <Border Grid.Row="1" Classes="content-card" Padding="14">
         <DockPanel>
           <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,14,0,0">
             <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="新增路由入口" />
@@ -34,9 +39,9 @@
         </DockPanel>
       </Border>
 
-      <Border Grid.Column="1" Classes="content-card" Padding="0">
+      <Border Grid.Row="1" Grid.Column="1" Classes="content-card" Padding="0">
         <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-          <StackPanel MinWidth="760">
+          <StackPanel>
             <Border Background="#F8FAFC" Padding="18,14">
               <Grid ColumnDefinitions="2*,1.5*,1.3*,1*,Auto">
                 <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="站点" />

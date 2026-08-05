@@ -35,7 +35,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private UsageLogRequestDetail? _selectedDetail;
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private bool _isDetailLoading;
-    [ObservableProperty] private bool _filtersExpanded = true;
+    [ObservableProperty] private bool _filtersExpanded;
     [ObservableProperty] private bool _autoRefresh = true;
     [ObservableProperty] private string _errorMessage = string.Empty;
 

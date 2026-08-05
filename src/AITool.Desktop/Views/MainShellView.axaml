@@ -60,7 +60,7 @@
             BorderBrush="#E2E8F0"
             BorderThickness="0,0,0,1"
             Padding="18,16">
-          <Grid ColumnDefinitions="Auto,*,Auto">
+          <Grid ColumnDefinitions="Auto,*">
             <Border
                 Width="38"
                 Height="38"
@@ -74,10 +74,14 @@
                   Foreground="White"
                   Text="AI" />
             </Border>
-            <StackPanel Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center" Spacing="2">
-              <TextBlock FontSize="16" FontWeight="Bold" Foreground="#1E293B" Text="AI Tool" />
-              <TextBlock FontSize="11" Foreground="#94A3B8" Text="管理控制台" />
-            </StackPanel>
+            <TextBlock
+                Grid.Column="1"
+                Margin="10,0,0,0"
+                VerticalAlignment="Center"
+                FontSize="16"
+                FontWeight="Bold"
+                Foreground="#1E293B"
+                Text="AI Tool" />
           </Grid>
         </Border>
 
@@ -122,12 +126,15 @@
           Background="#FFFFFF"
           BorderBrush="#E2E8F0"
           BorderThickness="0,0,0,1"
-          Padding="30,15">
+          Height="60"
+          Padding="32,0">
         <Grid ColumnDefinitions="*,Auto">
-          <StackPanel VerticalAlignment="Center" Spacing="2">
-            <TextBlock Classes="page-title" Text="{Binding SelectedItem.Label}" />
-            <TextBlock Classes="page-subtitle" Text="统一管理已部署的 AI Tool 服务" />
-          </StackPanel>
+          <TextBlock
+              VerticalAlignment="Center"
+              FontSize="16"
+              FontWeight="SemiBold"
+              Foreground="#1E293B"
+              Text="{Binding SelectedItem.Label}" />
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
             <Button Classes="secondary-button" Command="{Binding RefreshCurrentPageCommand}" Content="刷新当前页" Padding="12,7" />
             <Border
@@ -145,9 +152,9 @@
         </Grid>
       </Border>
 
-      <ScrollViewer Grid.Row="1" Padding="30">
+      <Border Grid.Row="1" Background="#F8FAFC" Padding="32,28">
         <ContentControl Content="{Binding CurrentPage}" />
-      </ScrollViewer>
+      </Border>
     </Grid>
   </Grid>
 </UserControl>

@@ -5,18 +5,23 @@
     xmlns:vm="using:AITool.Desktop.ViewModels"
     x:DataType="vm:UsageLogsViewModel"
     x:CompileBindings="False">
-  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
-    <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+  <Grid RowDefinitions="Auto,*" ColumnDefinitions="*,Auto" RowSpacing="24" ColumnSpacing="16">
+    <StackPanel Grid.ColumnSpan="2" Spacing="4">
+      <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="调用日志" />
+      <TextBlock Classes="page-subtitle" Text="查看代理服务和对话测试的调用记录" />
+    </StackPanel>
+
+    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
       <StackPanel Spacing="14">
         <Border Classes="content-card" Padding="0">
           <StackPanel>
             <Grid ColumnDefinitions="*,Auto" Margin="18,14">
               <ToggleButton
-                  Classes="nav-item"
+                  Classes="filter-toggle"
                   IsChecked="{Binding FiltersExpanded, Mode=TwoWay}"
-                  HorizontalContentAlignment="Left"
+                  HorizontalContentAlignment="Stretch"
                   Padding="0">
-                <Grid ColumnDefinitions="*,Auto" Width="300">
+                <Grid ColumnDefinitions="*,Auto">
                   <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="筛选与汇总" />
                   <TextBlock Grid.Column="1" FontSize="12" Foreground="#64748B" Text="展开/收起" />
                 </Grid>
@@ -29,22 +34,22 @@
             </Grid>
 
             <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,14" IsVisible="{Binding FiltersExpanded}">
-              <Grid ColumnDefinitions="1*,1*,1*,1*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="12" RowSpacing="10">
+              <Grid ColumnDefinitions="1*,1*,1*,1*,1*,1*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="12" RowSpacing="10">
                 <StackPanel Spacing="4">
                   <TextBlock FontSize="11" Foreground="#64748B" Text="时间范围" />
                   <ComboBox ItemsSource="{Binding RangeOptions}" SelectedItem="{Binding SelectedRange}">
                     <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
                   </ComboBox>
                 </StackPanel>
-                <StackPanel Grid.Column="1" Spacing="4" IsVisible="{Binding IsCustomRange}">
+                <StackPanel Grid.Column="1" Grid.ColumnSpan="2" Spacing="4" IsVisible="{Binding IsCustomRange}">
                   <TextBlock FontSize="11" Foreground="#64748B" Text="开始时间" />
                   <DatePicker SelectedDate="{Binding StartTime}" />
                 </StackPanel>
-                <StackPanel Grid.Column="2" Spacing="4" IsVisible="{Binding IsCustomRange}">
+                <StackPanel Grid.Column="3" Grid.ColumnSpan="2" Spacing="4" IsVisible="{Binding IsCustomRange}">
                   <TextBlock FontSize="11" Foreground="#64748B" Text="结束时间" />
                   <DatePicker SelectedDate="{Binding EndTime}" />
                 </StackPanel>
-                <StackPanel Grid.Column="3" Spacing="4">
+                <StackPanel Grid.Column="5" Spacing="4">
                   <TextBlock FontSize="11" Foreground="#64748B" Text="站点" />
                   <ComboBox ItemsSource="{Binding Sites}" SelectedItem="{Binding SelectedSite}" PlaceholderText="全部站点">
                     <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
@@ -56,23 +61,23 @@
                     <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
                   </ComboBox>
                 </StackPanel>
-                <StackPanel Grid.Row="1" Grid.Column="1" Spacing="4">
+                <StackPanel Grid.Row="1" Grid.Column="2" Spacing="4">
                   <TextBlock FontSize="11" Foreground="#64748B" Text="来源" />
                   <ComboBox ItemsSource="{Binding SourceOptions}" SelectedItem="{Binding SelectedSource}">
                     <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
                   </ComboBox>
                 </StackPanel>
-                <StackPanel Grid.Row="1" Grid.Column="2" Spacing="4">
+                <StackPanel Grid.Row="1" Grid.Column="4" Spacing="4">
                   <TextBlock FontSize="11" Foreground="#64748B" Text="状态" />
                   <ComboBox ItemsSource="{Binding StatusOptions}" SelectedItem="{Binding SelectedStatus}">
                     <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate></ComboBox.ItemTemplate>
                   </ComboBox>
                 </StackPanel>
-                <StackPanel Grid.Row="1" Grid.Column="3" Spacing="4">
+                <StackPanel Grid.Row="1" Grid.Column="5" Spacing="4">
                   <TextBlock FontSize="11" Foreground="#64748B" Text="模型搜索" />
                   <TextBox Classes="form-input" Text="{Binding ModelKeyword}" Watermark="模型模糊搜索" />
                 </StackPanel>
-                <StackPanel Grid.Row="2" Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                <StackPanel Grid.Row="2" Grid.Column="5" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
                   <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="12,7" />
                   <Button Classes="primary-button" Command="{Binding SearchCommand}" Content="查询" Padding="14,7" />
                 </StackPanel>
@@ -81,7 +86,7 @@
           </StackPanel>
         </Border>
 
-        <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="12">
+        <Grid ColumnDefinitions="*,*,*,*" ColumnSpacing="12" IsVisible="{Binding FiltersExpanded}">
           <Border Classes="content-card" Padding="14">
             <StackPanel Spacing="4"><TextBlock FontSize="12" Foreground="#64748B" Text="总请求" /><TextBlock FontSize="24" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Summary.TotalRequests}" /></StackPanel>
           </Border>
@@ -97,7 +102,7 @@
         </Grid>
 
         <Border Classes="content-card" Padding="0">
-          <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto" MaxHeight="560">
+          <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
             <StackPanel MinWidth="1260">
               <Border Background="#F8FAFC" Padding="16,13">
                 <Grid ColumnDefinitions="1.2*,0.8*,1.3*,1.2*,1.1*,1*,1.4*,0.8*,0.8*,0.8*,0.9*,Auto" ColumnSpacing="10">
@@ -162,7 +167,7 @@
       </StackPanel>
     </ScrollViewer>
 
-    <Border Grid.Column="1" Classes="content-card" Width="500" Padding="20" IsVisible="{Binding HasDetail}">
+    <Border Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2" Classes="content-card" Width="420" Padding="20" HorizontalAlignment="Right" IsVisible="{Binding HasDetail}" ZIndex="10">
       <ScrollViewer VerticalScrollBarVisibility="Auto">
         <StackPanel Spacing="14">
           <Grid ColumnDefinitions="*,Auto">

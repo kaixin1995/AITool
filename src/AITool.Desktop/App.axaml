@@ -84,6 +84,25 @@
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 
+    <!-- 筛选栏按钮不复用导航选中态，避免展开后出现整块蓝色背景。 -->
+    <Style Selector="ToggleButton.filter-toggle">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Foreground" Value="#1E293B" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Padding" Value="0" />
+    </Style>
+
+    <Style Selector="ToggleButton.filter-toggle:pointerover">
+      <Setter Property="Background" Value="#F8FAFC" />
+      <Setter Property="Foreground" Value="#1E293B" />
+    </Style>
+
+    <Style Selector="ToggleButton.filter-toggle:checked">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="#1E293B" />
+    </Style>
+
     <Style Selector="Border.content-card">
       <Setter Property="Background" Value="#FFFFFF" />
       <Setter Property="BorderBrush" Value="#E2E8F0" />

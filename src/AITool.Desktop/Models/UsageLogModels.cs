@@ -35,7 +35,7 @@ public sealed class UsageLogSummary
     public long TotalTokens { get; set; }
     public int MaxDurationMs { get; set; }
 
-    public string SuccessRateText => $"{SuccessRate * 100:0.0}%";
+    public string SuccessRateText => $"{(SuccessRate <= 1 ? SuccessRate * 100 : SuccessRate):0.0}%";
 }
 
 public sealed class UsageLogItem

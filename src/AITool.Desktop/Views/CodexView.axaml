@@ -47,12 +47,12 @@
       <ItemsControl ItemsSource="{Binding Accounts}">
         <ItemsControl.ItemsPanel>
           <ItemsPanelTemplate>
-            <WrapPanel Orientation="Horizontal" ItemWidth="360" />
+            <UniformGrid Columns="2" />
           </ItemsPanelTemplate>
         </ItemsControl.ItemsPanel>
         <ItemsControl.ItemTemplate>
           <DataTemplate>
-            <Border Classes="content-card" Width="344" Margin="0,0,16,16" Padding="20">
+            <Border Classes="content-card" Margin="0,0,12,16" Padding="20" HorizontalAlignment="Stretch">
               <StackPanel Spacing="14">
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
                   <StackPanel Spacing="4">
