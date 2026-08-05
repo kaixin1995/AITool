@@ -140,11 +140,13 @@ public sealed partial class OpenAiProxyController
         ProxyForwardResult? lastResult = null;
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
+        var routeIndex = -1;
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
         foreach (var route in allRoutes)
         {
+            routeIndex++;
             if (IsRouteBlockedSafely(route.RouteId))
                 continue;
 
@@ -225,6 +227,9 @@ public sealed partial class OpenAiProxyController
                 }
 
                 SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
+                var streamCanFallback = !streamResult.Success
+                    && streamOutcome.CanFallback
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.RouteId));
 
                 await SafeLogUsageAsync(new UsageLogEntry
                 {
@@ -239,9 +244,10 @@ public sealed partial class OpenAiProxyController
                     Source = requestSource,
                     RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
                     AttemptIndex = attemptIndex,
-                    IsFinalResult = streamResult.Success,
-                    FallbackTriggered = !streamResult.Success,
+                    IsFinalResult = streamResult.Success || !streamCanFallback,
+                    FallbackTriggered = streamCanFallback,
                     ErrorMessage = streamResult.Success ? string.Empty : (streamResult.ErrorMessage ?? string.Empty),
+                    HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
                     InputTokens = streamResult.InputTokens,
                     CachedTokens = streamResult.CachedTokens,
                     OutputTokens = streamResult.OutputTokens,
@@ -303,6 +309,8 @@ public sealed partial class OpenAiProxyController
             }
 
             SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
+            var canFallback = !result.Success
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.RouteId));
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -317,9 +325,10 @@ public sealed partial class OpenAiProxyController
                 Source = requestSource,
                 RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
-                IsFinalResult = result.Success,
-                FallbackTriggered = !result.Success,
+                IsFinalResult = result.Success || !canFallback,
+                FallbackTriggered = canFallback,
                 ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty),
+                HttpStatusCode = result.StatusCode > 0 ? result.StatusCode : null,
                 InputTokens = result.InputTokens,
                 CachedTokens = result.CachedTokens,
                 OutputTokens = result.OutputTokens,
@@ -445,11 +454,13 @@ public sealed partial class OpenAiProxyController
         ProxyForwardResult? lastResult = null;
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
+        var routeIndex = -1;
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
         foreach (var route in allRoutes)
         {
+            routeIndex++;
             if (IsRouteBlockedSafely(route.RouteId))
                 continue;
 
@@ -508,6 +519,9 @@ public sealed partial class OpenAiProxyController
                 : await ForwardAnthropicResponsesAsWebSocketAsync(webSocket, forwardRequest, modelName, cancellationToken);
             var streamResult = streamOutcome.Result;
             SafeWriteConsoleProxyLog("ResponsesWebSocket", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, rawRequestBody.Length);
+            var canFallback = !streamResult.Success
+                && streamOutcome.CanFallback
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.RouteId));
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -522,9 +536,10 @@ public sealed partial class OpenAiProxyController
                 Source = requestSource,
                 RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
-                IsFinalResult = streamResult.Success,
-                FallbackTriggered = !streamResult.Success,
+                IsFinalResult = streamResult.Success || !canFallback,
+                FallbackTriggered = canFallback,
                 ErrorMessage = streamResult.Success ? string.Empty : (streamResult.ErrorMessage ?? string.Empty),
+                HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
                 InputTokens = streamResult.InputTokens,
                 CachedTokens = streamResult.CachedTokens,
                 OutputTokens = streamResult.OutputTokens,

@@ -510,9 +510,49 @@ public sealed class ProxyFallbackFlowTests
         logs.Should().HaveCount(2);
         logs[0].AttemptedModel.Should().Be("gpt-5.5");
         logs[0].Status.Should().Be("fail");
+        logs[0].HttpStatusCode.Should().Be(500);
         logs[0].FallbackTriggered.Should().BeTrue();
         logs[1].AttemptedModel.Should().Be("glm-5.1");
         logs[1].Status.Should().Be("success");
+        logs[1].HttpStatusCode.Should().Be(200);
+        logs[1].IsFinalResult.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 验证没有收到上游 HTTP 响应时，使用日志不会伪造 502 状态码。
+    /// </summary>
+    [Fact]
+    public async Task Post_chat_completions_keeps_http_status_null_when_forward_result_has_no_status()
+    {
+        var fakeForwardService = new FakeProxyForwardService
+        {
+            ForwardResultFactory = _ => new ProxyForwardResult
+            {
+                Success = false,
+                ErrorMessage = "connection refused"
+            }
+        };
+        await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"chat-prod\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.OrderBy(x => x.AttemptIndex).ToListAsync();
+
+        logs.Should().HaveCount(2);
+        logs.Select(x => x.HttpStatusCode).Should().OnlyContain(x => x == null);
+        logs[0].FallbackTriggered.Should().BeTrue();
+        logs[0].IsFinalResult.Should().BeFalse();
+        logs[1].FallbackTriggered.Should().BeFalse();
         logs[1].IsFinalResult.Should().BeTrue();
     }
 
@@ -944,7 +984,8 @@ public sealed class ProxyFallbackFlowTests
         logs[0].AttemptedModel.Should().Be("gpt-5.5");
         logs[0].Status.Should().Be("fail");
         logs[0].IsStreamInterrupted.Should().BeTrue();
-        logs[0].FallbackTriggered.Should().BeTrue();
+        logs[0].FallbackTriggered.Should().BeFalse();
+        logs[0].IsFinalResult.Should().BeTrue();
     }
 }
 

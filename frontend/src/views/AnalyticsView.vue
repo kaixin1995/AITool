@@ -1,22 +1,49 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, shallowRef, watch } from 'vue'
-import { echarts, initChart as initThemedChart, type ECharts } from '@/composables/useEcharts'
-import { NCard, NSelect, NDatePicker, NButton, NEmpty, NSpin, type SelectOption } from 'naive-ui'
+import { darkChartOverrides, echarts, initChart as initThemedChart, type ECharts } from '@/composables/useEcharts'
+import { useTheme } from '@/composables/useTheme'
+import {
+  NButton,
+  NDataTable,
+  NDatePicker,
+  NEmpty,
+  NSelect,
+  NSpin,
+  NTag,
+  type DataTableColumns,
+  type SelectOption
+} from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import { formatCompact, formatDuration, formatPercentage } from './analyticsFormat'
 import * as api from '@/api/analytics'
 import type {
+  AnalyticsAnalysisDimension,
+  AnalyticsBreakdownPoint,
   AnalyticsBusyResult,
   AnalyticsDashboard,
   AnalyticsDashboardResponse,
+  AnalyticsFallbackChainPoint,
   AnalyticsFilterOptions,
+  AnalyticsLatencyPercentileValues,
   AnalyticsPendingResult
 } from '@/api/analytics'
 import {
+  ANALYTICS_ANALYSIS_TABS,
+  DEFAULT_ANALYTICS_ANALYSIS_DIMENSION,
   buildAnalyticsDefaultCustomRange,
+  buildAnalyticsQuery,
   calculateAnalyticsTotalTokens,
-  shouldAutoLoadAnalytics
+  removeAnalyticsFilter,
+  resetAnalyticsFilters,
+  shouldAutoLoadAnalytics,
+  sortAnalyticsBreakdown,
+  toggleAnalyticsDimensionFilter,
+  type AnalyticsFilterKey,
+  type AnalyticsFilterState
 } from './analyticsState'
+import { getUsageSourceLabel, usageSourceOptions } from './usageSource'
+
+const { isDark } = useTheme()
 
 const loading = ref(false)
 const waitingForResult = ref(false)
@@ -29,10 +56,12 @@ const rangeType = ref('week')
 const bucketType = ref('auto')
 const protocolType = ref('all')
 const modelName = ref('all')
+const source = ref<string | null>(null)
 const siteId = ref<string | null>(null)
 const accessKeyId = ref<string | null>(null)
 const startTime = ref<number | null>(null)
 const endTime = ref<number | null>(null)
+const activeAnalysisDimension = ref<AnalyticsAnalysisDimension>(DEFAULT_ANALYTICS_ANALYSIS_DIMENSION)
 
 const rangeOptions: SelectOption[] = [
   { label: '按天', value: 'day' },
@@ -65,6 +94,7 @@ const charts = shallowRef<Record<ChartKey, ECharts | null>>({
   fallbackTrend: null, cacheRatio: null, siteDist: null, modelDist: null
 })
 let chartResizeObserver: ResizeObserver | null = null
+const chartClickHandlers = new Map<ChartKey, (params: { dataIndex?: number }) => void>()
 
 const summary = computed(() => dashboard.value?.summary)
 const totalTokens = computed(() => calculateAnalyticsTotalTokens(summary.value))
@@ -75,6 +105,7 @@ const filterSummary = computed(() => {
   const appliedBucket = applied?.bucketType ?? bucketType.value
   const appliedProtocol = applied?.protocolType ?? protocolType.value
   const appliedModel = applied?.modelName ?? modelName.value
+  const appliedSource = applied?.source ?? source.value
   const appliedSiteId = applied?.siteId ?? siteId.value
   const appliedAccessKeyId = applied?.accessKeyId ?? accessKeyId.value
   const parts = [
@@ -83,6 +114,7 @@ const filterSummary = computed(() => {
   ]
   if (appliedProtocol !== 'all') parts.push(appliedProtocol)
   if (appliedModel !== 'all') parts.push(appliedModel)
+  if (appliedSource) parts.push(getUsageSourceLabel(appliedSource))
   if (appliedSiteId) {
     parts.push(filterOptions.value?.sites.find((site) => site.siteId === appliedSiteId)?.siteName ?? appliedSiteId)
   }
@@ -92,9 +124,78 @@ const filterSummary = computed(() => {
   return parts.filter(Boolean).join(' · ')
 })
 
+const activeAnalyticsFilters = computed<AnalyticsFilterState>(() => ({
+  source: source.value ?? undefined,
+  protocolType: protocolType.value !== 'all' ? protocolType.value : undefined,
+  modelName: modelName.value !== 'all' ? modelName.value : undefined,
+  siteId: siteId.value ?? undefined,
+  accessKeyId: accessKeyId.value ?? undefined
+}))
+
+const analyticsFilterTags = computed<Array<{
+  key: AnalyticsFilterKey
+  label: string
+  value: string
+}>>(() => {
+  const filters = activeAnalyticsFilters.value
+  const tags: Array<{ key: AnalyticsFilterKey; label: string; value: string }> = []
+  if (filters.source) tags.push({ key: 'source', label: '来源', value: getUsageSourceLabel(filters.source) })
+  if (filters.protocolType) tags.push({ key: 'protocolType', label: '协议', value: filters.protocolType })
+  if (filters.modelName) tags.push({ key: 'modelName', label: '模型', value: filters.modelName })
+  if (filters.siteId) {
+    tags.push({
+      key: 'siteId',
+      label: '站点',
+      value: filterOptions.value?.sites.find((site) => site.siteId === filters.siteId)?.siteName ?? filters.siteId
+    })
+  }
+  if (filters.accessKeyId) {
+    tags.push({
+      key: 'accessKeyId',
+      label: 'Access Key',
+      value: filterOptions.value?.accessKeys.find((key) => key.accessKeyId === filters.accessKeyId)?.accessKeyLabel ?? filters.accessKeyId
+    })
+  }
+  return tags
+})
+
+function applyAnalyticsFilterState(next: AnalyticsFilterState): void {
+  protocolType.value = next.protocolType ?? 'all'
+  modelName.value = next.modelName ?? 'all'
+  source.value = next.source ?? null
+  siteId.value = next.siteId ?? null
+  accessKeyId.value = next.accessKeyId ?? null
+}
+
+function removeFilterTag(key: AnalyticsFilterKey): void {
+  applyAnalyticsFilterState(removeAnalyticsFilter(activeAnalyticsFilters.value, key))
+}
+
+function resetAllAnalyticsFilters(): void {
+  applyAnalyticsFilterState(resetAnalyticsFilters(activeAnalyticsFilters.value))
+}
+
+function handleDimensionClick(dimension: AnalyticsAnalysisDimension | 'site' | 'model', value: string): void {
+  applyAnalyticsFilterState(toggleAnalyticsDimensionFilter(activeAnalyticsFilters.value, dimension, value))
+}
+
+function disposeChart(key: ChartKey): void {
+  const chart = charts.value[key]
+  if (!chart) return
+
+  const handler = chartClickHandlers.get(key)
+  if (handler) chart.off('click', handler)
+  chart.dispose()
+  charts.value[key] = null
+  chartClickHandlers.delete(key)
+}
+
 function setEl(key: ChartKey, el: HTMLElement | null) {
   const previous = chartEls.value[key]
-  if (previous && previous !== el) chartResizeObserver?.unobserve(previous)
+  if (previous && previous !== el) {
+    chartResizeObserver?.unobserve(previous)
+    disposeChart(key)
+  }
   chartEls.value[key] = el
   if (el) chartResizeObserver?.observe(el)
 }
@@ -115,19 +216,17 @@ function ensureCustomRangeDefaults(): void {
 }
 
 function buildParams(): Record<string, unknown> {
-  const params: Record<string, unknown> = {
+  return buildAnalyticsQuery({
     rangeType: rangeType.value,
     bucketType: bucketType.value,
     protocolType: protocolType.value,
-    modelName: modelName.value
-  }
-  if (siteId.value) params.siteId = siteId.value
-  if (accessKeyId.value) params.accessKeyId = accessKeyId.value
-  if (rangeType.value === 'custom') {
-    if (startTime.value) params.startTime = new Date(startTime.value).toISOString()
-    if (endTime.value) params.endTime = new Date(endTime.value).toISOString()
-  }
-  return params
+    modelName: modelName.value,
+    source: source.value,
+    siteId: siteId.value,
+    accessKeyId: accessKeyId.value,
+    startTime: startTime.value,
+    endTime: endTime.value
+  })
 }
 
 function isWaitingResult(
@@ -204,6 +303,86 @@ function continueWaiting(): void {
   void load(20)
 }
 
+function getActiveBreakdownRows(): AnalyticsBreakdownPoint[] {
+  const d = dashboard.value
+  if (!d) return []
+
+  const rows = activeAnalysisDimension.value === 'source'
+    ? d.sourceBreakdown ?? []
+    : activeAnalysisDimension.value === 'accessKey'
+      ? d.accessKeyBreakdown ?? []
+      : activeAnalysisDimension.value === 'protocol'
+        ? d.protocolBreakdown ?? []
+        : activeAnalysisDimension.value === 'failureReason'
+          ? d.failureReasonBreakdown ?? []
+          : d.statusCodeBreakdown ?? []
+
+  return sortAnalyticsBreakdown(rows, 'requestCount', 'desc')
+}
+
+const activeBreakdownRows = computed(getActiveBreakdownRows)
+
+const breakdownColumns: DataTableColumns<AnalyticsBreakdownPoint> = [
+  { title: '项目', key: 'label', minWidth: 160, ellipsis: { tooltip: true } },
+  { title: '请求数', key: 'requestCount', width: 100, sorter: (left, right) => left.requestCount - right.requestCount },
+  { title: '成功', key: 'successCount', width: 90 },
+  { title: '失败', key: 'failedCount', width: 90 },
+  { title: '成功率', key: 'successRate', width: 100, render: (row) => formatPercentage(row.successRate) },
+  { title: 'Tokens', key: 'totalTokens', width: 110, render: (row) => formatCompact(row.totalTokens) },
+  { title: '平均耗时', key: 'averageTotalDurationMs', width: 120, render: (row) => formatDuration(row.averageTotalDurationMs) },
+  { title: '回退请求', key: 'fallbackRequestCount', width: 100 }
+]
+
+function breakdownRowProps(row: AnalyticsBreakdownPoint): Record<string, unknown> {
+  const dimension = activeAnalysisDimension.value
+  if (dimension !== 'source' && dimension !== 'accessKey' && dimension !== 'protocol') return {}
+
+  return {
+    class: 'analytics-analysis-clickable',
+    onClick: () => handleDimensionClick(dimension, row.key)
+  }
+}
+
+const fallbackChainRows = computed<AnalyticsFallbackChainPoint[]>(() => {
+  const rows = (dashboard.value?.fallbackChainDistribution ?? []).map((point, index) => ({
+    ...point,
+    key: `${point.firstSiteKey}:${point.finalSiteKey}:${index}`
+  }))
+  return sortAnalyticsBreakdown(rows, 'requestCount', 'desc').map(({ key: _key, ...point }) => point)
+})
+
+const fallbackChainColumns: DataTableColumns<AnalyticsFallbackChainPoint> = [
+  {
+    title: '回退链路',
+    key: 'chain',
+    minWidth: 220,
+    render: (row) => `${row.firstSiteLabel} → ${row.finalSiteLabel}`
+  },
+  { title: '请求数', key: 'requestCount', width: 100 },
+  { title: '成功数', key: 'successCount', width: 100 },
+  { title: '成功率', key: 'successRate', width: 100, render: (row) => formatPercentage(row.successRate) },
+  { title: '平均尝试次数', key: 'averageAttemptCount', width: 130, render: (row) => row.averageAttemptCount.toFixed(2) }
+]
+
+type AnalyticsLatencyRow = AnalyticsLatencyPercentileValues & { label: string }
+
+const latencyRows = computed<AnalyticsLatencyRow[]>(() => {
+  const percentiles = dashboard.value?.latencyPercentiles
+  if (!percentiles) return []
+  return [
+    { label: '总耗时', ...percentiles.totalDuration },
+    { label: '首字延迟', ...percentiles.firstTokenLatency }
+  ]
+})
+
+const latencyColumns: DataTableColumns<AnalyticsLatencyRow> = [
+  { title: '指标', key: 'label', minWidth: 140 },
+  { title: 'P50', key: 'p50', width: 110, render: (row) => formatDuration(row.p50) },
+  { title: 'P95', key: 'p95', width: 110, render: (row) => formatDuration(row.p95) },
+  { title: 'P99', key: 'p99', width: 110, render: (row) => formatDuration(row.p99) },
+  { title: '样本数', key: 'sampleCount', width: 110 }
+]
+
 const PRIMARY = '#3b82f6'
 const SUCCESS = '#10b981'
 const WARNING = '#f59e0b'
@@ -240,6 +419,17 @@ function initChart(key: ChartKey): ECharts | null {
   // 用主题感知的初始化（暗色模式注册了 aitool-dark 主题）
   if (!charts.value[key]) charts.value[key] = initThemedChart(el)
   return charts.value[key]
+}
+
+function bindChartClick(
+  key: ChartKey,
+  chart: ECharts,
+  handler: (params: { dataIndex?: number }) => void
+): void {
+  const previous = chartClickHandlers.get(key)
+  if (previous) chart.off('click', previous)
+  chart.on('click', handler)
+  chartClickHandlers.set(key, handler)
 }
 
 function renderCharts(): void {
@@ -408,6 +598,10 @@ function renderCharts(): void {
       yAxis: { type: 'value', minInterval: 1, axisLabel: tokenAxisLabel },
       series: [{ name: '请求数', type: 'bar', data: data.map((t) => t.requestCount), itemStyle: { color: CACHED }, barMaxWidth: 32 }]
     }, true)
+    bindChartClick('siteDist', c7, (params) => {
+      const point = data[params.dataIndex ?? -1]
+      if (point?.key) handleDimensionClick('site', point.key)
+    })
   }
 
   const c8 = initChart('modelDist')
@@ -431,6 +625,17 @@ function renderCharts(): void {
       yAxis: { type: 'value', axisLabel: tokenAxisLabel },
       series: [{ name: 'Token 用量', type: 'bar', data: data.map((t) => t.totalTokens ?? 0), itemStyle: { color: SUCCESS }, barMaxWidth: 32 }]
     }, true)
+    bindChartClick('modelDist', c8, (params) => {
+      const point = data[params.dataIndex ?? -1]
+      if (point?.key) handleDimensionClick('model', point.key)
+    })
+  }
+
+  if (isDark.value) {
+    const overrides = darkChartOverrides()
+    ;(Object.keys(charts.value) as ChartKey[]).forEach((key) => {
+      charts.value[key]?.setOption(overrides, false)
+    })
   }
 }
 
@@ -438,17 +643,21 @@ function handleResize(): void {
   (Object.keys(charts.value) as ChartKey[]).forEach((k) => charts.value[k]?.resize())
 }
 
-onMounted(async () => {
+onMounted(() => {
   chartResizeObserver = new ResizeObserver(handleResize)
-  await Promise.all([loadFilters(), load()])
+  ;(Object.keys(chartEls.value) as ChartKey[]).forEach((key) => {
+    const el = chartEls.value[key]
+    if (el) chartResizeObserver?.observe(el)
+  })
   window.addEventListener('resize', handleResize)
+  void Promise.all([loadFilters(), load()])
 })
 onUnmounted(() => {
   loadController?.abort()
   chartResizeObserver?.disconnect()
   chartResizeObserver = null
   window.removeEventListener('resize', handleResize)
-  ;(Object.keys(charts.value) as ChartKey[]).forEach((k) => charts.value[k]?.dispose())
+  ;(Object.keys(charts.value) as ChartKey[]).forEach((key) => disposeChart(key))
 })
 
 // 切换到指定时间范围时等待用户确认，避免使用尚未填写的时间提前查询。
@@ -459,7 +668,10 @@ watch(rangeType, (value) => {
   }
   if (shouldAutoLoadAnalytics(value)) void load()
 })
-watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void load() })
+watch([bucketType, protocolType, modelName, source, siteId, accessKeyId], () => { void load() })
+watch(isDark, () => {
+  if (dashboard.value?.summary.totalRequests) renderCharts()
+})
 </script>
 
 <template>
@@ -508,6 +720,10 @@ watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void l
               />
             </label>
             <label class="analytics-filter-field">
+              <span class="form-label">来源</span>
+              <NSelect v-model:value="source" :options="usageSourceOptions" clearable />
+            </label>
+            <label class="analytics-filter-field">
               <span class="form-label">站点</span>
               <NSelect
                 v-model:value="siteId"
@@ -526,6 +742,20 @@ watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void l
               />
             </label>
             <div class="analytics-filter-meta">{{ filterSummary }}</div>
+          </div>
+          <div v-if="analyticsFilterTags.length > 0" class="analytics-active-filters">
+            <span class="analytics-active-filters-label">当前筛选</span>
+            <NTag
+              v-for="tag in analyticsFilterTags"
+              :key="tag.key"
+              size="small"
+              closable
+              :bordered="false"
+              @close="removeFilterTag(tag.key)"
+            >
+              {{ tag.label }}：{{ tag.value }}
+            </NTag>
+            <NButton text size="small" @click="resetAllAnalyticsFilters">全部重置</NButton>
           </div>
           <div v-if="rangeType === 'custom'" class="analytics-custom-range-row">
             <label class="analytics-filter-field analytics-custom-range-field">
@@ -636,6 +866,60 @@ watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void l
             <div class="analytics-chart-body"><div :ref="(el) => setEl('modelDist', el as HTMLElement | null)" class="chart-body" /></div>
           </section>
         </div>
+
+        <section class="analytics-analysis-panel analytics-panel card">
+          <div class="analytics-panel-header analytics-analysis-header">
+            <div>
+              <h5 class="analytics-panel-title">细分分析</h5>
+              <div class="analytics-panel-subtitle">按请求数查看当前筛选范围内的维度分布，点击可筛选来源、Access Key 和协议</div>
+            </div>
+          </div>
+          <div class="analytics-analysis-tabs" role="tablist" aria-label="细分分析维度">
+            <button
+              v-for="tab in ANALYTICS_ANALYSIS_TABS"
+              :key="tab.key"
+              type="button"
+              role="tab"
+              :aria-selected="activeAnalysisDimension === tab.key"
+              :class="['analytics-analysis-tab', { active: activeAnalysisDimension === tab.key }]"
+              @click="activeAnalysisDimension = tab.key"
+            >
+              {{ tab.label }}
+            </button>
+          </div>
+
+          <div v-if="activeAnalysisDimension === 'fallbackChain'" class="analytics-analysis-table-wrap">
+            <NDataTable
+              v-if="fallbackChainRows.length > 0"
+              :columns="fallbackChainColumns"
+              :data="fallbackChainRows"
+              :single-line="false"
+              :scroll-x="760"
+            />
+            <NEmpty v-else description="暂无回退链路数据" size="small" />
+          </div>
+          <div v-else-if="activeAnalysisDimension === 'latencyPercentiles'" class="analytics-analysis-table-wrap">
+            <NDataTable
+              v-if="latencyRows.length > 0"
+              :columns="latencyColumns"
+              :data="latencyRows"
+              :single-line="false"
+              :scroll-x="620"
+            />
+            <NEmpty v-else description="暂无延迟分位数数据" size="small" />
+          </div>
+          <div v-else class="analytics-analysis-table-wrap">
+            <NDataTable
+              v-if="activeBreakdownRows.length > 0"
+              :columns="breakdownColumns"
+              :data="activeBreakdownRows"
+              :row-props="breakdownRowProps"
+              :single-line="false"
+              :scroll-x="900"
+            />
+            <NEmpty v-else description="暂无细分数据" size="small" />
+          </div>
+        </section>
       </template>
     </NSpin>
   </div>
@@ -676,6 +960,19 @@ watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void l
   color: var(--text-primary);
   font-size: 13px;
   font-weight: 600;
+}
+
+.analytics-active-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.analytics-active-filters-label {
+  color: var(--text-color-secondary);
+  font-size: 13px;
 }
 
 .analytics-filter-meta {
@@ -727,7 +1024,7 @@ watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void l
   padding: 18px 20px;
   border: 1px solid var(--border-color-global);
   border-radius: 18px;
-  background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+  background: var(--bg-card);
   box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
 }
 
@@ -801,15 +1098,65 @@ watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void l
   height: 100%;
 }
 
+.analytics-analysis-panel {
+  margin-top: 18px;
+}
+
+.analytics-analysis-header {
+  padding-bottom: 14px;
+}
+
+.analytics-analysis-tabs {
+  display: flex;
+  gap: 4px;
+  overflow-x: auto;
+  padding: 0 20px 12px;
+  border-bottom: 1px solid var(--border-color-global);
+  scrollbar-width: thin;
+}
+
+.analytics-analysis-tab {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-color-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.analytics-analysis-tab:hover,
+.analytics-analysis-tab.active {
+  background: rgba(59, 130, 246, 0.1);
+  color: var(--primary-color, #3b82f6);
+}
+
+.analytics-analysis-table-wrap {
+  min-width: 0;
+  overflow-x: auto;
+  padding: 12px 16px 16px;
+}
+
+.analytics-analysis-table-wrap :deep(.n-data-table) {
+  min-width: 620px;
+}
+
+.analytics-analysis-table-wrap :deep(.analytics-analysis-clickable) {
+  cursor: pointer;
+}
+
+.analytics-analysis-table-wrap :deep(.analytics-analysis-clickable:hover td) {
+  background: rgba(59, 130, 246, 0.08);
+}
+
 .analytics-empty {
   padding: 80px 0;
   border: 1px solid var(--border-color-global);
   border-radius: 18px;
   background: var(--bg-card);
-}
-
-[data-theme='dark'] .analytics-kpi-card {
-  background: linear-gradient(180deg, rgba(31, 41, 55, 0.95) 0%, rgba(17, 24, 39, 0.95) 100%);
 }
 
 @media (max-width: 1280px) {
@@ -843,6 +1190,12 @@ watch([bucketType, protocolType, modelName, siteId, accessKeyId], () => { void l
 }
 
 @media (max-width: 767px) {
+  .analytics-active-filters {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+
   .analytics-filter-grid,
   .analytics-kpi-grid {
     grid-template-columns: 1fr;

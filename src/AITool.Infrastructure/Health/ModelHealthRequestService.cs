@@ -135,6 +135,7 @@ public sealed class ModelHealthRequestService
             IsFinalResult = true,
             FallbackTriggered = false,
             ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+            HttpStatusCode = forwardResult.StatusCode > 0 ? forwardResult.StatusCode : null,
             InputTokens = forwardResult.InputTokens,
             CachedTokens = forwardResult.CachedTokens,
             OutputTokens = forwardResult.OutputTokens,

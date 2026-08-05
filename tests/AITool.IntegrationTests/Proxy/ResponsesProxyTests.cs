@@ -467,6 +467,7 @@ public sealed class ResponsesProxyTests
         logs[0].ForwardingMode.Should().Be("bridge");
         logs[0].IsStreaming.Should().BeFalse();
         logs[0].Status.Should().Be("success");
+        logs[0].HttpStatusCode.Should().Be(200);
     }
 
     /// <summary>
@@ -524,6 +525,7 @@ public sealed class ResponsesProxyTests
         logs[0].ForwardingMode.Should().Be("bridge");
         logs[0].IsStreaming.Should().BeTrue();
         logs[0].Status.Should().Be("success");
+        logs[0].HttpStatusCode.Should().Be(200);
     }
 
     /// <summary>

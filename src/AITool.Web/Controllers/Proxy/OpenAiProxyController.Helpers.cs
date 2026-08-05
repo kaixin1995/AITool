@@ -375,7 +375,8 @@ public sealed partial class OpenAiProxyController
             : string.Empty;
         if (!string.IsNullOrWhiteSpace(explicitSource))
         {
-            return explicitSource;
+            // 统一显式来源的大小写，确保写入、展示和筛选使用同一口径。
+            return explicitSource.ToLowerInvariant();
         }
 
         var userAgent = request.Headers.UserAgent.ToString();

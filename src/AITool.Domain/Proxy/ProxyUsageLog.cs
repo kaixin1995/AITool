@@ -97,6 +97,18 @@ public sealed class ProxyUsageLog
     public string ErrorMessage { get; set; } = string.Empty;
 
     /// <summary>
+    /// 上游响应的 HTTP 状态码；未收到 HTTP 响应时为空。
+    /// </summary>
+    [SugarColumn(IsNullable = true)]
+    public int? HttpStatusCode { get; set; }
+
+    /// <summary>
+    /// 错误分类；成功记录和旧数据可以为空。
+    /// </summary>
+    [SugarColumn(Length = 50, IsNullable = true)]
+    public string? ErrorCategory { get; set; }
+
+    /// <summary>
     /// 输入 Token 数，用于统计提示词或请求正文消耗的输入量。
     /// </summary>
     public int InputTokens { get; set; }

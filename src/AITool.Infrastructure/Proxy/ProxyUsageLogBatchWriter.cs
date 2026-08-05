@@ -26,7 +26,7 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
     /// </summary>
     private readonly Channel<UsageLogEntry> _channel = Channel.CreateBounded<UsageLogEntry>(new BoundedChannelOptions(4096)
     {
-        FullMode = BoundedChannelFullMode.DropWrite,
+        FullMode = BoundedChannelFullMode.Wait,
         SingleReader = true,
         SingleWriter = false
     });
@@ -60,7 +60,7 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
     }
 
     /// <summary>
-    /// 代理链路只尝试入队，不等待数据库写入完成。同时更新 Site 使用时间映射（零 DB 开销）。
+    /// 代理链路只等待日志进入内存队列，不等待数据库写入完成。同时更新 Site 使用时间映射（零 DB 开销）。
     /// </summary>
     public async ValueTask<bool> EnqueueAsync(UsageLogEntry entry, CancellationToken cancellationToken)
     {
@@ -73,13 +73,17 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             return true;
         }
 
-        if (_channel.Writer.TryWrite(entry))
+        try
         {
+            // 日志不能因为客户端断开而丢失；队列满时只在内存缓冲耗尽期间施加背压。
+            await _channel.Writer.WriteAsync(entry, CancellationToken.None);
             return true;
         }
-
-        _logger.LogWarning("代理日志队列已满，本次日志已让步丢弃");
-        return false;
+        catch (ChannelClosedException ex)
+        {
+            _logger.LogWarning(ex, "代理日志队列已关闭，本次日志未能入队");
+            return false;
+        }
     }
 
     /// <summary>
@@ -189,6 +193,8 @@ public sealed class ProxyUsageLogBatchWriter : BackgroundService
             IsFinalResult = entry.IsFinalResult,
             FallbackTriggered = entry.FallbackTriggered,
             ErrorMessage = entry.ErrorMessage,
+            HttpStatusCode = entry.HttpStatusCode,
+            ErrorCategory = entry.ErrorCategory ?? UsageLogErrorClassifier.Classify(entry),
             InputTokens = entry.InputTokens,
             CachedTokens = entry.CachedTokens,
             OutputTokens = entry.OutputTokens,

@@ -543,11 +543,13 @@ public sealed partial class OpenAiProxyController : ControllerBase
         ProxyForwardResult? lastResult = null;
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
+        var routeIndex = -1;
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
         foreach (var route in allRoutes)
         {
+            routeIndex++;
             // 客户端已断开则不再尝试任何后续路由（无意义，响应已无法写回）。
             if (cancellationToken.IsCancellationRequested)
             {
@@ -626,6 +628,11 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 }
 
                 SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
+                var streamCanFallback = !streamResult.Success
+                    && streamOutcome.CanFallback
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate =>
+                        !IsRouteBlockedSafely(candidate.RouteId)
+                        && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
 
                 await SafeLogUsageAsync(new UsageLogEntry
                 {
@@ -640,9 +647,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     Source = requestSource,
                     RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
                     AttemptIndex = attemptIndex,
-                    IsFinalResult = streamResult.Success,
-                    FallbackTriggered = !streamResult.Success,
+                    IsFinalResult = streamResult.Success || !streamCanFallback,
+                    FallbackTriggered = streamCanFallback,
                     ErrorMessage = streamResult.Success ? string.Empty : (streamResult.ErrorMessage ?? string.Empty),
+                    HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
                     InputTokens = streamResult.InputTokens,
                     CachedTokens = streamResult.CachedTokens,
                     OutputTokens = streamResult.OutputTokens,
@@ -704,6 +712,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
             }
 
             SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
+            var canFallback = !result.Success
+                && allRoutes.Skip(routeIndex + 1).Any(candidate =>
+                    !IsRouteBlockedSafely(candidate.RouteId)
+                    && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -718,9 +730,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 Source = requestSource,
                 RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
-                IsFinalResult = result.Success,
-                FallbackTriggered = !result.Success,
+                IsFinalResult = result.Success || !canFallback,
+                FallbackTriggered = canFallback,
                 ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty),
+                HttpStatusCode = result.StatusCode > 0 ? result.StatusCode : null,
                 InputTokens = result.InputTokens,
                 CachedTokens = result.CachedTokens,
                 OutputTokens = result.OutputTokens,

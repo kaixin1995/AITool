@@ -79,7 +79,7 @@ public sealed class AnalyticsBackgroundQueryExecutor : BackgroundService
         _memoryCache = memoryCache;
         _queue = Channel.CreateBounded<AnalyticsJob>(new BoundedChannelOptions(4)
         {
-            FullMode = BoundedChannelFullMode.DropWrite,
+            FullMode = BoundedChannelFullMode.Wait,
             SingleReader = true,
             SingleWriter = false
         });

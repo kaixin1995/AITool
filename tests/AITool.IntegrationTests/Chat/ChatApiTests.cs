@@ -51,6 +51,12 @@ public sealed class ChatApiTests
         document.RootElement.GetProperty("content").GetString().Should().Be("anthropic-ok");
         document.RootElement.GetProperty("inputTokens").GetInt32().Should().Be(3);
         document.RootElement.GetProperty("outputTokens").GetInt32().Should().Be(5);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].HttpStatusCode.Should().Be(200);
     }
 
     /// <summary>

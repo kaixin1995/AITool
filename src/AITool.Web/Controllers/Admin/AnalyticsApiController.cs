@@ -1,3 +1,4 @@
+using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -33,6 +34,10 @@ public sealed class AnalyticsQueryDto
     /// 模型名称。
     /// </summary>
     public string ModelName { get; set; } = "all";
+    /// <summary>
+    /// 来源标识。
+    /// </summary>
+    public string? Source { get; set; }
     /// <summary>
     /// 站点标识。
     /// </summary>
@@ -148,6 +153,34 @@ public sealed class AnalyticsDashboardResponseDto
     /// 模型缓存命中分布数据。
     /// </summary>
     public List<AnalyticsCacheRatioPointDto> ModelCacheRatioDistribution { get; set; } = [];
+    /// <summary>
+    /// 来源细分数据。
+    /// </summary>
+    public List<AnalyticsBreakdownPointDto> SourceBreakdown { get; set; } = [];
+    /// <summary>
+    /// 访问密钥细分数据。
+    /// </summary>
+    public List<AnalyticsBreakdownPointDto> AccessKeyBreakdown { get; set; } = [];
+    /// <summary>
+    /// 协议细分数据。
+    /// </summary>
+    public List<AnalyticsBreakdownPointDto> ProtocolBreakdown { get; set; } = [];
+    /// <summary>
+    /// 最终失败请求的错误分类细分数据。
+    /// </summary>
+    public List<AnalyticsBreakdownPointDto> FailureReasonBreakdown { get; set; } = [];
+    /// <summary>
+    /// 最终失败请求的 HTTP 状态码细分数据。
+    /// </summary>
+    public List<AnalyticsBreakdownPointDto> StatusCodeBreakdown { get; set; } = [];
+    /// <summary>
+    /// 发生回退的请求链路分布数据。
+    /// </summary>
+    public List<AnalyticsFallbackChainPointDto> FallbackChainDistribution { get; set; } = [];
+    /// <summary>
+    /// 当前筛选最终请求的延迟百分位数。
+    /// </summary>
+    public AnalyticsLatencyPercentilesDto LatencyPercentiles { get; set; } = new();
 }
 
 /// <summary>
@@ -179,6 +212,10 @@ public sealed class AnalyticsAppliedFilterDto
     /// 模型名称。
     /// </summary>
     public string ModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 来源标识。
+    /// </summary>
+    public string? Source { get; set; }
     /// <summary>
     /// 站点标识。
     /// </summary>
@@ -357,6 +394,10 @@ public sealed class AnalyticsFallbackTrendPointDto
 public sealed class AnalyticsDistributionPointDto
 {
     /// <summary>
+    /// 稳定维度键，站点为 SiteId，模型为 AttemptedModel。
+    /// </summary>
+    public string Key { get; set; } = string.Empty;
+    /// <summary>
     /// 维度标签，站点分布时为站点名称，模型分布时为模型名称。
     /// </summary>
     public string Label { get; set; } = string.Empty;
@@ -395,6 +436,88 @@ public sealed class AnalyticsDistributionPointDto
 }
 
 /// <summary>
+/// 来源、访问密钥或协议细分中的一个维度点。
+/// </summary>
+public sealed class AnalyticsBreakdownPointDto
+{
+    /// <summary>
+    /// 稳定维度键。
+    /// </summary>
+    public string Key { get; set; } = string.Empty;
+    /// <summary>
+    /// 面向展示的维度标签。
+    /// </summary>
+    public string Label { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求数。
+    /// </summary>
+    public int RequestCount { get; set; }
+    /// <summary>
+    /// 成功请求数。
+    /// </summary>
+    public int SuccessCount { get; set; }
+    /// <summary>
+    /// 失败请求数。
+    /// </summary>
+    public int FailedCount { get; set; }
+    /// <summary>
+    /// 成功率。
+    /// </summary>
+    public double SuccessRate { get; set; }
+    /// <summary>
+    /// Token 总数。
+    /// </summary>
+    public long TotalTokens { get; set; }
+    /// <summary>
+    /// 平均总耗时（毫秒）。
+    /// </summary>
+    public double AverageTotalDurationMs { get; set; }
+    /// <summary>
+    /// 触发回退的请求数。
+    /// </summary>
+    public int FallbackRequestCount { get; set; }
+}
+
+/// <summary>
+/// 回退请求链路的首末站点及结果统计。
+/// </summary>
+public sealed class AnalyticsFallbackChainPointDto
+{
+    /// <summary>
+    /// 首次尝试站点的稳定标识。
+    /// </summary>
+    public string FirstSiteKey { get; set; } = string.Empty;
+    /// <summary>
+    /// 首次尝试站点名称。
+    /// </summary>
+    public string FirstSiteLabel { get; set; } = string.Empty;
+    /// <summary>
+    /// 最终尝试站点的稳定标识。
+    /// </summary>
+    public string FinalSiteKey { get; set; } = string.Empty;
+    /// <summary>
+    /// 最终尝试站点名称。
+    /// </summary>
+    public string FinalSiteLabel { get; set; } = string.Empty;
+    /// <summary>
+    /// 请求数。
+    /// </summary>
+    public int RequestCount { get; set; }
+    /// <summary>
+    /// 最终成功请求数。
+    /// </summary>
+    public int SuccessCount { get; set; }
+    /// <summary>
+    /// 成功率。
+    /// </summary>
+    public double SuccessRate { get; set; }
+    /// <summary>
+    /// 平均尝试次数。
+    /// </summary>
+    public double AverageAttemptCount { get; set; }
+}
+
+/// <summary>
 /// 模型缓存命中分布中的一个维度点，展示各模型的缓存命中率和相关 Token 统计。
 /// </summary>
 public sealed class AnalyticsCacheRatioPointDto
@@ -422,6 +545,44 @@ public sealed class AnalyticsCacheRatioPointDto
 }
 
 /// <summary>
+/// 延迟百分位数结果，包含 P50、P95、P99 和有效样本数。
+/// </summary>
+public sealed class AnalyticsLatencyPercentileValuesDto
+{
+    /// <summary>
+    /// P50 延迟（毫秒）。
+    /// </summary>
+    public double P50 { get; set; }
+    /// <summary>
+    /// P95 延迟（毫秒）。
+    /// </summary>
+    public double P95 { get; set; }
+    /// <summary>
+    /// P99 延迟（毫秒）。
+    /// </summary>
+    public double P99 { get; set; }
+    /// <summary>
+    /// 有效样本数。
+    /// </summary>
+    public int SampleCount { get; set; }
+}
+
+/// <summary>
+/// 当前筛选最终请求的总耗时和首 Token 延迟百分位数。
+/// </summary>
+public sealed class AnalyticsLatencyPercentilesDto
+{
+    /// <summary>
+    /// 总耗时百分位数。
+    /// </summary>
+    public AnalyticsLatencyPercentileValuesDto TotalDuration { get; set; } = new();
+    /// <summary>
+    /// 首 Token 延迟百分位数。
+    /// </summary>
+    public AnalyticsLatencyPercentileValuesDto FirstTokenLatency { get; set; } = new();
+}
+
+/// <summary>
 /// 统计分析控制器，提供用量统计看板和趋势图表数据。
 /// </summary>
 [ApiController]
@@ -444,6 +605,8 @@ public sealed class AnalyticsApiController : ControllerBase
     /// 当前宿主环境。
     /// </summary>
     private readonly IHostEnvironment _hostEnvironment;
+    // 回退链路数量上限，避免高基数链路维度撑大看板响应。
+    private const int MaxFallbackChainDistributionCount = 20;
 
     /// <summary>
     /// 创建统计分析控制器。
@@ -549,33 +712,26 @@ public sealed class AnalyticsApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         var siteNames = await dbContext.Sites
-            
+
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
+        // 细分只读取访问密钥标识和名称，避免把明文密钥或哈希载入统计查询。
+        var accessKeyNames = (await dbContext.ProxyAccessKeys
+                .Select(x => new { x.Id, x.KeyName })
+                .ToListAsync(cancellationToken))
+            .ToDictionary(x => x.Id, x => x.KeyName);
 
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
         var bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
+        var source = NormalizeAnalyticsSource(query.Source);
 
-        // 数据库层过滤：SqlSugar 支持 DateTimeOffset 下推，不再全表加载到内存。
-        var baseQuery = dbContext.ProxyUsageLogs
+        // 先只按时间范围读取日志，确保请求级归并不会丢失中间尝试。
+        var rangeLogs = await dbContext.ProxyUsageLogs
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
-            .WhereIF(!string.Equals(query.ProtocolType, "all", StringComparison.OrdinalIgnoreCase), x => x.ProtocolType == query.ProtocolType)
-            .WhereIF(!string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase), x => x.AttemptedModel == query.ModelName);
-
-        var scopedQuery = baseQuery;
-        if (query.SiteId.HasValue)
-        {
-            scopedQuery = scopedQuery.Where(x => x.TargetSiteId == query.SiteId.Value);
-        }
-        if (query.AccessKeyId.HasValue)
-        {
-            scopedQuery = scopedQuery.Where(x => x.AccessKeyId == query.AccessKeyId.Value);
-        }
-
-        var scopedLogs = await scopedQuery.ToListAsync(cancellationToken);
+            .ToListAsync(cancellationToken);
 
         // SqlSugar 读回 DateTimeOffset 时 offset 被配成本地时区（+08:00），但存储的是 UTC 值，
         // 导致瞬时偏移。这里统一把 RequestedAt 规范化回 UTC offset（+00:00），恢复正确瞬时时刻。
-        foreach (var log in scopedLogs)
+        foreach (var log in rangeLogs)
         {
             if (log.RequestedAt.Offset != TimeSpan.Zero)
             {
@@ -583,15 +739,21 @@ public sealed class AnalyticsApiController : ControllerBase
             }
         }
 
-        var finalLogs = scopedLogs
+        // 先确定每个请求的最终记录，再用最终记录应用所有维度筛选。
+        var finalLogs = rangeLogs
             .GroupBy(x => x.RequestId)
-            .Select(g => g
-                .OrderByDescending(x => x.AttemptIndex)
-                .ThenByDescending(x => x.RequestedAt)
-                .First())
+            .Select(SelectFinalAnalyticsLog)
+            .Where(x => MatchesAnalyticsFilters(x, query, source))
             .ToList();
+        var matchedRequestIds = finalLogs
+            .Select(x => x.RequestId)
+            .ToHashSet();
 
-        var fallbackRequestIds = scopedLogs
+        // 命中请求后恢复整条请求链，仅用于回退判断，避免筛选掉失败中间尝试造成统计错误。
+        var matchedChainLogs = rangeLogs
+            .Where(x => matchedRequestIds.Contains(x.RequestId))
+            .ToList();
+        var fallbackRequestIds = matchedChainLogs
             .GroupBy(x => x.RequestId)
             .Where(g => g.Any(x => x.FallbackTriggered) || g.Max(x => x.AttemptIndex) > 1)
             .Select(g => g.Key)
@@ -623,6 +785,7 @@ public sealed class AnalyticsApiController : ControllerBase
                 BucketType = bucketType,
                 ProtocolType = string.IsNullOrWhiteSpace(query.ProtocolType) ? "all" : query.ProtocolType,
                 ModelName = string.IsNullOrWhiteSpace(query.ModelName) ? "all" : query.ModelName,
+                Source = source,
                 SiteId = query.SiteId,
                 AccessKeyId = query.AccessKeyId
             },
@@ -634,7 +797,14 @@ public sealed class AnalyticsApiController : ControllerBase
             FallbackTrend = BuildFallbackTrend(buckets, bucketedLogs, fallbackRequestIds),
             SiteDistribution = BuildSiteDistribution(finalLogs, siteNames),
             ModelDistribution = BuildModelDistribution(finalLogs),
-            ModelCacheRatioDistribution = BuildModelCacheRatioDistribution(finalLogs)
+            ModelCacheRatioDistribution = BuildModelCacheRatioDistribution(finalLogs),
+            SourceBreakdown = BuildSourceBreakdown(finalLogs, fallbackRequestIds),
+            AccessKeyBreakdown = BuildAccessKeyBreakdown(finalLogs, fallbackRequestIds, accessKeyNames),
+            ProtocolBreakdown = BuildProtocolBreakdown(finalLogs, fallbackRequestIds),
+            FailureReasonBreakdown = BuildFailureReasonBreakdown(finalLogs, fallbackRequestIds),
+            StatusCodeBreakdown = BuildStatusCodeBreakdown(finalLogs, fallbackRequestIds),
+            FallbackChainDistribution = BuildFallbackChainDistribution(finalLogs, matchedChainLogs, fallbackRequestIds, siteNames),
+            LatencyPercentiles = BuildLatencyPercentiles(finalLogs)
         };
     }
 
@@ -780,6 +950,270 @@ public sealed class AnalyticsApiController : ControllerBase
     }
 
     /// <summary>
+    /// 构建来源细分，来源键统一为稳定的小写标识。
+    /// </summary>
+    private static List<AnalyticsBreakdownPointDto> BuildSourceBreakdown(
+        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
+        HashSet<Guid> fallbackRequestIds)
+    {
+        return BuildBreakdown(
+            finalLogs,
+            fallbackRequestIds,
+            x => NormalizeAnalyticsSource(x.Source) ?? "-",
+            ResolveAnalyticsSourceLabel);
+    }
+
+    /// <summary>
+    /// 构建访问密钥细分，只使用访问密钥名称作为展示标签。
+    /// </summary>
+    private static List<AnalyticsBreakdownPointDto> BuildAccessKeyBreakdown(
+        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
+        HashSet<Guid> fallbackRequestIds,
+        IReadOnlyDictionary<Guid, string> accessKeyNames)
+    {
+        return BuildBreakdown(
+            finalLogs,
+            fallbackRequestIds,
+            x => x.AccessKeyId.ToString("D"),
+            key => Guid.TryParse(key, out var accessKeyId)
+                && accessKeyNames.TryGetValue(accessKeyId, out var name)
+                ? NormalizeAnalyticsLabel(name)
+                : "-");
+    }
+
+    /// <summary>
+    /// 构建协议细分，协议键和标签均来自最终记录的 ProtocolType。
+    /// </summary>
+    private static List<AnalyticsBreakdownPointDto> BuildProtocolBreakdown(
+        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
+        HashSet<Guid> fallbackRequestIds)
+    {
+        return BuildBreakdown(
+            finalLogs,
+            fallbackRequestIds,
+            x => NormalizeAnalyticsLabel(x.ProtocolType),
+            key => key);
+    }
+
+    /// <summary>
+    /// 按最终请求统一构建细分统计，fallback 请求按 RequestId 去重。
+    /// </summary>
+    private static List<AnalyticsBreakdownPointDto> BuildBreakdown(
+        IEnumerable<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
+        HashSet<Guid> fallbackRequestIds,
+        Func<AITool.Domain.Proxy.ProxyUsageLog, string> keySelector,
+        Func<string, string> labelSelector)
+    {
+        return finalLogs
+            .GroupBy(keySelector)
+            .Select(group =>
+            {
+                var requestCount = group.Count();
+                var successCount = group.Count(x => IsSuccess(x.Status));
+                var fallbackCount = group
+                    .Select(x => x.RequestId)
+                    .Distinct()
+                    .Count(fallbackRequestIds.Contains);
+
+                return new AnalyticsBreakdownPointDto
+                {
+                    Key = group.Key,
+                    Label = labelSelector(group.Key),
+                    RequestCount = requestCount,
+                    SuccessCount = successCount,
+                    FailedCount = requestCount - successCount,
+                    SuccessRate = requestCount == 0 ? 0 : Math.Round(successCount * 100d / requestCount, 2),
+                    TotalTokens = group.Sum(x => (long)x.TotalTokens),
+                    AverageTotalDurationMs = requestCount == 0 ? 0 : Math.Round(group.Average(x => x.TotalDurationMs), 2),
+                    FallbackRequestCount = fallbackCount
+                };
+            })
+            .OrderByDescending(x => x.RequestCount)
+            .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 对最终请求集合一次性计算总耗时和首 Token 延迟百分位数。
+    /// </summary>
+    private static AnalyticsLatencyPercentilesDto BuildLatencyPercentiles(
+        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs)
+    {
+        var totalDuration = PercentileCalculator.Calculate(
+            finalLogs.Select(x => (double)x.TotalDurationMs));
+        var firstTokenLatency = PercentileCalculator.Calculate(
+            finalLogs.Select(x => (double)x.FirstTokenLatencyMs));
+
+        return new AnalyticsLatencyPercentilesDto
+        {
+            TotalDuration = ToLatencyPercentileValues(totalDuration),
+            FirstTokenLatency = ToLatencyPercentileValues(firstTokenLatency)
+        };
+    }
+
+    /// <summary>
+    /// 转换公共百分位计算结果 DTO。
+    /// </summary>
+    private static AnalyticsLatencyPercentileValuesDto ToLatencyPercentileValues(PercentileResult result)
+    {
+        return new AnalyticsLatencyPercentileValuesDto
+        {
+            P50 = result.P50,
+            P95 = result.P95,
+            P99 = result.P99,
+            SampleCount = result.SampleCount
+        };
+    }
+
+    /// <summary>
+    /// 构建最终失败请求的错误分类细分，不读取中间失败尝试作为统计请求。
+    /// </summary>
+    private static List<AnalyticsBreakdownPointDto> BuildFailureReasonBreakdown(
+        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
+        HashSet<Guid> fallbackRequestIds)
+    {
+        return BuildBreakdown(
+            finalLogs.Where(x => !IsSuccess(x.Status)),
+            fallbackRequestIds,
+            x => x.ErrorCategory
+                 ?? UsageLogErrorClassifier.Classify(
+                     x.Status,
+                     x.HttpStatusCode,
+                     x.ErrorMessage,
+                     x.IsStreamInterrupted)
+                 ?? "other",
+            ResolveFailureCategoryLabel);
+    }
+
+    /// <summary>
+    /// 构建最终失败请求的 HTTP 状态码细分，空值或零统一归入 no-response。
+    /// </summary>
+    private static List<AnalyticsBreakdownPointDto> BuildStatusCodeBreakdown(
+        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
+        HashSet<Guid> fallbackRequestIds)
+    {
+        return BuildBreakdown(
+            finalLogs.Where(x => !IsSuccess(x.Status)),
+            fallbackRequestIds,
+            x => x.HttpStatusCode is null or 0 ? "no-response" : x.HttpStatusCode.Value.ToString(),
+            ResolveHttpStatusLabel);
+    }
+
+    /// <summary>
+    /// 构建发生 fallback 的请求链路分布，并按首末站点组合去重。
+    /// </summary>
+    private static List<AnalyticsFallbackChainPointDto> BuildFallbackChainDistribution(
+        List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
+        List<AITool.Domain.Proxy.ProxyUsageLog> matchedChainLogs,
+        HashSet<Guid> fallbackRequestIds,
+        IReadOnlyDictionary<Guid, string> siteNames)
+    {
+        var finalByRequestId = finalLogs.ToDictionary(x => x.RequestId);
+        var requestChains = matchedChainLogs
+            .GroupBy(x => x.RequestId)
+            .Where(group => fallbackRequestIds.Contains(group.Key))
+            .Select(group =>
+            {
+                var attempts = group
+                    .OrderBy(x => x.AttemptIndex)
+                    .ThenBy(x => x.RequestedAt)
+                    .ToList();
+                var firstAttempt = attempts[0];
+                var finalRecord = finalByRequestId[group.Key];
+                var finalAttempt = SelectFinalAnalyticsLog(attempts);
+
+                return new
+                {
+                    FirstSiteId = firstAttempt.TargetSiteId,
+                    FinalSiteId = finalAttempt.TargetSiteId,
+                    IsSuccess = IsSuccess(finalRecord.Status),
+                    AttemptCount = Math.Max(1, attempts.Max(x => x.AttemptIndex))
+                };
+            });
+
+        return requestChains
+            .GroupBy(x => new { x.FirstSiteId, x.FinalSiteId })
+            .Select(group =>
+            {
+                var requestCount = group.Count();
+                var successCount = group.Count(x => x.IsSuccess);
+                return new AnalyticsFallbackChainPointDto
+                {
+                    FirstSiteKey = group.Key.FirstSiteId.ToString("D"),
+                    FirstSiteLabel = ResolveSiteAnalyticsLabel(group.Key.FirstSiteId, siteNames),
+                    FinalSiteKey = group.Key.FinalSiteId.ToString("D"),
+                    FinalSiteLabel = ResolveSiteAnalyticsLabel(group.Key.FinalSiteId, siteNames),
+                    RequestCount = requestCount,
+                    SuccessCount = successCount,
+                    SuccessRate = requestCount == 0 ? 0 : Math.Round(successCount * 100d / requestCount, 2),
+                    AverageAttemptCount = Math.Round(group.Average(x => x.AttemptCount), 2)
+                };
+            })
+            .OrderByDescending(x => x.RequestCount)
+            .ThenBy(x => x.FirstSiteLabel, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.FinalSiteLabel, StringComparer.OrdinalIgnoreCase)
+            // 仅返回 Top 20，控制高基数首末站点组合的响应体大小。
+            .Take(MaxFallbackChainDistributionCount)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 将错误分类键转换为稳定的展示标签，不返回错误正文。
+    /// </summary>
+    private static string ResolveFailureCategoryLabel(string key)
+    {
+        return key switch
+        {
+            "authentication" => "认证失败",
+            "rate-limit" => "频率限制",
+            "timeout" => "超时",
+            "stream-interrupted" => "流中断",
+            "model-not-found" => "模型不存在",
+            "upstream-error" => "上游错误",
+            "network-error" => "网络错误",
+            _ => "其他"
+        };
+    }
+
+    /// <summary>
+    /// 将 HTTP 状态码键转换为稳定展示标签。
+    /// </summary>
+    private static string ResolveHttpStatusLabel(string key)
+    {
+        return key == "no-response" ? "无响应" : key;
+    }
+
+    /// <summary>
+    /// 使用站点名称映射生成链路标签，缺失站点统一显示占位符。
+    /// </summary>
+    private static string ResolveSiteAnalyticsLabel(Guid siteId, IReadOnlyDictionary<Guid, string> siteNames)
+    {
+        return siteNames.TryGetValue(siteId, out var siteName)
+            ? NormalizeAnalyticsLabel(siteName)
+            : "-";
+    }
+
+    /// <summary>
+    /// 将稳定来源键转换为与 Usage Logs 一致的展示标签。
+    /// </summary>
+    private static string ResolveAnalyticsSourceLabel(string key)
+    {
+        return key switch
+        {
+            "proxy" => "代理",
+            "chat" => "对话测试",
+            "claude-code" => "Claude Code",
+            "codex" => "Codex",
+            "open-code" => "Open Code",
+            "zcode" => "ZCode",
+            "detection-manual" => "手动检测",
+            "detection-task" => "定时检测",
+            _ => NormalizeAnalyticsLabel(key)
+        };
+    }
+
+    /// <summary>
     /// 构建站点分布。
     /// </summary>
     private static List<AnalyticsDistributionPointDto> BuildSiteDistribution(
@@ -790,6 +1224,7 @@ public sealed class AnalyticsApiController : ControllerBase
             .GroupBy(x => x.TargetSiteId)
             .Select(g => new AnalyticsDistributionPointDto
             {
+                Key = g.Key.ToString("D"),
                 Label = siteNames.TryGetValue(g.Key, out var siteName) ? NormalizeAnalyticsLabel(siteName) : "-",
                 RequestCount = g.Count(),
                 SuccessCount = g.Count(x => IsSuccess(x.Status)),
@@ -814,6 +1249,7 @@ public sealed class AnalyticsApiController : ControllerBase
             .GroupBy(x => x.AttemptedModel)
             .Select(g => new AnalyticsDistributionPointDto
             {
+                Key = g.Key,
                 Label = NormalizeAnalyticsLabel(g.Key),
                 RequestCount = g.Count(),
                 SuccessCount = g.Count(x => IsSuccess(x.Status)),
@@ -858,6 +1294,45 @@ public sealed class AnalyticsApiController : ControllerBase
             .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
             .Take(10)
             .ToList();
+    }
+
+    /// <summary>
+    /// 从请求链中选择最终记录；优先使用明确标记的最终结果，再按尝试序号和时间兜底。
+    /// </summary>
+    private static AITool.Domain.Proxy.ProxyUsageLog SelectFinalAnalyticsLog(
+        IEnumerable<AITool.Domain.Proxy.ProxyUsageLog> logs)
+    {
+        return logs
+            .OrderByDescending(x => x.IsFinalResult)
+            .ThenByDescending(x => x.AttemptIndex)
+            .ThenByDescending(x => x.RequestedAt)
+            .First();
+    }
+
+    /// <summary>
+    /// 判断请求最终记录是否满足看板筛选条件。
+    /// </summary>
+    private static bool MatchesAnalyticsFilters(
+        AITool.Domain.Proxy.ProxyUsageLog log,
+        AnalyticsQueryDto query,
+        string? source)
+    {
+        return (string.Equals(query.ProtocolType, "all", StringComparison.OrdinalIgnoreCase)
+                || log.ProtocolType == query.ProtocolType)
+            && (string.Equals(query.ModelName, "all", StringComparison.OrdinalIgnoreCase)
+                || log.AttemptedModel == query.ModelName)
+            && (source is null
+                || string.Equals(log.Source, source, StringComparison.OrdinalIgnoreCase))
+            && (!query.SiteId.HasValue || log.TargetSiteId == query.SiteId.Value)
+            && (!query.AccessKeyId.HasValue || log.AccessKeyId == query.AccessKeyId.Value);
+    }
+
+    /// <summary>
+    /// 规范化来源筛选值，空值表示不筛选来源。
+    /// </summary>
+    private static string? NormalizeAnalyticsSource(string? value)
+    {
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToLowerInvariant();
     }
 
     /// <summary>
@@ -1050,6 +1525,7 @@ public sealed class AnalyticsApiController : ControllerBase
             query.EndTime?.ToString("O") ?? "-",
             query.ProtocolType ?? "all",
             query.ModelName ?? "all",
+            NormalizeAnalyticsSource(query.Source) ?? "-",
             query.SiteId?.ToString() ?? "-",
             query.AccessKeyId?.ToString() ?? "-");
     }

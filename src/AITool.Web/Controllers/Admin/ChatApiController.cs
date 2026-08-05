@@ -431,10 +431,12 @@ public sealed class ChatApiController : ControllerBase
         {
             var requestId = Guid.NewGuid();
             var attemptIndex = 0;
+            var routeIndex = -1;
             var attempts = new List<ChatAttemptResult>();
 
             foreach (var route in allRoutes)
             {
+                routeIndex++;
                 if (_circuitStore.IsBlocked(route.RouteId))
                     continue;
 
@@ -478,6 +480,8 @@ public sealed class ChatApiController : ControllerBase
                 }, cancellationToken);
 
                 attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success, requestBody, forwardResult.ResponseBody ?? ""));
+                var canFallback = !forwardResult.Success
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.RouteId));
 
                 await _usageLogService.LogAsync(new UsageLogEntry
                 {
@@ -491,9 +495,10 @@ public sealed class ChatApiController : ControllerBase
                     Source = "chat",
                     RetryCount = forwardResult.Success ? attemptIndex - 1 : attemptIndex,
                     AttemptIndex = attemptIndex,
-                    IsFinalResult = forwardResult.Success,
-                    FallbackTriggered = !forwardResult.Success,
+                    IsFinalResult = forwardResult.Success || !canFallback,
+                    FallbackTriggered = canFallback,
                     ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+                    HttpStatusCode = forwardResult.StatusCode > 0 ? forwardResult.StatusCode : null,
                     InputTokens = forwardResult.InputTokens,
                     CachedTokens = forwardResult.CachedTokens,
                     OutputTokens = forwardResult.OutputTokens,
@@ -592,10 +597,12 @@ public sealed class ChatApiController : ControllerBase
 
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
+        var routeIndex = -1;
         var attempts = new List<ChatAttemptResult>();
 
         foreach (var route in allRoutes)
         {
+            routeIndex++;
             if (_circuitStore.IsBlocked(route.RouteId))
                 continue;
 
@@ -650,6 +657,9 @@ public sealed class ChatApiController : ControllerBase
                 streamResult.RequestBody,
                 streamResult.ResponseBody);
             attempts.Add(attemptResult);
+            var canFallback = !streamResult.Success
+                && !streamResult.HadAnyContent
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.RouteId));
 
             await _usageLogService.LogAsync(new UsageLogEntry
             {
@@ -662,9 +672,10 @@ public sealed class ChatApiController : ControllerBase
                 Source = "chat",
                 RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
-                IsFinalResult = streamResult.Success,
-                FallbackTriggered = !streamResult.Success,
+                IsFinalResult = streamResult.Success || !canFallback,
+                FallbackTriggered = canFallback,
                 ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+                HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
                 InputTokens = streamResult.InputTokens,
                 CachedTokens = streamResult.CachedTokens,
                 OutputTokens = streamResult.OutputTokens,
@@ -862,6 +873,7 @@ public sealed class ChatApiController : ControllerBase
             IsFinalResult = true,
             FallbackTriggered = false,
             ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+            HttpStatusCode = forwardResult.StatusCode > 0 ? forwardResult.StatusCode : null,
             InputTokens = forwardResult.InputTokens,
             CachedTokens = forwardResult.CachedTokens,
             OutputTokens = forwardResult.OutputTokens,
@@ -977,6 +989,7 @@ public sealed class ChatApiController : ControllerBase
             IsFinalResult = true,
             FallbackTriggered = false,
             ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+            HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
             InputTokens = streamResult.InputTokens,
             CachedTokens = streamResult.CachedTokens,
             OutputTokens = streamResult.OutputTokens,
