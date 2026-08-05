@@ -55,10 +55,11 @@ const exportMode = ref(false)
 const selectedExportAccountIds = ref<string[]>([])
 const exportLoading = ref(false)
 
-// 编辑账号（重命名）弹窗
+// 编辑账号（重命名 + 修改凭证）弹窗
 const editModal = ref(false)
 const editAccount = ref<CodexAccount | null>(null)
 const editDisplayName = ref('')
+const editRefreshToken = ref('')
 const editLoading = ref(false)
 
 // 重置额度信用弹窗
@@ -233,18 +234,29 @@ async function handleRunInspection(force: boolean): Promise<void> {
   }
 }
 
-// 编辑（重命名）
+// 编辑（重命名 + 修改凭证）
 function openEdit(acc: CodexAccount): void {
   editAccount.value = acc
   editDisplayName.value = acc.displayName
+  editRefreshToken.value = ''
   editModal.value = true
 }
 async function handleSaveEdit(): Promise<void> {
   if (!editAccount.value || !editDisplayName.value.trim()) { message.warning('名称不能为空'); return }
   editLoading.value = true
   try {
-    await api.updateCodexAccount(editAccount.value.id, editDisplayName.value.trim())
-    message.success('已更新')
+    const result = await api.updateCodexAccount(
+      editAccount.value.id,
+      editDisplayName.value.trim(),
+      editRefreshToken.value || undefined
+    )
+    if (result.message) {
+      message.warning(result.message)
+    } else if (editRefreshToken.value) {
+      message.success('凭证已更新并刷新')
+    } else {
+      message.success('已更新')
+    }
     editModal.value = false
     await load()
   } catch (e) { message.error((e as Error).message) } finally { editLoading.value = false }
@@ -475,6 +487,18 @@ function formatDateTime(value: string | null | undefined): string {
   return new Date(value).toLocaleString('zh-CN')
 }
 
+function isTokenExpired(expiresAt: string | null | undefined): boolean {
+  if (!expiresAt) return false
+  return new Date(expiresAt).getTime() <= Date.now()
+}
+
+function isTokenExpiringSoon(expiresAt: string | null | undefined): boolean {
+  if (!expiresAt) return false
+  const expires = new Date(expiresAt).getTime()
+  const now = Date.now()
+  return expires > now && expires <= now + 10 * 60 * 1000
+}
+
 function formatBeijingTime(value: string | null | undefined): string {
   if (!value) return '—'
   return new Date(value).toLocaleString('zh-CN', {
@@ -603,6 +627,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                     <div class="codex-badges">
                       <NTag size="small" :type="accountStatusType(acc)" :bordered="false">{{ accountStatusLabel(acc) }}</NTag>
                       <span v-if="acc.planType" class="codex-plan">{{ acc.planType }}</span>
+                      <span v-if="acc.tokenExpiresAt" class="codex-token-expiry" :class="{ 'codex-token-expired': isTokenExpired(acc.tokenExpiresAt), 'codex-token-warning': isTokenExpiringSoon(acc.tokenExpiresAt) }">
+                        Token：{{ formatDateTime(acc.tokenExpiresAt) }}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -806,8 +833,23 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     </NModal>
 
     <!-- 编辑账号（重命名）弹窗 -->
-    <NModal v-model:show="editModal" title="编辑账号" preset="card" style="width: 420px; max-width: 92vw">
-      <NInput v-model:value="editDisplayName" placeholder="显示名称" />
+    <NModal v-model:show="editModal" title="编辑账号" preset="card" style="width: 480px; max-width: 92vw">
+      <NSpace vertical :size="16">
+        <div>
+          <p class="edit-label">显示名称</p>
+          <NInput v-model:value="editDisplayName" placeholder="显示名称" />
+        </div>
+        <div>
+          <p class="edit-label">更新凭证（可选）</p>
+          <NInput
+            v-model:value="editRefreshToken"
+            type="textarea"
+            placeholder="粘贴新的 refresh_token，留空则不修改凭证"
+            :autosize="{ minRows: 2, maxRows: 4 }"
+          />
+          <p class="edit-hint">填入后会立即用新凭证刷新 access_token。token 过期或失效时可用此功能恢复。</p>
+        </div>
+      </NSpace>
       <template #footer>
         <NSpace justify="end">
           <NButton @click="editModal = false">取消</NButton>
@@ -1036,6 +1078,29 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .reset-credit-error {
   margin: 0;
   color: var(--status-danger-text);
+}
+
+.edit-label {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.edit-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-color-secondary);
+  line-height: 1.5;
+}
+
+.codex-token-expired {
+  color: #e03131;
+  font-weight: 600;
+}
+
+.codex-token-warning {
+  color: #d97706;
 }
 
 .reset-credit-list-title {
@@ -1336,6 +1401,21 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   color: var(--status-warning-text);
   font-size: 11px;
   font-weight: 500;
+}
+
+.codex-token-expiry {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-color-secondary);
+}
+
+.codex-token-expiry.codex-token-expired {
+  color: #e03131;
+  font-weight: 600;
+}
+
+.codex-token-expiry.codex-token-warning {
+  color: #d97706;
 }
 
 .codex-windows-container {

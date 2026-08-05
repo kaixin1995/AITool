@@ -76,8 +76,10 @@ export async function refreshCodexQuota(id: string): Promise<void> {
 export async function resetCodexQuota(id: string): Promise<void> {
   await httpPost(`/api/admin/codex/accounts/${id}/reset-quota`)
 }
-export async function updateCodexAccount(id: string, displayName: string): Promise<void> {
-  await httpPut(`/api/admin/codex/accounts/${id}`, { displayName })
+export async function updateCodexAccount(id: string, displayName: string, refreshToken?: string): Promise<CodexAccount & { message?: string | null }> {
+  const body: Record<string, string> = { displayName }
+  if (refreshToken && refreshToken.trim()) body.refreshToken = refreshToken.trim()
+  return httpPut(`/api/admin/codex/accounts/${id}`, body)
 }
 export async function refreshCodexToken(id: string): Promise<void> {
   await httpPost(`/api/admin/codex/accounts/${id}/refresh-token`)
