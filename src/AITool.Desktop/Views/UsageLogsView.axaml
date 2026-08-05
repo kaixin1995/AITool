@@ -140,11 +140,11 @@
 
                 <StackPanel Grid.Row="2" HorizontalAlignment="Stretch" Spacing="4" IsVisible="{Binding IsCustomRange}">
                   <TextBlock FontSize="11" Foreground="#64748B" Text="开始时间" />
-                  <DatePicker HorizontalAlignment="Stretch" SelectedDate="{Binding StartTime}" />
+                  <TextBox Classes="form-input" HorizontalAlignment="Stretch" Text="{Binding StartTime}" Watermark="例如 2026-08-06 00:00:00" />
                 </StackPanel>
                 <StackPanel Grid.Row="2" Grid.Column="1" HorizontalAlignment="Stretch" Spacing="4" IsVisible="{Binding IsCustomRange}">
                   <TextBlock FontSize="11" Foreground="#64748B" Text="结束时间" />
-                  <DatePicker HorizontalAlignment="Stretch" SelectedDate="{Binding EndTime}" />
+                  <TextBox Classes="form-input" HorizontalAlignment="Stretch" Text="{Binding EndTime}" Watermark="例如 2026-08-06 23:59:59" />
                 </StackPanel>
                 <StackPanel
                     Grid.Row="2"
@@ -159,6 +159,25 @@
               </Grid>
             </Border>
           </StackPanel>
+        </Border>
+
+        <Border Background="#EFF6FF" CornerRadius="10" Padding="14" IsVisible="{Binding IsLoading}">
+          <StackPanel Spacing="7">
+            <ProgressBar IsIndeterminate="True" Height="4" />
+            <TextBlock FontSize="12" Foreground="#315EA8" Text="正在加载调用日志，请稍候..." />
+          </StackPanel>
+        </Border>
+        <Border Background="#F8FAFC" CornerRadius="10" Padding="14" IsVisible="{Binding IsDetailLoading}">
+          <TextBlock FontSize="12" Foreground="#64748B" Text="正在加载请求链路详情，请稍候..." />
+        </Border>
+        <Border Background="#FEE2E2" CornerRadius="10" Padding="14" IsVisible="{Binding HasError}">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
+            <StackPanel Spacing="4">
+              <TextBlock FontWeight="SemiBold" Foreground="#991B1B" Text="调用日志加载失败" />
+              <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+            </StackPanel>
+            <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RetryCommand}" Content="重试" IsEnabled="{Binding CanRetry}" Padding="12,7" />
+          </Grid>
         </Border>
 
         <Grid ColumnDefinitions="1*,1*,1*,1*" ColumnSpacing="12" IsVisible="{Binding FiltersExpanded}">
@@ -215,9 +234,9 @@
                       <Grid ColumnDefinitions="1.25*,0.85*,1.25*,1.2*,1.1*,1*,1.45*,0.8*,0.8*,0.8*,0.9*,Auto" ColumnSpacing="10" VerticalAlignment="Center">
                         <TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#64748B" Text="{Binding RequestedAtText}" TextTrimming="CharacterEllipsis" />
                         <Border Grid.Column="1" VerticalAlignment="Center" Background="#EEF4FF" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#5B8DEF" Text="{Binding SourceLabel}" /></Border>
-                        <TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="12" Foreground="#1E293B" Text="{Binding AttemptedModel}" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Grid.Column="3" VerticalAlignment="Center" FontSize="12" Foreground="#64748B" Text="{Binding SiteName}" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Grid.Column="4" VerticalAlignment="Center" FontSize="12" Foreground="#64748B" Text="{Binding AccessKeyName}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="12" Foreground="#1E293B" Text="{Binding ModelText}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="3" VerticalAlignment="Center" FontSize="12" Foreground="#64748B" Text="{Binding SiteNameText}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="4" VerticalAlignment="Center" FontSize="12" Foreground="#64748B" Text="{Binding AccessKeyNameText}" TextTrimming="CharacterEllipsis" />
                         <Border Grid.Column="5" VerticalAlignment="Center" Background="#E8F7EA" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left" IsVisible="{Binding IsSuccessfulStatus}"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#166534" Text="{Binding StatusText}" /></Border>
                         <Border Grid.Column="5" VerticalAlignment="Center" Background="#FEE2E2" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left" IsVisible="{Binding IsFailedStatus}"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#B91C1C" Text="{Binding StatusText}" /></Border>
                         <StackPanel Grid.Column="6" VerticalAlignment="Center" Orientation="Horizontal" Spacing="4">
@@ -273,30 +292,56 @@
             <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseDetailCommand}" Content="关闭" Padding="10,6" />
           </Grid>
           <Border Background="#F8FAFC" CornerRadius="8" Padding="12">
-            <StackPanel Spacing="7">
-              <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.RequestId}" TextWrapping="Wrap" />
-              <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.RequestModel}" />
-              <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.RouteEntry}" />
-              <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.ProtocolType}" />
-              <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.ForwardingMode}" />
-              <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.ReasoningEffort}" />
-            </StackPanel>
+            <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="10" RowSpacing="7">
+              <TextBlock FontSize="12" Foreground="#94A3B8" Text="请求 ID" />
+              <TextBlock Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.RequestIdText}" TextWrapping="Wrap" />
+              <TextBlock Grid.Row="1" FontSize="12" Foreground="#94A3B8" Text="请求模型" />
+              <TextBlock Grid.Row="1" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.RequestModelText}" TextWrapping="Wrap" />
+              <TextBlock Grid.Row="2" FontSize="12" Foreground="#94A3B8" Text="路由入口" />
+              <TextBlock Grid.Row="2" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.RouteEntryText}" TextWrapping="Wrap" />
+              <TextBlock Grid.Row="3" FontSize="12" Foreground="#94A3B8" Text="协议" />
+              <TextBlock Grid.Row="3" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.ProtocolTypeText}" />
+              <TextBlock Grid.Row="4" FontSize="12" Foreground="#94A3B8" Text="调用方式" />
+              <TextBlock Grid.Row="4" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.ForwardingModeText}" />
+              <TextBlock Grid.Row="5" FontSize="12" Foreground="#94A3B8" Text="思考等级" />
+              <TextBlock Grid.Row="5" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SelectedDetail.ReasoningEffortText}" />
+            </Grid>
           </Border>
           <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="尝试记录" />
           <ItemsControl ItemsSource="{Binding SelectedDetail.Attempts}">
             <ItemsControl.ItemTemplate>
               <DataTemplate>
                 <Border BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,10">
-                  <StackPanel Spacing="6">
+                  <StackPanel Spacing="7">
                     <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
-                      <TextBlock VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding AttemptedModel}" />
+                      <StackPanel Spacing="3">
+                        <TextBlock VerticalAlignment="Center" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding ModelText}" TextWrapping="Wrap" />
+                        <TextBlock FontSize="11" Foreground="#94A3B8" Text="{Binding AttemptIndexText}" />
+                      </StackPanel>
                       <Border Grid.Column="1" VerticalAlignment="Center" Background="#E8F7EA" CornerRadius="10" Padding="7,3" IsVisible="{Binding IsSuccessfulStatus}"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#166534" Text="{Binding StatusText}" /></Border>
                       <Border Grid.Column="1" VerticalAlignment="Center" Background="#FEE2E2" CornerRadius="10" Padding="7,3" IsVisible="{Binding IsFailedStatus}"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="#B91C1C" Text="{Binding StatusText}" /></Border>
                     </Grid>
-                    <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding TargetSiteName}" />
-                    <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding DurationText}" />
-                    <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding TokensText}" />
-                    <TextBlock FontSize="12" Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+                    <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnSpacing="8" RowSpacing="5">
+                      <TextBlock FontSize="12" Foreground="#94A3B8" Text="目标站点" />
+                      <TextBlock Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SiteNameText}" TextWrapping="Wrap" />
+                      <TextBlock Grid.Row="1" FontSize="12" Foreground="#94A3B8" Text="站点模型" />
+                      <TextBlock Grid.Row="1" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding SiteModelNameText}" TextWrapping="Wrap" />
+                      <TextBlock Grid.Row="2" FontSize="12" Foreground="#94A3B8" Text="访问密钥" />
+                      <TextBlock Grid.Row="2" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding AccessKeyNameText}" TextWrapping="Wrap" />
+                      <TextBlock Grid.Row="3" FontSize="12" Foreground="#94A3B8" Text="尝试时间" />
+                      <TextBlock Grid.Row="3" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding RequestedAtText}" />
+                      <TextBlock Grid.Row="4" FontSize="12" Foreground="#94A3B8" Text="调用方式" />
+                      <TextBlock Grid.Row="4" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding ForwardingModeText}" />
+                      <TextBlock Grid.Row="5" FontSize="12" Foreground="#94A3B8" Text="思考等级" />
+                      <TextBlock Grid.Row="5" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding ReasoningEffortText}" />
+                      <TextBlock Grid.Row="6" FontSize="12" Foreground="#94A3B8" Text="耗时" />
+                      <TextBlock Grid.Row="6" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding DurationText}" />
+                      <TextBlock Grid.Row="7" FontSize="12" Foreground="#94A3B8" Text="结果" />
+                      <TextBlock Grid.Row="7" Grid.Column="1" FontSize="12" Foreground="#64748B" Text="{Binding ResultDetailsText}" />
+                    </Grid>
+                    <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding TokensText}" TextWrapping="Wrap" />
+                    <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding StreamDetailsText}" TextWrapping="Wrap" />
+                    <TextBlock FontSize="12" Foreground="#B91C1C" Text="{Binding ErrorText}" TextWrapping="Wrap" />
                   </StackPanel>
                 </Border>
               </DataTemplate>

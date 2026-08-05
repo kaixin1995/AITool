@@ -57,15 +57,16 @@ public sealed class UsageLogItem
     public bool IsFinalResult { get; set; }
     public bool FallbackTriggered { get; set; }
     public string ErrorMessage { get; set; } = string.Empty;
-    public int InputTokens { get; set; }
-    public int CachedTokens { get; set; }
-    public int OutputTokens { get; set; }
-    public int TotalTokens { get; set; }
+    public long InputTokens { get; set; }
+    public long CachedTokens { get; set; }
+    public long OutputTokens { get; set; }
+    public long TotalTokens { get; set; }
     public bool IsStreaming { get; set; }
     public bool IsStreamInterrupted { get; set; }
     public int FirstTokenLatencyMs { get; set; }
     public int StreamDurationMs { get; set; }
     public int TotalDurationMs { get; set; }
+    public string ForwardingMode { get; set; } = string.Empty;
     public string ReasoningEffort { get; set; } = string.Empty;
     public string RequestedAt { get; set; } = string.Empty;
     public string RequestedAtText
@@ -84,6 +85,19 @@ public sealed class UsageLogItem
     public string CachedTokensText => CachedTokens.ToString("N0");
     public string OutputTokensText => OutputTokens.ToString("N0");
     public string TotalTokensText => TotalTokens.ToString("N0");
+
+    // 详情和列表统一使用实际尝试模型，兼容后端返回空模型的旧日志。
+    public string ModelText => FirstNonEmpty(AttemptedModel, RequestModel, "-");
+    public string SiteNameText => FirstNonEmpty(SiteName, "-");
+    public string SiteModelNameText => FirstNonEmpty(SiteModelName, "-");
+    public string AccessKeyNameText => FirstNonEmpty(AccessKeyName, "-");
+    public string ForwardingModeText => FirstNonEmpty(ForwardingMode, "-");
+    public string ReasoningEffortText => FirstNonEmpty(ReasoningEffort, "-");
+    public string ErrorText => FirstNonEmpty(ErrorMessage, "-");
+    public string AttemptIndexText => AttemptIndex >= 0 ? $"第 {AttemptIndex + 1} 次尝试" : "尝试序号 -";
+    public string TokensText => $"输入 {InputTokensText} / 缓存 {CachedTokensText} / 输出 {OutputTokensText} / 总计 {TotalTokensText}";
+    public string StreamDetailsText => $"{StreamingText} / 中断 {(IsStreamInterrupted ? "是" : "否")} / 流式耗时 {(StreamDurationMs > 0 ? $"{StreamDurationMs} ms" : "-")}";
+    public string ResultDetailsText => $"最终结果 {(IsFinalResult ? "是" : "否")} / 回退 {(FallbackTriggered ? "是" : "否")}";
 
     public bool IsSuccessfulStatus => Status is "success" or "ok";
     public bool IsFailedStatus => !IsSuccessfulStatus;
@@ -104,6 +118,9 @@ public sealed class UsageLogItem
     public string FirstTokenText => IsStreaming && FirstTokenLatencyMs > 0 ? $"{FirstTokenLatencyMs} ms" : "-";
     public string StreamingText => IsStreaming ? "流" : "非流";
     public string SourceText => string.IsNullOrWhiteSpace(Source) ? "-" : Source;
+
+    private static string FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "-";
 }
 
 public sealed class UsageLogRequestDetail
@@ -115,4 +132,14 @@ public sealed class UsageLogRequestDetail
     public string ForwardingMode { get; set; } = string.Empty;
     public string ReasoningEffort { get; set; } = string.Empty;
     public List<UsageLogItem> Attempts { get; set; } = new();
+
+    public string RequestIdText => FirstNonEmpty(RequestId, "-");
+    public string RequestModelText => FirstNonEmpty(RequestModel, "-");
+    public string RouteEntryText => FirstNonEmpty(RouteEntry, "-");
+    public string ProtocolTypeText => FirstNonEmpty(ProtocolType, "-");
+    public string ForwardingModeText => FirstNonEmpty(ForwardingMode, "-");
+    public string ReasoningEffortText => FirstNonEmpty(ReasoningEffort, "-");
+
+    private static string FirstNonEmpty(params string?[] values)
+        => values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value)) ?? "-";
 }

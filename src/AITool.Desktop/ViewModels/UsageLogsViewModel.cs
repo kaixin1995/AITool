@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Net.Http;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
@@ -24,8 +25,8 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private UsageLogOption? _selectedSource;
     [ObservableProperty] private UsageLogOption? _selectedStatus;
     [ObservableProperty] private UsageLogOption _selectedRange = new() { Id = "day", Name = "按天" };
-    [ObservableProperty] private DateTimeOffset? _startTime;
-    [ObservableProperty] private DateTimeOffset? _endTime;
+    [ObservableProperty] private string _startTime = string.Empty;
+    [ObservableProperty] private string _endTime = string.Empty;
     [ObservableProperty] private string _modelKeyword = string.Empty;
     [ObservableProperty] private int _page = 1;
     [ObservableProperty] private int _totalPages;
@@ -80,6 +81,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     public bool HasItems => Items.Count > 0;
     public bool HasNoItems => !IsLoading && !HasError && !HasItems;
     public bool HasDetail => SelectedDetail is not null;
+    public bool CanRetry => !IsLoading;
     public bool CanPrevious => Page > 1 && !IsLoading;
     public bool CanNext => Page < TotalPages && !IsLoading;
     public bool CanFirst => CanPrevious;
@@ -96,6 +98,12 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         ErrorMessage = string.Empty;
         try
         {
+            if (IsCustomRange && (!TryParseCustomTime(StartTime, out _) || !TryParseCustomTime(EndTime, out _)))
+            {
+                ErrorMessage = "请输入有效的开始时间和结束时间，例如 2026-08-06 00:00:00。";
+                return;
+            }
+
             var filters = await _apiService.SendAsync<UsageLogFilters>(
                 HttpMethod.Get,
                 "/api/admin/usage-logs/filters",
@@ -176,11 +184,33 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         if (!string.IsNullOrWhiteSpace(ModelKeyword)) values.Add($"modelKeyword={Uri.EscapeDataString(ModelKeyword.Trim())}");
         if (range == "custom")
         {
-            if (StartTime.HasValue) values.Add($"startTime={Uri.EscapeDataString(StartTime.Value.ToUniversalTime().ToString("O"))}");
-            if (EndTime.HasValue) values.Add($"endTime={Uri.EscapeDataString(EndTime.Value.ToUniversalTime().ToString("O"))}");
+            if (TryParseCustomTime(StartTime, out var startTime))
+            {
+                values.Add($"startTime={Uri.EscapeDataString(startTime.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))}");
+            }
+
+            if (TryParseCustomTime(EndTime, out var endTime))
+            {
+                values.Add($"endTime={Uri.EscapeDataString(endTime.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture))}");
+            }
         }
 
         return string.Join('&', values);
+    }
+
+    // 支持日期、时分秒和带小数秒输入，并统一转换为后端原有的 ISO 参数格式。
+    private static bool TryParseCustomTime(string value, out DateTimeOffset result)
+    {
+        return DateTimeOffset.TryParse(
+            value.Trim(),
+            CultureInfo.CurrentCulture,
+            DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeLocal,
+            out result)
+            || DateTimeOffset.TryParse(
+                value.Trim(),
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AllowWhiteSpaces | DateTimeStyles.AssumeLocal,
+                out result);
     }
 
     // 用 RequestId（唯一标识）+ RequestedAt（时间戳）轻量比对，避免逐行 JSON 序列化。
@@ -215,6 +245,13 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     {
         if (_disposed || !AutoRefresh || IsLoading || Interlocked.Exchange(ref _refreshInFlight, 1) == 1)
         {
+            return;
+        }
+
+        if (IsCustomRange && (!TryParseCustomTime(StartTime, out _) || !TryParseCustomTime(EndTime, out _)))
+        {
+            ErrorMessage = "请输入有效的开始时间和结束时间，例如 2026-08-06 00:00:00。";
+            Interlocked.Exchange(ref _refreshInFlight, 0);
             return;
         }
 
@@ -260,6 +297,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
                 Summary = summary;
             }
 
+            ErrorMessage = string.Empty;
             OnPropertyChanged(nameof(HasItems));
             OnPropertyChanged(nameof(HasNoItems));
             UpdatePagingProperties();
@@ -302,6 +340,12 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private async Task SearchAsync()
     {
+        if (IsCustomRange && (!TryParseCustomTime(StartTime, out _) || !TryParseCustomTime(EndTime, out _)))
+        {
+            ErrorMessage = "请输入有效的开始时间和结束时间，例如 2026-08-06 00:00:00。";
+            return;
+        }
+
         try
         {
             await LoadPageAsync(1);
@@ -311,6 +355,9 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
             ErrorMessage = exception.Message;
         }
     }
+
+    [RelayCommand]
+    private Task RetryAsync() => LoadAsync();
 
     [RelayCommand]
     private async Task FirstPageAsync()
@@ -363,10 +410,18 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         IsDetailLoading = true;
         try
         {
-            SelectedDetail = await _apiService.SendAsync<UsageLogRequestDetail>(
+            var detail = await _apiService.SendAsync<UsageLogRequestDetail>(
                 HttpMethod.Get,
                 $"/api/admin/usage-logs/request-detail/{Uri.EscapeDataString(item.RequestId)}",
                 null);
+
+            // 明细 DTO 的尝试项不重复携带请求模型，补入请求级模型以支持展示回退。
+            foreach (var attempt in detail.Attempts)
+            {
+                attempt.RequestModel = detail.RequestModel;
+            }
+
+            SelectedDetail = detail;
         }
         catch (Exception exception)
         {
@@ -412,6 +467,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     partial void OnIsLoadingChanged(bool value)
     {
         OnPropertyChanged(nameof(HasNoItems));
+        OnPropertyChanged(nameof(CanRetry));
         UpdatePagingProperties();
     }
     partial void OnAutoRefreshChanged(bool value) => ConfigureAutoRefresh();

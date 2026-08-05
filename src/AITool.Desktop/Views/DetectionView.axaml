@@ -5,35 +5,137 @@
     xmlns:vm="using:AITool.Desktop.ViewModels"
     x:DataType="vm:DetectionViewModel"
     x:CompileBindings="False">
-  <Grid RowDefinitions="Auto,Auto,*" RowSpacing="24">
-    <Grid ColumnDefinitions="*,Auto">
+  <Grid RowDefinitions="Auto,Auto,*" RowSpacing="18">
+    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
       <StackPanel Spacing="4">
         <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="模型检测" />
         <TextBlock Classes="page-subtitle" Text="检测已配置模型的可用性和响应耗时" />
       </StackPanel>
-      <Button Grid.Column="1" Classes="primary-button" Command="{Binding ProbeAllCommand}" Content="全部检测" IsEnabled="{Binding CanProbe}" Padding="14,8" />
+      <Button
+          Grid.Column="1"
+          Classes="primary-button"
+          Command="{Binding ProbeAllCommand}"
+          Content="全部检测"
+          IsEnabled="{Binding CanProbe}"
+          Padding="14,8" />
     </Grid>
-    <Grid Grid.Row="2">
-      <ScrollViewer VerticalScrollBarVisibility="Auto">
-      <StackPanel Spacing="14">
-        <Border Background="#EFF6FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}"><TextBlock Foreground="#315EA8" Text="正在加载模型检测数据..." /></Border>
-        <Border Background="#E8F1FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsBusy}"><TextBlock Foreground="#315EA8" Text="{Binding ProgressText}" /></Border>
-        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
-        <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding ShowEmptyState}" Text="暂无映射数据，请先配置站点和模型" Margin="0,30" />
-        <ItemsControl ItemsSource="{Binding Groups}">
-          <ItemsControl.ItemTemplate><DataTemplate>
-            <Border Classes="content-card" Margin="0,0,0,14" Padding="0">
-              <StackPanel>
-                <Border Background="#F8FAFC" Padding="18,13"><Grid ColumnDefinitions="*,Auto"><StackPanel Spacing="3"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding DisplayName}" /><TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding ModelName}" /></StackPanel><Button Grid.Column="1" Classes="secondary-button" Command="{Binding DataContext.ProbeModelCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="检测此模型" Padding="10,6" /></Grid></Border>
-                <ItemsControl ItemsSource="{Binding Sites}"><ItemsControl.ItemTemplate><DataTemplate>
-                  <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,13"><Grid ColumnDefinitions="2*,1.5*,1*,1*,Auto" ColumnSpacing="12"><StackPanel Spacing="3"><TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding SiteName}" /><TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding RemoteModelName}" /></StackPanel><TextBlock Grid.Column="1" Foreground="#64748B" Text="{Binding LastCheckedAt}" VerticalAlignment="Center" /><TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding DurationText}" VerticalAlignment="Center" /><Border Grid.Column="3" Background="#E8F7EA" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Foreground="#166534" Text="{Binding StatusText}" /></Border><Button Grid.Column="4" Classes="secondary-button" Command="{Binding DataContext.ProbeMappingCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="检测" Padding="10,6" /></Grid></Border>
-                </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
-              </StackPanel>
-            </Border>
-          </DataTemplate></ItemsControl.ItemTemplate>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+      <TextBox
+          HorizontalAlignment="Left"
+          MinWidth="280"
+          Width="380"
+          Text="{Binding SearchKeyword, Mode=TwoWay}"
+          Watermark="搜索模型或站点名称..." />
+      <TextBlock
+          Grid.Column="1"
+          VerticalAlignment="Center"
+          Foreground="#64748B"
+          Text="{Binding VisibleGroupCount, StringFormat='匹配模型：{0}'}" />
+    </Grid>
+
+    <ScrollViewer
+        Grid.Row="2"
+        HorizontalScrollBarVisibility="Auto"
+        VerticalScrollBarVisibility="Auto">
+      <StackPanel MinWidth="980" Spacing="14">
+        <Border Background="#EFF6FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}">
+          <TextBlock Foreground="#315EA8" Text="正在加载模型检测数据..." />
+        </Border>
+        <Border Background="#E8F1FF" CornerRadius="8" Padding="14" IsVisible="{Binding HasProgress}">
+          <StackPanel Spacing="8">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Foreground="#315EA8" Text="{Binding ProgressText}" />
+              <TextBlock Grid.Column="1" Foreground="#315EA8" Text="{Binding ProgressPercent, StringFormat={}{0}%}" />
+            </Grid>
+            <ProgressBar Height="8" Minimum="0" Maximum="100" Value="{Binding ProgressPercent}" />
+            <Grid ColumnDefinitions="*,*,*" ColumnSpacing="12">
+              <TextBlock Foreground="#64748B" Text="{Binding ProgressCompleted, StringFormat='已完成：{0}'}" />
+              <TextBlock Grid.Column="1" Foreground="#166534" Text="{Binding SuccessCount, StringFormat='成功：{0}'}" />
+              <TextBlock Grid.Column="2" Foreground="#B91C1C" Text="{Binding FailedCount, StringFormat='失败：{0}'}" />
+            </Grid>
+          </StackPanel>
+        </Border>
+        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}">
+          <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+        </Border>
+
+        <TextBlock
+            HorizontalAlignment="Center"
+            Foreground="#94A3B8"
+            IsVisible="{Binding ShowEmptyState}"
+            Margin="0,30"
+            Text="暂无映射数据，请先配置站点和模型" />
+        <TextBlock
+            HorizontalAlignment="Center"
+            Foreground="#94A3B8"
+            IsVisible="{Binding ShowNoMatchState}"
+            Margin="0,30"
+            Text="没有匹配的模型或站点" />
+
+        <ItemsControl ItemsSource="{Binding FilteredGroups}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Classes="content-card" MinWidth="980" Margin="0,0,0,14" Padding="0">
+                <StackPanel>
+                  <Border Background="#F8FAFC" Padding="18,13">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                      <StackPanel Spacing="3">
+                        <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding DisplayName}" />
+                        <TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding ModelName}" />
+                      </StackPanel>
+                      <Button
+                          Grid.Column="1"
+                          Classes="secondary-button"
+                          Command="{Binding DataContext.ProbeModelCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                          CommandParameter="{Binding}"
+                          Content="检测此模型"
+                          IsEnabled="{Binding DataContext.CanProbe, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                          Padding="10,6" />
+                    </Grid>
+                  </Border>
+                  <ItemsControl ItemsSource="{Binding Sites}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,13">
+                          <Grid ColumnDefinitions="2*,1.5*,1*,1.3*,Auto" ColumnSpacing="12">
+                            <StackPanel Spacing="3">
+                              <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding SiteName}" />
+                              <TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding RemoteModelName}" />
+                            </StackPanel>
+                            <TextBlock Grid.Column="1" Foreground="#64748B" Text="{Binding LastCheckedAt}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding DurationText}" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="3" Spacing="3" VerticalAlignment="Center">
+                              <Border Background="{Binding StatusBackground}" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left">
+                                <TextBlock Foreground="{Binding StatusForeground}" Text="{Binding StatusText}" />
+                              </Border>
+                              <TextBlock
+                                  FontSize="11"
+                                  Foreground="#B91C1C"
+                                  IsVisible="{Binding HasError}"
+                                  MaxWidth="250"
+                                  Text="{Binding LastError}"
+                                  TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Button
+                                Grid.Column="4"
+                                Classes="secondary-button"
+                                Command="{Binding DataContext.ProbeMappingCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                CommandParameter="{Binding}"
+                                Content="检测"
+                                IsEnabled="{Binding DataContext.CanProbe, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                Padding="10,6" />
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
         </ItemsControl>
       </StackPanel>
-      </ScrollViewer>
-    </Grid>
+    </ScrollViewer>
   </Grid>
 </UserControl>
