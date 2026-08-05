@@ -75,6 +75,9 @@ public sealed partial class ModelHealthMonitoredModel : ObservableObject
     public string SuccessRateText => ModelHealthText.FormatPercent(AverageSuccessRate);
 
     [JsonIgnore]
+    public string SuccessRateForeground => ModelHealthText.SuccessRateForeground(AverageSuccessRate);
+
+    [JsonIgnore]
     public string AverageDurationText => ModelHealthText.FormatDuration(AverageDurationMs);
 
     [JsonIgnore]
@@ -133,6 +136,9 @@ public sealed class ModelHealthSite
     public string SuccessRateText => ModelHealthText.FormatPercent(SuccessRate);
 
     [JsonIgnore]
+    public string SuccessRateForeground => ModelHealthText.SuccessRateForeground(SuccessRate);
+
+    [JsonIgnore]
     public double SuccessRatePercent => Math.Clamp(SuccessRate * 100, 0, 100);
 
     [JsonIgnore]
@@ -180,6 +186,12 @@ internal static class ModelHealthText
     {
         if (!value.HasValue || value <= 0 || !double.IsFinite(value.Value)) return "-";
         return value >= 1000 ? $"{value.Value / 1000:0.0}s" : $"{value.Value:0}ms";
+    }
+
+    public static string SuccessRateForeground(double value)
+    {
+        if (!double.IsFinite(value)) return "#64748B";
+        return value >= 0.8 ? "#166534" : value >= 0.5 ? "#B45309" : "#B91C1C";
     }
 
     public static string FormatDateTime(string? value)

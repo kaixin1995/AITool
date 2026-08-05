@@ -3,9 +3,10 @@
     xmlns="https://github.com/avaloniaui"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:AITool.Desktop.ViewModels"
+    xmlns:views="using:AITool.Desktop.Views"
     x:DataType="vm:ModelHealthViewModel"
     x:CompileBindings="False">
-  <Grid RowDefinitions="Auto,*" RowSpacing="18" MinWidth="0">
+  <Grid RowDefinitions="Auto,Auto,*" RowSpacing="18" MinWidth="0">
     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="14" VerticalAlignment="Center">
       <StackPanel Spacing="4">
         <TextBlock Classes="page-title" Text="模型健康看板" />
@@ -14,7 +15,14 @@
       <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="12,7" />
     </Grid>
 
-    <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+    <Border Grid.Row="1" Background="#F8FAFC" CornerRadius="8" Padding="4">
+      <StackPanel Orientation="Horizontal" Spacing="4">
+        <Button Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="health" Content="模型健康" IsEnabled="{Binding IsFallbackTab}" Padding="12,7" />
+        <Button Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="fallback" Content="路由回退" IsEnabled="{Binding IsHealthTab}" Padding="12,7" />
+      </StackPanel>
+    </Border>
+
+    <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" IsVisible="{Binding IsHealthTab}">
       <StackPanel Spacing="16">
         <Border Classes="content-card" Padding="18">
           <StackPanel Spacing="12">
@@ -40,21 +48,31 @@
         </Border>
 
         <Border Classes="content-card" Padding="16" IsVisible="{Binding HasMonitoredModels}">
-          <Grid ColumnDefinitions="Auto,180" ColumnSpacing="12" VerticalAlignment="Center">
-            <TextBlock VerticalAlignment="Center" FontSize="13" Foreground="#64748B" Text="时间范围" />
-            <ComboBox Grid.Column="1" ItemsSource="{Binding RangeOptions}" SelectedItem="{Binding SelectedRange}">
-              <ComboBox.ItemTemplate>
-                <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
-              </ComboBox.ItemTemplate>
-            </ComboBox>
-          </Grid>
+          <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
+            <Grid MinWidth="540" ColumnDefinitions="Auto,180,Auto,240" ColumnSpacing="12" VerticalAlignment="Center">
+              <TextBlock VerticalAlignment="Center" FontSize="13" Foreground="#64748B" Text="时间范围" />
+              <ComboBox Grid.Column="1" ItemsSource="{Binding RangeOptions}" SelectedItem="{Binding SelectedRange}">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+              <TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="13" Foreground="#64748B" Text="模型搜索" />
+              <TextBox Grid.Column="3" Classes="form-input" Text="{Binding ModelKeyword}" Watermark="按已监控模型名称过滤..." />
+            </Grid>
+          </ScrollViewer>
         </Border>
 
         <Border Background="#FEE2E2" CornerRadius="10" Padding="14" IsVisible="{Binding HasError}">
-          <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="重试" IsEnabled="{Binding CanRetry}" Padding="12,7" />
+          </Grid>
         </Border>
         <Border Background="#EFF6FF" CornerRadius="10" Padding="14" IsVisible="{Binding IsLoading}">
-          <TextBlock Foreground="#315EA8" Text="正在加载模型健康数据..." />
+          <StackPanel Spacing="7">
+            <ProgressBar Height="4" IsIndeterminate="True" />
+            <TextBlock Foreground="#315EA8" Text="正在加载模型健康数据..." />
+          </StackPanel>
         </Border>
 
         <Border Classes="content-card" Padding="24" IsVisible="{Binding HasNoMonitoredModels}">
@@ -67,7 +85,7 @@
           <TextBlock HorizontalAlignment="Center" Foreground="#64748B" Text="没有匹配当前关键词的模型" />
         </Border>
 
-        <ItemsControl ItemsSource="{Binding FilteredModels}">
+        <ItemsControl ItemsSource="{Binding FilteredModels}" IsVisible="{Binding IsContentVisible}">
           <ItemsControl.ItemTemplate>
             <DataTemplate>
               <Border Classes="content-card" Padding="18" Margin="0,0,0,14">
@@ -90,7 +108,7 @@
                   </Grid>
 
                   <Grid ColumnDefinitions="1*,1*,1*,1*,1.5*" ColumnSpacing="10">
-                    <Border Background="#F8FAFC" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="#64748B" Text="成功率" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#166534" Text="{Binding SuccessRateText}" /></StackPanel></Border>
+                    <Border Background="#F8FAFC" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="#64748B" Text="成功率" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{Binding SuccessRateForeground}" Text="{Binding SuccessRateText}" /></StackPanel></Border>
                     <Border Grid.Column="1" Background="#F8FAFC" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="#64748B" Text="成功 / 失败" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding SuccessFailureText}" /></StackPanel></Border>
                     <Border Grid.Column="2" Background="#F8FAFC" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="#64748B" Text="总请求" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding TotalRequestCount}" /></StackPanel></Border>
                     <Border Grid.Column="3" Background="#F8FAFC" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="#64748B" Text="平均延迟" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#B45309" Text="{Binding AverageDurationText}" /></StackPanel></Border>
@@ -116,7 +134,7 @@
                                   <TextBlock Grid.Column="1" VerticalAlignment="Center" FontSize="12" Foreground="#64748B" Text="{Binding RemoteModelName}" TextTrimming="CharacterEllipsis" />
                                 </Grid>
                                 <Grid ColumnDefinitions="1.2*,1*,1*,1.4*" ColumnSpacing="10">
-                                  <StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="成功率" /><TextBlock FontWeight="SemiBold" Foreground="#166534" Text="{Binding SuccessRateText}" /></StackPanel>
+                                  <StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="成功率" /><TextBlock FontWeight="SemiBold" Foreground="{Binding SuccessRateForeground}" Text="{Binding SuccessRateText}" /></StackPanel>
                                   <StackPanel Grid.Column="1" Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="成功 / 失败" /><TextBlock Foreground="#1E293B" Text="{Binding SuccessFailureText}" /></StackPanel>
                                   <StackPanel Grid.Column="2" Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="最近耗时" /><TextBlock Foreground="#B45309" Text="{Binding DurationText}" /></StackPanel>
                                   <StackPanel Grid.Column="3" Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="最近检查" /><TextBlock FontSize="12" Foreground="#64748B" Text="{Binding LastCheckedText}" TextTrimming="CharacterEllipsis" /></StackPanel>
@@ -152,5 +170,10 @@
         </ItemsControl>
       </StackPanel>
     </ScrollViewer>
+
+    <views:RouteFallbackView
+        Grid.Row="2"
+        DataContext="{Binding RouteFallback}"
+        IsVisible="{Binding DataContext.IsFallbackTab, RelativeSource={RelativeSource AncestorType=UserControl}}" />
   </Grid>
 </UserControl>

@@ -23,20 +23,28 @@ public partial class ModelHealthViewModel : ViewModelBase
     [ObservableProperty] private bool _isLoading;
     [ObservableProperty] private bool _isSaving;
     [ObservableProperty] private string _errorMessage = string.Empty;
+    [ObservableProperty] private string _activeTab = "health";
 
     public ModelHealthViewModel(ApiService apiService)
     {
         _apiService = apiService;
+        RouteFallback = new RouteFallbackViewModel(apiService);
     }
+
+    public RouteFallbackViewModel RouteFallback { get; }
+    public bool IsHealthTab => string.Equals(ActiveTab, "health", StringComparison.Ordinal);
+    public bool IsFallbackTab => string.Equals(ActiveTab, "fallback", StringComparison.Ordinal);
 
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasMonitoredModels => MonitoredModels.Count > 0;
-    public bool HasNoMonitoredModels => !HasMonitoredModels;
+    public bool HasNoMonitoredModels => !IsLoading && !HasError && !HasMonitoredModels;
     public bool HasAvailableModels => AvailableModels.Count > 0;
     public bool HasNoAvailableModels => !HasAvailableModels;
     public bool CanAddMonitor => SelectedModel is not null && !IsSaving && !IsLoading;
-    public bool CanRemoveMonitor => !IsSaving;
-    public bool IsEmptyAfterFilter => HasMonitoredModels && !FilteredModels.Any();
+    public bool CanRetry => !IsLoading && !IsSaving;
+    public bool CanRemoveMonitor => !IsSaving && !IsLoading;
+    public bool IsEmptyAfterFilter => !IsLoading && !HasError && HasMonitoredModels && !FilteredModels.Any();
+    public bool IsContentVisible => !IsLoading && !HasError && HasMonitoredModels && FilteredModels.Any();
     public bool HasNoFilteredAvailableModels => HasAvailableModels && !FilteredAvailableModels.Any();
 
     public IEnumerable<ModelHealthModelOption> FilteredAvailableModels
@@ -169,6 +177,19 @@ public partial class ModelHealthViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    private async Task SelectTabAsync(string? tab)
+    {
+        var nextTab = string.Equals(tab, "fallback", StringComparison.Ordinal) ? "fallback" : "health";
+        if (string.Equals(ActiveTab, nextTab, StringComparison.Ordinal)) return;
+
+        ActiveTab = nextTab;
+        if (IsFallbackTab)
+        {
+            await RouteFallback.LoadAsync(1);
+        }
+    }
+
+    [RelayCommand]
     private void ToggleDetails(ModelHealthMonitoredModel? model)
     {
         if (model is not null)
@@ -187,15 +208,23 @@ public partial class ModelHealthViewModel : ViewModelBase
         OnPropertyChanged(nameof(FilteredAvailableModels));
         OnPropertyChanged(nameof(HasNoFilteredAvailableModels));
         OnPropertyChanged(nameof(IsEmptyAfterFilter));
+        OnPropertyChanged(nameof(IsContentVisible));
     }
 
     private void NotifyCanAddMonitor()
     {
         OnPropertyChanged(nameof(CanAddMonitor));
+        OnPropertyChanged(nameof(CanRetry));
         OnPropertyChanged(nameof(CanRemoveMonitor));
     }
 
-    partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
+    partial void OnErrorMessageChanged(string value)
+    {
+        OnPropertyChanged(nameof(HasError));
+        OnPropertyChanged(nameof(HasNoMonitoredModels));
+        OnPropertyChanged(nameof(IsEmptyAfterFilter));
+        OnPropertyChanged(nameof(IsContentVisible));
+    }
 
     partial void OnAvailableKeywordChanged(string value)
     {
@@ -211,7 +240,19 @@ public partial class ModelHealthViewModel : ViewModelBase
 
     partial void OnSelectedModelChanged(ModelHealthModelOption? value) => NotifyCanAddMonitor();
 
-    partial void OnIsLoadingChanged(bool value) => NotifyCanAddMonitor();
+    partial void OnActiveTabChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsHealthTab));
+        OnPropertyChanged(nameof(IsFallbackTab));
+    }
+
+    partial void OnIsLoadingChanged(bool value)
+    {
+        NotifyCanAddMonitor();
+        OnPropertyChanged(nameof(HasNoMonitoredModels));
+        OnPropertyChanged(nameof(IsEmptyAfterFilter));
+        OnPropertyChanged(nameof(IsContentVisible));
+    }
 
     partial void OnIsSavingChanged(bool value) => NotifyCanAddMonitor();
 
