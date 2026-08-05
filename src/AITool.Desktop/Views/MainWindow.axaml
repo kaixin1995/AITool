@@ -9,6 +9,8 @@
     Height="800"
     MinWidth="960"
     MinHeight="640"
+    HorizontalContentAlignment="Stretch"
+    VerticalContentAlignment="Stretch"
     Title="AI Tool">
   <Window.DataTemplates>
     <DataTemplate DataType="{x:Type vm:AuthViewModel}">

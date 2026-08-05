@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace AITool.Desktop.Models;
 
 public sealed class UsageLogFilters
@@ -66,6 +68,18 @@ public sealed class UsageLogItem
     public int TotalDurationMs { get; set; }
     public string ReasoningEffort { get; set; } = string.Empty;
     public string RequestedAt { get; set; } = string.Empty;
+    public string RequestedAtText
+    {
+        get
+        {
+            if (!DateTimeOffset.TryParse(RequestedAt, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var value))
+            {
+                return string.IsNullOrWhiteSpace(RequestedAt) ? "-" : RequestedAt;
+            }
+
+            return value.ToLocalTime().ToString("yyyy/M/d HH:mm:ss", CultureInfo.InvariantCulture);
+        }
+    }
     public string InputTokensText => InputTokens.ToString("N0");
     public string CachedTokensText => CachedTokens.ToString("N0");
     public string OutputTokensText => OutputTokens.ToString("N0");

@@ -48,7 +48,7 @@
     </DataTemplate>
   </UserControl.DataTemplates>
 
-  <Grid Background="#F8FAFC" ColumnDefinitions="260,*">
+  <Grid MinWidth="0" ClipToBounds="True" Background="#F8FAFC" ColumnDefinitions="260,*">
     <!-- 左侧导航，结构和 Vue3 MainLayout 保持一致。 -->
     <Border
         Background="#FFFFFF"
@@ -143,7 +143,7 @@
                 Padding="10,5">
               <StackPanel Orientation="Horizontal" Spacing="6">
                 <Ellipse Width="7" Height="7" Fill="#22C55E" VerticalAlignment="Center" />
-                <TextBlock FontSize="12" Foreground="#166534" Text="服务已连接" />
+                <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#166534" Text="服务已连接" />
               </StackPanel>
             </Border>
             <TextBlock FontSize="12" Foreground="#94A3B8" Text="AI Tool Desktop" VerticalAlignment="Center" />
@@ -152,8 +152,11 @@
         </Grid>
       </Border>
 
-      <Border Grid.Row="1" Background="#F8FAFC" Padding="32,28">
-        <ContentControl Content="{Binding CurrentPage}" />
+      <Border Grid.Row="1" ClipToBounds="True" Background="#F8FAFC" Padding="32,28">
+        <ContentControl
+            HorizontalContentAlignment="Stretch"
+            VerticalContentAlignment="Stretch"
+            Content="{Binding CurrentPage}" />
       </Border>
     </Grid>
   </Grid>

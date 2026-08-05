@@ -98,6 +98,17 @@
       <Setter Property="Foreground" Value="#1E293B" />
     </Style>
 
+    <Style Selector="Button.filter-toggle:pressed">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="#1E293B" />
+    </Style>
+
+    <Style Selector="Button.filter-toggle:focus">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Foreground" Value="#1E293B" />
+    </Style>
+
     <Style Selector="Border.content-card">
       <Setter Property="Background" Value="#FFFFFF" />
       <Setter Property="BorderBrush" Value="#E2E8F0" />

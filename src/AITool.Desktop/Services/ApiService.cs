@@ -154,6 +154,43 @@ public sealed class ApiService
         }
     }
 
+    public async Task<DeveloperRawResponse> SendRawAsync(
+        HttpMethod method,
+        Uri uri,
+        IReadOnlyDictionary<string, string> headers,
+        string? body,
+        CancellationToken cancellationToken = default)
+    {
+        using var request = new HttpRequestMessage(method, uri);
+        foreach (var header in headers)
+        {
+            if (!string.Equals(header.Key, "Content-Type", StringComparison.OrdinalIgnoreCase))
+            {
+                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            }
+        }
+
+        if (body is not null)
+        {
+            request.Content = new StringContent(body, Encoding.UTF8, "application/json");
+            if (headers.TryGetValue("Content-Type", out var contentType)
+                && !string.IsNullOrWhiteSpace(contentType))
+            {
+                request.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+            }
+        }
+
+        using var response = await _httpClient.SendAsync(
+            request,
+            HttpCompletionOption.ResponseHeadersRead,
+            cancellationToken);
+        return new DeveloperRawResponse
+        {
+            StatusCode = (int)response.StatusCode,
+            Body = await response.Content.ReadAsStringAsync(cancellationToken)
+        };
+    }
+
     public Uri CreateRequestUri(string path)
     {
         if (_baseAddress is null)
