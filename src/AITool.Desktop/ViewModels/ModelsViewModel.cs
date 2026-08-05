@@ -18,6 +18,12 @@ public partial class ModelsViewModel : ViewModelBase
     private ModelEditForm _form = new();
 
     [ObservableProperty]
+    private ObservableCollection<CompatibilityProfileItem> _profileOptions = new();
+
+    [ObservableProperty]
+    private CompatibilityProfileItem? _selectedCompatibilityProfile;
+
+    [ObservableProperty]
     private ModelListItem? _editingModel;
 
     [ObservableProperty]
@@ -98,6 +104,7 @@ public partial class ModelsViewModel : ViewModelBase
         {
             var result = await _apiService.SendAsync<ModelListResponse>(HttpMethod.Get, "/api/admin/models", null);
             VendorGroups = new ObservableCollection<ModelVendorGroup>(result.VendorGroups);
+            await LoadCompatibilityProfilesAsync();
             OnPropertyChanged(nameof(ModelCount));
         }
         catch (Exception exception)
@@ -121,6 +128,7 @@ public partial class ModelsViewModel : ViewModelBase
     {
         EditingModel = null;
         Form.Reset();
+        SelectedCompatibilityProfile = null;
         IsEditorOpen = true;
     }
 
@@ -134,8 +142,11 @@ public partial class ModelsViewModel : ViewModelBase
             ModelName = model.ModelName,
             DisplayName = model.DisplayName,
             IsEnabled = model.IsEnabled,
-            OverrideReasoningEffort = model.OverrideReasoningEffort
+            OverrideReasoningEffort = model.OverrideReasoningEffort,
+            CompatibilityProfileId = model.CompatibilityProfileId
         };
+        SelectedCompatibilityProfile = ProfileOptions.FirstOrDefault(profile =>
+            string.Equals(profile.Id, model.CompatibilityProfileId, StringComparison.OrdinalIgnoreCase));
         IsEditorOpen = true;
     }
 
@@ -143,6 +154,23 @@ public partial class ModelsViewModel : ViewModelBase
     private void CloseEditor()
     {
         IsEditorOpen = false;
+    }
+
+    private async Task LoadCompatibilityProfilesAsync()
+    {
+        try
+        {
+            var profiles = await _apiService.SendAsync<List<CompatibilityProfileItem>>(
+                HttpMethod.Get,
+                "/api/admin/compatibility-profiles",
+                null);
+            ProfileOptions = new ObservableCollection<CompatibilityProfileItem>(profiles);
+        }
+        catch (Exception exception)
+        {
+            ProfileOptions = new ObservableCollection<CompatibilityProfileItem>();
+            System.Diagnostics.Debug.WriteLine(exception);
+        }
     }
 
     [RelayCommand]
@@ -292,6 +320,12 @@ public partial class ModelsViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    private void ClearCompatibilityProfile()
+    {
+        SelectedCompatibilityProfile = null;
+    }
+
+    [RelayCommand]
     private async Task SaveAsync()
     {
         ErrorMessage = string.Empty;
@@ -309,7 +343,10 @@ public partial class ModelsViewModel : ViewModelBase
                 ModelName = Form.ModelName.Trim(),
                 DisplayName = Form.DisplayName.Trim(),
                 IsEnabled = Form.IsEnabled,
-                OverrideReasoningEffort = Form.OverrideReasoningEffort.Trim()
+                OverrideReasoningEffort = Form.OverrideReasoningEffort.Trim(),
+                CompatibilityProfileId = string.IsNullOrWhiteSpace(Form.CompatibilityProfileId)
+                    ? null
+                    : Form.CompatibilityProfileId
             };
             if (EditingModel is null)
             {
@@ -379,6 +416,11 @@ public partial class ModelsViewModel : ViewModelBase
     {
         OnPropertyChanged(nameof(MappingTitle));
         OnPropertyChanged(nameof(CanAddMapping));
+    }
+
+    partial void OnSelectedCompatibilityProfileChanged(CompatibilityProfileItem? value)
+    {
+        Form.CompatibilityProfileId = value?.Id;
     }
 
     partial void OnMappingDetailChanged(ModelDetail? value)

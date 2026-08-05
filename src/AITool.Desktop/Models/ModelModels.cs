@@ -102,11 +102,13 @@ public sealed class ModelEditForm : CommunityToolkit.Mvvm.ComponentModel.Observa
     private string _displayName = string.Empty;
     private bool _isEnabled = true;
     private string _overrideReasoningEffort = string.Empty;
+    private string? _compatibilityProfileId;
 
     public string ModelName { get => _modelName; set => SetProperty(ref _modelName, value); }
     public string DisplayName { get => _displayName; set => SetProperty(ref _displayName, value); }
     public bool IsEnabled { get => _isEnabled; set => SetProperty(ref _isEnabled, value); }
     public string OverrideReasoningEffort { get => _overrideReasoningEffort; set => SetProperty(ref _overrideReasoningEffort, value); }
+    public string? CompatibilityProfileId { get => _compatibilityProfileId; set => SetProperty(ref _compatibilityProfileId, value); }
 
     public void Reset()
     {
@@ -114,5 +116,6 @@ public sealed class ModelEditForm : CommunityToolkit.Mvvm.ComponentModel.Observa
         DisplayName = string.Empty;
         IsEnabled = true;
         OverrideReasoningEffort = string.Empty;
+        CompatibilityProfileId = null;
     }
 }

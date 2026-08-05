@@ -152,6 +152,12 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 await page.LoadAsync();
                 return page;
             }
+            case "compatibility":
+            {
+                var page = new CompatibilityViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
+            }
             case "detection":
             {
                 var page = new DetectionViewModel(_apiService);
@@ -236,6 +242,9 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 break;
             case RoutesViewModel routes:
                 await routes.LoadAsync();
+                break;
+            case CompatibilityViewModel compatibility:
+                await compatibility.LoadAsync();
                 break;
             case DetectionViewModel detection:
                 await detection.LoadAsync();
@@ -331,6 +340,7 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 new[]
                 {
                     new NavigationItemViewModel("routes", "路由管理", "🔀"),
+                    new NavigationItemViewModel("compatibility", "兼容规则集", "🧩"),
                     new NavigationItemViewModel("access-keys", "访问密钥", "🔑")
                 }),
             new(

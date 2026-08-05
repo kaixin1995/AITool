@@ -67,6 +67,17 @@
             <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="模型名称" /><TextBox Classes="form-input" Text="{Binding Form.ModelName}" Watermark="例如 claude-3-7-sonnet" /></StackPanel>
             <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="显示名称" /><TextBox Classes="form-input" Text="{Binding Form.DisplayName}" /></StackPanel>
             <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="推理强度覆盖" /><TextBox Classes="form-input" Text="{Binding Form.OverrideReasoningEffort}" Watermark="可选" /></StackPanel>
+            <StackPanel Spacing="6">
+              <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="兼容规则集" />
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <ComboBox ItemsSource="{Binding ProfileOptions}" SelectedItem="{Binding SelectedCompatibilityProfile}">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+                <Button Grid.Column="1" Classes="secondary-button" Command="{Binding ClearCompatibilityProfileCommand}" Content="清除" Padding="10,6" />
+              </Grid>
+            </StackPanel>
             <CheckBox Content="启用模型" IsChecked="{Binding Form.IsEnabled}" />
             <TextBlock Foreground="#B91C1C" IsVisible="{Binding HasError}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
             <Button Classes="primary-button" Command="{Binding SaveCommand}" Content="保存模型" IsEnabled="{Binding CanSave}" HorizontalContentAlignment="Center" Padding="12,9" />

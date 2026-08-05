@@ -25,6 +25,9 @@
     <DataTemplate DataType="{x:Type vm:RoutesViewModel}">
       <views:RoutesView />
     </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:CompatibilityViewModel}">
+      <views:CompatibilityView />
+    </DataTemplate>
     <DataTemplate DataType="{x:Type vm:DetectionViewModel}">
       <views:DetectionView />
     </DataTemplate>
