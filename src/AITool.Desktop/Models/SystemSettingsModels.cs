@@ -1,3 +1,4 @@
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace AITool.Desktop.Models;
@@ -29,5 +30,25 @@ public partial class SystemSettings : ObservableObject
     [ObservableProperty] private int _codexAutoDisableThresholdPercent = 95;
     public string? LastUsageLogPrunedAt { get; set; }
     public int LastUsageLogPrunedCount { get; set; }
-    public string LastUsageLogPrunedText => $"最近一次自动清理数量：{LastUsageLogPrunedCount}";
+    public string LastUsageLogPrunedText
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(LastUsageLogPrunedAt))
+            {
+                return $"最近一次自动清理数量：{LastUsageLogPrunedCount}";
+            }
+
+            if (DateTimeOffset.TryParse(
+                    LastUsageLogPrunedAt,
+                    CultureInfo.InvariantCulture,
+                    DateTimeStyles.AssumeUniversal,
+                    out var parsed))
+            {
+                return $"最近一次自动清理：{parsed.ToLocalTime():yyyy-MM-dd HH:mm}，共 {LastUsageLogPrunedCount} 条";
+            }
+
+            return $"最近一次自动清理：{LastUsageLogPrunedAt}，共 {LastUsageLogPrunedCount} 条";
+        }
+    }
 }
