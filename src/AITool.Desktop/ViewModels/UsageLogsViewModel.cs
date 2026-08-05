@@ -16,6 +16,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     private readonly SemaphoreSlim _pageLoadLock = new(1, 1);
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private Timer? _refreshTimer;
+    private Timer? _filterDebounceTimer;
     private CancellationTokenSource? _listCancellation;
     private CancellationTokenSource? _detailCancellation;
     private int _listGeneration;
@@ -372,6 +373,18 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         cancellation?.Dispose();
     }
 
+    private void ScheduleFilterSearch()
+    {
+        if (_disposed) return;
+
+        _filterDebounceTimer?.Dispose();
+        _filterDebounceTimer = new Timer(
+            _ => Dispatcher.UIThread.Post(() => _ = SearchAsync()),
+            null,
+            TimeSpan.FromMilliseconds(300),
+            Timeout.InfiniteTimeSpan);
+    }
+
     private void ConfigureAutoRefresh()
     {
         _refreshTimer?.Dispose();
@@ -536,6 +549,8 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         _disposed = true;
         _refreshTimer?.Dispose();
         _refreshTimer = null;
+        _filterDebounceTimer?.Dispose();
+        _filterDebounceTimer = null;
         CancelCurrentListRequest();
         var detailCancellation = Interlocked.Exchange(ref _detailCancellation, null);
         detailCancellation?.Cancel();
@@ -551,7 +566,18 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(HasNoItems));
     }
     partial void OnSelectedDetailChanged(UsageLogRequestDetail? value) => OnPropertyChanged(nameof(HasDetail));
-    partial void OnSelectedRangeChanged(UsageLogOption value) => OnPropertyChanged(nameof(IsCustomRange));
+    partial void OnSelectedRangeChanged(UsageLogOption value)
+    {
+        OnPropertyChanged(nameof(IsCustomRange));
+        ScheduleFilterSearch();
+    }
+    partial void OnSelectedSiteChanged(UsageLogFilterItem? value) => ScheduleFilterSearch();
+    partial void OnSelectedAccessKeyChanged(UsageLogFilterItem? value) => ScheduleFilterSearch();
+    partial void OnSelectedSourceChanged(UsageLogOption? value) => ScheduleFilterSearch();
+    partial void OnSelectedStatusChanged(UsageLogOption? value) => ScheduleFilterSearch();
+    partial void OnModelKeywordChanged(string value) => ScheduleFilterSearch();
+    partial void OnStartTimeChanged(string value) => ScheduleFilterSearch();
+    partial void OnEndTimeChanged(string value) => ScheduleFilterSearch();
     partial void OnPageChanged(int value) => UpdatePagingProperties();
     partial void OnTotalPagesChanged(int value) => UpdatePagingProperties();
     partial void OnTotalCountChanged(int value) => UpdatePagingProperties();
