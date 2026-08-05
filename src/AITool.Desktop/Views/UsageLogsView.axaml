@@ -55,11 +55,10 @@
                 BorderThickness="0,1,0,0"
                 Padding="18,14"
                 IsVisible="{Binding FiltersExpanded}">
-              <Grid
-                  ColumnDefinitions="1*,1*,1*"
-                  RowDefinitions="Auto,Auto,Auto"
-                  ColumnSpacing="16"
-                  RowSpacing="12">
+              <WrapPanel
+                  Orientation="Horizontal"
+                  ItemWidth="210"
+                  ItemHeight="78">
                 <StackPanel HorizontalAlignment="Stretch" Spacing="4">
                   <TextBlock FontSize="11" Foreground="#64748B" Text="时间范围" />
                   <ComboBox
@@ -155,7 +154,7 @@
                   <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="12,7" />
                   <Button Classes="primary-button" Command="{Binding SearchCommand}" Content="查询" Padding="14,7" />
                 </StackPanel>
-              </Grid>
+              </WrapPanel>
             </Border>
           </StackPanel>
         </Border>
@@ -257,9 +256,9 @@
           </ScrollViewer>
         </Border>
 
-        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12" Margin="0,0,0,8">
-          <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding PaginationSummary}" />
-          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+        <WrapPanel Orientation="Horizontal" Margin="0,0,0,8">
+          <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding PaginationSummary}" Margin="0,0,16,8" />
+          <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
             <Button Classes="secondary-button" Command="{Binding FirstPageCommand}" Content="首页" IsEnabled="{Binding CanFirst}" Padding="10,6" />
             <Button Classes="secondary-button" Command="{Binding PreviousPageCommand}" Content="上一页" IsEnabled="{Binding CanPrevious}" Padding="10,6" />
             <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding PageText}" Margin="5,0" />
@@ -268,7 +267,7 @@
             <TextBox Classes="form-input" VerticalContentAlignment="Center" Width="70" Text="{Binding PageJumpInput}" Watermark="页码" />
             <Button Classes="secondary-button" Command="{Binding JumpPageCommand}" Content="前往" Padding="10,6" />
           </StackPanel>
-        </Grid>
+        </WrapPanel>
       </StackPanel>
     </ScrollViewer>
 
