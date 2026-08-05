@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Net.Http;
 using AITool.Desktop.Models;
 using AITool.Desktop.Services;
@@ -29,6 +30,34 @@ public partial class SystemSettingsViewModel : ViewModelBase
     public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
     public bool CanSave => !IsLoading && !IsSaving;
     public bool CanClearLogs => !IsLoading && !IsSaving && !IsClearingLogs;
+    public IReadOnlyList<ClearLogSourceOption> ClearSourceOptions { get; } =
+    [
+        new() { Value = string.Empty, Label = "全部来源" },
+        new() { Value = "proxy", Label = "代理" },
+        new() { Value = "chat", Label = "对话测试" },
+        new() { Value = "claude-code", Label = "Claude Code" },
+        new() { Value = "codex", Label = "Codex" },
+        new() { Value = "open-code", Label = "Open Code" },
+        new() { Value = "zcode", Label = "ZCode" },
+        new() { Value = "detection-manual", Label = "手动检测" },
+        new() { Value = "detection-task", Label = "定时检测" }
+    ];
+    public string ClearScopeText
+    {
+        get
+        {
+            var parts = new List<string>();
+            if (!string.IsNullOrWhiteSpace(ClearSource))
+            {
+                var label = ClearSourceOptions.FirstOrDefault(option => option.Value == ClearSource)?.Label ?? ClearSource;
+                parts.Add($"来源 {label}");
+            }
+
+            if (!string.IsNullOrWhiteSpace(ClearStartTime)) parts.Add($"从 {ClearStartTime}");
+            if (!string.IsNullOrWhiteSpace(ClearEndTime)) parts.Add($"到 {ClearEndTime}");
+            return parts.Count == 0 ? "全部 UsageLogs" : string.Join("，", parts);
+        }
+    }
 
     public async Task LoadAsync()
     {
@@ -59,10 +88,43 @@ public partial class SystemSettingsViewModel : ViewModelBase
         finally { IsSaving = false; OnPropertyChanged(nameof(CanSave)); }
     }
 
+    private bool TryBuildClearRange(out string? startTime, out string? endTime)
+    {
+        startTime = null;
+        endTime = null;
+        startTime = ParseClearTime(ClearStartTime, "开始时间");
+        if (!string.IsNullOrWhiteSpace(ClearStartTime) && startTime is null) return false;
+
+        endTime = ParseClearTime(ClearEndTime, "结束时间");
+        if (!string.IsNullOrWhiteSpace(ClearEndTime) && endTime is null) return false;
+
+        if (startTime is not null
+            && endTime is not null
+            && DateTimeOffset.Parse(startTime, CultureInfo.InvariantCulture) >= DateTimeOffset.Parse(endTime, CultureInfo.InvariantCulture))
+        {
+            ErrorMessage = "结束时间必须晚于开始时间";
+            return false;
+        }
+
+        return true;
+    }
+
+    private string? ParseClearTime(string value, string fieldName)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (DateTimeOffset.TryParse(value.Trim(), CultureInfo.CurrentCulture, DateTimeStyles.AssumeLocal, out var parsed))
+        {
+            return parsed.ToUniversalTime().ToString("O", CultureInfo.InvariantCulture);
+        }
+
+        ErrorMessage = $"{fieldName}格式无效，请输入例如 2026-08-01 00:00";
+        return null;
+    }
+
     [RelayCommand]
     private async Task ClearFilteredLogsAsync()
     {
-        if (!CanClearLogs) return;
+        if (!CanClearLogs || !TryBuildClearRange(out var startTime, out var endTime)) return;
         IsClearingLogs = true;
         ErrorMessage = string.Empty;
         try
@@ -70,8 +132,8 @@ public partial class SystemSettingsViewModel : ViewModelBase
             var result = await _apiService.SendAsync<Dictionary<string, int>>(HttpMethod.Post, "/api/admin/system/clear-usage-logs?clearAll=false", new
             {
                 source = string.IsNullOrWhiteSpace(ClearSource) ? null : ClearSource.Trim(),
-                startTime = string.IsNullOrWhiteSpace(ClearStartTime) ? null : ClearStartTime,
-                endTime = string.IsNullOrWhiteSpace(ClearEndTime) ? null : ClearEndTime
+                startTime,
+                endTime
             });
             Message = $"已清空 {result.GetValueOrDefault("deletedCount")} 条日志";
             await LoadAsync();
@@ -112,4 +174,7 @@ public partial class SystemSettingsViewModel : ViewModelBase
     }
 
     partial void OnIsClearingLogsChanged(bool value) => OnPropertyChanged(nameof(CanClearLogs));
+    partial void OnClearSourceChanged(string value) => OnPropertyChanged(nameof(ClearScopeText));
+    partial void OnClearStartTimeChanged(string value) => OnPropertyChanged(nameof(ClearScopeText));
+    partial void OnClearEndTimeChanged(string value) => OnPropertyChanged(nameof(ClearScopeText));
 }

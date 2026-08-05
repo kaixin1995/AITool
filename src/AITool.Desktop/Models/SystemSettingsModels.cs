@@ -2,6 +2,12 @@ using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace AITool.Desktop.Models;
 
+public sealed class ClearLogSourceOption
+{
+    public string Value { get; init; } = string.Empty;
+    public string Label { get; init; } = string.Empty;
+}
+
 public partial class SystemSettings : ObservableObject
 {
     [ObservableProperty] private int _proxyRequestTimeoutSeconds = 60;

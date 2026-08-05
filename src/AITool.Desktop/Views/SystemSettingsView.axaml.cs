@@ -10,7 +10,8 @@ public partial class SystemSettingsView : UserControl
 
     private async void ConfirmClearFilteredLogs(object? sender, RoutedEventArgs e)
     {
-        if (DataContext is SystemSettingsViewModel viewModel && await ConfirmAsync("确定清空当前筛选条件匹配的调用日志吗？此操作不可恢复。"))
+        if (DataContext is SystemSettingsViewModel viewModel
+            && await ConfirmAsync($"确定清空当前筛选条件匹配的调用日志吗？范围：{viewModel.ClearScopeText}。此操作不可恢复。"))
         {
             await viewModel.ClearFilteredLogsCommand.ExecuteAsync(null);
         }
