@@ -40,6 +40,7 @@ public partial class MainShellViewModel : ViewModelBase
     private readonly ApiService _apiService;
     private readonly SseClient _sseClient;
     private readonly NavigationService _navigationService;
+    private int _navigationVersion;
 
     [ObservableProperty]
     private object? _currentPage;
@@ -79,10 +80,22 @@ public partial class MainShellViewModel : ViewModelBase
     private async Task NavigateAsync(NavigationItemViewModel? item)
     {
         if (item is null) return;
+        if (ReferenceEquals(SelectedItem, item) && CurrentPage is not PlaceholderPageViewModel) return;
 
         foreach (var navigationItem in NavigationGroups.SelectMany(group => group.Items))
         {
             navigationItem.IsSelected = ReferenceEquals(navigationItem, item);
+        }
+
+        SelectedItem = item;
+        var navigationVersion = Interlocked.Increment(ref _navigationVersion);
+        var page = await LoadPageAsync(item);
+
+        // 只提交最后一次导航结果，避免快速点击时旧页面覆盖新页面。
+        if (navigationVersion != Volatile.Read(ref _navigationVersion) || !ReferenceEquals(SelectedItem, item))
+        {
+            (page as IDisposable)?.Dispose();
+            return;
         }
 
         if (CurrentPage is IDisposable disposablePage)
@@ -90,92 +103,88 @@ public partial class MainShellViewModel : ViewModelBase
             disposablePage.Dispose();
         }
 
-        SelectedItem = item;
+        CurrentPage = page;
+        if (page is PlaceholderPageViewModel)
+        {
+            _navigationService.Navigate(page);
+        }
+    }
+
+    private async Task<object> LoadPageAsync(NavigationItemViewModel item)
+    {
         switch (item.Key)
         {
             case "dashboard":
             {
-                var dashboard = new DashboardViewModel(_apiService);
-                CurrentPage = dashboard;
-                await dashboard.LoadAsync();
-                break;
+                var page = new DashboardViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "sites":
             {
-                var sites = new SitesViewModel(_apiService);
-                CurrentPage = sites;
-                await sites.LoadAsync();
-                break;
+                var page = new SitesViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "models":
             {
-                var models = new ModelsViewModel(_apiService);
-                CurrentPage = models;
-                await models.LoadAsync();
-                break;
+                var page = new ModelsViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "access-keys":
             {
-                var accessKeys = new AccessKeysViewModel(_apiService);
-                CurrentPage = accessKeys;
-                await accessKeys.LoadAsync();
-                break;
+                var page = new AccessKeysViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "routes":
             {
-                var routes = new RoutesViewModel(_apiService);
-                CurrentPage = routes;
-                await routes.LoadAsync();
-                break;
+                var page = new RoutesViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "detection":
             {
-                var detection = new DetectionViewModel(_apiService);
-                CurrentPage = detection;
-                await detection.LoadAsync();
-                break;
+                var page = new DetectionViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "detection-tasks":
             {
-                var detectionTasks = new DetectionTasksViewModel(_apiService);
-                CurrentPage = detectionTasks;
-                await detectionTasks.LoadAsync();
-                break;
+                var page = new DetectionTasksViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "usage-logs":
             {
-                var usageLogs = new UsageLogsViewModel(_apiService);
-                CurrentPage = usageLogs;
-                await usageLogs.LoadAsync();
-                break;
+                var page = new UsageLogsViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "system-settings":
             {
-                var systemSettings = new SystemSettingsViewModel(_apiService);
-                CurrentPage = systemSettings;
-                await systemSettings.LoadAsync();
-                break;
+                var page = new SystemSettingsViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "codex":
             {
-                var codex = new CodexViewModel(_apiService);
-                CurrentPage = codex;
-                await codex.LoadAsync();
-                break;
+                var page = new CodexViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "developer-invocations":
             {
-                var developer = new DeveloperInvocationsViewModel(_apiService);
-                CurrentPage = developer;
-                await developer.LoadAsync();
-                break;
+                var page = new DeveloperInvocationsViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
             }
             case "chat":
             {
-                var chat = new ChatViewModel(_apiService, _sseClient);
-                CurrentPage = chat;
-                await chat.LoadAsync();
-                break;
+                var page = new ChatViewModel(_apiService, _sseClient);
+                await page.LoadAsync();
+                return page;
             }
             default:
             {
@@ -185,9 +194,7 @@ public partial class MainShellViewModel : ViewModelBase
                     "model-health" => "模型健康时间线将在桌面端后续接入专用图表组件。",
                     _ => $"{item.Label}页面正在迁移到 Avalonia 桌面端。"
                 };
-                CurrentPage = new PlaceholderPageViewModel(item.Label, description);
-                _navigationService.Navigate(CurrentPage);
-                break;
+                return new PlaceholderPageViewModel(item.Label, description);
             }
         }
     }

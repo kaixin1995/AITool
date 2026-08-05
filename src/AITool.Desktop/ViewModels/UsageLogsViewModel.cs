@@ -234,6 +234,13 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private Task RefreshAsync() => LoadAsync();
 
+    // 使用普通按钮切换筛选区，避免 ToggleButton 的 checked 模板覆盖页面样式。
+    [RelayCommand]
+    private void ToggleFilters()
+    {
+        FiltersExpanded = !FiltersExpanded;
+    }
+
     [RelayCommand]
     private async Task SearchAsync()
     {

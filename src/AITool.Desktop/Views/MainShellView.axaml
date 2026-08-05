@@ -103,7 +103,7 @@
                             Classes="nav-item"
                             Command="{Binding DataContext.NavigateCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
                             CommandParameter="{Binding}"
-                            IsChecked="{Binding IsSelected, Mode=TwoWay}">
+                            IsChecked="{Binding IsSelected, Mode=OneWay}">
                           <StackPanel Orientation="Horizontal" Spacing="10">
                             <TextBlock FontSize="15" Text="{Binding Icon}" Width="20" />
                             <TextBlock VerticalAlignment="Center" Text="{Binding Label}" />

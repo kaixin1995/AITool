@@ -84,8 +84,8 @@
       <Setter Property="FontWeight" Value="SemiBold" />
     </Style>
 
-    <!-- 筛选栏按钮不复用导航选中态，避免展开后出现整块蓝色背景。 -->
-    <Style Selector="ToggleButton.filter-toggle">
+    <!-- 筛选栏使用普通按钮，避免 ToggleButton 的 checked 模板覆盖页面样式。 -->
+    <Style Selector="Button.filter-toggle">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="BorderThickness" Value="0" />
       <Setter Property="Foreground" Value="#1E293B" />
@@ -93,13 +93,8 @@
       <Setter Property="Padding" Value="0" />
     </Style>
 
-    <Style Selector="ToggleButton.filter-toggle:pointerover">
+    <Style Selector="Button.filter-toggle:pointerover">
       <Setter Property="Background" Value="#F8FAFC" />
-      <Setter Property="Foreground" Value="#1E293B" />
-    </Style>
-
-    <Style Selector="ToggleButton.filter-toggle:checked">
-      <Setter Property="Background" Value="Transparent" />
       <Setter Property="Foreground" Value="#1E293B" />
     </Style>
 
