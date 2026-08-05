@@ -1,0 +1,92 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.SitesView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:SitesViewModel"
+    x:CompileBindings="False">
+  <Grid>
+    <Grid RowDefinitions="Auto,*">
+      <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,18">
+        <StackPanel Spacing="4">
+          <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="站点管理" />
+          <TextBlock Classes="page-subtitle" Text="配置上游服务站点和协议能力" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+          <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="14,8" />
+          <Button Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增站点" Padding="14,8" />
+        </StackPanel>
+      </Grid>
+
+      <Grid Grid.Row="1">
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding IsLoading}" Text="正在加载站点..." />
+        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}">
+          <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+        </Border>
+
+        <Border Classes="content-card" IsVisible="{Binding IsListVisible}" Padding="0">
+          <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+            <StackPanel MinWidth="860">
+              <Border Background="#F8FAFC" Padding="18,14">
+                <Grid ColumnDefinitions="2*,2.5*,1.2*,1.2*,Auto">
+                  <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="站点名称" />
+                  <TextBlock Grid.Column="1" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="服务地址" />
+                  <TextBlock Grid.Column="2" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="协议" />
+                  <TextBlock Grid.Column="3" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="状态" />
+                  <TextBlock Grid.Column="4" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="操作" />
+                </Grid>
+              </Border>
+              <ItemsControl ItemsSource="{Binding Sites}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,14">
+                      <Grid ColumnDefinitions="2*,2.5*,1.2*,1.2*,Auto" ColumnSpacing="12">
+                        <StackPanel Spacing="3">
+                          <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Name}" />
+                          <TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding ApiKeyMasked}" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="1" Foreground="#475569" Text="{Binding BaseUrl}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding ProtocolType}" VerticalAlignment="Center" />
+                        <Border Grid.Column="3" Background="#E8F7EA" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center">
+                          <TextBlock Foreground="#166534" Text="{Binding StatusText}" />
+                        </Border>
+                        <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                          <Button Classes="secondary-button" Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,6" />
+                          <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="切换" Padding="10,6" />
+                          <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
+                        </StackPanel>
+                      </Grid>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+              <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding NoSites}" Margin="20" Text="暂无站点" />
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+
+        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+          <ScrollViewer MaxHeight="650">
+            <StackPanel Spacing="14">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding EditorTitle}" />
+                <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseEditorCommand}" Content="关闭" Padding="10,6" />
+              </Grid>
+              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="名称" /><TextBox Classes="form-input" Text="{Binding Form.Name}" /></StackPanel>
+              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="服务地址" /><TextBox Classes="form-input" Text="{Binding Form.BaseUrl}" Watermark="https://api.example.com" /></StackPanel>
+              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="API 密钥" /><TextBox Classes="form-input" PasswordChar="●" Text="{Binding Form.ApiKey}" Watermark="编辑时留空表示保留原密钥" /></StackPanel>
+              <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="路径模式" /><TextBox Classes="form-input" Text="{Binding Form.EndpointPathMode}" Watermark="standard-root 或 versioned-base" /></StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="18">
+                <CheckBox Content="支持 OpenAI" IsChecked="{Binding Form.SupportsOpenAi}" />
+                <CheckBox Content="支持 Anthropic" IsChecked="{Binding Form.SupportsAnthropic}" />
+                <CheckBox Content="启用" IsChecked="{Binding Form.IsEnabled}" />
+              </StackPanel>
+              <TextBlock Foreground="#B91C1C" IsVisible="{Binding HasError}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+              <Button Classes="primary-button" Command="{Binding SaveCommand}" Content="保存站点" IsEnabled="{Binding CanSave}" HorizontalContentAlignment="Center" Padding="12,9" />
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+      </Grid>
+    </Grid>
+  </Grid>
+</UserControl>

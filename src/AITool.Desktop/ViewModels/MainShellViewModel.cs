@@ -93,6 +93,20 @@ public partial class MainShellViewModel : ViewModelBase
                 await dashboard.LoadAsync();
                 break;
             }
+            case "sites":
+            {
+                var sites = new SitesViewModel(_apiService);
+                CurrentPage = sites;
+                await sites.LoadAsync();
+                break;
+            }
+            case "models":
+            {
+                var models = new ModelsViewModel(_apiService);
+                CurrentPage = models;
+                await models.LoadAsync();
+                break;
+            }
             default:
             {
                 var description = item.Key switch

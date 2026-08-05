@@ -1,0 +1,80 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.ModelsView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:ModelsViewModel"
+    x:CompileBindings="False">
+  <Grid>
+    <Grid RowDefinitions="Auto,*">
+      <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,18">
+        <StackPanel Spacing="4">
+          <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="模型库" />
+          <TextBlock Classes="page-subtitle" Text="管理统一模型名称和启用状态" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
+          <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="14,8" />
+          <Button Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增模型" Padding="14,8" />
+        </StackPanel>
+      </Grid>
+
+      <Grid Grid.Row="1">
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding IsLoading}" Text="正在加载模型..." />
+        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
+        <ScrollViewer IsVisible="{Binding IsListVisible}" VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding VendorGroups}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Classes="content-card" Margin="0,0,0,14" Padding="0">
+                  <StackPanel>
+                    <Border Background="#F8FAFC" Padding="18,13">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding VendorName}" />
+                        <TextBlock Grid.Column="1" Foreground="#94A3B8" Text="{Binding Models.Count, StringFormat='共 {0} 个模型'}" />
+                      </Grid>
+                    </Border>
+                    <ItemsControl ItemsSource="{Binding Models}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,13">
+                            <Grid ColumnDefinitions="2.2*,1.2*,1*,Auto" ColumnSpacing="14">
+                              <StackPanel Spacing="3">
+                                <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding DisplayName}" />
+                                <TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding ModelName}" />
+                              </StackPanel>
+                              <TextBlock Grid.Column="1" Foreground="#64748B" Text="{Binding SiteCount, StringFormat='关联站点：{0}'}" VerticalAlignment="Center" />
+                              <Border Grid.Column="2" Background="#E8F7EA" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                <TextBlock Foreground="#166534" Text="{Binding StatusText}" />
+                              </Border>
+                              <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                                <Button Classes="secondary-button" Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,6" />
+                                <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="切换" Padding="10,6" />
+                                <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
+                              </StackPanel>
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+
+        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+          <StackPanel Spacing="14">
+            <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding EditorTitle}" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
+            <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="模型名称" /><TextBox Classes="form-input" Text="{Binding Form.ModelName}" Watermark="例如 claude-3-7-sonnet" /></StackPanel>
+            <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="显示名称" /><TextBox Classes="form-input" Text="{Binding Form.DisplayName}" /></StackPanel>
+            <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="推理强度覆盖" /><TextBox Classes="form-input" Text="{Binding Form.OverrideReasoningEffort}" Watermark="可选" /></StackPanel>
+            <CheckBox Content="启用模型" IsChecked="{Binding Form.IsEnabled}" />
+            <TextBlock Foreground="#B91C1C" IsVisible="{Binding HasError}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+            <Button Classes="primary-button" Command="{Binding SaveCommand}" Content="保存模型" IsEnabled="{Binding CanSave}" HorizontalContentAlignment="Center" Padding="12,9" />
+          </StackPanel>
+        </Border>
+      </Grid>
+    </Grid>
+  </Grid>
+</UserControl>
