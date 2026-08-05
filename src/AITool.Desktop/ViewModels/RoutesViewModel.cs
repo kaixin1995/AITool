@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Net.Http;
+using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using AITool.Desktop.Models;
@@ -400,13 +401,19 @@ public partial class RoutesViewModel : ViewModelBase
 
         // 路由队列与网页端保持一致，候选顺序和可用性变化后自动保存。
         if (SelectedEntry is null) return;
-        if (IsSavingRules)
-        {
-            _pendingSaveAfterCurrent = true;
-            return;
-        }
 
-        _ = SaveRulesAsync();
+        // 延迟到当前属性变更完成后再提交，确保时间范围 JSON 已同步更新。
+        Dispatcher.UIThread.Post(() =>
+        {
+            if (SelectedEntry is null) return;
+            if (IsSavingRules)
+            {
+                _pendingSaveAfterCurrent = true;
+                return;
+            }
+
+            _ = SaveRulesAsync();
+        });
     }
 
     private void UpdateRulePositions()
