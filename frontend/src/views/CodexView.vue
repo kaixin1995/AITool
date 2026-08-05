@@ -996,7 +996,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 .credential-file-summary {
   margin-top: 7px;
-  color: #18a058;
+  color: var(--status-success-text);
   font-size: 13px;
 }
 
@@ -1022,10 +1022,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   gap: 5px;
   margin-top: 12px;
   padding: 10px 12px;
-  border: 1px solid rgba(208, 48, 80, 0.24);
+  border: 1px solid color-mix(in srgb, var(--status-danger-text) 30%, transparent);
   border-radius: 8px;
-  background: rgba(208, 48, 80, 0.07);
-  color: #d03050;
+  background: var(--status-danger-bg);
+  color: var(--status-danger-text);
   font-size: 13px;
 }
 
@@ -1035,7 +1035,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 .reset-credit-error {
   margin: 0;
-  color: #d03050;
+  color: var(--status-danger-text);
 }
 
 .reset-credit-list-title {
@@ -1072,7 +1072,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .reset-credit-expiry strong {
-  color: #c4612f;
+  color: var(--status-warning-text);
 }
 
 .codex-export-toolbar {
@@ -1081,10 +1081,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   gap: 12px;
   margin-bottom: 16px;
   padding: 12px;
-  border: 1px solid #ffc107;
+  border: 1px solid color-mix(in srgb, var(--status-warning-text) 35%, transparent);
   border-radius: 8px;
-  background: #fff3cd;
-  color: #856404;
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
 }
 
 .codex-stack {
@@ -1235,20 +1235,20 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   flex-direction: column;
   min-width: 0;
   padding: 20px;
-  border: 1px solid #e7e1d7;
+  border: 1px solid var(--border-color-global);
   border-radius: 12px;
-  background: #fbf9f5;
-  box-shadow: 0 2px 8px rgba(196, 97, 47, 0.06);
-  transition: all 0.2s ease;
+  background: var(--bg-card);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
 .codex-card:hover {
-  border-color: #d4c5b4;
-  box-shadow: 0 4px 16px rgba(196, 97, 47, 0.12);
+  border-color: color-mix(in srgb, var(--status-warning-text) 42%, var(--border-color-global));
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.1);
 }
 
 .codex-card.disabled {
-  opacity: 0.72;
+  opacity: 0.64;
 }
 
 .export-mode .codex-card {
@@ -1257,9 +1257,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .codex-card.selected {
-  border-color: #c4612f;
-  background: rgba(196, 97, 47, 0.02);
-  box-shadow: 0 0 0 3px rgba(196, 97, 47, 0.15);
+  border-color: var(--status-warning-text);
+  background: color-mix(in srgb, var(--status-warning-bg) 42%, var(--bg-card));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-warning-text) 25%, transparent);
 }
 
 .codex-export-checkbox {
@@ -1275,7 +1275,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   gap: 12px;
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #e7e1d7;
+  border-bottom: 1px solid var(--border-color-global);
 }
 
 .codex-card-header-main {
@@ -1288,7 +1288,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  color: #1f2421;
+  color: var(--text-primary);
   font-size: 15px;
   font-weight: 700;
   line-height: 1.45;
@@ -1301,7 +1301,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 4px;
-  color: #6c757d;
+  color: var(--text-color-secondary);
   font-size: 12px;
   word-break: break-all;
 }
@@ -1318,22 +1318,22 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   padding: 0;
   border: 0;
   background: transparent;
-  color: #6c757d;
+  color: var(--text-color-secondary);
   cursor: pointer;
   font: inherit;
   text-decoration: underline dotted;
 }
 
 .codex-reset-credits-hint:hover {
-  color: #0d6efd;
+  color: var(--status-info-text);
 }
 
 .codex-plan {
   flex-shrink: 0;
   padding: 3px 10px;
   border-radius: 12px;
-  background: #f2e3d6;
-  color: #c4612f;
+  background: color-mix(in srgb, var(--status-warning-text) 16%, transparent);
+  color: var(--status-warning-text);
   font-size: 11px;
   font-weight: 500;
 }
@@ -1350,7 +1350,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   column-gap: 12px;
   row-gap: 6px;
   padding: 10px 0 12px;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--border-color-soft);
 }
 
 .codex-window:last-child {
@@ -1387,10 +1387,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 .codex-window-placeholder {
   padding: 20px;
-  border: 1px dashed #e5e7eb;
+  border: 1px dashed var(--border-color-global);
   border-radius: 8px;
-  background: #f9fafb;
-  color: #9ca3af;
+  background: var(--bg-surface-soft);
+  color: var(--text-color-secondary);
   font-size: 13px;
   text-align: center;
 }
@@ -1398,13 +1398,13 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .codex-card-meta {
   margin-top: 12px;
   padding-top: 16px;
-  border-top: 1px solid #e7e1d7;
+  border-top: 1px solid var(--border-color-global);
 }
 
 .codex-source-meta {
   min-height: 16px;
   margin-bottom: 12px;
-  color: #9ca3af;
+  color: var(--text-color-secondary);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -1434,9 +1434,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   stroke-linejoin: round;
 }
 
-.codex-icon-button.primary { color: #c4612f; }
-.codex-icon-button.info { color: #0ea5e9; }
-.codex-icon-button.danger { color: #dc2626; }
+.codex-icon-button.primary { color: var(--status-warning-text); }
+.codex-icon-button.info { color: var(--status-info-text); }
+.codex-icon-button.danger { color: var(--status-danger-text); }
 
 :global([data-theme='dark']) .codex-card {
   border-color: var(--border-color-global);
@@ -1458,9 +1458,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 :global([data-theme='dark']) .codex-export-toolbar {
-  border-color: rgba(240, 160, 32, 0.5);
-  background: rgba(240, 160, 32, 0.12);
-  color: #f0a020;
+  border-color: color-mix(in srgb, var(--status-warning-text) 35%, transparent);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
 }
 
 @media (max-width: 720px) {

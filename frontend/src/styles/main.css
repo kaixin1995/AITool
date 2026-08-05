@@ -11,8 +11,19 @@
   --bg-page: #F8FAFC;
   --bg-card: #FFFFFF;
   --bg-input: #FFFFFF;
+  --bg-surface-soft: #F1F5F9;
   --border-color-global: #E2E8F0;
+  --border-color-soft: rgba(226, 232, 240, 0.9);
   --text-primary: #1E293B;
+  --text-color-disabled: #94A3B8;
+  --status-info-bg: #EFF6FF;
+  --status-info-text: #1D4ED8;
+  --status-success-bg: #E8F7EA;
+  --status-success-text: #166534;
+  --status-warning-bg: #FFF5D6;
+  --status-warning-text: #B45309;
+  --status-danger-bg: #FEE2E2;
+  --status-danger-text: #B91C1C;
   --layout-gutter-x: 32px;
   --layout-gutter-y: 28px;
 }

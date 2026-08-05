@@ -637,7 +637,7 @@ onUnmounted(() => {
   padding: 0 14px;
   border-radius: 999px;
   background: var(--bg-card);
-  border: 1px solid rgba(148, 163, 184, 0.2);
+  border: 1px solid var(--border-color-soft);
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
   margin: 0;
   cursor: pointer;
@@ -660,7 +660,7 @@ onUnmounted(() => {
   padding: 20px 22px;
   background: var(--bg-card);
   border-radius: 18px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  border: 1px solid var(--border-color-soft);
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
 }
 
@@ -690,14 +690,14 @@ onUnmounted(() => {
   margin-bottom: 16px;
   padding: 16px 18px;
   border-radius: 18px;
-  border: 1px solid rgba(59, 130, 246, 0.14);
+  border: 1px solid color-mix(in srgb, var(--status-info-text) 24%, transparent);
   background: linear-gradient(135deg, rgba(239, 246, 255, 0.9), var(--bg-card));
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
 }
 
 .trace-loading-title {
   margin-bottom: 6px;
-  color: #1d4ed8;
+  color: var(--status-info-text);
   font-size: 14px;
   font-weight: 700;
 }
@@ -709,15 +709,15 @@ onUnmounted(() => {
 }
 
 .trace-card {
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  border: 1px solid var(--border-color-soft);
   border-radius: 20px;
   overflow: hidden;
   box-shadow: 0 12px 32px rgba(15, 23, 42, 0.05);
 }
 
-.trace-card-success { border-left: 6px solid #22c55e; }
-.trace-card-pending { border-left: 6px solid #f59e0b; background: linear-gradient(180deg, rgba(255, 251, 235, 0.4), var(--bg-card) 42%); }
-.trace-card-danger { border-left: 6px solid #ef4444; background: linear-gradient(180deg, rgba(254, 242, 242, 0.55), var(--bg-card) 42%); box-shadow: 0 16px 36px rgba(239, 68, 68, 0.12); }
+.trace-card-success { border-left: 6px solid var(--status-success-text); }
+.trace-card-pending { border-left: 6px solid var(--status-warning-text); background: linear-gradient(180deg, rgba(255, 251, 235, 0.4), var(--bg-card) 42%); }
+.trace-card-danger { border-left: 6px solid var(--status-danger-text); background: linear-gradient(180deg, rgba(254, 242, 242, 0.55), var(--bg-card) 42%); box-shadow: 0 16px 36px rgba(239, 68, 68, 0.12); }
 
 .trace-card-toggle {
   width: 100%;
@@ -729,7 +729,7 @@ onUnmounted(() => {
 }
 
 .trace-card-toggle:hover {
-  background: rgba(248, 250, 252, 0.72);
+  background: var(--bg-surface-soft);
 }
 
 .trace-card-main,
@@ -775,11 +775,11 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.trace-status-pill-success { background: #e8f7ea; color: #166534; }
-.trace-status-pill-pending { background: #fff5d6; color: #b45309; }
-.trace-status-pill-danger { background: #fee2e2; color: #b91c1c; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08); }
-.trace-protocol-pill { background: #eff6ff; color: #1d4ed8; }
-.trace-source-pill { background: #f8fafc; color: var(--text-color-secondary); }
+.trace-status-pill-success { background: var(--status-success-bg); color: var(--status-success-text); }
+.trace-status-pill-pending { background: var(--status-warning-bg); color: var(--status-warning-text); }
+.trace-status-pill-danger { background: var(--status-danger-bg); color: var(--status-danger-text); box-shadow: 0 0 0 3px color-mix(in srgb, var(--status-danger-text) 14%, transparent); }
+.trace-protocol-pill { background: var(--status-info-bg); color: var(--status-info-text); }
+.trace-source-pill { background: var(--bg-surface-soft); color: var(--text-color-secondary); }
 
 .trace-request-model,
 .trace-attempted-model {
@@ -790,11 +790,11 @@ onUnmounted(() => {
 }
 
 .trace-attempted-model {
-  color: #1d4ed8;
+  color: var(--status-info-text);
 }
 
 .trace-model-arrow {
-  color: #94a3b8;
+  color: var(--text-color-disabled);
   font-size: 18px;
   font-weight: 700;
 }
@@ -812,8 +812,8 @@ onUnmounted(() => {
   min-width: 0;
   padding: 12px 14px;
   border-radius: 14px;
-  background: #f8fafc;
-  border: 1px solid rgba(226, 232, 240, 0.95);
+  background: var(--bg-surface-soft);
+  border: 1px solid var(--border-color-soft);
 }
 
 .trace-meta-chip strong {
@@ -834,17 +834,17 @@ onUnmounted(() => {
 .trace-attempt-card {
   padding: 14px;
   border-radius: 16px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  border: 1px solid var(--border-color-soft);
   background: var(--bg-card);
 }
 
-.trace-attempt-card-success { border-left: 5px solid #22c55e; }
-.trace-attempt-card-pending { border-left: 5px solid #f59e0b; background: #fffdf6; }
-.trace-attempt-card-danger { border-left: 5px solid #ef4444; background: #fff7f7; }
+.trace-attempt-card-success { border-left: 5px solid var(--status-success-text); }
+.trace-attempt-card-pending { border-left: 5px solid var(--status-warning-text); background: color-mix(in srgb, var(--status-warning-bg) 55%, var(--bg-card)); }
+.trace-attempt-card-danger { border-left: 5px solid var(--status-danger-text); background: color-mix(in srgb, var(--status-danger-bg) 55%, var(--bg-card)); }
 
 .trace-attempt-order {
-  background: #f1f5f9;
-  color: #334155;
+  background: var(--bg-surface-soft);
+  color: var(--text-primary);
 }
 
 .trace-detail-grid,
@@ -901,14 +901,14 @@ onUnmounted(() => {
   overflow: hidden;
   padding: 16px;
   border-radius: 16px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
-  background: #f8fafc;
+  border: 1px solid var(--border-color-soft);
+  background: var(--bg-surface-soft);
 }
 
 .trace-code-panel-danger {
   margin-top: 12px;
-  background: #fff5f5;
-  border-color: rgba(239, 68, 68, 0.22);
+  background: var(--status-danger-bg);
+  border-color: color-mix(in srgb, var(--status-danger-text) 30%, transparent);
 }
 
 .trace-section-title {
@@ -918,7 +918,7 @@ onUnmounted(() => {
 }
 
 .trace-section-title-danger {
-  color: #b91c1c;
+  color: var(--status-danger-text);
 }
 
 .trace-copy-btn {
@@ -944,7 +944,7 @@ onUnmounted(() => {
   margin-top: 16px;
   padding: 14px 16px;
   border-radius: 18px;
-  border: 1px solid rgba(226, 232, 240, 0.9);
+  border: 1px solid var(--border-color-soft);
   background: var(--bg-card);
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
 }
@@ -968,8 +968,8 @@ onUnmounted(() => {
   height: 20px;
   border: 0;
   border-radius: 999px;
-  background: #e2e8f0;
-  color: #475569;
+  background: var(--bg-surface-soft);
+  color: var(--text-color-secondary);
   font-size: 12px;
   font-weight: 800;
   cursor: help;
@@ -988,19 +988,19 @@ onUnmounted(() => {
   min-height: 30px;
   padding: 6px 12px;
   border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
   font-weight: 700;
 }
 
 .concurrency-count-badge.is-active {
-  background: #e8f7ea;
-  color: #166534;
+  background: var(--status-success-bg);
+  color: var(--status-success-text);
 }
 
 .concurrency-count-badge.is-queued {
-  background: #fff5d6;
-  color: #b45309;
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
 }
 
 [data-theme='dark'] .trace-overview-card-primary,
