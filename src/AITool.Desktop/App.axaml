@@ -129,6 +129,39 @@
       <Setter Property="Foreground" Value="#1E293B" />
     </Style>
 
+    <Style Selector="ToggleButton.filter-toggle">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="Foreground" Value="#64748B" />
+      <Setter Property="Padding" Value="12,7" />
+      <Setter Property="CornerRadius" Value="8" />
+    </Style>
+
+    <Style Selector="ToggleButton.filter-toggle:pointerover">
+      <Setter Property="Background" Value="#F8FAFC" />
+      <Setter Property="Foreground" Value="#1E293B" />
+    </Style>
+
+    <Style Selector="ToggleButton.filter-toggle:checked">
+      <Setter Property="Background" Value="#EEF4FF" />
+      <Setter Property="Foreground" Value="#315EA8" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
+    <Style Selector="TextBox.code-box">
+      <Setter Property="Background" Value="#F8FAFC" />
+      <Setter Property="BorderBrush" Value="#E2E8F0" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Foreground" Value="#334155" />
+      <Setter Property="FontFamily" Value="Cascadia Mono, Consolas, monospace" />
+      <Setter Property="FontSize" Value="12" />
+      <Setter Property="Padding" Value="10" />
+    </Style>
+
+    <Style Selector="TextBox.response-box">
+      <Setter Property="Background" Value="#FFF7ED" />
+    </Style>
+
     <Style Selector="Border.content-card">
       <Setter Property="Background" Value="#FFFFFF" />
       <Setter Property="BorderBrush" Value="#E2E8F0" />

@@ -20,8 +20,8 @@
 
       <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
         <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-          <Button Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="gallery" Content="模型分组" IsEnabled="{Binding IsVendorRulesTab}" Padding="12,7" />
-          <Button Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="rules" Content="厂商规则" IsEnabled="{Binding IsGalleryTab}" Padding="12,7" />
+          <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="gallery" Content="模型分组" IsChecked="{Binding IsGalleryTab}" />
+          <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="rules" Content="厂商规则" IsChecked="{Binding IsVendorRulesTab}" />
         </StackPanel>
         <TextBox Grid.Column="1" Classes="form-input" Text="{Binding SearchText}" Watermark="搜索模型名、显示名或厂商名" IsVisible="{Binding IsGalleryTab}" />
         <TextBox Grid.Column="1" Classes="form-input" Text="{Binding VendorSearchText}" Watermark="搜索厂商名或匹配规则" IsVisible="{Binding IsVendorRulesTab}" />

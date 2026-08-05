@@ -17,8 +17,8 @@
 
     <Border Grid.Row="1" Background="#F8FAFC" CornerRadius="8" Padding="4">
       <StackPanel Orientation="Horizontal" Spacing="4">
-        <Button Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="health" Content="模型健康" IsEnabled="{Binding IsFallbackTab}" Padding="12,7" />
-        <Button Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="fallback" Content="路由回退" IsEnabled="{Binding IsHealthTab}" Padding="12,7" />
+        <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="health" Content="模型健康" IsChecked="{Binding IsHealthTab}" />
+        <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="fallback" Content="路由回退" IsChecked="{Binding IsFallbackTab}" />
       </StackPanel>
     </Border>
 
