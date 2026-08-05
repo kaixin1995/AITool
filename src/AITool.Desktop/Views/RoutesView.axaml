@@ -98,7 +98,15 @@
                                 <Border Background="#E8F7EA" CornerRadius="10" Padding="7,2"><TextBlock FontSize="11" Foreground="#166534" Text="{Binding StatusText}" /></Border>
                               </StackPanel>
                               <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding InstanceSummary}" TextTrimming="CharacterEllipsis" />
-                              <TextBlock FontSize="12" Foreground="#64748B" Text="可用性：{Binding AvailabilityMode}" />
+                              <StackPanel Orientation="Horizontal" Spacing="7">
+                                <TextBlock FontSize="12" Foreground="#64748B" Text="可用性" VerticalAlignment="Center" />
+                                <ComboBox Width="130" ItemsSource="{Binding DataContext.AvailabilityOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding AvailabilityMode, Mode=TwoWay}" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding HasTimeRange}">
+                                  <TextBox Classes="form-input" Width="76" Text="{Binding TimeRangeStart}" Watermark="00:00" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                  <TextBlock Foreground="#64748B" Text="至" VerticalAlignment="Center" />
+                                  <TextBox Classes="form-input" Width="76" Text="{Binding TimeRangeEnd}" Watermark="23:59" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                </StackPanel>
+                              </StackPanel>
                             </StackPanel>
                             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                               <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleUpCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="上移" IsEnabled="{Binding CanMoveUp}" Padding="8,5" />

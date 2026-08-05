@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Net.Http;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
@@ -57,6 +58,9 @@ public partial class RoutesViewModel : ViewModelBase
     {
         _apiService = apiService;
     }
+
+    public IReadOnlyList<string> AvailabilityOptions { get; } =
+        new[] { "AllDay", "AvailableOnly", "UnavailableOnly" };
 
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
@@ -207,7 +211,7 @@ public partial class RoutesViewModel : ViewModelBase
             return;
         }
 
-        Rules.Add(new RouteRuleItem
+        var newRule = new RouteRuleItem
         {
             SiteId = SelectedSiteInstance.SiteId,
             SiteName = SelectedSiteInstance.SiteName,
@@ -219,7 +223,9 @@ public partial class RoutesViewModel : ViewModelBase
             InstancePriority = 0,
             IsEnabled = true,
             AvailabilityMode = "AllDay"
-        });
+        };
+        newRule.PropertyChanged += OnRulePropertyChanged;
+        Rules.Add(newRule);
         SelectedSiteInstance = null;
         MarkDirty();
         UpdateRulePositions();
@@ -253,6 +259,7 @@ public partial class RoutesViewModel : ViewModelBase
     private void RemoveCandidate(RouteRuleItem? rule)
     {
         if (!CanEdit || rule is null) return;
+        rule.PropertyChanged -= OnRulePropertyChanged;
         Rules.Remove(rule);
         MarkDirty();
         UpdateRulePositions();
@@ -418,9 +425,24 @@ public partial class RoutesViewModel : ViewModelBase
 
     partial void OnRulesChanged(ObservableCollection<RouteRuleItem> value)
     {
+        foreach (var rule in value)
+        {
+            rule.PropertyChanged += OnRulePropertyChanged;
+        }
+
         UpdateRulePositions();
         OnPropertyChanged(nameof(HasRules));
         OnPropertyChanged(nameof(HasNoRules));
+    }
+
+    private void OnRulePropertyChanged(object? sender, PropertyChangedEventArgs eventArgs)
+    {
+        if (eventArgs.PropertyName is nameof(RouteRuleItem.AvailabilityMode)
+            or nameof(RouteRuleItem.TimeRangeStart)
+            or nameof(RouteRuleItem.TimeRangeEnd))
+        {
+            MarkDirty();
+        }
     }
 
     partial void OnSiteInstancesChanged(ObservableCollection<SiteInstanceItem> value) => NotifyPoolProperties();

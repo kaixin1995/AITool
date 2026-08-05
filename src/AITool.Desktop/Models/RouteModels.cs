@@ -1,3 +1,5 @@
+using System.Text.Json;
+
 namespace AITool.Desktop.Models;
 
 /// <summary>
@@ -38,8 +40,59 @@ public partial class RouteRuleItem : CommunityToolkit.Mvvm.ComponentModel.Observ
     public int Priority { get; set; }
     public int ModelPriority { get; set; }
     public int InstancePriority { get; set; }
-    public string AvailabilityMode { get; set; } = "AllDay";
-    public string TimeRangesJson { get; set; } = string.Empty;
+
+    private string _availabilityMode = "AllDay";
+    private string _timeRangesJson = string.Empty;
+    private string _timeRangeStart = "00:00";
+    private string _timeRangeEnd = "23:59";
+
+    public string AvailabilityMode
+    {
+        get => _availabilityMode;
+        set
+        {
+            if (!SetProperty(ref _availabilityMode, value)) return;
+            OnPropertyChanged(nameof(HasTimeRange));
+            if (string.Equals(value, "AllDay", StringComparison.OrdinalIgnoreCase))
+            {
+                TimeRangesJson = string.Empty;
+            }
+            else
+            {
+                UpdateTimeRangesJson();
+            }
+        }
+    }
+
+    public string TimeRangesJson
+    {
+        get => _timeRangesJson;
+        set
+        {
+            if (!SetProperty(ref _timeRangesJson, value)) return;
+            ParseTimeRanges(value);
+        }
+    }
+
+    public string TimeRangeStart
+    {
+        get => _timeRangeStart;
+        set
+        {
+            if (SetProperty(ref _timeRangeStart, value)) UpdateTimeRangesJson();
+        }
+    }
+
+    public string TimeRangeEnd
+    {
+        get => _timeRangeEnd;
+        set
+        {
+            if (SetProperty(ref _timeRangeEnd, value)) UpdateTimeRangesJson();
+        }
+    }
+
+    public bool HasTimeRange => !string.Equals(AvailabilityMode, "AllDay", StringComparison.OrdinalIgnoreCase);
 
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
     private bool _isEnabled;
@@ -70,9 +123,51 @@ public partial class RouteRuleItem : CommunityToolkit.Mvvm.ComponentModel.Observ
         OnPropertyChanged(nameof(PriorityText));
     }
 
+    private void ParseTimeRanges(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return;
+        try
+        {
+            var ranges = JsonSerializer.Deserialize<List<RouteTimeRange>>(value);
+            var first = ranges?.FirstOrDefault();
+            if (first is null) return;
+            _timeRangeStart = string.IsNullOrWhiteSpace(first.Start) ? "00:00" : first.Start;
+            _timeRangeEnd = string.IsNullOrWhiteSpace(first.End) ? "23:59" : first.End;
+            OnPropertyChanged(nameof(TimeRangeStart));
+            OnPropertyChanged(nameof(TimeRangeEnd));
+        }
+        catch (JsonException)
+        {
+            _timeRangeStart = "00:00";
+            _timeRangeEnd = "23:59";
+            OnPropertyChanged(nameof(TimeRangeStart));
+            OnPropertyChanged(nameof(TimeRangeEnd));
+        }
+    }
+
+    private void UpdateTimeRangesJson()
+    {
+        if (string.Equals(AvailabilityMode, "AllDay", StringComparison.OrdinalIgnoreCase)) return;
+        var value = JsonSerializer.Serialize(new[]
+        {
+            new RouteTimeRange
+            {
+                Start = TimeRangeStart,
+                End = TimeRangeEnd
+            }
+        });
+        SetProperty(ref _timeRangesJson, value, nameof(TimeRangesJson));
+    }
+
     partial void OnIsEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(ToggleActionText));
     }
+}
+
+public sealed class RouteTimeRange
+{
+    public string Start { get; set; } = "00:00";
+    public string End { get; set; } = "23:59";
 }
