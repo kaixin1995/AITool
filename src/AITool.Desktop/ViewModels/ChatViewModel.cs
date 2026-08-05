@@ -37,6 +37,7 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
     public bool HasMessages => Messages.Count > 0;
     public bool HasNoMessages => !HasMessages;
     public bool CanSend => !IsSending && SelectedTarget is not null && !string.IsNullOrWhiteSpace(Input);
+    public bool CanClear => !IsSending && HasMessages;
     public IEnumerable<ChatModelTarget> FilteredTargets
         => Targets.Where(target => string.IsNullOrWhiteSpace(ModelSearchText)
             || $"{target.ModelDisplayName} {target.SiteName} {target.SiteModelName}"
@@ -70,6 +71,7 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
         Messages.Add(assistant);
         OnPropertyChanged(nameof(HasMessages));
         OnPropertyChanged(nameof(HasNoMessages));
+        OnPropertyChanged(nameof(CanClear));
         IsSending = true;
         var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
         var previousCancellation = Interlocked.Exchange(ref _streamCancellation, localCancellation);
@@ -178,16 +180,22 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private void Clear()
     {
+        if (!CanClear) return;
         Messages.Clear();
         OnPropertyChanged(nameof(HasMessages));
         OnPropertyChanged(nameof(HasNoMessages));
+        OnPropertyChanged(nameof(CanClear));
     }
 
     partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
     partial void OnModelSearchTextChanged(string value) => OnPropertyChanged(nameof(FilteredTargets));
     partial void OnInputChanged(string value) => OnPropertyChanged(nameof(CanSend));
     partial void OnSelectedTargetChanged(ChatModelTarget? value) => OnPropertyChanged(nameof(CanSend));
-    partial void OnIsSendingChanged(bool value) => OnPropertyChanged(nameof(CanSend));
+    partial void OnIsSendingChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanSend));
+        OnPropertyChanged(nameof(CanClear));
+    }
 
     public void Dispose()
     {

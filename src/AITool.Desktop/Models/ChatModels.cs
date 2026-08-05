@@ -23,7 +23,7 @@ public sealed class ChatSendResult
     public List<ChatAttemptResult> Attempts { get; set; } = new();
 }
 
-public sealed class ChatAttemptResult
+public partial class ChatAttemptResult : ObservableObject
 {
     public int? AttemptIndex { get; set; }
     public string? SiteName { get; set; }
@@ -43,6 +43,7 @@ public sealed class ChatAttemptResult
     public string? ResponseBody { get; set; }
     public string? ForwardingMode { get; set; }
     public string? UpstreamProtocolType { get; set; }
+    [ObservableProperty] private bool _isExpanded;
 
     public string AttemptTitle => $"第 {AttemptIndex.GetValueOrDefault() + 1} 次尝试 · {SiteName ?? "未知站点"}";
     public string AttemptModelText => $"{AttemptedModel ?? "未知模型"} / {SiteModelName ?? "-"}";
@@ -58,6 +59,7 @@ public sealed class ChatAttemptResult
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage) || !IsSuccess;
     public bool HasRequestBody => !string.IsNullOrWhiteSpace(RequestBody);
     public bool HasResponseBody => !string.IsNullOrWhiteSpace(ResponseBody);
+    public bool HasDetails => HasRequestBody || HasResponseBody;
 }
 
 public partial class ChatMessage : ObservableObject
