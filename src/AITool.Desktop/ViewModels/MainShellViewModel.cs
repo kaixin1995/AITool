@@ -121,6 +121,34 @@ public partial class MainShellViewModel : ViewModelBase
                 await routes.LoadAsync();
                 break;
             }
+            case "detection":
+            {
+                var detection = new DetectionViewModel(_apiService);
+                CurrentPage = detection;
+                await detection.LoadAsync();
+                break;
+            }
+            case "detection-tasks":
+            {
+                var detectionTasks = new DetectionTasksViewModel(_apiService);
+                CurrentPage = detectionTasks;
+                await detectionTasks.LoadAsync();
+                break;
+            }
+            case "usage-logs":
+            {
+                var usageLogs = new UsageLogsViewModel(_apiService);
+                CurrentPage = usageLogs;
+                await usageLogs.LoadAsync();
+                break;
+            }
+            case "system-settings":
+            {
+                var systemSettings = new SystemSettingsViewModel(_apiService);
+                CurrentPage = systemSettings;
+                await systemSettings.LoadAsync();
+                break;
+            }
             default:
             {
                 var description = item.Key switch

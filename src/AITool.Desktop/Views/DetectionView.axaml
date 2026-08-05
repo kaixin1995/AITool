@@ -1,0 +1,33 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.DetectionView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:DetectionViewModel"
+    x:CompileBindings="False">
+  <Grid RowDefinitions="Auto,*">
+    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,18">
+      <StackPanel Spacing="4"><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="模型检测" /><TextBlock Classes="page-subtitle" Text="查看各站点模型的可用性和响应状态" /></StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10"><Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="14,8" /><Button Classes="primary-button" Command="{Binding ProbeAllCommand}" Content="全部检测" IsEnabled="{Binding CanProbe}" Padding="14,8" /></StackPanel>
+    </Grid>
+    <Grid Grid.Row="1">
+      <StackPanel Spacing="14">
+        <Border Background="#E8F1FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsBusy}"><TextBlock Foreground="#315EA8" Text="{Binding ProgressText}" /></Border>
+        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
+        <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoGroups}" Text="暂无映射数据，请先配置站点和模型" Margin="0,30" />
+        <ItemsControl ItemsSource="{Binding Groups}">
+          <ItemsControl.ItemTemplate><DataTemplate>
+            <Border Classes="content-card" Margin="0,0,0,14" Padding="0">
+              <StackPanel>
+                <Border Background="#F8FAFC" Padding="18,13"><Grid ColumnDefinitions="*,Auto"><StackPanel Spacing="3"><TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding DisplayName}" /><TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding ModelName}" /></StackPanel><Button Grid.Column="1" Classes="secondary-button" Command="{Binding DataContext.ProbeModelCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="检测此模型" Padding="10,6" /></Grid></Border>
+                <ItemsControl ItemsSource="{Binding Sites}"><ItemsControl.ItemTemplate><DataTemplate>
+                  <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,13"><Grid ColumnDefinitions="2*,1.5*,1*,1*,Auto" ColumnSpacing="12"><StackPanel Spacing="3"><TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding SiteName}" /><TextBlock FontSize="12" Foreground="#94A3B8" Text="{Binding RemoteModelName}" /></StackPanel><TextBlock Grid.Column="1" Foreground="#64748B" Text="{Binding LastCheckedAt}" VerticalAlignment="Center" /><TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding DurationText}" VerticalAlignment="Center" /><Border Grid.Column="3" Background="#E8F7EA" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Foreground="#166534" Text="{Binding StatusText}" /></Border><Button Grid.Column="4" Classes="secondary-button" Command="{Binding DataContext.ProbeMappingCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="检测" Padding="10,6" /></Grid></Border>
+                </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+              </StackPanel>
+            </Border>
+          </DataTemplate></ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </Grid>
+  </Grid>
+</UserControl>
