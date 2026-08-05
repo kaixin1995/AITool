@@ -14,7 +14,9 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
     private readonly SemaphoreSlim _tokenRefreshLock = new(1, 1);
+    private readonly SemaphoreSlim _stateRefreshLock = new(1, 1);
     private Timer? _tokenRefreshTimer;
+    private Timer? _stateRefreshTimer;
     private bool _disposed;
 
     [ObservableProperty] private ObservableCollection<CodexAccount> _accounts = new();
@@ -159,6 +161,19 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
 
         // 启动后台定时刷新：每 3 分钟检查即将过期的 token 并自动刷新，避免用户手动操作。
         StartTokenRefreshTimer();
+        StartStateRefreshTimer();
+    }
+
+    private void StartStateRefreshTimer()
+    {
+        if (_disposed) return;
+
+        _stateRefreshTimer?.Dispose();
+        _stateRefreshTimer = new Timer(
+            _ => _ = RefreshStateSilentlyAsync(),
+            null,
+            TimeSpan.FromSeconds(15),
+            TimeSpan.FromSeconds(15));
     }
 
     private void StartTokenRefreshTimer()
@@ -171,6 +186,68 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             null,
             TimeSpan.FromMinutes(3),
             TimeSpan.FromMinutes(3));
+    }
+
+    private async Task RefreshStateSilentlyAsync()
+    {
+        if (_disposed || !await _stateRefreshLock.WaitAsync(0)) return;
+
+        try
+        {
+            var accounts = await _apiService.SendAsync<List<CodexAccount>>(
+                HttpMethod.Get,
+                "/api/admin/codex/accounts",
+                null);
+            if (_disposed) return;
+
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                var exportSelections = Accounts.ToDictionary(account => account.Id, account => account.IsExportSelected);
+                foreach (var account in accounts)
+                {
+                    account.IsExportSelected = exportSelections.GetValueOrDefault(account.Id, true);
+                    AttachAccount(account);
+                }
+
+                FeatureDisabled = false;
+                Accounts = new ObservableCollection<CodexAccount>(accounts);
+                NotifyAccountProperties();
+            });
+
+            var inspectionStatus = await _apiService.SendAsync<CodexInspectionStatus>(
+                HttpMethod.Get,
+                "/api/admin/codex/inspection/status",
+                null);
+            if (!_disposed)
+            {
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    InspectionStatus = inspectionStatus;
+                    InspectionDisabled = false;
+                    NotifyInspectionProperties();
+                });
+            }
+        }
+        catch (ApiException exception) when (exception.StatusCode == 404)
+        {
+            if (!_disposed)
+            {
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    FeatureDisabled = true;
+                    Accounts.Clear();
+                    NotifyAccountProperties();
+                });
+            }
+        }
+        catch
+        {
+            // 后台轮询失败不覆盖当前页面数据，保留用户主动刷新时的错误提示。
+        }
+        finally
+        {
+            _stateRefreshLock.Release();
+        }
     }
 
     private async Task RefreshExpiringTokensAsync()
@@ -970,5 +1047,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         _disposed = true;
         _tokenRefreshTimer?.Dispose();
         _tokenRefreshTimer = null;
+        _stateRefreshTimer?.Dispose();
+        _stateRefreshTimer = null;
     }
 }
