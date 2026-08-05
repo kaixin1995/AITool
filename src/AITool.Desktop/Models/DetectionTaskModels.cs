@@ -46,13 +46,36 @@ public partial class DetectionTaskItem : ObservableObject
     [ObservableProperty]
     private bool _isEnabled;
 
+    [ObservableProperty]
+    private bool _isBusy;
+
+    [ObservableProperty]
+    private string _busyText = string.Empty;
+
     public string StatusText => IsEnabled ? "已启用" : "已停用";
     public string ToggleActionText => IsEnabled ? "停用" : "启用";
     public string ModelText => string.IsNullOrWhiteSpace(ModelName) ? "全部模型" : ModelName!;
+    public string StatusBackground => IsEnabled ? "#E8F7EA" : "#F1F5F9";
+    public string StatusForeground => IsEnabled ? "#166534" : "#64748B";
+    public bool CanToggle => !IsBusy;
+    public bool CanExecute => !IsBusy;
+    public bool CanDelete => !IsBusy;
+    public bool HasBusyText => !string.IsNullOrWhiteSpace(BusyText);
 
     partial void OnIsEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(ToggleActionText));
+        OnPropertyChanged(nameof(StatusBackground));
+        OnPropertyChanged(nameof(StatusForeground));
     }
+
+    partial void OnIsBusyChanged(bool value)
+    {
+        OnPropertyChanged(nameof(CanToggle));
+        OnPropertyChanged(nameof(CanExecute));
+        OnPropertyChanged(nameof(CanDelete));
+    }
+
+    partial void OnBusyTextChanged(string value) => OnPropertyChanged(nameof(HasBusyText));
 }

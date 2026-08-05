@@ -20,6 +20,7 @@ public partial class DetectionTasksViewModel : ViewModelBase
     [ObservableProperty] private bool _isSaving;
     [ObservableProperty] private string _errorMessage = string.Empty;
     [ObservableProperty] private string? _executingTaskId;
+    [ObservableProperty] private bool _isOperationBusy;
 
     public DetectionTasksViewModel(ApiService apiService)
     {
@@ -30,7 +31,11 @@ public partial class DetectionTasksViewModel : ViewModelBase
     public bool HasTasks => Tasks.Count > 0;
     public bool HasNoTasks => !HasTasks;
     public bool ShowEmptyState => !IsLoading && !HasError && HasNoTasks;
-    public bool CanCreate => !IsSaving && !string.IsNullOrWhiteSpace(TaskName) && !string.IsNullOrWhiteSpace(CronExpression);
+    public bool IsListVisible => !IsLoading && !HasError && HasTasks;
+    public bool CanRetry => !IsLoading && !IsOperationBusy;
+    public bool CanCreate => !IsSaving && !IsLoading && !IsOperationBusy
+        && !string.IsNullOrWhiteSpace(TaskName)
+        && !string.IsNullOrWhiteSpace(CronExpression);
 
     public async Task LoadAsync()
     {
@@ -89,39 +94,69 @@ public partial class DetectionTasksViewModel : ViewModelBase
     [RelayCommand]
     private async Task ToggleAsync(DetectionTaskItem? task)
     {
-        if (task is null) return;
+        if (!TryBeginOperation(task, "正在切换状态...")) return;
         try
         {
-            await _apiService.SendAsync<object>(HttpMethod.Post, $"/api/admin/detection-tasks/{task.Id}/toggle", null);
+            await _apiService.SendAsync<object>(HttpMethod.Post, $"/api/admin/detection-tasks/{task!.Id}/toggle", null);
             await LoadAsync();
         }
         catch (Exception exception) { ErrorMessage = exception.Message; }
+        finally { EndOperation(task); }
     }
 
     [RelayCommand]
     private async Task ExecuteAsync(DetectionTaskItem? task)
     {
-        if (task is null || ExecutingTaskId is not null) return;
-        ExecutingTaskId = task.Id;
+        if (!TryBeginOperation(task, "正在执行检测...")) return;
+        ExecutingTaskId = task!.Id;
         try
         {
             await _apiService.SendAsync<object>(HttpMethod.Post, $"/api/admin/detection-tasks/{task.Id}/execute", null);
             await LoadAsync();
         }
         catch (Exception exception) { ErrorMessage = exception.Message; }
-        finally { ExecutingTaskId = null; }
+        finally
+        {
+            ExecutingTaskId = null;
+            EndOperation(task);
+        }
     }
 
     [RelayCommand]
     private async Task DeleteAsync(DetectionTaskItem? task)
     {
-        if (task is null) return;
+        if (!TryBeginOperation(task, "正在删除任务...")) return;
         try
         {
-            await _apiService.SendAsync<object>(HttpMethod.Delete, $"/api/admin/detection-tasks/{task.Id}", null);
+            await _apiService.SendAsync<object>(HttpMethod.Delete, $"/api/admin/detection-tasks/{task!.Id}", null);
             await LoadAsync();
         }
         catch (Exception exception) { ErrorMessage = exception.Message; }
+        finally { EndOperation(task); }
+    }
+
+    private bool TryBeginOperation(DetectionTaskItem? task, string busyText)
+    {
+        if (task is null || IsOperationBusy || IsLoading) return false;
+        IsOperationBusy = true;
+        task.IsBusy = true;
+        task.BusyText = busyText;
+        OnPropertyChanged(nameof(CanCreate));
+        OnPropertyChanged(nameof(CanRetry));
+        return true;
+    }
+
+    private void EndOperation(DetectionTaskItem? task)
+    {
+        if (task is not null)
+        {
+            task.IsBusy = false;
+            task.BusyText = string.Empty;
+        }
+
+        IsOperationBusy = false;
+        OnPropertyChanged(nameof(CanCreate));
+        OnPropertyChanged(nameof(CanRetry));
     }
 
     partial void OnErrorMessageChanged(string value)
