@@ -89,6 +89,8 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
 
     private void StartTokenRefreshTimer()
     {
+        if (_disposed) return;
+
         _tokenRefreshTimer?.Dispose();
         _tokenRefreshTimer = new Timer(
             async _ => await RefreshExpiringTokensAsync(),
@@ -99,7 +101,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
 
     private async Task RefreshExpiringTokensAsync()
     {
-        if (!await _tokenRefreshLock.WaitAsync(0)) return;
+        if (_disposed || !await _tokenRefreshLock.WaitAsync(0)) return;
         try
         {
             var expirationThreshold = DateTimeOffset.UtcNow.AddMinutes(10);
@@ -111,7 +113,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                     && expiresAt <= expirationThreshold)
                 .ToList());
 
-            if (expiringAccounts.Count == 0) return;
+            if (_disposed || expiringAccounts.Count == 0) return;
 
             // 网络刷新保持并行，绑定集合和提示消息统一在 UI 线程提交。
             var refreshTasks = expiringAccounts
@@ -129,8 +131,11 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                 .ToArray();
 
             var results = await Task.WhenAll(refreshTasks);
+            if (_disposed) return;
+
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
+                if (_disposed) return;
                 foreach (var (refreshedAccount, message) in results)
                 {
                     if (refreshedAccount is not null)
@@ -422,6 +427,5 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         _disposed = true;
         _tokenRefreshTimer?.Dispose();
         _tokenRefreshTimer = null;
-        _tokenRefreshLock.Dispose();
     }
 }
