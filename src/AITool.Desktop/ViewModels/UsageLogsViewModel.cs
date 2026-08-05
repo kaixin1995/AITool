@@ -13,7 +13,12 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
     private readonly SemaphoreSlim _pageLoadLock = new(1, 1);
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private Timer? _refreshTimer;
+    private CancellationTokenSource? _listCancellation;
+    private CancellationTokenSource? _detailCancellation;
+    private int _listGeneration;
+    private int _detailGeneration;
     private int _refreshInFlight;
     private bool _disposed;
 
@@ -94,6 +99,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
 
     public async Task LoadAsync()
     {
+        CancelCurrentListRequest();
         IsLoading = true;
         ErrorMessage = string.Empty;
         try
@@ -107,10 +113,16 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
             var filters = await _apiService.SendAsync<UsageLogFilters>(
                 HttpMethod.Get,
                 "/api/admin/usage-logs/filters",
-                null);
+                null,
+                true,
+                _lifetimeCancellation.Token);
             Sites = new ObservableCollection<UsageLogFilterItem>(filters.Sites);
             AccessKeys = new ObservableCollection<UsageLogFilterItem>(filters.AccessKeys);
             await LoadPageAsync(Page, showLoading: false);
+        }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            // 页面销毁时取消请求，不向用户显示普通错误。
         }
         catch (Exception exception)
         {
@@ -126,47 +138,75 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
 
     private async Task LoadPageAsync(int page, bool showLoading = true)
     {
-        await _pageLoadLock.WaitAsync();
-        if (showLoading)
-        {
-            IsLoading = true;
-            ErrorMessage = string.Empty;
-        }
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var previousCancellation = Interlocked.Exchange(ref _listCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        var generation = Interlocked.Increment(ref _listGeneration);
+        var lockAcquired = false;
 
         try
         {
-        var query = BuildQuery(page);
-        var listTask = _apiService.SendAsync<UsageLogListResponse>(
-            HttpMethod.Get,
-            $"/api/admin/usage-logs/list?{query}",
-            null);
-        var summaryTask = _apiService.SendAsync<UsageLogSummary>(
-            HttpMethod.Get,
-            $"/api/admin/usage-logs/summary?{query}",
-            null);
-        await Task.WhenAll(listTask, summaryTask);
+            await _pageLoadLock.WaitAsync(localCancellation.Token);
+            lockAcquired = true;
+            if (showLoading && IsCurrentListRequest(generation, localCancellation))
+            {
+                IsLoading = true;
+                ErrorMessage = string.Empty;
+            }
 
-        var list = await listTask;
-        Summary = await summaryTask;
-        Items = new ObservableCollection<UsageLogItem>(list.Items);
-        Page = list.Page;
-        TotalPages = list.TotalPages;
-        TotalCount = list.TotalCount;
-        OnPropertyChanged(nameof(HasItems));
-        OnPropertyChanged(nameof(HasNoItems));
-        UpdatePagingProperties();
+            var query = BuildQuery(page);
+            var listTask = _apiService.SendAsync<UsageLogListResponse>(
+                HttpMethod.Get,
+                $"/api/admin/usage-logs/list?{query}",
+                null,
+                true,
+                localCancellation.Token);
+            var summaryTask = _apiService.SendAsync<UsageLogSummary>(
+                HttpMethod.Get,
+                $"/api/admin/usage-logs/summary?{query}",
+                null,
+                true,
+                localCancellation.Token);
+            await Task.WhenAll(listTask, summaryTask);
+
+            if (!IsCurrentListRequest(generation, localCancellation)) return;
+            var list = await listTask;
+            Summary = await summaryTask;
+            Items = new ObservableCollection<UsageLogItem>(list.Items);
+            Page = list.Page;
+            TotalPages = list.TotalPages;
+            TotalCount = list.TotalCount;
+            OnPropertyChanged(nameof(HasItems));
+            OnPropertyChanged(nameof(HasNoItems));
+            UpdatePagingProperties();
+        }
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
+        {
+            // 新查询或页面销毁会取消旧请求，取消不应显示为失败。
+        }
+        catch (Exception exception) when (IsCurrentListRequest(generation, localCancellation))
+        {
+            ErrorMessage = exception.Message;
         }
         finally
         {
-            if (showLoading)
+            if (IsCurrentListRequest(generation, localCancellation))
             {
-                IsLoading = false;
+                if (showLoading) IsLoading = false;
+                Interlocked.CompareExchange(ref _listCancellation, null, localCancellation);
+                UpdatePagingProperties();
             }
 
-            _pageLoadLock.Release();
-            UpdatePagingProperties();
+            if (lockAcquired) _pageLoadLock.Release();
+            localCancellation.Dispose();
         }
     }
+
+    private bool IsCurrentListRequest(int generation, CancellationTokenSource localCancellation)
+        => !_disposed
+            && generation == Volatile.Read(ref _listGeneration)
+            && ReferenceEquals(_listCancellation, localCancellation);
 
     private string BuildQuery(int page)
     {
@@ -261,19 +301,25 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
             return;
         }
 
+        var generation = Volatile.Read(ref _listGeneration);
         try
         {
             var query = BuildQuery(Page);
             var listTask = _apiService.SendAsync<UsageLogListResponse>(
                 HttpMethod.Get,
                 $"/api/admin/usage-logs/list?{query}",
-                null);
+                null,
+                true,
+                _lifetimeCancellation.Token);
             var summaryTask = _apiService.SendAsync<UsageLogSummary>(
                 HttpMethod.Get,
                 $"/api/admin/usage-logs/summary?{query}",
-                null);
+                null,
+                true,
+                _lifetimeCancellation.Token);
             await Task.WhenAll(listTask, summaryTask);
 
+            if (_disposed || generation != Volatile.Read(ref _listGeneration)) return;
             var list = await listTask;
             var summary = await summaryTask;
             if (Page != list.Page || TotalPages != list.TotalPages || TotalCount != list.TotalCount)
@@ -302,6 +348,10 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
             OnPropertyChanged(nameof(HasNoItems));
             UpdatePagingProperties();
         }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested)
+        {
+            // 页面销毁时取消自动刷新请求，不显示为普通错误。
+        }
         catch (Exception exception)
         {
             ErrorMessage = exception.Message;
@@ -311,6 +361,14 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
             _pageLoadLock.Release();
             Interlocked.Exchange(ref _refreshInFlight, 0);
         }
+    }
+
+    private void CancelCurrentListRequest()
+    {
+        Interlocked.Increment(ref _listGeneration);
+        var cancellation = Interlocked.Exchange(ref _listCancellation, null);
+        cancellation?.Cancel();
+        cancellation?.Dispose();
     }
 
     private void ConfigureAutoRefresh()
@@ -406,14 +464,24 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private async Task OpenDetailAsync(UsageLogItem? item)
     {
-        if (item is null || string.IsNullOrWhiteSpace(item.RequestId)) return;
+        if (item is null || string.IsNullOrWhiteSpace(item.RequestId) || _disposed) return;
+
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var previousCancellation = Interlocked.Exchange(ref _detailCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
+        var generation = Interlocked.Increment(ref _detailGeneration);
         IsDetailLoading = true;
         try
         {
             var detail = await _apiService.SendAsync<UsageLogRequestDetail>(
                 HttpMethod.Get,
                 $"/api/admin/usage-logs/request-detail/{Uri.EscapeDataString(item.RequestId)}",
-                null);
+                null,
+                true,
+                localCancellation.Token);
+
+            if (!IsCurrentDetailRequest(generation, localCancellation)) return;
 
             // 明细 DTO 的尝试项不重复携带请求模型，补入请求级模型以支持展示回退。
             foreach (var attempt in detail.Attempts)
@@ -423,15 +491,30 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
 
             SelectedDetail = detail;
         }
-        catch (Exception exception)
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
+        {
+            // 用户切换到另一条日志或页面销毁时取消旧详情请求。
+        }
+        catch (Exception exception) when (IsCurrentDetailRequest(generation, localCancellation))
         {
             ErrorMessage = exception.Message;
         }
         finally
         {
-            IsDetailLoading = false;
+            if (IsCurrentDetailRequest(generation, localCancellation))
+            {
+                IsDetailLoading = false;
+                Interlocked.CompareExchange(ref _detailCancellation, null, localCancellation);
+            }
+
+            localCancellation.Dispose();
         }
     }
+
+    private bool IsCurrentDetailRequest(int generation, CancellationTokenSource localCancellation)
+        => !_disposed
+            && generation == Volatile.Read(ref _detailGeneration)
+            && ReferenceEquals(_detailCancellation, localCancellation);
 
     [RelayCommand]
     private void CloseDetail() => SelectedDetail = null;
@@ -452,6 +535,13 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
         _disposed = true;
         _refreshTimer?.Dispose();
         _refreshTimer = null;
+        CancelCurrentListRequest();
+        var detailCancellation = Interlocked.Exchange(ref _detailCancellation, null);
+        detailCancellation?.Cancel();
+        detailCancellation?.Dispose();
+        _lifetimeCancellation.Cancel();
+        _lifetimeCancellation.Dispose();
+        _pageLoadLock.Dispose();
     }
 
     partial void OnErrorMessageChanged(string value)
