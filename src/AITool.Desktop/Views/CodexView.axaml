@@ -125,7 +125,9 @@
                         <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="0,12,0,0">
                           <WrapPanel HorizontalAlignment="Right">
                             <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Padding="10,7" Margin="0,0,6,0" />
+                            <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Padding="10,7" Margin="0,0,6,0" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,7" Margin="0,0,6,0" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,7" />
                           </WrapPanel>
@@ -243,5 +245,19 @@
         </TabControl>
       </StackPanel>
     </ScrollViewer>
+
+    <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsAccountEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+      <StackPanel Spacing="14">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="编辑 Codex 账号" />
+          <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseAccountEditorCommand}" Content="关闭" Padding="10,6" />
+        </Grid>
+        <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding EditingAccountEmailText}" TextWrapping="Wrap" />
+        <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="显示名称" /><TextBox Classes="form-input" Text="{Binding AccountDisplayName, Mode=TwoWay}" /></StackPanel>
+        <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="新的 Refresh Token（可选）" /><TextBox Classes="form-input" PasswordChar="●" Text="{Binding AccountRefreshToken, Mode=TwoWay}" Watermark="留空表示保留当前凭证" /></StackPanel>
+        <TextBlock FontSize="12" Foreground="#64748B" Text="Refresh Token 仅用于本次请求，不会写入桌面端配置文件或源码。" TextWrapping="Wrap" />
+        <Button Classes="primary-button" Command="{Binding SaveAccountCommand}" Content="保存账号" IsEnabled="{Binding CanSaveAccount}" HorizontalContentAlignment="Center" Padding="12,9" />
+      </StackPanel>
+    </Border>
   </Grid>
 </UserControl>

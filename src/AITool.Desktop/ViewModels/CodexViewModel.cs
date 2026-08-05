@@ -29,6 +29,11 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private bool _inspectionRunning;
     [ObservableProperty] private bool _inspectionDisabled;
     [ObservableProperty] private string _inspectionError = string.Empty;
+    [ObservableProperty] private CodexAccount? _editingAccount;
+    [ObservableProperty] private string _accountDisplayName = string.Empty;
+    [ObservableProperty] private string _accountRefreshToken = string.Empty;
+    [ObservableProperty] private bool _isAccountEditorOpen;
+    [ObservableProperty] private bool _isAccountSaving;
 
     public CodexViewModel(ApiService apiService)
     {
@@ -52,6 +57,8 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     public string InspectionRunSummary => InspectionLastRun is null
         ? string.Empty
         : $"{InspectionLastRun.RunModeText} · {InspectionLastRun.RefreshModeText}";
+    public bool CanSaveAccount => !IsAccountSaving && EditingAccount is not null && !string.IsNullOrWhiteSpace(AccountDisplayName);
+    public string EditingAccountEmailText => string.IsNullOrWhiteSpace(EditingAccount?.Email) ? "未提供邮箱" : $"账号：{EditingAccount.Email}";
 
     public async Task LoadAsync()
     {
@@ -275,6 +282,77 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     }
 
     [RelayCommand]
+    private void OpenAccountEditor(CodexAccount? account)
+    {
+        if (account is null) return;
+        EditingAccount = account;
+        AccountDisplayName = account.DisplayName;
+        AccountRefreshToken = string.Empty;
+        IsAccountEditorOpen = true;
+        OnPropertyChanged(nameof(CanSaveAccount));
+    }
+
+    [RelayCommand]
+    private void CloseAccountEditor()
+    {
+        IsAccountEditorOpen = false;
+        EditingAccount = null;
+        AccountDisplayName = string.Empty;
+        AccountRefreshToken = string.Empty;
+        OnPropertyChanged(nameof(CanSaveAccount));
+    }
+
+    [RelayCommand]
+    private async Task SaveAccountAsync()
+    {
+        if (!CanSaveAccount || EditingAccount is null) return;
+        IsAccountSaving = true;
+        ErrorMessage = string.Empty;
+        try
+        {
+            var account = await _apiService.SendAsync<CodexAccount>(
+                HttpMethod.Put,
+                $"/api/admin/codex/accounts/{EditingAccount.Id}",
+                new
+                {
+                    displayName = AccountDisplayName.Trim(),
+                    refreshToken = string.IsNullOrWhiteSpace(AccountRefreshToken) ? null : AccountRefreshToken.Trim()
+                });
+            ReplaceAccount(account);
+            Message = "Codex 账号已更新";
+            CloseAccountEditor();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+        finally
+        {
+            IsAccountSaving = false;
+            OnPropertyChanged(nameof(CanSaveAccount));
+        }
+    }
+
+    [RelayCommand]
+    private async Task ResetQuotaAsync(CodexAccount? account)
+    {
+        if (account is null) return;
+        try
+        {
+            await _apiService.SendAsync<object>(
+                HttpMethod.Post,
+                $"/api/admin/codex/accounts/{account.Id}/reset-quota",
+                null);
+            Message = $"账号“{account.DisplayName}”的额度状态已重置";
+            await LoadAsync();
+        }
+        catch (Exception exception)
+        {
+            ErrorMessage = exception.Message;
+        }
+    }
+
+    [RelayCommand]
     private async Task RefreshTokenAsync(CodexAccount? account)
     {
         if (account is null) return;
@@ -418,6 +496,13 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     }
     partial void OnOAuthUrlChanged(string value) => OnPropertyChanged(nameof(HasOAuthSession));
     partial void OnIsOAuthBusyChanged(bool value) => OnPropertyChanged(nameof(CanCompleteOAuth));
+    partial void OnIsAccountSavingChanged(bool value) => OnPropertyChanged(nameof(CanSaveAccount));
+    partial void OnAccountDisplayNameChanged(string value) => OnPropertyChanged(nameof(CanSaveAccount));
+    partial void OnEditingAccountChanged(CodexAccount? value)
+    {
+        OnPropertyChanged(nameof(CanSaveAccount));
+        OnPropertyChanged(nameof(EditingAccountEmailText));
+    }
     partial void OnInspectionRunningChanged(bool value) => NotifyInspectionProperties();
     partial void OnInspectionErrorChanged(string value) => OnPropertyChanged(nameof(HasInspectionError));
 
