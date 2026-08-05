@@ -61,7 +61,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     public bool HasFeatureDisabled => FeatureDisabled;
     public bool HasMessage => !string.IsNullOrWhiteSpace(Message);
     public bool HasAccounts => Accounts.Count > 0;
-    public bool HasNoAccounts => !IsLoading && !HasError && !HasAccounts;
+    public bool HasNoAccounts => !IsLoading && !HasError && !FeatureDisabled && !HasAccounts;
     public int SelectedExportCount => Accounts.Count(account => account.IsExportSelected);
     public string SelectedExportText => $"已选 {SelectedExportCount} 个账号";
     public bool HasSelectedExports => SelectedExportCount > 0;
