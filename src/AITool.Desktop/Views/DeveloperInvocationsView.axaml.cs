@@ -24,6 +24,22 @@ public partial class DeveloperInvocationsView : UserControl
         }
     }
 
+    private async void CopyDetailText(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not Button button
+            || button.Tag is not string text
+            || string.IsNullOrWhiteSpace(text))
+        {
+            return;
+        }
+
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (clipboard is not null)
+        {
+            await clipboard.SetTextAsync(text);
+        }
+    }
+
     private async void ConfirmResetCircuit(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not DeveloperInvocationsViewModel viewModel
