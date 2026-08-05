@@ -157,9 +157,9 @@
                   </StackPanel>
                   <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
                     <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="#64748B" Text="{Binding InspectionStatus.NextScheduledText, FallbackValue=未安排}" />
-                    <Button Classes="secondary-button" Command="{Binding RunManualInspectionCommand}" Content="手动巡检" Padding="11,7" />
-                    <Button Classes="primary-button" Command="{Binding RunRealInspectionCommand}" Content="真实巡检" Padding="11,7" />
-                    <Button Classes="secondary-button" Command="{Binding RefreshInspectionCommand}" Content="刷新状态" Padding="11,7" />
+                    <Button Classes="secondary-button" Command="{Binding RunManualInspectionCommand}" Content="手动巡检" Height="36" MinHeight="36" Padding="11,6" />
+                    <Button Classes="primary-button" Command="{Binding RunRealInspectionCommand}" Content="真实巡检" Height="36" MinHeight="36" Padding="11,6" />
+                    <Button Classes="secondary-button" Command="{Binding RefreshInspectionCommand}" Content="刷新状态" Height="36" MinHeight="36" Padding="11,6" />
                   </StackPanel>
                 </Grid>
               </Border>
