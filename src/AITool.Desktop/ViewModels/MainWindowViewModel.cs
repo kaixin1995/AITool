@@ -3,7 +3,7 @@ using AITool.Desktop.Services;
 
 namespace AITool.Desktop.ViewModels;
 
-public partial class MainWindowViewModel : ViewModelBase
+public partial class MainWindowViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
     private readonly SseClient _sseClient;
@@ -15,6 +15,7 @@ public partial class MainWindowViewModel : ViewModelBase
 
     private AuthViewModel? _authViewModel;
     private MainShellViewModel? _mainShellViewModel;
+    private bool _disposed;
 
     public MainWindowViewModel(
         ApiService apiService,
@@ -86,5 +87,26 @@ public partial class MainWindowViewModel : ViewModelBase
         _authViewModel.LoginSucceeded += OnLoginSucceeded;
         CurrentViewModel = _authViewModel;
         _ = _authViewModel.InitializeAsync();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+
+        _disposed = true;
+        if (_mainShellViewModel is not null)
+        {
+            _mainShellViewModel.LogoutCompleted -= OnLogoutCompleted;
+            _mainShellViewModel.Dispose();
+            _mainShellViewModel = null;
+        }
+
+        if (_authViewModel is not null)
+        {
+            _authViewModel.LoginSucceeded -= OnLoginSucceeded;
+            _authViewModel = null;
+        }
+
+        CurrentViewModel = null;
     }
 }

@@ -16,6 +16,7 @@ namespace AITool.Desktop;
 public partial class App : Application
 {
     private ServiceProvider? _serviceProvider;
+    private MainWindowViewModel? _mainWindowViewModel;
     private TrayIcon? _trayIcon;
     private bool _isExiting;
 
@@ -41,6 +42,7 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             var viewModel = _serviceProvider.GetRequiredService<MainWindowViewModel>();
+            _mainWindowViewModel = viewModel;
             var window = _serviceProvider.GetRequiredService<MainWindow>();
             window.DataContext = viewModel;
             desktop.MainWindow = window;
@@ -133,6 +135,8 @@ public partial class App : Application
         _isExiting = true;
         _trayIcon?.Dispose();
         _trayIcon = null;
+        _mainWindowViewModel?.Dispose();
+        _mainWindowViewModel = null;
         desktop.Shutdown();
         _serviceProvider?.Dispose();
         _serviceProvider = null;
