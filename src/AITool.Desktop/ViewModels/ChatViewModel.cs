@@ -22,6 +22,7 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private string _input = string.Empty;
     [ObservableProperty] private bool _enableStreaming;
     [ObservableProperty] private bool _enableReasoning;
+    [ObservableProperty] private string _reasoningEffort = "high";
     [ObservableProperty] private bool _isSending;
     [ObservableProperty] private string _errorMessage = string.Empty;
 
@@ -35,6 +36,7 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
     public bool HasMessages => Messages.Count > 0;
     public bool HasNoMessages => !HasMessages;
     public bool CanSend => !IsSending && SelectedTarget is not null && !string.IsNullOrWhiteSpace(Input);
+    public IReadOnlyList<string> ReasoningEffortOptions { get; } = ["low", "medium", "high", "xhigh", "max"];
 
     public async Task LoadAsync()
     {
@@ -69,10 +71,10 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
         previousCancellation?.Dispose();
         try
         {
-            object body = new { modelId = SelectedTarget.ModelId, mappingId = SelectedTarget.MappingId, message = text, enableReasoning = EnableReasoning, enableStreaming = false, reasoningEffort = "high" };
+            object body = new { modelId = SelectedTarget.ModelId, mappingId = SelectedTarget.MappingId, message = text, enableReasoning = EnableReasoning, enableStreaming = false, reasoningEffort = ReasoningEffort };
             if (EnableStreaming)
             {
-                body = new { modelId = SelectedTarget.ModelId, mappingId = SelectedTarget.MappingId, message = text, enableReasoning = EnableReasoning, enableStreaming = true, reasoningEffort = "high" };
+                body = new { modelId = SelectedTarget.ModelId, mappingId = SelectedTarget.MappingId, message = text, enableReasoning = EnableReasoning, enableStreaming = true, reasoningEffort = ReasoningEffort };
                 await foreach (var item in _sseClient.StreamAsync("/api/admin/chat/send-stream", body, localCancellation.Token))
                 {
                     HandleStreamEvent(item, assistant);
