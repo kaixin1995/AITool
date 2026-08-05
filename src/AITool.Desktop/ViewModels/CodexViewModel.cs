@@ -19,6 +19,12 @@ public partial class CodexViewModel : ViewModelBase
     [ObservableProperty] private bool _isOAuthBusy;
     [ObservableProperty] private string _errorMessage = string.Empty;
     [ObservableProperty] private string _message = string.Empty;
+    [ObservableProperty] private CodexInspectionStatus? _inspectionStatus;
+    [ObservableProperty] private CodexInspectionRunResult? _inspectionLastRun;
+    [ObservableProperty] private ObservableCollection<CodexInspectionLog> _inspectionLogs = new();
+    [ObservableProperty] private bool _inspectionRunning;
+    [ObservableProperty] private bool _inspectionDisabled;
+    [ObservableProperty] private string _inspectionError = string.Empty;
 
     public CodexViewModel(ApiService apiService)
     {
@@ -31,6 +37,14 @@ public partial class CodexViewModel : ViewModelBase
     public bool HasNoAccounts => !HasAccounts;
     public bool CanCompleteOAuth => !IsOAuthBusy;
     public bool HasOAuthSession => !string.IsNullOrWhiteSpace(OAuthUrl);
+    public bool HasInspection => InspectionStatus is not null && !InspectionDisabled;
+    public bool HasInspectionLastRun => InspectionLastRun is not null;
+    public bool HasInspectionLogs => InspectionLogs.Count > 0;
+    public bool HasNoInspectionLogs => !HasInspectionLogs;
+    public bool HasInspectionError => !string.IsNullOrWhiteSpace(InspectionError);
+    public bool IsInspectionIdle => !InspectionRunning && InspectionStatus?.IsRunning != true;
+    public string InspectionStateText => InspectionRunning || InspectionStatus?.IsRunning == true ? "巡检中" : "空闲";
+    public string InspectionActionButtonText => InspectionRunning ? "巡检中..." : "手动巡检";
 
     public async Task LoadAsync()
     {
@@ -52,10 +66,9 @@ public partial class CodexViewModel : ViewModelBase
         {
             ErrorMessage = exception.Message;
         }
-        finally
-        {
-            IsLoading = false;
-        }
+
+        await LoadInspectionAsync();
+        IsLoading = false;
     }
 
     private async Task RefreshExpiringTokensAsync()
@@ -82,6 +95,45 @@ public partial class CodexViewModel : ViewModelBase
                 // 后台服务也会周期刷新；单个账号刷新失败不阻断其他账号展示。
             }
         }
+    }
+
+    private async Task LoadInspectionAsync(bool force = false)
+    {
+        if (InspectionDisabled && !force) return;
+        InspectionError = string.Empty;
+
+        try
+        {
+            InspectionStatus = await _apiService.SendAsync<CodexInspectionStatus>(
+                HttpMethod.Get,
+                "/api/admin/codex/inspection/status",
+                null);
+            InspectionDisabled = false;
+
+            var lastRunTask = _apiService.SendAsync<CodexInspectionRunResult?>(
+                HttpMethod.Get,
+                "/api/admin/codex/inspection/last-run",
+                null);
+            var logsTask = _apiService.SendAsync<List<CodexInspectionLog>>(
+                HttpMethod.Get,
+                "/api/admin/codex/inspection/logs",
+                null);
+            InspectionLastRun = await lastRunTask;
+            InspectionLogs = new ObservableCollection<CodexInspectionLog>(await logsTask);
+        }
+        catch (ApiException exception) when (exception.StatusCode == 404)
+        {
+            InspectionDisabled = true;
+            InspectionStatus = null;
+            InspectionLastRun = null;
+            InspectionLogs.Clear();
+        }
+        catch (Exception exception)
+        {
+            InspectionError = exception.Message;
+        }
+
+        NotifyInspectionProperties();
     }
 
     private async Task<CodexAccount> RefreshTokenCoreAsync(CodexAccount account)
@@ -248,8 +300,58 @@ public partial class CodexViewModel : ViewModelBase
         }
     }
 
+    [RelayCommand]
+    private async Task RunInspectionAsync(bool force)
+    {
+        if (InspectionRunning) return;
+        InspectionRunning = true;
+        InspectionError = string.Empty;
+        NotifyInspectionProperties();
+        try
+        {
+            InspectionLastRun = await _apiService.SendAsync<CodexInspectionRunResult>(
+                HttpMethod.Post,
+                $"/api/admin/codex/inspection/run?force={force.ToString().ToLowerInvariant()}",
+                null);
+            Message = force ? "真实巡检已完成" : "手动巡检已完成";
+            await LoadInspectionAsync(true);
+        }
+        catch (Exception exception)
+        {
+            InspectionError = exception.Message;
+        }
+        finally
+        {
+            InspectionRunning = false;
+            NotifyInspectionProperties();
+        }
+    }
+
+    [RelayCommand]
+    private Task RefreshInspectionAsync() => LoadInspectionAsync(true);
+
+    [RelayCommand]
+    private Task RunManualInspectionAsync() => RunInspectionAsync(false);
+
+    [RelayCommand]
+    private Task RunRealInspectionAsync() => RunInspectionAsync(true);
+
+    private void NotifyInspectionProperties()
+    {
+        OnPropertyChanged(nameof(HasInspection));
+        OnPropertyChanged(nameof(HasInspectionLastRun));
+        OnPropertyChanged(nameof(HasInspectionLogs));
+        OnPropertyChanged(nameof(HasNoInspectionLogs));
+        OnPropertyChanged(nameof(HasInspectionError));
+        OnPropertyChanged(nameof(IsInspectionIdle));
+        OnPropertyChanged(nameof(InspectionStateText));
+        OnPropertyChanged(nameof(InspectionActionButtonText));
+    }
+
     partial void OnErrorMessageChanged(string value) => OnPropertyChanged(nameof(HasError));
     partial void OnMessageChanged(string value) => OnPropertyChanged(nameof(HasMessage));
     partial void OnOAuthUrlChanged(string value) => OnPropertyChanged(nameof(HasOAuthSession));
     partial void OnIsOAuthBusyChanged(bool value) => OnPropertyChanged(nameof(CanCompleteOAuth));
+    partial void OnInspectionRunningChanged(bool value) => NotifyInspectionProperties();
+    partial void OnInspectionErrorChanged(string value) => OnPropertyChanged(nameof(HasInspectionError));
 }

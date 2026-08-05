@@ -1,3 +1,4 @@
+using System.Globalization;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace AITool.Desktop.Models;
@@ -27,16 +28,19 @@ public partial class CodexAccount : ObservableObject
 
     public string StatusText => IsQuotaCooling ? "冷却中" : IsEnabled ? "正常" : "已禁用";
     public string ToggleActionText => IsEnabled ? "停用" : "启用";
+    public bool IsDisabled => !IsEnabled;
     public bool HasWindows => Windows.Count > 0;
     public bool HasNoWindows => !HasWindows;
     public string QuotaText => WeeklyUsedPercent.HasValue
         ? $"周额度剩余 {Math.Max(0, 100 - WeeklyUsedPercent.Value):0.#}%"
         : "暂无额度";
+    public string LastQuotaCheckedText => CodexDateText.Format(LastQuotaCheckedAt);
 
     partial void OnIsEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(ToggleActionText));
+        OnPropertyChanged(nameof(IsDisabled));
     }
 }
 
@@ -56,4 +60,74 @@ public sealed class CodexOAuthResult
 {
     public string Url { get; set; } = string.Empty;
     public string State { get; set; } = string.Empty;
+}
+
+public sealed class CodexInspectionStatus
+{
+    public bool IsRunning { get; set; }
+    public string? NextScheduledAt { get; set; }
+    public string? LastFinishedAt { get; set; }
+    public string NextScheduledText => CodexDateText.Format(NextScheduledAt);
+    public string LastFinishedText => CodexDateText.Format(LastFinishedAt);
+}
+
+public sealed class CodexInspectionRunResult
+{
+    public bool IsRunning { get; set; }
+    public bool ForcedRefresh { get; set; }
+    public string? StartedAt { get; set; }
+    public string? FinishedAt { get; set; }
+    public List<CodexInspectionAccountResult> Accounts { get; set; } = new();
+    public int KeepCount { get; set; }
+    public int DisableCount { get; set; }
+    public int EnableCount { get; set; }
+    public int CacheCount { get; set; }
+    public int RealRefreshCount { get; set; }
+    public bool AutoTriggered { get; set; }
+    public string FinishedText => CodexDateText.Format(FinishedAt);
+    public string RunModeText => AutoTriggered ? "自动巡检" : "手动巡检";
+    public string RefreshModeText => ForcedRefresh ? "强制真实刷新" : "允许使用缓存";
+}
+
+public sealed class CodexInspectionAccountResult
+{
+    public string AccountId { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string Action { get; set; } = "keep";
+    public string Reason { get; set; } = string.Empty;
+    public bool FromCache { get; set; }
+    public double? WeeklyUsedPercent { get; set; }
+    public double? FiveHourUsedPercent { get; set; }
+    public string? CheckedAt { get; set; }
+
+    public string ActionText => Action.ToLowerInvariant() switch
+    {
+        "disable" => "禁用",
+        "enable" => "启用",
+        _ => "保留"
+    };
+
+    public string FiveHourText => FiveHourUsedPercent.HasValue ? $"{FiveHourUsedPercent.Value:0.0}%" : "-";
+    public string WeeklyText => WeeklyUsedPercent.HasValue ? $"{WeeklyUsedPercent.Value:0.0}%" : "-";
+    public string SourceText => FromCache ? "缓存" : "实时";
+    public string CheckedAtText => CodexDateText.Format(CheckedAt);
+}
+
+public sealed class CodexInspectionLog
+{
+    public string At { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public string AtText => CodexDateText.Format(At);
+}
+
+internal static class CodexDateText
+{
+    public static string Format(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "从未";
+        return DateTimeOffset.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var date)
+            ? date.ToLocalTime().ToString("yyyy/M/d HH:mm:ss", CultureInfo.InvariantCulture)
+            : value;
+    }
 }

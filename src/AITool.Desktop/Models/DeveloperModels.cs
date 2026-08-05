@@ -58,6 +58,7 @@ public sealed class DeveloperInvocationSummary
     public bool IsPending => string.Equals(Status, "pending", StringComparison.OrdinalIgnoreCase);
     public bool IsSuccessful => string.Equals(Status, "success", StringComparison.OrdinalIgnoreCase)
         || string.Equals(Status, "ok", StringComparison.OrdinalIgnoreCase);
+    public bool IsFailed => !IsPending && !IsSuccessful;
     public string StatusText => IsPending ? "等待" : IsSuccessful ? "成功" : "失败";
     public string DurationText => FormatDuration(TotalDurationMs);
     public string AttemptStatsText => $"成功 {SuccessAttemptCount} / 失败 {FailedAttemptCount} / 等待 {PendingAttemptCount}";
@@ -100,6 +101,7 @@ public sealed class DeveloperInvocationDetail
     public string RequestHeadersText => RequestHeaders.Count == 0
         ? "无"
         : string.Join(Environment.NewLine, RequestHeaders.Select(x => $"{x.Key}: {x.Value}"));
+    public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public string DurationText => TotalDurationMs <= 0 ? "-" : TotalDurationMs >= 1000 ? $"{TotalDurationMs / 1000d:0.#}s" : $"{TotalDurationMs}ms";
 }
 
@@ -125,6 +127,10 @@ public sealed class DeveloperInvocationAttempt
     public bool IsPending => string.Equals(Status, "pending", StringComparison.OrdinalIgnoreCase);
     public bool IsSuccessful => string.Equals(Status, "success", StringComparison.OrdinalIgnoreCase)
         || string.Equals(Status, "ok", StringComparison.OrdinalIgnoreCase);
+    public bool IsFailed => !IsPending && !IsSuccessful;
+    public bool HasPreparedRequestBody => !string.IsNullOrWhiteSpace(PreparedRequestBody);
+    public bool HasResponseBody => !string.IsNullOrWhiteSpace(ResponseBody);
+    public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public string StatusText => IsPending ? "等待" : IsSuccessful ? "成功" : "失败";
     public string DurationText => TotalDurationMs <= 0 ? "-" : TotalDurationMs >= 1000 ? $"{TotalDurationMs / 1000d:0.#}s" : $"{TotalDurationMs}ms";
     public string TokensText => $"{InputTokens:N0} / {CachedTokens:N0} / {OutputTokens:N0}";
@@ -163,7 +169,9 @@ public sealed class CircuitBreakerRoute
     public int FailureCount { get; set; }
     public string? BlockedUntil { get; set; }
     public int? RemainingSeconds { get; set; }
+    public bool IsNotBlocked => !IsBlocked;
     public string StatusText => IsBlocked ? "已熔断" : "失败累计";
+    public string FailureText => $"失败 {FailureCount} 次";
     public string RemainingText => RemainingSeconds is null ? "-" : RemainingSeconds < 60 ? $"{RemainingSeconds}s" : $"{RemainingSeconds / 60}m {RemainingSeconds % 60}s";
 }
 
@@ -193,7 +201,12 @@ public sealed partial class DeveloperSimulatorTab : ObservableObject
 
     [ObservableProperty] private bool _streamEnabled;
     [ObservableProperty] private bool _isRunning;
+    [ObservableProperty] private bool _isSelected;
+
+    public bool CanSend => !IsRunning;
     [ObservableProperty] private string _response = "尚未请求";
     [ObservableProperty] private string _requestExample = string.Empty;
     [ObservableProperty] private string _endpointUrl = string.Empty;
+
+    partial void OnIsRunningChanged(bool value) => OnPropertyChanged(nameof(CanSend));
 }

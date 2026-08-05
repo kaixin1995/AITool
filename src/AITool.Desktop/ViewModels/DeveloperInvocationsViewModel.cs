@@ -59,6 +59,7 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
             new("countTokens", "Count Tokens", "/v1/messages/count_tokens", "POST", false),
             new("responsesCompact", "Responses Compact", "/v1/responses/compact", "POST", false)
         };
+        SimulatorTabs[0].IsSelected = true;
         SelectedSimulatorTab = SimulatorTabs[0];
     }
 
@@ -68,7 +69,9 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
     public bool HasNoItems => !HasItems;
     public bool HasDetail => SelectedDetail is not null;
     public bool HasConcurrency => Concurrency.Count > 0;
+    public bool HasNoConcurrency => !HasConcurrency;
     public bool HasCircuitRoutes => CircuitRoutes.Count > 0;
+    public bool HasNoCircuitRoutes => !HasCircuitRoutes;
     public bool HasBlockedCircuits => CircuitRoutes.Any(x => x.IsBlocked);
     public bool CanPrevious => Page > 1 && !IsLoading;
     public bool CanNext => Page < TotalPages && !IsLoading;
@@ -97,6 +100,7 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
             BaseUrl = init.DefaultBaseUrl;
             AccessKey = init.DefaultAccessKey;
             Models = new ObservableCollection<DeveloperSimulatorModel>(init.Models);
+            ModelNames = new ObservableCollection<string>(Models.Select(model => model.ModelName));
             SelectedModel = init.DefaultOpenAiModel;
             if (string.IsNullOrWhiteSpace(SelectedModel))
             {
@@ -243,6 +247,17 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
 
     [RelayCommand]
     private Task RefreshAsync() => LoadActiveTabAsync();
+
+    [RelayCommand]
+    private void SelectSimulatorTab(DeveloperSimulatorTab? tab)
+    {
+        if (tab is null) return;
+        foreach (var simulatorTab in SimulatorTabs)
+        {
+            simulatorTab.IsSelected = ReferenceEquals(simulatorTab, tab);
+        }
+        SelectedSimulatorTab = tab;
+    }
 
     [RelayCommand]
     private async Task PreviousPageAsync()
