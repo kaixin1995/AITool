@@ -29,6 +29,8 @@
           <SolidColorBrush x:Key="AppDangerTextBrush" Color="#B91C1C" />
           <SolidColorBrush x:Key="AppInfoSoftBrush" Color="#EFF6FF" />
           <SolidColorBrush x:Key="AppInfoTextBrush" Color="#315EA8" />
+          <Color x:Key="AppLoginGradientStartColor">#6C9EFF</Color>
+          <Color x:Key="AppLoginGradientEndColor">#A5B4FC</Color>
         </ResourceDictionary>
         <ResourceDictionary x:Key="Dark">
           <SolidColorBrush x:Key="AppPageBackgroundBrush" Color="#101014" />
@@ -53,6 +55,8 @@
           <SolidColorBrush x:Key="AppDangerTextBrush" Color="#FFB4BC" />
           <SolidColorBrush x:Key="AppInfoSoftBrush" Color="#1E3152" />
           <SolidColorBrush x:Key="AppInfoTextBrush" Color="#AFC8FF" />
+          <Color x:Key="AppLoginGradientStartColor">#263A63</Color>
+          <Color x:Key="AppLoginGradientEndColor">#3A315E</Color>
         </ResourceDictionary>
       </ResourceDictionary.ThemeDictionaries>
     </ResourceDictionary>
