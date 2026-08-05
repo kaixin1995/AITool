@@ -55,8 +55,8 @@ public partial class DetectionTaskItem : ObservableObject
     public string StatusText => IsEnabled ? "已启用" : "已停用";
     public string ToggleActionText => IsEnabled ? "停用" : "启用";
     public string ModelText => string.IsNullOrWhiteSpace(ModelName) ? "全部模型" : ModelName!;
-    public string StatusBackground => IsEnabled ? "#E8F7EA" : "#F1F5F9";
-    public string StatusForeground => IsEnabled ? "#166534" : "#64748B";
+    // 状态颜色交给主题资源处理，避免模型层固定浅色主题颜色。
+    public bool IsDisabled => !IsEnabled;
     public bool CanToggle => !IsBusy;
     public bool CanExecute => !IsBusy;
     public bool CanDelete => !IsBusy;
@@ -66,8 +66,7 @@ public partial class DetectionTaskItem : ObservableObject
     {
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(ToggleActionText));
-        OnPropertyChanged(nameof(StatusBackground));
-        OnPropertyChanged(nameof(StatusForeground));
+        OnPropertyChanged(nameof(IsDisabled));
     }
 
     partial void OnIsBusyChanged(bool value)

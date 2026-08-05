@@ -10,14 +10,14 @@
     PointerReleased="EndRuleDrag">
   <Grid RowDefinitions="Auto,*" RowSpacing="24" ColumnDefinitions="260,*" ColumnSpacing="18">
       <StackPanel Grid.ColumnSpan="2" Spacing="4" IsVisible="{Binding ShowPageHeader, RelativeSource={RelativeSource AncestorType=UserControl}}">
-        <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="路由规则管理" />
+        <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="路由规则管理" />
         <TextBlock Classes="page-subtitle" Text="主入口绑定有序候选实例队列，请求时按顺序失败切换、成功即停止" TextWrapping="Wrap" />
       </StackPanel>
 
       <Border Grid.Row="1" Classes="content-card" Padding="14">
         <DockPanel>
           <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,14,0,0">
-            <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="新增路由入口" />
+            <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="新增路由入口" />
             <TextBox Classes="form-input" Text="{Binding NewEntryName}" Watermark="例如 claude-3-7-sonnet" />
             <Button Classes="primary-button" Command="{Binding CreateEntryCommand}" Content="创建入口" IsEnabled="{Binding CanCreate}" HorizontalContentAlignment="Center" Padding="10,8" />
           </StackPanel>
@@ -30,8 +30,8 @@
                       Click="SelectEntry"
                       IsChecked="{Binding IsSelected, Mode=OneWay}">
                     <Grid ColumnDefinitions="*,Auto">
-                      <TextBlock Foreground="#1E293B" Text="{Binding EntryName}" TextTrimming="CharacterEllipsis" />
-                      <Border Grid.Column="1" Background="#EEF4FF" CornerRadius="10" Padding="7,3"><TextBlock FontSize="11" Foreground="#5B8DEF" Text="{Binding CandidateCount}" /></Border>
+                      <TextBlock Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding EntryName}" TextTrimming="CharacterEllipsis" />
+                      <Border Grid.Column="1" Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="10" Padding="7,3"><TextBlock FontSize="11" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding CandidateCount}" /></Border>
                     </Grid>
                   </ToggleButton>
                 </DataTemplate>
@@ -44,25 +44,25 @@
       <Border Grid.Row="1" Grid.Column="1" Classes="content-card" Padding="0">
         <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
           <StackPanel>
-            <Border Background="#F8FAFC" Padding="18,14">
+            <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="18,14">
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
                 <StackPanel Spacing="3">
-                  <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="#1E293B" Text="候选实例队列" />
-                  <TextBlock FontSize="12" Foreground="#64748B" Text="按顺序尝试候选实例，失败后自动切换；保存后立即生效。" />
+                  <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="候选实例队列" />
+                  <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="按顺序尝试候选实例，失败后自动切换；保存后立即生效。" />
                 </StackPanel>
                 <Button Grid.Column="1" Classes="secondary-button" Click="ConfirmDeleteEntry" Content="删除当前入口" IsEnabled="{Binding CanEdit}" Padding="10,6" />
               </Grid>
             </Border>
-            <Border Background="#FEE2E2" CornerRadius="8" IsVisible="{Binding HasError}" Margin="16,14,16,0" Padding="12">
-              <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+            <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" IsVisible="{Binding HasError}" Margin="16,14,16,0" Padding="12">
+              <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
             </Border>
-            <Border Background="#E8F7EA" CornerRadius="8" IsVisible="{Binding HasMessage}" Margin="16,14,16,0" Padding="12">
-              <TextBlock Foreground="#166534" Text="{Binding Message}" TextWrapping="Wrap" />
+            <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="8" IsVisible="{Binding HasMessage}" Margin="16,14,16,0" Padding="12">
+              <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding Message}" TextWrapping="Wrap" />
             </Border>
-            <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoSelectedEntry}" Margin="25" Text="请先选择或创建一个路由入口" />
+            <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoSelectedEntry}" Margin="25" Text="请先选择或创建一个路由入口" />
 
             <StackPanel IsVisible="{Binding HasSelectedEntry}" Spacing="12" Margin="16,14,16,0">
-              <Border Background="#F8FAFC" CornerRadius="8" Padding="14">
+              <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="14">
                 <Grid ColumnDefinitions="1.1*,1.8*,Auto,Auto" ColumnSpacing="8">
                   <TextBox Classes="form-input" Text="{Binding CandidateSearch}" Watermark="搜索站点或模型" />
                   <ComboBox Grid.Column="1" ItemsSource="{Binding FilteredSiteInstances}" SelectedItem="{Binding SelectedSiteInstance}" IsEnabled="{Binding CanEdit}">
@@ -74,31 +74,34 @@
                   <Button Grid.Column="3" Classes="secondary-button" Command="{Binding RefreshSiteInstancesCommand}" Content="刷新实例池" IsEnabled="{Binding CanRefreshPool}" Padding="10,7" />
                 </Grid>
               </Border>
-              <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoSiteInstances}" Text="暂无可用站点实例，请先启用站点并配置模型映射。" TextWrapping="Wrap" />
+              <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoSiteInstances}" Text="暂无可用站点实例，请先启用站点并配置模型映射。" TextWrapping="Wrap" />
 
-              <Border BorderBrush="#E2E8F0" BorderThickness="1" CornerRadius="8" Padding="0">
+              <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="8" Padding="0">
                 <StackPanel>
-                  <Border Background="#F8FAFC" Padding="14,11">
-                    <TextBlock FontSize="12" Foreground="#64748B" Text="候选队列（可拖拽或使用上移/下移调整顺序，修改后自动保存）" TextWrapping="Wrap" />
+                  <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="14,11">
+                    <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="候选队列（可拖拽或使用上移/下移调整顺序，修改后自动保存）" TextWrapping="Wrap" />
                   </Border>
-                  <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoRules}" Margin="20" Text="当前主入口暂无候选实例，请从上方实例池添加。" TextWrapping="Wrap" />
+                  <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoRules}" Margin="20" Text="当前主入口暂无候选实例，请从上方实例池添加。" TextWrapping="Wrap" />
                   <ItemsControl ItemsSource="{Binding Rules}">
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
-                        <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="14,12">
+                        <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="14,12">
                           <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
-                            <Border Background="#EEF4FF" CornerRadius="14" Height="28" Width="28" VerticalAlignment="Center">
-                              <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="#315EA8" Text="{Binding PriorityText}" />
+                            <Border Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="14" Height="28" Width="28" VerticalAlignment="Center">
+                              <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding PriorityText}" />
                             </Border>
                             <StackPanel Grid.Column="1" Spacing="3">
                               <StackPanel Orientation="Horizontal" Spacing="8">
-                                <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding SiteName}" />
-                                <Border Background="#FEE2E2" CornerRadius="10" IsVisible="{Binding IsSiteDisabled}" Padding="7,2"><TextBlock FontSize="11" Foreground="#B91C1C" Text="站点已禁用" /></Border>
-                                <Border Background="{Binding StatusBackground}" CornerRadius="10" Padding="7,2"><TextBlock FontSize="11" Foreground="{Binding StatusForeground}" Text="{Binding StatusText}" /></Border>
+                                <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SiteName}" />
+                                <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" IsVisible="{Binding IsSiteDisabled}" Padding="7,2"><TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="站点已禁用" /></Border>
+                                <Grid>
+                                  <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,2" IsVisible="{Binding IsEnabled}"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
+                                  <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="10" Padding="7,2" IsVisible="{Binding IsDisabled}"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" /></Border>
+                                </Grid>
                               </StackPanel>
-                              <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding InstanceSummary}" TextTrimming="CharacterEllipsis" />
+                              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InstanceSummary}" TextTrimming="CharacterEllipsis" />
                               <StackPanel Orientation="Horizontal" Spacing="7">
-                                <TextBlock FontSize="12" Foreground="#64748B" Text="可用性" VerticalAlignment="Center" />
+                                <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="可用性" VerticalAlignment="Center" />
                                 <ComboBox Width="130" ItemsSource="{Binding DataContext.AvailabilityOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedValue="{Binding AvailabilityMode, Mode=TwoWay}" SelectedValueBinding="{Binding Value}" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}">
                                   <ComboBox.ItemTemplate>
                                     <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
@@ -106,7 +109,7 @@
                                 </ComboBox>
                                 <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding HasTimeRange}">
                                   <TextBox Classes="form-input" Width="76" Text="{Binding TimeRangeStart}" Watermark="00:00" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
-                                  <TextBlock Foreground="#64748B" Text="至" VerticalAlignment="Center" />
+                                  <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="至" VerticalAlignment="Center" />
                                   <TextBox Classes="form-input" Width="76" Text="{Binding TimeRangeEnd}" Watermark="23:59" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
                                 </StackPanel>
                               </StackPanel>

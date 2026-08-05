@@ -108,7 +108,12 @@
                   </Grid>
 
                   <Grid ColumnDefinitions="1*,1*,1*,1*,1.5*" ColumnSpacing="10">
-                    <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="成功率" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{Binding SuccessRateForeground}" Text="{Binding SuccessRateText}" /></StackPanel></Border>
+                    <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="成功率" /><Grid>
+                          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsHighSuccessRate}" />
+                          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsMediumSuccessRate}" />
+                          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsLowSuccessRate}" />
+                          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsUnknownSuccessRate}" />
+                        </Grid></StackPanel></Border>
                     <Border Grid.Column="1" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="成功 / 失败" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SuccessFailureText}" /></StackPanel></Border>
                     <Border Grid.Column="2" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="总请求" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding TotalRequestCount}" /></StackPanel></Border>
                     <Border Grid.Column="3" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="平均延迟" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding AverageDurationText}" /></StackPanel></Border>
@@ -134,7 +139,12 @@
                                   <TextBlock Grid.Column="1" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding RemoteModelName}" TextTrimming="CharacterEllipsis" />
                                 </Grid>
                                 <Grid ColumnDefinitions="1.2*,1*,1*,1.4*" ColumnSpacing="10">
-                                  <StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="成功率" /><TextBlock FontWeight="SemiBold" Foreground="{Binding SuccessRateForeground}" Text="{Binding SuccessRateText}" /></StackPanel>
+                                  <StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="成功率" /><Grid>
+                                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsHighSuccessRate}" />
+                                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsMediumSuccessRate}" />
+                                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsLowSuccessRate}" />
+                                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsUnknownSuccessRate}" />
+                                    </Grid></StackPanel>
                                   <StackPanel Grid.Column="1" Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="成功 / 失败" /><TextBlock Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SuccessFailureText}" /></StackPanel>
                                   <StackPanel Grid.Column="2" Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="最近耗时" /><TextBlock Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding DurationText}" /></StackPanel>
                                   <StackPanel Grid.Column="3" Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="最近检查" /><TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding LastCheckedText}" TextTrimming="CharacterEllipsis" /></StackPanel>

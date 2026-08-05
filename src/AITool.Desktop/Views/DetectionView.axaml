@@ -106,9 +106,17 @@
                             <TextBlock Grid.Column="1" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding LastCheckedAt}" VerticalAlignment="Center" />
                             <TextBlock Grid.Column="2" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding DurationText}" VerticalAlignment="Center" />
                             <StackPanel Grid.Column="3" Spacing="3" VerticalAlignment="Center">
-                              <Border Background="{Binding StatusBackground}" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left">
-                                <TextBlock Foreground="{Binding StatusForeground}" Text="{Binding StatusText}" />
-                              </Border>
+                              <Grid HorizontalAlignment="Left">
+                                <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsSuccess}">
+                                  <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" />
+                                </Border>
+                                <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsFailed}">
+                                  <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding StatusText}" />
+                                </Border>
+                                <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsUnknown}">
+                                  <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" />
+                                </Border>
+                              </Grid>
                               <TextBlock
                                   FontSize="11"
                                   Foreground="{DynamicResource AppDangerTextBrush}"

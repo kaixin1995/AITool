@@ -41,28 +41,19 @@ public partial class DetectionSiteStatus : ObservableObject
         _ => string.IsNullOrWhiteSpace(LastStatus) ? "未检测" : LastStatus
     };
 
-    public string StatusBackground => LastStatus switch
-    {
-        "success" => "#E8F7EA",
-        "fail" => "#FEE2E2",
-        _ => "#F1F5F9"
-    };
-
-    public string StatusForeground => LastStatus switch
-    {
-        "success" => "#166534",
-        "fail" => "#B91C1C",
-        _ => "#475569"
-    };
-
+    // 状态颜色交给主题资源处理，避免模型层固定浅色主题颜色。
+    public bool IsSuccess => string.Equals(LastStatus, "success", StringComparison.OrdinalIgnoreCase);
+    public bool IsFailed => string.Equals(LastStatus, "fail", StringComparison.OrdinalIgnoreCase);
+    public bool IsUnknown => !IsSuccess && !IsFailed;
     public bool HasError => !string.IsNullOrWhiteSpace(LastError);
     public string DurationText => LastDurationMs.HasValue ? $"{LastDurationMs} ms" : "-";
 
     partial void OnLastStatusChanged(string value)
     {
         OnPropertyChanged(nameof(StatusText));
-        OnPropertyChanged(nameof(StatusBackground));
-        OnPropertyChanged(nameof(StatusForeground));
+        OnPropertyChanged(nameof(IsSuccess));
+        OnPropertyChanged(nameof(IsFailed));
+        OnPropertyChanged(nameof(IsUnknown));
     }
 
     partial void OnLastErrorChanged(string value) => OnPropertyChanged(nameof(HasError));

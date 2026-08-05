@@ -10,19 +10,19 @@
       <StackPanel Spacing="10">
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
           <StackPanel Spacing="3">
-            <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="#1E293B" Text="路由回退事件" />
-            <TextBlock FontSize="12" Foreground="#64748B" Text="基于近期调用日志样本重建站点切换链路，用于诊断模型故障与降级情况。" TextWrapping="Wrap" />
+            <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="路由回退事件" />
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="基于近期调用日志样本重建站点切换链路，用于诊断模型故障与降级情况。" TextWrapping="Wrap" />
           </StackPanel>
           <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" IsEnabled="{Binding CanRetry}" Padding="12,7" />
         </Grid>
         <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
           <Grid MinWidth="620" ColumnDefinitions="1*,1*,Auto,Auto" ColumnSpacing="12" VerticalAlignment="Bottom">
             <StackPanel Spacing="4">
-              <TextBlock FontSize="11" Foreground="#64748B" Text="模型关键字" />
+              <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型关键字" />
               <TextBox Classes="form-input" Text="{Binding ModelKeyword}" Watermark="按模型名筛选" />
             </StackPanel>
             <StackPanel Grid.Column="1" Spacing="4">
-              <TextBlock FontSize="11" Foreground="#64748B" Text="回退原因" />
+              <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="回退原因" />
               <TextBox Classes="form-input" Text="{Binding ReasonKeyword}" Watermark="按原因筛选" />
             </StackPanel>
             <Button Grid.Column="2" Classes="primary-button" Command="{Binding SearchCommand}" Content="查询" Padding="12,7" />
@@ -33,46 +33,46 @@
     </Border>
 
     <Grid Grid.Row="1" ColumnDefinitions="1*,1*,1*,1*" ColumnSpacing="10">
-      <Border Classes="content-card" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="样本内回退数" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#B45309" Text="{Binding Summary.TotalCount}" /></StackPanel></Border>
-      <Border Grid.Column="1" Classes="content-card" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="涉及源站点" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Summary.UniqueFromSites}" /></StackPanel></Border>
-      <Border Grid.Column="2" Classes="content-card" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="涉及目标站点" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding Summary.UniqueToSites}" /></StackPanel></Border>
-      <Border Grid.Column="3" Classes="content-card" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="#64748B" Text="最近回退时间" /><TextBlock FontSize="12" Foreground="#64748B" Text="{Binding Summary.LatestOccurredAtText}" TextTrimming="CharacterEllipsis" /></StackPanel></Border>
+      <Border Classes="content-card" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="样本内回退数" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding Summary.TotalCount}" /></StackPanel></Border>
+      <Border Grid.Column="1" Classes="content-card" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="涉及源站点" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Summary.UniqueFromSites}" /></StackPanel></Border>
+      <Border Grid.Column="2" Classes="content-card" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="涉及目标站点" /><TextBlock FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Summary.UniqueToSites}" /></StackPanel></Border>
+      <Border Grid.Column="3" Classes="content-card" Padding="12"><StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="最近回退时间" /><TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Summary.LatestOccurredAtText}" TextTrimming="CharacterEllipsis" /></StackPanel></Border>
     </Grid>
 
     <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
       <StackPanel Spacing="10">
-        <Border Background="#F8FAFC" CornerRadius="8" Padding="12">
-          <TextBlock FontSize="12" Foreground="#64748B" Text="{Binding SampleDescription}" TextWrapping="Wrap" />
+        <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12">
+          <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SampleDescription}" TextWrapping="Wrap" />
         </Border>
-        <Border Background="#EFF6FF" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}">
-          <StackPanel Spacing="7"><ProgressBar Height="4" IsIndeterminate="True" /><TextBlock Foreground="#315EA8" Text="正在加载路由回退事件..." /></StackPanel>
+        <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}">
+          <StackPanel Spacing="7"><ProgressBar Height="4" IsIndeterminate="True" /><TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="正在加载路由回退事件..." /></StackPanel>
         </Border>
-        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}">
-          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" VerticalAlignment="Center" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding RetryCommand}" Content="重试" IsEnabled="{Binding CanRetry}" Padding="12,7" /></Grid>
+        <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12"><TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" VerticalAlignment="Center" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding RetryCommand}" Content="重试" IsEnabled="{Binding CanRetry}" Padding="12,7" /></Grid>
         </Border>
         <Border Classes="content-card" Padding="0" IsVisible="{Binding HasItems}">
           <StackPanel>
-            <Border Background="#F8FAFC" Padding="14,11">
+            <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="14,11">
               <Grid ColumnDefinitions="1.15*,1.2*,Auto,1.2*,1.2*,1.8*" ColumnSpacing="10">
-                <TextBlock FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="发生时间" />
-                <TextBlock Grid.Column="1" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="请求模型" />
-                <TextBlock Grid.Column="2" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="" />
-                <TextBlock Grid.Column="3" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="源站点" />
-                <TextBlock Grid.Column="4" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="目标站点" />
-                <TextBlock Grid.Column="5" FontSize="11" FontWeight="SemiBold" Foreground="#64748B" Text="回退原因" />
+                <TextBlock FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="发生时间" />
+                <TextBlock Grid.Column="1" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="请求模型" />
+                <TextBlock Grid.Column="2" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="" />
+                <TextBlock Grid.Column="3" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="源站点" />
+                <TextBlock Grid.Column="4" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="目标站点" />
+                <TextBlock Grid.Column="5" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="回退原因" />
               </Grid>
             </Border>
             <ItemsControl ItemsSource="{Binding Items}">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
-                  <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="14,11">
+                  <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="14,11">
                     <Grid ColumnDefinitions="1.15*,1.2*,Auto,1.2*,1.2*,1.8*" ColumnSpacing="10">
-                      <TextBlock FontSize="11" Foreground="#64748B" Text="{Binding OccurredAtText}" TextTrimming="CharacterEllipsis" />
-                      <TextBlock Grid.Column="1" FontSize="12" Foreground="#1E293B" Text="{Binding RequestModelText}" TextTrimming="CharacterEllipsis" />
-                      <TextBlock Grid.Column="2" FontSize="18" Foreground="#B45309" Text="→" VerticalAlignment="Center" />
-                      <StackPanel Grid.Column="3" Spacing="2"><TextBlock FontSize="12" Foreground="#1E293B" Text="{Binding FromSiteNameText}" TextTrimming="CharacterEllipsis" /><TextBlock FontSize="11" Foreground="#94A3B8" Text="{Binding FromSiteModelText}" TextTrimming="CharacterEllipsis" /></StackPanel>
-                      <StackPanel Grid.Column="4" Spacing="2"><TextBlock FontSize="12" Foreground="#1E293B" Text="{Binding ToSiteNameText}" TextTrimming="CharacterEllipsis" /><TextBlock FontSize="11" Foreground="#94A3B8" Text="{Binding ToSiteModelText}" TextTrimming="CharacterEllipsis" /></StackPanel>
-                      <TextBlock Grid.Column="5" FontSize="12" Foreground="#64748B" Text="{Binding ReasonText}" TextWrapping="Wrap" />
+                      <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding OccurredAtText}" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Grid.Column="1" FontSize="12" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding RequestModelText}" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Grid.Column="2" FontSize="18" Foreground="{DynamicResource AppWarningTextBrush}" Text="→" VerticalAlignment="Center" />
+                      <StackPanel Grid.Column="3" Spacing="2"><TextBlock FontSize="12" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding FromSiteNameText}" TextTrimming="CharacterEllipsis" /><TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding FromSiteModelText}" TextTrimming="CharacterEllipsis" /></StackPanel>
+                      <StackPanel Grid.Column="4" Spacing="2"><TextBlock FontSize="12" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding ToSiteNameText}" TextTrimming="CharacterEllipsis" /><TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding ToSiteModelText}" TextTrimming="CharacterEllipsis" /></StackPanel>
+                      <TextBlock Grid.Column="5" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding ReasonText}" TextWrapping="Wrap" />
                     </Grid>
                   </Border>
                 </DataTemplate>
@@ -80,12 +80,12 @@
             </ItemsControl>
           </StackPanel>
         </Border>
-        <TextBlock HorizontalAlignment="Center" Foreground="#94A3B8" IsVisible="{Binding HasNoItems}" Margin="0,24" Text="暂无路由回退事件记录" />
+        <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoItems}" Margin="0,24" Text="暂无路由回退事件记录" />
         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-          <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding PaginationText}" />
+          <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding PaginationText}" />
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6">
             <Button Classes="secondary-button" Command="{Binding PreviousPageCommand}" Content="上一页" IsEnabled="{Binding CanPrevious}" Padding="10,6" />
-            <TextBlock VerticalAlignment="Center" Foreground="#64748B" Text="{Binding PageText}" Margin="6,0" />
+            <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding PageText}" Margin="6,0" />
             <Button Classes="secondary-button" Command="{Binding NextPageCommand}" Content="下一页" IsEnabled="{Binding CanNext}" Padding="10,6" />
           </StackPanel>
         </Grid>

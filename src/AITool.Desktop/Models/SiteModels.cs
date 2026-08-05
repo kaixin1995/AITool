@@ -36,8 +36,8 @@ public partial class SiteListItem : ObservableObject
     public string StatusText => IsEnabled ? "已启用" : "已停用";
     public string ToggleActionText => IsEnabled ? "停用" : "启用";
     public bool SupportsResponses => !SupportsOpenAi && !SupportsAnthropic;
-    public string StatusBackground => IsEnabled ? "#E8F7EA" : "#F1F5F9";
-    public string StatusForeground => IsEnabled ? "#166534" : "#64748B";
+    // 状态颜色交给主题资源处理，避免模型层固定浅色主题颜色。
+    public bool IsDisabled => !IsEnabled;
     public string CreatedAtText => CreatedAt == default ? "-" : CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
 
     public event EventHandler? SelectionChanged;
@@ -46,8 +46,7 @@ public partial class SiteListItem : ObservableObject
     {
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(ToggleActionText));
-        OnPropertyChanged(nameof(StatusBackground));
-        OnPropertyChanged(nameof(StatusForeground));
+        OnPropertyChanged(nameof(IsDisabled));
     }
 
     partial void OnIsSelectedChanged(bool value) => SelectionChanged?.Invoke(this, EventArgs.Empty);

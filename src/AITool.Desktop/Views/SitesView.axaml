@@ -86,9 +86,14 @@
                             <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="Responses" />
                           </Border>
                         </StackPanel>
-                        <Border Grid.Column="4" Background="{Binding StatusBackground}" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center">
-                          <TextBlock Foreground="{Binding StatusForeground}" Text="{Binding StatusText}" />
-                        </Border>
+                        <Grid Grid.Column="4" HorizontalAlignment="Left" VerticalAlignment="Center">
+                          <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsEnabled}">
+                            <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" />
+                          </Border>
+                          <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsDisabled}">
+                            <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" />
+                          </Border>
+                        </Grid>
                         <TextBlock Grid.Column="5" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding CreatedAtText}" VerticalAlignment="Center" />
                         <TextBlock Grid.Column="6" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding EndpointPathMode}" VerticalAlignment="Center" />
                         <StackPanel Grid.Column="7" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">

@@ -18,17 +18,15 @@ public partial class AccessKeyItem : CommunityToolkit.Mvvm.ComponentModel.Observ
 
     public string StatusText => IsEnabled ? "已启用" : "已停用";
     public string ToggleActionText => IsEnabled ? "停用" : "启用";
-    // 停用状态使用中性灰色，避免与启用状态的成功色混淆。
-    public string StatusBackground => IsEnabled ? "#E8F7EA" : "#F1F5F9";
-    public string StatusForeground => IsEnabled ? "#166534" : "#64748B";
+    // 状态颜色交给主题资源处理，避免模型层固定浅色主题颜色。
+    public bool IsDisabled => !IsEnabled;
     public string AllowedRoutesText => AllowedRouteNames.Count == 0 ? "全部路由" : string.Join("、", AllowedRouteNames);
 
     partial void OnIsEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(StatusText));
         OnPropertyChanged(nameof(ToggleActionText));
-        OnPropertyChanged(nameof(StatusBackground));
-        OnPropertyChanged(nameof(StatusForeground));
+        OnPropertyChanged(nameof(IsDisabled));
     }
 }
 

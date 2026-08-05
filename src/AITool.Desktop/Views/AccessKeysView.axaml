@@ -9,42 +9,45 @@
     <Grid RowDefinitions="Auto,Auto,*" RowSpacing="24">
       <Grid ColumnDefinitions="*,Auto">
         <StackPanel Spacing="4">
-          <TextBlock FontSize="22" FontWeight="Bold" Foreground="#1E293B" Text="访问密钥" />
+          <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="访问密钥" />
           <TextBlock Classes="page-subtitle" Text="管理客户端访问凭证和允许的路由范围" />
         </StackPanel>
         <Button Grid.Column="1" Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新建密钥" IsEnabled="{Binding CanOpenEditor}" Padding="14,8" />
       </Grid>
 
       <Grid Grid.Row="2">
-        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="#64748B" IsVisible="{Binding IsLoading}" Text="正在加载访问密钥..." />
-        <Border Background="#FEE2E2" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}"><TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
-        <Border Background="#FFF7ED" CornerRadius="8" Padding="14" IsVisible="{Binding HasRouteError}">
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="{DynamicResource AppTextSecondaryBrush}" IsVisible="{Binding IsLoading}" Text="正在加载访问密钥..." />
+        <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}"><TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
+        <Border Background="{DynamicResource AppWarningSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding HasRouteError}">
           <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-            <TextBlock Foreground="#9A3412" Text="{Binding RouteErrorMessage}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            <TextBlock Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding RouteErrorMessage}" TextWrapping="Wrap" VerticalAlignment="Center" />
             <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="重试" IsEnabled="{Binding CanRetryRouteLoad}" Padding="10,6" />
           </Grid>
         </Border>
         <Border Classes="content-card" IsVisible="{Binding IsListVisible}" Padding="0">
           <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
             <StackPanel MinWidth="760">
-              <Border Background="#F8FAFC" Padding="18,14">
+              <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="18,14">
                 <Grid ColumnDefinitions="2*,2.2*,2*,1*,Auto">
-                  <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="名称" />
-                  <TextBlock Grid.Column="1" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="密钥" />
-                  <TextBlock Grid.Column="2" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="允许路由" />
-                  <TextBlock Grid.Column="3" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="状态" />
-                  <TextBlock Grid.Column="4" FontSize="12" FontWeight="SemiBold" Foreground="#64748B" Text="操作" />
+                  <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="名称" />
+                  <TextBlock Grid.Column="1" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="密钥" />
+                  <TextBlock Grid.Column="2" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="允许路由" />
+                  <TextBlock Grid.Column="3" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="状态" />
+                  <TextBlock Grid.Column="4" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="操作" />
                 </Grid>
               </Border>
               <ItemsControl ItemsSource="{Binding PagedItems}">
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
-                    <Border BorderBrush="#E2E8F0" BorderThickness="0,1,0,0" Padding="18,14">
+                    <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="18,14">
                       <Grid ColumnDefinitions="2*,2.2*,2*,1*,Auto" ColumnSpacing="12">
-                        <TextBlock FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding KeyName}" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="1" Foreground="#64748B" Text="{Binding MaskedValue}" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding AllowedRoutesText}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                        <Border Grid.Column="3" Background="{Binding StatusBackground}" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Foreground="{Binding StatusForeground}" Text="{Binding StatusText}" /></Border>
+                        <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding KeyName}" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="1" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding MaskedValue}" VerticalAlignment="Center" />
+                        <TextBlock Grid.Column="2" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding AllowedRoutesText}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
+                        <Grid Grid.Column="3" HorizontalAlignment="Left" VerticalAlignment="Center">
+                          <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsEnabled}"><TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
+                          <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsDisabled}"><TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" /></Border>
+                        </Grid>
                         <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                           <Button Classes="secondary-button" Command="{Binding DataContext.OpenRoutesEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑路由" IsEnabled="{Binding DataContext.CanOpenEditor, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="10,6" />
                           <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,6" />
@@ -55,10 +58,10 @@
                   </DataTemplate>
                 </ItemsControl.ItemTemplate>
               </ItemsControl>
-              <Border Background="#FFFFFF" Padding="18,12">
+              <Border Background="{DynamicResource AppCardBackgroundBrush}" Padding="18,12">
                 <Grid ColumnDefinitions="*,Auto,*">
                   <Button Classes="secondary-button" Command="{Binding PreviousPageCommand}" Content="上一页" IsEnabled="{Binding CanPreviousPage}" HorizontalAlignment="Left" Padding="10,6" />
-                  <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="#64748B" Text="{Binding PageText}" />
+                  <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding PageText}" />
                   <Button Grid.Column="2" Classes="secondary-button" Command="{Binding NextPageCommand}" Content="下一页" IsEnabled="{Binding CanNextPage}" HorizontalAlignment="Right" Padding="10,6" />
                 </Grid>
               </Border>
@@ -66,25 +69,25 @@
           </ScrollViewer>
         </Border>
 
-        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
           <StackPanel Spacing="14">
-            <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="新建访问密钥" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
-            <Border Background="#E8F7EA" CornerRadius="8" IsVisible="{Binding HasCreatedKey}" Padding="12">
+            <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="新建访问密钥" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
+            <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="8" IsVisible="{Binding HasCreatedKey}" Padding="12">
               <StackPanel Spacing="8">
-                <TextBlock FontWeight="SemiBold" Foreground="#166534" Text="密钥已创建，仅显示一次" />
+                <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppSuccessTextBrush}" Text="密钥已创建，仅显示一次" />
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
                   <TextBox Classes="form-input" IsReadOnly="True" Text="{Binding CreatedPlainKey}" />
                   <Button Grid.Column="1" Classes="secondary-button" Click="CopyCreatedPlainKey" Content="复制" Padding="10,6" />
                 </Grid>
-                <TextBlock FontSize="12" Foreground="#64748B" Text="请立即复制并妥善保存，客户端不会再次获取明文。列表中的密钥仅显示脱敏值，无法复制完整密钥。" TextWrapping="Wrap" />
+                <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="请立即复制并妥善保存，客户端不会再次获取明文。列表中的密钥仅显示脱敏值，无法复制完整密钥。" TextWrapping="Wrap" />
               </StackPanel>
             </Border>
             <StackPanel IsVisible="{Binding IsCreateFormVisible}" Spacing="8">
-              <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="密钥名称" />
+              <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="密钥名称" />
               <TextBox Classes="form-input" Text="{Binding NewKeyName}" Watermark="如：生产环境密钥" />
-              <TextBlock FontSize="12" Foreground="#64748B" Text="不勾选任何路由表示允许全部路由；勾选后仅允许访问选中的路由入口。" TextWrapping="Wrap" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="不勾选任何路由表示允许全部路由；勾选后仅允许访问选中的路由入口。" TextWrapping="Wrap" />
               <StackPanel Spacing="6" IsVisible="{Binding HasRouteEntries}">
-                <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="#334155" Text="允许路由（不选=全部）" />
+                <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="允许路由（不选=全部）" />
                 <ScrollViewer MaxHeight="150" VerticalScrollBarVisibility="Auto">
                   <ItemsControl ItemsSource="{Binding RouteEntries}">
                     <ItemsControl.ItemTemplate>
@@ -100,10 +103,10 @@
           </StackPanel>
         </Border>
 
-        <Border Background="#FFFFFF" BorderBrush="#CBD5E1" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsRoutesEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="11">
+        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsRoutesEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="11">
           <StackPanel Spacing="14">
-            <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="#1E293B" Text="{Binding RoutesEditorTitle}" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseRoutesEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
-            <TextBlock FontSize="12" Foreground="#64748B" Text="勾选允许访问的路由入口。不勾选任何项表示允许全部路由。" TextWrapping="Wrap" />
+            <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding RoutesEditorTitle}" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseRoutesEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="勾选允许访问的路由入口。不勾选任何项表示允许全部路由。" TextWrapping="Wrap" />
             <StackPanel Orientation="Horizontal" Spacing="8">
               <Button Classes="secondary-button" Command="{Binding SelectAllRoutesCommand}" Content="全选" Padding="10,6" />
               <Button Classes="secondary-button" Command="{Binding ClearSelectedRoutesCommand}" Content="清空（全部路由）" Padding="10,6" />
