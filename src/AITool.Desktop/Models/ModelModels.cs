@@ -17,11 +17,13 @@ public sealed class ModelListItem : CommunityToolkit.Mvvm.ComponentModel.Observa
             if (SetProperty(ref _isEnabled, value))
             {
                 OnPropertyChanged(nameof(StatusText));
+                OnPropertyChanged(nameof(ToggleActionText));
             }
         }
     }
 
     public string StatusText => IsEnabled ? "已启用" : "已停用";
+    public string ToggleActionText => IsEnabled ? "停用" : "启用";
     public string OverrideReasoningEffort { get; set; } = string.Empty;
     public string? CompatibilityProfileId { get; set; }
     public int SiteCount { get; set; }

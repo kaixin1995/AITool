@@ -47,7 +47,12 @@ public partial class DetectionTaskItem : ObservableObject
     private bool _isEnabled;
 
     public string StatusText => IsEnabled ? "已启用" : "已停用";
+    public string ToggleActionText => IsEnabled ? "停用" : "启用";
     public string ModelText => string.IsNullOrWhiteSpace(ModelName) ? "全部模型" : ModelName!;
 
-    partial void OnIsEnabledChanged(bool value) => OnPropertyChanged(nameof(StatusText));
+    partial void OnIsEnabledChanged(bool value)
+    {
+        OnPropertyChanged(nameof(StatusText));
+        OnPropertyChanged(nameof(ToggleActionText));
+    }
 }

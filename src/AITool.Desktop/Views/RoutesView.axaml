@@ -5,16 +5,7 @@
     xmlns:vm="using:AITool.Desktop.ViewModels"
     x:DataType="vm:RoutesViewModel"
     x:CompileBindings="False">
-  <Grid RowDefinitions="Auto,*">
-    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,18">
-      <StackPanel Spacing="4">
-        <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="路由管理" />
-        <TextBlock Classes="page-subtitle" Text="管理外部模型入口和候选转发规则" />
-      </StackPanel>
-      <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="14,8" />
-    </Grid>
-
-    <Grid Grid.Row="1" ColumnDefinitions="260,*" ColumnSpacing="18">
+  <Grid ColumnDefinitions="260,*" ColumnSpacing="18">
       <Border Classes="content-card" Padding="14">
         <DockPanel>
           <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,14,0,0">
@@ -65,7 +56,7 @@
                       <TextBlock Grid.Column="1" Foreground="#475569" Text="{Binding UpstreamModelName}" VerticalAlignment="Center" />
                       <TextBlock Grid.Column="2" Foreground="#64748B" Text="{Binding AvailabilityMode}" VerticalAlignment="Center" />
                       <Border Grid.Column="3" Background="#E8F7EA" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center"><TextBlock Foreground="#166534" Text="{Binding StatusText}" /></Border>
-                      <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"><Button Classes="secondary-button" Command="{Binding DataContext.ToggleRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="切换" Padding="10,6" /><Button Classes="secondary-button" Command="{Binding DataContext.DeleteRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" /></StackPanel>
+                      <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center"><Button Classes="secondary-button" Command="{Binding DataContext.ToggleRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,6" /><Button Classes="secondary-button" Command="{Binding DataContext.DeleteRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" /></StackPanel>
                     </Grid>
                   </Border>
                 </DataTemplate>
@@ -75,5 +66,4 @@
         </ScrollViewer>
       </Border>
     </Grid>
-  </Grid>
 </UserControl>

@@ -188,6 +188,50 @@ public partial class MainShellViewModel : ViewModelBase
     }
 
     [RelayCommand]
+    private async Task RefreshCurrentPageAsync()
+    {
+        switch (CurrentPage)
+        {
+            case DashboardViewModel dashboard:
+                await dashboard.LoadAsync();
+                break;
+            case SitesViewModel sites:
+                await sites.LoadAsync();
+                break;
+            case ModelsViewModel models:
+                await models.LoadAsync();
+                break;
+            case AccessKeysViewModel accessKeys:
+                await accessKeys.LoadAsync();
+                break;
+            case RoutesViewModel routes:
+                await routes.LoadAsync();
+                break;
+            case DetectionViewModel detection:
+                await detection.LoadAsync();
+                break;
+            case DetectionTasksViewModel detectionTasks:
+                await detectionTasks.LoadAsync();
+                break;
+            case UsageLogsViewModel usageLogs:
+                await usageLogs.LoadAsync();
+                break;
+            case SystemSettingsViewModel systemSettings:
+                await systemSettings.LoadAsync();
+                break;
+            case CodexViewModel codex:
+                await codex.LoadAsync();
+                break;
+            case DeveloperInvocationsViewModel developer:
+                await developer.LoadAsync();
+                break;
+            case ChatViewModel chat:
+                await chat.LoadAsync();
+                break;
+        }
+    }
+
+    [RelayCommand]
     private async Task LogoutAsync()
     {
         try

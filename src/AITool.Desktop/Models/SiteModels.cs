@@ -17,12 +17,14 @@ public partial class SiteListItem : CommunityToolkit.Mvvm.ComponentModel.Observa
     private bool _isEnabled;
 
     public string StatusText => IsEnabled ? "已启用" : "已停用";
+    public string ToggleActionText => IsEnabled ? "停用" : "启用";
 
     public DateTimeOffset CreatedAt { get; set; }
 
     partial void OnIsEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(StatusText));
+        OnPropertyChanged(nameof(ToggleActionText));
     }
 }
 

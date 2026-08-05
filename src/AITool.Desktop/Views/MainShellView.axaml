@@ -137,7 +137,8 @@
             <TextBlock Classes="page-title" Text="{Binding SelectedItem.Label}" />
             <TextBlock Classes="page-subtitle" Text="统一管理已部署的 AI Tool 服务" />
           </StackPanel>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+            <Button Classes="secondary-button" Command="{Binding RefreshCurrentPageCommand}" Content="刷新当前页" Padding="12,7" />
             <Border
                 Background="#E8F7EA"
                 CornerRadius="14"

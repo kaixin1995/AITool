@@ -27,9 +27,11 @@ public partial class RouteRuleItem : CommunityToolkit.Mvvm.ComponentModel.Observ
     private bool _isEnabled;
 
     public string StatusText => IsEnabled ? "已启用" : "已停用";
+    public string ToggleActionText => IsEnabled ? "停用" : "启用";
 
     partial void OnIsEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(StatusText));
+        OnPropertyChanged(nameof(ToggleActionText));
     }
 }

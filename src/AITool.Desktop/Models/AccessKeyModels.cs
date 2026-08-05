@@ -17,11 +17,13 @@ public partial class AccessKeyItem : CommunityToolkit.Mvvm.ComponentModel.Observ
     private bool _isEnabled;
 
     public string StatusText => IsEnabled ? "已启用" : "已停用";
+    public string ToggleActionText => IsEnabled ? "停用" : "启用";
     public string AllowedRoutesText => AllowedRouteNames.Count == 0 ? "全部路由" : string.Join("、", AllowedRouteNames);
 
     partial void OnIsEnabledChanged(bool value)
     {
         OnPropertyChanged(nameof(StatusText));
+        OnPropertyChanged(nameof(ToggleActionText));
     }
 }
 

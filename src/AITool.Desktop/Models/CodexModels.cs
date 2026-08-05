@@ -14,8 +14,14 @@ public partial class CodexAccount : ObservableObject
     [ObservableProperty] private double? _fiveHourUsedPercent;
     [ObservableProperty] private double? _weeklyUsedPercent;
     public string StatusText => IsEnabled ? "已启用" : "已停用";
+    public string ToggleActionText => IsEnabled ? "停用" : "启用";
     public string QuotaText => WeeklyUsedPercent.HasValue ? $"周额度 {WeeklyUsedPercent:0.#}%" : "暂无额度";
-    partial void OnIsEnabledChanged(bool value) => OnPropertyChanged(nameof(StatusText));
+
+    partial void OnIsEnabledChanged(bool value)
+    {
+        OnPropertyChanged(nameof(StatusText));
+        OnPropertyChanged(nameof(ToggleActionText));
+    }
 }
 
 public sealed class CodexOAuthResult

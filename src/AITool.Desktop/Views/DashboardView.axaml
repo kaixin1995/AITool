@@ -4,21 +4,7 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
     xmlns:vm="using:AITool.Desktop.ViewModels"
     x:DataType="vm:DashboardViewModel">
-  <Grid RowDefinitions="Auto,*">
-    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,18">
-      <StackPanel Spacing="4">
-        <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="运营概览" />
-        <TextBlock Classes="page-subtitle" Text="查看当前服务资源和运行状态" />
-      </StackPanel>
-      <Button
-          Classes="secondary-button"
-          Command="{Binding RefreshCommand}"
-          Content="刷新数据"
-          Grid.Column="1"
-          Padding="14,8" />
-    </Grid>
-
-    <Grid Grid.Row="1">
+  <Grid>
       <TextBlock
           HorizontalAlignment="Center"
           VerticalAlignment="Top"
@@ -35,7 +21,6 @@
         <StackPanel Spacing="8">
           <TextBlock FontWeight="SemiBold" Foreground="#B91C1C" Text="加载失败" />
           <TextBlock Foreground="#B91C1C" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
-          <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="重试" HorizontalAlignment="Left" Padding="14,7" />
         </StackPanel>
       </Border>
 
@@ -107,6 +92,5 @@
           </StackPanel>
         </Border>
       </StackPanel>
-    </Grid>
   </Grid>
 </UserControl>

@@ -7,15 +7,8 @@
     x:CompileBindings="False">
   <Grid>
     <Grid RowDefinitions="Auto,*">
-      <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,18">
-        <StackPanel Spacing="4">
-          <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="#1E293B" Text="站点管理" />
-          <TextBlock Classes="page-subtitle" Text="配置上游服务站点和协议能力" />
-        </StackPanel>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10">
-          <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="14,8" />
-          <Button Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增站点" Padding="14,8" />
-        </StackPanel>
+      <Grid Margin="0,0,0,14">
+        <Button Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增站点" HorizontalAlignment="Right" Padding="14,8" />
       </Grid>
 
       <Grid Grid.Row="1">
@@ -52,7 +45,7 @@
                         </Border>
                         <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
                           <Button Classes="secondary-button" Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,6" />
-                          <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="切换" Padding="10,6" />
+                          <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,6" />
                           <Button Classes="secondary-button" Command="{Binding DataContext.DeleteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
                         </StackPanel>
                       </Grid>
