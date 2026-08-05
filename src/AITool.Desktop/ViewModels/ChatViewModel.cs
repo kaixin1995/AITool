@@ -12,7 +12,9 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
 {
     private readonly ApiService _apiService;
     private readonly SseClient _sseClient;
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private CancellationTokenSource? _streamCancellation;
+    private bool _disposed;
 
     [ObservableProperty] private ObservableCollection<ChatModelTarget> _targets = new();
     [ObservableProperty] private ChatModelTarget? _selectedTarget;
@@ -61,29 +63,50 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
         OnPropertyChanged(nameof(HasMessages));
         OnPropertyChanged(nameof(HasNoMessages));
         IsSending = true;
-        _streamCancellation = new CancellationTokenSource();
+        var localCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        var previousCancellation = Interlocked.Exchange(ref _streamCancellation, localCancellation);
+        previousCancellation?.Cancel();
+        previousCancellation?.Dispose();
         try
         {
             object body = new { modelId = SelectedTarget.ModelId, mappingId = SelectedTarget.MappingId, message = text, enableReasoning = EnableReasoning, enableStreaming = false, reasoningEffort = "high" };
             if (EnableStreaming)
             {
                 body = new { modelId = SelectedTarget.ModelId, mappingId = SelectedTarget.MappingId, message = text, enableReasoning = EnableReasoning, enableStreaming = true, reasoningEffort = "high" };
-                await foreach (var item in _sseClient.StreamAsync("/api/admin/chat/send-stream", body, _streamCancellation.Token))
+                await foreach (var item in _sseClient.StreamAsync("/api/admin/chat/send-stream", body, localCancellation.Token))
                 {
                     HandleStreamEvent(item, assistant);
                 }
             }
             else
             {
-                var result = await _apiService.SendAsync<ChatSendResult>(HttpMethod.Post, "/api/admin/chat/send", body);
+                var result = await _apiService.SendAsync<ChatSendResult>(
+                    HttpMethod.Post,
+                    "/api/admin/chat/send",
+                    body,
+                    true,
+                    localCancellation.Token);
                 assistant.Content = result.Success ? result.Content : $"错误：{result.Error ?? "未知错误"}";
                 assistant.Reasoning = result.ReasoningContent ?? string.Empty;
                 assistant.IsError = !result.Success;
             }
         }
-        catch (OperationCanceledException) { assistant.Content = "（已停止）"; }
+        catch (OperationCanceledException) when (localCancellation.IsCancellationRequested)
+        {
+            assistant.Content = "（已停止）";
+        }
         catch (Exception exception) { assistant.Content = $"错误：{exception.Message}"; assistant.IsError = true; ErrorMessage = exception.Message; }
-        finally { _streamCancellation.Dispose(); _streamCancellation = null; IsSending = false; OnPropertyChanged(nameof(CanSend)); }
+        finally
+        {
+            if (ReferenceEquals(_streamCancellation, localCancellation))
+            {
+                Interlocked.CompareExchange(ref _streamCancellation, null, localCancellation);
+                IsSending = false;
+                OnPropertyChanged(nameof(CanSend));
+            }
+
+            localCancellation.Dispose();
+        }
     }
 
     private static void HandleStreamEvent(SseEvent item, ChatMessage assistant)
@@ -117,8 +140,13 @@ public partial class ChatViewModel : ViewModelBase, IDisposable
 
     public void Dispose()
     {
-        _streamCancellation?.Cancel();
-        _streamCancellation?.Dispose();
-        _streamCancellation = null;
+        if (_disposed) return;
+
+        _disposed = true;
+        var streamCancellation = Interlocked.Exchange(ref _streamCancellation, null);
+        streamCancellation?.Cancel();
+        streamCancellation?.Dispose();
+        _lifetimeCancellation.Cancel();
+        _lifetimeCancellation.Dispose();
     }
 }
