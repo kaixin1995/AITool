@@ -17,8 +17,8 @@
     </StackPanel>
 
     <Grid Grid.Row="1">
-      <views:RoutesView DataContext="{Binding Routes}" ShowPageHeader="False" IsVisible="{Binding IsRoutesTab, RelativeSource={RelativeSource AncestorType=UserControl}}" />
-      <views:CompatibilityView DataContext="{Binding Compatibility}" ShowPageHeader="False" IsVisible="{Binding IsCompatibilityTab, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+      <views:RoutesView DataContext="{Binding Routes}" ShowPageHeader="False" IsVisible="{Binding DataContext.IsRoutesTab, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+      <views:CompatibilityView DataContext="{Binding Compatibility}" ShowPageHeader="False" IsVisible="{Binding DataContext.IsCompatibilityTab, RelativeSource={RelativeSource AncestorType=UserControl}}" />
     </Grid>
   </Grid>
 </UserControl>
