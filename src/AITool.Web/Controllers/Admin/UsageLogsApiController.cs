@@ -530,7 +530,7 @@ public sealed class UsageLogsApiController : ControllerBase
         {
             var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
 
-            // 数据库层过滤 + 聚合：不再全表加载到内存。
+            // 数据库层过滤。
             var baseQuery = _dbContext.ProxyUsageLogs
                 .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
                 .WhereIF(query.SiteId.HasValue, x => x.TargetSiteId == query.SiteId!.Value)
@@ -543,16 +543,21 @@ public sealed class UsageLogsApiController : ControllerBase
                 baseQuery = baseQuery.Where(x => x.AttemptedModel.Contains(query.ModelKeyword) || x.RequestModel.Contains(query.ModelKeyword));
             }
 
-            var totalCount = await baseQuery.CountAsync(cancellationToken);
-            var successRequests = await baseQuery.CountAsync(x => x.Status == "success", cancellationToken);
-            var failedRequests = await baseQuery.CountAsync(x => x.Status == "fail", cancellationToken);
+            // 一次性取出聚合所需字段在内存计算，避免 SqlSugar SumAsync 对 (long) 强转的 SQL 翻译缺陷
+            // 以及 baseQuery 多次复用（CountAsync/SumAsync/MaxAsync）导致的内部状态污染。
+            // 仅取统计字段，不加载完整实体，数据量为调用日志行数（管理后台低频操作，可接受）。
+            var rows = await baseQuery
+                .Select(x => new { x.Status, x.TotalTokens, x.TotalDurationMs })
+                .ToListAsync(cancellationToken);
+
+            var totalCount = rows.Count;
+            var successRequests = rows.Count(x => x.Status == "success");
+            var failedRequests = rows.Count(x => x.Status == "fail");
             var successRate = totalCount == 0
                 ? 0d
                 : Math.Round(successRequests * 100d / totalCount, 2, MidpointRounding.AwayFromZero);
-            var totalTokens = totalCount == 0 ? 0L : await baseQuery.SumAsync(x => (long)x.TotalTokens);
-            var maxDurationMs = totalCount == 0
-                ? 0
-                : await baseQuery.MaxAsync(x => x.TotalDurationMs, cancellationToken);
+            var totalTokens = rows.Sum(x => (long)x.TotalTokens);
+            var maxDurationMs = rows.Count == 0 ? 0 : rows.Max(x => x.TotalDurationMs);
 
             return Ok(new UsageLogSummaryDto
             {
