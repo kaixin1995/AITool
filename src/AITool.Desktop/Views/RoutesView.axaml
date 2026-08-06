@@ -26,9 +26,9 @@
             <Border Background="{DynamicResource AppInputBackgroundBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,0,0,1" Padding="16">
               <StackPanel Spacing="6">
                 <TextBlock FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="新建主入口" />
-                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
-                  <TextBox Classes="form-input" Height="34" Text="{Binding NewEntryName}" Watermark="例如 auto" />
-                  <Button Grid.Column="1" Classes="primary-button" Command="{Binding CreateEntryCommand}" Content="创建" IsEnabled="{Binding CanCreate}" Height="34" Padding="12,6" HorizontalContentAlignment="Center" />
+                <Grid ColumnDefinitions="*,88" ColumnSpacing="8">
+                  <TextBox Grid.Column="0" Classes="form-input" MinWidth="0" Height="34" Text="{Binding NewEntryName}" Watermark="例如 auto" />
+                  <Button Grid.Column="1" Classes="primary-button" Command="{Binding CreateEntryCommand}" Content="创建" IsEnabled="{Binding CanCreate}" Height="34" HorizontalAlignment="Stretch" Padding="8,6" HorizontalContentAlignment="Center" />
                 </Grid>
               </StackPanel>
             </Border>
