@@ -34,6 +34,7 @@ public sealed class SiteKeySelector
             .Where(k => k.SiteId == siteId && k.IsEnabled)
             .OrderBy(k => k.Priority)
             .ThenBy(k => k.CreatedAt)
+            .ThenBy(k => k.Id)
             .Select(k => k.KeyValue)
             .ToListAsync(cancellationToken);
 

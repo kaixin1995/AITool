@@ -1469,6 +1469,7 @@ public sealed class ProxyRequestMetadataCache
             return keys
                 .OrderBy(x => x.Priority)
                 .ThenBy(x => x.CreatedAt)
+                .ThenBy(x => x.Id)
                 .Select(x => new SiteKeyCandidate(x.Id, x.KeyValue))
                 .ToList();
         }

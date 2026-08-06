@@ -65,7 +65,7 @@ public sealed class SitesApiController : ControllerBase
             .Where(k => siteIds.Contains(k.SiteId))
             .ToListAsync(cancellationToken);
         var keysBySite = allKeys.GroupBy(k => k.SiteId)
-            .ToDictionary(g => g.Key, g => g.OrderBy(k => k.Priority).ThenBy(k => k.CreatedAt).ToList());
+            .ToDictionary(g => g.Key, g => g.OrderBy(k => k.Priority).ThenBy(k => k.CreatedAt).ThenBy(k => k.Id).ToList());
 
         return Ok(sites.Select(s => MapSiteToListItem(s, keysBySite)));
     }
@@ -88,6 +88,7 @@ public sealed class SitesApiController : ControllerBase
             .Where(k => k.SiteId == id)
             .OrderBy(k => k.Priority)
             .ThenBy(k => k.CreatedAt)
+            .ThenBy(k => k.Id)
             .ToListAsync(cancellationToken);
 
         return Ok(ApiResponse.Ok(new
@@ -230,6 +231,7 @@ public sealed class SitesApiController : ControllerBase
             .Where(k => k.SiteId == id)
             .OrderBy(k => k.Priority)
             .ThenBy(k => k.CreatedAt)
+            .ThenBy(k => k.Id)
             .ToListAsync(cancellationToken);
 
         return Ok(ApiResponse.Ok(keys.Select(k => new
@@ -370,6 +372,7 @@ public sealed class SitesApiController : ControllerBase
             .Where(k => k.SiteId == siteId)
             .OrderBy(k => k.Priority)
             .ThenBy(k => k.CreatedAt)
+            .ThenBy(k => k.Id)
             .ToListAsync(cancellationToken);
 
         if (keys.Count == 0)
@@ -459,7 +462,7 @@ public sealed class SitesApiController : ControllerBase
             .Where(k => siteIds.Contains(k.SiteId))
             .ToListAsync(cancellationToken);
         var keysBySite = allKeys.GroupBy(k => k.SiteId)
-            .ToDictionary(g => g.Key, g => g.OrderBy(k => k.Priority).ThenBy(k => k.CreatedAt).ToList());
+            .ToDictionary(g => g.Key, g => g.OrderBy(k => k.Priority).ThenBy(k => k.CreatedAt).ThenBy(k => k.Id).ToList());
 
         var exportData = sites.Select(s =>
         {
