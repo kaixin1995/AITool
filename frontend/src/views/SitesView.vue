@@ -179,13 +179,29 @@ async function openKeysModal(row: SiteListItem): Promise<void> {
   await loadSiteKeys()
 }
 
+// 密钥弹窗关闭后清理编辑态和新增表单，避免下次打开时残留
+function handleKeysModalClosed(): void {
+  editingKeyId.value = null
+  resetNewKeyForm()
+}
+
+// 密钥列表加载请求序号，防止快速切换站点时旧响应覆盖新响应（竞态）
+let siteKeysLoadSeq = 0
+
 async function loadSiteKeys(): Promise<void> {
   if (!keysModalSiteId.value) return
+  const seq = ++siteKeysLoadSeq
+  const targetSiteId = keysModalSiteId.value
   keysLoading.value = true
   try {
-    siteKeys.value = await sitesApi.listSiteKeys(keysModalSiteId.value)
+    const result = await sitesApi.listSiteKeys(targetSiteId)
+    // 仅当本次请求仍是最新一次（目标站点未变）时才应用结果
+    if (seq !== siteKeysLoadSeq || keysModalSiteId.value !== targetSiteId) return
+    siteKeys.value = result
   } finally {
-    keysLoading.value = false
+    if (seq === siteKeysLoadSeq) {
+      keysLoading.value = false
+    }
   }
 }
 
@@ -262,7 +278,8 @@ async function handleToggleKey(key: sitesApi.SiteKeyItem): Promise<void> {
   await loadSites()
 }
 
-// 上移/下移调整优先级：交换相邻两个 Key 的 priority 并实时更新
+// 上移/下移调整优先级：交换相邻两个 Key 的 priority 并实时更新。
+// 并行发起两次更新；任一失败则回滚本地状态并提示，重新加载以同步后端真实状态。
 async function handleMoveKey(key: sitesApi.SiteKeyItem, direction: -1 | 1): Promise<void> {
   if (!keysModalSiteId.value) return
   const sorted = [...siteKeys.value].sort((a, b) => a.priority - b.priority)
@@ -270,18 +287,30 @@ async function handleMoveKey(key: sitesApi.SiteKeyItem, direction: -1 | 1): Prom
   const targetIdx = idx + direction
   if (targetIdx < 0 || targetIdx >= sorted.length) return
   const target = sorted[targetIdx]
+  // 先记录原值，便于失败回滚
+  const origKeyPriority = key.priority
+  const origTargetPriority = target.priority
   // 交换两者的 priority
-  const tmp = key.priority
-  key.priority = target.priority
-  target.priority = tmp
+  key.priority = origTargetPriority
+  target.priority = origKeyPriority
 
-  await sitesApi.updateSiteKey(keysModalSiteId.value, key.id, {
-    keyValue: '', remark: key.remark, priority: key.priority, isEnabled: key.isEnabled
-  })
-  await sitesApi.updateSiteKey(keysModalSiteId.value, target.id, {
-    keyValue: '', remark: target.remark, priority: target.priority, isEnabled: target.isEnabled
-  })
-  await loadSiteKeys()
+  try {
+    await Promise.all([
+      sitesApi.updateSiteKey(keysModalSiteId.value, key.id, {
+        keyValue: '', remark: key.remark, priority: key.priority, isEnabled: key.isEnabled
+      }),
+      sitesApi.updateSiteKey(keysModalSiteId.value, target.id, {
+        keyValue: '', remark: target.remark, priority: target.priority, isEnabled: target.isEnabled
+      })
+    ])
+    await loadSiteKeys()
+  } catch {
+    // 失败：回滚本地 priority，重新加载以同步后端真实状态
+    key.priority = origKeyPriority
+    target.priority = origTargetPriority
+    message.error('排序更新失败，正在刷新密钥列表')
+    await loadSiteKeys()
+  }
 }
 
 // 导入/导出：保留旧页面的预览、选择、复制、下载和 JSON 文件导入流程。
@@ -613,8 +642,7 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
       const options = [
         {
           key: 'fetch',
-          label: '拉取模型',
-          disabled: !row.isEnabled
+          label: '拉取模型'
         },
         {
           key: 'keys',
@@ -628,7 +656,7 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
           label: row.isEnabled ? '禁用' : '启用'
         },
         { type: 'divider' as const, key: 'd1' },
-        { key: 'delete', label: '删除站点', props: { style: 'color: var(--error-color)' } }
+        { key: 'delete', label: '删除站点', props: { style: 'color: var(--status-danger-text)' } }
       ]
       return h(NSpace, { size: 4, wrap: false, align: 'center' }, () => [
         h(NButton, { size: 'small', secondary: true, onClick: () => openEdit(row) }, () => '编辑'),
@@ -745,6 +773,7 @@ onBeforeUnmount(handleCatalogClosed)
       preset="card"
       style="width: 780px; max-width: 94vw"
       :mask-closable="false"
+      @after-leave="handleKeysModalClosed"
     >
       <NSpace vertical size="large">
         <p class="site-modal-tip">
@@ -1135,7 +1164,7 @@ onBeforeUnmount(handleCatalogClosed)
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  color: var(--error-color);
+  color: var(--status-danger-text);
   word-break: break-all;
 }
 
