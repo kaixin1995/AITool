@@ -63,15 +63,15 @@
 
             <StackPanel IsVisible="{Binding HasSelectedEntry}" Spacing="12" Margin="16,14,16,0">
               <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="14">
-                <Grid ColumnDefinitions="1.1*,1.8*,Auto,Auto" ColumnSpacing="8">
+                <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,*" ColumnSpacing="8" RowSpacing="8">
                   <TextBox Classes="form-input" Text="{Binding CandidateSearch}" Watermark="搜索站点或模型" />
                   <ComboBox Grid.Column="1" ItemsSource="{Binding FilteredSiteInstances}" SelectedItem="{Binding SelectedSiteInstance}" IsEnabled="{Binding CanEdit}">
                     <ComboBox.ItemTemplate>
                       <DataTemplate><TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" /></DataTemplate>
                     </ComboBox.ItemTemplate>
                   </ComboBox>
-                  <Button Grid.Column="2" Classes="primary-button" Command="{Binding AddSelectedCandidateCommand}" Content="追加候选" IsEnabled="{Binding CanAddCandidate}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" />
-                  <Button Grid.Column="3" Classes="secondary-button" Command="{Binding RefreshSiteInstancesCommand}" Content="刷新实例池" IsEnabled="{Binding CanRefreshPool}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" />
+                  <Button Grid.Row="1" Classes="primary-button" Command="{Binding AddSelectedCandidateCommand}" Content="追加候选" IsEnabled="{Binding CanAddCandidate}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" HorizontalAlignment="Stretch" />
+                  <Button Grid.Row="1" Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshSiteInstancesCommand}" Content="刷新实例池" IsEnabled="{Binding CanRefreshPool}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" HorizontalAlignment="Stretch" />
                 </Grid>
               </Border>
               <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoSiteInstances}" Text="暂无可用站点实例，请先启用站点并配置模型映射。" TextWrapping="Wrap" />
@@ -86,21 +86,21 @@
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
                         <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="14,12">
-                          <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="12">
-                            <Border Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="14" Height="28" Width="28" VerticalAlignment="Center">
+                          <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*" ColumnSpacing="12" RowSpacing="8">
+                            <Border Grid.RowSpan="2" Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="14" Height="28" Width="28" VerticalAlignment="Center">
                               <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding PriorityText}" />
                             </Border>
                             <StackPanel Grid.Column="1" Spacing="3">
-                              <StackPanel Orientation="Horizontal" Spacing="8">
+                              <WrapPanel ItemSpacing="8" LineSpacing="4">
                                 <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SiteName}" />
                                 <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" IsVisible="{Binding IsSiteDisabled}" Padding="7,2"><TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="站点已禁用" /></Border>
                                 <Grid>
                                   <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,2" IsVisible="{Binding IsEnabled}"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
                                   <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="10" Padding="7,2" IsVisible="{Binding IsDisabled}"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" /></Border>
                                 </Grid>
-                              </StackPanel>
+                              </WrapPanel>
                               <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InstanceSummary}" TextTrimming="CharacterEllipsis" />
-                              <StackPanel Orientation="Horizontal" Spacing="7">
+                              <WrapPanel ItemSpacing="7" LineSpacing="6">
                                 <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="可用性" VerticalAlignment="Center" />
                                 <ComboBox ItemsSource="{Binding DataContext.AvailabilityOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedValue="{Binding AvailabilityMode, Mode=TwoWay}" SelectedValueBinding="{Binding Value}" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}">
                                   <ComboBox.ItemTemplate>
@@ -112,14 +112,14 @@
                                   <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="至" VerticalAlignment="Center" />
                                   <TextBox Classes="form-input" Text="{Binding TimeRangeEnd}" Watermark="23:59" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
                                 </StackPanel>
-                              </StackPanel>
+                              </WrapPanel>
                             </StackPanel>
-                            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                            <WrapPanel Grid.Row="1" Grid.Column="1" ItemSpacing="6" LineSpacing="6">
                               <Button Classes="secondary-button" Command="{Binding DataContext.ToggleRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" IsEnabled="{Binding CanToggle}" Padding="8,5" />
                               <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleUpCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="上移" IsEnabled="{Binding CanMoveUp}" Padding="8,5" />
                               <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleDownCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="下移" IsEnabled="{Binding CanMoveDown}" Padding="8,5" />
                               <Button Classes="secondary-button" Command="{Binding DataContext.RemoveCandidateCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="移除" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="8,5" />
-                            </StackPanel>
+                            </WrapPanel>
                           </Grid>
                         </Border>
                       </DataTemplate>

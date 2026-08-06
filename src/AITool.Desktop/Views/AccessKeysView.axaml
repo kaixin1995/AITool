@@ -26,9 +26,9 @@
         </Border>
         <Border Classes="content-card" IsVisible="{Binding IsListVisible}" Padding="0">
           <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-            <StackPanel MinWidth="760">
+            <StackPanel HorizontalAlignment="Stretch">
               <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="18,14">
-                <Grid ColumnDefinitions="2*,2.2*,2*,1*,Auto">
+                <Grid ColumnDefinitions="2*,2.2*,2*,1*,1.8*" ColumnSpacing="12">
                   <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="名称" />
                   <TextBlock Grid.Column="1" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="密钥" />
                   <TextBlock Grid.Column="2" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="允许路由" />
@@ -40,19 +40,19 @@
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
                     <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="18,14">
-                      <Grid ColumnDefinitions="2*,2.2*,2*,1*,Auto" ColumnSpacing="12">
-                        <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding KeyName}" VerticalAlignment="Center" />
-                        <TextBlock Grid.Column="1" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding MaskedValue}" VerticalAlignment="Center" />
+                      <Grid ColumnDefinitions="2*,2.2*,2*,1*,1.8*" ColumnSpacing="12">
+                        <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding KeyName}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="1" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding MaskedValue}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
                         <TextBlock Grid.Column="2" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding AllowedRoutesText}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" />
-                        <Grid Grid.Column="3" HorizontalAlignment="Left" VerticalAlignment="Center">
+                        <Grid Grid.Column="3" HorizontalAlignment="Center" VerticalAlignment="Center">
                           <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsEnabled}"><TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
                           <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsDisabled}"><TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" /></Border>
                         </Grid>
-                        <StackPanel Grid.Column="4" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <WrapPanel Grid.Column="4" ItemSpacing="6" LineSpacing="6" VerticalAlignment="Center">
                           <Button Classes="secondary-button" Command="{Binding DataContext.OpenRoutesEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑路由" IsEnabled="{Binding DataContext.CanOpenEditor, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="10,6" />
                           <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,6" />
                           <Button Classes="secondary-button" Click="ConfirmDeleteAccessKey" Content="删除" Padding="10,6" />
-                        </StackPanel>
+                        </WrapPanel>
                       </Grid>
                     </Border>
                   </DataTemplate>
