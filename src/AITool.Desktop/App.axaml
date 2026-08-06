@@ -143,6 +143,31 @@
       <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
     </Style>
 
+    <!-- 路由主入口使用统一卡片行，避免复用导航按钮后出现视觉不一致。 -->
+    <Style Selector="ToggleButton.route-entry-item">
+      <Setter Property="Background" Value="{DynamicResource AppCardBackgroundBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppBorderBrush}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="Foreground" Value="{DynamicResource AppTextPrimaryBrush}" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="Padding" Value="14,10" />
+      <Setter Property="MinHeight" Value="46" />
+      <Setter Property="Margin" Value="0,0,0,8" />
+      <Setter Property="CornerRadius" Value="10" />
+    </Style>
+
+    <Style Selector="ToggleButton.route-entry-item:pointerover">
+      <Setter Property="Background" Value="{DynamicResource AppPrimarySoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppPrimaryBrush}" />
+    </Style>
+
+    <Style Selector="ToggleButton.route-entry-item:checked">
+      <Setter Property="Background" Value="{DynamicResource AppPrimarySoftBrush}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource AppPrimaryBrush}" />
+      <Setter Property="Foreground" Value="{DynamicResource AppInfoTextBrush}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+
     <Style Selector="ToggleButton.nav-item:checked">
       <Setter Property="Background" Value="{DynamicResource AppPrimarySoftBrush}" />
       <Setter Property="Foreground" Value="#5B8DEF" />

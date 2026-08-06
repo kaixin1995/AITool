@@ -8,37 +8,41 @@
     PointerPressed="StartRuleDrag"
     PointerMoved="MoveRuleDrag"
     PointerReleased="EndRuleDrag">
-  <Grid RowDefinitions="Auto,*" RowSpacing="24" ColumnDefinitions="1*,2.4*" ColumnSpacing="18">
+  <Grid RowDefinitions="Auto,*" RowSpacing="24" ColumnDefinitions="320,*" ColumnSpacing="20">
       <StackPanel Grid.ColumnSpan="2" Spacing="4" IsVisible="{Binding ShowPageHeader, RelativeSource={RelativeSource AncestorType=UserControl}}">
         <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="路由规则管理" />
         <TextBlock Classes="page-subtitle" Text="主入口绑定有序候选实例队列，请求时按顺序失败切换、成功即停止" TextWrapping="Wrap" />
       </StackPanel>
 
-      <Border Grid.Row="1" Classes="content-card" Padding="14">
+      <Border Grid.Row="1" Classes="content-card" Padding="0">
         <DockPanel>
-          <StackPanel DockPanel.Dock="Top" Spacing="10">
-            <StackPanel Spacing="3">
-              <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="主入口" />
-              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="管理对外暴露的本地路由入口" TextWrapping="Wrap" />
-            </StackPanel>
-            <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="10">
-              <StackPanel Spacing="8">
-                <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="新建主入口" />
-                <TextBox Classes="form-input" Text="{Binding NewEntryName}" Watermark="例如 auto" />
-                <Button Classes="primary-button" Command="{Binding CreateEntryCommand}" Content="创建入口" IsEnabled="{Binding CanCreate}" HorizontalContentAlignment="Center" Padding="10,8" />
+          <StackPanel DockPanel.Dock="Top" Spacing="0">
+            <Border Background="{DynamicResource AppPageBackgroundBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,0,0,1" Padding="18,16">
+              <StackPanel Spacing="4">
+                <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="主入口" />
+                <TextBlock FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="管理对外暴露的本地路由入口" TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
+            <Border Background="{DynamicResource AppInputBackgroundBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,0,0,1" Padding="16">
+              <StackPanel Spacing="6">
+                <TextBlock FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="新建主入口" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                  <TextBox Classes="form-input" Height="34" Text="{Binding NewEntryName}" Watermark="例如 auto" />
+                  <Button Grid.Column="1" Classes="primary-button" Command="{Binding CreateEntryCommand}" Content="创建" IsEnabled="{Binding CanCreate}" Height="34" Padding="12,6" HorizontalContentAlignment="Center" />
+                </Grid>
               </StackPanel>
             </Border>
           </StackPanel>
           <ScrollViewer VerticalScrollBarVisibility="Auto">
-            <ItemsControl ItemsSource="{Binding Entries}">
+            <ItemsControl ItemsSource="{Binding Entries}" Margin="10">
               <ItemsControl.ItemTemplate>
                 <DataTemplate>
                   <ToggleButton
-                      Classes="nav-item"
+                      Classes="route-entry-item"
                       Click="SelectEntry"
                       IsChecked="{Binding IsSelected, Mode=OneWay}">
-                    <Grid ColumnDefinitions="*,Auto">
-                      <TextBlock Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding EntryName}" TextTrimming="CharacterEllipsis" />
+                    <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+                      <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding EntryName}" TextTrimming="CharacterEllipsis" />
                       <Border Grid.Column="1" Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="10" Padding="7,3"><TextBlock FontSize="11" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding CandidateCount}" /></Border>
                     </Grid>
                   </ToggleButton>
@@ -71,9 +75,9 @@
 
             <StackPanel IsVisible="{Binding HasSelectedEntry}" Spacing="12" Margin="16,14,16,0">
               <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="14">
-                <Grid ColumnDefinitions="1.35*,1.65*,Auto,Auto" ColumnSpacing="8">
-                  <TextBox Classes="form-input" Text="{Binding CandidateSearch}" Watermark="搜索站点或模型" />
-                  <ComboBox Grid.Column="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" PlaceholderText="选择站点实例" ItemsSource="{Binding FilteredSiteInstances}" SelectedItem="{Binding SelectedSiteInstance}" IsEnabled="{Binding CanEdit}">
+                <Grid ColumnDefinitions="2*,2*,Auto,Auto" ColumnSpacing="8">
+                  <TextBox Classes="form-input" Height="34" Text="{Binding CandidateSearch}" Watermark="搜索站点或模型" />
+                  <ComboBox Grid.Column="1" Height="34" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" PlaceholderText="选择站点实例" ItemsSource="{Binding FilteredSiteInstances}" SelectedItem="{Binding SelectedSiteInstance}" IsEnabled="{Binding CanEdit}">
                     <ComboBox.ItemTemplate>
                       <DataTemplate><TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" /></DataTemplate>
                     </ComboBox.ItemTemplate>
