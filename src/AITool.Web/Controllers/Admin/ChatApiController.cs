@@ -448,7 +448,8 @@ public sealed class ChatApiController : ControllerBase
                     route.SiteModelName,
                     concurrencyMode,
                     concurrencyQueueTimeout,
-                    cancellationToken);
+                    cancellationToken,
+                    displaySiteId: route.SiteId);
 
                 if (!concurrencyHandle.Acquired)
                 {
@@ -819,7 +820,8 @@ public sealed class ChatApiController : ControllerBase
             mapping.SiteModelName,
             concurrencyMode,
             concurrencyQueueTimeout,
-            cancellationToken);
+            cancellationToken,
+            displaySiteId: mapping.SiteId);
 
         if (!concurrencyHandle.Acquired)
         {
@@ -932,7 +934,8 @@ public sealed class ChatApiController : ControllerBase
             mapping.SiteModelName,
             concurrencyMode,
             concurrencyQueueTimeout,
-            cancellationToken);
+            cancellationToken,
+            displaySiteId: mapping.SiteId);
 
         if (!concurrencyHandle.Acquired)
         {

@@ -20,9 +20,9 @@ async function load(): Promise<void> {
   } finally { loading.value = false }
 }
 
-async function handleReset(routeId: string): Promise<void> {
+async function handleReset(circuitKey: string): Promise<void> {
   try {
-    await api.resetCircuitBreaker(routeId)
+    await api.resetCircuitBreaker(circuitKey)
     message.success('已解除熔断')
     await load()
   } catch (e) { message.error((e as Error).message) }
@@ -69,7 +69,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
     <NEmpty v-if="routes.length === 0" description="当前无熔断或失败记录" />
 
     <div v-else>
-      <div v-for="r in routes" :key="r.routeId" class="circuit-row">
+      <div v-for="r in routes" :key="r.circuitKey" class="circuit-row">
         <NSpace align="center" :size="8" style="flex: 1">
           <NTag size="small" :type="r.isBlocked ? 'error' : 'warning'" :bordered="false">
             {{ r.isBlocked ? '已熔断' : '失败累计' }}
@@ -82,7 +82,7 @@ onUnmounted(() => { if (timer) clearInterval(timer) })
             剩余 {{ formatRemaining(r.remainingSeconds) }}
           </span>
         </NSpace>
-        <NPopconfirm v-if="r.isBlocked || r.failureCount > 0" @positive-click="handleReset(r.routeId)">
+        <NPopconfirm v-if="r.isBlocked || r.failureCount > 0" @positive-click="handleReset(r.circuitKey)">
           <template #trigger><NButton size="tiny" quaternary type="warning">解除</NButton></template>
           确认解除该路由的熔断/失败计数？
         </NPopconfirm>

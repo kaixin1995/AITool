@@ -199,18 +199,18 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         }
 
         var siteNames = await _metadataCache.GetEnabledSiteNamesAsync(cancellationToken);
-        var mappingLimits = await _metadataCache.GetModelConcurrencyLimitsAsync(cancellationToken);
 
+        // x.SiteId 是真实站点 Id（displaySiteId），用于反查站点名；
+        // x.MaxConcurrency 已由限制器的 EnrichWithStateInfo 从运行时 state 填充，无需再查缓存字典。
         var items = snapshots.Select(x =>
         {
-            var key = $"{x.SiteId:N}:{x.SiteModelName}";
             return new
             {
                 siteId = x.SiteId,
                 modelName = x.SiteModelName,
                 siteName = siteNames.TryGetValue(x.SiteId, out var n) ? n : "-",
                 activeCount = x.ActiveCount,
-                maxConcurrency = mappingLimits.TryGetValue(key, out var mc) && mc > 0 ? (int?)mc : null,
+                maxConcurrency = x.MaxConcurrency > 0 ? (int?)x.MaxConcurrency : null,
                 queueCount = x.QueueCount,
                 lastSeenAt = x.LastSeenAt
             };
@@ -241,56 +241,73 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             return Ok(ApiResponse.Ok(new { routes = Array.Empty<object>() }));
         }
 
-        // 查 routeId → siteName + modelName + entryName 的映射
-        var routeIds = states.Keys.ToList();
-        var routes = await _dbContext.Client.Queryable<AITool.Domain.Proxy.ProxyRouteRule>()
-            .Where(r => routeIds.Contains(r.Id))
-            .Select(r => new { r.Id, r.ExternalModelName, r.UpstreamModelName, r.SiteId })
-            .ToListAsync(cancellationToken);
+        // 熔断存储的 key 现在是 CircuitKey（多 Key 候选为合成 Guid，单 Key/兼容候选为 RouteId 本身）。
+        // 从缓存层展开后的路由候选构建 CircuitKey → 候选信息 字典，正确匹配每条熔断状态。
+        var allTargets = await _metadataCache.GetAllRouteTargetsAsync(cancellationToken);
+        var targetByCircuitKey = allTargets.ToDictionary(x => x.CircuitKey, x => x);
 
-        var siteIds = routes.Select(r => r.SiteId).Distinct().ToList();
-        var sites = await _dbContext.Client.Queryable<AITool.Domain.Sites.Site>()
-            .Where(s => siteIds.Contains(s.Id))
-            .Select(s => new { s.Id, s.Name })
-            .ToListAsync(cancellationToken);
-        var siteNames = sites.ToDictionary(s => s.Id, s => s.Name);
-
-        var now = DateTimeOffset.UtcNow;
-        var result = routes.Select(r =>
+        var result = new List<object>(states.Count);
+        foreach (var pair in states)
         {
-            var state = states.GetValueOrDefault(r.Id);
-            var siteName = siteNames.GetValueOrDefault(r.SiteId, "未知站点");
-            return new
+            var circuitKey = pair.Key;
+            var state = pair.Value;
+            // 匹配缓存候选；匹配不到（候选已被删除或缓存未刷新）时仅展示熔断状态本身。
+            if (targetByCircuitKey.TryGetValue(circuitKey, out var target))
             {
-                routeId = r.Id,
-                entryName = r.ExternalModelName,
-                upstreamModelName = r.UpstreamModelName,
-                siteName,
-                isBlocked = state?.IsBlocked ?? false,
-                failureCount = state?.FailureCount ?? 0,
-                blockedUntil = state?.BlockedUntil,
-                remainingSeconds = state?.RemainingTime != null
-                    ? Math.Max(0, (int)Math.Ceiling(state.RemainingTime.Value.TotalSeconds))
-                    : (int?)null
-            };
-        }).ToList();
+                result.Add(new
+                {
+                    routeId = target.RouteId,
+                    circuitKey,
+                    entryName = target.ExternalModelName,
+                    upstreamModelName = target.UpstreamModelName,
+                    siteName = target.SiteName,
+                    siteKeyId = target.SiteKeyId,
+                    isBlocked = state.IsBlocked,
+                    failureCount = state.FailureCount,
+                    blockedUntil = state.BlockedUntil,
+                    remainingSeconds = state.RemainingTime != null
+                        ? Math.Max(0, (int)Math.Ceiling(state.RemainingTime.Value.TotalSeconds))
+                        : (int?)null
+                });
+            }
+            else
+            {
+                // 候选已不存在（路由/Key 被删除），仍展示熔断状态以便手动解除。
+                result.Add(new
+                {
+                    routeId = Guid.Empty,
+                    circuitKey,
+                    entryName = "(候选已移除)",
+                    upstreamModelName = string.Empty,
+                    siteName = string.Empty,
+                    siteKeyId = (Guid?)null,
+                    isBlocked = state.IsBlocked,
+                    failureCount = state.FailureCount,
+                    blockedUntil = state.BlockedUntil,
+                    remainingSeconds = state.RemainingTime != null
+                        ? Math.Max(0, (int)Math.Ceiling(state.RemainingTime.Value.TotalSeconds))
+                        : (int?)null
+                });
+            }
+        }
 
         return Ok(ApiResponse.Ok(new { routes = result }));
     }
 
     /// <summary>
     /// 手动解除指定路由的熔断状态。
+    /// 路径参数 circuitKey 为熔断身份键（多 Key 候选为合成 Guid，兼容候选为 RouteId）。
     /// </summary>
-    [HttpPost("circuit-breaker/{routeId}/reset")]
-    public async Task<IActionResult> ResetCircuitBreaker(Guid routeId, CancellationToken cancellationToken)
+    [HttpPost("circuit-breaker/{circuitKey}/reset")]
+    public async Task<IActionResult> ResetCircuitBreaker(Guid circuitKey, CancellationToken cancellationToken)
     {
         if (!await IsDeveloperEnabledAsync(cancellationToken))
         {
             return NotFound();
         }
 
-        var removed = _circuitStore.Reset(routeId);
-        return Ok(ApiResponse.Ok(new { routeId, reset = removed }, removed ? "已解除熔断" : "该路由未被熔断"));
+        var removed = _circuitStore.Reset(circuitKey);
+        return Ok(ApiResponse.Ok(new { circuitKey, reset = removed }, removed ? "已解除熔断" : "该路由未被熔断"));
     }
 
     /// <summary>

@@ -221,7 +221,7 @@ public sealed class AnthropicProxyController : ControllerBase
             // 按站点+模型粒度获取并发许可，根据配置决定跳过或排队。
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                 HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
-                concurrencyMode, concurrencyQueueTimeout, cancellationToken);
+                concurrencyMode, concurrencyQueueTimeout, cancellationToken, displaySiteId: route.SiteId);
 
             if (!concurrencyHandle.Acquired)
             {

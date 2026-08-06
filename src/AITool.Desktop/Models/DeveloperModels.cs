@@ -164,6 +164,7 @@ public sealed class CircuitBreakerResponse
 public sealed class CircuitBreakerRoute
 {
     public string RouteId { get; set; } = string.Empty;
+    public string CircuitKey { get; set; } = string.Empty;
     public string EntryName { get; set; } = string.Empty;
     public string UpstreamModelName { get; set; } = string.Empty;
     public string SiteName { get; set; } = string.Empty;

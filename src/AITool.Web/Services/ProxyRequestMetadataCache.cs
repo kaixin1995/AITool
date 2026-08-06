@@ -251,6 +251,15 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 获取所有路由候选（含多 Key 展开后的每条候选），供调试页按 CircuitKey 反查路由/站点/Key 信息。
+    /// 不过滤模型名和可用性，因为熔断状态可能对应任意候选。
+    /// </summary>
+    public async Task<IReadOnlyList<CachedProxyRouteTarget>> GetAllRouteTargetsAsync(CancellationToken cancellationToken)
+    {
+        return await GetRouteTargetsAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// 获取模型对应的路由目标。
     /// </summary>
     public async Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsForModelAsync(
@@ -1441,7 +1450,7 @@ public sealed class ProxyRequestMetadataCache
     /// 为多 Key 展开准备的身份候选：一个站点可能产出多个候选，每个候选携带实际使用的密钥值和对应的 SiteKeyId。
     /// 站点没有启用的 SiteKey 时回退到站点默认密钥（兼容 Codex 托管站点和未迁移的老站点）。
     /// </summary>
-    private sealed record SiteKeyCandidate(Guid? SiteKeyId, string ApiKey);
+    internal sealed record SiteKeyCandidate(Guid? SiteKeyId, string ApiKey);
 
     /// <summary>
     /// 取指定站点的密钥候选列表（按 Priority 升序，仅启用项）。
@@ -1450,7 +1459,7 @@ public sealed class ProxyRequestMetadataCache
     /// 则回退用 <paramref name="fallbackApiKey"/> 产出单条候选，保证不回归。
     /// </para>
     /// </summary>
-    private static List<SiteKeyCandidate> ResolveSiteKeyCandidates(
+    internal static List<SiteKeyCandidate> ResolveSiteKeyCandidates(
         Guid siteId,
         string fallbackApiKey,
         Dictionary<Guid, List<SiteKey>> siteKeysBySite)
@@ -1473,7 +1482,7 @@ public sealed class ProxyRequestMetadataCache
     /// 始终映射到相同的合成键——这样某个 Key 连续失败只熔断它自己，不误伤同站点其他 Key。
     /// SiteKey 为 null 的兼容候选用 RouteId 本身。
     /// </summary>
-    private static Guid BuildCircuitKey(Guid routeId, Guid? siteKeyId)
+    internal static Guid BuildCircuitKey(Guid routeId, Guid? siteKeyId)
     {
         if (siteKeyId is null)
         {

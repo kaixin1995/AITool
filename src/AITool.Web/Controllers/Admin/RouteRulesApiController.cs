@@ -2,6 +2,7 @@ using System.Text.Json;
 using AITool.Application.Common;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
+using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -506,6 +507,13 @@ public sealed class RouteRulesApiController : ControllerBase
 
             .Where(x => siteIds.Contains(x.Id) && x.IsEnabled)
             .ToDictionaryAsync(x => x.Id, x => x, cancellationToken);
+        // 加载这些站点的启用 SiteKey，按 SiteId 分组，用于按 Key 展开为多条候选（与缓存层一致）。
+        var siteKeys = await _dbContext.SiteKeys
+            .Where(k => k.IsEnabled && siteIds.Contains(k.SiteId))
+            .ToListAsync(cancellationToken);
+        var siteKeysBySite = siteKeys
+            .GroupBy(k => k.SiteId)
+            .ToDictionary(g => g.Key, g => g.ToList());
         var upstreamModelNames = existingRules
             .Select(x => x.UpstreamModelName)
             .Where(x => !string.IsNullOrWhiteSpace(x))
@@ -527,36 +535,46 @@ public sealed class RouteRulesApiController : ControllerBase
                 .ToListAsync(cancellationToken))
             .ToDictionary(x => x.Id, x => ParseCompatibilityRules(x.RulesJson));
 
-        return existingRules
-            .Where(x => x.IsEnabled && sites.ContainsKey(x.SiteId))
-            .Select(x =>
+        // 按 SiteKey 展开：每条路由 × 每个启用 Key 各产出一条候选，保证延迟刷新期间的旧快照
+        // 与缓存热路径产出一致（SiteKeyId/CircuitKey/ApiKey 都正确），避免保护期内熔断键错乱。
+        var expanded = new List<CachedProxyRouteTarget>();
+        foreach (var rule in existingRules.Where(x => x.IsEnabled && sites.ContainsKey(x.SiteId)))
+        {
+            var site = sites[rule.SiteId];
+            models.TryGetValue(rule.UpstreamModelName, out var model);
+            var candidates = ProxyRequestMetadataCache.ResolveSiteKeyCandidates(site.Id, site.ApiKey, siteKeysBySite);
+
+            foreach (var candidate in candidates)
             {
-                var site = sites[x.SiteId];
-                models.TryGetValue(x.UpstreamModelName, out var model);
-                return new CachedProxyRouteTarget
+                expanded.Add(new CachedProxyRouteTarget
                 {
-                    RouteId = x.Id,
+                    RouteId = rule.Id,
                     SiteId = site.Id,
+                    SiteKeyId = candidate.SiteKeyId,
+                    CircuitKey = ProxyRequestMetadataCache.BuildCircuitKey(rule.Id, candidate.SiteKeyId),
                     SiteName = site.Name,
                     ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
                     EndpointPathMode = site.EndpointPathMode,
                     SupportsOpenAi = site.SupportsOpenAi,
                     SupportsAnthropic = site.SupportsAnthropic,
-                    ExternalModelName = x.ExternalModelName,
-                    UpstreamModelName = x.UpstreamModelName,
-                    SiteModelName = x.SiteModelName,
+                    ExternalModelName = rule.ExternalModelName,
+                    UpstreamModelName = rule.UpstreamModelName,
+                    SiteModelName = rule.SiteModelName,
                     BaseUrl = site.BaseUrl,
-                    ApiKey = site.ApiKey,
+                    ApiKey = candidate.ApiKey,
                     ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
-                    ModelPriority = x.ModelPriority,
-                    InstancePriority = x.InstancePriority,
-                    Priority = x.Priority,
+                    ModelPriority = rule.ModelPriority,
+                    InstancePriority = rule.InstancePriority,
+                    Priority = rule.Priority,
                     OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
                     CompatibilityRules = GetRulesForModel(model, profiles),
-                    AvailabilityMode = x.AvailabilityMode,
-                    TimeRangesJson = x.TimeRangesJson
-                };
-            })
+                    AvailabilityMode = rule.AvailabilityMode,
+                    TimeRangesJson = rule.TimeRangesJson
+                });
+            }
+        }
+
+        return expanded
             .OrderBy(x => x.ModelPriority)
             .ThenBy(x => x.InstancePriority)
             .ThenBy(x => x.Priority)

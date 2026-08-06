@@ -595,9 +595,11 @@ public partial class DeveloperInvocationsViewModel : ViewModelBase, IDisposable
         if (route is null || _disposed) return;
         try
         {
+            // 解除熔断使用 CircuitKey（多 Key 候选为合成 Guid，兼容候选等同 RouteId）。
+            var circuitKey = !string.IsNullOrEmpty(route.CircuitKey) ? route.CircuitKey : route.RouteId;
             await _apiService.SendAsync<JsonElement>(
                 HttpMethod.Post,
-                $"/api/admin/developer/invocations/circuit-breaker/{Uri.EscapeDataString(route.RouteId)}/reset",
+                $"/api/admin/developer/invocations/circuit-breaker/{Uri.EscapeDataString(circuitKey)}/reset",
                 null,
                 true,
                 _lifetimeCancellation.Token);
