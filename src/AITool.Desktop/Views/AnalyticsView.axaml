@@ -11,18 +11,18 @@
         <TextBlock Classes="page-title" Text="可视化分析" />
         <TextBlock Classes="page-subtitle" Text="聚合请求量、成功率、Tokens 用量、耗时与路由分布，面向日常观察和排障" TextWrapping="Wrap" />
       </StackPanel>
-      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+      <WrapPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal" ItemSpacing="8" LineSpacing="8">
         <Button Classes="secondary-button" Command="{Binding CancelQueryCommand}" Content="取消查询" IsVisible="{Binding CanCancel}" Padding="12,7" />
         <Button Classes="secondary-button" Command="{Binding ContinueWaitingCommand}" Content="继续等待" IsVisible="{Binding CanContinueWaiting}" Padding="12,7" />
         <Button Classes="primary-button" Command="{Binding RefreshCommand}" Content="刷新数据" IsEnabled="{Binding CanRefresh}" Padding="12,7" />
-      </StackPanel>
+      </WrapPanel>
     </Grid>
 
     <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
       <StackPanel Spacing="16">
         <Border Classes="content-card" Padding="18">
           <StackPanel Spacing="12">
-            <Grid ColumnDefinitions="1*,1*,1*,1*" ColumnSpacing="12">
+            <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="1*,1*" ColumnSpacing="12" RowSpacing="10">
               <StackPanel Spacing="5">
                 <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="时间范围" />
                 <ComboBox ItemsSource="{Binding RangeOptions}" SelectedItem="{Binding SelectedRange}">
@@ -35,20 +35,20 @@
                   <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
                 </ComboBox>
               </StackPanel>
-              <StackPanel Grid.Column="2" Spacing="5">
+              <StackPanel Grid.Row="1" Spacing="5">
                 <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="协议类型" />
                 <ComboBox ItemsSource="{Binding ProtocolOptions}" SelectedItem="{Binding SelectedProtocol}">
                   <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate></ComboBox.ItemTemplate>
                 </ComboBox>
               </StackPanel>
-              <StackPanel Grid.Column="3" Spacing="5">
+              <StackPanel Grid.Row="1" Grid.Column="1" Spacing="5">
                 <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="调用模型" />
                 <ComboBox ItemsSource="{Binding ModelOptions}" SelectedItem="{Binding SelectedModel}">
                   <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" /></DataTemplate></ComboBox.ItemTemplate>
                 </ComboBox>
               </StackPanel>
             </Grid>
-            <Grid ColumnDefinitions="1*,1*,1*,1*" ColumnSpacing="12">
+            <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="1*,1*" ColumnSpacing="12" RowSpacing="10">
               <StackPanel Spacing="5">
                 <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="来源" />
                 <ComboBox ItemsSource="{Binding SourceOptions}" SelectedItem="{Binding SelectedSource}">
@@ -61,13 +61,13 @@
                   <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" /></DataTemplate></ComboBox.ItemTemplate>
                 </ComboBox>
               </StackPanel>
-              <StackPanel Grid.Column="2" Spacing="5">
+              <StackPanel Grid.Row="1" Spacing="5">
                 <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="访问密钥" />
                 <ComboBox ItemsSource="{Binding AccessKeyOptions}" SelectedItem="{Binding SelectedAccessKey}">
                   <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" /></DataTemplate></ComboBox.ItemTemplate>
                 </ComboBox>
               </StackPanel>
-              <TextBlock Grid.Column="3" VerticalAlignment="Bottom" FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="筛选变化后自动刷新" Margin="0,0,0,12" />
+              <TextBlock Grid.Row="1" Grid.Column="1" VerticalAlignment="Bottom" FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="筛选变化后自动刷新" Margin="0,0,0,12" TextWrapping="Wrap" />
             </Grid>
             <Grid ColumnDefinitions="1*,1*,Auto" ColumnSpacing="12" IsVisible="{Binding IsCustomRange}">
               <StackPanel Spacing="5">

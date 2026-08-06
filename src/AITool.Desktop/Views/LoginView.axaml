@@ -31,9 +31,10 @@
         VerticalAlignment="Top" />
 
     <Border
-        Width="430"
+        MaxWidth="430"
+        Margin="16"
         Padding="34"
-        HorizontalAlignment="Center"
+        HorizontalAlignment="Stretch"
         VerticalAlignment="Center"
         Background="{DynamicResource AppCardBackgroundBrush}"
         CornerRadius="16">

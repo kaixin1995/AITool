@@ -35,43 +35,43 @@
           VerticalScrollBarVisibility="Auto"
           IsVisible="{Binding HasStats}">
         <StackPanel Spacing="18">
-        <WrapPanel Orientation="Horizontal" ItemWidth="180" ItemSpacing="10" LineSpacing="10">
-          <Border Classes="content-card" Width="180" Padding="16">
+        <Grid ColumnDefinitions="1*,1*,1*,1*,1*" ColumnSpacing="10">
+          <Border Classes="content-card" Padding="16">
             <StackPanel Spacing="8">
               <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="启用站点" />
               <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.SiteCount}" />
               <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="资源管理" />
             </StackPanel>
           </Border>
-          <Border Classes="content-card" Width="180" Padding="16">
+          <Border Grid.Column="1" Classes="content-card" Padding="16">
             <StackPanel Spacing="8">
               <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型总数" />
               <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.ModelCount}" />
               <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="模型库" />
             </StackPanel>
           </Border>
-          <Border Classes="content-card" Width="180" Padding="16">
+          <Border Grid.Column="2" Classes="content-card" Padding="16">
             <StackPanel Spacing="8">
               <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="路由规则" />
               <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.RouteCount}" />
               <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="代理配置" />
             </StackPanel>
           </Border>
-          <Border Classes="content-card" Width="180" Padding="16">
+          <Border Grid.Column="3" Classes="content-card" Padding="16">
             <StackPanel Spacing="8">
               <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="启用密钥" />
               <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.AccessKeyCount}" />
               <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="访问控制" />
             </StackPanel>
           </Border>
-          <Border Classes="content-card" Padding="16">
+          <Border Grid.Column="4" Classes="content-card" Padding="16">
             <StackPanel Spacing="8">
               <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="检测任务" />
               <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.DetectionTaskCount}" />
               <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="监控运维" />
             </StackPanel>
           </Border>
-        </WrapPanel>
+        </Grid>
 
         <Border Classes="content-card" Padding="20">
           <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="16">
