@@ -21,8 +21,8 @@ namespace AITool.Web.Services;
 /// </summary>
 public sealed class CodexInspectionService : BackgroundService
 {
-    /// <summary>轮询基线间隔（实际执行周期由设置 CodexInspectionIntervalMinutes 决定）。</summary>
-    private static readonly TimeSpan TickInterval = TimeSpan.FromMinutes(1);
+    /// <summary>轮询基线间隔。巡检周期最小 30 秒，基线 10 秒确保 30 秒设置能及时触发。</summary>
+    private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(10);
 
     /// <summary>内存日志上限。</summary>
     private const int MaxLogs = 200;
