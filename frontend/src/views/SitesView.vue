@@ -730,12 +730,12 @@ onBeforeUnmount(handleCatalogClosed)
         <NFormItem label="接口路径模式">
           <NSelect v-model:value="form.endpointPathMode" :options="endpointModeOptions" />
         </NFormItem>
-        <NFormItem :label="isEditMode ? '默认密钥（留空保留）' : '密钥'">
+        <NFormItem v-if="!isEditMode" label="密钥">
           <NInput
             v-model:value="form.apiKey"
             type="password"
             show-password-on="click"
-            placeholder="sk-..."
+            placeholder="sk-...（作为首个默认密钥，更多密钥创建后用「密钥管理」添加）"
           />
         </NFormItem>
         <NFormItem label="协议支持">
