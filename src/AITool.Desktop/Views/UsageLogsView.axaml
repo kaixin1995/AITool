@@ -283,7 +283,7 @@
         Grid.Row="1"
         Classes="content-card"
         MaxWidth="420"
-        MinWidth="300"
+        Margin="12"
         Padding="20"
         HorizontalAlignment="Right"
         IsVisible="{Binding HasDetail}"
