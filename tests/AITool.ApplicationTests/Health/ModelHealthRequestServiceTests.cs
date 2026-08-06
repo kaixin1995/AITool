@@ -5,6 +5,7 @@ using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Sites;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -41,7 +42,7 @@ public sealed class ModelHealthRequestServiceTests : IDisposable
     [Fact]
     public async Task ProbeMappingAsync_copies_forward_http_status_code_to_usage_log()
     {
-        var service = new ModelHealthRequestService(_dbContext, _forwardService, _usageLogService);
+        var service = new ModelHealthRequestService(_dbContext, _forwardService, _usageLogService, new SiteKeySelector(_dbContext));
 
         var result = await service.ProbeMappingAsync(_mappingId, "detection-test", CancellationToken.None);
 
