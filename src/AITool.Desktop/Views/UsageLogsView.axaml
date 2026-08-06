@@ -210,18 +210,18 @@
             <StackPanel MinWidth="1260">
               <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="16,13">
                 <Grid ColumnDefinitions="1.25*,0.85*,1.25*,1.2*,1.1*,1*,1.45*,0.8*,0.8*,0.8*,0.9*,Auto" ColumnSpacing="10">
-                  <TextBlock VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="时间" />
-                  <TextBlock Grid.Column="1" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="来源" />
-                  <TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型" />
-                  <TextBlock Grid.Column="3" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="目标站点" />
-                  <TextBlock Grid.Column="4" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="访问密钥" />
-                  <TextBlock Grid.Column="5" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="状态" />
-                  <TextBlock Grid.Column="6" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="用时/首字" />
-                  <TextBlock Grid.Column="7" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="输入" />
-                  <TextBlock Grid.Column="8" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="缓存" />
-                  <TextBlock Grid.Column="9" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="输出" />
-                  <TextBlock Grid.Column="10" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="总 Token" />
-                  <TextBlock Grid.Column="11" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="操作" />
+                  <TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="时间" />
+                  <TextBlock Grid.Column="1" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="来源" />
+                  <TextBlock Grid.Column="2" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型" />
+                  <TextBlock Grid.Column="3" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="目标站点" />
+                  <TextBlock Grid.Column="4" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="访问密钥" />
+                  <TextBlock Grid.Column="5" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="状态" />
+                  <TextBlock Grid.Column="6" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="用时/首字" />
+                  <TextBlock Grid.Column="7" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="输入" />
+                  <TextBlock Grid.Column="8" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="缓存" />
+                  <TextBlock Grid.Column="9" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="输出" />
+                  <TextBlock Grid.Column="10" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="总 Token" />
+                  <TextBlock Grid.Column="11" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="操作" />
                 </Grid>
               </Border>
               <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoItems}" Margin="0,30" Text="暂无调用日志" />
@@ -230,23 +230,23 @@
                   <DataTemplate>
                     <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="16,12">
                       <Grid ColumnDefinitions="1.25*,0.85*,1.25*,1.2*,1.1*,1*,1.45*,0.8*,0.8*,0.8*,0.9*,Auto" ColumnSpacing="10" VerticalAlignment="Center">
-                        <TextBlock VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding RequestedAtText}" TextTrimming="CharacterEllipsis" />
-                        <Border Grid.Column="1" VerticalAlignment="Center" Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding SourceLabel}" /></Border>
-                        <TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding ModelText}" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Grid.Column="3" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SiteNameText}" TextTrimming="CharacterEllipsis" />
-                        <TextBlock Grid.Column="4" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding AccessKeyNameText}" TextTrimming="CharacterEllipsis" />
-                        <Border Grid.Column="5" VerticalAlignment="Center" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left" IsVisible="{Binding IsSuccessfulStatus}"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
-                        <Border Grid.Column="5" VerticalAlignment="Center" Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Left" IsVisible="{Binding IsFailedStatus}"><TextBlock VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding StatusText}" /></Border>
-                        <StackPanel Grid.Column="6" VerticalAlignment="Center" Orientation="Horizontal" Spacing="4">
-                          <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="9" Padding="6,3"><TextBlock VerticalAlignment="Center" FontSize="10" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="{Binding DurationText}" /></Border>
-                          <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="9" Padding="6,3"><TextBlock VerticalAlignment="Center" FontSize="10" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding FirstTokenText}" /></Border>
-                          <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="9" Padding="6,3"><TextBlock VerticalAlignment="Center" FontSize="10" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StreamingText}" /></Border>
+                        <TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding RequestedAtText}" TextTrimming="CharacterEllipsis" />
+                        <Border Grid.Column="1" VerticalAlignment="Center" Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Center"><TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding SourceLabel}" /></Border>
+                        <TextBlock Grid.Column="2" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding ModelText}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="3" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SiteNameText}" TextTrimming="CharacterEllipsis" />
+                        <TextBlock Grid.Column="4" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding AccessKeyNameText}" TextTrimming="CharacterEllipsis" />
+                        <Border Grid.Column="5" VerticalAlignment="Center" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Center" IsVisible="{Binding IsSuccessfulStatus}"><TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
+                        <Border Grid.Column="5" VerticalAlignment="Center" Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Center" IsVisible="{Binding IsFailedStatus}"><TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding StatusText}" /></Border>
+                        <StackPanel Grid.Column="6" HorizontalAlignment="Center" VerticalAlignment="Center" Orientation="Horizontal" Spacing="4">
+                          <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="9" Padding="6,3"><TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="10" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="{Binding DurationText}" /></Border>
+                          <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="9" Padding="6,3"><TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="10" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding FirstTokenText}" /></Border>
+                          <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="9" Padding="6,3"><TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="10" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StreamingText}" /></Border>
                         </StackPanel>
-                        <TextBlock Grid.Column="7" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InputTokensText}" />
-                        <TextBlock Grid.Column="8" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding CachedTokensText}" />
-                        <TextBlock Grid.Column="9" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding OutputTokensText}" />
-                        <TextBlock Grid.Column="10" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding TotalTokensText}" />
-                        <Button Grid.Column="11" VerticalAlignment="Center" Classes="secondary-button" Command="{Binding DataContext.OpenDetailCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="查看链路" Padding="9,6" />
+                        <TextBlock Grid.Column="7" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InputTokensText}" />
+                        <TextBlock Grid.Column="8" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding CachedTokensText}" />
+                        <TextBlock Grid.Column="9" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding OutputTokensText}" />
+                        <TextBlock Grid.Column="10" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding TotalTokensText}" />
+                        <Button Grid.Column="11" VerticalAlignment="Center" Classes="secondary-button" Command="{Binding DataContext.OpenDetailCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="查看链路" Padding="9,6" HorizontalContentAlignment="Center" />
                       </Grid>
                     </Border>
                   </DataTemplate>
