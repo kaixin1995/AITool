@@ -9,20 +9,20 @@
     <Grid Grid.Column="0" ColumnDefinitions="1.25*,0.9*,Auto" ColumnSpacing="10" Margin="0,0,0,14" VerticalAlignment="Top">
       <StackPanel Spacing="5">
         <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型搜索" />
-        <TextBox Classes="form-input" Height="34" Text="{Binding ModelSearchText}" Watermark="搜索站点或模型" />
+        <TextBox Classes="form-input" Height="34" MinHeight="34" Text="{Binding ModelSearchText}" Watermark="搜索站点或模型" />
       </StackPanel>
       <StackPanel Grid.Column="1" Spacing="5">
         <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="站点 / 模型" />
-        <ComboBox Height="34" ItemsSource="{Binding FilteredTargets}" SelectedItem="{Binding SelectedTarget}" PlaceholderText="选择站点模型">
+        <ComboBox Height="34" MinHeight="34" ItemsSource="{Binding FilteredTargets}" SelectedItem="{Binding SelectedTarget}" PlaceholderText="选择站点模型">
           <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" /></DataTemplate></ComboBox.ItemTemplate>
         </ComboBox>
       </StackPanel>
       <WrapPanel Grid.Column="2" ItemSpacing="10" LineSpacing="8" VerticalAlignment="Bottom">
-        <CheckBox Content="启用流式" IsChecked="{Binding EnableStreaming}" Height="34" />
-        <CheckBox Content="开启思考" IsChecked="{Binding EnableReasoning}" Height="34" />
+        <CheckBox Content="启用流式" IsChecked="{Binding EnableStreaming}" Height="34" MinHeight="34" VerticalContentAlignment="Center" />
+        <CheckBox Content="开启思考" IsChecked="{Binding EnableReasoning}" Height="34" MinHeight="34" VerticalContentAlignment="Center" />
         <StackPanel Spacing="5" IsVisible="{Binding EnableReasoning}">
           <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="思考等级" />
-          <ComboBox Height="34" ItemsSource="{Binding ReasoningEffortOptions}" SelectedItem="{Binding ReasoningEffort}" />
+          <ComboBox Height="34" MinHeight="34" ItemsSource="{Binding ReasoningEffortOptions}" SelectedItem="{Binding ReasoningEffort}" />
         </StackPanel>
         <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新候选" Height="34" Padding="10,6" />
         <Button Classes="secondary-button" Command="{Binding ClearCommand}" Content="清空" IsEnabled="{Binding CanClear}" Height="34" Padding="10,6" />
