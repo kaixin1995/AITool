@@ -15,20 +15,18 @@
           </StackPanel>
           <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" IsEnabled="{Binding CanRetry}" Padding="12,7" />
         </Grid>
-        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-          <Grid MinWidth="620" ColumnDefinitions="1*,1*,Auto,Auto" ColumnSpacing="12" VerticalAlignment="Bottom">
-            <StackPanel Spacing="4">
-              <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型关键字" />
-              <TextBox Classes="form-input" Text="{Binding ModelKeyword}" Watermark="按模型名筛选" />
-            </StackPanel>
-            <StackPanel Grid.Column="1" Spacing="4">
-              <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="回退原因" />
-              <TextBox Classes="form-input" Text="{Binding ReasonKeyword}" Watermark="按原因筛选" />
-            </StackPanel>
-            <Button Grid.Column="2" Classes="primary-button" Command="{Binding SearchCommand}" Content="查询" Padding="12,7" />
-            <Button Grid.Column="3" Classes="secondary-button" Command="{Binding ResetCommand}" Content="重置" Padding="12,7" />
-          </Grid>
-        </ScrollViewer>
+        <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="1*,1*" ColumnSpacing="12" RowSpacing="10" VerticalAlignment="Bottom">
+          <StackPanel Spacing="4">
+            <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型关键字" />
+            <TextBox Classes="form-input" Text="{Binding ModelKeyword}" Watermark="按模型名筛选" />
+          </StackPanel>
+          <StackPanel Grid.Column="1" Spacing="4">
+            <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="回退原因" />
+            <TextBox Classes="form-input" Text="{Binding ReasonKeyword}" Watermark="按原因筛选" />
+          </StackPanel>
+          <Button Grid.Row="1" Classes="primary-button" Command="{Binding SearchCommand}" Content="查询" Padding="12,7" HorizontalAlignment="Stretch" />
+          <Button Grid.Row="1" Grid.Column="1" Classes="secondary-button" Command="{Binding ResetCommand}" Content="重置" Padding="12,7" HorizontalAlignment="Stretch" />
+        </Grid>
       </StackPanel>
     </Border>
 

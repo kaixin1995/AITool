@@ -12,12 +12,12 @@
           <TextBlock Classes="page-title" Text="站点管理" />
           <TextBlock Classes="page-subtitle" Text="管理上游服务地址、协议、模型目录和启用状态" />
         </StackPanel>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+        <WrapPanel Grid.Column="1" HorizontalAlignment="Right" ItemSpacing="8" LineSpacing="6">
           <Button Classes="secondary-button" Command="{Binding FetchAllModelsCommand}" Content="一键拉取全部" IsEnabled="{Binding CanFetchModels}" Padding="12,7" />
           <Button Classes="secondary-button" Click="ExportSites" Content="导出 JSON" Padding="12,7" />
           <Button Classes="secondary-button" Click="ImportSites" Content="导入 JSON" Padding="12,7" />
           <Button Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增站点" Padding="14,8" />
-        </StackPanel>
+        </WrapPanel>
       </Grid>
 
       <StackPanel Grid.Row="1" Spacing="8">
@@ -40,9 +40,9 @@
 
         <Border Classes="content-card" IsVisible="{Binding IsListVisible}" Padding="0">
           <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
-            <StackPanel MinWidth="1180">
+            <StackPanel HorizontalAlignment="Stretch">
               <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="18,12">
-                <Grid ColumnDefinitions="Auto,2*,2.5*,1.25*,1.15*,1.35*,1.2*,Auto" ColumnSpacing="10">
+                <Grid ColumnDefinitions="Auto,2*,2.5*,1.25*,1.15*,1.35*,1.2*,1.8*" ColumnSpacing="10">
                   <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="选择" />
                   <TextBlock Grid.Column="1" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="站点名称" />
                   <TextBlock Grid.Column="2" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="服务地址" />
@@ -68,7 +68,7 @@
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
                     <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="18,12">
-                      <Grid ColumnDefinitions="Auto,2*,2.5*,1.25*,1.15*,1.35*,1.2*,Auto" ColumnSpacing="10">
+                      <Grid ColumnDefinitions="Auto,2*,2.5*,1.25*,1.15*,1.35*,1.2*,1.8*" ColumnSpacing="10">
                         <CheckBox VerticalAlignment="Center" IsChecked="{Binding IsSelected, Mode=TwoWay}" />
                         <StackPanel Grid.Column="1" Spacing="3">
                           <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Name}" />
@@ -96,12 +96,12 @@
                         </Grid>
                         <TextBlock Grid.Column="5" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding CreatedAtText}" VerticalAlignment="Center" />
                         <TextBlock Grid.Column="6" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding EndpointPathMode}" VerticalAlignment="Center" />
-                        <StackPanel Grid.Column="7" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                        <WrapPanel Grid.Column="7" ItemSpacing="6" LineSpacing="6" VerticalAlignment="Center">
                           <Button Classes="secondary-button" Command="{Binding DataContext.FetchModelsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取" IsEnabled="{Binding DataContext.CanFetchModels, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="9,5" />
                           <Button Classes="secondary-button" Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="9,5" />
                           <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="9,5" />
                           <Button Classes="secondary-button" Click="ConfirmDeleteSite" Content="删除" Padding="9,5" />
-                        </StackPanel>
+                        </WrapPanel>
                       </Grid>
                     </Border>
                   </DataTemplate>

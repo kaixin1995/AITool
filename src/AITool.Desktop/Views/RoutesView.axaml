@@ -63,15 +63,15 @@
 
             <StackPanel IsVisible="{Binding HasSelectedEntry}" Spacing="12" Margin="16,14,16,0">
               <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="14">
-                <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,*" ColumnSpacing="8" RowSpacing="8">
+                <Grid ColumnDefinitions="1.35*,1.65*,Auto,Auto" ColumnSpacing="8">
                   <TextBox Classes="form-input" Text="{Binding CandidateSearch}" Watermark="搜索站点或模型" />
-                  <ComboBox Grid.Column="1" ItemsSource="{Binding FilteredSiteInstances}" SelectedItem="{Binding SelectedSiteInstance}" IsEnabled="{Binding CanEdit}">
+                  <ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{Binding FilteredSiteInstances}" SelectedItem="{Binding SelectedSiteInstance}" IsEnabled="{Binding CanEdit}">
                     <ComboBox.ItemTemplate>
                       <DataTemplate><TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" /></DataTemplate>
                     </ComboBox.ItemTemplate>
                   </ComboBox>
-                  <Button Grid.Row="1" Classes="primary-button" Command="{Binding AddSelectedCandidateCommand}" Content="追加候选" IsEnabled="{Binding CanAddCandidate}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" HorizontalAlignment="Stretch" />
-                  <Button Grid.Row="1" Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshSiteInstancesCommand}" Content="刷新实例池" IsEnabled="{Binding CanRefreshPool}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" HorizontalAlignment="Stretch" />
+                  <Button Grid.Column="2" Classes="primary-button" Command="{Binding AddSelectedCandidateCommand}" Content="追加候选" IsEnabled="{Binding CanAddCandidate}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" />
+                  <Button Grid.Column="3" Classes="secondary-button" Command="{Binding RefreshSiteInstancesCommand}" Content="刷新实例池" IsEnabled="{Binding CanRefreshPool}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" />
                 </Grid>
               </Border>
               <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoSiteInstances}" Text="暂无可用站点实例，请先启用站点并配置模型映射。" TextWrapping="Wrap" />

@@ -12,10 +12,10 @@
           <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="模型库" />
           <TextBlock Classes="page-subtitle" Text="统一管理模型映射和启用状态" />
         </StackPanel>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+        <WrapPanel Grid.Column="1" HorizontalAlignment="Right" ItemSpacing="8" LineSpacing="6">
           <Button Classes="secondary-button" Click="ConfirmClearAll" Content="清空全部模型" IsEnabled="{Binding CanClearAll}" Padding="12,8" />
           <Button Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增模型" Padding="14,8" />
-        </StackPanel>
+        </WrapPanel>
       </Grid>
 
       <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
@@ -50,7 +50,7 @@
                       <ItemsControl.ItemTemplate>
                         <DataTemplate>
                           <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="18,13">
-                            <Grid ColumnDefinitions="2.2*,1.2*,1*,Auto" ColumnSpacing="14">
+                            <Grid ColumnDefinitions="2.2*,1.2*,1*,1.8*" ColumnSpacing="14">
                               <StackPanel Spacing="3">
                                 <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding DisplayName}" />
                                 <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding ModelName}" />
@@ -59,12 +59,12 @@
                               <Border Grid.Column="2" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center">
                                 <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" />
                               </Border>
-                              <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                              <WrapPanel Grid.Column="3" ItemSpacing="6" LineSpacing="6" VerticalAlignment="Center">
                                 <Button Classes="secondary-button" Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,6" />
                                 <Button Classes="secondary-button" Command="{Binding DataContext.OpenMappingCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="映射" IsEnabled="{Binding DataContext.CanOpenMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="10,6" />
                                 <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,6" />
                                 <Button Classes="secondary-button" Click="ConfirmDeleteModel" Content="删除" Padding="10,6" />
-                              </StackPanel>
+                              </WrapPanel>
                             </Grid>
                           </Border>
                         </DataTemplate>
@@ -82,10 +82,10 @@
             <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="14">
               <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
                 <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="每个厂商可配置标题样式和多条匹配规则，规则按优先级从小到大匹配。" TextWrapping="Wrap" />
-                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                <WrapPanel Grid.Column="1" HorizontalAlignment="Right" ItemSpacing="8" LineSpacing="6">
                   <Button Classes="secondary-button" Command="{Binding AddVendorCommand}" Content="新增厂商" Padding="10,6" />
                   <Button Classes="primary-button" Command="{Binding SaveVendorCatalogCommand}" Content="保存厂商规则" IsEnabled="{Binding CanSaveVendorCatalog}" Padding="10,6" />
-                </StackPanel>
+                </WrapPanel>
               </Grid>
             </Border>
             <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="12" IsVisible="{Binding HasVendorError}">
@@ -108,10 +108,10 @@
                           </ItemsControl.ItemTemplate>
                         </ItemsControl>
                       </StackPanel>
-                      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+                      <WrapPanel Grid.Column="1" ItemSpacing="8" LineSpacing="6" VerticalAlignment="Top">
                         <Button Classes="secondary-button" Command="{Binding DataContext.OpenVendorEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,6" />
                         <Button Classes="secondary-button" Command="{Binding DataContext.DeleteVendorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
-                      </StackPanel>
+                      </WrapPanel>
                     </Grid>
                   </Border>
                 </DataTemplate>
@@ -120,7 +120,7 @@
           </StackPanel>
         </ScrollViewer>
 
-        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsVendorEditorOpen}" Padding="24" Width="680" MaxWidth="900" MaxHeight="720" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsVendorEditorOpen}" Padding="24" Margin="12" MaxWidth="900" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="10">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="14">
               <Grid ColumnDefinitions="*,Auto">
@@ -157,7 +157,7 @@
           </ScrollViewer>
         </Border>
 
-        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Margin="12" MaxWidth="520" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="10">
           <StackPanel Spacing="14">
             <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding EditorTitle}" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
             <StackPanel Spacing="6">
@@ -189,7 +189,7 @@
           </StackPanel>
         </Border>
 
-        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsMappingOpen}" Padding="24" Width="560" MaxHeight="720" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="11">
+        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsMappingOpen}" Padding="24" Margin="12" MaxWidth="560" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="11">
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <StackPanel Spacing="14">
               <Grid ColumnDefinitions="*,Auto">

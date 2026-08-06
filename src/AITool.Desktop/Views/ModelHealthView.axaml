@@ -48,18 +48,16 @@
         </Border>
 
         <Border Classes="content-card" Padding="16" IsVisible="{Binding HasMonitoredModels}">
-          <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-            <Grid MinWidth="540" ColumnDefinitions="Auto,180,Auto,240" ColumnSpacing="12" VerticalAlignment="Center">
-              <TextBlock VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="时间范围" />
-              <ComboBox Grid.Column="1" ItemsSource="{Binding RangeOptions}" SelectedItem="{Binding SelectedRange}">
-                <ComboBox.ItemTemplate>
-                  <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
-                </ComboBox.ItemTemplate>
-              </ComboBox>
-              <TextBlock Grid.Column="2" VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型搜索" />
-              <TextBox Grid.Column="3" Classes="form-input" Text="{Binding ModelKeyword}" Watermark="按已监控模型名称过滤..." />
-            </Grid>
-          </ScrollViewer>
+          <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*" ColumnSpacing="12" RowSpacing="10" VerticalAlignment="Center">
+            <TextBlock VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="时间范围" />
+            <ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{Binding RangeOptions}" SelectedItem="{Binding SelectedRange}">
+              <ComboBox.ItemTemplate>
+                <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+            <TextBlock Grid.Row="1" VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型搜索" />
+            <TextBox Grid.Row="1" Grid.Column="1" Classes="form-input" Text="{Binding ModelKeyword}" Watermark="按已监控模型名称过滤..." />
+          </Grid>
         </Border>
 
         <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasError}">
