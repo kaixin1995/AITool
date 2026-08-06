@@ -59,6 +59,11 @@ function openCreate(): void {
     name: '', baseUrl: '', endpointPathMode: 'standard-root', apiKey: '',
     supportsOpenAi: true, supportsAnthropic: false, isEnabled: true
   })
+  // 新建模式：本地暂存待创建的 Key 列表（站点尚未创建，无法实时调 Key API）
+  editingKeyId.value = null
+  Object.assign(editKeyForm, { keyValue: '', remark: '', priority: 0, isEnabled: true })
+  Object.assign(newKeyForm, { keyValue: '', remark: '', priority: 0, isEnabled: true })
+  siteKeys.value = []
   showModal.value = true
 }
 
@@ -82,6 +87,11 @@ async function openEdit(row: SiteListItem): Promise<void> {
     supportsAnthropic: detail.supportsAnthropic,
     isEnabled: detail.isEnabled
   })
+  // 编辑模式：加载该站点已有的 Key 列表，在对话框内直接增删改
+  editingKeyId.value = null
+  Object.assign(editKeyForm, { keyValue: '', remark: '', priority: 0, isEnabled: true })
+  Object.assign(newKeyForm, { keyValue: '', remark: '', priority: 0, isEnabled: true })
+  siteKeys.value = detail.keys ?? []
   showModal.value = true
 }
 
@@ -90,17 +100,51 @@ async function handleSave(): Promise<void> {
     message.warning('名称和地址不能为空')
     return
   }
-  if (!isEditMode.value && !form.apiKey.trim()) {
-    message.warning('密钥不能为空')
+  // 新建模式：至少需要一个 Key
+  if (!isEditMode.value && siteKeys.value.length === 0) {
+    message.warning('请至少添加一个密钥')
     return
   }
   saving.value = true
   try {
     if (editingId.value) {
+      // 编辑模式：站点字段用 form（apiKey 留空保留），Key 的增删改已在对话框内实时完成
       await sitesApi.updateSite(editingId.value, form)
       message.success('站点已更新')
     } else {
-      await sitesApi.createSite(form)
+      // 新建模式：先创建站点（用第一个 Key 的值作为默认 apiKey，后端会建一条默认 SiteKey），
+      // 再修正第一个 Key 的备注/优先级/启用状态（后端默认建 Priority=0/启用/备注"默认"），
+      // 最后批量添加其余 Key。
+      const firstKey = siteKeys.value[0]
+      const createPayload: SitePayload = { ...form, apiKey: firstKey.keyValue || '' }
+      const created = await sitesApi.createSite(createPayload)
+      // 加载刚创建的默认 Key，按用户设定修正其属性
+      const createdKeys = await sitesApi.listSiteKeys(created.id)
+      if (createdKeys.length > 0) {
+        const defaultKey = createdKeys[0]
+        const needUpdate =
+          (firstKey.remark && firstKey.remark !== defaultKey.remark) ||
+          (firstKey.priority ?? 0) !== defaultKey.priority ||
+          (firstKey.isEnabled ?? true) !== defaultKey.isEnabled
+        if (needUpdate) {
+          await sitesApi.updateSiteKey(created.id, defaultKey.id, {
+            keyValue: '', // 留空保留
+            remark: firstKey.remark || '',
+            priority: firstKey.priority ?? 0,
+            isEnabled: firstKey.isEnabled ?? true
+          })
+        }
+      }
+      // 其余 Key 逐个添加
+      for (let i = 1; i < siteKeys.value.length; i++) {
+        const k = siteKeys.value[i]
+        await sitesApi.createSiteKey(created.id, {
+          keyValue: k.keyValue || '',
+          remark: k.remark || undefined,
+          priority: k.priority ?? 0,
+          isEnabled: k.isEnabled ?? true
+        })
+      }
       message.success('站点已创建')
     }
     showModal.value = false
@@ -134,20 +178,18 @@ async function handleBulkDelete(): Promise<void> {
   await loadSites()
 }
 
-// —— 站点密钥管理 ——
-const keysModalVisible = ref(false)
-const keysModalSiteId = ref<string | null>(null)
-const keysModalSiteName = ref('')
-const siteKeys = ref<sitesApi.SiteKeyItem[]>([])
-const keysLoading = ref(false)
-// 新增密钥表单
+// —— 密钥管理（内嵌于站点编辑对话框）——
+// 编辑模式：siteKeys 来自后端（含 id），增删改实时调 API
+// 新建模式：siteKeys 为本地暂存（无 id），保存站点时一并提交
+const siteKeys = ref<Array<sitesApi.SiteKeyItem & { keyValue?: string }>>([])
+// 新增密钥的临时表单
 const newKeyForm = reactive<sitesApi.SiteKeyPayload>({
   keyValue: '',
   remark: '',
   priority: 0,
   isEnabled: true
 })
-// 正在编辑的密钥 id（行内编辑）
+// 正在编辑的密钥 id（编辑模式行内编辑）
 const editingKeyId = ref<string | null>(null)
 const editKeyForm = reactive<sitesApi.SiteKeyPayload>({
   keyValue: '',
@@ -156,46 +198,42 @@ const editKeyForm = reactive<sitesApi.SiteKeyPayload>({
   isEnabled: true
 })
 
-async function openKeysModal(row: SiteListItem): Promise<void> {
-  keysModalSiteId.value = row.id
-  keysModalSiteName.value = row.name
-  keysModalVisible.value = true
-  await loadSiteKeys()
-}
-
-async function loadSiteKeys(): Promise<void> {
-  if (!keysModalSiteId.value) return
-  keysLoading.value = true
-  try {
-    siteKeys.value = await sitesApi.listSiteKeys(keysModalSiteId.value)
-  } finally {
-    keysLoading.value = false
-  }
-}
+const isKeyEditMode = computed(() => !!editingId.value)
 
 function resetNewKeyForm(): void {
   Object.assign(newKeyForm, { keyValue: '', remark: '', priority: 0, isEnabled: true })
 }
 
+// 添加密钥：编辑模式实时调 API；新建模式加入本地暂存列表
 async function handleAddKey(): Promise<void> {
-  if (!keysModalSiteId.value || !newKeyForm.keyValue.trim()) {
+  if (!newKeyForm.keyValue.trim()) {
     message.warning('密钥不能为空')
     return
   }
-  try {
-    await sitesApi.createSiteKey(keysModalSiteId.value, {
-      keyValue: newKeyForm.keyValue,
-      remark: newKeyForm.remark,
-      priority: newKeyForm.priority,
-      isEnabled: newKeyForm.isEnabled
-    })
-    message.success('密钥已添加')
-    resetNewKeyForm()
-    await loadSiteKeys()
-    await loadSites()
-  } catch {
-    // http 层已提示
+  const payload = {
+    keyValue: newKeyForm.keyValue,
+    remark: newKeyForm.remark || undefined,
+    priority: newKeyForm.priority ?? 0,
+    isEnabled: newKeyForm.isEnabled ?? true
   }
+  if (isKeyEditMode.value && editingId.value) {
+    // 编辑模式：实时创建
+    await sitesApi.createSiteKey(editingId.value, payload)
+    siteKeys.value = await sitesApi.listSiteKeys(editingId.value)
+    message.success('密钥已添加')
+  } else {
+    // 新建模式：本地暂存（用临时 id 标识，保存站点时提交）
+    siteKeys.value.push({
+      id: `local-${Date.now()}`,
+      keyValueMasked: '',
+      keyValue: payload.keyValue, // 本地暂存明文，提交时用
+      remark: payload.remark || '',
+      priority: payload.priority ?? 0,
+      isEnabled: payload.isEnabled ?? true,
+      createdAt: new Date().toISOString()
+    })
+  }
+  resetNewKeyForm()
 }
 
 function startEditKey(key: sitesApi.SiteKeyItem): void {
@@ -213,37 +251,92 @@ function cancelEditKey(): void {
 }
 
 async function handleSaveKey(key: sitesApi.SiteKeyItem): Promise<void> {
-  if (!keysModalSiteId.value || !editingKeyId.value) return
-  try {
-    await sitesApi.updateSiteKey(keysModalSiteId.value, key.id, {
-      keyValue: editKeyForm.keyValue, // 留空保留
-      remark: editKeyForm.remark,
-      priority: editKeyForm.priority,
-      isEnabled: editKeyForm.isEnabled
-    })
-    message.success('密钥已更新')
+  // 新建模式的本地暂存项：直接更新本地数组
+  if (key.id.startsWith('local-')) {
+    const idx = siteKeys.value.findIndex(k => k.id === key.id)
+    if (idx >= 0) {
+      siteKeys.value[idx] = {
+        ...siteKeys.value[idx],
+        keyValue: editKeyForm.keyValue || siteKeys.value[idx].keyValue,
+        remark: editKeyForm.remark || '',
+        priority: editKeyForm.priority ?? 0,
+        isEnabled: editKeyForm.isEnabled ?? true
+      }
+    }
     editingKeyId.value = null
-    await loadSiteKeys()
-    await loadSites()
-  } catch {
-    // http 层已提示
+    return
   }
+  // 编辑模式：实时更新
+  if (!editingId.value || !editingKeyId.value) return
+  await sitesApi.updateSiteKey(editingId.value, key.id, {
+    keyValue: editKeyForm.keyValue, // 留空保留
+    remark: editKeyForm.remark,
+    priority: editKeyForm.priority,
+    isEnabled: editKeyForm.isEnabled
+  })
+  siteKeys.value = await sitesApi.listSiteKeys(editingId.value)
+  editingKeyId.value = null
+  message.success('密钥已更新')
 }
 
 async function handleDeleteKey(key: sitesApi.SiteKeyItem): Promise<void> {
-  if (!keysModalSiteId.value) return
-  await sitesApi.deleteSiteKey(keysModalSiteId.value, key.id)
+  // 新建模式的本地暂存项：从本地数组移除
+  if (key.id.startsWith('local-')) {
+    siteKeys.value = siteKeys.value.filter(k => k.id !== key.id)
+    return
+  }
+  // 编辑模式：实时删除
+  if (!editingId.value) return
+  await sitesApi.deleteSiteKey(editingId.value, key.id)
+  siteKeys.value = await sitesApi.listSiteKeys(editingId.value)
   message.success('密钥已删除')
-  await loadSiteKeys()
-  await loadSites()
 }
 
 async function handleToggleKey(key: sitesApi.SiteKeyItem): Promise<void> {
-  if (!keysModalSiteId.value) return
-  const result = await sitesApi.toggleSiteKey(keysModalSiteId.value, key.id)
+  // 新建模式的本地暂存项：直接切换本地状态
+  if (key.id.startsWith('local-')) {
+    key.isEnabled = !key.isEnabled
+    return
+  }
+  // 编辑模式：实时切换
+  if (!editingId.value) return
+  const result = await sitesApi.toggleSiteKey(editingId.value, key.id)
   key.isEnabled = result.isEnabled
   message.success(`密钥已${result.isEnabled ? '启用' : '禁用'}`)
-  await loadSites()
+}
+
+// 上移/下移调整优先级：编辑模式实时更新 priority，新建模式本地调整
+async function handleMoveKey(key: sitesApi.SiteKeyItem, direction: -1 | 1): Promise<void> {
+  const sorted = [...siteKeys.value].sort((a, b) => a.priority - b.priority)
+  const idx = sorted.findIndex(k => k.id === key.id)
+  const targetIdx = idx + direction
+  if (targetIdx < 0 || targetIdx >= sorted.length) return
+  const target = sorted[targetIdx]
+  // 交换两者的 priority
+  const tmp = key.priority
+  key.priority = target.priority
+  target.priority = tmp
+
+  if (isKeyEditMode.value && editingId.value && !key.id.startsWith('local-')) {
+    await sitesApi.updateSiteKey(editingId.value, key.id, {
+      keyValue: '', // 留空保留
+      remark: key.remark,
+      priority: key.priority,
+      isEnabled: key.isEnabled
+    })
+    if (!target.id.startsWith('local-')) {
+      await sitesApi.updateSiteKey(editingId.value, target.id, {
+        keyValue: '',
+        remark: target.remark,
+        priority: target.priority,
+        isEnabled: target.isEnabled
+      })
+    }
+    siteKeys.value = await sitesApi.listSiteKeys(editingId.value)
+  } else {
+    // 新建模式或本地项：重新排序本地数组
+    siteKeys.value.sort((a, b) => a.priority - b.priority)
+  }
 }
 
 // 导入/导出：保留旧页面的预览、选择、复制、下载和 JSON 文件导入流程。
@@ -568,12 +661,11 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 330,
+    width: 286,
     fixed: 'right',
     render: (row) =>
       h(NSpace, { size: 6, wrap: false, class: 'site-actions' }, () => [
         h(NButton, { size: 'small', secondary: true, disabled: !row.isEnabled, loading: catalogLoading.value, onClick: () => handleFetchModels(row) }, () => '拉取'),
-        h(NButton, { size: 'small', secondary: true, onClick: () => openKeysModal(row) }, () => `密钥(${row.keyCount ?? 0})`),
         h(NButton, { size: 'small', secondary: true, onClick: () => openEdit(row) }, () => '编辑'),
         h(NButton, { size: 'small', secondary: true, onClick: () => handleToggle(row) }, () =>
           row.isEnabled ? '禁用' : '启用'
@@ -631,7 +723,7 @@ onBeforeUnmount(handleCatalogClosed)
       v-model:show="showModal"
       :title="modalTitle"
       preset="card"
-      style="width: 560px; max-width: 92vw"
+      style="width: 720px; max-width: 92vw"
       :mask-closable="false"
     >
       <NForm label-placement="top">
@@ -644,14 +736,95 @@ onBeforeUnmount(handleCatalogClosed)
         <NFormItem label="接口路径模式">
           <NSelect v-model:value="form.endpointPathMode" :options="endpointModeOptions" />
         </NFormItem>
-        <NFormItem :label="isEditMode ? '主密钥（留空保留，更多密钥请用「密钥」管理）' : '密钥'">
-          <NInput
-            v-model:value="form.apiKey"
-            type="password"
-            show-password-on="click"
-            placeholder="sk-..."
-          />
+
+        <!-- 密钥管理（内嵌于站点编辑/新增对话框）-->
+        <NFormItem label="访问密钥">
+          <div style="width: 100%">
+            <p class="site-form-tip" style="margin-bottom: 8px">
+              一个站点可配置多个密钥，按优先级（数字越小越优先）参与主备调度。禁用的密钥不参与调用，
+              每个启用的密钥各自独立享有该站点模型的并发额度。
+            </p>
+
+            <!-- 已有密钥列表 -->
+            <div v-if="siteKeys.length > 0" class="site-preview-table-wrap">
+              <table class="site-preview-table">
+                <thead>
+                  <tr>
+                    <th style="width: 40px">排序</th>
+                    <th>密钥</th>
+                    <th>备注</th>
+                    <th>状态</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="(key, idx) in [...siteKeys].sort((a, b) => a.priority - b.priority)" :key="key.id">
+                    <!-- 排序（上下移动）-->
+                    <td>
+                      <NSpace :size="2" vertical>
+                        <NButton size="tiny" quaternary :disabled="idx === 0" @click="handleMoveKey(key, -1)">▲</NButton>
+                        <NButton size="tiny" quaternary :disabled="idx === siteKeys.length - 1" @click="handleMoveKey(key, 1)">▼</NButton>
+                      </NSpace>
+                    </td>
+                    <!-- 密钥（编辑态可改）-->
+                    <td v-if="editingKeyId === key.id">
+                      <NInput v-model:value="editKeyForm.keyValue" size="small" type="password" show-password-on="click" placeholder="留空保留原值" style="width: 160px" />
+                    </td>
+                    <td v-else>
+                      <code v-if="key.id.startsWith('local-')">{{ key.keyValue && key.keyValue.length > 8 ? key.keyValue.slice(0, 8) + '****' : '****' }}</code>
+                      <code v-else>{{ key.keyValueMasked || '****' }}</code>
+                      <NTag size="tiny" :bordered="false" style="margin-left: 4px">优先级{{ key.priority }}</NTag>
+                    </td>
+                    <!-- 备注 -->
+                    <td v-if="editingKeyId === key.id">
+                      <NInput v-model:value="editKeyForm.remark" size="small" placeholder="备注" style="width: 110px" />
+                    </td>
+                    <td v-else>{{ key.remark || '-' }}</td>
+                    <!-- 状态 -->
+                    <td v-if="editingKeyId === key.id">
+                      <NSwitch v-model:value="editKeyForm.isEnabled" size="small" />
+                    </td>
+                    <td v-else>
+                      <NTag size="small" :type="key.isEnabled ? 'success' : 'default'" :bordered="false">
+                        {{ key.isEnabled ? '启用' : '禁用' }}
+                      </NTag>
+                    </td>
+                    <!-- 操作 -->
+                    <td>
+                      <NSpace v-if="editingKeyId === key.id" size="small">
+                        <NButton size="small" type="primary" @click="handleSaveKey(key)">保存</NButton>
+                        <NButton size="small" @click="cancelEditKey">取消</NButton>
+                      </NSpace>
+                      <NSpace v-else size="small">
+                        <NButton size="small" quaternary @click="startEditKey(key)">编辑</NButton>
+                        <NButton size="small" quaternary @click="handleToggleKey(key)">
+                          {{ key.isEnabled ? '禁用' : '启用' }}
+                        </NButton>
+                        <NPopconfirm :on-positive-click="() => handleDeleteKey(key)">
+                          <template #trigger>
+                            <NButton size="small" quaternary type="error">删除</NButton>
+                          </template>
+                          确认删除该密钥？
+                        </NPopconfirm>
+                      </NSpace>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <div v-else class="site-empty" style="margin: 8px 0">暂无密钥，请至少添加一个</div>
+
+            <!-- 新增密钥行 -->
+            <NSpace align="center" :wrap="false" style="margin-top: 8px">
+              <NInput v-model:value="newKeyForm.keyValue" type="password" show-password-on="click" placeholder="sk-..." style="width: 200px" />
+              <NInput v-model:value="newKeyForm.remark" placeholder="备注（如：主号）" style="width: 130px" />
+              <NInputNumber v-model:value="newKeyForm.priority" :step="1" placeholder="优先级" style="width: 100px" />
+              <NSwitch v-model:value="newKeyForm.isEnabled" />
+              <NButton size="small" type="primary" @click="handleAddKey">添加密钥</NButton>
+            </NSpace>
+          </div>
         </NFormItem>
+
         <NFormItem label="协议支持">
           <NSpace vertical :size="6">
             <NSpace>
@@ -671,103 +844,6 @@ onBeforeUnmount(handleCatalogClosed)
           <NButton type="primary" :loading="saving" @click="handleSave">保存</NButton>
         </NSpace>
       </template>
-    </NModal>
-
-    <!-- 站点密钥管理 -->
-    <NModal
-      v-model:show="keysModalVisible"
-      :title="`密钥管理 - ${keysModalSiteName}`"
-      preset="card"
-      style="width: 760px; max-width: 94vw"
-      :mask-closable="false"
-    >
-      <NSpace vertical size="large">
-        <p class="site-modal-tip">
-          一个站点可配置多个密钥，按优先级（数字越小越优先）参与主备调度。禁用的密钥不参与调用。
-          每个启用的密钥各自独立享有该站点模型的并发额度。
-        </p>
-
-        <!-- 已有密钥列表 -->
-        <div v-if="siteKeys.length > 0" class="site-preview-table-wrap">
-          <table class="site-preview-table">
-            <thead>
-              <tr>
-                <th>密钥（脱敏）</th>
-                <th>备注</th>
-                <th>优先级</th>
-                <th>状态</th>
-                <th>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="key in siteKeys" :key="key.id">
-                <td><code>{{ key.keyValueMasked || '****' }}</code></td>
-                <td v-if="editingKeyId === key.id">
-                  <NInput v-model:value="editKeyForm.remark" size="small" placeholder="备注" />
-                </td>
-                <td v-else>{{ key.remark || '-' }}</td>
-                <td v-if="editingKeyId === key.id">
-                  <NInputNumber v-model:value="editKeyForm.priority" size="small" :step="1" style="width: 90px" />
-                </td>
-                <td v-else>{{ key.priority }}</td>
-                <td v-if="editingKeyId === key.id">
-                  <NSwitch v-model:value="editKeyForm.isEnabled" size="small" />
-                </td>
-                <td v-else>
-                  <NTag size="small" :type="key.isEnabled ? 'success' : 'default'" :bordered="false">
-                    {{ key.isEnabled ? '启用' : '禁用' }}
-                  </NTag>
-                </td>
-                <td>
-                  <NSpace v-if="editingKeyId === key.id" size="small">
-                    <NInput
-                      v-model:value="editKeyForm.keyValue"
-                      size="small"
-                      type="password"
-                      show-password-on="click"
-                      placeholder="留空保留原值"
-                      style="width: 160px"
-                    />
-                    <NButton size="small" type="primary" @click="handleSaveKey(key)">保存</NButton>
-                    <NButton size="small" @click="cancelEditKey">取消</NButton>
-                  </NSpace>
-                  <NSpace v-else size="small">
-                    <NButton size="small" secondary @click="startEditKey(key)">编辑</NButton>
-                    <NButton size="small" secondary @click="handleToggleKey(key)">
-                      {{ key.isEnabled ? '禁用' : '启用' }}
-                    </NButton>
-                    <NPopconfirm :on-positive-click="() => handleDeleteKey(key)">
-                      <template #trigger>
-                        <NButton size="small" secondary type="error">删除</NButton>
-                      </template>
-                      确认删除该密钥？
-                    </NPopconfirm>
-                  </NSpace>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-        <div v-else-if="!keysLoading" class="site-empty">该站点暂无密钥记录</div>
-
-        <!-- 新增密钥 -->
-        <div class="site-form-title">新增密钥</div>
-        <NForm label-placement="left" :show-feedback="false">
-          <NSpace align="center" :wrap="false">
-            <NInput
-              v-model:value="newKeyForm.keyValue"
-              type="password"
-              show-password-on="click"
-              placeholder="sk-..."
-              style="width: 240px"
-            />
-            <NInput v-model:value="newKeyForm.remark" placeholder="备注（如：主号）" style="width: 160px" />
-            <NInputNumber v-model:value="newKeyForm.priority" :step="1" placeholder="优先级" style="width: 110px" />
-            <NSwitch v-model:value="newKeyForm.isEnabled" />
-            <NButton type="primary" @click="handleAddKey">添加</NButton>
-          </NSpace>
-        </NForm>
-      </NSpace>
     </NModal>
 
     <!-- 导出站点 -->
