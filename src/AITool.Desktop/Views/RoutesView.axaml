@@ -8,7 +8,7 @@
     PointerPressed="StartRuleDrag"
     PointerMoved="MoveRuleDrag"
     PointerReleased="EndRuleDrag">
-  <Grid RowDefinitions="Auto,*" RowSpacing="24" ColumnDefinitions="260,*" ColumnSpacing="18">
+  <Grid RowDefinitions="Auto,*" RowSpacing="24" ColumnDefinitions="1*,2.4*" ColumnSpacing="18">
       <StackPanel Grid.ColumnSpan="2" Spacing="4" IsVisible="{Binding ShowPageHeader, RelativeSource={RelativeSource AncestorType=UserControl}}">
         <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="路由规则管理" />
         <TextBlock Classes="page-subtitle" Text="主入口绑定有序候选实例队列，请求时按顺序失败切换、成功即停止" TextWrapping="Wrap" />
@@ -70,8 +70,8 @@
                       <DataTemplate><TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" /></DataTemplate>
                     </ComboBox.ItemTemplate>
                   </ComboBox>
-                  <Button Grid.Column="2" Classes="primary-button" Command="{Binding AddSelectedCandidateCommand}" Content="追加候选" IsEnabled="{Binding CanAddCandidate}" Width="96" Height="34" Padding="8,6" HorizontalContentAlignment="Center" />
-                  <Button Grid.Column="3" Classes="secondary-button" Command="{Binding RefreshSiteInstancesCommand}" Content="刷新实例池" IsEnabled="{Binding CanRefreshPool}" Width="96" Height="34" Padding="8,6" HorizontalContentAlignment="Center" />
+                  <Button Grid.Column="2" Classes="primary-button" Command="{Binding AddSelectedCandidateCommand}" Content="追加候选" IsEnabled="{Binding CanAddCandidate}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" />
+                  <Button Grid.Column="3" Classes="secondary-button" Command="{Binding RefreshSiteInstancesCommand}" Content="刷新实例池" IsEnabled="{Binding CanRefreshPool}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" />
                 </Grid>
               </Border>
               <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoSiteInstances}" Text="暂无可用站点实例，请先启用站点并配置模型映射。" TextWrapping="Wrap" />
@@ -102,15 +102,15 @@
                               <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InstanceSummary}" TextTrimming="CharacterEllipsis" />
                               <StackPanel Orientation="Horizontal" Spacing="7">
                                 <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="可用性" VerticalAlignment="Center" />
-                                <ComboBox Width="130" ItemsSource="{Binding DataContext.AvailabilityOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedValue="{Binding AvailabilityMode, Mode=TwoWay}" SelectedValueBinding="{Binding Value}" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}">
+                                <ComboBox ItemsSource="{Binding DataContext.AvailabilityOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedValue="{Binding AvailabilityMode, Mode=TwoWay}" SelectedValueBinding="{Binding Value}" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}">
                                   <ComboBox.ItemTemplate>
                                     <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
                                   </ComboBox.ItemTemplate>
                                 </ComboBox>
                                 <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding HasTimeRange}">
-                                  <TextBox Classes="form-input" Width="76" Text="{Binding TimeRangeStart}" Watermark="00:00" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                  <TextBox Classes="form-input" Text="{Binding TimeRangeStart}" Watermark="00:00" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
                                   <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="至" VerticalAlignment="Center" />
-                                  <TextBox Classes="form-input" Width="76" Text="{Binding TimeRangeEnd}" Watermark="23:59" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                  <TextBox Classes="form-input" Text="{Binding TimeRangeEnd}" Watermark="23:59" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
                                 </StackPanel>
                               </StackPanel>
                             </StackPanel>
