@@ -699,13 +699,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 callContext.TotalDurationMs = streamResult.TotalDurationMs;
                 callContext.HasStartedStreaming = streamResult.HasStartedStreaming;
                 callContext.RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex;
-                var streamCanFallback = !streamResult.Success
-                    && streamOutcome.CanFallback
-                    && allRoutes.Skip(routeIndex + 1).Any(candidate =>
-                        !IsRouteBlockedSafely(candidate.CircuitKey)
-                        && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
-                callContext.IsFinalResult = streamResult.Success || !streamCanFallback;
-                callContext.FallbackTriggered = streamCanFallback;
+                callContext.IsFinalResult = streamResult.Success;
+                callContext.FallbackTriggered = !streamResult.Success;
                 await _proxyCallRecorder.RecordUsageAsync(callContext, CancellationToken.None);
 
                 if (streamResult.Success)
@@ -758,12 +753,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
             callContext.TotalDurationMs = result.TotalDurationMs;
             callContext.HasStartedStreaming = result.HasStartedStreaming;
             callContext.RetryCount = result.Success ? attemptIndex - 1 : attemptIndex;
-            var canFallback = !result.Success
-                && allRoutes.Skip(routeIndex + 1).Any(candidate =>
-                    !IsRouteBlockedSafely(candidate.CircuitKey)
-                    && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
-            callContext.IsFinalResult = result.Success || !canFallback;
-            callContext.FallbackTriggered = canFallback;
+            callContext.IsFinalResult = result.Success;
+            callContext.FallbackTriggered = !result.Success;
             await _proxyCallRecorder.RecordUsageAsync(callContext, cancellationToken);
 
             if (result.Success)
