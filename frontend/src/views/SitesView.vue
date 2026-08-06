@@ -155,6 +155,8 @@ const keysModalSiteId = ref<string | null>(null)
 const keysModalSiteName = ref('')
 const siteKeys = ref<sitesApi.SiteKeyItem[]>([])
 const keysLoading = ref(false)
+// 按优先级排序后的密钥列表（模板渲染与排序操作共用，避免两处分别 sort 导致不一致）
+const sortedSiteKeys = computed(() => [...siteKeys.value].sort((a, b) => a.priority - b.priority))
 // 新增密钥的临时表单
 const newKeyForm = reactive<sitesApi.SiteKeyPayload>({
   keyValue: '',
@@ -282,7 +284,7 @@ async function handleToggleKey(key: sitesApi.SiteKeyItem): Promise<void> {
 // 并行发起两次更新；任一失败则回滚本地状态并提示，重新加载以同步后端真实状态。
 async function handleMoveKey(key: sitesApi.SiteKeyItem, direction: -1 | 1): Promise<void> {
   if (!keysModalSiteId.value) return
-  const sorted = [...siteKeys.value].sort((a, b) => a.priority - b.priority)
+  const sorted = sortedSiteKeys.value
   const idx = sorted.findIndex(k => k.id === key.id)
   const targetIdx = idx + direction
   if (targetIdx < 0 || targetIdx >= sorted.length) return
@@ -795,7 +797,7 @@ onBeforeUnmount(handleCatalogClosed)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(key, idx) in [...siteKeys].sort((a, b) => a.priority - b.priority)" :key="key.id">
+              <tr v-for="(key, idx) in sortedSiteKeys" :key="key.id">
                 <td>
                   <NSpace :size="2" vertical>
                     <NButton size="tiny" quaternary :disabled="idx === 0" @click="handleMoveKey(key, -1)">▲</NButton>
