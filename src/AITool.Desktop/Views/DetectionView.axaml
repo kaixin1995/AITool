@@ -22,9 +22,7 @@
 
     <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="12">
       <TextBox
-          HorizontalAlignment="Left"
-          MinWidth="280"
-          Width="380"
+          HorizontalAlignment="Stretch"
           Text="{Binding SearchKeyword, Mode=TwoWay}"
           Watermark="搜索模型或站点名称..." />
       <TextBlock

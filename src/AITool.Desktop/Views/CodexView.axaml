@@ -98,7 +98,7 @@
                 </ItemsControl.ItemsPanel>
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
-                    <Border Classes="content-card" Width="520" Margin="0,0,14,16" Padding="20" HorizontalAlignment="Left">
+                    <Border Classes="content-card" MaxWidth="520" Margin="0,0,14,16" Padding="20" HorizontalAlignment="Stretch">
                       <StackPanel Spacing="15">
                         <!-- 卡片头部按网页端分成账号信息、状态和套餐三层，避免内容互相挤压。 -->
                         <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" VerticalAlignment="Top">
@@ -164,16 +164,16 @@
                         </Grid>
 
                         <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,12,0,0">
-                          <UniformGrid Columns="4" HorizontalAlignment="Stretch">
-                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="重置额度信用" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Height="34" Margin="0,0,0,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Click="ConfirmDeleteAccount" Content="删除" Height="34" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                          </UniformGrid>
+                          <WrapPanel ItemSpacing="8" LineSpacing="8" HorizontalAlignment="Stretch">
+                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="重置额度信用" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Click="ConfirmDeleteAccount" Content="删除" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
+                          </WrapPanel>
                         </Border>
                       </StackPanel>
                     </Border>
@@ -232,9 +232,9 @@
                   </UniformGrid>
                   <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InspectionRunSummary}" />
                   <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
-                    <StackPanel MinWidth="800">
+                    <StackPanel HorizontalAlignment="Stretch">
                       <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="12,10">
-                        <Grid ColumnDefinitions="1.4*,80,80,70,70,2*" ColumnSpacing="12">
+                        <Grid ColumnDefinitions="1.4*,1*,1*,1*,1*,2*" ColumnSpacing="12">
                           <TextBlock FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="账号" />
                           <TextBlock Grid.Column="1" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="5 小时" />
                           <TextBlock Grid.Column="2" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="周额度" />
@@ -247,7 +247,7 @@
                         <ItemsControl.ItemTemplate>
                           <DataTemplate>
                             <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="12,10">
-                              <Grid ColumnDefinitions="1.4*,80,80,70,70,2*" ColumnSpacing="12" VerticalAlignment="Center">
+                              <Grid ColumnDefinitions="1.4*,1*,1*,1*,1*,2*" ColumnSpacing="12" VerticalAlignment="Center">
                                 <TextBlock VerticalAlignment="Center" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
                                 <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding FiveHourText}" />
                                 <TextBlock Grid.Column="2" VerticalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding WeeklyText}" />
@@ -291,7 +291,7 @@
 
     <Border Grid.RowSpan="3" Background="{DynamicResource AppPageBackgroundBrush}" Opacity="0.72" IsVisible="{Binding HasModalOpen}" ZIndex="9" />
 
-    <Border Grid.RowSpan="3" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsAccountEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+    <Border Grid.RowSpan="3" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsAccountEditorOpen}" Padding="24" Margin="12" MaxWidth="520" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="10">
       <StackPanel Spacing="14">
         <Grid ColumnDefinitions="*,Auto">
           <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="编辑 Codex 账号" />
@@ -360,7 +360,7 @@
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
                     <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,0,0,1" Padding="8,10">
-                      <Grid ColumnDefinitions="Auto,2*,1.2*,Auto" ColumnSpacing="10" MinWidth="620">
+                      <Grid ColumnDefinitions="Auto,2*,1.2*,Auto" ColumnSpacing="10">
                         <CheckBox IsChecked="{Binding IsSelected, Mode=TwoWay}" VerticalAlignment="Center" />
                         <TextBlock Grid.Column="1" VerticalAlignment="Center" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding RemoteModelName}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding RemoteModelName}" />
                         <TextBox Grid.Column="2" Classes="form-input" Text="{Binding Alias, Mode=TwoWay}" Watermark="显示别名" />
