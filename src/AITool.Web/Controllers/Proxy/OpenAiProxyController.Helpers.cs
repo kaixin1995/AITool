@@ -896,53 +896,56 @@ public sealed partial class OpenAiProxyController
     }
     /// <summary>
     /// 安全地读取路由熔断状态。
+    /// 参数为熔断身份键（多 Key 展开后用合成键，区分同一路由的不同 Key）。
     /// </summary>
-    private bool IsRouteBlockedSafely(Guid routeId)
+    private bool IsRouteBlockedSafely(Guid circuitKey)
     {
         try
         {
-            return _circuitStore.IsBlocked(routeId);
+            return _circuitStore.IsBlocked(circuitKey);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "读取熔断状态失败，按未熔断继续转发。RouteId={RouteId}",
-                routeId);
+                "读取熔断状态失败，按未熔断继续转发。CircuitKey={CircuitKey}",
+                circuitKey);
             return false;
         }
     }
 
     /// <summary>
     /// 安全地标记路由调用成功。
+    /// 参数为熔断身份键（多 Key 展开后用合成键，区分同一路由的不同 Key）。
     /// </summary>
-    private void SafeSucceedRoute(Guid routeId)
+    private void SafeSucceedRoute(Guid circuitKey)
     {
         try
         {
-            _circuitStore.Succeed(routeId);
+            _circuitStore.Succeed(circuitKey);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "更新路由成功状态失败，但请求继续返回。RouteId={RouteId}",
-                routeId);
+                "更新路由成功状态失败，但请求继续返回。CircuitKey={CircuitKey}",
+                circuitKey);
         }
     }
 
     /// <summary>
     /// 安全地累计路由失败状态。
+    /// 参数为熔断身份键（多 Key 展开后用合成键，区分同一路由的不同 Key）。
     /// </summary>
-    private void SafeBlockRoute(Guid routeId)
+    private void SafeBlockRoute(Guid circuitKey)
     {
         try
         {
-            _circuitStore.Block(routeId);
+            _circuitStore.Block(circuitKey);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "更新路由失败状态失败，但继续尝试后续路由。RouteId={RouteId}",
-                routeId);
+                "更新路由失败状态失败，但继续尝试后续路由。CircuitKey={CircuitKey}",
+                circuitKey);
         }
     }
 

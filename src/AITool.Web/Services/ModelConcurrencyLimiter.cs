@@ -403,6 +403,11 @@ public sealed class ModelConcurrencyLimiter
 
     /// <summary>
     /// 如果受影响的模型正在调用中，则在同一把锁内捕获槽位并登记延迟刷新，避免请求刚结束时丢失通知。
+    /// <para>
+    /// 注意：多 Key 站点的并发 state 键是 {SiteKeyId}:{Model}，而本方法入参的 RouteTargetIdentity 用真实 SiteId，
+    /// 精确查不到时会返回 false，调用方据此降级为立即刷新缓存（安全行为，仅丢失"等活跃调用结束再刷新"的优化）。
+    /// 这是可接受的折中——该机制仅在编辑路由规则这一罕见操作时触发，且最坏后果是 5 秒缓存窗口后自动一致。
+    /// </para>
     /// </summary>
     public bool TryDeferRuntimeRouteTargetsRefresh(
         string externalModelName,

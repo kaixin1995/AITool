@@ -147,14 +147,14 @@ public sealed partial class OpenAiProxyController
         foreach (var route in allRoutes)
         {
             routeIndex++;
-            if (IsRouteBlockedSafely(route.RouteId))
+            if (IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
             attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
 
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
-                HttpContext.RequestServices, route.SiteId, route.SiteModelName,
+                HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
                 concurrencyMode, concurrencyQueueTimeout, cancellationToken);
 
             if (!concurrencyHandle.Acquired)
@@ -230,7 +230,7 @@ public sealed partial class OpenAiProxyController
                 SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
                 var streamCanFallback = !streamResult.Success
                     && streamOutcome.CanFallback
-                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.RouteId));
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
 
                 await SafeLogUsageAsync(new UsageLogEntry
                 {
@@ -262,7 +262,7 @@ public sealed partial class OpenAiProxyController
 
                 if (streamResult.Success)
                 {
-                    SafeSucceedRoute(route.RouteId);
+                    SafeSucceedRoute(route.CircuitKey);
                     SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                     {
                         Status = "success",
@@ -292,7 +292,7 @@ public sealed partial class OpenAiProxyController
                     TotalDurationMs = streamResult.TotalDurationMs
                 });
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
-                SafeBlockRoute(route.RouteId);
+                SafeBlockRoute(route.CircuitKey);
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
                 {
@@ -311,7 +311,7 @@ public sealed partial class OpenAiProxyController
 
             SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
             var canFallback = !result.Success
-                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.RouteId));
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -343,7 +343,7 @@ public sealed partial class OpenAiProxyController
 
             if (result.Success)
             {
-                SafeSucceedRoute(route.RouteId);
+                SafeSucceedRoute(route.CircuitKey);
                 var responseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
 
                 if (isPassthrough)
@@ -399,7 +399,7 @@ public sealed partial class OpenAiProxyController
                 TotalDurationMs = result.TotalDurationMs
             });
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
-            SafeBlockRoute(route.RouteId);
+            SafeBlockRoute(route.CircuitKey);
             lastResult = result;
         }
 
@@ -462,14 +462,14 @@ public sealed partial class OpenAiProxyController
         foreach (var route in allRoutes)
         {
             routeIndex++;
-            if (IsRouteBlockedSafely(route.RouteId))
+            if (IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
             attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
 
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
-                HttpContext.RequestServices, route.SiteId, route.SiteModelName,
+                HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
                 concurrencyMode, concurrencyQueueTimeout, cancellationToken);
             if (!concurrencyHandle.Acquired)
             {
@@ -523,7 +523,7 @@ public sealed partial class OpenAiProxyController
             SafeWriteConsoleProxyLog("ResponsesWebSocket", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, rawRequestBody.Length);
             var canFallback = !streamResult.Success
                 && streamOutcome.CanFallback
-                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.RouteId));
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -555,7 +555,7 @@ public sealed partial class OpenAiProxyController
 
             if (streamResult.Success)
             {
-                SafeSucceedRoute(route.RouteId);
+                SafeSucceedRoute(route.CircuitKey);
                 sessionState.LastRequestJson = normalizedRequestBody;
                 sessionState.LastResponseOutputJson = string.IsNullOrWhiteSpace(streamOutcome.CompletedOutputJson)
                     ? "[]"
@@ -589,7 +589,7 @@ public sealed partial class OpenAiProxyController
                 TotalDurationMs = streamResult.TotalDurationMs
             });
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
-            SafeBlockRoute(route.RouteId);
+            SafeBlockRoute(route.CircuitKey);
             lastResult = streamResult;
             if (!streamOutcome.CanFallback)
             {

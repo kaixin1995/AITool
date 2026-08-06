@@ -109,7 +109,23 @@ public sealed class ModelsApiController : ControllerBase
 
         // 配置保存后立即失效缓存，并同步更新运行中的限制器状态，仅影响后续新请求。
         _metadataCache.InvalidateRouteTargets();
-        _concurrencyLimiter.UpdateLimit(mapping.SiteId, mapping.RemoteModelName, mapping.MaxConcurrency);
+        // 多 Key 场景：并发计数按 SiteKey 维度，需对站点每个启用的 Key 各同步一次运行时限制器，
+        // 使调大上限后正在排队的请求能被立即唤醒。站点没有 SiteKey 时回退用 SiteId（兼容 Codex/老站点）。
+        var siteKeyIds = await _dbContext.SiteKeys
+            .Where(k => k.SiteId == mapping.SiteId && k.IsEnabled)
+            .Select(k => k.Id)
+            .ToListAsync(cancellationToken);
+        if (siteKeyIds.Count > 0)
+        {
+            foreach (var keyId in siteKeyIds)
+            {
+                _concurrencyLimiter.UpdateLimit(keyId, mapping.RemoteModelName, mapping.MaxConcurrency);
+            }
+        }
+        else
+        {
+            _concurrencyLimiter.UpdateLimit(mapping.SiteId, mapping.RemoteModelName, mapping.MaxConcurrency);
+        }
 
         return Ok(ApiResponse.Ok(new { maxConcurrency = mapping.MaxConcurrency }));
     }

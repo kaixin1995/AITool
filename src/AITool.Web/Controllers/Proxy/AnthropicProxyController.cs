@@ -212,7 +212,7 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             // 跳过已被熔断器屏蔽的路由
-            if (IsRouteBlockedSafely(route.RouteId))
+            if (IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
             attemptIndex++;
@@ -220,7 +220,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
             // 按站点+模型粒度获取并发许可，根据配置决定跳过或排队。
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
-                HttpContext.RequestServices, route.SiteId, route.SiteModelName,
+                HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
                 concurrencyMode, concurrencyQueueTimeout, cancellationToken);
 
             if (!concurrencyHandle.Acquired)
@@ -291,7 +291,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
                 var streamCanFallback = !streamResult.Success
                     && streamOutcome.CanFallback
-                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.RouteId));
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
 
                 await SafeLogUsageAsync(new UsageLogEntry
                 {
@@ -324,7 +324,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 if (streamResult.Success)
                 {
-                    SafeSucceedRoute(route.RouteId);
+                    SafeSucceedRoute(route.CircuitKey);
                     return new EmptyResult();
                 }
 
@@ -343,7 +343,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 });
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
 
-                SafeBlockRoute(route.RouteId);
+                SafeBlockRoute(route.CircuitKey);
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
                 {
@@ -362,7 +362,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
             SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
             var canFallback = !result.Success
-                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.RouteId));
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -395,7 +395,7 @@ public sealed class AnthropicProxyController : ControllerBase
             if (result.Success)
             {
                 // 成功时清除该路由的连续失败计数
-                SafeSucceedRoute(route.RouteId);
+                SafeSucceedRoute(route.CircuitKey);
                 if (result.IsStreaming &&
                     string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
                     HttpContext.Response.HasStarted)
@@ -450,7 +450,7 @@ public sealed class AnthropicProxyController : ControllerBase
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
 
             // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
-            SafeBlockRoute(route.RouteId);
+            SafeBlockRoute(route.CircuitKey);
             lastResult = result;
         }
 

@@ -437,14 +437,14 @@ public sealed class ChatApiController : ControllerBase
             foreach (var route in allRoutes)
             {
                 routeIndex++;
-                if (_circuitStore.IsBlocked(route.RouteId))
+                if (_circuitStore.IsBlocked(route.CircuitKey))
                     continue;
 
                 attemptIndex++;
                 // 调试对话与代理主链路共用同一套并发占用统计，确保调试页看到的是全局真实占用。
                 using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                     HttpContext.RequestServices,
-                    route.SiteId,
+                    route.SiteKeyId ?? route.SiteId,
                     route.SiteModelName,
                     concurrencyMode,
                     concurrencyQueueTimeout,
@@ -481,7 +481,7 @@ public sealed class ChatApiController : ControllerBase
 
                 attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success, requestBody, forwardResult.ResponseBody ?? ""));
                 var canFallback = !forwardResult.Success
-                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.RouteId));
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.CircuitKey));
 
                 await _usageLogService.LogAsync(new UsageLogEntry
                 {
@@ -513,12 +513,12 @@ public sealed class ChatApiController : ControllerBase
                 if (forwardResult.Success)
                 {
                     sw.Stop();
-                    _circuitStore.Succeed(route.RouteId);
+                    _circuitStore.Succeed(route.CircuitKey);
                     var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, route.ProtocolType);
                     return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
                 }
 
-                _circuitStore.Block(route.RouteId);
+                _circuitStore.Block(route.CircuitKey);
             }
 
             sw.Stop();
@@ -603,14 +603,14 @@ public sealed class ChatApiController : ControllerBase
         foreach (var route in allRoutes)
         {
             routeIndex++;
-            if (_circuitStore.IsBlocked(route.RouteId))
+            if (_circuitStore.IsBlocked(route.CircuitKey))
                 continue;
 
             attemptIndex++;
             // 调试对话与代理主链路共用同一套并发占用统计，确保调试页看到的是全局真实占用。
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                 HttpContext.RequestServices,
-                route.SiteId,
+                route.SiteKeyId ?? route.SiteId,
                 route.SiteModelName,
                 concurrencyMode,
                 concurrencyQueueTimeout,
@@ -659,7 +659,7 @@ public sealed class ChatApiController : ControllerBase
             attempts.Add(attemptResult);
             var canFallback = !streamResult.Success
                 && !streamResult.HadAnyContent
-                && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.RouteId));
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.CircuitKey));
 
             await _usageLogService.LogAsync(new UsageLogEntry
             {
@@ -708,11 +708,11 @@ public sealed class ChatApiController : ControllerBase
                 };
                 await WriteSseEventAsync("meta", finalResult, cancellationToken);
                 await WriteSseEventAsync("done", new { requestId }, cancellationToken);
-                _circuitStore.Succeed(route.RouteId);
+                _circuitStore.Succeed(route.CircuitKey);
                 return;
             }
 
-            _circuitStore.Block(route.RouteId);
+            _circuitStore.Block(route.CircuitKey);
             if (streamResult.HadAnyContent)
             {
                 await WriteSseEventAsync("error", new { message = streamResult.ErrorMessage }, cancellationToken);
@@ -780,6 +780,9 @@ public sealed class ChatApiController : ControllerBase
         {
             ModelId = modelId,
             SiteId = selectedTarget.SiteId,
+            // 复制多 Key 身份：直发也要用选中 Key 的独立并发额度和熔断身份键。
+            SiteKeyId = selectedTarget.SiteKeyId,
+            CircuitKey = selectedTarget.CircuitKey,
             SiteName = selectedTarget.SiteName,
             ProtocolType = selectedTarget.ProtocolType,
             BaseUrl = selectedTarget.BaseUrl,
@@ -812,7 +815,7 @@ public sealed class ChatApiController : ControllerBase
         // 直发到指定站点模型时也要进入统一并发统计，避免聊天页与开发者并发检测口径不一致。
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
-            mapping.SiteId,
+            mapping.SiteKeyId ?? mapping.SiteId,
             mapping.SiteModelName,
             concurrencyMode,
             concurrencyQueueTimeout,
@@ -925,7 +928,7 @@ public sealed class ChatApiController : ControllerBase
         // 直发到指定站点模型时也要进入统一并发统计，避免聊天页与开发者并发检测口径不一致。
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
-            mapping.SiteId,
+            mapping.SiteKeyId ?? mapping.SiteId,
             mapping.SiteModelName,
             concurrencyMode,
             concurrencyQueueTimeout,
