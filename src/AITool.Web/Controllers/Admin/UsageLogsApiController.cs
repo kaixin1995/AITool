@@ -543,20 +543,18 @@ public sealed class UsageLogsApiController : ControllerBase
                 baseQuery = baseQuery.Where(x => x.AttemptedModel.Contains(query.ModelKeyword) || x.RequestModel.Contains(query.ModelKeyword));
             }
 
-            // 加载完整实体后在内存聚合。
-            // 不用 SqlSugar 的 SumAsync/匿名类型 Select——前者对 (long) 强转的 SQL 翻译有缺陷，
-            // 后者可能因列映射偏差导致 TotalTokens 取到错误值。完整实体加载保证字段映射与列表一致。
-            // 管理后台低频操作，数据量为日志行数，可接受。
-            var rows = await baseQuery.ToListAsync(cancellationToken);
-
-            var totalCount = rows.Count;
-            var successRequests = rows.Count(x => x.Status == "success");
-            var failedRequests = rows.Count(x => x.Status == "fail");
+            // 数据库层过滤 + 聚合：不下全表加载到内存，避免大数据量（如"全部"范围）OOM。
+            var totalCount = await baseQuery.CountAsync(cancellationToken);
+            var successRequests = await baseQuery.CountAsync(x => x.Status == "success", cancellationToken);
+            var failedRequests = await baseQuery.CountAsync(x => x.Status == "fail", cancellationToken);
             var successRate = totalCount == 0
                 ? 0d
                 : Math.Round(successRequests * 100d / totalCount, 2, MidpointRounding.AwayFromZero);
-            var totalTokens = rows.Sum(x => (long)x.TotalTokens);
-            var maxDurationMs = rows.Count == 0 ? 0 : rows.Max(x => x.TotalDurationMs);
+            // (long) 强转避免 int 求和累计超 21 亿溢出（见 9391615）。
+            var totalTokens = totalCount == 0 ? 0L : await baseQuery.SumAsync(x => (long)x.TotalTokens);
+            var maxDurationMs = totalCount == 0
+                ? 0
+                : await baseQuery.MaxAsync(x => x.TotalDurationMs, cancellationToken);
 
             return Ok(new UsageLogSummaryDto
             {
