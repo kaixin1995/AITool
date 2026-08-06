@@ -164,16 +164,16 @@
                         </Grid>
 
                         <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,12,0,0">
-                          <WrapPanel ItemSpacing="8" LineSpacing="8" HorizontalAlignment="Stretch">
-                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="重置额度信用" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Click="ConfirmDeleteAccount" Content="删除" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
-                          </WrapPanel>
+                          <UniformGrid Columns="4" Rows="2" HorizontalAlignment="Stretch" VerticalAlignment="Top">
+                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="重置额度信用" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Click="ConfirmDeleteAccount" Content="删除" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                          </UniformGrid>
                         </Border>
                       </StackPanel>
                     </Border>
