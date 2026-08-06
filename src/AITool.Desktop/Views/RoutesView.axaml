@@ -39,6 +39,8 @@
                 <DataTemplate>
                   <ToggleButton
                       Classes="route-entry-item"
+                      HorizontalAlignment="Stretch"
+                      HorizontalContentAlignment="Stretch"
                       Click="SelectEntry"
                       IsChecked="{Binding IsSelected, Mode=OneWay}">
                     <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
@@ -98,13 +100,13 @@
                     <ItemsControl.ItemTemplate>
                       <DataTemplate>
                         <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="14,12">
-                          <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*" ColumnSpacing="12" RowSpacing="8">
-                            <Border Grid.RowSpan="2" Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="14" Height="28" Width="28" VerticalAlignment="Center">
+                          <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="12" VerticalAlignment="Center">
+                            <Border Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="14" Height="28" Width="28" VerticalAlignment="Center">
                               <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding PriorityText}" />
                             </Border>
-                            <StackPanel Grid.Column="1" Spacing="3">
+                            <StackPanel Grid.Column="1" Spacing="3" MinWidth="0">
                               <WrapPanel ItemSpacing="8" LineSpacing="4">
-                                <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SiteName}" />
+                                <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SiteName}" TextTrimming="CharacterEllipsis" />
                                 <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" IsVisible="{Binding IsSiteDisabled}" Padding="7,2"><TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="站点已禁用" /></Border>
                                 <Grid>
                                   <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,2" IsVisible="{Binding IsEnabled}"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
@@ -112,26 +114,26 @@
                                 </Grid>
                               </WrapPanel>
                               <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InstanceSummary}" TextTrimming="CharacterEllipsis" />
-                              <WrapPanel ItemSpacing="7" LineSpacing="6">
-                                <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="可用性" VerticalAlignment="Center" />
-                                <ComboBox ItemsSource="{Binding DataContext.AvailabilityOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedValue="{Binding AvailabilityMode, Mode=TwoWay}" SelectedValueBinding="{Binding Value}" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}">
-                                  <ComboBox.ItemTemplate>
-                                    <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
-                                  </ComboBox.ItemTemplate>
-                                </ComboBox>
-                                <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding HasTimeRange}">
-                                  <TextBox Classes="form-input" Text="{Binding TimeRangeStart}" Watermark="00:00" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
-                                  <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="至" VerticalAlignment="Center" />
-                                  <TextBox Classes="form-input" Text="{Binding TimeRangeEnd}" Watermark="23:59" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
-                                </StackPanel>
-                              </WrapPanel>
                             </StackPanel>
-                            <WrapPanel Grid.Row="1" Grid.Column="1" ItemSpacing="6" LineSpacing="6">
-                              <Button Classes="secondary-button" Command="{Binding DataContext.ToggleRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" IsEnabled="{Binding CanToggle}" Padding="8,5" />
-                              <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleUpCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="上移" IsEnabled="{Binding CanMoveUp}" Padding="8,5" />
-                              <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleDownCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="下移" IsEnabled="{Binding CanMoveDown}" Padding="8,5" />
-                              <Button Classes="secondary-button" Command="{Binding DataContext.RemoveCandidateCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="移除" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="8,5" />
+                            <WrapPanel Grid.Column="2" ItemSpacing="6" VerticalAlignment="Center">
+                              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="可用性" VerticalAlignment="Center" />
+                              <ComboBox Height="34" ItemsSource="{Binding DataContext.AvailabilityOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedValue="{Binding AvailabilityMode, Mode=TwoWay}" SelectedValueBinding="{Binding Value}" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}">
+                                <ComboBox.ItemTemplate>
+                                  <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+                                </ComboBox.ItemTemplate>
+                              </ComboBox>
+                              <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding HasTimeRange}">
+                                <TextBox Classes="form-input" Width="64" Height="34" Text="{Binding TimeRangeStart}" Watermark="00:00" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="至" VerticalAlignment="Center" />
+                                <TextBox Classes="form-input" Width="64" Height="34" Text="{Binding TimeRangeEnd}" Watermark="23:59" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                              </StackPanel>
                             </WrapPanel>
+                            <UniformGrid Grid.Column="3" Columns="4" HorizontalAlignment="Right" VerticalAlignment="Center">
+                              <Button Classes="secondary-button" Command="{Binding DataContext.ToggleRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" IsEnabled="{Binding CanToggle}" Height="34" Margin="0,0,6,0" Padding="8,5" HorizontalContentAlignment="Center" />
+                              <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleUpCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="上移" IsEnabled="{Binding CanMoveUp}" Height="34" Margin="0,0,6,0" Padding="8,5" HorizontalContentAlignment="Center" />
+                              <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleDownCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="下移" IsEnabled="{Binding CanMoveDown}" Height="34" Margin="0,0,6,0" Padding="8,5" HorizontalContentAlignment="Center" />
+                              <Button Classes="secondary-button" Command="{Binding DataContext.RemoveCandidateCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="移除" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" Height="34" Padding="8,5" HorizontalContentAlignment="Center" />
+                            </UniformGrid>
                           </Grid>
                         </Border>
                       </DataTemplate>
