@@ -16,10 +16,18 @@
 
       <Border Grid.Row="1" Classes="content-card" Padding="14">
         <DockPanel>
-          <StackPanel DockPanel.Dock="Bottom" Spacing="8" Margin="0,14,0,0">
-            <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="新增路由入口" />
-            <TextBox Classes="form-input" Text="{Binding NewEntryName}" Watermark="例如 claude-3-7-sonnet" />
-            <Button Classes="primary-button" Command="{Binding CreateEntryCommand}" Content="创建入口" IsEnabled="{Binding CanCreate}" HorizontalContentAlignment="Center" Padding="10,8" />
+          <StackPanel DockPanel.Dock="Top" Spacing="10">
+            <StackPanel Spacing="3">
+              <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="主入口" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="管理对外暴露的本地路由入口" TextWrapping="Wrap" />
+            </StackPanel>
+            <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="10">
+              <StackPanel Spacing="8">
+                <TextBlock FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="新建主入口" />
+                <TextBox Classes="form-input" Text="{Binding NewEntryName}" Watermark="例如 auto" />
+                <Button Classes="primary-button" Command="{Binding CreateEntryCommand}" Content="创建入口" IsEnabled="{Binding CanCreate}" HorizontalContentAlignment="Center" Padding="10,8" />
+              </StackPanel>
+            </Border>
           </StackPanel>
           <ScrollViewer VerticalScrollBarVisibility="Auto">
             <ItemsControl ItemsSource="{Binding Entries}">
@@ -65,7 +73,7 @@
               <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="14">
                 <Grid ColumnDefinitions="1.35*,1.65*,Auto,Auto" ColumnSpacing="8">
                   <TextBox Classes="form-input" Text="{Binding CandidateSearch}" Watermark="搜索站点或模型" />
-                  <ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{Binding FilteredSiteInstances}" SelectedItem="{Binding SelectedSiteInstance}" IsEnabled="{Binding CanEdit}">
+                  <ComboBox Grid.Column="1" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" PlaceholderText="选择站点实例" ItemsSource="{Binding FilteredSiteInstances}" SelectedItem="{Binding SelectedSiteInstance}" IsEnabled="{Binding CanEdit}">
                     <ComboBox.ItemTemplate>
                       <DataTemplate><TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" /></DataTemplate>
                     </ComboBox.ItemTemplate>
