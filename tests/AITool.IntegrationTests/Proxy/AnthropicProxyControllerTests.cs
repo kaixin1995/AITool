@@ -181,6 +181,7 @@ public sealed class AnthropicProxyControllerTests
 
         logs.Should().ContainSingle();
         logs[0].Status.Should().Be("success");
+        logs[0].HttpStatusCode.Should().Be(200);
         logs[0].IsStreaming.Should().BeTrue();
         logs[0].InputTokens.Should().Be(6);
         logs[0].CachedTokens.Should().Be(2);

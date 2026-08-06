@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
+    <Project Path="src/AITool.Desktop/AITool.Desktop.csproj" />
     <Project Path="src/AITool.Application/AITool.Application.csproj" />
     <Project Path="src/AITool.Domain/AITool.Domain.csproj" />
     <Project Path="src/AITool.Infrastructure/AITool.Infrastructure.csproj" />
