@@ -27,7 +27,7 @@
               <StackPanel Spacing="6">
                 <TextBlock FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="新建主入口" />
                 <Grid ColumnDefinitions="*,88" ColumnSpacing="8">
-                  <TextBox Grid.Column="0" Classes="form-input" MinWidth="0" Height="34" Text="{Binding NewEntryName}" Watermark="例如 auto" />
+                  <TextBox Grid.Column="0" Classes="form-input" MinWidth="0" Height="34" MinHeight="34" Text="{Binding NewEntryName}" Watermark="例如 auto" />
                   <Button Grid.Column="1" Classes="primary-button" Command="{Binding CreateEntryCommand}" Content="创建" IsEnabled="{Binding CanCreate}" Height="34" HorizontalAlignment="Stretch" Padding="8,6" HorizontalContentAlignment="Center" />
                 </Grid>
               </StackPanel>
@@ -78,7 +78,7 @@
             <StackPanel IsVisible="{Binding HasSelectedEntry}" Spacing="12" Margin="16,14,16,0">
               <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="14">
                 <Grid ColumnDefinitions="2*,2*,Auto,Auto" ColumnSpacing="8">
-                  <TextBox Classes="form-input" Height="34" Text="{Binding CandidateSearch}" Watermark="搜索站点或模型" />
+                  <TextBox Classes="form-input" Height="34" MinHeight="34" Text="{Binding CandidateSearch}" Watermark="搜索站点或模型" />
                   <ComboBox Grid.Column="1" Height="34" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" PlaceholderText="选择站点实例" ItemsSource="{Binding FilteredSiteInstances}" SelectedItem="{Binding SelectedSiteInstance}" IsEnabled="{Binding CanEdit}">
                     <ComboBox.ItemTemplate>
                       <DataTemplate><TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" /></DataTemplate>
