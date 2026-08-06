@@ -102,16 +102,19 @@ public sealed class DetectionApiController : ControllerBase
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
-        // 只取最终结果日志，按 (站点, 请求模型) 取最新一条。
-        var allLogs = await dbContext.ProxyUsageLogs
-            .Where(x => x.IsFinalResult)
+        // 只取最近 7 天的最终结果日志（避免全表加载），按 (站点, 请求模型) 取最新一条。
+        var recentCutoff = DateTimeOffset.UtcNow.AddDays(-7);
+        var recentLogs = await dbContext.ProxyUsageLogs
+            .Where(x => x.IsFinalResult && x.RequestedAt >= recentCutoff)
             .ToListAsync(cancellationToken);
-        var latestLogs = allLogs
+        var latestLogs = recentLogs
             .GroupBy(d => (d.TargetSiteId, d.RequestModel))
             .ToDictionary(g => g.Key, g => g.OrderByDescending(d => d.RequestedAt).First());
 
-        // SqlSugar 的 ToDictionaryAsync 需要 key+value 两个 selector，这里用 ToListAsync + 内存 ToDictionary。
-        var models = (await dbContext.ModelLibraryItems.ToListAsync(cancellationToken))
+        // 只加载启用的模型（而非全表），配合启用映射使用。
+        var models = (await dbContext.ModelLibraryItems
+            .Where(m => m.IsEnabled)
+            .ToListAsync(cancellationToken))
             .ToDictionary(m => m.Id);
         var sites = (await dbContext.Sites
             .Where(s => s.IsEnabled)

@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   NCard, NButton, NSpace, NTag, NModal, NForm, NFormItem, NInput, NInputNumber,
-  NSwitch, NSelect, NPopconfirm, NEmpty, NDrawer, NDrawerContent, NSpin, NTabs, NTabPane, useMessage
+  NSwitch, NSelect, NPopconfirm, NEmpty, NSpin, NTabs, NTabPane, useMessage
 } from 'naive-ui'
 import * as modelsApi from '@/api/models'
 import * as compatApi from '@/api/compatibility'
@@ -47,9 +47,7 @@ const form = reactive<ModelPayload>({
 })
 const saving = ref(false)
 
-// 映射管理 Drawer
-const mappingDrawer = ref(false)
-const mappingModel = ref<ModelListItem | null>(null)
+// 映射管理（嵌入编辑弹窗，仅编辑模式可见）
 const modelDetail = ref<modelsApi.ModelDetail | null>(null)
 const newMappingSiteId = ref<string | null>(null)
 const newMappingRemoteName = ref('')
@@ -111,6 +109,12 @@ async function loadModels(): Promise<void> {
 function openCreate(): void {
   editingId.value = null
   Object.assign(form, { modelName: '', displayName: '', isEnabled: true, overrideReasoningEffort: '', compatibilityProfileId: null })
+  // 新建模式不展示映射区块，清理可能残留的上一次编辑数据
+  modelDetail.value = null
+  newMappingSiteId.value = null
+  newMappingRemoteName.value = ''
+  newMappingEnabled.value = true
+  mappingLoading.value = false
   showModal.value = true
 }
 
@@ -132,6 +136,20 @@ async function openEdit(model: ModelListItem): Promise<void> {
     compatibilityProfileId: model.compatibilityProfileId
   })
   showModal.value = true
+  // 同时加载映射数据，供弹窗内映射区块展示与编辑
+  await loadModelDetail(model)
+}
+
+async function loadModelDetail(model: ModelListItem): Promise<void> {
+  mappingLoading.value = true
+  newMappingSiteId.value = null
+  newMappingRemoteName.value = model.modelName
+  newMappingEnabled.value = true
+  try {
+    modelDetail.value = await modelsApi.getModelDetail(model.id)
+  } finally {
+    mappingLoading.value = false
+  }
 }
 
 async function handleSave(): Promise<void> {
@@ -253,26 +271,14 @@ async function handleSaveVendorCatalog(): Promise<void> {
   }
 }
 
-async function openMappingDrawer(model: ModelListItem): Promise<void> {
-  mappingModel.value = model
-  mappingDrawer.value = true
-  mappingLoading.value = true
-  newMappingSiteId.value = null
-  newMappingRemoteName.value = model.modelName
-  newMappingEnabled.value = true
-  try {
-    modelDetail.value = await modelsApi.getModelDetail(model.id)
-  } finally { mappingLoading.value = false }
-}
-
 async function handleAddMapping(): Promise<void> {
-  if (!mappingModel.value || !newMappingSiteId.value || !newMappingRemoteName.value.trim()) {
+  if (!editingId.value || !newMappingSiteId.value || !newMappingRemoteName.value.trim()) {
     message.warning('请选择站点并填写模型名'); return
   }
   try {
-    await modelsApi.addModelMapping(mappingModel.value.id, newMappingSiteId.value, newMappingRemoteName.value.trim(), newMappingEnabled.value)
+    await modelsApi.addModelMapping(editingId.value, newMappingSiteId.value, newMappingRemoteName.value.trim(), newMappingEnabled.value)
     message.success('关联已添加')
-    modelDetail.value = await modelsApi.getModelDetail(mappingModel.value.id)
+    modelDetail.value = await modelsApi.getModelDetail(editingId.value)
     newMappingSiteId.value = null
     newMappingEnabled.value = true
     await loadModels()
@@ -286,10 +292,10 @@ async function handleUpdateMappingConcurrency(mapping: modelsApi.ModelSiteMappin
 }
 
 async function handleDeleteMapping(mappingId: string): Promise<void> {
-  if (!mappingModel.value) return
-  await modelsApi.deleteModelMapping(mappingModel.value.id, mappingId)
+  if (!editingId.value) return
+  await modelsApi.deleteModelMapping(editingId.value, mappingId)
   message.success('关联已删除')
-  modelDetail.value = await modelsApi.getModelDetail(mappingModel.value.id)
+  modelDetail.value = await modelsApi.getModelDetail(editingId.value)
   await loadModels()
 }
 
@@ -369,7 +375,6 @@ onMounted(loadModels)
                   {{ model.isEnabled ? '禁用' : '启用' }}
                 </NButton>
                 <NButton size="small" secondary type="primary" @click="openEdit(model)">编辑</NButton>
-                <NButton size="small" secondary @click="openMappingDrawer(model)">映射</NButton>
                 <NPopconfirm @positive-click="handleDelete(model)">
                   <template #trigger>
                     <NButton size="small" secondary type="error">删除</NButton>
@@ -435,7 +440,7 @@ onMounted(loadModels)
       v-model:show="showModal"
       :title="isEditMode ? '编辑模型' : '新建模型'"
       preset="card"
-      style="width: 480px; max-width: 92vw"
+      style="width: 720px; max-width: 92vw"
       :mask-closable="false"
     >
       <NForm label-placement="top">
@@ -459,6 +464,48 @@ onMounted(loadModels)
           <NSwitch v-model:value="form.isEnabled" />
         </NFormItem>
       </NForm>
+
+      <div v-if="isEditMode" class="mapping-section">
+        <NSpin :show="mappingLoading">
+          <h4 class="mapping-section-title">站点映射</h4>
+          <h5 class="mapping-subtitle">已关联站点</h5>
+          <NEmpty v-if="!modelDetail || modelDetail.siteMappings.length === 0" description="暂无关联" size="small" />
+          <div v-for="m in modelDetail?.siteMappings" :key="m.mappingId" class="mapping-row">
+            <div class="mapping-row-main">
+              <div class="mapping-site-line">
+                <span>{{ m.siteName }}</span>
+                <NTag size="small" :bordered="false">{{ m.remoteModelName }}</NTag>
+                <NTag v-if="!m.isEnabled" size="tiny" :bordered="false">禁用</NTag>
+              </div>
+              <div class="mapping-concurrency-line">
+                <span class="mapping-field-label">最大并发</span>
+                <NInputNumber v-model:value="m.maxConcurrency" size="tiny" :min="0" :precision="0" placeholder="0=不限" class="mapping-concurrency-input" />
+                <NButton size="tiny" secondary @click="handleUpdateMappingConcurrency(m, m.maxConcurrency)">保存</NButton>
+              </div>
+            </div>
+            <NPopconfirm @positive-click="handleDeleteMapping(m.mappingId)">
+              <template #trigger><NButton size="tiny" quaternary type="error">删除</NButton></template>
+              删除该关联？
+            </NPopconfirm>
+          </div>
+
+          <h5 class="mapping-subtitle mapping-subtitle-add">添加关联</h5>
+          <NSpace vertical :size="8">
+            <NSelect
+              v-model:value="newMappingSiteId"
+              :options="modelDetail?.availableSites.map(s => ({ label: s.name, value: s.id })) ?? []"
+              placeholder="选择站点"
+            />
+            <NInput v-model:value="newMappingRemoteName" placeholder="站点上的模型名" />
+            <label class="mapping-enabled-line">
+              <NSwitch v-model:value="newMappingEnabled" />
+              <span>启用映射</span>
+            </label>
+            <NButton type="primary" size="small" @click="handleAddMapping">添加</NButton>
+          </NSpace>
+        </NSpin>
+      </div>
+
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showModal = false">取消</NButton>
@@ -557,48 +604,6 @@ onMounted(loadModels)
       </template>
     </NModal>
 
-    <!-- 映射管理 Drawer -->
-    <NDrawer v-model:show="mappingDrawer" :width="520" placement="right">
-      <NDrawerContent :title="`站点映射 - ${mappingModel?.displayName ?? ''}`" closable>
-        <NSpin :show="mappingLoading">
-          <h4 style="margin: 0 0 8px; font-size: 13px; color: var(--n-text-color-3, #888)">已关联站点</h4>
-          <NEmpty v-if="!modelDetail || modelDetail.siteMappings.length === 0" description="暂无关联" size="small" />
-          <div v-for="m in modelDetail?.siteMappings" :key="m.mappingId" class="mapping-row">
-            <div class="mapping-row-main">
-              <div class="mapping-site-line">
-                <span>{{ m.siteName }}</span>
-                <NTag size="small" :bordered="false">{{ m.remoteModelName }}</NTag>
-                <NTag v-if="!m.isEnabled" size="tiny" :bordered="false">禁用</NTag>
-              </div>
-              <div class="mapping-concurrency-line">
-                <span class="mapping-field-label">最大并发</span>
-                <NInputNumber v-model:value="m.maxConcurrency" size="tiny" :min="0" :precision="0" placeholder="0=不限" class="mapping-concurrency-input" />
-                <NButton size="tiny" secondary @click="handleUpdateMappingConcurrency(m, m.maxConcurrency)">保存</NButton>
-              </div>
-            </div>
-            <NPopconfirm @positive-click="handleDeleteMapping(m.mappingId)">
-              <template #trigger><NButton size="tiny" quaternary type="error">删除</NButton></template>
-              删除该关联？
-            </NPopconfirm>
-          </div>
-
-          <h4 style="margin: 20px 0 8px; font-size: 13px; color: var(--n-text-color-3, #888)">添加关联</h4>
-          <NSpace vertical :size="8">
-            <NSelect
-              v-model:value="newMappingSiteId"
-              :options="modelDetail?.availableSites.map(s => ({ label: s.name, value: s.id })) ?? []"
-              placeholder="选择站点"
-            />
-            <NInput v-model:value="newMappingRemoteName" placeholder="站点上的模型名" />
-            <label class="mapping-enabled-line">
-              <NSwitch v-model:value="newMappingEnabled" />
-              <span>启用映射</span>
-            </label>
-            <NButton type="primary" size="small" @click="handleAddMapping">添加</NButton>
-          </NSpace>
-        </NSpin>
-      </NDrawerContent>
-    </NDrawer>
   </div>
 </template>
 
@@ -1000,6 +1005,29 @@ onMounted(loadModels)
   gap: 8px;
   padding: 10px 0;
   border-bottom: 1px solid var(--border-color-global);
+}
+
+.mapping-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.35);
+}
+
+.mapping-section-title {
+  margin: 0 0 12px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.mapping-subtitle {
+  margin: 12px 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--n-text-color-3, #888);
+}
+
+.mapping-subtitle-add {
+  margin-top: 20px;
 }
 
 .mapping-row-main {
