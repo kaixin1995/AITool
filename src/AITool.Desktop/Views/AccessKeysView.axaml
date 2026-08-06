@@ -69,7 +69,7 @@
           </ScrollViewer>
         </Border>
 
-        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Margin="12" MaxWidth="520" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="10">
           <StackPanel Spacing="14">
             <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="新建访问密钥" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
             <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="8" IsVisible="{Binding HasCreatedKey}" Padding="12">
@@ -103,7 +103,7 @@
           </StackPanel>
         </Border>
 
-        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsRoutesEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="11">
+        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsRoutesEditorOpen}" Padding="24" Margin="12" MaxWidth="520" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="11">
           <StackPanel Spacing="14">
             <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding RoutesEditorTitle}" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseRoutesEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
             <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="勾选允许访问的路由入口。不勾选任何项表示允许全部路由。" TextWrapping="Wrap" />
