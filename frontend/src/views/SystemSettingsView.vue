@@ -54,7 +54,7 @@ const form = reactive<SystemSettings>({
   concurrencyQueueTimeoutSeconds: 120,
   codexFeaturesEnabled: false,
   codexInspectionEnabled: false,
-  codexInspectionIntervalMinutes: 30,
+  codexInspectionIntervalSeconds: 1800,
   codexQuotaMaxCacheHours: 6,
   codexAutoDisableThresholdPercent: 95,
   lastUsageLogPrunedAt: null,
@@ -207,8 +207,8 @@ onMounted(loadSettings)
                 <label class="settings-switch-inline"><NSwitch v-model:value="form.codexInspectionEnabled" :disabled="!form.codexFeaturesEnabled" />启用自动巡检</label>
               </NFormItem>
               <NFormItem>
-                <template #label><span class="form-label-tip">巡检周期（分钟）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>每隔多少分钟执行一轮自动巡检，下限 5 分钟。</NTooltip></span></template>
-                <NInputNumber v-model:value="form.codexInspectionIntervalMinutes" :min="5" :step="5" :disabled="!form.codexFeaturesEnabled" />
+                <template #label><span class="form-label-tip">巡检周期（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>每隔多少秒执行一轮自动巡检，下限 30 秒。</NTooltip></span></template>
+                <NInputNumber v-model:value="form.codexInspectionIntervalSeconds" :min="30" :step="30" :disabled="!form.codexFeaturesEnabled" />
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">额度缓存最大小时数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>未被使用的账号可以命中缓存，但超过该小时数后会强制真实刷新一次额度。</NTooltip></span></template>

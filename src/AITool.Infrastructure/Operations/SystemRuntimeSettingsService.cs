@@ -67,7 +67,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         var wasCodexEnabled = settings.CodexFeaturesEnabled;
         settings.CodexFeaturesEnabled = request.CodexFeaturesEnabled;
         settings.CodexInspectionEnabled = request.CodexInspectionEnabled;
-        settings.CodexInspectionIntervalMinutes = Math.Max(1, request.CodexInspectionIntervalMinutes);
+        settings.CodexInspectionIntervalSeconds = Math.Max(30, request.CodexInspectionIntervalSeconds);
         settings.CodexQuotaMaxCacheHours = Math.Max(1, request.CodexQuotaMaxCacheHours);
         settings.CodexAutoDisableThresholdPercent = Math.Max(1, Math.Min(100, request.CodexAutoDisableThresholdPercent));
 

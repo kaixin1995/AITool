@@ -25,7 +25,7 @@ public partial class SystemSettings : ObservableObject
     [ObservableProperty] private int _concurrencyQueueTimeoutSeconds = 120;
     [ObservableProperty] private bool _codexFeaturesEnabled;
     [ObservableProperty] private bool _codexInspectionEnabled;
-    [ObservableProperty] private int _codexInspectionIntervalMinutes = 30;
+    [ObservableProperty] private int _codexInspectionIntervalSeconds = 1800;
     [ObservableProperty] private int _codexQuotaMaxCacheHours = 6;
     [ObservableProperty] private int _codexAutoDisableThresholdPercent = 95;
     public string? LastUsageLogPrunedAt { get; set; }

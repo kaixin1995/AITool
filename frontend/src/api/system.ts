@@ -15,7 +15,7 @@ export interface SystemSettings {
   concurrencyQueueTimeoutSeconds: number
   codexFeaturesEnabled: boolean
   codexInspectionEnabled: boolean
-  codexInspectionIntervalMinutes: number
+  codexInspectionIntervalSeconds: number
   codexQuotaMaxCacheHours: number
   codexAutoDisableThresholdPercent: number
   lastUsageLogPrunedAt: string | null

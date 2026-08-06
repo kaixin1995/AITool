@@ -88,7 +88,7 @@ public sealed class CodexInspectionService : BackgroundService
 
         try
         {
-            var interval = TimeSpan.FromMinutes(Math.Max(5, runtime.CodexInspectionIntervalMinutes));
+            var interval = TimeSpan.FromSeconds(Math.Max(30, runtime.CodexInspectionIntervalSeconds));
             _nextScheduledAt = now + interval;
             // 巡检流程：HTTP 额度查询在锁外执行（避免长时间持锁阻塞其他 DB 操作），
             // 只有 DB 写入（禁用/启用账号）在 SerialExecuteAsync 锁内。
