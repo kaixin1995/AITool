@@ -216,7 +216,9 @@ builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>()
         PooledConnectionLifetime = TimeSpan.FromMinutes(2),
         PooledConnectionIdleTimeout = TimeSpan.FromSeconds(30)
     });
-builder.Services.AddScoped<ModelHealthRequestService>();
+    builder.Services.AddScoped<ModelHealthRequestService>();
+// 站点密钥选择器：模型目录拉取、健康检测等站点级操作取用活动密钥。
+builder.Services.AddScoped<AITool.Infrastructure.Sites.SiteKeySelector>();
 
 // 注册使用日志服务，记录每次代理调用的 Token 用量。
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();

@@ -46,6 +46,10 @@ public sealed class SiteCascadeDeleter
         var rules = await _dbContext.ProxyRouteRules
             .Where(x => normalizedSiteIds.Contains(x.SiteId))
             .ToListAsync(cancellationToken);
+        // 级联删除站点的所有密钥，避免遗留孤儿 SiteKey。
+        var siteKeys = await _dbContext.SiteKeys
+            .Where(x => normalizedSiteIds.Contains(x.SiteId))
+            .ToListAsync(cancellationToken);
         var affectedEntryNames = rules
             .Select(x => x.ExternalModelName)
             .Distinct(StringComparer.Ordinal)
@@ -59,6 +63,11 @@ public sealed class SiteCascadeDeleter
         if (rules.Count > 0)
         {
             _dbContext.ProxyRouteRules.RemoveRange(rules);
+        }
+
+        if (siteKeys.Count > 0)
+        {
+            _dbContext.SiteKeys.RemoveRange(siteKeys);
         }
 
         _dbContext.Sites.RemoveRange(sites);

@@ -3,6 +3,7 @@ using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Sites;
 
 namespace AITool.Infrastructure.Health;
 
@@ -23,18 +24,24 @@ public sealed class ModelHealthRequestService
     /// 使用日志服务，用于记录每次检测的调用结果
     /// </summary>
     private readonly IUsageLogService _usageLogService;
+    /// <summary>
+    /// 站点密钥选择器，取站点活动密钥（多 Key 站点用优先级最高的启用项）。
+    /// </summary>
+    private readonly SiteKeySelector _siteKeySelector;
 
     /// <summary>
-    /// 注入数据库上下文、代理转发服务和日志服务
+    /// 注入数据库上下文、代理转发服务、日志服务和站点密钥选择器
     /// </summary>
     public ModelHealthRequestService(
         AppDbContext dbContext,
         IProxyForwardService forwardService,
-        IUsageLogService usageLogService)
+        IUsageLogService usageLogService,
+        SiteKeySelector siteKeySelector)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
         _usageLogService = usageLogService;
+        _siteKeySelector = siteKeySelector;
     }
 
     /// <summary>
@@ -98,11 +105,18 @@ public sealed class ModelHealthRequestService
             catch { }
         }
 
+        // 取站点活动密钥：多 Key 站点用优先级最高的启用项，没有 SiteKey 时回退 site.ApiKey（兼容 Codex/未迁移）。
+        var activeApiKey = await _siteKeySelector.GetActiveKeyAsync(site.Id, cancellationToken);
+        if (string.IsNullOrEmpty(activeApiKey))
+        {
+            activeApiKey = site.ApiKey;
+        }
+
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = site.BaseUrl,
             TargetEndpointPathMode = site.EndpointPathMode,
-            TargetApiKey = site.ApiKey,
+            TargetApiKey = activeApiKey,
             ProtocolType = protocolType,
             TargetModelName = mapping.RemoteModelName,
             RequestBody = requestBody,
