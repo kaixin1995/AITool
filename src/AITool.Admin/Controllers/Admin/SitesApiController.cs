@@ -4,7 +4,6 @@ using AITool.Application.Common;
 using AITool.Application.Sites;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
-using AITool.Application.Common;
 using AITool.Admin.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -62,7 +61,15 @@ public sealed class SitesApiController : ControllerBase
             .OrderBy(x => x.Name)
             .ToListAsync(cancellationToken);
 
-        return Ok(sites.Select(MapSiteToListItem));
+        var siteIds = sites.Select(x => x.Id).ToList();
+        // 一次性加载这些站点的 SiteKey，按 SiteId 分组，避免列表接口 N+1 查询。
+        var allKeys = await _dbContext.SiteKeys
+            .Where(k => siteIds.Contains(k.SiteId))
+            .ToListAsync(cancellationToken);
+        var keysBySite = allKeys.GroupBy(k => k.SiteId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(k => k.Priority).ThenBy(k => k.CreatedAt).ThenBy(k => k.Id).ToList());
+
+        return Ok(sites.Select(s => MapSiteToListItem(s, keysBySite)));
     }
 
     /// <summary>
@@ -78,6 +85,14 @@ public sealed class SitesApiController : ControllerBase
         }
 
         // 编辑时密钥留空表示保留原值，详情接口不向浏览器返回原始密钥。
+        // 返回该站点的 SiteKey 列表（KeyValue 脱敏），供前端多 Key 管理展示。
+        var siteKeys = await _dbContext.SiteKeys
+            .Where(k => k.SiteId == id)
+            .OrderBy(k => k.Priority)
+            .ThenBy(k => k.CreatedAt)
+            .ThenBy(k => k.Id)
+            .ToListAsync(cancellationToken);
+
         return Ok(ApiResponse.Ok(new
         {
             id = site.Id,
@@ -88,7 +103,16 @@ public sealed class SitesApiController : ControllerBase
             supportsAnthropic = site.SupportsAnthropic,
             protocolType = site.ProtocolType,
             isEnabled = site.IsEnabled,
-            createdAt = site.CreatedAt
+            createdAt = site.CreatedAt,
+            keys = siteKeys.Select(k => new
+            {
+                id = k.Id,
+                keyValueMasked = MaskApiKey(k.KeyValue),
+                remark = k.Remark ?? string.Empty,
+                priority = k.Priority,
+                isEnabled = k.IsEnabled,
+                createdAt = k.CreatedAt
+            })
         }));
     }
 
@@ -119,6 +143,16 @@ public sealed class SitesApiController : ControllerBase
             IsEnabled = payload.IsEnabled
         };
         _dbContext.Sites.Add(site);
+        // 同时插入一条默认 SiteKey（Priority=0），使新站点立即具备多 Key 能力。
+        // Site.ApiKey 保持同步，兼容健康检测/目录拉取等站点级回退路径。
+        _dbContext.SiteKeys.Add(new SiteKey
+        {
+            SiteId = site.Id,
+            KeyValue = payload.ApiKey,
+            Remark = "默认",
+            Priority = 0,
+            IsEnabled = true
+        });
         // SqlSugar 的 Add 是立即执行（扩展方法，同步 ExecuteCommand），无需 SaveChanges。
         await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
 
@@ -149,6 +183,9 @@ public sealed class SitesApiController : ControllerBase
         if (!string.IsNullOrWhiteSpace(payload.ApiKey))
         {
             site.ApiKey = payload.ApiKey;
+            // 同步更新默认 SiteKey（Priority 最小的启用项）的 KeyValue，保持多 Key 链路与站点字段一致。
+            // 若站点还没有 SiteKey（极端情况），则补建一条默认项。
+            await SyncDefaultSiteKeyAsync(site.Id, payload.ApiKey, cancellationToken);
         }
         site.SupportsOpenAi = payload.SupportsOpenAi;
         site.SupportsAnthropic = payload.SupportsAnthropic;
@@ -178,6 +215,185 @@ public sealed class SitesApiController : ControllerBase
         await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
 
         return Ok(ApiResponse.Ok(new { isEnabled = site.IsEnabled }, $"站点已{(site.IsEnabled ? "启用" : "禁用")}"));
+    }
+
+    /// <summary>
+    /// 获取站点的密钥列表（KeyValue 脱敏，不暴露完整密钥）。
+    /// </summary>
+    [HttpGet("{id:guid}/keys")]
+    public async Task<IActionResult> ListKeys(Guid id, CancellationToken cancellationToken)
+    {
+        var site = await _dbContext.Sites.InSingleAsync(id);
+        if (site is null || !string.IsNullOrEmpty(site.ManagedSource))
+        {
+            return NotFound(ApiResponse.Fail("站点不存在", "site_not_found"));
+        }
+
+        var keys = await _dbContext.SiteKeys
+            .Where(k => k.SiteId == id)
+            .OrderBy(k => k.Priority)
+            .ThenBy(k => k.CreatedAt)
+            .ThenBy(k => k.Id)
+            .ToListAsync(cancellationToken);
+
+        return Ok(ApiResponse.Ok(keys.Select(k => new
+        {
+            id = k.Id,
+            keyValueMasked = MaskApiKey(k.KeyValue),
+            remark = k.Remark ?? string.Empty,
+            priority = k.Priority,
+            isEnabled = k.IsEnabled,
+            createdAt = k.CreatedAt
+        })));
+    }
+
+    /// <summary>
+    /// 新增站点密钥。
+    /// </summary>
+    [HttpPost("{id:guid}/keys")]
+    public async Task<IActionResult> CreateKey(Guid id, [FromBody] SiteKeyUpsertRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null || string.IsNullOrWhiteSpace(request.KeyValue))
+        {
+            return BadRequest(ApiResponse.Fail("密钥不能为空", "invalid_input"));
+        }
+
+        var site = await _dbContext.Sites.InSingleAsync(id);
+        if (site is null || !string.IsNullOrEmpty(site.ManagedSource))
+        {
+            return NotFound(ApiResponse.Fail("站点不存在", "site_not_found"));
+        }
+
+        var key = new SiteKey
+        {
+            SiteId = id,
+            KeyValue = request.KeyValue,
+            Remark = string.IsNullOrWhiteSpace(request.Remark) ? null : request.Remark,
+            Priority = request.Priority,
+            IsEnabled = request.IsEnabled
+        };
+        _dbContext.SiteKeys.Add(key);
+        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+
+        return Ok(ApiResponse.Ok(new { id = key.Id }, "密钥已添加"));
+    }
+
+    /// <summary>
+    /// 更新站点密钥。KeyValue 留空表示保留原值（与站点编辑一致）。
+    /// </summary>
+    [HttpPut("{id:guid}/keys/{keyId:guid}")]
+    public async Task<IActionResult> UpdateKey(Guid id, Guid keyId, [FromBody] SiteKeyUpsertRequest request, CancellationToken cancellationToken)
+    {
+        if (request is null)
+        {
+            return BadRequest(ApiResponse.Fail("请求体无效", "invalid_input"));
+        }
+
+        var site = await _dbContext.Sites.InSingleAsync(id);
+        if (site is null || !string.IsNullOrEmpty(site.ManagedSource))
+        {
+            return NotFound(ApiResponse.Fail("站点不存在", "site_not_found"));
+        }
+
+        var key = await _dbContext.SiteKeys.InSingleAsync(keyId);
+        if (key is null || key.SiteId != id)
+        {
+            return NotFound(ApiResponse.Fail("密钥不存在", "key_not_found"));
+        }
+
+        // KeyValue 留空表示保留原值。
+        if (!string.IsNullOrWhiteSpace(request.KeyValue))
+        {
+            key.KeyValue = request.KeyValue;
+        }
+        key.Remark = string.IsNullOrWhiteSpace(request.Remark) ? null : request.Remark;
+        key.Priority = request.Priority;
+        key.IsEnabled = request.IsEnabled;
+        await _dbContext.UpdateAsync(key, cancellationToken);
+        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+
+        return Ok(ApiResponse.Ok("密钥已更新"));
+    }
+
+    /// <summary>
+    /// 删除站点密钥。
+    /// </summary>
+    [HttpDelete("{id:guid}/keys/{keyId:guid}")]
+    public async Task<IActionResult> DeleteKey(Guid id, Guid keyId, CancellationToken cancellationToken)
+    {
+        var site = await _dbContext.Sites.InSingleAsync(id);
+        if (site is null || !string.IsNullOrEmpty(site.ManagedSource))
+        {
+            return NotFound(ApiResponse.Fail("站点不存在", "site_not_found"));
+        }
+
+        var key = await _dbContext.SiteKeys.InSingleAsync(keyId);
+        if (key is null || key.SiteId != id)
+        {
+            return NotFound(ApiResponse.Fail("密钥不存在", "key_not_found"));
+        }
+
+        await _dbContext.DeleteAsync(key, cancellationToken);
+        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+
+        return Ok(ApiResponse.Ok("密钥已删除"));
+    }
+
+    /// <summary>
+    /// 切换站点密钥启用状态。
+    /// </summary>
+    [HttpPost("{id:guid}/keys/{keyId:guid}/toggle")]
+    public async Task<IActionResult> ToggleKey(Guid id, Guid keyId, CancellationToken cancellationToken)
+    {
+        var site = await _dbContext.Sites.InSingleAsync(id);
+        if (site is null || !string.IsNullOrEmpty(site.ManagedSource))
+        {
+            return NotFound(ApiResponse.Fail("站点不存在", "site_not_found"));
+        }
+
+        var key = await _dbContext.SiteKeys.InSingleAsync(keyId);
+        if (key is null || key.SiteId != id)
+        {
+            return NotFound(ApiResponse.Fail("密钥不存在", "key_not_found"));
+        }
+
+        key.IsEnabled = !key.IsEnabled;
+        await _dbContext.UpdateAsync(key, cancellationToken);
+        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+
+        return Ok(ApiResponse.Ok(new { isEnabled = key.IsEnabled }, $"密钥已{(key.IsEnabled ? "启用" : "禁用")}"));
+    }
+
+    /// <summary>
+    /// 同步默认 SiteKey 的 KeyValue：找到站点优先级最高的启用 SiteKey 更新其值；
+    /// 站点没有任何 SiteKey 时补建一条默认项。保证站点字段与多 Key 链路一致。
+    /// </summary>
+    private async Task SyncDefaultSiteKeyAsync(Guid siteId, string keyValue, CancellationToken cancellationToken)
+    {
+        var keys = await _dbContext.SiteKeys
+            .Where(k => k.SiteId == siteId)
+            .OrderBy(k => k.Priority)
+            .ThenBy(k => k.CreatedAt)
+            .ThenBy(k => k.Id)
+            .ToListAsync(cancellationToken);
+
+        if (keys.Count == 0)
+        {
+            _dbContext.SiteKeys.Add(new SiteKey
+            {
+                SiteId = siteId,
+                KeyValue = keyValue,
+                Remark = "默认",
+                Priority = 0,
+                IsEnabled = true
+            });
+            return;
+        }
+
+        // 更新主 Key（优先级最高的启用项，没有启用项则取第一条）的 KeyValue。
+        var primaryKey = keys.FirstOrDefault(k => k.IsEnabled) ?? keys[0];
+        primaryKey.KeyValue = keyValue;
+        await _dbContext.UpdateAsync(primaryKey, cancellationToken);
     }
 
     /// <summary>
@@ -243,15 +459,37 @@ public sealed class SitesApiController : ControllerBase
             .Where(s => string.IsNullOrEmpty(s.ManagedSource))
             .ToListAsync(cancellationToken);
 
-        var exportData = sites.Select(s => new
+        var siteIds = sites.Select(s => s.Id).ToList();
+        var allKeys = await _dbContext.SiteKeys
+            .Where(k => siteIds.Contains(k.SiteId))
+            .ToListAsync(cancellationToken);
+        var keysBySite = allKeys.GroupBy(k => k.SiteId)
+            .ToDictionary(g => g.Key, g => g.OrderBy(k => k.Priority).ThenBy(k => k.CreatedAt).ThenBy(k => k.Id).ToList());
+
+        var exportData = sites.Select(s =>
         {
-            id = s.Id,
-            name = s.Name,
-            baseUrl = s.BaseUrl,
-            endpointPathMode = SiteEndpointPathResolver.NormalizeMode(s.EndpointPathMode),
-            apiKey = s.ApiKey,
-            supportsOpenAi = s.SupportsOpenAi,
-            supportsAnthropic = s.SupportsAnthropic
+            // 导出包含完整 SiteKey 列表（含原始 KeyValue），用于跨实例迁移。
+            // 站点没有 SiteKey 时导出空数组（导入侧会用 apiKey 兜底建默认项）。
+            keysBySite.TryGetValue(s.Id, out var keys);
+            var keysExport = (keys ?? []).Select(k => new
+            {
+                keyValue = k.KeyValue,
+                remark = k.Remark ?? string.Empty,
+                priority = k.Priority,
+                isEnabled = k.IsEnabled
+            }).ToList();
+
+            return new
+            {
+                id = s.Id,
+                name = s.Name,
+                baseUrl = s.BaseUrl,
+                endpointPathMode = SiteEndpointPathResolver.NormalizeMode(s.EndpointPathMode),
+                apiKey = s.ApiKey,
+                supportsOpenAi = s.SupportsOpenAi,
+                supportsAnthropic = s.SupportsAnthropic,
+                keys = keysExport
+            };
         });
 
         return Ok(exportData);
@@ -276,7 +514,7 @@ public sealed class SitesApiController : ControllerBase
                 continue;
             }
 
-            _dbContext.Sites.Add(new Site
+            var site = new Site
             {
                 Name = item.Name,
                 BaseUrl = item.BaseUrl,
@@ -286,7 +524,40 @@ public sealed class SitesApiController : ControllerBase
                 SupportsOpenAi = item.SupportsOpenAi,
                 SupportsAnthropic = item.SupportsAnthropic,
                 IsEnabled = true
-            });
+            };
+            _dbContext.Sites.Add(site);
+
+            // 兼容多 Key 导入：导出数据带 keys 数组时按其创建；否则用 apiKey 建一条默认 SiteKey。
+            if (item.Keys is { Count: > 0 })
+            {
+                foreach (var key in item.Keys)
+                {
+                    if (string.IsNullOrWhiteSpace(key.KeyValue))
+                    {
+                        continue;
+                    }
+                    _dbContext.SiteKeys.Add(new SiteKey
+                    {
+                        SiteId = site.Id,
+                        KeyValue = key.KeyValue,
+                        Remark = string.IsNullOrWhiteSpace(key.Remark) ? null : key.Remark,
+                        Priority = key.Priority,
+                        IsEnabled = key.IsEnabled
+                    });
+                }
+            }
+            else
+            {
+                _dbContext.SiteKeys.Add(new SiteKey
+                {
+                    SiteId = site.Id,
+                    KeyValue = item.ApiKey,
+                    Remark = "默认",
+                    Priority = 0,
+                    IsEnabled = true
+                });
+            }
+
             created++;
         }
 
@@ -310,17 +581,27 @@ public sealed class SitesApiController : ControllerBase
 
     /// <summary>
     /// 把站点实体映射为列表项（ApiKey 脱敏：只返回掩码前缀，不暴露完整密钥）。
+    /// 多 Key 场景下展示主 Key（Priority 最小的启用项）脱敏值与 Key 总数。
     /// </summary>
-    private static object MapSiteToListItem(Site site)
+    private static object MapSiteToListItem(Site site, Dictionary<Guid, List<SiteKey>> keysBySite)
     {
+        // 主 Key：优先级最高（Priority 最小）的启用项；没有启用项则取 Priority 最小的任意项；都没有则回退 site.ApiKey。
+        var primaryKey = keysBySite.TryGetValue(site.Id, out var keys) && keys.Count > 0
+            ? (keys.FirstOrDefault(k => k.IsEnabled) ?? keys[0])
+            : null;
+        var primaryKeyValue = primaryKey?.KeyValue ?? site.ApiKey;
+        var keyCount = keys?.Count ?? 0;
+
         return new
         {
             id = site.Id,
             name = site.Name,
             baseUrl = site.BaseUrl,
             endpointPathMode = SiteEndpointPathResolver.NormalizeMode(site.EndpointPathMode),
-            // 列表展示密钥脱敏，避免一次请求泄漏所有站点的完整密钥。
-            apiKeyMasked = MaskApiKey(site.ApiKey),
+            // 列表展示主 Key 脱敏，避免一次请求泄漏所有站点的完整密钥。
+            apiKeyMasked = MaskApiKey(primaryKeyValue),
+            // 站点的密钥总数，供前端展示"N 个 Key"。
+            keyCount,
             supportsOpenAi = site.SupportsOpenAi,
             supportsAnthropic = site.SupportsAnthropic,
             protocolType = site.ProtocolType,
@@ -379,6 +660,33 @@ public sealed class SitePayload
     /// 是否启用（仅创建时生效）。
     /// </summary>
     public bool IsEnabled { get; set; } = true;
+    /// <summary>
+    /// 站点密钥列表（导入时使用）。为空时用 <see cref="ApiKey"/> 建一条默认 SiteKey。
+    /// </summary>
+    public List<SiteKeyPayload>? Keys { get; set; }
+}
+
+/// <summary>
+/// 站点密钥导入载荷（导出/导入用，携带完整 KeyValue）。
+/// </summary>
+public sealed class SiteKeyPayload
+{
+    /// <summary>
+    /// 密钥值。
+    /// </summary>
+    public string KeyValue { get; set; } = string.Empty;
+    /// <summary>
+    /// 备注。
+    /// </summary>
+    public string? Remark { get; set; }
+    /// <summary>
+    /// 优先级。
+    /// </summary>
+    public int Priority { get; set; }
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
 }
 
 /// <summary>
@@ -390,4 +698,27 @@ public sealed class BulkDeleteRequest
     /// 要删除的站点 ID 列表。
     /// </summary>
     public List<Guid> SiteIds { get; set; } = [];
+}
+
+/// <summary>
+/// 站点密钥新增/编辑请求。KeyValue 留空表示编辑时保留原值。
+/// </summary>
+public sealed class SiteKeyUpsertRequest
+{
+    /// <summary>
+    /// 密钥值。编辑时留空表示保留原值。
+    /// </summary>
+    public string KeyValue { get; set; } = string.Empty;
+    /// <summary>
+    /// 备注，用于区分多个 Key。
+    /// </summary>
+    public string? Remark { get; set; }
+    /// <summary>
+    /// 优先级，数字越小越优先。
+    /// </summary>
+    public int Priority { get; set; }
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
 }

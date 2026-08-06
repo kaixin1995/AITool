@@ -1,8 +1,6 @@
-using AITool.Application.Conversations;
 using AITool.Application.CoreRuntime;
 using AITool.Application.Proxy;
 using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Proxy;
 using Microsoft.Extensions.Caching.Memory;
@@ -101,9 +99,7 @@ public static class ProxyRuntimeInfrastructureExtensions
         services.AddSingleton<CoreEventSpoolStore>();
         services.AddHostedService<CoreEventSpoolBackgroundService>();
 
-        // 注册使用日志事件发布器和批处理写入器。
-        // 宿主发布事件到总线，后台写入器批量持久化到数据库。
-        services.AddSingleton<CoreConversationEventPublisher>();
+        // 注册配置变更事件发布器。
         services.AddSingleton<CoreConfigAppliedEventPublisher>();
         // Site 使用时间内存映射：日志入队时增量更新，Codex 巡检读它判断账号是否被使用，避免回查 DB。
         // 注册在共享层，确保 Core 和 Admin 宿主都能解析（ProxyUsageLogBatchWriter 依赖它）。
@@ -112,19 +108,11 @@ public static class ProxyRuntimeInfrastructureExtensions
         services.AddSingleton<ProxyUsageLogBatchWriter>();
         services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
 
-        // 注册对话日志批处理写入器。
-        // 对话日志文件存储已通过 AddCommonInfrastructure 注册，此处仅补充批处理写入器。
-        services.AddSingleton<ConversationLogBatchWriter>();
-        services.AddHostedService(sp => sp.GetRequiredService<ConversationLogBatchWriter>());
-
         // 注册使用日志服务，记录每次代理调用的 Token 用量。
         services.AddSingleton<IUsageLogService, UsageLogService>();
 
-        // 注册对话日志服务，提供对话日志的写入和查询能力。
-        services.AddSingleton<IConversationLogService, ConversationLogService>();
-
-        // 注册代理调用统一记录服务，将 UsageLog、DeveloperInvocationTrace、ConversationLog
-        // 三套写入逻辑收口到单一入口，避免代理管道中分散地重复采集。
+        // 注册代理调用统一记录服务，将 UsageLog 和 DeveloperInvocationTrace
+        // 两套写入逻辑收口到单一入口，避免代理管道中分散地重复采集。
         services.AddSingleton<IProxyCallRecorder, ProxyCallRecorder>();
 
         return services;

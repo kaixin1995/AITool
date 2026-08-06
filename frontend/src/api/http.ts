@@ -111,6 +111,16 @@ export function isApiResponse(raw: unknown): raw is ApiResponse {
   return Object.keys(raw).every(key => apiResponseKeys.has(key))
 }
 
+// 刷新后重试时清除请求配置中的旧令牌，让请求拦截器重新注入刚换发的 access token。
+export function prepareRequestForTokenRefreshRetry(config: AxiosRequestConfig): AxiosRequestConfig {
+  const headers = config.headers as { Authorization?: string; delete?: (name: string) => boolean } | undefined
+  if (!headers) return config
+
+  if (typeof headers.delete === 'function') headers.delete('Authorization')
+  else delete headers.Authorization
+  return config
+}
+
 // 响应拦截器：统一解包 ApiResponse + 401 自动刷新重试 + 错误提示
 instance.interceptors.response.use(
   // 成功响应（HTTP 2xx）
@@ -150,7 +160,7 @@ instance.interceptors.response.use(
       originalRequest._retried = true
       const ok = await refreshAccessToken()
       if (ok) {
-        return instance(originalRequest)
+        return instance(prepareRequestForTokenRefreshRetry(originalRequest))
       }
       // 刷新失败：清 token，跳登录。
       clearTokens()

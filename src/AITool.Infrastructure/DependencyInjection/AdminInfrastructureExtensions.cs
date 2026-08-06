@@ -55,6 +55,10 @@ public static class AdminInfrastructureExtensions
         // 注册站点目录客户端，用于拉取远程站点模型列表。
         services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 
+        // 站点密钥选择器：供站点级、非路由操作（模型目录拉取、健康检测）取站点活动密钥。
+        // 转发链路在缓存层按 Key 展开，走另一套逻辑；此选择器只在站点级单次调用场景使用。
+        services.AddScoped<AITool.Infrastructure.Sites.SiteKeySelector>();
+
         // 注册 Hangfire 内存存储与调度器。
         services.AddHangfire(config => config
             .UseSimpleAssemblyNameTypeSerializer()

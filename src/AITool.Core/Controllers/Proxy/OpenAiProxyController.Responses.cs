@@ -170,15 +170,16 @@ public sealed partial class OpenAiProxyController
         {
         foreach (var route in allRoutes)
         {
-            if (IsRouteBlockedSafely(route.RouteId))
+            if (IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
             attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
 
+            // 多 Key 场景：并发计数按 SiteKey 维度隔离（route.SiteKeyId），用真实站点 Id 作为调试展示身份。
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
-                HttpContext.RequestServices, route.SiteId, route.SiteModelName,
-                concurrencyMode, concurrencyQueueTimeout, cancellationToken);
+                HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
+                concurrencyMode, concurrencyQueueTimeout, cancellationToken, displaySiteId: route.SiteId);
 
             if (!concurrencyHandle.Acquired)
             {
@@ -276,8 +277,7 @@ public sealed partial class OpenAiProxyController
                 {
                     // 流式成功：记录对话并完成追踪
                     callContext.ResponseContentType = "text/event-stream";
-                    await _proxyCallRecorder.RecordConversationAsync(callContext, CancellationToken.None);
-                    SafeSucceedRoute(route.RouteId);
+                    SafeSucceedRoute(route.CircuitKey);
                     _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                     return new EmptyResult();
                 }
@@ -288,7 +288,7 @@ public sealed partial class OpenAiProxyController
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
                 if (!streamResult.HasStartedStreaming)
                 {
-                    SafeBlockRoute(route.RouteId);
+                    SafeBlockRoute(route.CircuitKey);
                 }
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
@@ -328,14 +328,13 @@ public sealed partial class OpenAiProxyController
 
             if (result.Success)
             {
-                SafeSucceedRoute(route.RouteId);
+                SafeSucceedRoute(route.CircuitKey);
                 var responseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
 
                 if (isPassthrough)
                 {
                     // OpenAI 上游直接透传：记录对话并完成追踪
                     callContext.ResponseContentType = responseContentType;
-                    await _proxyCallRecorder.RecordConversationAsync(callContext, cancellationToken);
                     _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                     return Content(result.ResponseBody, responseContentType);
                 }
@@ -351,7 +350,6 @@ public sealed partial class OpenAiProxyController
                 callContext.ResponseBody = responsesBody;
                 callContext.AdaptedResponseBody = responsesBody;
                 callContext.ResponseContentType = "application/json";
-                await _proxyCallRecorder.RecordConversationAsync(callContext, cancellationToken);
                 _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                 return Content(responsesBody, "application/json");
             }
@@ -362,7 +360,7 @@ public sealed partial class OpenAiProxyController
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
             if (!result.HasStartedStreaming)
             {
-                SafeBlockRoute(route.RouteId);
+                SafeBlockRoute(route.CircuitKey);
             }
             lastResult = result;
         }
@@ -462,15 +460,16 @@ public sealed partial class OpenAiProxyController
         {
         foreach (var route in allRoutes)
         {
-            if (IsRouteBlockedSafely(route.RouteId))
+            if (IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
             attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
 
+            // 多 Key 场景：并发计数按 SiteKey 维度隔离（route.SiteKeyId），用真实站点 Id 作为调试展示身份。
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
-                HttpContext.RequestServices, route.SiteId, route.SiteModelName,
-                concurrencyMode, concurrencyQueueTimeout, cancellationToken);
+                HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
+                concurrencyMode, concurrencyQueueTimeout, cancellationToken, displaySiteId: route.SiteId);
             if (!concurrencyHandle.Acquired)
             {
                 continue;
@@ -545,13 +544,12 @@ public sealed partial class OpenAiProxyController
             if (streamResult.Success)
             {
                 // WebSocket 流式成功：记录对话并完成追踪
-                SafeSucceedRoute(route.RouteId);
+                SafeSucceedRoute(route.CircuitKey);
                 sessionState.LastRequestJson = normalizedRequestBody;
                 sessionState.LastResponseOutputJson = string.IsNullOrWhiteSpace(streamOutcome.CompletedOutputJson)
                     ? "[]"
                     : streamOutcome.CompletedOutputJson;
                 callContext.ResponseContentType = "application/websocket+json";
-                await _proxyCallRecorder.RecordConversationAsync(callContext, CancellationToken.None);
                 _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                 return true;
             }
@@ -562,7 +560,7 @@ public sealed partial class OpenAiProxyController
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
             if (!streamResult.HasStartedStreaming)
             {
-                SafeBlockRoute(route.RouteId);
+                SafeBlockRoute(route.CircuitKey);
             }
             lastResult = streamResult;
             if (!streamOutcome.CanFallback)

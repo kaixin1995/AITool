@@ -1,10 +1,8 @@
 using System.Net;
 using System.Text.Json;
-using AITool.Application.Conversations;
 using AITool.Application.CoreRuntime;
 using AITool.Admin.Services;
 using AITool.Domain.Proxy;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.Persistence;
 using FluentAssertions;
@@ -17,8 +15,6 @@ public sealed class CoreEventPullServiceTests : IDisposable
     private readonly AppDbContext _dbContext;
     private readonly Action _dispose;
     private readonly AdminUnifiedProxyEventIngestor _unifiedIngestor;
-    private readonly StubConversationLogStore _conversationStore;
-    private readonly AdminConversationTurnEventIngestor _conversationTurnIngestor;
     private readonly AdminRouteFallbackEventIngestor _routeFallbackIngestor;
     private readonly AdminConfigAppliedEventIngestor _configAppliedIngestor;
     private readonly AdminCircuitBreakerEventIngestor _circuitBreakerIngestor;
@@ -32,13 +28,9 @@ public sealed class CoreEventPullServiceTests : IDisposable
         _dispose = factory.Dispose;
 
         var traceStore = new AdminDeveloperTraceStore();
-        _conversationStore = new StubConversationLogStore();
         _unifiedIngestor = new AdminUnifiedProxyEventIngestor(
             _dbContext, traceStore,
             LoggerStub.Create<AdminUnifiedProxyEventIngestor>());
-
-        _conversationTurnIngestor = new AdminConversationTurnEventIngestor(
-            _conversationStore, LoggerStub.Create<AdminConversationTurnEventIngestor>());
 
         var routeFallbackStore = new AdminRouteFallbackStore();
         _routeFallbackIngestor = new AdminRouteFallbackEventIngestor(
@@ -64,7 +56,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 0, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _conversationTurnIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count = await service.PullAndProcessAsync(CancellationToken.None);
         count.Should().Be(0);
@@ -86,14 +78,13 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 11, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _conversationTurnIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count = await service.PullAndProcessAsync(CancellationToken.None);
         count.Should().Be(2);
         service.AckedSequenceId.Should().Be(11);
         handler.AckCallCount.Should().Be(1);
         _dbContext.ProxyUsageLogs.ToList().Should().BeEmpty();
-        _conversationStore.WrittenLogs.Should().BeEmpty();
     }
 
     [Fact]
@@ -110,7 +101,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 3, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _conversationTurnIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count1 = await service.PullAndProcessAsync(CancellationToken.None);
         count1.Should().Be(3);
@@ -140,7 +131,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         var coreClient = CreateCoreClient(handler);
 
         var service1 = new CoreEventPullService(
-            coreClient, _unifiedIngestor, _conversationTurnIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore,
+            coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore,
             LoggerStub.Create<CoreEventPullService>());
         var count1 = await service1.PullAndProcessAsync(CancellationToken.None);
         count1.Should().Be(5);
@@ -148,7 +139,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
 
         var ackStateStore2 = new CoreEventAckStateStore(_ackMetaPath, LoggerStub.Create<CoreEventAckStateStore>());
         var service2 = new CoreEventPullService(
-            coreClient, _unifiedIngestor, _conversationTurnIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, ackStateStore2,
+            coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, ackStateStore2,
             LoggerStub.Create<CoreEventPullService>());
 
         service2.AckedSequenceId.Should().Be(5);
@@ -221,34 +212,4 @@ internal sealed class StubHttpMessageHandler : HttpMessageHandler
 internal static class LoggerStub
 {
     public static ILogger<T> Create<T>() => new LoggerFactory().CreateLogger<T>();
-}
-
-internal sealed class StubConversationLogStore : IConversationLogService, IConversationLogStore
-{
-    public List<ConversationTurnEntry> WrittenLogs { get; } = [];
-    public List<ConversationTurnLog> WrittenTurnLogs { get; } = [];
-
-    public Task LogAsync(ConversationTurnEntry entry, CancellationToken cancellationToken = default)
-    {
-        WrittenLogs.Add(entry);
-        return Task.CompletedTask;
-    }
-
-    public Task AppendBatchAsync(IReadOnlyList<ConversationTurnLog> logs, CancellationToken ct = default)
-    {
-        WrittenTurnLogs.AddRange(logs);
-        return Task.CompletedTask;
-    }
-
-    public Task<IReadOnlyList<ConversationTurnLog>> QueryAsync(ConversationLogQuery query, CancellationToken ct = default)
-        => Task.FromResult<IReadOnlyList<ConversationTurnLog>>([]);
-
-    public Task<int> DeleteSessionAsync(string groupKey, CancellationToken ct = default)
-        => Task.FromResult(0);
-
-    public Task<int> UpdateSessionTitleAsync(string groupKey, string title, CancellationToken ct = default)
-        => Task.FromResult(0);
-
-    public Task PruneExpiredAsync(CancellationToken ct = default)
-        => Task.CompletedTask;
 }

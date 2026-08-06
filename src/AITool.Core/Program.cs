@@ -33,11 +33,8 @@ builder.WebHost.ConfigureKestrel(options =>
     options.Limits.MaxRequestBodySize = null;
 });
 
-// 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器、对话日志存储。
-var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
-    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
-    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
-builder.Services.AddCommonInfrastructure(conversationLogRootPath);
+// 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器。
+builder.Services.AddCommonInfrastructure();
 
 // 注册 CORS 策略，允许 Admin 宿主（5030）的前端 JavaScript 跨域调用 Core 代理端点。
 // 双宿主部署时 Admin 页面和 Core API 分属不同端口，浏览器需要 CORS 头才能正常通信。

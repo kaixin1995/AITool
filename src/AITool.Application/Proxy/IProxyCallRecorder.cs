@@ -2,7 +2,7 @@ namespace AITool.Application.Proxy;
 
 /// <summary>
 /// 代理调用统一记录服务，从一份 <see cref="ProxyCallContext"/> 派发数据到
-/// UsageLog、DeveloperInvocationTrace、ConversationLog 三个存储，
+/// UsageLog 和 DeveloperInvocationTrace 两个存储，
 /// 避免代理管道中分散地多次重复采集。
 /// </summary>
 public interface IProxyCallRecorder
@@ -35,9 +35,4 @@ public interface IProxyCallRecorder
     /// 写入用量日志（ProxyUsageLog），记录一次路由尝试的完整统计信息。
     /// </summary>
     Task RecordUsageAsync(ProxyCallContext context, CancellationToken cancellationToken = default);
-
-    /// <summary>
-    /// 写入结构化对话记录（ConversationTurnLog），仅在成功且能提取到有效内容时记录。
-    /// </summary>
-    Task RecordConversationAsync(ProxyCallContext context, CancellationToken cancellationToken = default);
 }

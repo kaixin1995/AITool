@@ -2,7 +2,6 @@ using AppVersionInfo = AITool.Infrastructure.Hosting.AppVersionInfo;
 using AITool.Application.Codex;
 using AITool.Application.Common;
 using AITool.Infrastructure.Codex;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.DependencyInjection;
 using AITool.Infrastructure.Hosting;
@@ -41,11 +40,8 @@ builder.WebHost.ConfigureKestrel(options =>
     options.Limits.MaxRequestBodySize = null;
 });
 
-// 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器、对话日志存储。
-var conversationLogRootPath = builder.Environment.IsEnvironment("Testing")
-    ? Path.Combine(Path.GetTempPath(), $"aitool-conversation-logs-{Guid.NewGuid():N}")
-    : Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "conversation-logs");
-builder.Services.AddCommonInfrastructure(conversationLogRootPath);
+// 注册所有宿主共享的基础设施：控制器、内存缓存、异常过滤器。
+builder.Services.AddCommonInfrastructure();
 
 // 启用响应压缩，压缩 API JSON 响应（Analytics/UsageLogs/Invocations 列表）和静态资源。
 // EnableForHttps=true 确保内网 HTTPS 部署也压缩。
@@ -161,9 +157,6 @@ if (!builder.Environment.IsEnvironment("Testing"))
         });
     });
 }
-
-// Admin 侧 ConversationTurn 事件消费器，将 Core 代理产生的对话记录事件写入 Admin 本地 JSONL 存储。
-builder.Services.AddScoped<AdminConversationTurnEventIngestor>();
 
 // Admin 侧开发者追踪内存存储，缓存从 Core 拉取的 developer-trace 事件摘要。
 // Singleton 生命周期：内存数据跨请求保持，6 小时过期自动清理，最多 100 条。

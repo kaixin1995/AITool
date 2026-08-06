@@ -1,5 +1,4 @@
 using AITool.Application.CoreRuntime;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.CoreRuntime;
 using Microsoft.Extensions.Logging;
 
@@ -13,7 +12,6 @@ namespace AITool.Admin.Services;
 /// 当前支持的事件类型：
 /// <list type="bullet">
 ///   <item><c>usage-log</c> — 代理使用日志，写入 Admin 数据库</item>
-///   <item><c>conversation-turn</c> — 对话记录，写入 Admin 本地 JSONL 文件</item>
 ///   <item><c>developer-trace</c> — 开发者调用追踪，写入 Admin 内存缓存</item>
 ///   <item><c>route-fallback</c> — 路由回退事件，写入 Admin 内存缓存</item>
 ///   <item><c>config-applied</c> — 配置变更应用确认，写入 Admin 内存缓存</item>
@@ -29,7 +27,6 @@ public sealed class CoreEventPullService
 {
     private readonly CoreAdminClient _coreClient;
     private readonly AdminUnifiedProxyEventIngestor _unifiedIngestor;
-    private readonly AdminConversationTurnEventIngestor _conversationTurnIngestor;
     private readonly AdminRouteFallbackEventIngestor _routeFallbackIngestor;
     private readonly AdminConfigAppliedEventIngestor _configAppliedIngestor;
     private readonly AdminCircuitBreakerEventIngestor _circuitBreakerIngestor;
@@ -53,7 +50,6 @@ public sealed class CoreEventPullService
     public CoreEventPullService(
         CoreAdminClient coreClient,
         AdminUnifiedProxyEventIngestor unifiedIngestor,
-        AdminConversationTurnEventIngestor conversationTurnIngestor,
         AdminRouteFallbackEventIngestor routeFallbackIngestor,
         AdminConfigAppliedEventIngestor configAppliedIngestor,
         AdminCircuitBreakerEventIngestor circuitBreakerIngestor,
@@ -63,7 +59,6 @@ public sealed class CoreEventPullService
     {
         _coreClient = coreClient;
         _unifiedIngestor = unifiedIngestor;
-        _conversationTurnIngestor = conversationTurnIngestor;
         _routeFallbackIngestor = routeFallbackIngestor;
         _configAppliedIngestor = configAppliedIngestor;
         _circuitBreakerIngestor = circuitBreakerIngestor;
@@ -107,7 +102,6 @@ public sealed class CoreEventPullService
 
         // 按事件类型分别消费入库
         var unifiedMax = await _unifiedIngestor.IngestUnifiedProxyEventsAsync(envelopes, cancellationToken);
-        var conversationTurnMax = await _conversationTurnIngestor.IngestConversationTurnEventsAsync(envelopes, cancellationToken);
         var routeFallbackMax = await _routeFallbackIngestor.IngestRouteFallbackEventsAsync(envelopes, cancellationToken);
         var configAppliedMax = await _configAppliedIngestor.IngestConfigAppliedEventsAsync(envelopes, cancellationToken);
         var circuitBreakerMax = await _circuitBreakerIngestor.IngestCircuitBreakerEventsAsync(envelopes, cancellationToken);

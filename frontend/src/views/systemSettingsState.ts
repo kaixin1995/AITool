@@ -9,7 +9,7 @@ const numericFieldLabels: Record<string, string> = {
   usageLogRetentionDays: 'UsageLogs 保留天数',
   concurrencyMode: '并发打满策略',
   concurrencyQueueTimeoutSeconds: '排队等待超时',
-  codexInspectionIntervalMinutes: 'Codex 巡检周期',
+  codexInspectionIntervalSeconds: 'Codex 巡检周期',
   codexQuotaMaxCacheHours: 'Codex 额度缓存最大小时数',
   codexAutoDisableThresholdPercent: 'Codex 自动禁用阈值'
 }

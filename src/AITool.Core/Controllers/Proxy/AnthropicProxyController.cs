@@ -217,7 +217,7 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             // 跳过已被熔断器屏蔽的路由
-            if (IsRouteBlockedSafely(route.RouteId))
+            if (IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
             // 如果上一条路由已失败，此时已知下一条候选路由，发布回退事件
@@ -235,10 +235,10 @@ public sealed class AnthropicProxyController : ControllerBase
             attemptIndex++;
             var actualProtocolType = route.ResolveProtocolForClient("Anthropic");
 
-            // 按站点+模型粒度获取并发许可，根据配置决定跳过或排队。
+            // 多 Key 场景：并发计数按 SiteKey 维度隔离（route.SiteKeyId），用真实站点 Id 作为调试展示身份。
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
-                HttpContext.RequestServices, route.SiteId, route.SiteModelName,
-                concurrencyMode, concurrencyQueueTimeout, cancellationToken);
+                HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
+                concurrencyMode, concurrencyQueueTimeout, cancellationToken, displaySiteId: route.SiteId);
 
             if (!concurrencyHandle.Acquired)
             {
@@ -341,8 +341,7 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 if (streamResult.Success)
                 {
-                    await _proxyCallRecorder.RecordConversationAsync(callContext, CancellationToken.None);
-                    SafeSucceedRoute(route.RouteId);
+                    SafeSucceedRoute(route.CircuitKey);
                     return new EmptyResult();
                 }
 
@@ -353,7 +352,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 // 视为部分成功，不触发熔断，避免健康路由因上游偶发流中断被错误拉黑。
                 if (!streamResult.HasStartedStreaming)
                 {
-                    SafeBlockRoute(route.RouteId);
+                    SafeBlockRoute(route.CircuitKey);
                 }
                 lastResult = streamResult;
                 lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, streamResult.ErrorMessage);
@@ -396,8 +395,7 @@ public sealed class AnthropicProxyController : ControllerBase
             if (result.Success)
             {
                 // 成功时清除该路由的连续失败计数
-                SafeSucceedRoute(route.RouteId);
-                await _proxyCallRecorder.RecordConversationAsync(callContext, cancellationToken);
+                SafeSucceedRoute(route.CircuitKey);
                 if (result.IsStreaming &&
                     string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
                     HttpContext.Response.HasStarted)
@@ -435,7 +433,7 @@ public sealed class AnthropicProxyController : ControllerBase
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
 
             // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
-            SafeBlockRoute(route.RouteId);
+            SafeBlockRoute(route.CircuitKey);
             lastResult = result;
             lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, result.ErrorMessage);
         }

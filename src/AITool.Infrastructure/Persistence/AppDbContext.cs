@@ -78,6 +78,7 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
 
     // —— 与原 DbSet 同名的便捷查询访问器 ——
     public ISugarQueryable<Site> Sites => _client.Queryable<Site>();
+    public ISugarQueryable<SiteKey> SiteKeys => _client.Queryable<SiteKey>();
     public ISugarQueryable<CodexAccount> CodexAccounts => _client.Queryable<CodexAccount>();
     public ISugarQueryable<ModelLibraryItem> ModelLibraryItems => _client.Queryable<ModelLibraryItem>();
     public ISugarQueryable<SiteModelMapping> SiteModelMappings => _client.Queryable<SiteModelMapping>();
@@ -205,6 +206,7 @@ public static class SqlSugarSetup
         // CodeFirst 建表（表已存在时只增不删，自动补齐缺失列）。
         db.CodeFirst.InitTables(
             typeof(Site),
+            typeof(SiteKey),
             typeof(CodexAccount),
             typeof(ModelLibraryItem),
             typeof(SiteModelMapping),
@@ -218,5 +220,74 @@ public static class SqlSugarSetup
             typeof(SystemRuntimeSettings),
             typeof(CompatibilityProfile),
             typeof(RefreshTokenRecord));
+
+        // 一次性数据迁移：把老站点的 Site.ApiKey 复制成一条默认 SiteKey，保证老站点立即具备多 Key 能力。
+        // 仅迁移用户自建站点（ManagedSource 为空且 ApiKey 非空）；Codex 托管站点不迁移，仍直接用 Site.ApiKey。
+        // 迁移幂等：已存在 SiteKey 记录的站点跳过，可重复执行。
+        MigrateLegacySiteKeys(db);
+    }
+
+    /// <summary>
+    /// 把老站点的 <see cref="Site.ApiKey"/> 迁移为一条默认 <see cref="SiteKey"/>。
+    /// <para>
+    /// 仅处理用户自建站点（<see cref="Site.ManagedSource"/> 为空且 ApiKey 非空）。
+    /// Codex 托管站点不迁移——它们恰好一个 token，仍直接使用 Site.ApiKey，
+    /// 缓存层对没有 SiteKey 的站点会回退用 Site.ApiKey 产出单条候选，行为不变。
+    /// </para>
+    /// <para>
+    /// 幂等：通过检查"目标站点是否已有任意 SiteKey"避免重复迁移，可安全多次执行。
+    /// 迁移失败不影响启动（异常被吞掉并记录到控制台），下次启动会重试。
+    /// </para>
+    /// </summary>
+    private static void MigrateLegacySiteKeys(ISqlSugarClient db)
+    {
+        try
+        {
+            // 仅查自建站点且 ApiKey 非空
+            var legacySites = db.Queryable<Site>()
+                .Where(x => SqlFunc.IsNullOrEmpty(x.ManagedSource) && !SqlFunc.IsNullOrEmpty(x.ApiKey))
+                .Select(x => new { x.Id, x.ApiKey })
+                .ToList();
+            if (legacySites.Count == 0)
+            {
+                return;
+            }
+
+            // 已有 SiteKey 记录的站点集合，避免重复迁移
+            var migratedSiteIds = db.Queryable<SiteKey>()
+                .Select(x => x.SiteId)
+                .ToList()
+                .ToHashSet();
+
+            var toInsert = new List<SiteKey>();
+            foreach (var site in legacySites)
+            {
+                if (migratedSiteIds.Contains(site.Id))
+                {
+                    continue;
+                }
+
+                toInsert.Add(new SiteKey
+                {
+                    SiteId = site.Id,
+                    KeyValue = site.ApiKey,
+                    Remark = "默认",
+                    Priority = 0,
+                    IsEnabled = true,
+                    CreatedAt = DateTimeOffset.UtcNow
+                });
+            }
+
+            if (toInsert.Count > 0)
+            {
+                db.Insertable(toInsert).ExecuteCommand();
+                Console.WriteLine($"[Migration] 已为 {toInsert.Count} 个老站点创建默认 SiteKey（迁移自 Site.ApiKey）。");
+            }
+        }
+        catch (Exception ex)
+        {
+            // 迁移失败不阻断启动，下次启动会重试（幂等）
+            Console.WriteLine($"[Migration] 老站点 SiteKey 迁移失败，将在下次启动重试：{ex.Message}");
+        }
     }
 }

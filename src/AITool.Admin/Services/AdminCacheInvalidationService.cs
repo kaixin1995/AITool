@@ -119,19 +119,19 @@ public sealed class AdminCacheInvalidationService
 
     public async Task InvalidateRouteTargetsAsync(CancellationToken cancellationToken = default)
     {
-        await SyncToCoreAsync(["Sites", "RouteRules", "RouteEntries"], cancellationToken);
+        await SyncToCoreAsync(["Sites", "SiteKeys", "RouteRules", "RouteEntries"], cancellationToken);
         _metadataCache.InvalidateRouteTargets(); // Admin 本地缓存同步失效
     }
 
     public async Task InvalidateAdminRouteMetadataAsync(CancellationToken cancellationToken = default)
     {
-        await SyncToCoreAsync(["Sites", "RouteRules", "RouteEntries"], cancellationToken);
+        await SyncToCoreAsync(["Sites", "SiteKeys", "RouteRules", "RouteEntries"], cancellationToken);
         _metadataCache.InvalidateRouteTargets(); // Admin 本地缓存同步失效
     }
 
     public async Task InvalidateRuntimeRouteTargetsAsync(CancellationToken cancellationToken = default)
     {
-        await SyncToCoreAsync(["Sites", "RouteRules", "RouteEntries"], cancellationToken);
+        await SyncToCoreAsync(["Sites", "SiteKeys", "RouteRules", "RouteEntries"], cancellationToken);
         _metadataCache.InvalidateRouteTargets(); // Admin 本地缓存同步失效
     }
 
@@ -215,6 +215,69 @@ public sealed class AdminCacheInvalidationService
                     SupportsAnthropic = x.SupportsAnthropic,
                     IsEnabled = x.IsEnabled,
                     ExtraHeadersJson = x.ExtraHeadersJson
+                })
+                .ToList();
+        }
+
+        if (categorySet.Contains("Sites"))
+        {
+            var sites = await _dbContext.Sites.ToListAsync(cancellationToken);
+            patch.Sites = sites
+                .OrderBy(x => x.Id)
+                .Select(x => new CoreRuntimeSite
+                {
+                    Id = x.Id,
+                    Name = x.Name,
+                    BaseUrl = x.BaseUrl,
+                    EndpointPathMode = x.EndpointPathMode,
+                    ApiKey = x.ApiKey,
+                    ProtocolType = x.ProtocolType,
+                    SupportsOpenAi = x.SupportsOpenAi,
+                    SupportsAnthropic = x.SupportsAnthropic,
+                    IsEnabled = x.IsEnabled,
+                    ExtraHeadersJson = x.ExtraHeadersJson
+                })
+                .ToList();
+            // 站点变更必然牵连站点密钥（多 Key 展开依赖 SiteKey），同时下发 SiteKeys，
+            // 确保 Core 端路由候选展开与 Admin 数据库一致。
+            var siteKeysForSites = await _dbContext.SiteKeys.ToListAsync(cancellationToken);
+            patch.SiteKeys = siteKeysForSites
+                .Where(x => x.IsEnabled)
+                .OrderBy(x => x.SiteId)
+                .ThenBy(x => x.Priority)
+                .ThenBy(x => x.CreatedAt)
+                .ThenBy(x => x.Id)
+                .Select(x => new CoreRuntimeSiteKey
+                {
+                    Id = x.Id,
+                    SiteId = x.SiteId,
+                    KeyValue = x.KeyValue,
+                    Remark = x.Remark,
+                    Priority = x.Priority,
+                    IsEnabled = x.IsEnabled,
+                    CreatedAt = x.CreatedAt
+                })
+                .ToList();
+        }
+
+        if (categorySet.Contains("SiteKeys"))
+        {
+            var siteKeys = await _dbContext.SiteKeys.ToListAsync(cancellationToken);
+            patch.SiteKeys = siteKeys
+                .Where(x => x.IsEnabled)
+                .OrderBy(x => x.SiteId)
+                .ThenBy(x => x.Priority)
+                .ThenBy(x => x.CreatedAt)
+                .ThenBy(x => x.Id)
+                .Select(x => new CoreRuntimeSiteKey
+                {
+                    Id = x.Id,
+                    SiteId = x.SiteId,
+                    KeyValue = x.KeyValue,
+                    Remark = x.Remark,
+                    Priority = x.Priority,
+                    IsEnabled = x.IsEnabled,
+                    CreatedAt = x.CreatedAt
                 })
                 .ToList();
         }
@@ -374,10 +437,11 @@ public sealed class AdminCacheInvalidationService
         var accessKeys = await _dbContext.ProxyAccessKeys.ToListAsync(cancellationToken);
         var compatibilityProfiles = await _dbContext.CompatibilityProfiles.ToListAsync(cancellationToken);
         var runtimeSettings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
+        var siteKeys = await _dbContext.SiteKeys.ToListAsync(cancellationToken);
 
         var snapshot = CoreRuntimeConfigSnapshotBuilder.Build(
             sites, models, mappings, routeEntries, routeRules, accessKeys,
-            runtimeSettings, version, DateTimeOffset.UtcNow, compatibilityProfiles);
+            runtimeSettings, version, DateTimeOffset.UtcNow, compatibilityProfiles, siteKeys);
 
         var result = await _coreClient.FullSyncAsync(snapshot, cancellationToken);
 
@@ -397,6 +461,7 @@ public sealed class AdminCacheInvalidationService
 
         // 按固定顺序添加非 null 类别，确保哈希确定性
         if (patch.Sites is not null) payload["Sites"] = patch.Sites;
+        if (patch.SiteKeys is not null) payload["SiteKeys"] = patch.SiteKeys;
         if (patch.Models is not null) payload["Models"] = patch.Models;
         if (patch.SiteModelMappings is not null) payload["SiteModelMappings"] = patch.SiteModelMappings;
         if (patch.RouteEntries is not null) payload["RouteEntries"] = patch.RouteEntries;

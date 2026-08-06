@@ -1,4 +1,4 @@
-import type { SitePayload } from '@/api/sites'
+import type { SitePayload, SiteKeyPayload } from '@/api/sites'
 
 export interface SiteImportPreviewItem extends SitePayload {
   selected: boolean
@@ -7,6 +7,8 @@ export interface SiteImportPreviewItem extends SitePayload {
 
 export interface SiteExportItem extends SitePayload {
   id: string
+  // 导出数据携带完整密钥列表（含原始 KeyValue），用于跨实例迁移多 Key。
+  keys?: SiteKeyPayload[]
 }
 
 export interface ParseSitesImportResult {

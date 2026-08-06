@@ -582,7 +582,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 break;
             }
 
-            if (IsRouteBlockedSafely(route.RouteId))
+            if (IsRouteBlockedSafely(route.CircuitKey))
                 continue;
 
             var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
@@ -606,9 +606,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 lastFailedRoute = null;
             }
 
+            // 多 Key 场景：并发计数按 SiteKey 维度隔离（route.SiteKeyId），用真实站点 Id 作为调试展示身份。
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
-                HttpContext.RequestServices, route.SiteId, route.SiteModelName,
-                concurrencyMode, concurrencyQueueTimeout, cancellationToken);
+                HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
+                concurrencyMode, concurrencyQueueTimeout, cancellationToken, displaySiteId: route.SiteId);
 
             if (!concurrencyHandle.Acquired)
             {
@@ -702,8 +703,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
                 if (streamResult.Success)
                 {
-                    await _proxyCallRecorder.RecordConversationAsync(callContext, CancellationToken.None);
-                    SafeSucceedRoute(route.RouteId);
+                    SafeSucceedRoute(route.CircuitKey);
                     _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
                     return new EmptyResult();
                 }
@@ -715,7 +715,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 // 视为部分成功，不触发熔断，避免健康路由因上游偶发流中断被错误拉黑。
                 if (!streamResult.HasStartedStreaming)
                 {
-                    SafeBlockRoute(route.RouteId);
+                    SafeBlockRoute(route.CircuitKey);
                 }
                 lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, streamResult.ErrorMessage);
                 lastResult = streamResult;
@@ -758,9 +758,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
             if (result.Success)
             {
                 // 成功时清除该路由的连续失败计数
-                SafeSucceedRoute(route.RouteId);
+                SafeSucceedRoute(route.CircuitKey);
                 var responseBody = responseFactory(result, actualProtocolType, modelName);
-                await _proxyCallRecorder.RecordConversationAsync(callContext, cancellationToken);
 
                 // 将适配后的响应体和内容类型写入上下文，供开发者追踪使用
                 callContext.AdaptedResponseBody = responseBody;
@@ -772,7 +771,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
             callContext.ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
             _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
-            SafeBlockRoute(route.RouteId);
+            SafeBlockRoute(route.CircuitKey);
             lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, result.ErrorMessage);
             lastResult = result;
         }

@@ -35,7 +35,8 @@ public static class CoreRuntimeConfigSnapshotBuilder
         SystemRuntimeSettings runtimeSettings,
         long configVersion,
         DateTimeOffset generatedAt,
-        IEnumerable<CompatibilityProfile>? compatibilityProfiles = null)
+        IEnumerable<CompatibilityProfile>? compatibilityProfiles = null,
+        IEnumerable<SiteKey>? siteKeys = null)
     {
         // 预解析兼容规则集：构建 Id→规则列表字典（仅启用的），供路由规则投影时查（避免 N+1）。
         var profileRules = compatibilityProfiles is null
@@ -65,6 +66,24 @@ public static class CoreRuntimeConfigSnapshotBuilder
                     SupportsAnthropic = x.SupportsAnthropic,
                     IsEnabled = x.IsEnabled,
                     ExtraHeadersJson = x.ExtraHeadersJson
+                })
+                .ToList(),
+            // 站点密钥（多 Key）：仅下发启用的密钥，Core 据此把路由按 Key 展开为多条候选。
+            SiteKeys = (siteKeys ?? [])
+                .Where(x => x.IsEnabled)
+                .OrderBy(x => x.SiteId)
+                .ThenBy(x => x.Priority)
+                .ThenBy(x => x.CreatedAt)
+                .ThenBy(x => x.Id)
+                .Select(x => new CoreRuntimeSiteKey
+                {
+                    Id = x.Id,
+                    SiteId = x.SiteId,
+                    KeyValue = x.KeyValue,
+                    Remark = x.Remark,
+                    Priority = x.Priority,
+                    IsEnabled = x.IsEnabled,
+                    CreatedAt = x.CreatedAt
                 })
                 .ToList(),
             Models = modelList
@@ -167,6 +186,7 @@ public static class CoreRuntimeConfigSnapshotBuilder
         var payload = new
         {
             snapshot.Sites,
+            snapshot.SiteKeys,
             snapshot.Models,
             snapshot.SiteModelMappings,
             snapshot.RouteEntries,

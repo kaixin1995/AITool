@@ -23,7 +23,7 @@ public sealed class CoreConfigSyncController : ControllerBase
     /// </summary>
     private static readonly HashSet<string> KnownCategories = new(StringComparer.Ordinal)
     {
-        "Sites", "Models", "SiteModelMappings", "RouteEntries", "RouteRules", "AccessKeys", "RuntimeSettings"
+        "Sites", "SiteKeys", "Models", "SiteModelMappings", "RouteEntries", "RouteRules", "AccessKeys", "RuntimeSettings"
     };
 
     /// <summary>
@@ -259,6 +259,7 @@ public sealed class CoreConfigSyncController : ControllerBase
             GeneratedAt = DateTimeOffset.UtcNow,
             // 以下集合：如果 Patch 携带了新值则用新值，否则用当前快照的引用
             Sites = patch.Sites ?? current.Sites,
+            SiteKeys = patch.SiteKeys ?? current.SiteKeys,
             Models = patch.Models ?? current.Models,
             SiteModelMappings = patch.SiteModelMappings ?? current.SiteModelMappings,
             RouteEntries = patch.RouteEntries ?? current.RouteEntries,
@@ -294,6 +295,12 @@ public sealed class CoreConfigSyncController : ControllerBase
         if (categorySet.Contains("Sites")
             || categorySet.Contains("RouteRules")
             || categorySet.Contains("RouteEntries"))
+        {
+            _metadataCache.InvalidateRuntimeRouteTargets();
+        }
+
+        // 站点密钥（多 Key）变更会影响路由按 Key 展开、并发计数身份键，需失效路由目标缓存。
+        if (categorySet.Contains("SiteKeys"))
         {
             _metadataCache.InvalidateRuntimeRouteTargets();
         }

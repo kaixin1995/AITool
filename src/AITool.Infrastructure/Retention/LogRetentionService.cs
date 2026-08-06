@@ -1,7 +1,5 @@
 using AITool.Application.Common;
-using AITool.Application.Conversations;
 using AITool.Domain.Operations;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Persistence;
 
 namespace AITool.Infrastructure.Retention;
@@ -16,10 +14,6 @@ public sealed class LogRetentionService : ILogRetentionService
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 对话记录本地存储，用于清理本地保留窗口之外的历史数据。
-    /// </summary>
-    private readonly IConversationLogStore _conversationLogStore;
-    /// <summary>
     /// 当前 UTC 时间提供器，测试时可替换为固定时间
     /// </summary>
     private readonly Func<DateTimeOffset> _utcNowProvider;
@@ -27,23 +21,22 @@ public sealed class LogRetentionService : ILogRetentionService
     /// <summary>
     /// 注入数据库上下文，使用系统当前 UTC 时间
     /// </summary>
-    public LogRetentionService(AppDbContext dbContext, IConversationLogStore conversationLogStore)
-        : this(dbContext, conversationLogStore, () => DateTimeOffset.UtcNow)
+    public LogRetentionService(AppDbContext dbContext)
+        : this(dbContext, () => DateTimeOffset.UtcNow)
     {
     }
 
     /// <summary>
     /// 为测试提供固定时间入口，避免边界场景受当前时间漂移影响
     /// </summary>
-    public LogRetentionService(AppDbContext dbContext, IConversationLogStore conversationLogStore, Func<DateTimeOffset> utcNowProvider)
+    public LogRetentionService(AppDbContext dbContext, Func<DateTimeOffset> utcNowProvider)
     {
         _dbContext = dbContext;
-        _conversationLogStore = conversationLogStore;
         _utcNowProvider = utcNowProvider;
     }
 
     /// <summary>
-    /// 删除超过保留天数的使用日志和对话记录，并回写本次清理结果。
+    /// 删除超过保留天数的使用日志，并回写本次清理结果。
     /// <para>
     /// SqlSugar 能将 RequestedAt 区间比较下推到 SQLite，因此直接用条件删除，
     /// 无需像 EF Core 时代那样先查 Id 再按 Id 定位删除。
@@ -63,10 +56,6 @@ public sealed class LogRetentionService : ILogRetentionService
         }
 
         var now = _utcNowProvider();
-
-        // 对话记录已迁移到本地 JSONL 文件，DB 表不再写入，无需清理。
-        // 本地文件的过期清理由下一行 PruneExpiredAsync 负责。
-        await _conversationLogStore.PruneExpiredAsync(cancellationToken);
 
         if (!settings.UsageLogAutoCleanupEnabled)
         {

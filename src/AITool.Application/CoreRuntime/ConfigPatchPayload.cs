@@ -5,7 +5,7 @@ namespace AITool.Application.CoreRuntime;
 /// 与 <see cref="CoreRuntimeConfigSnapshot"/> 的全量模式不同，Patch 只携带发生变化类别的完整列表，
 /// Core 端收到后仅替换对应集合，未携带的集合保持不变。
 /// <para>
-/// 支持的实体类别：<c>Sites</c>、<c>Models</c>、<c>SiteModelMappings</c>、
+/// 支持的实体类别：<c>Sites</c>、<c>SiteKeys</c>、<c>Models</c>、<c>SiteModelMappings</c>、
 /// <c>RouteEntries</c>、<c>RouteRules</c>、<c>AccessKeys</c>、<c>RuntimeSettings</c>。
 /// 每个 Patch 至少携带一个类别，否则 Core 端会拒绝。
 /// </para>
@@ -34,6 +34,11 @@ public sealed class ConfigPatchPayload
     /// 变更后的站点完整列表，未携带时为 null。
     /// </summary>
     public List<CoreRuntimeSite>? Sites { get; set; }
+
+    /// <summary>
+    /// 变更后的站点密钥完整列表（多 Key），未携带时为 null。
+    /// </summary>
+    public List<CoreRuntimeSiteKey>? SiteKeys { get; set; }
 
     /// <summary>
     /// 变更后的模型完整列表，未携带时为 null。

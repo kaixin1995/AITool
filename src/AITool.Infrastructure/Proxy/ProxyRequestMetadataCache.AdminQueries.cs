@@ -101,25 +101,56 @@ public sealed partial class ProxyRequestMetadataCache
                             return Task.FromResult<IReadOnlyList<CachedChatTarget>>([]);
                         }
 
-                        var targets = (
+                        // 站点密钥（多 Key）按 SiteId 分组，用于把候选按 Key 展开。
+                        var siteKeysBySite = (snapshot.SiteKeys ?? [])
+                            .GroupBy(k => k.SiteId)
+                            .ToDictionary(g => g.Key, g => g.ToList());
+
+                        var baseTargets = (
                                 from mapping in snapshot.SiteModelMappings
                                 join site in snapshot.Sites on mapping.SiteId equals site.Id
                                 join model in snapshot.Models on mapping.ModelLibraryItemId equals model.Id
                                 where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
-                                orderby model.DisplayName, site.Name, mapping.RemoteModelName
-                                select new CachedChatTarget
+                                select new { mapping, site, model })
+                            .ToList();
+
+                        // 按 SiteKey 展开：每个启用 Key 产出一条候选，使聊天/调试页也享受多 Key 调度。
+                        var expanded = new List<CachedChatTarget>(baseTargets.Count);
+                        foreach (var item in baseTargets)
+                        {
+                            var keysForSite = siteKeysBySite.TryGetValue(item.site.Id, out var skList) && skList.Count > 0
+                                ? skList.Select(k => new Domain.Sites.SiteKey { Id = k.Id, SiteId = k.SiteId, KeyValue = k.KeyValue, Priority = k.Priority, CreatedAt = k.CreatedAt, IsEnabled = k.IsEnabled }).ToList()
+                                : null;
+                            var keysBySiteTyped = keysForSite is null
+                                ? new Dictionary<Guid, List<Domain.Sites.SiteKey>>()
+                                : new Dictionary<Guid, List<Domain.Sites.SiteKey>> { [item.site.Id] = keysForSite };
+                            var candidates = ResolveSiteKeyCandidates(item.site.Id, item.site.ApiKey, keysBySiteTyped);
+
+                            foreach (var candidate in candidates)
+                            {
+                                expanded.Add(new CachedChatTarget
                                 {
-                                    MappingId = mapping.Id,
-                                    ModelId = model.Id,
-                                    ModelDisplayName = model.DisplayName,
-                                    SiteId = site.Id,
-                                    SiteName = site.Name,
-                                    ProtocolType = site.ProtocolType,
-                                    BaseUrl = site.BaseUrl,
-                                    EndpointPathMode = site.EndpointPathMode,
-                                    ApiKey = site.ApiKey,
-                                    SiteModelName = mapping.RemoteModelName
-                                })
+                                    MappingId = item.mapping.Id,
+                                    ModelId = item.model.Id,
+                                    ModelDisplayName = item.model.DisplayName,
+                                    SiteId = item.site.Id,
+                                    SiteKeyId = candidate.SiteKeyId,
+                                    CircuitKey = BuildCircuitKey(item.mapping.Id, candidate.SiteKeyId),
+                                    SiteName = item.site.Name,
+                                    ProtocolType = item.site.ProtocolType,
+                                    BaseUrl = item.site.BaseUrl,
+                                    EndpointPathMode = item.site.EndpointPathMode,
+                                    ApiKey = candidate.ApiKey,
+                                    SiteModelName = item.mapping.RemoteModelName
+                                });
+                            }
+                        }
+
+                        // 保持原有的展示排序：按模型显示名、站点名、模型远程名稳定排序
+                        var targets = expanded
+                            .OrderBy(x => x.ModelDisplayName, StringComparer.OrdinalIgnoreCase)
+                            .ThenBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
+                            .ThenBy(x => x.SiteModelName, StringComparer.OrdinalIgnoreCase)
                             .ToList();
 
                         return Task.FromResult<IReadOnlyList<CachedChatTarget>>(targets);
@@ -140,25 +171,50 @@ public sealed partial class ProxyRequestMetadataCache
                     var siteModelMappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
                     var allSites = await dbContext.Sites.ToListAsync(cancellationToken);
                     var allModels = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
-                    return (
+                    var allSiteKeys = await dbContext.SiteKeys
+                        .Where(k => k.IsEnabled)
+                        .ToListAsync(cancellationToken);
+                    var siteKeysBySite = allSiteKeys
+                        .GroupBy(k => k.SiteId)
+                        .ToDictionary(g => g.Key, g => g.ToList());
+
+                    var baseTargets = (
                             from mapping in siteModelMappings
                             join site in allSites on mapping.SiteId equals site.Id
                             join model in allModels on mapping.ModelLibraryItemId equals model.Id
                             where mapping.IsEnabled && site.IsEnabled && model.IsEnabled
-                            orderby model.DisplayName, site.Name, mapping.RemoteModelName
-                            select new CachedChatTarget
+                            select new { mapping, site, model })
+                        .ToList();
+
+                    // 按 SiteKey 展开：每个启用 Key 产出一条候选，使聊天/调试页也享受多 Key 调度。
+                    var expanded = new List<CachedChatTarget>(baseTargets.Count);
+                    foreach (var item in baseTargets)
+                    {
+                        var candidates = ResolveSiteKeyCandidates(item.site.Id, item.site.ApiKey, siteKeysBySite);
+                        foreach (var candidate in candidates)
+                        {
+                            expanded.Add(new CachedChatTarget
                             {
-                                MappingId = mapping.Id,
-                                ModelId = model.Id,
-                                ModelDisplayName = model.DisplayName,
-                                SiteId = site.Id,
-                                SiteName = site.Name,
-                                ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
-                                BaseUrl = site.BaseUrl,
-                                EndpointPathMode = site.EndpointPathMode,
-                                ApiKey = site.ApiKey,
-                                SiteModelName = mapping.RemoteModelName
-                            })
+                                MappingId = item.mapping.Id,
+                                ModelId = item.model.Id,
+                                ModelDisplayName = item.model.DisplayName,
+                                SiteId = item.site.Id,
+                                SiteKeyId = candidate.SiteKeyId,
+                                CircuitKey = BuildCircuitKey(item.mapping.Id, candidate.SiteKeyId),
+                                SiteName = item.site.Name,
+                                ProtocolType = ResolveSiteProtocolType(item.site.SupportsOpenAi, item.site.SupportsAnthropic),
+                                BaseUrl = item.site.BaseUrl,
+                                EndpointPathMode = item.site.EndpointPathMode,
+                                ApiKey = candidate.ApiKey,
+                                SiteModelName = item.mapping.RemoteModelName
+                            });
+                        }
+                    }
+
+                    return expanded
+                        .OrderBy(x => x.ModelDisplayName, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
+                        .ThenBy(x => x.SiteModelName, StringComparer.OrdinalIgnoreCase)
                         .ToList();
                 })
             ?? [];
@@ -195,11 +251,27 @@ public sealed partial class ProxyRequestMetadataCache
                         }
 
                         var limits = new Dictionary<string, int>(StringComparer.Ordinal);
+                        // 加载所有启用的站点密钥，按 SiteId 分组，用于把站点级并发上限展开到每个 Key。
+                        var siteKeysBySite = (snapshot.SiteKeys ?? [])
+                            .GroupBy(k => k.SiteId)
+                            .ToDictionary(g => g.Key, g => g.Select(x => x.Id).ToList());
                         foreach (var mapping in snapshot.SiteModelMappings)
                         {
                             if (mapping.IsEnabled && mapping.MaxConcurrency > 0)
                             {
-                                limits[$"{mapping.SiteId:N}:{mapping.RemoteModelName}"] = mapping.MaxConcurrency;
+                                // 该站点有启用的 SiteKey 时，每个 Key 各享一份独立额度；
+                                // 没有时（Codex 托管 / 未迁移）回退用 SiteId，行为与原逻辑一致。
+                                if (siteKeysBySite.TryGetValue(mapping.SiteId, out var keyIds) && keyIds.Count > 0)
+                                {
+                                    foreach (var keyId in keyIds)
+                                    {
+                                        limits[$"{keyId:N}:{mapping.RemoteModelName}"] = mapping.MaxConcurrency;
+                                    }
+                                }
+                                else
+                                {
+                                    limits[$"{mapping.SiteId:N}:{mapping.RemoteModelName}"] = mapping.MaxConcurrency;
+                                }
                             }
                         }
 
@@ -218,7 +290,7 @@ public sealed partial class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     var mappings = await dbContext.SiteModelMappings
-                        
+
                         .Where(x => x.IsEnabled && x.MaxConcurrency > 0)
                         .Select(x => new
                         {
@@ -227,11 +299,31 @@ public sealed partial class ProxyRequestMetadataCache
                             x.MaxConcurrency
                         })
                         .ToListAsync(cancellationToken);
+                    // 加载所有启用的站点密钥，按 SiteId 分组，用于把站点级并发上限展开到每个 Key。
+                    var siteKeys = await dbContext.SiteKeys
+                        .Where(k => k.IsEnabled)
+                        .Select(k => new { k.SiteId, k.Id })
+                        .ToListAsync(cancellationToken);
+                    var siteKeysBySite = siteKeys
+                        .GroupBy(k => k.SiteId)
+                        .ToDictionary(g => g.Key, g => g.Select(x => x.Id).ToList());
 
                     var limits = new Dictionary<string, int>(mappings.Count, StringComparer.Ordinal);
                     foreach (var mapping in mappings)
                     {
-                        limits[$"{mapping.SiteId:N}:{mapping.RemoteModelName}"] = mapping.MaxConcurrency;
+                        // 该站点有启用的 SiteKey 时，每个 Key 各享一份独立额度；
+                        // 没有时（Codex 托管 / 未迁移）回退用 SiteId，行为与原逻辑一致。
+                        if (siteKeysBySite.TryGetValue(mapping.SiteId, out var keyIds) && keyIds.Count > 0)
+                        {
+                            foreach (var keyId in keyIds)
+                            {
+                                limits[$"{keyId:N}:{mapping.RemoteModelName}"] = mapping.MaxConcurrency;
+                            }
+                        }
+                        else
+                        {
+                            limits[$"{mapping.SiteId:N}:{mapping.RemoteModelName}"] = mapping.MaxConcurrency;
+                        }
                     }
 
                     return limits;

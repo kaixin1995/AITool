@@ -621,13 +621,14 @@ onMounted(() => {
 }
 
 .entry-item:hover {
-  border-color: #b6d4fe;
-  background: #f8fbff;
+  border-color: var(--status-info-text);
+  background: var(--status-info-bg);
 }
 
 .entry-item.active {
-  border-color: #0d6efd;
-  background: #e8f0fe;
+  border-color: var(--primary-color, #6C9EFF);
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
 }
 
 .entry-name {
@@ -689,8 +690,8 @@ onMounted(() => {
 }
 
 .route-item.dragging {
-  opacity: 0.4;
-  background: #e8f0fe;
+  opacity: 0.58;
+  background: var(--status-info-bg);
 }
 
 .drag-handle {
@@ -708,8 +709,8 @@ onMounted(() => {
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  background: #e8f0fe;
-  color: #0d6efd;
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
   font-size: 13px;
   font-weight: 600;
 }
@@ -731,7 +732,7 @@ onMounted(() => {
 }
 
 .site-disabled {
-  color: #9ca3af;
+  color: var(--text-color-disabled);
 }
 
 .route-badge {
@@ -739,10 +740,10 @@ onMounted(() => {
   align-items: center;
   min-height: 22px;
   padding: 2px 8px;
-  border: 1px solid #dbeafe;
+  border: 1px solid color-mix(in srgb, var(--status-info-text) 28%, transparent);
   border-radius: 999px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  background: var(--status-info-bg);
+  color: var(--status-info-text);
   font-size: 12px;
   line-height: 1.2;
   white-space: nowrap;
@@ -750,20 +751,20 @@ onMounted(() => {
 
 .route-badge-muted {
   border-color: var(--border-color-global);
-  background: #f8f9fa;
+  background: var(--bg-surface-soft);
   color: var(--text-color-secondary);
 }
 
 .route-badge-warning {
-  border-color: #fed7aa;
-  background: #fff7ed;
-  color: #c2410c;
+  border-color: color-mix(in srgb, var(--status-warning-text) 34%, transparent);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
 }
 
 .badge-disabled {
-  border-color: #d1d5db;
+  border-color: var(--border-color-global);
   background: var(--bg-page);
-  color: #9ca3af;
+  color: var(--text-color-disabled);
 }
 
 .remote-name {
@@ -795,7 +796,7 @@ onMounted(() => {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border: 1px solid #dbeafe;
+  border: 1px solid var(--border-color-soft);
   border-radius: 8px;
   background: var(--bg-page);
   cursor: default;

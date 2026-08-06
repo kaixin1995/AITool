@@ -27,6 +27,5 @@ export interface AuthStatus {
     codexEnabled: boolean
     codexInspectionEnabled: boolean
     developerEnabled: boolean
-    conversationLogEnabled: boolean
   }
 }

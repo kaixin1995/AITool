@@ -28,6 +28,11 @@ public sealed class CoreRuntimeConfigSnapshot
     public List<CoreRuntimeSite> Sites { get; set; } = [];
 
     /// <summary>
+    /// 站点密钥列表（多 Key）。每个站点可有多条密钥，转发链路按 Key 展开多候选路由。
+    /// </summary>
+    public List<CoreRuntimeSiteKey> SiteKeys { get; set; } = [];
+
+    /// <summary>
     /// 模型列表。
     /// </summary>
     public List<CoreRuntimeModel> Models { get; set; } = [];
@@ -113,6 +118,47 @@ public sealed class CoreRuntimeSite
     /// Core 转发时通过 MergeExtraHeaders 解析并注入上游请求，缺失会导致 Codex 请求被上游拒绝。
     /// </summary>
     public string? ExtraHeadersJson { get; set; }
+}
+
+/// <summary>
+/// Core 运行时站点密钥项（多 Key）。
+/// </summary>
+public sealed class CoreRuntimeSiteKey
+{
+    /// <summary>
+    /// 密钥标识。
+    /// </summary>
+    public Guid Id { get; set; }
+
+    /// <summary>
+    /// 所属站点标识。
+    /// </summary>
+    public Guid SiteId { get; set; }
+
+    /// <summary>
+    /// 实际密钥值。
+    /// </summary>
+    public string KeyValue { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 备注。
+    /// </summary>
+    public string? Remark { get; set; }
+
+    /// <summary>
+    /// 优先级，数字越小越优先。
+    /// </summary>
+    public int Priority { get; set; }
+
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
+
+    /// <summary>
+    /// 创建时间。
+    /// </summary>
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }
 public sealed class CoreRuntimeModel
 {

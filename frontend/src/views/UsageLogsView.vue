@@ -24,6 +24,7 @@ import {
   buildVisibleUsageLogPages,
   canAutoLoadUsageLogs
 } from './usageLogsState'
+import { getUsageSourceMeta as getSourceMeta, usageSourceOptions as sourceOptions } from './usageSource'
 
 const message = useMessage()
 const loading = ref(false)
@@ -57,17 +58,6 @@ const query = reactive({
 
 const siteOptions = computed(() => filters.value.sites.map((s) => ({ label: s.name, value: s.id })))
 const keyOptions = computed(() => filters.value.accessKeys.map((k) => ({ label: k.name, value: k.id })))
-const sourceOptions: SelectOption[] = [
-  { label: '全部', value: '' },
-  { label: '代理', value: 'proxy' },
-  { label: '对话测试', value: 'chat' },
-  { label: 'Claude Code', value: 'claude-code' },
-  { label: 'Codex', value: 'codex' },
-  { label: 'Open Code', value: 'open-code' },
-  { label: 'ZCode', value: 'zcode' },
-  { label: '手动检测', value: 'detection-manual' },
-  { label: '定时检测', value: 'detection-task' }
-]
 const statusOptions: SelectOption[] = [
   { label: '全部', value: '' },
   { label: '成功', value: 'success' },
@@ -96,8 +86,9 @@ function formatMetricNumber(value: number | null | undefined): string {
     unitIndex++
   }
   if (unitIndex === 0) return formatNumber(number)
-  const formatted = (number >= 100 ? number.toFixed(0) : number >= 10 ? number.toFixed(1) : number.toFixed(2))
-    .replace(/0+$/, '')
+  // 最多两位小数，清理小数尾零（240.00→240，5.50→5.5，240.25→240.25）。
+  const formatted = number.toFixed(2)
+    .replace(/(\.\d*?)0+$/, '$1')
     .replace(/\.$/, '')
   return `${formatted} ${units[unitIndex]}`
 }
@@ -144,22 +135,6 @@ function getStatusMeta(row: UsageLogItem): { label: string; type: 'success' | 'e
 function statusTag(row: UsageLogItem) {
   const meta = getStatusMeta(row)
   return h(NTag, { size: 'small', type: meta.type, bordered: false }, () => meta.label)
-}
-
-function getSourceMeta(source: string): { label: string; type: 'default' | 'success' | 'info' | 'warning' } {
-  const normalized = source?.trim().toLowerCase()
-  const labels: Record<string, string> = {
-    proxy: '代理',
-    chat: '对话测试',
-    'claude-code': 'Claude Code',
-    codex: 'Codex',
-    'open-code': 'Open Code',
-    zcode: 'ZCode',
-    'detection-manual': '手动检测',
-    'detection-task': '定时检测'
-  }
-  const type = normalized === 'chat' ? 'info' : normalized?.startsWith('detection') ? 'warning' : normalized === 'proxy' ? 'default' : 'success'
-  return { label: labels[normalized] ?? source ?? '代理', type }
 }
 
 function sourceTag(source: string) {

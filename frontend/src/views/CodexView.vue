@@ -55,10 +55,11 @@ const exportMode = ref(false)
 const selectedExportAccountIds = ref<string[]>([])
 const exportLoading = ref(false)
 
-// 编辑账号（重命名）弹窗
+// 编辑账号（重命名 + 修改凭证）弹窗
 const editModal = ref(false)
 const editAccount = ref<CodexAccount | null>(null)
 const editDisplayName = ref('')
+const editRefreshToken = ref('')
 const editLoading = ref(false)
 
 // 重置额度信用弹窗
@@ -233,18 +234,29 @@ async function handleRunInspection(force: boolean): Promise<void> {
   }
 }
 
-// 编辑（重命名）
+// 编辑（重命名 + 修改凭证）
 function openEdit(acc: CodexAccount): void {
   editAccount.value = acc
   editDisplayName.value = acc.displayName
+  editRefreshToken.value = ''
   editModal.value = true
 }
 async function handleSaveEdit(): Promise<void> {
   if (!editAccount.value || !editDisplayName.value.trim()) { message.warning('名称不能为空'); return }
   editLoading.value = true
   try {
-    await api.updateCodexAccount(editAccount.value.id, editDisplayName.value.trim())
-    message.success('已更新')
+    const result = await api.updateCodexAccount(
+      editAccount.value.id,
+      editDisplayName.value.trim(),
+      editRefreshToken.value || undefined
+    )
+    if (result.message) {
+      message.warning(result.message)
+    } else if (editRefreshToken.value) {
+      message.success('凭证已更新并刷新')
+    } else {
+      message.success('已更新')
+    }
     editModal.value = false
     await load()
   } catch (e) { message.error((e as Error).message) } finally { editLoading.value = false }
@@ -475,6 +487,18 @@ function formatDateTime(value: string | null | undefined): string {
   return new Date(value).toLocaleString('zh-CN')
 }
 
+function isTokenExpired(expiresAt: string | null | undefined): boolean {
+  if (!expiresAt) return false
+  return new Date(expiresAt).getTime() <= Date.now()
+}
+
+function isTokenExpiringSoon(expiresAt: string | null | undefined): boolean {
+  if (!expiresAt) return false
+  const expires = new Date(expiresAt).getTime()
+  const now = Date.now()
+  return expires > now && expires <= now + 10 * 60 * 1000
+}
+
 function formatBeijingTime(value: string | null | undefined): string {
   if (!value) return '—'
   return new Date(value).toLocaleString('zh-CN', {
@@ -603,6 +627,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                     <div class="codex-badges">
                       <NTag size="small" :type="accountStatusType(acc)" :bordered="false">{{ accountStatusLabel(acc) }}</NTag>
                       <span v-if="acc.planType" class="codex-plan">{{ acc.planType }}</span>
+                      <span v-if="acc.tokenExpiresAt" class="codex-token-expiry" :class="{ 'codex-token-expired': isTokenExpired(acc.tokenExpiresAt), 'codex-token-warning': isTokenExpiringSoon(acc.tokenExpiresAt) }">
+                        Token：{{ formatDateTime(acc.tokenExpiresAt) }}
+                      </span>
                     </div>
                   </div>
                 </div>
@@ -806,8 +833,23 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     </NModal>
 
     <!-- 编辑账号（重命名）弹窗 -->
-    <NModal v-model:show="editModal" title="编辑账号" preset="card" style="width: 420px; max-width: 92vw">
-      <NInput v-model:value="editDisplayName" placeholder="显示名称" />
+    <NModal v-model:show="editModal" title="编辑账号" preset="card" style="width: 480px; max-width: 92vw">
+      <NSpace vertical :size="16">
+        <div>
+          <p class="edit-label">显示名称</p>
+          <NInput v-model:value="editDisplayName" placeholder="显示名称" />
+        </div>
+        <div>
+          <p class="edit-label">更新凭证（可选）</p>
+          <NInput
+            v-model:value="editRefreshToken"
+            type="textarea"
+            placeholder="粘贴新的 refresh_token，留空则不修改凭证"
+            :autosize="{ minRows: 2, maxRows: 4 }"
+          />
+          <p class="edit-hint">填入后会立即用新凭证刷新 access_token。token 过期或失效时可用此功能恢复。</p>
+        </div>
+      </NSpace>
       <template #footer>
         <NSpace justify="end">
           <NButton @click="editModal = false">取消</NButton>
@@ -996,7 +1038,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 .credential-file-summary {
   margin-top: 7px;
-  color: #18a058;
+  color: var(--status-success-text);
   font-size: 13px;
 }
 
@@ -1022,10 +1064,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   gap: 5px;
   margin-top: 12px;
   padding: 10px 12px;
-  border: 1px solid rgba(208, 48, 80, 0.24);
+  border: 1px solid color-mix(in srgb, var(--status-danger-text) 30%, transparent);
   border-radius: 8px;
-  background: rgba(208, 48, 80, 0.07);
-  color: #d03050;
+  background: var(--status-danger-bg);
+  color: var(--status-danger-text);
   font-size: 13px;
 }
 
@@ -1035,8 +1077,34 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 .reset-credit-error {
   margin: 0;
-  color: #d03050;
+  color: var(--status-danger-text);
 }
+
+.edit-label {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.edit-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-color-secondary);
+  line-height: 1.5;
+}
+
+.codex-token-expired {
+  color: var(--status-danger-text, #e03131);
+  font-weight: 600;
+}
+
+.codex-token-warning {
+  color: var(--status-warning-text, #d97706);
+}
+
+:global([data-theme='dark']) .codex-token-expired { color: #f87171; }
+:global([data-theme='dark']) .codex-token-warning { color: #fbbf24; }
 
 .reset-credit-list-title {
   margin: 0 0 8px;
@@ -1072,7 +1140,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .reset-credit-expiry strong {
-  color: #c4612f;
+  color: var(--status-warning-text);
 }
 
 .codex-export-toolbar {
@@ -1081,10 +1149,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   gap: 12px;
   margin-bottom: 16px;
   padding: 12px;
-  border: 1px solid #ffc107;
+  border: 1px solid color-mix(in srgb, var(--status-warning-text) 35%, transparent);
   border-radius: 8px;
-  background: #fff3cd;
-  color: #856404;
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
 }
 
 .codex-stack {
@@ -1235,20 +1303,20 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   flex-direction: column;
   min-width: 0;
   padding: 20px;
-  border: 1px solid #e7e1d7;
+  border: 1px solid var(--border-color-global);
   border-radius: 12px;
-  background: #fbf9f5;
-  box-shadow: 0 2px 8px rgba(196, 97, 47, 0.06);
-  transition: all 0.2s ease;
+  background: var(--bg-card);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
 .codex-card:hover {
-  border-color: #d4c5b4;
-  box-shadow: 0 4px 16px rgba(196, 97, 47, 0.12);
+  border-color: color-mix(in srgb, var(--primary-color, #3b82f6) 42%, var(--border-color-global));
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.1);
 }
 
 .codex-card.disabled {
-  opacity: 0.72;
+  opacity: 0.64;
 }
 
 .export-mode .codex-card {
@@ -1257,9 +1325,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .codex-card.selected {
-  border-color: #c4612f;
-  background: rgba(196, 97, 47, 0.02);
-  box-shadow: 0 0 0 3px rgba(196, 97, 47, 0.15);
+  border-color: var(--primary-color, #3b82f6);
+  background: color-mix(in srgb, var(--primary-color, #3b82f6) 10%, var(--bg-card));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color, #3b82f6) 20%, transparent);
 }
 
 .codex-export-checkbox {
@@ -1275,7 +1343,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   gap: 12px;
   margin-bottom: 16px;
   padding-bottom: 12px;
-  border-bottom: 1px solid #e7e1d7;
+  border-bottom: 1px solid var(--border-color-global);
 }
 
 .codex-card-header-main {
@@ -1288,7 +1356,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  color: #1f2421;
+  color: var(--text-primary);
   font-size: 15px;
   font-weight: 700;
   line-height: 1.45;
@@ -1301,7 +1369,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   gap: 8px;
   flex-wrap: wrap;
   margin-top: 4px;
-  color: #6c757d;
+  color: var(--text-color-secondary);
   font-size: 12px;
   word-break: break-all;
 }
@@ -1318,25 +1386,44 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   padding: 0;
   border: 0;
   background: transparent;
-  color: #6c757d;
+  color: var(--text-color-secondary);
   cursor: pointer;
   font: inherit;
   text-decoration: underline dotted;
 }
 
 .codex-reset-credits-hint:hover {
-  color: #0d6efd;
+  color: var(--status-info-text);
 }
 
 .codex-plan {
   flex-shrink: 0;
   padding: 3px 10px;
   border-radius: 12px;
-  background: #f2e3d6;
-  color: #c4612f;
+  background: color-mix(in srgb, var(--status-warning-text) 16%, transparent);
+  color: var(--status-warning-text);
   font-size: 11px;
   font-weight: 500;
 }
+
+.codex-token-expiry {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--text-color-secondary);
+}
+
+.codex-token-expiry.codex-token-expired {
+  color: var(--status-danger-text, #e03131);
+  font-weight: 600;
+}
+
+.codex-token-expiry.codex-token-warning {
+  color: var(--status-warning-text, #d97706);
+}
+
+:global([data-theme='dark']) .codex-token-expiry.codex-token-expired { color: #f87171; }
+:global([data-theme='dark']) .codex-token-expiry.codex-token-warning { color: #fbbf24; }
+:global([data-theme='dark']) .codex-token-expiry { color: rgba(255, 255, 255, 0.5); }
 
 .codex-windows-container {
   min-height: 60px;
@@ -1350,7 +1437,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   column-gap: 12px;
   row-gap: 6px;
   padding: 10px 0 12px;
-  border-bottom: 1px solid #f3f4f6;
+  border-bottom: 1px solid var(--border-color-soft);
 }
 
 .codex-window:last-child {
@@ -1387,10 +1474,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 .codex-window-placeholder {
   padding: 20px;
-  border: 1px dashed #e5e7eb;
+  border: 1px dashed var(--border-color-global);
   border-radius: 8px;
-  background: #f9fafb;
-  color: #9ca3af;
+  background: var(--bg-surface-soft);
+  color: var(--text-color-secondary);
   font-size: 13px;
   text-align: center;
 }
@@ -1398,13 +1485,13 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .codex-card-meta {
   margin-top: 12px;
   padding-top: 16px;
-  border-top: 1px solid #e7e1d7;
+  border-top: 1px solid var(--border-color-global);
 }
 
 .codex-source-meta {
   min-height: 16px;
   margin-bottom: 12px;
-  color: #9ca3af;
+  color: var(--text-color-secondary);
   font-size: 11px;
   line-height: 1.5;
 }
@@ -1434,9 +1521,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   stroke-linejoin: round;
 }
 
-.codex-icon-button.primary { color: #c4612f; }
-.codex-icon-button.info { color: #0ea5e9; }
-.codex-icon-button.danger { color: #dc2626; }
+.codex-icon-button.primary { color: var(--primary-color, #3b82f6); }
+.codex-icon-button.info { color: var(--status-info-text, #3b82f6); }
+.codex-icon-button.danger { color: var(--status-danger-text, #e03131); }
+
+/* 暗色模式下确保图标按钮在深色背景上清晰可见 */
+:global([data-theme='dark']) .codex-icon-button.primary { color: #60a5fa; }
+:global([data-theme='dark']) .codex-icon-button.info { color: #38bdf8; }
+:global([data-theme='dark']) .codex-icon-button.danger { color: #f87171; }
 
 :global([data-theme='dark']) .codex-card {
   border-color: var(--border-color-global);
@@ -1458,9 +1550,9 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 :global([data-theme='dark']) .codex-export-toolbar {
-  border-color: rgba(240, 160, 32, 0.5);
-  background: rgba(240, 160, 32, 0.12);
-  color: #f0a020;
+  border-color: color-mix(in srgb, var(--status-warning-text) 35%, transparent);
+  background: var(--status-warning-bg);
+  color: var(--status-warning-text);
 }
 
 @media (max-width: 720px) {

@@ -113,8 +113,23 @@ public sealed class ModelsApiController : ControllerBase
         // 否则 Core 端 ModelConcurrencyLimiter 读不到新值，并发限制不生效。
         await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
         await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
-        // Admin 进程内的 limiter 立即更新（Core 端靠上面的 patch 同步）。
-        _concurrencyLimiter.UpdateLimit(mapping.SiteId, mapping.RemoteModelName, mapping.MaxConcurrency);
+        // 多 Key 场景：并发计数按 SiteKey 维度，需对站点每个启用的 Key 各同步一次运行时限制器，
+        // 使调大上限后正在排队的请求能被立即唤醒。站点没有 SiteKey 时回退用 SiteId（兼容 Codex/老站点）。
+        var siteKeyIds = await _dbContext.SiteKeys
+            .Where(k => k.SiteId == mapping.SiteId && k.IsEnabled)
+            .Select(k => k.Id)
+            .ToListAsync(cancellationToken);
+        if (siteKeyIds.Count > 0)
+        {
+            foreach (var keyId in siteKeyIds)
+            {
+                _concurrencyLimiter.UpdateLimit(keyId, mapping.RemoteModelName, mapping.MaxConcurrency);
+            }
+        }
+        else
+        {
+            _concurrencyLimiter.UpdateLimit(mapping.SiteId, mapping.RemoteModelName, mapping.MaxConcurrency);
+        }
 
         return Ok(ApiResponse.Ok(new { maxConcurrency = mapping.MaxConcurrency }));
     }

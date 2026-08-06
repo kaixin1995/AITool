@@ -6,6 +6,7 @@ using AITool.Application.CoreRuntime;
 using AITool.Domain.Codex;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
+using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.DependencyInjection;
@@ -737,35 +738,66 @@ public sealed partial class ProxyRequestMetadataCache
                             .Where(s => s.IsEnabled)
                             .ToDictionary(s => s.Id, s => s);
 
-                        var targets = snapshot.RouteRules
+                        // 站点密钥（多 Key）按 SiteId 分组，用于把路由按 Key 展开为多条候选。
+                        // 快照里只下发启用的 SiteKey；没有 SiteKey 的站点回退用 Site.ApiKey。
+                        var siteKeysBySite = (snapshot.SiteKeys ?? [])
+                            .GroupBy(k => k.SiteId)
+                            .ToDictionary(g => g.Key, g => g.ToList());
+
+                        // 基础路由投影（每条 route × site 一条），不含 Key 维度。
+                        var baseTargets = snapshot.RouteRules
                             .Where(r => r.IsEnabled)
-                            .Join(sitesById.Values, r => r.SiteId, s => s.Id, (rule, site) => new CachedProxyRouteTarget
-                            {
-                                RouteId = rule.Id,
-                                SiteId = site.Id,
-                                SiteName = site.Name,
-                                ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
-                                EndpointPathMode = site.EndpointPathMode,
-                                SupportsOpenAi = site.SupportsOpenAi,
-                                SupportsAnthropic = site.SupportsAnthropic,
-                                ExternalModelName = rule.ExternalModelName,
-                                UpstreamModelName = rule.UpstreamModelName,
-                                SiteModelName = rule.SiteModelName,
-                                BaseUrl = site.BaseUrl,
-                                ApiKey = site.ApiKey,
-                                // Codex 隐藏 Site 的自定义请求头（Originator/Chatgpt-Account-Id 等），
-                                // Core 转发时通过 MergeExtraHeaders 注入上游，缺失会导致 Codex 请求被拒绝。
-                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
-                                ModelPriority = rule.ModelPriority,
-                                InstancePriority = rule.InstancePriority,
-                                Priority = rule.Priority,
-                                // 派生字段：Admin 在构建快照时已按 model 关联预解析，Core 直接透传。
-                                OverrideReasoningEffort = rule.OverrideReasoningEffort,
-                                CompatibilityRules = rule.CompatibilityRules,
-                                AvailabilityMode = NormalizeAvailabilityMode(rule.AvailabilityMode),
-                                TimeRangesJson = NormalizeTimeRangesJson(rule.AvailabilityMode, rule.TimeRangesJson)
-                            })
+                            .Join(sitesById.Values, r => r.SiteId, s => s.Id, (rule, site) => new { rule, site })
                             .ToList();
+
+                        // 按 SiteKey 展开：同一路由的每个启用 Key 各产出一条候选，实现"主备 Key + 各自独立并发计数"。
+                        // 站点没有启用的 SiteKey（Codex 托管站点 / 未迁移）回退用 site.ApiKey 产出单条候选。
+                        var targets = new List<CachedProxyRouteTarget>(baseTargets.Count);
+                        foreach (var item in baseTargets)
+                        {
+                            var rule = item.rule;
+                            var site = item.site;
+                            // 把 CoreRuntimeSiteKey 转成本方法用的 SiteKey 形态（仅取展开所需字段）。
+                            var keysForSite = siteKeysBySite.TryGetValue(site.Id, out var skList) && skList.Count > 0
+                                ? skList.Select(k => new SiteKey { Id = k.Id, SiteId = k.SiteId, KeyValue = k.KeyValue, Priority = k.Priority, CreatedAt = k.CreatedAt, IsEnabled = k.IsEnabled }).ToList()
+                                : null;
+                            var keysBySiteTyped = keysForSite is null
+                                ? new Dictionary<Guid, List<SiteKey>>()
+                                : new Dictionary<Guid, List<SiteKey>> { [site.Id] = keysForSite };
+                            var candidates = ResolveSiteKeyCandidates(site.Id, site.ApiKey, keysBySiteTyped);
+
+                            foreach (var candidate in candidates)
+                            {
+                                targets.Add(new CachedProxyRouteTarget
+                                {
+                                    RouteId = rule.Id,
+                                    SiteId = site.Id,
+                                    SiteKeyId = candidate.SiteKeyId,
+                                    CircuitKey = BuildCircuitKey(rule.Id, candidate.SiteKeyId),
+                                    SiteName = site.Name,
+                                    ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
+                                    EndpointPathMode = site.EndpointPathMode,
+                                    SupportsOpenAi = site.SupportsOpenAi,
+                                    SupportsAnthropic = site.SupportsAnthropic,
+                                    ExternalModelName = rule.ExternalModelName,
+                                    UpstreamModelName = rule.UpstreamModelName,
+                                    SiteModelName = rule.SiteModelName,
+                                    BaseUrl = site.BaseUrl,
+                                    ApiKey = candidate.ApiKey,
+                                    // Codex 隐藏 Site 的自定义请求头（Originator/Chatgpt-Account-Id 等），
+                                    // Core 转发时通过 MergeExtraHeaders 注入上游，缺失会导致 Codex 请求被拒绝。
+                                    ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
+                                    ModelPriority = rule.ModelPriority,
+                                    InstancePriority = rule.InstancePriority,
+                                    Priority = rule.Priority,
+                                    // 派生字段：Admin 在构建快照时已按 model 关联预解析，Core 直接透传。
+                                    OverrideReasoningEffort = rule.OverrideReasoningEffort,
+                                    CompatibilityRules = rule.CompatibilityRules,
+                                    AvailabilityMode = NormalizeAvailabilityMode(rule.AvailabilityMode),
+                                    TimeRangesJson = NormalizeTimeRangesJson(rule.AvailabilityMode, rule.TimeRangesJson)
+                                });
+                            }
+                        }
 
                         return Task.FromResult<IReadOnlyList<CachedProxyRouteTarget>>(targets);
                     })
@@ -785,6 +817,13 @@ public sealed partial class ProxyRequestMetadataCache
                     var routeRows = await independentClient.Queryable<Domain.Proxy.ProxyRouteRule>().ToListAsync(cancellationToken);
                     var routeSiteRows = await independentClient.Queryable<Domain.Sites.Site>().ToListAsync(cancellationToken);
                     var models = await independentClient.Queryable<Domain.Models.ModelLibraryItem>().ToListAsync(cancellationToken);
+                    // 一次性加载所有启用的站点密钥，按 SiteId 分组，供路由目标按 Key 展开为多条候选。
+                    var siteKeyRows = await independentClient.Queryable<Domain.Sites.SiteKey>()
+                        .Where(k => k.IsEnabled)
+                        .ToListAsync(cancellationToken);
+                    var siteKeysBySite = siteKeyRows
+                        .GroupBy(k => k.SiteId)
+                        .ToDictionary(g => g.Key, g => g.ToList());
                     // 一次性加载所有启用的兼容规则集，构建 Id→规则列表字典，供路由目标投影时查（避免 N+1）。
                     var profiles = await independentClient.Queryable<Domain.Proxy.CompatibilityProfile>()
                         .Where(p => p.IsEnabled)
@@ -793,16 +832,34 @@ public sealed partial class ProxyRequestMetadataCache
                         p => p.Id,
                         p => CompatibilityRuleParser.Parse(p.RulesJson));
 
-                    return (
+                    // 基础路由投影（每条 route × site × model 一条），不含 Key 维度。
+                    var baseRoutes = (
                             from route in routeRows
                             join site in routeSiteRows on route.SiteId equals site.Id
                             join model in models on route.UpstreamModelName equals model.ModelName into modelGroup
                             from model in modelGroup.DefaultIfEmpty()
                             where route.IsEnabled && site.IsEnabled
-                            select new CachedProxyRouteTarget
+                            select new { route, site, model })
+                        .ToList();
+
+                    // 按 SiteKey 展开：同一路由的每个启用 Key 各产出一条候选，实现"主备 Key + 各自独立并发计数"。
+                    // 站点没有启用的 SiteKey（Codex 托管站点 / 未迁移）回退用 site.ApiKey 产出单条候选。
+                    var expanded = new List<CachedProxyRouteTarget>(baseRoutes.Count);
+                    foreach (var item in baseRoutes)
+                    {
+                        var route = item.route;
+                        var site = item.site;
+                        var model = item.model;
+                        var candidates = ResolveSiteKeyCandidates(site.Id, site.ApiKey, siteKeysBySite);
+
+                        foreach (var candidate in candidates)
+                        {
+                            expanded.Add(new CachedProxyRouteTarget
                             {
                                 RouteId = route.Id,
                                 SiteId = site.Id,
+                                SiteKeyId = candidate.SiteKeyId,
+                                CircuitKey = BuildCircuitKey(route.Id, candidate.SiteKeyId),
                                 SiteName = site.Name,
                                 ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
                                 EndpointPathMode = site.EndpointPathMode,
@@ -812,7 +869,7 @@ public sealed partial class ProxyRequestMetadataCache
                                 UpstreamModelName = route.UpstreamModelName,
                                 SiteModelName = route.SiteModelName,
                                 BaseUrl = site.BaseUrl,
-                                ApiKey = site.ApiKey,
+                                ApiKey = candidate.ApiKey,
                                 ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
                                 ModelPriority = route.ModelPriority,
                                 InstancePriority = route.InstancePriority,
@@ -821,8 +878,11 @@ public sealed partial class ProxyRequestMetadataCache
                                 CompatibilityRules = CompatibilityRuleParser.GetRulesForModel(model?.CompatibilityProfileId, profileRules),
                                 AvailabilityMode = NormalizeAvailabilityMode(route.AvailabilityMode),
                                 TimeRangesJson = NormalizeTimeRangesJson(route.AvailabilityMode, route.TimeRangesJson)
-                            })
-                        .ToList();
+                            });
+                        }
+                    }
+
+                    return expanded;
                 })
             ?? [];
     }
@@ -913,6 +973,10 @@ public sealed partial class ProxyRequestMetadataCache
                         var modelsById = snapshot.Models
                             .Where(m => m.IsEnabled)
                             .ToDictionary(m => m.Id);
+                        // 站点密钥（多 Key）按 SiteId 分组，用于把兜底候选按 Key 展开。
+                        var siteKeysBySite = (snapshot.SiteKeys ?? [])
+                            .GroupBy(k => k.SiteId)
+                            .ToDictionary(g => g.Key, g => g.ToList());
 
                         // 三表内存联查：映射 + 站点 + 模型
                         var validMappings = snapshot.SiteModelMappings
@@ -923,35 +987,49 @@ public sealed partial class ProxyRequestMetadataCache
                             {
                                 var site = sitesById[m.SiteId];
                                 var model = modelsById[m.ModelLibraryItemId];
-                                return new { m.ModelLibraryItemId, model.ModelName, m.SiteId, site, m.RemoteModelName };
+                                return new { m.ModelLibraryItemId, m.Id, model.ModelName, m.SiteId, site, m.RemoteModelName };
                             })
                             .ToList();
 
-                        // 按模型分组，每组取站点名字典序第一个作为兜底目标
+                        // 每个模型取优先级最高的一个站点（与原逻辑一致：按站点名排序取第一个），
+                        // 然后把该站点的所有启用 Key 展开为多条兜底候选，使 fallback 也支持多 Key。
                         var fallbackTargets = validMappings
                             .GroupBy(x => x.ModelLibraryItemId)
-                            .Select(grouped =>
+                            .SelectMany(grouped =>
                             {
                                 var first = grouped
                                     .OrderBy(x => x.site.Name, StringComparer.OrdinalIgnoreCase)
                                     .First();
 
-                                return new CachedFallbackTarget
+                                var keysForSite = siteKeysBySite.TryGetValue(first.site.Id, out var skList) && skList.Count > 0
+                                    ? skList.Select(k => new Domain.Sites.SiteKey { Id = k.Id, SiteId = k.SiteId, KeyValue = k.KeyValue, Priority = k.Priority, CreatedAt = k.CreatedAt, IsEnabled = k.IsEnabled }).ToList()
+                                    : null;
+                                var keysBySiteTyped = keysForSite is null
+                                    ? new Dictionary<Guid, List<Domain.Sites.SiteKey>>()
+                                    : new Dictionary<Guid, List<Domain.Sites.SiteKey>> { [first.site.Id] = keysForSite };
+                                var candidates = ResolveSiteKeyCandidates(first.site.Id, first.site.ApiKey, keysBySiteTyped);
+                                return candidates.Select(candidate => new CachedFallbackTarget
                                 {
                                     ModelId = grouped.Key,
                                     ModelName = first.ModelName,
                                     SiteId = first.SiteId,
+                                    SiteKeyId = candidate.SiteKeyId,
+                                    CircuitKey = BuildCircuitKey(first.Id, candidate.SiteKeyId),
                                     SiteName = first.site.Name,
                                     ProtocolType = ResolveSiteProtocolType(first.site.SupportsOpenAi, first.site.SupportsAnthropic),
                                     BaseUrl = first.site.BaseUrl,
                                     EndpointPathMode = first.site.EndpointPathMode,
-                                    ApiKey = first.site.ApiKey,
+                                    ApiKey = candidate.ApiKey,
                                     SiteModelName = first.RemoteModelName
-                                };
+                                });
                             })
                             .ToList();
 
-                        return Task.FromResult(fallbackTargets.ToDictionary(x => x.ModelId, x => x));
+                        // 兜底字典保留每个模型的主 Key 候选（Priority 最小的那个）。
+                        // fallback 语义是"每个模型一个单目标兜底"，多 Key 的主备轮换由主路由 GetRouteTargetsAsync 处理。
+                        return Task.FromResult(fallbackTargets
+                            .GroupBy(x => x.ModelId)
+                            .ToDictionary(g => g.Key, g => g.First()));
                     })
                 ?? [];
         }
@@ -969,6 +1047,12 @@ public sealed partial class ProxyRequestMetadataCache
                     var fbMappings = await independentClient.Queryable<Domain.SiteCatalog.SiteModelMapping>().ToListAsync(cancellationToken);
                     var fbSites = await independentClient.Queryable<Domain.Sites.Site>().ToListAsync(cancellationToken);
                     var fbModels = await independentClient.Queryable<Domain.Models.ModelLibraryItem>().ToListAsync(cancellationToken);
+                    var fbSiteKeys = await independentClient.Queryable<Domain.Sites.SiteKey>()
+                        .Where(k => k.IsEnabled)
+                        .ToListAsync(cancellationToken);
+                    var fbSiteKeysBySite = fbSiteKeys
+                        .GroupBy(k => k.SiteId)
+                        .ToDictionary(g => g.Key, g => g.ToList());
                     var rawMappings = (
                             from mapping in fbMappings
                             join site in fbSites on mapping.SiteId equals site.Id
@@ -977,6 +1061,7 @@ public sealed partial class ProxyRequestMetadataCache
                             select new
                             {
                                 ModelId = model.Id,
+                                MappingId = mapping.Id,
                                 model.ModelName,
                                 SiteId = site.Id,
                                 SiteName = site.Name,
@@ -990,31 +1075,39 @@ public sealed partial class ProxyRequestMetadataCache
                             })
                         .ToList();
 
+                    // 每个模型取优先级最高的一个站点（与原逻辑一致：按站点名排序取第一个），
+                    // 然后把该站点的所有启用 Key 展开为多条兜底候选，使 fallback 也支持多 Key。
                     var mappings = rawMappings
                         .GroupBy(x => x.ModelId)
-                        .Select(grouped =>
+                        .SelectMany(grouped =>
                         {
                             var first = grouped
                                 .OrderBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
                                 .First();
 
-                            return new CachedFallbackTarget
+                            var candidates = ResolveSiteKeyCandidates(first.SiteId, first.ApiKey, fbSiteKeysBySite);
+                            return candidates.Select(candidate => new CachedFallbackTarget
                             {
                                 ModelId = grouped.Key,
                                 ModelName = first.ModelName,
                                 SiteId = first.SiteId,
+                                SiteKeyId = candidate.SiteKeyId,
+                                CircuitKey = BuildCircuitKey(first.MappingId, candidate.SiteKeyId),
                                 SiteName = first.SiteName,
                                 ProtocolType = ResolveSiteProtocolType(first.SupportsOpenAi, first.SupportsAnthropic),
                                 BaseUrl = first.BaseUrl,
                                 EndpointPathMode = first.EndpointPathMode,
-                                ApiKey = first.ApiKey,
+                                ApiKey = candidate.ApiKey,
                                 SiteModelName = first.SiteModelName,
                                 ExtraHeaders = TryParseExtraHeaders(first.ExtraHeadersJson)
-                            };
+                            });
                         })
                         .ToList();
 
-                    return mappings.ToDictionary(x => x.ModelId, x => x);
+                    // 兜底字典保留每个模型的主 Key 候选（Priority 最小的那个）。
+                    return mappings
+                        .GroupBy(x => x.ModelId)
+                        .ToDictionary(g => g.Key, g => g.First());
                 })
             ?? [];
     }
@@ -1088,6 +1181,60 @@ public sealed partial class ProxyRequestMetadataCache
         {
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
+    }
+
+    /// <summary>
+    /// 为多 Key 展开准备的身份候选：一个站点可能产出多个候选，每个候选携带实际使用的密钥值和对应的 SiteKeyId。
+    /// 站点没有启用的 SiteKey 时回退到站点默认密钥（兼容 Codex 托管站点和未迁移的老站点）。
+    /// </summary>
+    internal sealed record SiteKeyCandidate(Guid? SiteKeyId, string ApiKey);
+
+    /// <summary>
+    /// 取指定站点的密钥候选列表（按 Priority 升序，仅启用项）。
+    /// <para>
+    /// 优先返回该站点的启用 SiteKey；若站点没有任何启用的 SiteKey（Codex 托管站点或尚未迁移），
+    /// 则回退用 <paramref name="fallbackApiKey"/> 产出单条候选，保证不回归。
+    /// </para>
+    /// </summary>
+    internal static List<SiteKeyCandidate> ResolveSiteKeyCandidates(
+        Guid siteId,
+        string fallbackApiKey,
+        Dictionary<Guid, List<SiteKey>> siteKeysBySite)
+    {
+        if (siteKeysBySite.TryGetValue(siteId, out var keys) && keys.Count > 0)
+        {
+            return keys
+                .OrderBy(x => x.Priority)
+                .ThenBy(x => x.CreatedAt)
+                .ThenBy(x => x.Id)
+                .Select(x => new SiteKeyCandidate(x.Id, x.KeyValue))
+                .ToList();
+        }
+
+        // 回退：站点没有 SiteKey，用 Site.ApiKey 产出单条候选（null SiteKeyId 标记为兼容候选）
+        return [new SiteKeyCandidate(null, fallbackApiKey)];
+    }
+
+    /// <summary>
+    /// 合成熔断/并发身份键。多 Key 候选用确定性派生的 Guid，保证同一 (RouteId, SiteKeyId) 组合
+    /// 始终映射到相同的合成键——这样某个 Key 连续失败只熔断它自己，不误伤同站点其他 Key。
+    /// SiteKey 为 null 的兼容候选用 RouteId 本身。
+    /// </summary>
+    internal static Guid BuildCircuitKey(Guid routeId, Guid? siteKeyId)
+    {
+        if (siteKeyId is null)
+        {
+            return routeId;
+        }
+
+        // 确定性派生：把 RouteId 和 SiteKeyId 的字节拼接后做 SHA256，取前 16 字节为 Guid。
+        // 这样合成键稳定且与真实 RouteRule.Id 空间冲突概率可忽略（不同 RouteId 必然不同键）。
+        Span<byte> buffer = stackalloc byte[32];
+        routeId.TryWriteBytes(buffer[..16]);
+        siteKeyId.Value.TryWriteBytes(buffer[16..]);
+        Span<byte> hash = stackalloc byte[32];
+        SHA256.HashData(buffer, hash);
+        return new Guid(hash[..16]);
     }
 
     /// <summary>
@@ -1326,9 +1473,24 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public Guid SiteId { get; set; }
     /// <summary>
+    /// 该候选实际使用的站点密钥标识。null 表示该站点没有 SiteKey 记录（Codex 托管站点或未迁移），
+    /// 此时使用 <see cref="ApiKey"/>（回退自 Site.ApiKey）。多 Key 展开后同一路由会有多个候选，
+    /// 各自携带不同的 SiteKeyId。
+    /// </summary>
+    public Guid? SiteKeyId { get; set; }
+    /// <summary>
+    /// 熔断/并发身份键。多 Key 展开的候选用合成(RouteId, SiteKeyId)，单 Key/兼容候选用 RouteId 本身。
+    /// 转发循环用此键读写熔断状态，避免同一路由的不同 Key 互相误熔断。
+    /// </summary>
+    public Guid CircuitKey { get; set; }
+    /// <summary>
     /// 站点名称。
     /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点托管来源，用于识别需要特殊凭证续期的 Codex 隐藏站点。
+    /// </summary>
+    public string ManagedSource { get; set; } = string.Empty;
     /// <summary>
     /// 协议类型。
     /// </summary>
@@ -1520,6 +1682,14 @@ public sealed class CachedChatTarget
     /// </summary>
     public Guid SiteId { get; set; }
     /// <summary>
+    /// 该候选实际使用的站点密钥标识。null 表示回退到 <see cref="ApiKey"/>（Site.ApiKey）。
+    /// </summary>
+    public Guid? SiteKeyId { get; set; }
+    /// <summary>
+    /// 熔断/并发身份键，多 Key 展开后用于区分同一映射的不同 Key。
+    /// </summary>
+    public Guid CircuitKey { get; set; }
+    /// <summary>
     /// 站点名称。
     /// </summary>
     public string SiteName { get; set; } = string.Empty;
@@ -1585,6 +1755,14 @@ public sealed class CachedFallbackTarget
     /// 站点标识。
     /// </summary>
     public Guid SiteId { get; set; }
+    /// <summary>
+    /// 该候选实际使用的站点密钥标识。null 表示回退到 <see cref="ApiKey"/>（Site.ApiKey）。
+    /// </summary>
+    public Guid? SiteKeyId { get; set; }
+    /// <summary>
+    /// 熔断/并发身份键，多 Key 展开后用于区分同一映射的不同 Key。
+    /// </summary>
+    public Guid CircuitKey { get; set; }
     /// <summary>
     /// 站点名称。
     /// </summary>

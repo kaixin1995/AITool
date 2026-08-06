@@ -44,6 +44,7 @@ export interface AnalyticsFallbackTrendPoint {
   fallbackRate: number
 }
 export interface AnalyticsDistributionPoint {
+  key: string
   label: string
   requestCount: number
   successCount?: number
@@ -61,6 +62,50 @@ export interface AnalyticsCacheRatioPoint {
   totalInputScope: number
   cacheHitRate: number
 }
+export interface AnalyticsBreakdownPoint {
+  key: string
+  label: string
+  requestCount: number
+  successCount: number
+  failedCount: number
+  successRate: number
+  totalTokens: number
+  averageTotalDurationMs: number
+  fallbackRequestCount: number
+}
+
+export interface AnalyticsFallbackChainPoint {
+  firstSiteKey: string
+  firstSiteLabel: string
+  finalSiteKey: string
+  finalSiteLabel: string
+  requestCount: number
+  successCount: number
+  successRate: number
+  averageAttemptCount: number
+}
+
+export interface AnalyticsLatencyPercentileValues {
+  p50: number
+  p95: number
+  p99: number
+  sampleCount: number
+}
+
+export interface AnalyticsLatencyPercentiles {
+  totalDuration: AnalyticsLatencyPercentileValues
+  firstTokenLatency: AnalyticsLatencyPercentileValues
+}
+
+export type AnalyticsAnalysisDimension =
+  | 'source'
+  | 'accessKey'
+  | 'protocol'
+  | 'failureReason'
+  | 'statusCode'
+  | 'fallbackChain'
+  | 'latencyPercentiles'
+
 export interface AnalyticsAppliedFilter {
   startTime: string
   endTime: string
@@ -68,6 +113,7 @@ export interface AnalyticsAppliedFilter {
   bucketType: string
   protocolType: string
   modelName: string
+  source: string | null
   siteId: string | null
   accessKeyId: string | null
 }
@@ -83,6 +129,13 @@ export interface AnalyticsDashboard {
   modelDistribution: AnalyticsDistributionPoint[]
   siteDistribution: AnalyticsDistributionPoint[]
   modelCacheRatioDistribution?: AnalyticsCacheRatioPoint[]
+  sourceBreakdown?: AnalyticsBreakdownPoint[]
+  accessKeyBreakdown?: AnalyticsBreakdownPoint[]
+  protocolBreakdown?: AnalyticsBreakdownPoint[]
+  failureReasonBreakdown?: AnalyticsBreakdownPoint[]
+  statusCodeBreakdown?: AnalyticsBreakdownPoint[]
+  fallbackChainDistribution?: AnalyticsFallbackChainPoint[]
+  latencyPercentiles?: AnalyticsLatencyPercentiles
 }
 
 export interface AnalyticsFilterOptions {
@@ -108,6 +161,28 @@ export type AnalyticsDashboardResponse =
   | AnalyticsPendingResult
   | AnalyticsBusyResult
 
+// 旧后端响应缺少新增分析字段时，统一补为空数组；延迟分位数继续保留 undefined。
+export function normalizeAnalyticsDashboardResponse(
+  response: AnalyticsDashboardResponse
+): AnalyticsDashboardResponse {
+  if ('status' in response) return response
+
+  return {
+    ...response,
+    resultTrend: response.resultTrend ?? [],
+    tokenTrend: response.tokenTrend ?? [],
+    durationTrend: response.durationTrend ?? [],
+    fallbackTrend: response.fallbackTrend ?? [],
+    modelCacheRatioDistribution: response.modelCacheRatioDistribution ?? [],
+    sourceBreakdown: response.sourceBreakdown ?? [],
+    accessKeyBreakdown: response.accessKeyBreakdown ?? [],
+    protocolBreakdown: response.protocolBreakdown ?? [],
+    failureReasonBreakdown: response.failureReasonBreakdown ?? [],
+    statusCodeBreakdown: response.statusCodeBreakdown ?? [],
+    fallbackChainDistribution: response.fallbackChainDistribution ?? []
+  }
+}
+
 export async function getAnalyticsDashboard(
   params: Record<string, unknown>,
   signal?: AbortSignal
@@ -116,7 +191,7 @@ export async function getAnalyticsDashboard(
   for (const [k, v] of Object.entries(params)) {
     if (v !== undefined && v !== null && v !== '') query.append(k, String(v))
   }
-  return httpGet<AnalyticsDashboardResponse>(
+  const response = await httpGet<AnalyticsDashboardResponse>(
     `/api/admin/analytics/dashboard?${query.toString()}`,
     {
       signal,
@@ -124,6 +199,7 @@ export async function getAnalyticsDashboard(
       validateStatus: status => (status >= 200 && status < 300) || status === 429
     }
   )
+  return normalizeAnalyticsDashboardResponse(response)
 }
 
 export async function getAnalyticsOptions(): Promise<AnalyticsFilterOptions> {

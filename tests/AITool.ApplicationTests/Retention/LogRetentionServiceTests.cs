@@ -1,4 +1,3 @@
-using AITool.Application.Conversations;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
@@ -20,10 +19,6 @@ public sealed class LogRetentionServiceTests : IDisposable
     /// 测试工厂的清理回调，用于释放临时 SQLite 文件。
     /// </summary>
     private readonly Action _dispose;
-    /// <summary>
-    /// 空实现的对话记录存储，供保留策略测试复用。
-    /// </summary>
-    private readonly IConversationLogStore _conversationLogStore = new NoopConversationLogStore();
 
     /// <summary>
     /// 被测服务，负责根据保留策略执行日志清理。
@@ -38,7 +33,7 @@ public sealed class LogRetentionServiceTests : IDisposable
         var factory = TestDatabaseFactory.Create();
         _dbContext = factory.DbContext;
         _dispose = factory.Dispose;
-        _service = new LogRetentionService(_dbContext, _conversationLogStore);
+        _service = new LogRetentionService(_dbContext);
     }
 
     /// <summary>
@@ -114,7 +109,7 @@ public sealed class LogRetentionServiceTests : IDisposable
         // 固定当前时间，确保截止点计算可重复、可断言。
         var baseTime = new DateTimeOffset(2026, 04, 28, 12, 00, 00, TimeSpan.Zero);
         // 通过注入时钟委托，让清理逻辑按固定时间执行。
-        var service = new LogRetentionService(_dbContext, _conversationLogStore, () => baseTime);
+        var service = new LogRetentionService(_dbContext, () => baseTime);
 
         await _dbContext.InsertAsync(new SystemRuntimeSettings
         {
@@ -159,7 +154,7 @@ public sealed class LogRetentionServiceTests : IDisposable
         // 固定当前时间，避免时间流逝影响断言结果。
         var baseTime = new DateTimeOffset(2026, 04, 28, 12, 00, 00, TimeSpan.Zero);
         // 使用固定时钟，验证禁用清理时回写的时间值是否稳定。
-        var service = new LogRetentionService(_dbContext, _conversationLogStore, () => baseTime);
+        var service = new LogRetentionService(_dbContext, () => baseTime);
 
         await _dbContext.InsertAsync(new SystemRuntimeSettings
         {
@@ -199,36 +194,5 @@ public sealed class LogRetentionServiceTests : IDisposable
     {
         _dbContext.Dispose();
         _dispose();
-    }
-
-    /// <summary>
-    /// 保留策略测试不关心对话文件写入，这里提供一个空实现即可。
-    /// </summary>
-    private sealed class NoopConversationLogStore : IConversationLogStore
-    {
-        public Task AppendBatchAsync(IReadOnlyList<ConversationTurnLog> logs, CancellationToken cancellationToken = default)
-        {
-            return Task.CompletedTask;
-        }
-
-        public Task<IReadOnlyList<ConversationTurnLog>> QueryAsync(ConversationLogQuery query, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult<IReadOnlyList<ConversationTurnLog>>([]);
-        }
-
-        public Task<int> DeleteSessionAsync(string groupKey, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(0);
-        }
-
-        public Task<int> UpdateSessionTitleAsync(string groupKey, string title, CancellationToken cancellationToken = default)
-        {
-            return Task.FromResult(0);
-        }
-
-        public Task PruneExpiredAsync(CancellationToken cancellationToken = default)
-        {
-            return Task.CompletedTask;
-        }
     }
 }
