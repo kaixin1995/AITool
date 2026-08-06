@@ -209,7 +209,7 @@
           <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled">
             <StackPanel MinWidth="1260">
               <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="16,13">
-                <Grid ColumnDefinitions="1.25*,0.85*,1.25*,1.2*,1.1*,1*,1.45*,0.8*,0.8*,0.8*,0.9*,Auto" ColumnSpacing="10">
+                <Grid ColumnDefinitions="1.25*,0.85*,1.25*,1.2*,1.1*,1*,1.45*,0.8*,0.8*,0.8*,0.9*,96" ColumnSpacing="10">
                   <TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="时间" />
                   <TextBlock Grid.Column="1" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="来源" />
                   <TextBlock Grid.Column="2" TextAlignment="Center" VerticalAlignment="Center" FontSize="11" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型" />
@@ -229,7 +229,7 @@
                 <ItemsControl.ItemTemplate>
                   <DataTemplate>
                     <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="16,12">
-                      <Grid ColumnDefinitions="1.25*,0.85*,1.25*,1.2*,1.1*,1*,1.45*,0.8*,0.8*,0.8*,0.9*,Auto" ColumnSpacing="10" VerticalAlignment="Center">
+                      <Grid ColumnDefinitions="1.25*,0.85*,1.25*,1.2*,1.1*,1*,1.45*,0.8*,0.8*,0.8*,0.9*,96" ColumnSpacing="10" VerticalAlignment="Center" Width="1200">
                         <TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding RequestedAtText}" TextTrimming="CharacterEllipsis" />
                         <Border Grid.Column="1" VerticalAlignment="Center" Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="10" Padding="7,3" HorizontalAlignment="Center"><TextBlock TextAlignment="Center" VerticalAlignment="Center" FontSize="11" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding SourceLabel}" /></Border>
                         <TextBlock Grid.Column="2" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding ModelText}" TextTrimming="CharacterEllipsis" />
@@ -246,7 +246,7 @@
                         <TextBlock Grid.Column="8" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding CachedTokensText}" />
                         <TextBlock Grid.Column="9" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding OutputTokensText}" />
                         <TextBlock Grid.Column="10" TextAlignment="Center" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding TotalTokensText}" />
-                        <Button Grid.Column="11" VerticalAlignment="Center" Classes="secondary-button" Command="{Binding DataContext.OpenDetailCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="查看链路" Padding="9,6" HorizontalContentAlignment="Center" />
+                        <Button Grid.Column="11" Width="78" HorizontalAlignment="Center" VerticalAlignment="Center" Classes="secondary-button" Command="{Binding DataContext.OpenDetailCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="查看链路" Padding="8,6" HorizontalContentAlignment="Center" />
                       </Grid>
                     </Border>
                   </DataTemplate>
