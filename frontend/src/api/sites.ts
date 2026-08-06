@@ -7,9 +7,20 @@ export interface SiteListItem {
   baseUrl: string
   endpointPathMode: string
   apiKeyMasked: string
+  keyCount: number
   supportsOpenAi: boolean
   supportsAnthropic: boolean
   protocolType: string
+  isEnabled: boolean
+  createdAt: string
+}
+
+// 站点密钥列表项（KeyValue 脱敏）。
+export interface SiteKeyItem {
+  id: string
+  keyValueMasked: string
+  remark: string
+  priority: number
   isEnabled: boolean
   createdAt: string
 }
@@ -24,6 +35,7 @@ export interface SiteDetail {
   protocolType: string
   isEnabled: boolean
   createdAt: string
+  keys: SiteKeyItem[]
 }
 
 export interface SitePayload {
@@ -33,6 +45,14 @@ export interface SitePayload {
   apiKey: string
   supportsOpenAi?: boolean
   supportsAnthropic?: boolean
+  isEnabled?: boolean
+}
+
+// 站点密钥新增/编辑请求。编辑时 keyValue 留空表示保留原值。
+export interface SiteKeyPayload {
+  keyValue: string
+  remark?: string
+  priority?: number
   isEnabled?: boolean
 }
 
@@ -116,4 +136,26 @@ export async function getFetchAllProgress(taskId: string): Promise<FetchAllProgr
 
 export async function importSelectedModels(selections: ModelSelectionItem[]): Promise<{ importedCount: number }> {
   return httpPost<{ importedCount: number }>('/api/admin/site-catalog/import-selected', { selections })
+}
+
+// —— 站点密钥管理 ——
+
+export async function listSiteKeys(siteId: string): Promise<SiteKeyItem[]> {
+  return httpGet<SiteKeyItem[]>(`/api/admin/sites/${siteId}/keys`)
+}
+
+export async function createSiteKey(siteId: string, payload: SiteKeyPayload): Promise<{ id: string }> {
+  return httpPost<{ id: string }>(`/api/admin/sites/${siteId}/keys`, payload)
+}
+
+export async function updateSiteKey(siteId: string, keyId: string, payload: SiteKeyPayload): Promise<void> {
+  await httpPut(`/api/admin/sites/${siteId}/keys/${keyId}`, payload)
+}
+
+export async function deleteSiteKey(siteId: string, keyId: string): Promise<void> {
+  await httpDelete(`/api/admin/sites/${siteId}/keys/${keyId}`)
+}
+
+export async function toggleSiteKey(siteId: string, keyId: string): Promise<{ isEnabled: boolean }> {
+  return httpPost<{ isEnabled: boolean }>(`/api/admin/sites/${siteId}/keys/${keyId}/toggle`)
 }
