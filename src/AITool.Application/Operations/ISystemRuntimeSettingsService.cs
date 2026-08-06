@@ -110,9 +110,9 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public bool CodexInspectionEnabled { get; set; }
 
     /// <summary>
-    /// Codex 巡检周期（分钟），下限 5。
+    /// Codex 巡检周期（秒），下限 30。
     /// </summary>
-    public int CodexInspectionIntervalMinutes { get; set; }
+    public int CodexInspectionIntervalSeconds { get; set; }
 
     /// <summary>
     /// Codex 额度缓存最大小时数，超过则强制真实刷新。

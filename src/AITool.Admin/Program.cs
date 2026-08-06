@@ -118,8 +118,12 @@ builder.Services.AddAuthorization(options =>
         .Build();
 });
 
-// Swagger：仅开发环境启用，方便本地测试接口。测试环境（Testing）与生产都不暴露文档。
-if (!builder.Environment.IsEnvironment("Testing"))
+// Swagger：可通过 appsettings.json 的 Swagger:Enabled 配置控制。
+// 未配置时默认所有环境可用，可设置为 false 关闭。
+// Testing 环境始终关闭，避免集成测试注入 Swagger 服务。
+var swaggerEnabled = !builder.Environment.IsEnvironment("Testing")
+    && (builder.Configuration.GetValue<bool?>("Swagger:Enabled") ?? true);
+if (swaggerEnabled)
 {
     builder.Services.AddEndpointsApiExplorer();
     builder.Services.AddSwaggerGen(options =>
@@ -242,6 +246,9 @@ builder.Services.AddHttpClient<ICodexQuotaService, CodexQuotaService>(c =>
 {
     c.Timeout = TimeSpan.FromSeconds(20);
 });
+// 在实时代理请求命中 Codex 上游 401 时，立即刷新账号凭证并同步隐藏站点。
+// 仅在 Admin 注册（依赖 AppDbContext 直接读写数据库）。
+builder.Services.AddScoped<CodexCredentialRefreshService>();
 // 周期刷新 Codex 账号 OAuth token，写回隐藏 Site.ApiKey 并通过 AdminCacheInvalidationService 推送到 Core。
 builder.Services.AddHostedService<CodexTokenRefreshService>();
 // 周期恢复冷却到期的 Codex 账号（清除冷却，恢复 Site，若未被手动禁用）。
@@ -324,9 +331,9 @@ app.UseGlobalExceptionHandler(app.Environment);
 // 响应压缩必须在其他产生响应的中间件（静态文件、MVC）之前注册。
 app.UseResponseCompression();
 
-// Swagger UI：仅开发环境启用。必须在 UseStaticFiles/MapFallbackToFile 之前注册，
-// 否则 /swagger 会被当作前端路由返回 index.html。
-if (app.Environment.IsDevelopment())
+// Swagger UI：由 swaggerEnabled 控制（配置 Swagger:Enabled，默认 true）。
+// 必须位于 SPA fallback（MapFallbackToFile）之前，否则 /swagger 会被当作前端路由返回 index.html。
+if (swaggerEnabled)
 {
     app.UseSwagger();
     app.UseSwaggerUI(options =>

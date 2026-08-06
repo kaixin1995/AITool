@@ -21,8 +21,8 @@ namespace AITool.Admin.Services;
 /// </summary>
 public sealed class CodexInspectionService : BackgroundService
 {
-    /// <summary>轮询基线间隔（实际执行周期由设置 CodexInspectionIntervalMinutes 决定）。</summary>
-    private static readonly TimeSpan TickInterval = TimeSpan.FromMinutes(1);
+    /// <summary>轮询基线间隔。巡检周期最小 30 秒，基线 10 秒确保 30 秒设置能及时触发。</summary>
+    private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(10);
 
     /// <summary>内存日志上限。</summary>
     private const int MaxLogs = 200;
@@ -89,7 +89,7 @@ public sealed class CodexInspectionService : BackgroundService
 
         try
         {
-            var interval = TimeSpan.FromMinutes(Math.Max(5, runtime.CodexInspectionIntervalMinutes));
+            var interval = TimeSpan.FromSeconds(Math.Max(30, runtime.CodexInspectionIntervalSeconds));
             _nextScheduledAt = now + interval;
             // 巡检不在全局 SerialExecuteAsync 锁内运行——InspectAccountAsync 内部会调
             // quotaService.QueryAsync（可能打 chatgpt.com 上游 HTTP），持锁会导致其他后台 DB 写阻塞。
@@ -320,41 +320,40 @@ public sealed class CodexInspectionService : BackgroundService
     /// <returns>true 表示 Site.IsEnabled 被改（需要推送 Core）；false 表示 Site 本就禁用。</returns>
     private static async Task<bool> DisableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
     {
-        // DB 写用 SerialExecuteAsync 保护 SqlSugarScope（巡检已不在外层全局锁内）。
-        return await dbContext.SerialExecuteAsync(async () =>
+        // 用 CopyNew 独立连接写入，不碰单例 SqlSugarScope，无需串行锁
+        using var client = dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        account.IsEnabled = false;
+        await client.Updateable(account).ExecuteCommandAsync(ct);
+        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
+        if (site != null && site.IsEnabled)
         {
-            account.IsEnabled = false;
-            await dbContext.UpdateAsync(account, ct);
-            var site = await dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-            if (site != null && site.IsEnabled)
-            {
-                site.IsEnabled = false;
-                await dbContext.UpdateAsync(site, ct);
-            }
-            cache.InvalidateCodexAccounts();
-            return site != null && !site.IsEnabled;
-        }, ct);
+            site.IsEnabled = false;
+            await client.Updateable(site).ExecuteCommandAsync(ct);
+        }
+        cache.InvalidateRouteTargets();
+        cache.InvalidateCodexAccounts();
+        return site != null && !site.IsEnabled;
     }
 
     private static async Task<bool> EnableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
     {
-        // DB 写用 SerialExecuteAsync 保护 SqlSugarScope（巡检已不在外层全局锁内）。
-        return await dbContext.SerialExecuteAsync(async () =>
+        using var client = dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        account.IsEnabled = true;
+        // 自动恢复（额度恢复）时清除手动禁用标记——虽然上游 if 已确保不进到这里，
+        // 但保留幂等清除，防止状态残留。
+        account.ManuallyDisabled = false;
+        await client.Updateable(account).ExecuteCommandAsync(ct);
+        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
+        if (site != null && !site.IsEnabled)
         {
-            account.IsEnabled = true;
-            // 自动恢复（额度恢复）时清除手动禁用标记——虽然上游 if 已确保不进到这里，
-            // 但保留幂等清除，防止状态残留。
-            account.ManuallyDisabled = false;
-            await dbContext.UpdateAsync(account, ct);
-            var site = await dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-            if (site != null && !site.IsEnabled)
-            {
-                site.IsEnabled = true;
-                await dbContext.UpdateAsync(site, ct);
-            }
-            cache.InvalidateCodexAccounts();
-            return site != null && site.IsEnabled;
-        }, ct);
+            site.IsEnabled = true;
+            await client.Updateable(site).ExecuteCommandAsync(ct);
+        }
+        cache.InvalidateRouteTargets();
+        cache.InvalidateCodexAccounts();
+        return site != null && site.IsEnabled;
     }
 
     private void AddLog(string category, string message)

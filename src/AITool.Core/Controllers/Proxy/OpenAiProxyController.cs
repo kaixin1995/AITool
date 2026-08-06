@@ -566,6 +566,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
         ProxyForwardResult? lastResult = null;
         var attemptIndex = 0;
+        var routeIndex = -1;
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
 
@@ -576,6 +577,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         {
         foreach (var route in allRoutes)
         {
+            routeIndex++;
             // 客户端已断开则不再尝试任何后续路由（无意义，响应已无法写回）。
             if (cancellationToken.IsCancellationRequested)
             {
@@ -697,8 +699,13 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 callContext.TotalDurationMs = streamResult.TotalDurationMs;
                 callContext.HasStartedStreaming = streamResult.HasStartedStreaming;
                 callContext.RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex;
-                callContext.IsFinalResult = streamResult.Success;
-                callContext.FallbackTriggered = !streamResult.Success;
+                var streamCanFallback = !streamResult.Success
+                    && streamOutcome.CanFallback
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate =>
+                        !IsRouteBlockedSafely(candidate.CircuitKey)
+                        && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
+                callContext.IsFinalResult = streamResult.Success || !streamCanFallback;
+                callContext.FallbackTriggered = streamCanFallback;
                 await _proxyCallRecorder.RecordUsageAsync(callContext, CancellationToken.None);
 
                 if (streamResult.Success)
@@ -751,8 +758,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
             callContext.TotalDurationMs = result.TotalDurationMs;
             callContext.HasStartedStreaming = result.HasStartedStreaming;
             callContext.RetryCount = result.Success ? attemptIndex - 1 : attemptIndex;
-            callContext.IsFinalResult = result.Success;
-            callContext.FallbackTriggered = !result.Success;
+            var canFallback = !result.Success
+                && allRoutes.Skip(routeIndex + 1).Any(candidate =>
+                    !IsRouteBlockedSafely(candidate.CircuitKey)
+                    && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
+            callContext.IsFinalResult = result.Success || !canFallback;
+            callContext.FallbackTriggered = canFallback;
             await _proxyCallRecorder.RecordUsageAsync(callContext, cancellationToken);
 
             if (result.Success)

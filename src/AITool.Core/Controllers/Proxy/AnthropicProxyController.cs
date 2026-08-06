@@ -201,6 +201,7 @@ public sealed class AnthropicProxyController : ControllerBase
         // 按优先级逐个尝试路由，失败则通知熔断器并继续下一个
         ProxyForwardResult? lastResult = null;
         var attemptIndex = 0;
+        var routeIndex = -1;
         var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
         var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
         // 记录上一条失败路由信息，在下一条候选路由开始时发布回退事件
@@ -210,6 +211,7 @@ public sealed class AnthropicProxyController : ControllerBase
         {
         foreach (var route in allRoutes)
         {
+            routeIndex++;
             // 客户端已断开则不再尝试任何后续路由（无意义，响应已无法写回）。
             if (cancellationToken.IsCancellationRequested)
             {
@@ -335,8 +337,11 @@ public sealed class AnthropicProxyController : ControllerBase
                 callContext.TotalDurationMs = streamResult.TotalDurationMs;
                 callContext.HasStartedStreaming = streamResult.HasStartedStreaming;
                 callContext.RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex;
-                callContext.IsFinalResult = streamResult.Success;
-                callContext.FallbackTriggered = !streamResult.Success;
+                var streamCanFallback = !streamResult.Success
+                    && streamOutcome.CanFallback
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+                callContext.IsFinalResult = streamResult.Success || !streamCanFallback;
+                callContext.FallbackTriggered = streamCanFallback;
                 await _proxyCallRecorder.RecordUsageAsync(callContext, CancellationToken.None);
 
                 if (streamResult.Success)
@@ -388,8 +393,10 @@ public sealed class AnthropicProxyController : ControllerBase
             callContext.TotalDurationMs = result.TotalDurationMs;
             callContext.HasStartedStreaming = result.HasStartedStreaming;
             callContext.RetryCount = result.Success ? attemptIndex - 1 : attemptIndex;
-            callContext.IsFinalResult = result.Success;
-            callContext.FallbackTriggered = !result.Success;
+            var canFallback = !result.Success
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+            callContext.IsFinalResult = result.Success || !canFallback;
+            callContext.FallbackTriggered = canFallback;
             await _proxyCallRecorder.RecordUsageAsync(callContext, cancellationToken);
 
             if (result.Success)

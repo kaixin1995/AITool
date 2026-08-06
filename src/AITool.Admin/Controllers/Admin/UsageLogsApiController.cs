@@ -645,12 +645,15 @@ public sealed class UsageLogsApiController : ControllerBase
             return (customStart, customEnd);
         }
 
+        // 结束时间统一用"今天结束"（明天0点），与 Analytics 口径一致，
+        // 避免不同页面对"当天"的结束时刻定义不同导致统计范围偏差。
+        var endOfToday = new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset).AddDays(1);
         return normalized switch
         {
-            "week" => (new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset).AddDays(-((7 + (int)now.DayOfWeek - (int)DayOfWeek.Monday) % 7)), now),
-            "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), now),
+            "week" => (new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset).AddDays(-((7 + (int)now.DayOfWeek - (int)DayOfWeek.Monday) % 7)), endOfToday),
+            "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), endOfToday),
             "all" => (DateTimeOffset.MinValue, DateTimeOffset.MaxValue),
-            _ => (new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset), now)
+            _ => (new DateTimeOffset(now.Year, now.Month, now.Day, 0, 0, 0, now.Offset), endOfToday)
         };
     }
 

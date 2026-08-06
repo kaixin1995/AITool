@@ -52,6 +52,10 @@ public sealed class CodexAccountProvisioner
     /// </summary>
     public async Task<CodexAccount> ProvisionFromTokensAsync(CodexProvisionInput input, CancellationToken ct)
     {
+        // 用 CopyNew 独立连接做所有 DB 操作
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+
         // —— 去重：按 AccountId（兜底 Email）查现有账号 ——
         var existing = await FindExistingAsync(input.AccountId, input.Email, ct);
 
@@ -62,7 +66,7 @@ public sealed class CodexAccountProvisioner
         {
             // 更新 token
             account = existing;
-            site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId)
+            site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId)
                 ?? throw new InvalidOperationException($"Linked site {account.LinkedSiteId} not found for Codex account {account.Id}");
 
             account.AccessToken = input.AccessToken;
@@ -78,8 +82,8 @@ public sealed class CodexAccountProvisioner
             if (!string.IsNullOrWhiteSpace(input.DisplayName)) site.Name = input.DisplayName;
             UpdateSiteExtraHeaders(site, account.AccountId ?? input.AccountId);
 
-            await _dbContext.UpdateAsync(account, ct);
-            await _dbContext.UpdateAsync(site, ct);
+            await client.Updateable(account).ExecuteCommandAsync(ct);
+            await client.Updateable(site).ExecuteCommandAsync(ct);
         }
         else
         {
@@ -96,7 +100,7 @@ public sealed class CodexAccountProvisioner
                 IsEnabled = true,
             };
             UpdateSiteExtraHeaders(site, input.AccountId);
-            await _dbContext.InsertAsync(site, ct);
+            await client.Insertable(site).ExecuteCommandAsync(ct);
 
             account = new CodexAccount
             {
@@ -112,7 +116,7 @@ public sealed class CodexAccountProvisioner
                 LinkedSiteId = site.Id,
                 IsEnabled = true,
             };
-            await _dbContext.InsertAsync(account, ct);
+            await client.Insertable(account).ExecuteCommandAsync(ct);
         }
 
         // —— 模型映射（按 plan 分层）——
@@ -133,7 +137,9 @@ public sealed class CodexAccountProvisioner
     /// </summary>
     public async Task DeprovisionAsync(Guid codexAccountId, CancellationToken ct)
     {
-        var account = (await _dbContext.CodexAccounts
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        var account = (await client.Queryable<CodexAccount>()
             .Where(a => a.Id == codexAccountId)
             .ToListAsync(ct)).FirstOrDefault();
         if (account == null)
@@ -142,7 +148,7 @@ public sealed class CodexAccountProvisioner
         }
 
         await _cascadeDeleter.RemoveSitesAsync([account.LinkedSiteId], ct);
-        await _dbContext.DeleteAsync<CodexAccount>(a => a.Id == codexAccountId, ct);
+        await client.Deleteable<CodexAccount>().Where(a => a.Id == codexAccountId).ExecuteCommandAsync(ct);
 
         // 路由目标缓存（含隐藏 Site）必须推送到 Core，否则 Core 仍用旧 token/旧 Site 转发。
         await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
@@ -154,24 +160,25 @@ public sealed class CodexAccountProvisioner
 
     /// <summary>
     /// 编辑 Codex 账号（当前仅支持 DisplayName），同步隐藏 Site 名称。
-    /// 自动禁用阈值已改为系统级设置，不再按账号单独维护。
     /// </summary>
     public async Task UpdateAsync(Guid codexAccountId, string? displayName, CancellationToken ct)
     {
-        var account = (await _dbContext.CodexAccounts
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        var account = (await client.Queryable<CodexAccount>()
             .Where(a => a.Id == codexAccountId)
             .ToListAsync(ct)).FirstOrDefault() ?? throw new InvalidOperationException($"Codex account {codexAccountId} not found");
         if (!string.IsNullOrWhiteSpace(displayName))
         {
             account.DisplayName = displayName;
-            var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+            var site = await client.Queryable<Site>().InSingleAsync(account.LinkedSiteId);
             if (site != null)
             {
                 site.Name = displayName;
-                await _dbContext.UpdateAsync(site, ct);
+                await client.Updateable(site).ExecuteCommandAsync(ct);
             }
         }
-        await _dbContext.UpdateAsync(account, ct);
+        await client.Updateable(account).ExecuteCommandAsync(ct);
 
         // 仅改 DisplayName 也需推送：Core 侧不缓存 DisplayName 但路由表一致性靠此同步。
         await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
