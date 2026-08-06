@@ -8,7 +8,7 @@
     x:CompileBindings="False">
   <UserControl.DataTemplates>
     <DataTemplate DataType="{x:Type models:DeveloperSimulatorTab}">
-      <Grid RowDefinitions="Auto,Auto,*" ColumnDefinitions="*,*" ColumnSpacing="14" RowSpacing="10" MinWidth="700" MinHeight="420">
+      <Grid RowDefinitions="Auto,Auto,*" ColumnDefinitions="*,*" ColumnSpacing="14" RowSpacing="10">
         <Grid Grid.ColumnSpan="2" ColumnDefinitions="*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
           <TextBox Classes="form-input" Height="34" IsReadOnly="True" Text="{Binding EndpointUrl}" TextWrapping="NoWrap" VerticalContentAlignment="Center" />
           <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
@@ -44,41 +44,41 @@
       <TabItem Header="调用调试">
         <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
           <StackPanel Margin="0,16,0,0" Spacing="16">
-            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16" VerticalAlignment="Center">
+            <Grid ColumnDefinitions="1.2*,1*" ColumnSpacing="16" VerticalAlignment="Center">
               <StackPanel Spacing="4">
                 <TextBlock FontSize="20" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="调用调试" />
-                <TextBlock FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="展开每条调用查看请求链路、请求体、响应体和上游尝试记录" />
+                <TextBlock FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="展开每条调用查看请求链路、请求体、响应体和上游尝试记录" TextWrapping="Wrap" />
               </StackPanel>
-              <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+              <WrapPanel Grid.Column="1" HorizontalAlignment="Right" ItemSpacing="8" LineSpacing="6" VerticalAlignment="Center">
                 <ToggleSwitch IsChecked="{Binding AutoRefresh, Mode=TwoWay}" OnContent="自动刷新" OffContent="手动" />
                 <ToggleSwitch IsChecked="{Binding SummarizeDetail, Mode=TwoWay}" OnContent="精简显示" OffContent="完整详情" />
                 <Button Classes="primary-button" Command="{Binding RefreshCommand}" Content="立即刷新" Padding="12,7" />
-              </StackPanel>
+              </WrapPanel>
             </Grid>
 
-            <WrapPanel Orientation="Horizontal">
-              <Border Classes="content-card" Width="220" Margin="0,0,12,12" Padding="18">
+            <Grid ColumnDefinitions="1*,1*,1*" ColumnSpacing="12">
+              <Border Classes="content-card" Padding="18">
                 <StackPanel Spacing="6">
                   <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="当前记录数" />
                   <TextBlock FontSize="30" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding TotalCount}" />
-                  <TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="当前页最多 40 条记录" />
+                  <TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="当前页最多 40 条记录" TextWrapping="Wrap" />
                 </StackPanel>
               </Border>
-              <Border Classes="content-card" Width="220" Margin="0,0,12,12" Padding="18" Background="{DynamicResource AppDangerSoftBrush}">
+              <Border Grid.Column="1" Classes="content-card" Padding="18" Background="{DynamicResource AppDangerSoftBrush}">
                 <StackPanel Spacing="6">
                   <TextBlock FontSize="12" Foreground="{DynamicResource AppDangerTextBrush}" Text="失败 / 异常" />
                   <TextBlock FontSize="30" FontWeight="Bold" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding FailedCount}" />
-                  <TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="优先检查红色告警记录" />
+                  <TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="优先检查红色告警记录" TextWrapping="Wrap" />
                 </StackPanel>
               </Border>
-              <Border Classes="content-card" Width="220" Margin="0,0,12,12" Padding="18" Background="{DynamicResource AppWarningSoftBrush}">
+              <Border Grid.Column="2" Classes="content-card" Padding="18" Background="{DynamicResource AppWarningSoftBrush}">
                 <StackPanel Spacing="6">
                   <TextBlock FontSize="12" Foreground="{DynamicResource AppWarningTextBrush}" Text="等待返回" />
                   <TextBlock FontSize="30" FontWeight="Bold" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding PendingCount}" />
-                  <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="请求已到达但响应未补齐" />
+                  <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="请求已到达但响应未补齐" TextWrapping="Wrap" />
                 </StackPanel>
               </Border>
-            </WrapPanel>
+            </Grid>
 
             <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding IsLoading}">
               <StackPanel Spacing="6">
@@ -168,16 +168,18 @@
             </Border>
             <Border Classes="content-card" Padding="0">
               <StackPanel>
-                <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Disabled" Padding="16,12">
-                  <ItemsControl ItemsSource="{Binding SimulatorTabs}">
-                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="8" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
-                    <ItemsControl.ItemTemplate>
-                      <DataTemplate>
-                        <ToggleButton Classes="simulator-tab" Command="{Binding DataContext.SelectSimulatorTabCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding Label}" IsChecked="{Binding IsSelected, Mode=TwoWay}" Padding="12,7" />
-                      </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                  </ItemsControl>
-                </ScrollViewer>
+                <ItemsControl ItemsSource="{Binding SimulatorTabs}" Padding="16,12">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <WrapPanel Orientation="Horizontal" ItemSpacing="8" LineSpacing="6" />
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <ToggleButton Classes="simulator-tab" Command="{Binding DataContext.SelectSimulatorTabCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding Label}" IsChecked="{Binding IsSelected, Mode=TwoWay}" Padding="12,7" />
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
                 <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="16">
                   <ContentControl Content="{Binding SelectedSimulatorTab}" />
                 </Border>
