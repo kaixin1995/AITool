@@ -86,8 +86,8 @@ function formatMetricNumber(value: number | null | undefined): string {
     unitIndex++
   }
   if (unitIndex === 0) return formatNumber(number)
-  // 只清理小数点后的尾零（如 95.0 → 95），不能动整数部分的 0（如 240 误删成 24）。
-  const formatted = (number >= 100 ? number.toFixed(0) : number >= 10 ? number.toFixed(1) : number.toFixed(2))
+  // 最多两位小数，清理小数尾零（240.00→240，5.50→5.5，240.25→240.25）。
+  const formatted = number.toFixed(2)
     .replace(/(\.\d*?)0+$/, '$1')
     .replace(/\.$/, '')
   return `${formatted} ${units[unitIndex]}`
