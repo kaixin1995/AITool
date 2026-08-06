@@ -1,0 +1,171 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.MainShellView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    xmlns:views="using:AITool.Desktop.Views"
+    x:DataType="vm:MainShellViewModel"
+    x:CompileBindings="False">
+  <UserControl.DataTemplates>
+    <DataTemplate DataType="{x:Type vm:DashboardViewModel}">
+      <views:DashboardView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:AnalyticsViewModel}">
+      <views:AnalyticsView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:SitesViewModel}">
+      <views:SitesView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:ModelsViewModel}">
+      <views:ModelsView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:AccessKeysViewModel}">
+      <views:AccessKeysView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:RouteManagementViewModel}">
+      <views:RouteManagementView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:DetectionViewModel}">
+      <views:DetectionView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:DetectionTasksViewModel}">
+      <views:DetectionTasksView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:ModelHealthViewModel}">
+      <views:ModelHealthView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:UsageLogsViewModel}">
+      <views:UsageLogsView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:SystemSettingsViewModel}">
+      <views:SystemSettingsView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:CodexViewModel}">
+      <views:CodexView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:DeveloperInvocationsViewModel}">
+      <views:DeveloperInvocationsView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:ChatViewModel}">
+      <views:ChatView />
+    </DataTemplate>
+    <DataTemplate DataType="{x:Type vm:PlaceholderPageViewModel}">
+      <views:PlaceholderPageView />
+    </DataTemplate>
+  </UserControl.DataTemplates>
+
+  <Grid MinWidth="0" ClipToBounds="False" Background="{DynamicResource AppPageBackgroundBrush}" ColumnDefinitions="208,*">
+    <!-- 左侧导航，结构和 Vue3 MainLayout 保持一致。 -->
+    <Border
+        Background="{DynamicResource AppCardBackgroundBrush}"
+        BorderBrush="{DynamicResource AppBorderBrush}"
+        BorderThickness="0,0,1,0">
+      <DockPanel>
+        <Border
+            DockPanel.Dock="Top"
+            BorderBrush="{DynamicResource AppBorderBrush}"
+            BorderThickness="0,0,0,1"
+            Padding="18,16">
+          <Grid ColumnDefinitions="Auto,*">
+            <Border
+                Width="38"
+                Height="38"
+                Background="{DynamicResource AppPrimaryBrush}"
+                CornerRadius="10">
+              <TextBlock
+                  HorizontalAlignment="Center"
+                  VerticalAlignment="Center"
+                  FontSize="15"
+                  FontWeight="Bold"
+                  Foreground="{DynamicResource AppOnPrimaryBrush}"
+                  Text="AI" />
+            </Border>
+            <TextBlock
+                Grid.Column="1"
+                Margin="10,0,0,0"
+                VerticalAlignment="Center"
+                FontSize="16"
+                FontWeight="Bold"
+                Foreground="{DynamicResource AppTextPrimaryBrush}"
+                Text="AI Tool" />
+          </Grid>
+        </Border>
+
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding NavigationGroups}" Margin="12,10">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <StackPanel Margin="0,0,0,8">
+                  <TextBlock
+                      FontSize="11"
+                      FontWeight="SemiBold"
+                      Foreground="{DynamicResource AppTextTertiaryBrush}"
+                      Margin="12,10,12,5"
+                      Text="{Binding Title}" />
+                  <ItemsControl ItemsSource="{Binding Items}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <ToggleButton
+                            Classes="nav-item"
+                            Command="{Binding DataContext.NavigateCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                            CommandParameter="{Binding}"
+                            IsChecked="{Binding IsSelected, Mode=OneWay}"
+                            HorizontalAlignment="Stretch">
+                          <StackPanel Orientation="Horizontal" Spacing="10">
+                            <TextBlock FontSize="15" Text="{Binding Icon}" Width="20" />
+                            <TextBlock VerticalAlignment="Center" Text="{Binding Label}" />
+                          </StackPanel>
+                        </ToggleButton>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+      </DockPanel>
+    </Border>
+
+    <!-- 右侧主内容区：顶部标题栏 + 页面内容。 -->
+    <Grid Grid.Column="1" RowDefinitions="Auto,*">
+      <Border
+          Background="{DynamicResource AppCardBackgroundBrush}"
+          BorderBrush="{DynamicResource AppBorderBrush}"
+          BorderThickness="0,0,0,1"
+          Padding="24,10">
+        <Grid ColumnDefinitions="Auto,*" ColumnSpacing="16">
+          <TextBlock
+              VerticalAlignment="Center"
+              FontSize="16"
+              FontWeight="SemiBold"
+              Foreground="{DynamicResource AppTextPrimaryBrush}"
+              Text="{Binding SelectedItem.Label}"
+              TextTrimming="CharacterEllipsis" />
+          <WrapPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal" ItemSpacing="12" LineSpacing="8" VerticalAlignment="Center">
+            <Button Classes="secondary-button" Command="{Binding RefreshCurrentPageCommand}" Content="刷新当前页" Padding="12,7" />
+            <Border
+                Background="{DynamicResource AppSuccessSoftBrush}"
+                CornerRadius="14"
+                Padding="10,5">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <Ellipse Width="7" Height="7" Fill="{DynamicResource AppSuccessTextBrush}" VerticalAlignment="Center" />
+                <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppSuccessTextBrush}" Text="服务已连接" />
+              </StackPanel>
+            </Border>
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="AI Tool Desktop" VerticalAlignment="Center" />
+            <Button Classes="secondary-button" Command="{Binding ToggleThemeCommand}" Content="{Binding ThemeToggleText}" Padding="10,7" />
+            <Button Classes="secondary-button" Command="{Binding LogoutCommand}" Content="退出登录" Padding="10,7" />
+          </WrapPanel>
+        </Grid>
+      </Border>
+
+      <Border Grid.Row="1" ClipToBounds="False" Background="{DynamicResource AppPageBackgroundBrush}" Padding="24,22">
+        <ContentControl
+            HorizontalContentAlignment="Stretch"
+            VerticalContentAlignment="Stretch"
+            Content="{Binding CurrentPage}" />
+      </Border>
+    </Grid>
+  </Grid>
+</UserControl>

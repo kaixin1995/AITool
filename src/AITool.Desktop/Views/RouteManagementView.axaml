@@ -1,0 +1,24 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.RouteManagementView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    xmlns:views="using:AITool.Desktop.Views"
+    x:DataType="vm:RouteManagementViewModel"
+    x:CompileBindings="False">
+  <Grid RowDefinitions="Auto,*" RowSpacing="16">
+    <StackPanel Spacing="4">
+      <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="路由管理" />
+      <TextBlock Classes="page-subtitle" Text="统一管理路由规则与兼容规则集" TextWrapping="Wrap" />
+      <WrapPanel Margin="0,10,0,0" Orientation="Horizontal">
+        <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="routes" Content="路由规则" IsChecked="{Binding IsRoutesTab, Mode=OneWay}" />
+        <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="compatibility" Content="兼容规则集" IsChecked="{Binding IsCompatibilityTab, Mode=OneWay}" />
+      </WrapPanel>
+    </StackPanel>
+
+    <Grid Grid.Row="1">
+      <views:RoutesView DataContext="{Binding Routes}" ShowPageHeader="False" IsVisible="{Binding DataContext.IsRoutesTab, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+      <views:CompatibilityView DataContext="{Binding Compatibility}" ShowPageHeader="False" IsVisible="{Binding DataContext.IsCompatibilityTab, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+    </Grid>
+  </Grid>
+</UserControl>

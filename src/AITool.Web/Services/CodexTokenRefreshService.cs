@@ -115,22 +115,35 @@ public sealed class CodexTokenRefreshService : BackgroundService
         try
         {
             // single-flight：OAuth 客户端内部保证同 refresh_token 并发只刷一次
+            // HTTP 调用在锁外执行，避免长时间持有串行锁
             var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken!, ct);
 
-            account.AccessToken = tokens.AccessToken;
-            account.RefreshToken = tokens.RefreshToken; // 部分上游轮换 refresh_token，以返回值为准
-            if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
-            account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
-            account.LastRefreshAt = DateTimeOffset.UtcNow;
-            await db.UpdateAsync(account, ct);
-
-            // 同步写回隐藏 Site.ApiKey（列更新，避免全字段覆盖并发写）
-            var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
-            if (site != null)
+            // DB 写入用串行锁包裹，避免并发竞态
+            await db.SerialExecuteAsync(async () =>
             {
-                site.ApiKey = tokens.AccessToken;
-                await db.UpdateAsync(site, ct);
-            }
+                // 仅在上游返回了非空值时才覆盖，避免空响应清空有效 token 导致永久无法刷新。
+                if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
+                {
+                    account.AccessToken = tokens.AccessToken;
+                }
+                // OpenAI 会轮换 refresh_token，但某些响应可能不返回新 refresh_token，
+                // 此时保留旧值避免被清空导致永久无法刷新。
+                if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
+                {
+                    account.RefreshToken = tokens.RefreshToken;
+                }
+                if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
+                account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
+                account.LastRefreshAt = DateTimeOffset.UtcNow;
+                await db.UpdateAsync(account, ct);
+
+                var site = await db.Sites.InSingleAsync(account.LinkedSiteId);
+                if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
+                {
+                    site.ApiKey = tokens.AccessToken;
+                    await db.UpdateAsync(site, ct);
+                }
+            }, ct);
 
             _logger.LogInformation("Codex account {Id} token refreshed", account.Id);
             return true;

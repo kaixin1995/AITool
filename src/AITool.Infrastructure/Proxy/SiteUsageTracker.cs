@@ -51,10 +51,10 @@ public sealed class SiteUsageTracker
     {
         try
         {
-            // 取每条日志的 TargetSiteId + RequestedAt，内存分组取最大值。
-            // SqlSugar 对 DateTimeOffset 的 GroupBy + Max 在 SQLite 下行为不稳，故拉到内存聚合。
+            // 只取最近 7 天，避免全表扫描（日志表可能有数百万行）
+            var cutoff = DateTimeOffset.UtcNow.AddDays(-7);
             var recent = await dbContext.ProxyUsageLogs
-                .Where(l => l.TargetSiteId != Guid.Empty)
+                .Where(l => l.TargetSiteId != Guid.Empty && l.RequestedAt >= cutoff)
                 .Select(l => new { l.TargetSiteId, l.RequestedAt })
                 .ToListAsync(cancellationToken);
 

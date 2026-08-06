@@ -1,0 +1,107 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.DashboardView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:DashboardViewModel">
+  <Grid>
+      <TextBlock
+          HorizontalAlignment="Center"
+          VerticalAlignment="Top"
+          Margin="0,35,0,0"
+          Foreground="{DynamicResource AppTextSecondaryBrush}"
+          IsVisible="{Binding IsLoading}"
+          Text="正在加载仪表盘数据..." />
+
+      <Border
+          Background="{DynamicResource AppDangerSoftBrush}"
+          CornerRadius="8"
+          Padding="14"
+          IsVisible="{Binding HasError}">
+        <StackPanel Spacing="8">
+          <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppDangerTextBrush}" Text="加载失败" />
+          <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+        </StackPanel>
+      </Border>
+
+      <Border
+          Classes="content-card"
+          Padding="24"
+          IsVisible="{Binding ShowNoStats}">
+        <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="暂无仪表盘数据" />
+      </Border>
+
+      <ScrollViewer
+          VerticalScrollBarVisibility="Auto"
+          IsVisible="{Binding HasStats}">
+        <StackPanel Spacing="18">
+        <Grid ColumnDefinitions="1*,1*,1*,1*,1*" ColumnSpacing="10">
+          <Border Classes="content-card" Padding="16">
+            <StackPanel Spacing="8">
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="启用站点" />
+              <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.SiteCount}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="资源管理" />
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="1" Classes="content-card" Padding="16">
+            <StackPanel Spacing="8">
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型总数" />
+              <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.ModelCount}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="模型库" />
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="2" Classes="content-card" Padding="16">
+            <StackPanel Spacing="8">
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="路由规则" />
+              <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.RouteCount}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="代理配置" />
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="3" Classes="content-card" Padding="16">
+            <StackPanel Spacing="8">
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="启用密钥" />
+              <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.AccessKeyCount}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="访问控制" />
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="4" Classes="content-card" Padding="16">
+            <StackPanel Spacing="8">
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="检测任务" />
+              <TextBlock FontSize="28" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Stats.DetectionTaskCount}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="监控运维" />
+            </StackPanel>
+          </Border>
+        </Grid>
+
+        <Border Classes="content-card" Padding="20">
+          <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="16">
+            <Border Width="46" Height="46" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12">
+              <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontSize="22" Text="✓" Foreground="{DynamicResource AppSuccessTextBrush}" />
+            </Border>
+            <StackPanel Grid.Column="1" Spacing="4" VerticalAlignment="Center">
+              <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="核心服务状态" />
+              <TextBlock Classes="page-subtitle" Text="{Binding Stats.CoreStatusText}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding Stats.CoreSyncDetailText}" TextWrapping="Wrap" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" HorizontalAlignment="Right" Spacing="4" VerticalAlignment="Center">
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="同步状态" />
+              <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding Stats.CoreSyncStatusText}" />
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <Border Classes="content-card" Padding="20">
+          <StackPanel Spacing="10">
+            <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="快捷操作" />
+            <WrapPanel Orientation="Horizontal" ItemSpacing="10" LineSpacing="10">
+              <Button Classes="primary-button" Content="新增站点" Padding="16,8" Command="{Binding NavigateToSitesCommand}" />
+              <Button Classes="secondary-button" Content="新增模型" Padding="16,8" Command="{Binding NavigateToModelsCommand}" />
+              <Button Classes="secondary-button" Content="配置路由" Padding="16,8" Command="{Binding NavigateToRoutesCommand}" />
+              <Button Classes="secondary-button" Content="查看日志" Padding="16,8" Command="{Binding NavigateToLogsCommand}" />
+            </WrapPanel>
+          </StackPanel>
+        </Border>
+        </StackPanel>
+      </ScrollViewer>
+  </Grid>
+</UserControl>

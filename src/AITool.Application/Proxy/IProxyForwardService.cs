@@ -67,6 +67,11 @@ public sealed class ProxyForwardRequest
     /// 需要额外透传给上游的请求头，使用不区分大小写的键比较方式。
     /// </summary>
     public Dictionary<string, string> ForwardHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// 上游返回 401 时刷新特定凭证并返回新 API Key；普通站点不设置此回调。
+    /// </summary>
+    public Func<string, CancellationToken, Task<string?>>? RefreshTargetApiKeyAsync { get; set; }
 }
 
 /// <summary>

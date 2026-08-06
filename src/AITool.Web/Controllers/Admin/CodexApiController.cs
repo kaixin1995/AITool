@@ -190,7 +190,7 @@ public sealed class CodexApiController : ControllerBase
         var accounts = await _dbContext.CodexAccounts
             .OrderByDescending(a => a.CreatedAt)
             .ToListAsync(ct);
-        return Ok(accounts.Select(ToSummary).ToList());
+        return Ok(accounts.Select(a => ToSummary(a)).ToList());
     }
 
     /// <summary>查询指定账号额度（forceRefresh 穿透 30s 缓存）。</summary>
@@ -227,6 +227,9 @@ public sealed class CodexApiController : ControllerBase
         if (account == null) return NotFound(new { message = "账号不存在" });
 
         account.IsEnabled = !account.IsEnabled;
+        // 手动禁用打标记，避免巡检「额度恢复」时误自动启用；
+        // 手动启用则清除标记，恢复巡检的自动恢复能力。
+        account.ManuallyDisabled = !account.IsEnabled;
         await _dbContext.UpdateAsync(account, ct);
 
         var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
@@ -262,8 +265,52 @@ public sealed class CodexApiController : ControllerBase
         try
         {
             await _provisioner.UpdateAsync(id, req.DisplayName, ct);
-            var account = await GetAccountAsync(id, ct);
-            return Ok(ToSummary(account!));
+
+            // 如果传了新的 refresh_token，更新凭证并立即刷新 access_token。
+            if (!string.IsNullOrWhiteSpace(req.RefreshToken))
+            {
+                var account = await GetAccountAsync(id, ct);
+                if (account == null) return NotFound(new { message = "账号不存在" });
+
+                account.RefreshToken = req.RefreshToken;
+                await _dbContext.UpdateAsync(account, ct);
+
+                // 立即用新 refresh_token 刷新 access_token。
+                try
+                {
+                    var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
+                    // 仅在上游返回了非空值时才覆盖，避免空响应清空有效 token。
+                    if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
+                    {
+                        account.AccessToken = tokens.AccessToken;
+                    }
+                    if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
+                    {
+                        account.RefreshToken = tokens.RefreshToken;
+                    }
+                    if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
+                    account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
+                    account.LastRefreshAt = DateTimeOffset.UtcNow;
+                    await _dbContext.UpdateAsync(account, ct);
+
+                    var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+                    if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
+                    {
+                        site.ApiKey = tokens.AccessToken;
+                        await _dbContext.UpdateAsync(site, ct);
+                    }
+                    _metadataCache.InvalidateRouteTargets();
+                    _metadataCache.InvalidateCodexAccounts();
+                }
+                catch (Exception ex)
+                {
+                    // 凭证已更新但刷新失败，返回提示让用户知道凭证可能无效。
+                    return Ok(ToSummary(account, $"凭证已更新，但立即刷新失败：{ex.Message}"));
+                }
+            }
+
+            var updated = await GetAccountAsync(id, ct);
+            return Ok(ToSummary(updated!));
         }
         catch (InvalidOperationException)
         {
@@ -285,15 +332,22 @@ public sealed class CodexApiController : ControllerBase
         try
         {
             var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
-            account.AccessToken = tokens.AccessToken;
-            account.RefreshToken = tokens.RefreshToken;
+            // 仅在上游返回了非空值时才覆盖，避免空响应清空有效 token 导致永久无法刷新。
+            if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
+            {
+                account.AccessToken = tokens.AccessToken;
+            }
+            if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
+            {
+                account.RefreshToken = tokens.RefreshToken;
+            }
             if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
             account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
             account.LastRefreshAt = DateTimeOffset.UtcNow;
             await _dbContext.UpdateAsync(account, ct);
 
             var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-            if (site != null)
+            if (site != null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
             {
                 site.ApiKey = tokens.AccessToken;
                 await _dbContext.UpdateAsync(site, ct);
@@ -497,7 +551,7 @@ public sealed class CodexApiController : ControllerBase
         return (await _dbContext.CodexAccounts.Where(a => a.Id == id).ToListAsync(ct)).FirstOrDefault();
     }
 
-    private static object ToSummary(CodexAccount a)
+    private static object ToSummary(CodexAccount a, string? message = null)
     {
         // 从最近一次额度查询的原始响应解析窗口（供前端画进度条，无需每次单独刷新）
         List<object>? windows = null;
@@ -557,6 +611,7 @@ public sealed class CodexApiController : ControllerBase
             lastQuotaCheckedAt = a.LastQuotaCheckedAt,
             tokenExpiresAt = a.TokenExpiresAt,
             createdAt = a.CreatedAt,
+            message,
         };
     }
 
@@ -587,6 +642,10 @@ public sealed class CompleteOAuthRequest
 public sealed class UpdateAccountRequest
 {
     public string? DisplayName { get; set; }
+    /// <summary>
+    /// 新的 refresh_token，非空时更新凭证并自动刷新 access_token。
+    /// </summary>
+    public string? RefreshToken { get; set; }
 }
 
 public sealed class ExportCredentialsRequest

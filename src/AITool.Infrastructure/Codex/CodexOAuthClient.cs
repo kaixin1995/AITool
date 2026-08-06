@@ -85,6 +85,8 @@ public sealed class CodexOAuthClient : ICodexOAuthClient
     }
 
     // —— single-flight：同一 refresh_token 并发只触发一次真实上游请求 ——
+    // 注意：OpenAI 上游会轮换 refresh_token，旧 token 对应的 SemaphoreSlim 若不清理会内存泄漏。
+    // 策略：刷新完成后，若此刻没有其他等待者（CurrentCount==1 表示空闲），从字典移除并释放。
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _refreshLocks = new();
 
     /// <inheritdoc />
@@ -109,6 +111,13 @@ public sealed class CodexOAuthClient : ICodexOAuthClient
         finally
         {
             gate.Release();
+            // 清理无竞争的 entry，避免 token 轮换后旧 SemaphoreSlim 泄漏。
+            // 仅当此刻空闲（CurrentCount==1，即无人等待）才移除；并发等待中则保留复用。
+            // 用 CompareExchange 风格：先判断空闲再 TryRemove，移除成功才 Dispose（避免误释放正在等待的信号量）。
+            if (gate.CurrentCount == 1 && _refreshLocks.TryRemove(refreshToken, out var removed) && ReferenceEquals(removed, gate))
+            {
+                removed.Dispose();
+            }
         }
     }
 

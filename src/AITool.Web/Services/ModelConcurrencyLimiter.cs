@@ -130,6 +130,11 @@ public sealed class ModelConcurrencyLimiter
     /// 按模式获取指定站点模型的并发许可。
     /// SkipOnFull：打满立即返回 NotAcquired；
     /// WaitForSlot：排队等待直到释放或超时。
+    /// <para>
+    /// <paramref name="siteId"/> 是并发隔离身份（多 Key 站点为 SiteKeyId，其余为 SiteId），
+    /// <paramref name="displaySiteId"/> 是用于调试面板展示的真实站点 Id（多 Key 站点传入真实 SiteId）。
+    /// 两者分离后，并发计数仍按 Key 维度隔离，而调试面板能正确显示站点名。
+    /// </para>
     /// </summary>
     public async ValueTask<ConcurrencyAcquireResult> AcquireAsync(
         IServiceProvider serviceProvider,
@@ -137,8 +142,12 @@ public sealed class ModelConcurrencyLimiter
         string remoteModelName,
         ConcurrencyAcquireMode mode,
         TimeSpan queueTimeout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Guid displaySiteId = default)
     {
+        // 调试展示用的真实站点 Id：未显式传入时回退到隔离身份（兼容旧调用方/单 Key 场景）。
+        var effectiveDisplaySiteId = displaySiteId == default ? siteId : displaySiteId;
+
         var limits = await _metadataCache.GetModelConcurrencyLimitsAsync(cancellationToken);
         var key = BuildKey(siteId, remoteModelName);
         var maxConcurrency = limits.TryGetValue(key, out var configuredLimit)
@@ -172,12 +181,12 @@ public sealed class ModelConcurrencyLimiter
             }
         }
 
-        ReleaseQueuedWaiters(promotedWaiters, key, siteId, remoteModelName, state.ActiveCount);
+        ReleaseQueuedWaiters(promotedWaiters, key, effectiveDisplaySiteId, remoteModelName, state.ActiveCount);
 
         if (acquired)
         {
-            UpdateActiveEntry(key, siteId, remoteModelName, activeCount);
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, activeSlotId);
+            UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, activeCount);
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName, activeSlotId, effectiveDisplaySiteId);
         }
 
         if (mode == ConcurrencyAcquireMode.SkipOnFull)
@@ -192,8 +201,8 @@ public sealed class ModelConcurrencyLimiter
 
         if (completedTask == waiter.Completion.Task)
         {
-            UpdateActiveEntry(key, siteId, remoteModelName, GetActiveCount(state));
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId);
+            UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, GetActiveCount(state));
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId, effectiveDisplaySiteId);
         }
 
         var grantedDuringCancellation = false;
@@ -212,8 +221,8 @@ public sealed class ModelConcurrencyLimiter
         if (grantedDuringCancellation)
         {
             await waiter.Completion.Task;
-            UpdateActiveEntry(key, siteId, remoteModelName, GetActiveCount(state));
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId);
+            UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, GetActiveCount(state));
+            return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId, effectiveDisplaySiteId);
         }
 
         if (cancellationToken.IsCancellationRequested)
@@ -259,6 +268,11 @@ public sealed class ModelConcurrencyLimiter
 
     /// <summary>
     /// 返回最近保留窗口内出现过的模型并发快照，归零后的项也会保留显示。
+    /// <para>
+    /// 同时惰性清理已过期且空闲的并发状态（站点/Key 被删除后不再有请求访问的条目），
+    /// 避免长运行进程因频繁增删站点/Key 导致 _states 无限增长。
+    /// 仅清理 ActiveCount==0 且无排队等待的条目，不会影响正在执行的请求。
+    /// </para>
     /// </summary>
     public IReadOnlyList<ActiveModelConcurrencyEntry> ListRecent(TimeSpan retention)
     {
@@ -269,6 +283,18 @@ public sealed class ModelConcurrencyLimiter
             if (pair.Value.ActiveCount <= 0 && pair.Value.LastSeenAt < cutoff)
             {
                 _activeEntries.TryRemove(pair.Key, out _);
+                // 同步回收空闲的并发状态：仅当该 state 无活跃请求且无排队时移除，
+                // 避免误删正在执行的请求所持有的状态。
+                if (_states.TryGetValue(pair.Key, out var state))
+                {
+                    lock (state.SyncRoot)
+                    {
+                        if (state.ActiveCount == 0 && state.Waiters.Count == 0)
+                        {
+                            _states.TryRemove(pair.Key, out _);
+                        }
+                    }
+                }
             }
         }
 
@@ -284,10 +310,11 @@ public sealed class ModelConcurrencyLimiter
 
     /// <summary>
     /// 创建带真实活跃计数的并发句柄，只在请求真正开始占用模型时才记数。
+    /// release 委托同时携带隔离身份（siteId，用于延迟刷新通知）和显示身份（displaySiteId，用于调试面板）。
     /// </summary>
-    private ConcurrencyAcquireResult CreateTrackedAcquireResult(string key, Guid siteId, string remoteModelName, long activeSlotId)
+    private ConcurrencyAcquireResult CreateTrackedAcquireResult(string key, Guid siteId, string remoteModelName, long activeSlotId, Guid displaySiteId)
     {
-        return ConcurrencyAcquireResult.AcquiredSlot(() => ReleaseActiveCount(key, siteId, remoteModelName, activeSlotId));
+        return ConcurrencyAcquireResult.AcquiredSlot(() => ReleaseActiveCount(key, siteId, remoteModelName, activeSlotId, displaySiteId));
     }
 
     /// <summary>
@@ -353,8 +380,11 @@ public sealed class ModelConcurrencyLimiter
 
     /// <summary>
     /// 请求结束后回收当前活跃计数，归零时保留最近记录，便于调试页在 6 小时窗口内显示 0 并发。
+    /// <para>
+    /// <paramref name="siteId"/> 是隔离身份（用于延迟刷新通知），<paramref name="displaySiteId"/> 是显示身份（用于调试面板）。
+    /// </para>
     /// </summary>
-    private void ReleaseActiveCount(string key, Guid siteId, string remoteModelName, long activeSlotId)
+    private void ReleaseActiveCount(string key, Guid siteId, string remoteModelName, long activeSlotId, Guid displaySiteId)
     {
         var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
         List<QueuedAcquireWaiter>? promotedWaiters;
@@ -375,16 +405,17 @@ public sealed class ModelConcurrencyLimiter
 
         if (releasedTrackedSlot)
         {
+            // 延迟刷新通知用隔离身份（与 TryDeferRuntimeRouteTargetsRefresh 的 RouteTargetIdentity 对齐）。
             _metadataCache.CompleteDeferredRuntimeRouteTarget(siteId, remoteModelName, activeSlotId);
         }
 
         if (promotedWaiters.Count > 0)
         {
-            ReleaseQueuedWaiters(promotedWaiters, key, siteId, remoteModelName, activeCount);
+            ReleaseQueuedWaiters(promotedWaiters, key, displaySiteId, remoteModelName, activeCount);
             return;
         }
 
-        UpdateActiveEntry(key, siteId, remoteModelName, activeCount);
+        UpdateActiveEntry(key, displaySiteId, remoteModelName, activeCount);
     }
 
     /// <summary>
@@ -403,6 +434,11 @@ public sealed class ModelConcurrencyLimiter
 
     /// <summary>
     /// 如果受影响的模型正在调用中，则在同一把锁内捕获槽位并登记延迟刷新，避免请求刚结束时丢失通知。
+    /// <para>
+    /// 注意：多 Key 站点的并发 state 键是 {SiteKeyId}:{Model}，而本方法入参的 RouteTargetIdentity 用真实 SiteId，
+    /// 精确查不到时会返回 false，调用方据此降级为立即刷新缓存（安全行为，仅丢失"等活跃调用结束再刷新"的优化）。
+    /// 这是可接受的折中——该机制仅在编辑路由规则这一罕见操作时触发，且最坏后果是 5 秒缓存窗口后自动一致。
+    /// </para>
     /// </summary>
     public bool TryDeferRuntimeRouteTargetsRefresh(
         string externalModelName,

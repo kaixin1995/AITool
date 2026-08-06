@@ -1,0 +1,215 @@
+using System.Text;
+using Avalonia.Controls;
+using Avalonia.Interactivity;
+using Avalonia.Platform.Storage;
+using AITool.Desktop.Models;
+using AITool.Desktop.ViewModels;
+
+namespace AITool.Desktop.Views;
+
+public partial class CodexView : UserControl
+{
+    private static readonly IReadOnlyList<FilePickerFileType> JsonFileTypes =
+    [
+        new FilePickerFileType("JSON 文件")
+        {
+            Patterns = ["*.json"],
+            MimeTypes = ["application/json"]
+        }
+    ];
+
+    public CodexView() => InitializeComponent();
+
+    private async void ExportCredentials(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel
+            || TopLevel.GetTopLevel(this)?.StorageProvider is not { } storageProvider)
+        {
+            return;
+        }
+
+        var json = await viewModel.ExportCredentialsJsonAsync();
+        if (string.IsNullOrWhiteSpace(json)) return;
+
+        try
+        {
+            var file = await storageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
+            {
+                Title = "导出 Codex 凭证",
+                SuggestedFileName = $"codex_credentials_{DateTime.Now:yyyyMMdd}.json",
+                DefaultExtension = "json",
+                FileTypeChoices = JsonFileTypes
+            });
+            if (file is null) return;
+
+            await using var stream = await file.OpenWriteAsync();
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false));
+            await writer.WriteAsync(json);
+            viewModel.Message = "Codex 凭证已导出到所选文件";
+        }
+        catch (Exception exception)
+        {
+            viewModel.ErrorMessage = exception.Message;
+        }
+    }
+
+    private async void CopyCredentials(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel)
+        {
+            return;
+        }
+
+        var json = await viewModel.ExportCredentialsJsonAsync();
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+        if (string.IsNullOrWhiteSpace(json) || clipboard is null) return;
+
+        await clipboard.SetTextAsync(json);
+        viewModel.Message = "Codex 凭证 JSON 已复制到剪贴板";
+    }
+
+    private async void ImportCredentialFiles(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel
+            || TopLevel.GetTopLevel(this)?.StorageProvider is not { } storageProvider)
+        {
+            return;
+        }
+
+        var files = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
+        {
+            Title = "选择 Codex 凭证 JSON 文件",
+            AllowMultiple = true,
+            FileTypeFilter =
+            [
+                new FilePickerFileType("JSON 文件")
+                {
+                    Patterns = ["*.json"]
+                }
+            ]
+        });
+
+        if (files.Count == 0) return;
+
+        var contents = new List<(string FileName, string JsonText)>();
+        foreach (var file in files)
+        {
+            try
+            {
+                await using var stream = await file.OpenReadAsync();
+                using var reader = new StreamReader(stream);
+                contents.Add((file.Name, await reader.ReadToEndAsync()));
+            }
+            catch
+            {
+                // 让服务端统一返回该文件的解析失败结果，界面不会显示文件内容。
+                contents.Add((file.Name, string.Empty));
+            }
+        }
+
+        await viewModel.ImportCredentialFilesAsync(contents);
+    }
+
+    private async void ConfirmConsumeResetCredit(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel
+            || !viewModel.CanConsumeResetCredit)
+        {
+            return;
+        }
+
+        if (await ConfirmAsync(
+                "消耗一张手动重置额度并执行真实额度重置？此操作不可撤销。",
+                "确认消耗"))
+        {
+            await viewModel.ConsumeResetCreditCommand.ExecuteAsync(null);
+        }
+    }
+
+    private async void ConfirmResetQuota(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel
+            || sender is not Button button
+            || button.DataContext is not CodexAccount account)
+        {
+            return;
+        }
+
+        if (await ConfirmAsync("重置额度会清除冷却状态并刷新凭证，确认继续吗？", "重置额度"))
+        {
+            await viewModel.ResetQuotaCommand.ExecuteAsync(account);
+        }
+    }
+
+    private async void ConfirmDeleteAccount(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not CodexViewModel viewModel
+            || sender is not Button button
+            || button.DataContext is not CodexAccount account)
+        {
+            return;
+        }
+
+        var accountName = string.IsNullOrWhiteSpace(account.DisplayName)
+            ? account.Email
+            : account.DisplayName;
+        var message = $"确定删除 Codex 账号“{accountName}”吗？删除会同时移除关联站点、模型映射和路由规则，此操作不可撤销。";
+        if (await ConfirmAsync(message, "确认删除", "确认删除 Codex 账号"))
+        {
+            await viewModel.DeleteCommand.ExecuteAsync(account);
+        }
+    }
+
+    private async Task<bool> ConfirmAsync(
+        string message,
+        string confirmText,
+        string title = "确认重置额度")
+    {
+        var owner = TopLevel.GetTopLevel(this) as Window;
+        if (owner is null) return false;
+
+        Window? dialog = null;
+        var cancelButton = new Button
+        {
+            Content = "取消",
+            Padding = new Avalonia.Thickness(14, 8)
+        };
+        var confirmButton = new Button
+        {
+            Content = confirmText,
+            Padding = new Avalonia.Thickness(14, 8)
+        };
+        dialog = new Window
+        {
+            Title = title,
+            Width = 460,
+            Height = 240,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Content = new StackPanel
+            {
+                Margin = new Avalonia.Thickness(24),
+                Spacing = 18,
+                Children =
+                {
+                    new TextBlock
+                    {
+                        Text = message,
+                        TextWrapping = Avalonia.Media.TextWrapping.Wrap
+                    },
+                    new StackPanel
+                    {
+                        Orientation = Avalonia.Layout.Orientation.Horizontal,
+                        HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right,
+                        Spacing = 10,
+                        Children = { cancelButton, confirmButton }
+                    }
+                }
+            }
+        };
+        cancelButton.Click += (_, _) => dialog.Close(false);
+        confirmButton.Click += (_, _) => dialog.Close(true);
+
+        return await dialog.ShowDialog<bool>(owner);
+    }
+}

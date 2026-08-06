@@ -40,22 +40,6 @@ public static class SqlSugarQueryableExtensions
         }
     }
 
-    /// <summary>单实体的 DateTimeOffset offset 规范化（用于 First/Single 等单结果）。</summary>
-    private static T NormalizeSingle<T>(T? item) where T : class
-    {
-        if (item is null) return default!;
-        var type = typeof(T);
-        foreach (var prop in type.GetProperties().Where(p => p.PropertyType == typeof(DateTimeOffset)))
-        {
-            var current = (DateTimeOffset)prop.GetValue(item)!;
-            if (current.Offset != TimeSpan.Zero)
-            {
-                prop.SetValue(item, new DateTimeOffset(current.DateTime, TimeSpan.Zero));
-            }
-        }
-        return item;
-    }
-
     // —— DateTimeOffset offset 规范化的终端操作包装（关键：命中原生实例方法，不递归）——
 
     /// <summary>ToListAsync 包装：物化后规范化 DateTimeOffset offset。</summary>

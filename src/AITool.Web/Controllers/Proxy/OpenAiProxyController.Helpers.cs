@@ -2,11 +2,9 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using AITool.Web.Services;
@@ -30,6 +28,20 @@ public sealed partial class OpenAiProxyController
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
         return new Dictionary<string, string>(extra, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 仅为 Codex 隐藏站点绑定实时凭证刷新回调，普通站点的 401 不触发 OAuth 刷新。
+    /// </summary>
+    private Func<string, CancellationToken, Task<string?>>? CreateCodexCredentialRefreshCallback(
+        CachedProxyRouteTarget route)
+    {
+        return string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
+            ? (staleToken, cancellationToken) => _codexCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken)
+            : null;
     }
     /// <summary>
     /// 接收一条完整的 WebSocket 文本消息。
@@ -377,7 +389,8 @@ public sealed partial class OpenAiProxyController
             : string.Empty;
         if (!string.IsNullOrWhiteSpace(explicitSource))
         {
-            return explicitSource;
+            // 统一显式来源的大小写，确保写入、展示和筛选使用同一口径。
+            return explicitSource.ToLowerInvariant();
         }
 
         var userAgent = request.Headers.UserAgent.ToString();
@@ -530,6 +543,8 @@ public sealed partial class OpenAiProxyController
                 inputTokens = promptTokens.GetInt32();
             }
 
+            // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
+            // 所以 output_tokens=0 时回退到 completion_tokens。
             if (usage.TryGetProperty("output_tokens", out var outputTokenElement) && outputTokenElement.ValueKind == JsonValueKind.Number && outputTokenElement.GetInt32() > 0)
             {
                 outputTokens = outputTokenElement.GetInt32();
@@ -539,16 +554,19 @@ public sealed partial class OpenAiProxyController
                 outputTokens = completionTokens.GetInt32();
             }
 
-            // OpenAI Chat Completions 与 Responses 的缓存字段名称不同，流式统计同时兼容两种格式。
-            if (usage.TryGetProperty("input_tokens_details", out var inputTokenDetails) && inputTokenDetails.ValueKind == JsonValueKind.Object &&
-                inputTokenDetails.TryGetProperty("cached_tokens", out var inputCachedTokenElement) &&
-                inputCachedTokenElement.ValueKind == JsonValueKind.Number)
+            // 缓存 token：同时兼容 input_tokens_details / prompt_tokens_details 两种格式。
+            // 部分中间层（如 newapi）会在同一个 usage 里同时放这两种字段，取先命中的非零值。
+            if (usage.TryGetProperty("input_tokens_details", out var inputTokenDetails)
+                && inputTokenDetails.ValueKind == JsonValueKind.Object
+                && inputTokenDetails.TryGetProperty("cached_tokens", out var inputCachedTokenElement)
+                && inputCachedTokenElement.ValueKind == JsonValueKind.Number)
             {
                 cachedTokens = inputCachedTokenElement.GetInt32();
             }
-            else if (usage.TryGetProperty("prompt_tokens_details", out var promptTokenDetails) &&
-                     promptTokenDetails.ValueKind == JsonValueKind.Object && promptTokenDetails.TryGetProperty("cached_tokens", out var cachedTokenElement) &&
-                     cachedTokenElement.ValueKind == JsonValueKind.Number)
+            else if (usage.TryGetProperty("prompt_tokens_details", out var promptTokenDetails)
+                     && promptTokenDetails.ValueKind == JsonValueKind.Object
+                     && promptTokenDetails.TryGetProperty("cached_tokens", out var cachedTokenElement)
+                     && cachedTokenElement.ValueKind == JsonValueKind.Number)
             {
                 cachedTokens = cachedTokenElement.GetInt32();
             }
@@ -876,148 +894,58 @@ public sealed partial class OpenAiProxyController
                 entry.AttemptedModel);
         }
     }
-
-    /// <summary>
-    /// 安全地写入结构化对话记录，失败时不影响主链路。
-    /// 有会话标识的工具（claude-code / codex / open-code）按会话分组，
-    /// 无会话标识的普通代理请求合并到同一个分组。
-    /// </summary>
-    /// <param name="assistantContent">流式转发时实时累积的 AI 正文（不受 64KB 诊断副本限制）；非流式或为空时回退到从 <paramref name="responseBody"/> 提取。</param>
-    private async Task SafeLogConversationAsync(Guid requestId, Guid accessKeyId, string protocolType, string requestSource, string requestBody, string responseBody, string requestModel, bool isStreaming, string status, int inputTokens, int cachedTokens, int outputTokens, DateTimeOffset requestedAt, CancellationToken cancellationToken, string assistantContent = "")
-    {
-        try
-        {
-            var headers = CaptureRequestHeaders();
-            var sourceTool = _conversationExtractionService.ResolveSourceTool(
-                headers.TryGetValue("X-AITool-Source", out var explicitSource) ? explicitSource : string.Empty,
-                Request.Headers.UserAgent.ToString());
-
-            var sessionId = _conversationExtractionService.ExtractSessionId(headers);
-
-            // 合并为一次 JsonDocument.Parse，避免对几 MB 的 requestBody 解析两次导致两份 LOH 副本。
-            var (userInput, toolResultOutput) = _conversationExtractionService.ExtractRequestConversationFields(requestBody, protocolType, Request.Path);
-            // 优先用流式转发时实时累积的 AI 正文（完整捕获，不受 64KB 诊断副本限制）；
-            // 为空时回退到从 responseBody 提取（非流式或兜底场景）。
-            var assistantText = !string.IsNullOrWhiteSpace(assistantContent)
-                ? assistantContent
-                : _conversationExtractionService.ExtractAssistantOutput(responseBody, protocolType, Request.Path);
-            var assistantOutputMarkdown = JoinConversationMarkdown(toolResultOutput, assistantText);
-            if (string.IsNullOrWhiteSpace(userInput) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
-            {
-                return;
-            }
-
-            // 有 sessionId 的按 sourceTool:sessionId 分组，无 sessionId 的合并到 sourceTool 这一组。
-            var groupKey = !string.IsNullOrWhiteSpace(sessionId)
-                ? $"{sourceTool}:{sessionId}"
-                : sourceTool;
-
-            await _conversationLogService.LogAsync(new ConversationTurnEntry
-            {
-                RequestId = requestId,
-                CreatedAt = DateTimeOffset.UtcNow,
-                UserCreatedAt = requestedAt,
-                SourceTool = sourceTool,
-                SessionId = sessionId,
-                ConversationGroupKey = groupKey,
-                AccessKeyId = accessKeyId,
-                RequestModel = requestModel,
-                ProtocolType = protocolType,
-                RequestPath = Request.Path,
-                Source = requestSource,
-                UserInputText = userInput,
-                AssistantOutputMarkdown = assistantOutputMarkdown,
-                InputTokens = inputTokens,
-                CachedTokens = cachedTokens,
-                OutputTokens = outputTokens,
-                IsStreaming = isStreaming,
-                Status = status,
-                MetadataJson = _conversationExtractionService.BuildMetadataJson(
-                    Request.Headers.UserAgent.ToString(),
-                    headers.TryGetValue("x-app", out var xApp) ? xApp : string.Empty,
-                    sessionId)
-            }, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex,
-                "记录结构化对话失败，但请求继续返回。Protocol={Protocol}, RequestModel={RequestModel}",
-                protocolType,
-                requestModel);
-        }
-    }
-
-    /// <summary>
-    /// 合并工具结果和模型回复，避免展示时内容粘连。
-    /// </summary>
-    private static string JoinConversationMarkdown(params string[] values)
-    {
-        return string.Join("\n\n", values.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()));
-    }
-
-    /// <summary>
-    /// 复制当前请求头为普通字典，避免跨层依赖 ASP.NET Core 类型。
-    /// </summary>
-    private Dictionary<string, string> CaptureRequestHeaders()
-    {
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var header in Request.Headers)
-        {
-            headers[header.Key] = header.Value.ToString();
-        }
-
-        return headers;
-    }
-
     /// <summary>
     /// 安全地读取路由熔断状态。
+    /// 参数为熔断身份键（多 Key 展开后用合成键，区分同一路由的不同 Key）。
     /// </summary>
-    private bool IsRouteBlockedSafely(Guid routeId)
+    private bool IsRouteBlockedSafely(Guid circuitKey)
     {
         try
         {
-            return _circuitStore.IsBlocked(routeId);
+            return _circuitStore.IsBlocked(circuitKey);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "读取熔断状态失败，按未熔断继续转发。RouteId={RouteId}",
-                routeId);
+                "读取熔断状态失败，按未熔断继续转发。CircuitKey={CircuitKey}",
+                circuitKey);
             return false;
         }
     }
 
     /// <summary>
     /// 安全地标记路由调用成功。
+    /// 参数为熔断身份键（多 Key 展开后用合成键，区分同一路由的不同 Key）。
     /// </summary>
-    private void SafeSucceedRoute(Guid routeId)
+    private void SafeSucceedRoute(Guid circuitKey)
     {
         try
         {
-            _circuitStore.Succeed(routeId);
+            _circuitStore.Succeed(circuitKey);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "更新路由成功状态失败，但请求继续返回。RouteId={RouteId}",
-                routeId);
+                "更新路由成功状态失败，但请求继续返回。CircuitKey={CircuitKey}",
+                circuitKey);
         }
     }
 
     /// <summary>
     /// 安全地累计路由失败状态。
+    /// 参数为熔断身份键（多 Key 展开后用合成键，区分同一路由的不同 Key）。
     /// </summary>
-    private void SafeBlockRoute(Guid routeId)
+    private void SafeBlockRoute(Guid circuitKey)
     {
         try
         {
-            _circuitStore.Block(routeId);
+            _circuitStore.Block(circuitKey);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "更新路由失败状态失败，但继续尝试后续路由。RouteId={RouteId}",
-                routeId);
+                "更新路由失败状态失败，但继续尝试后续路由。CircuitKey={CircuitKey}",
+                circuitKey);
         }
     }
 

@@ -1,0 +1,187 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.ModelHealthView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    xmlns:views="using:AITool.Desktop.Views"
+    x:DataType="vm:ModelHealthViewModel"
+    x:CompileBindings="False">
+  <Grid RowDefinitions="Auto,Auto,*" RowSpacing="18" MinWidth="0">
+    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="14" VerticalAlignment="Center">
+      <StackPanel Spacing="4">
+        <TextBlock Classes="page-title" Text="模型健康看板" />
+        <TextBlock Classes="page-subtitle" Text="监控指定模型在各站点的健康状态、成功率和检测历史" />
+      </StackPanel>
+      <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="12,7" />
+    </Grid>
+
+    <Border Grid.Row="1" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="4">
+      <StackPanel Orientation="Horizontal" Spacing="4">
+        <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="health" Content="模型健康" IsChecked="{Binding IsHealthTab}" />
+        <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="fallback" Content="路由回退" IsChecked="{Binding IsFallbackTab}" />
+      </StackPanel>
+    </Border>
+
+    <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" IsVisible="{Binding IsHealthTab}">
+      <StackPanel Spacing="16">
+        <Border Classes="content-card" Padding="18">
+          <StackPanel Spacing="12">
+            <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="添加监控模型" />
+            <Grid ColumnDefinitions="1*,1.2*,Auto" ColumnSpacing="12" VerticalAlignment="Bottom">
+              <StackPanel Spacing="5">
+                <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="搜索模型" />
+                <TextBox Classes="form-input" Text="{Binding AvailableKeyword}" Watermark="输入模型名称过滤..." />
+              </StackPanel>
+              <StackPanel Grid.Column="1" Spacing="5">
+                <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="选择模型" />
+                <ComboBox ItemsSource="{Binding FilteredAvailableModels}" SelectedItem="{Binding SelectedModel}" PlaceholderText="请选择要监控的模型">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate><TextBlock Text="{Binding DisplayName}" /></DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+              </StackPanel>
+              <Button Grid.Column="2" Classes="primary-button" Command="{Binding AddMonitorCommand}" Content="添加监控" IsEnabled="{Binding CanAddMonitor}" Padding="14,8" />
+            </Grid>
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoAvailableModels}" Text="暂无可添加的模型，或所有模型已经加入监控。" />
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoFilteredAvailableModels}" Text="没有匹配的模型，请调整搜索关键词。" />
+          </StackPanel>
+        </Border>
+
+        <Border Classes="content-card" Padding="16" IsVisible="{Binding HasMonitoredModels}">
+          <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*" ColumnSpacing="12" RowSpacing="10" VerticalAlignment="Center">
+            <TextBlock VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="时间范围" />
+            <ComboBox Grid.Column="1" HorizontalAlignment="Stretch" ItemsSource="{Binding RangeOptions}" SelectedItem="{Binding SelectedRange}">
+              <ComboBox.ItemTemplate>
+                <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+            <TextBlock Grid.Row="1" VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型搜索" />
+            <TextBox Grid.Row="1" Grid.Column="1" Classes="form-input" Text="{Binding ModelKeyword}" Watermark="按已监控模型名称过滤..." />
+          </Grid>
+        </Border>
+
+        <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasError}">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="重试" IsEnabled="{Binding CanRetry}" Padding="12,7" />
+          </Grid>
+        </Border>
+        <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding IsLoading}">
+          <StackPanel Spacing="7">
+            <ProgressBar Height="4" IsIndeterminate="True" />
+            <TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="正在加载模型健康数据..." />
+          </StackPanel>
+        </Border>
+
+        <Border Classes="content-card" Padding="24" IsVisible="{Binding HasNoMonitoredModels}">
+          <StackPanel HorizontalAlignment="Center" Spacing="8">
+            <TextBlock HorizontalAlignment="Center" FontSize="30" Text="💊" />
+            <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="暂未配置监控模型，请在上方选择模型添加" />
+          </StackPanel>
+        </Border>
+        <Border Classes="content-card" Padding="24" IsVisible="{Binding IsEmptyAfterFilter}">
+          <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="没有匹配当前关键词的模型" />
+        </Border>
+
+        <ItemsControl ItemsSource="{Binding FilteredModels}" IsVisible="{Binding IsContentVisible}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Classes="content-card" Padding="18" Margin="0,0,0,14">
+                <StackPanel Spacing="14">
+                  <Grid ColumnDefinitions="*,Auto" ColumnSpacing="14" VerticalAlignment="Top">
+                    <StackPanel Spacing="4" MinWidth="0">
+                      <TextBlock FontSize="17" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
+                      <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SiteSummaryText}" />
+                      <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,4,0,0">
+                        <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding HealthySiteText}" /></Border>
+                        <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="12" Padding="9,4"><TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding UnhealthySiteText}" /></Border>
+                        <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="9,4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding HealthSummaryText}" /></Border>
+                      </StackPanel>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                      <Button Classes="secondary-button" Command="{Binding DataContext.ToggleDetailsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="查看明细" IsVisible="{Binding IsCollapsed}" Padding="11,7" />
+                      <Button Classes="secondary-button" Command="{Binding DataContext.ToggleDetailsCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="收起明细" IsVisible="{Binding IsExpanded}" Padding="11,7" />
+                      <Button Classes="secondary-button" Command="{Binding DataContext.RemoveMonitorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="移除监控" IsEnabled="{Binding DataContext.CanRemoveMonitor, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="11,7" />
+                    </StackPanel>
+                  </Grid>
+
+                  <Grid ColumnDefinitions="1*,1*,1*,1*,1.5*" ColumnSpacing="10">
+                    <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="成功率" /><Grid>
+                          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsHighSuccessRate}" />
+                          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsMediumSuccessRate}" />
+                          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsLowSuccessRate}" />
+                          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsUnknownSuccessRate}" />
+                        </Grid></StackPanel></Border>
+                    <Border Grid.Column="1" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="成功 / 失败" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SuccessFailureText}" /></StackPanel></Border>
+                    <Border Grid.Column="2" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="总请求" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding TotalRequestCount}" /></StackPanel></Border>
+                    <Border Grid.Column="3" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="平均延迟" /><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding AverageDurationText}" /></StackPanel></Border>
+                    <Border Grid.Column="4" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12,10"><StackPanel Spacing="4"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="最近检查" /><TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding LastCheckedText}" TextTrimming="CharacterEllipsis" /></StackPanel></Border>
+                  </Grid>
+
+                  <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,14,0,0" IsVisible="{Binding IsExpanded}">
+                    <StackPanel Spacing="10">
+                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="站点明细" />
+                      <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoSites}" Text="该模型暂无站点映射数据" />
+                      <ItemsControl ItemsSource="{Binding Sites}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate>
+                            <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="10" Padding="14" Margin="0,0,0,8">
+                              <StackPanel Spacing="10">
+                                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                                  <StackPanel Orientation="Horizontal" Spacing="8">
+                                    <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SiteName}" TextTrimming="CharacterEllipsis" />
+                                    <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="8,4" IsVisible="{Binding IsSuccess}"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="正常" /></Border>
+                                    <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="12" Padding="8,4" IsVisible="{Binding IsFailed}"><TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="异常" /></Border>
+                                    <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="8,4" IsVisible="{Binding IsUnknown}"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="未知" /></Border>
+                                  </StackPanel>
+                                  <TextBlock Grid.Column="1" VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding RemoteModelName}" TextTrimming="CharacterEllipsis" />
+                                </Grid>
+                                <Grid ColumnDefinitions="1.2*,1*,1*,1.4*" ColumnSpacing="10">
+                                  <StackPanel Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="成功率" /><Grid>
+                                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsHighSuccessRate}" />
+                                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsMediumSuccessRate}" />
+                                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsLowSuccessRate}" />
+                                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SuccessRateText}" IsVisible="{Binding IsUnknownSuccessRate}" />
+                                    </Grid></StackPanel>
+                                  <StackPanel Grid.Column="1" Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="成功 / 失败" /><TextBlock Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SuccessFailureText}" /></StackPanel>
+                                  <StackPanel Grid.Column="2" Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="最近耗时" /><TextBlock Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding DurationText}" /></StackPanel>
+                                  <StackPanel Grid.Column="3" Spacing="3"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="最近检查" /><TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding LastCheckedText}" TextTrimming="CharacterEllipsis" /></StackPanel>
+                                </Grid>
+                                <ProgressBar Maximum="100" Value="{Binding SuccessRatePercent}" Height="8" />
+                                <StackPanel Orientation="Horizontal" Spacing="4" IsVisible="{Binding HasTimeline}">
+                                  <ItemsControl ItemsSource="{Binding TimelineSegments}">
+                                    <ItemsControl.ItemsPanel><ItemsPanelTemplate><StackPanel Orientation="Horizontal" Spacing="4" /></ItemsPanelTemplate></ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
+                                      <DataTemplate>
+                                        <Grid Width="16" Height="10" ToolTip.Tip="{Binding TooltipText}">
+                                          <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="3" IsVisible="{Binding IsAllSuccess}" />
+                                          <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="3" IsVisible="{Binding IsAllFailed}" />
+                                          <Border Background="{DynamicResource AppWarningSoftBrush}" CornerRadius="3" IsVisible="{Binding IsMixed}" />
+                                          <Border Background="{DynamicResource AppBorderBrush}" CornerRadius="3" IsVisible="{Binding IsEmpty}" />
+                                        </Grid>
+                                      </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                  </ItemsControl>
+                                </StackPanel>
+                                <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoTimeline}" Text="暂无请求记录" />
+                              </StackPanel>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </StackPanel>
+                  </Border>
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </ScrollViewer>
+
+    <views:RouteFallbackView
+        Grid.Row="2"
+        DataContext="{Binding RouteFallback}"
+        IsVisible="{Binding DataContext.IsFallbackTab, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+  </Grid>
+</UserControl>

@@ -30,6 +30,7 @@ public sealed class CodexQuotaService : ICodexQuotaService
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly IMemoryCache _resultCache;
+    private readonly CodexCredentialRefreshService _credentialRefreshService;
     private readonly ILogger<CodexQuotaService> _logger;
 
     /// <summary>single-flight：同 accountId 并发只一次真实请求。</summary>
@@ -40,12 +41,14 @@ public sealed class CodexQuotaService : ICodexQuotaService
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
         IMemoryCache resultCache,
+        CodexCredentialRefreshService credentialRefreshService,
         ILogger<CodexQuotaService> logger)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _resultCache = resultCache;
+        _credentialRefreshService = credentialRefreshService;
         _logger = logger;
     }
 
@@ -73,12 +76,14 @@ public sealed class CodexQuotaService : ICodexQuotaService
 
             var info = await QueryUpstreamAsync(account, cancellationToken);
 
-            // 持久化（更新 LastQuotaRawJson/LastQuotaCheckedAt；自动禁用判定仍用百分比阈值）
+            // 持久化（用 CopyNew 独立连接写入）
             try
             {
+                using var writeClient = _dbContext.Client.CopyNew();
+                writeClient.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
                 account.LastQuotaRawJson = info.RawJson;
                 account.LastQuotaCheckedAt = DateTimeOffset.UtcNow;
-                await _dbContext.UpdateAsync(account, cancellationToken);
+                await writeClient.Updateable(account).ExecuteCommandAsync(cancellationToken);
                 // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
                 _metadataCache.InvalidateCodexAccounts();
 
@@ -107,10 +112,19 @@ public sealed class CodexQuotaService : ICodexQuotaService
         finally
         {
             gate.Release();
+            // 清理无竞争的 entry，避免账号删除后 SemaphoreSlim 泄漏。
+            // 仅当此刻空闲（无人等待）才移除；并发等待中则保留复用。
+            if (gate.CurrentCount == 1 && _locks.TryRemove(account.Id, out var removed) && ReferenceEquals(removed, gate))
+            {
+                removed.Dispose();
+            }
         }
     }
 
-    private async Task<CodexQuotaInfo> QueryUpstreamAsync(CodexAccount account, CancellationToken ct)
+    private async Task<CodexQuotaInfo> QueryUpstreamAsync(
+        CodexAccount account,
+        CancellationToken ct,
+        bool allowTokenRefresh = true)
     {
         if (string.IsNullOrEmpty(account.AccessToken))
         {
@@ -135,6 +149,19 @@ public sealed class CodexQuotaService : ICodexQuotaService
             var info = new CodexQuotaInfo { RawJson = body, CheckedAt = DateTimeOffset.UtcNow };
             if (!response.IsSuccessStatusCode)
             {
+                if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh)
+                {
+                    var refreshedAccessToken = await _credentialRefreshService.RefreshAsync(
+                        account.LinkedSiteId,
+                        account.AccessToken,
+                        ct);
+                    if (!string.IsNullOrWhiteSpace(refreshedAccessToken))
+                    {
+                        account.AccessToken = refreshedAccessToken;
+                        return await QueryUpstreamAsync(account, ct, false);
+                    }
+                }
+
                 info.Success = false;
                 info.Error = $"上游返回 {(int)response.StatusCode}";
                 return info;
@@ -176,14 +203,17 @@ public sealed class CodexQuotaService : ICodexQuotaService
 
     private async Task DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)
     {
+        // 用 CopyNew 独立连接写入
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         account.IsEnabled = false;
-        await _dbContext.UpdateAsync(account, ct);
+        await client.Updateable(account).ExecuteCommandAsync(ct);
 
-        var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null && site.IsEnabled)
         {
             site.IsEnabled = false;
-            await _dbContext.UpdateAsync(site, ct);
+            await client.Updateable(site).ExecuteCommandAsync(ct);
         }
 
         _metadataCache.InvalidateRouteTargets();

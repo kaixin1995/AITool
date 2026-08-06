@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AITool.Application.Common;
 using Microsoft.AspNetCore.Http;
 
@@ -298,6 +299,75 @@ public sealed class DeveloperInvocationTraceStore
         {
             return body;
         }
+    }
+
+    /// <summary>
+    /// 精简调用详情正文：保留 JSON 结构，仅收缩超长字符串值，供调试页面展示使用。
+    /// </summary>
+    public static string SummarizeBody(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            var node = JsonNode.Parse(body);
+            SummarizeJsonNode(node);
+            return node?.ToJsonString(JsonSerializerPresets.WriteIndented) ?? body;
+        }
+        catch
+        {
+            // 非 JSON 响应体保持原样，避免精简展示破坏文本、SSE 等诊断内容。
+            return body;
+        }
+    }
+
+    private static void SummarizeJsonNode(JsonNode? node)
+    {
+        switch (node)
+        {
+            case JsonObject jsonObject:
+                foreach (var property in jsonObject.ToList())
+                {
+                    if (TrySummarizeString(property.Value, out var summarized))
+                    {
+                        jsonObject[property.Key] = summarized;
+                        continue;
+                    }
+
+                    SummarizeJsonNode(property.Value);
+                }
+                break;
+            case JsonArray jsonArray:
+                for (var index = 0; index < jsonArray.Count; index++)
+                {
+                    var item = jsonArray[index];
+                    if (TrySummarizeString(item, out var summarized))
+                    {
+                        jsonArray[index] = summarized;
+                        continue;
+                    }
+
+                    SummarizeJsonNode(item);
+                }
+                break;
+        }
+    }
+
+    private static bool TrySummarizeString(JsonNode? node, out string summarized)
+    {
+        summarized = string.Empty;
+        if (node is not JsonValue value
+            || !value.TryGetValue<string>(out var text)
+            || text.Length <= 200)
+        {
+            return false;
+        }
+
+        summarized = $"{text[..100]}…(省略{text.Length - 120}字符){text[^20..]}";
+        return true;
     }
 }
 

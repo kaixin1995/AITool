@@ -79,11 +79,6 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public bool DeveloperFeaturesEnabled { get; set; }
 
     /// <summary>
-    /// 控制对话记录页面及记录写入功能是否启用。
-    /// </summary>
-    public bool ConversationLogEnabled { get; set; }
-
-    /// <summary>
     /// 并发打满时的处理策略：0 = 跳到下一顺位，1 = 排队等待。
     /// </summary>
     public int ConcurrencyMode { get; set; }
@@ -104,9 +99,9 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public bool CodexInspectionEnabled { get; set; }
 
     /// <summary>
-    /// Codex 巡检周期（分钟），下限 5。
+    /// Codex 巡检周期（秒），下限 30。
     /// </summary>
-    public int CodexInspectionIntervalMinutes { get; set; }
+    public int CodexInspectionIntervalSeconds { get; set; }
 
     /// <summary>
     /// Codex 额度缓存最大小时数，超过则强制真实刷新。

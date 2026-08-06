@@ -56,8 +56,19 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
 
-        // 尊重 Codex 功能总开关：关闭时跳过本轮（避免恢复被总开关禁用的账号）
-        var runtime = await cache.GetRuntimeSettingsAsync(ct);
+        // 尊重 Codex 功能总开关：关闭时跳过本轮（避免恢复被总开关禁用的账号）。
+        // 此处在 SerialExecuteAsync 外查询，可能与 Web 请求并发踩 SqlSugarScope 竞态，
+        // 用 try-catch 降级：查询失败时跳过本轮（下轮重试）。
+        CachedProxyRuntimeSettings runtime;
+        try
+        {
+            runtime = await cache.GetRuntimeSettingsAsync(ct);
+        }
+        catch
+        {
+            _logger.LogWarning("GetRuntimeSettingsAsync failed in cooldown recovery, skipping this round");
+            return;
+        }
         if (!runtime.CodexFeaturesEnabled)
         {
             return;

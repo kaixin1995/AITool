@@ -358,6 +358,25 @@ public sealed class UsageLogsApiController : ControllerBase
     }
 
     /// <summary>
+    /// 获取筛选项（全部站点 + 全部访问密钥，供筛选下拉框）。
+    /// 迁移自 UsageLogs/Index.cshtml.cs 的 OnGetAsync。
+    /// </summary>
+    [HttpGet("filters")]
+    public async Task<IActionResult> GetFilters(CancellationToken cancellationToken)
+    {
+        var sites = await _dbContext.Sites
+            .OrderBy(s => s.Name)
+            .Select(s => new { id = s.Id, name = s.Name })
+            .ToListAsync(cancellationToken);
+        var accessKeys = await _dbContext.ProxyAccessKeys
+            .OrderBy(k => k.KeyName)
+            .Select(k => new { id = k.Id, name = k.KeyName })
+            .ToListAsync(cancellationToken);
+
+        return Ok(new { sites, accessKeys });
+    }
+
+    /// <summary>
     /// 获取用量日志列表。
     /// </summary>
     [HttpGet("list")]
@@ -511,7 +530,7 @@ public sealed class UsageLogsApiController : ControllerBase
         {
             var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
 
-            // 数据库层过滤 + 聚合：不再全表加载到内存。
+            // 数据库层过滤。
             var baseQuery = _dbContext.ProxyUsageLogs
                 .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
                 .WhereIF(query.SiteId.HasValue, x => x.TargetSiteId == query.SiteId!.Value)
@@ -524,13 +543,15 @@ public sealed class UsageLogsApiController : ControllerBase
                 baseQuery = baseQuery.Where(x => x.AttemptedModel.Contains(query.ModelKeyword) || x.RequestModel.Contains(query.ModelKeyword));
             }
 
+            // 数据库层过滤 + 聚合：不下全表加载到内存，避免大数据量（如"全部"范围）OOM。
             var totalCount = await baseQuery.CountAsync(cancellationToken);
             var successRequests = await baseQuery.CountAsync(x => x.Status == "success", cancellationToken);
             var failedRequests = await baseQuery.CountAsync(x => x.Status == "fail", cancellationToken);
             var successRate = totalCount == 0
                 ? 0d
                 : Math.Round(successRequests * 100d / totalCount, 2, MidpointRounding.AwayFromZero);
-            var totalTokens = totalCount == 0 ? 0L : await baseQuery.SumAsync(x => x.TotalTokens);
+            // (long) 强转避免 int 求和累计超 21 亿溢出（见 9391615）。
+            var totalTokens = totalCount == 0 ? 0L : await baseQuery.SumAsync(x => (long)x.TotalTokens);
             var maxDurationMs = totalCount == 0
                 ? 0
                 : await baseQuery.MaxAsync(x => x.TotalDurationMs, cancellationToken);
@@ -570,12 +591,15 @@ public sealed class UsageLogsApiController : ControllerBase
             return (customStart, customEnd);
         }
 
+        // 结束时间统一用"今天结束"（明天0点），与 Analytics 口径一致，
+        // 避免不同页面对"当天"的结束时刻定义不同导致统计范围偏差。
+        var endOfToday = now.Date.AddDays(1);
         return normalized switch
         {
-            "week" => (now.Date.AddDays(-(int)now.DayOfWeek), now),
-            "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), now),
+            "week" => (now.Date.AddDays(-(int)now.DayOfWeek), endOfToday),
+            "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), endOfToday),
             "all" => (DateTimeOffset.MinValue, DateTimeOffset.MaxValue),
-            _ => (now.Date, now)
+            _ => (now.Date, endOfToday)
         };
     }
 

@@ -1,0 +1,149 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.RoutesView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:RoutesViewModel"
+    x:CompileBindings="False"
+    PointerPressed="StartRuleDrag"
+    PointerMoved="MoveRuleDrag"
+    PointerReleased="EndRuleDrag">
+  <Grid RowDefinitions="Auto,*" RowSpacing="24" ColumnDefinitions="320,*" ColumnSpacing="20">
+      <StackPanel Grid.ColumnSpan="2" Spacing="4" IsVisible="{Binding ShowPageHeader, RelativeSource={RelativeSource AncestorType=UserControl}}">
+        <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="路由规则管理" />
+        <TextBlock Classes="page-subtitle" Text="主入口绑定有序候选实例队列，请求时按顺序失败切换、成功即停止" TextWrapping="Wrap" />
+      </StackPanel>
+
+      <Border Grid.Row="1" Classes="content-card" Padding="0">
+        <DockPanel>
+          <StackPanel DockPanel.Dock="Top" Spacing="0">
+            <Border Background="{DynamicResource AppPageBackgroundBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,0,0,1" Padding="18,16">
+              <StackPanel Spacing="4">
+                <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="主入口" />
+                <TextBlock FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="管理对外暴露的本地路由入口" TextWrapping="Wrap" />
+              </StackPanel>
+            </Border>
+            <Border Background="{DynamicResource AppInputBackgroundBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,0,0,1" Padding="16">
+              <StackPanel Spacing="6">
+                <TextBlock FontSize="13" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="新建主入口" />
+                <Grid ColumnDefinitions="*,88" ColumnSpacing="8">
+                  <TextBox Grid.Column="0" Classes="form-input" MinWidth="0" Height="34" MinHeight="34" Text="{Binding NewEntryName}" Watermark="例如 auto" />
+                  <Button Grid.Column="1" Classes="primary-button" Command="{Binding CreateEntryCommand}" Content="创建" IsEnabled="{Binding CanCreate}" Height="34" HorizontalAlignment="Stretch" Padding="8,6" HorizontalContentAlignment="Center" />
+                </Grid>
+              </StackPanel>
+            </Border>
+          </StackPanel>
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <ItemsControl ItemsSource="{Binding Entries}" Margin="10">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <ToggleButton
+                      Classes="route-entry-item"
+                      HorizontalAlignment="Stretch"
+                      HorizontalContentAlignment="Stretch"
+                      Click="SelectEntry"
+                      IsChecked="{Binding IsSelected, Mode=OneWay}">
+                    <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+                      <TextBlock VerticalAlignment="Center" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding EntryName}" TextTrimming="CharacterEllipsis" />
+                      <Border Grid.Column="1" Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="10" Padding="7,3"><TextBlock FontSize="11" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding CandidateCount}" /></Border>
+                    </Grid>
+                  </ToggleButton>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </ScrollViewer>
+        </DockPanel>
+      </Border>
+
+      <Border Grid.Row="1" Grid.Column="1" Classes="content-card" Padding="0">
+        <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+          <StackPanel>
+            <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="18,14">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                <StackPanel Spacing="3">
+                  <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="候选实例队列" />
+                  <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="按顺序尝试候选实例，失败后自动切换；保存后立即生效。" />
+                </StackPanel>
+                <Button Grid.Column="1" Classes="secondary-button" Click="ConfirmDeleteEntry" Content="删除当前入口" IsEnabled="{Binding CanEdit}" Padding="10,6" />
+              </Grid>
+            </Border>
+            <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" IsVisible="{Binding HasError}" Margin="16,14,16,0" Padding="12">
+              <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+            </Border>
+            <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="8" IsVisible="{Binding HasMessage}" Margin="16,14,16,0" Padding="12">
+              <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding Message}" TextWrapping="Wrap" />
+            </Border>
+            <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoSelectedEntry}" Margin="25" Text="请先选择或创建一个路由入口" />
+
+            <StackPanel IsVisible="{Binding HasSelectedEntry}" Spacing="12" Margin="16,14,16,0">
+              <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="14">
+                <Grid ColumnDefinitions="2*,2*,Auto,Auto" ColumnSpacing="8">
+                  <TextBox Classes="form-input" Height="34" MinHeight="34" Text="{Binding CandidateSearch}" Watermark="搜索站点或模型" />
+                  <ComboBox Grid.Column="1" Height="34" HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch" PlaceholderText="选择站点实例" ItemsSource="{Binding FilteredSiteInstances}" SelectedItem="{Binding SelectedSiteInstance}" IsEnabled="{Binding CanEdit}">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate><TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" /></DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <Button Grid.Column="2" Classes="primary-button" Command="{Binding AddSelectedCandidateCommand}" Content="追加候选" IsEnabled="{Binding CanAddCandidate}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" />
+                  <Button Grid.Column="3" Classes="secondary-button" Command="{Binding RefreshSiteInstancesCommand}" Content="刷新实例池" IsEnabled="{Binding CanRefreshPool}" Height="34" Padding="8,6" HorizontalContentAlignment="Center" />
+                </Grid>
+              </Border>
+              <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoSiteInstances}" Text="暂无可用站点实例，请先启用站点并配置模型映射。" TextWrapping="Wrap" />
+
+              <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="8" Padding="0">
+                <StackPanel>
+                  <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="14,11">
+                    <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="候选队列（可拖拽或使用上移/下移调整顺序，修改后自动保存）" TextWrapping="Wrap" />
+                  </Border>
+                  <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoRules}" Margin="20" Text="当前主入口暂无候选实例，请从上方实例池添加。" TextWrapping="Wrap" />
+                  <ItemsControl ItemsSource="{Binding Rules}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="14,12">
+                          <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="12" VerticalAlignment="Center">
+                            <Border Background="{DynamicResource AppPrimarySoftBrush}" CornerRadius="14" Height="28" Width="28" VerticalAlignment="Center">
+                              <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding PriorityText}" />
+                            </Border>
+                            <StackPanel Grid.Column="1" Spacing="3" MinWidth="0">
+                              <WrapPanel ItemSpacing="8" LineSpacing="4">
+                                <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SiteName}" TextTrimming="CharacterEllipsis" />
+                                <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" IsVisible="{Binding IsSiteDisabled}" Padding="7,2"><TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="站点已禁用" /></Border>
+                                <Grid>
+                                  <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,2" IsVisible="{Binding IsEnabled}"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
+                                  <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="10" Padding="7,2" IsVisible="{Binding IsDisabled}"><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" /></Border>
+                                </Grid>
+                              </WrapPanel>
+                              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InstanceSummary}" TextTrimming="CharacterEllipsis" />
+                            </StackPanel>
+                            <WrapPanel Grid.Column="2" ItemSpacing="6" VerticalAlignment="Center">
+                              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="可用性" VerticalAlignment="Center" />
+                              <ComboBox Height="34" ItemsSource="{Binding DataContext.AvailabilityOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedValue="{Binding AvailabilityMode, Mode=TwoWay}" SelectedValueBinding="{Binding Value}" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}">
+                                <ComboBox.ItemTemplate>
+                                  <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+                                </ComboBox.ItemTemplate>
+                              </ComboBox>
+                              <StackPanel Orientation="Horizontal" Spacing="6" IsVisible="{Binding HasTimeRange}">
+                                <TextBox Classes="form-input" Width="64" Height="34" Text="{Binding TimeRangeStart}" Watermark="00:00" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                                <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="至" VerticalAlignment="Center" />
+                                <TextBox Classes="form-input" Width="64" Height="34" Text="{Binding TimeRangeEnd}" Watermark="23:59" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                              </StackPanel>
+                            </WrapPanel>
+                            <UniformGrid Grid.Column="3" Columns="4" HorizontalAlignment="Right" VerticalAlignment="Center">
+                              <Button Classes="secondary-button" Command="{Binding DataContext.ToggleRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" IsEnabled="{Binding CanToggle}" Height="34" Margin="0,0,6,0" Padding="8,5" HorizontalContentAlignment="Center" />
+                              <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleUpCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="上移" IsEnabled="{Binding CanMoveUp}" Height="34" Margin="0,0,6,0" Padding="8,5" HorizontalContentAlignment="Center" />
+                              <Button Classes="secondary-button" Command="{Binding DataContext.MoveRuleDownCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="下移" IsEnabled="{Binding CanMoveDown}" Height="34" Margin="0,0,6,0" Padding="8,5" HorizontalContentAlignment="Center" />
+                              <Button Classes="secondary-button" Command="{Binding DataContext.RemoveCandidateCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="移除" IsEnabled="{Binding DataContext.CanEdit, RelativeSource={RelativeSource AncestorType=UserControl}}" Height="34" Padding="8,5" HorizontalContentAlignment="Center" />
+                            </UniformGrid>
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </Border>
+    </Grid>
+</UserControl>

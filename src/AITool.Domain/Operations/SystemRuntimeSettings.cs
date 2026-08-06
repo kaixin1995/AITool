@@ -65,11 +65,6 @@ public sealed class SystemRuntimeSettings
     public bool DeveloperFeaturesEnabled { get; set; }
 
     /// <summary>
-    /// 标记是否启用对话记录功能，用于控制对话记录页面显示以及对话记录写入。
-    /// </summary>
-    public bool ConversationLogEnabled { get; set; } = true;
-
-    /// <summary>
     /// 并发打满时的处理策略。
     /// 0 = SkipOnFull：跳到下一顺位模型；
     /// 1 = WaitForSlot：排队等待直到释放或超时。
@@ -106,9 +101,9 @@ public sealed class SystemRuntimeSettings
     public bool CodexInspectionEnabled { get; set; }
 
     /// <summary>
-    /// Codex 巡检周期（分钟），下限 5。每隔该周期执行一轮账号额度巡检。
+    /// Codex 巡检周期（秒），下限 30。每隔该周期执行一轮账号额度巡检。
     /// </summary>
-    public int CodexInspectionIntervalMinutes { get; set; } = 30;
+    public int CodexInspectionIntervalSeconds { get; set; } = 1800;
 
     /// <summary>
     /// Codex 额度缓存最大小时数。超过该时长未真实刷新的账号，巡检时强制真实刷新（codex-patrol 缺失的兜底）。

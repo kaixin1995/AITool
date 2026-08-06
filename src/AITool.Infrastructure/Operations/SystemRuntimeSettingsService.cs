@@ -60,7 +60,6 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         settings.UsageLogRetentionDays = Math.Max(1, request.UsageLogRetentionDays);
         settings.UsageLogAutoCleanupEnabled = request.UsageLogAutoCleanupEnabled;
         settings.DeveloperFeaturesEnabled = request.DeveloperFeaturesEnabled;
-        settings.ConversationLogEnabled = request.ConversationLogEnabled;
         settings.ConcurrencyMode = Math.Max(0, Math.Min(1, request.ConcurrencyMode));
         settings.ConcurrencyQueueTimeoutSeconds = Math.Max(1, request.ConcurrencyQueueTimeoutSeconds);
 
@@ -68,7 +67,7 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         var wasCodexEnabled = settings.CodexFeaturesEnabled;
         settings.CodexFeaturesEnabled = request.CodexFeaturesEnabled;
         settings.CodexInspectionEnabled = request.CodexInspectionEnabled;
-        settings.CodexInspectionIntervalMinutes = Math.Max(1, request.CodexInspectionIntervalMinutes);
+        settings.CodexInspectionIntervalSeconds = Math.Max(30, request.CodexInspectionIntervalSeconds);
         settings.CodexQuotaMaxCacheHours = Math.Max(1, request.CodexQuotaMaxCacheHours);
         settings.CodexAutoDisableThresholdPercent = Math.Max(1, Math.Min(100, request.CodexAutoDisableThresholdPercent));
 

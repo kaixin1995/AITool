@@ -2,14 +2,13 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using AITool.Application.Conversations;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
-using AITool.Infrastructure.Conversations;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Web.Services;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Web.Controllers.Admin;
@@ -328,14 +327,6 @@ public sealed class ChatApiController : ControllerBase
     /// 模型并发限制器。
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
-    /// <summary>
-    /// 结构化对话内容提取服务。
-    /// </summary>
-    private readonly ConversationExtractionService _conversationExtractionService;
-    /// <summary>
-    /// 结构化对话写入服务。
-    /// </summary>
-    private readonly IConversationLogService _conversationLogService;
 
     /// <summary>
     /// 创建调试对话控制器。
@@ -347,9 +338,7 @@ public sealed class ChatApiController : ControllerBase
         IUsageLogService usageLogService,
         ProxyRequestMetadataCache metadataCache,
         IHttpClientFactory httpClientFactory,
-        ModelConcurrencyLimiter concurrencyLimiter,
-        ConversationExtractionService conversationExtractionService,
-        IConversationLogService conversationLogService)
+        ModelConcurrencyLimiter concurrencyLimiter)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
@@ -358,8 +347,6 @@ public sealed class ChatApiController : ControllerBase
         _metadataCache = metadataCache;
         _httpClientFactory = httpClientFactory;
         _concurrencyLimiter = concurrencyLimiter;
-        _conversationExtractionService = conversationExtractionService;
-        _conversationLogService = conversationLogService;
     }
 
     /// <summary>
@@ -444,22 +431,25 @@ public sealed class ChatApiController : ControllerBase
         {
             var requestId = Guid.NewGuid();
             var attemptIndex = 0;
+            var routeIndex = -1;
             var attempts = new List<ChatAttemptResult>();
 
             foreach (var route in allRoutes)
             {
-                if (_circuitStore.IsBlocked(route.RouteId))
+                routeIndex++;
+                if (_circuitStore.IsBlocked(route.CircuitKey))
                     continue;
 
                 attemptIndex++;
                 // 调试对话与代理主链路共用同一套并发占用统计，确保调试页看到的是全局真实占用。
                 using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                     HttpContext.RequestServices,
-                    route.SiteId,
+                    route.SiteKeyId ?? route.SiteId,
                     route.SiteModelName,
                     concurrencyMode,
                     concurrencyQueueTimeout,
-                    cancellationToken);
+                    cancellationToken,
+                    displaySiteId: route.SiteId);
 
                 if (!concurrencyHandle.Acquired)
                 {
@@ -491,6 +481,8 @@ public sealed class ChatApiController : ControllerBase
                 }, cancellationToken);
 
                 attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success, requestBody, forwardResult.ResponseBody ?? ""));
+                var canFallback = !forwardResult.Success
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.CircuitKey));
 
                 await _usageLogService.LogAsync(new UsageLogEntry
                 {
@@ -504,9 +496,10 @@ public sealed class ChatApiController : ControllerBase
                     Source = "chat",
                     RetryCount = forwardResult.Success ? attemptIndex - 1 : attemptIndex,
                     AttemptIndex = attemptIndex,
-                    IsFinalResult = forwardResult.Success,
-                    FallbackTriggered = !forwardResult.Success,
+                    IsFinalResult = forwardResult.Success || !canFallback,
+                    FallbackTriggered = canFallback,
                     ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+                    HttpStatusCode = forwardResult.StatusCode > 0 ? forwardResult.StatusCode : null,
                     InputTokens = forwardResult.InputTokens,
                     CachedTokens = forwardResult.CachedTokens,
                     OutputTokens = forwardResult.OutputTokens,
@@ -521,13 +514,12 @@ public sealed class ChatApiController : ControllerBase
                 if (forwardResult.Success)
                 {
                     sw.Stop();
-                    _circuitStore.Succeed(route.RouteId);
+                    _circuitStore.Succeed(route.CircuitKey);
                     var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, route.ProtocolType);
-                    await SafeLogChatConversationAsync(requestId, model.ModelName, route.ProtocolType, request.Message, payload.Content, forwardResult.InputTokens, forwardResult.CachedTokens, forwardResult.OutputTokens, false, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, forwardResult.TotalDurationMs)), cancellationToken);
                     return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
                 }
 
-                _circuitStore.Block(route.RouteId);
+                _circuitStore.Block(route.CircuitKey);
             }
 
             sw.Stop();
@@ -552,10 +544,13 @@ public sealed class ChatApiController : ControllerBase
     [HttpPost("send-stream")]
     public async Task SendStream([FromBody] ChatSendRequest request, CancellationToken cancellationToken)
     {
-        Response.StatusCode = 200;
-        Response.ContentType = "text/event-stream";
-        Response.Headers.CacheControl = "no-cache";
+        Response.StatusCode = StatusCodes.Status200OK;
+        Response.ContentType = "text/event-stream; charset=utf-8";
+        Response.Headers.CacheControl = "no-cache, no-transform";
         Response.Headers["X-Accel-Buffering"] = "no";
+        HttpContext.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+        await Response.StartAsync(cancellationToken);
+        await Response.Body.FlushAsync(cancellationToken);
 
         if (string.IsNullOrWhiteSpace(request.Message))
         {
@@ -603,18 +598,20 @@ public sealed class ChatApiController : ControllerBase
 
         var requestId = Guid.NewGuid();
         var attemptIndex = 0;
+        var routeIndex = -1;
         var attempts = new List<ChatAttemptResult>();
 
         foreach (var route in allRoutes)
         {
-            if (_circuitStore.IsBlocked(route.RouteId))
+            routeIndex++;
+            if (_circuitStore.IsBlocked(route.CircuitKey))
                 continue;
 
             attemptIndex++;
             // 调试对话与代理主链路共用同一套并发占用统计，确保调试页看到的是全局真实占用。
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                 HttpContext.RequestServices,
-                route.SiteId,
+                route.SiteKeyId ?? route.SiteId,
                 route.SiteModelName,
                 concurrencyMode,
                 concurrencyQueueTimeout,
@@ -661,6 +658,9 @@ public sealed class ChatApiController : ControllerBase
                 streamResult.RequestBody,
                 streamResult.ResponseBody);
             attempts.Add(attemptResult);
+            var canFallback = !streamResult.Success
+                && !streamResult.HadAnyContent
+                && allRoutes.Skip(routeIndex + 1).Any(candidate => !_circuitStore.IsBlocked(candidate.CircuitKey));
 
             await _usageLogService.LogAsync(new UsageLogEntry
             {
@@ -673,9 +673,10 @@ public sealed class ChatApiController : ControllerBase
                 Source = "chat",
                 RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
-                IsFinalResult = streamResult.Success,
-                FallbackTriggered = !streamResult.Success,
+                IsFinalResult = streamResult.Success || !canFallback,
+                FallbackTriggered = canFallback,
                 ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+                HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
                 InputTokens = streamResult.InputTokens,
                 CachedTokens = streamResult.CachedTokens,
                 OutputTokens = streamResult.OutputTokens,
@@ -706,14 +707,13 @@ public sealed class ChatApiController : ControllerBase
                     TotalDurationMs = streamResult.TotalDurationMs,
                     Attempts = attempts
                 };
-                await SafeLogChatConversationAsync(requestId, model.ModelName, route.ProtocolType, request.Message, streamResult.Content, streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, true, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), cancellationToken);
                 await WriteSseEventAsync("meta", finalResult, cancellationToken);
                 await WriteSseEventAsync("done", new { requestId }, cancellationToken);
-                _circuitStore.Succeed(route.RouteId);
+                _circuitStore.Succeed(route.CircuitKey);
                 return;
             }
 
-            _circuitStore.Block(route.RouteId);
+            _circuitStore.Block(route.CircuitKey);
             if (streamResult.HadAnyContent)
             {
                 await WriteSseEventAsync("error", new { message = streamResult.ErrorMessage }, cancellationToken);
@@ -781,6 +781,9 @@ public sealed class ChatApiController : ControllerBase
         {
             ModelId = modelId,
             SiteId = selectedTarget.SiteId,
+            // 复制多 Key 身份：直发也要用选中 Key 的独立并发额度和熔断身份键。
+            SiteKeyId = selectedTarget.SiteKeyId,
+            CircuitKey = selectedTarget.CircuitKey,
             SiteName = selectedTarget.SiteName,
             ProtocolType = selectedTarget.ProtocolType,
             BaseUrl = selectedTarget.BaseUrl,
@@ -813,11 +816,12 @@ public sealed class ChatApiController : ControllerBase
         // 直发到指定站点模型时也要进入统一并发统计，避免聊天页与开发者并发检测口径不一致。
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
-            mapping.SiteId,
+            mapping.SiteKeyId ?? mapping.SiteId,
             mapping.SiteModelName,
             concurrencyMode,
             concurrencyQueueTimeout,
-            cancellationToken);
+            cancellationToken,
+            displaySiteId: mapping.SiteId);
 
         if (!concurrencyHandle.Acquired)
         {
@@ -874,6 +878,7 @@ public sealed class ChatApiController : ControllerBase
             IsFinalResult = true,
             FallbackTriggered = false,
             ErrorMessage = forwardResult.Success ? string.Empty : (forwardResult.ErrorMessage ?? string.Empty),
+            HttpStatusCode = forwardResult.StatusCode > 0 ? forwardResult.StatusCode : null,
             InputTokens = forwardResult.InputTokens,
             CachedTokens = forwardResult.CachedTokens,
             OutputTokens = forwardResult.OutputTokens,
@@ -905,7 +910,6 @@ public sealed class ChatApiController : ControllerBase
         }
 
         var payload = ExtractChatPayload(forwardResult.ResponseBody ?? string.Empty, mapping.ProtocolType);
-        await SafeLogChatConversationAsync(requestId, model.ModelName, mapping.ProtocolType, request.Message, payload.Content, forwardResult.InputTokens, forwardResult.CachedTokens, forwardResult.OutputTokens, false, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, forwardResult.TotalDurationMs)), cancellationToken);
         return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
     }
 
@@ -926,11 +930,12 @@ public sealed class ChatApiController : ControllerBase
         // 直发到指定站点模型时也要进入统一并发统计，避免聊天页与开发者并发检测口径不一致。
         using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
             HttpContext.RequestServices,
-            mapping.SiteId,
+            mapping.SiteKeyId ?? mapping.SiteId,
             mapping.SiteModelName,
             concurrencyMode,
             concurrencyQueueTimeout,
-            cancellationToken);
+            cancellationToken,
+            displaySiteId: mapping.SiteId);
 
         if (!concurrencyHandle.Acquired)
         {
@@ -990,6 +995,7 @@ public sealed class ChatApiController : ControllerBase
             IsFinalResult = true,
             FallbackTriggered = false,
             ErrorMessage = streamResult.Success ? string.Empty : streamResult.ErrorMessage,
+            HttpStatusCode = streamResult.StatusCode > 0 ? streamResult.StatusCode : null,
             InputTokens = streamResult.InputTokens,
             CachedTokens = streamResult.CachedTokens,
             OutputTokens = streamResult.OutputTokens,
@@ -1007,7 +1013,6 @@ public sealed class ChatApiController : ControllerBase
             return;
         }
 
-        await SafeLogChatConversationAsync(requestId, model.ModelName, mapping.ProtocolType, request.Message, streamResult.Content, streamResult.InputTokens, streamResult.CachedTokens, streamResult.OutputTokens, true, DateTimeOffset.UtcNow.AddMilliseconds(-Math.Max(0, streamResult.TotalDurationMs)), cancellationToken);
 
         var finalResult = new ChatSendResult
         {
@@ -1781,50 +1786,6 @@ public sealed class ChatApiController : ControllerBase
         if (!string.IsNullOrWhiteSpace(value))
         {
             values.Add(value.Trim());
-        }
-    }
-
-    /// <summary>
-    /// 将对话测试的请求与响应写入结构化对话记录。
-    /// 对话测试没有会话概念，所有记录归入同一个分组，便于在对话记录页面集中查看。
-    /// 写入失败时静默吞掉异常，不阻断对话测试的正常返回。
-    /// </summary>
-    private async Task SafeLogChatConversationAsync(Guid requestId, string requestModel, string protocolType, string userInputText, string assistantOutputMarkdown, int inputTokens, int cachedTokens, int outputTokens, bool isStreaming, DateTimeOffset requestedAt, CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (string.IsNullOrWhiteSpace(userInputText) && string.IsNullOrWhiteSpace(assistantOutputMarkdown))
-            {
-                return;
-            }
-
-            // 对话测试没有多轮会话的概念，全部归到同一个 groupKey 下。
-            await _conversationLogService.LogAsync(new ConversationTurnEntry
-            {
-                RequestId = requestId,
-                CreatedAt = DateTimeOffset.UtcNow,
-                UserCreatedAt = requestedAt,
-                SourceTool = "chat",
-                SessionId = string.Empty,
-                ConversationGroupKey = "chat",
-                AccessKeyId = Guid.Empty,
-                RequestModel = requestModel,
-                ProtocolType = protocolType,
-                RequestPath = "/api/admin/chat",
-                Source = "chat",
-                UserInputText = userInputText,
-                AssistantOutputMarkdown = assistantOutputMarkdown,
-                InputTokens = inputTokens,
-                CachedTokens = cachedTokens,
-                OutputTokens = outputTokens,
-                IsStreaming = isStreaming,
-                Status = "success",
-                MetadataJson = "{}"
-            }, cancellationToken);
-        }
-        catch
-        {
-            // 写入失败不影响对话测试主流程
         }
     }
 }
