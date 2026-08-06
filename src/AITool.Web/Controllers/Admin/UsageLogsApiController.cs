@@ -543,12 +543,11 @@ public sealed class UsageLogsApiController : ControllerBase
                 baseQuery = baseQuery.Where(x => x.AttemptedModel.Contains(query.ModelKeyword) || x.RequestModel.Contains(query.ModelKeyword));
             }
 
-            // 一次性取出聚合所需字段在内存计算，避免 SqlSugar SumAsync 对 (long) 强转的 SQL 翻译缺陷
-            // 以及 baseQuery 多次复用（CountAsync/SumAsync/MaxAsync）导致的内部状态污染。
-            // 仅取统计字段，不加载完整实体，数据量为调用日志行数（管理后台低频操作，可接受）。
-            var rows = await baseQuery
-                .Select(x => new { x.Status, x.TotalTokens, x.TotalDurationMs })
-                .ToListAsync(cancellationToken);
+            // 加载完整实体后在内存聚合。
+            // 不用 SqlSugar 的 SumAsync/匿名类型 Select——前者对 (long) 强转的 SQL 翻译有缺陷，
+            // 后者可能因列映射偏差导致 TotalTokens 取到错误值。完整实体加载保证字段映射与列表一致。
+            // 管理后台低频操作，数据量为日志行数，可接受。
+            var rows = await baseQuery.ToListAsync(cancellationToken);
 
             var totalCount = rows.Count;
             var successRequests = rows.Count(x => x.Status == "success");
@@ -594,12 +593,15 @@ public sealed class UsageLogsApiController : ControllerBase
             return (customStart, customEnd);
         }
 
+        // 结束时间统一用"今天结束"（明天0点），与 Analytics 口径一致，
+        // 避免不同页面对"当天"的结束时刻定义不同导致统计范围偏差。
+        var endOfToday = now.Date.AddDays(1);
         return normalized switch
         {
-            "week" => (now.Date.AddDays(-(int)now.DayOfWeek), now),
-            "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), now),
+            "week" => (now.Date.AddDays(-(int)now.DayOfWeek), endOfToday),
+            "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), endOfToday),
             "all" => (DateTimeOffset.MinValue, DateTimeOffset.MaxValue),
-            _ => (now.Date, now)
+            _ => (now.Date, endOfToday)
         };
     }
 
