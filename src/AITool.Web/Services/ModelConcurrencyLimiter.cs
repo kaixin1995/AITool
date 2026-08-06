@@ -268,6 +268,11 @@ public sealed class ModelConcurrencyLimiter
 
     /// <summary>
     /// 返回最近保留窗口内出现过的模型并发快照，归零后的项也会保留显示。
+    /// <para>
+    /// 同时惰性清理已过期且空闲的并发状态（站点/Key 被删除后不再有请求访问的条目），
+    /// 避免长运行进程因频繁增删站点/Key 导致 _states 无限增长。
+    /// 仅清理 ActiveCount==0 且无排队等待的条目，不会影响正在执行的请求。
+    /// </para>
     /// </summary>
     public IReadOnlyList<ActiveModelConcurrencyEntry> ListRecent(TimeSpan retention)
     {
@@ -278,6 +283,18 @@ public sealed class ModelConcurrencyLimiter
             if (pair.Value.ActiveCount <= 0 && pair.Value.LastSeenAt < cutoff)
             {
                 _activeEntries.TryRemove(pair.Key, out _);
+                // 同步回收空闲的并发状态：仅当该 state 无活跃请求且无排队时移除，
+                // 避免误删正在执行的请求所持有的状态。
+                if (_states.TryGetValue(pair.Key, out var state))
+                {
+                    lock (state.SyncRoot)
+                    {
+                        if (state.ActiveCount == 0 && state.Waiters.Count == 0)
+                        {
+                            _states.TryRemove(pair.Key, out _);
+                        }
+                    }
+                }
             }
         }
 
