@@ -637,15 +637,11 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
   {
     title: '操作',
     key: 'actions',
-    width: 130,
+    width: 248,
     fixed: 'right',
     render: (row) => {
-      // 主操作「编辑」直接按钮；其余收纳进「⋯」下拉菜单，保持操作列清爽。
+      // 高频操作（编辑/拉取/启停）直接显示为按钮；低频且需谨慎的（密钥管理/删除）收纳进「⋯」菜单。
       const options = [
-        {
-          key: 'fetch',
-          label: '拉取模型'
-        },
         {
           key: 'keys',
           label: () => h('span', null, [
@@ -653,15 +649,15 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
             h(NTag, { size: 'tiny', bordered: false, style: 'margin-left: 6px' }, () => `${row.keyCount ?? 0}`)
           ])
         },
-        {
-          key: 'toggle',
-          label: row.isEnabled ? '禁用' : '启用'
-        },
         { type: 'divider' as const, key: 'd1' },
         { key: 'delete', label: '删除站点', props: { style: 'color: var(--status-danger-text)' } }
       ]
       return h(NSpace, { size: 4, wrap: false, align: 'center' }, () => [
         h(NButton, { size: 'small', secondary: true, onClick: () => openEdit(row) }, () => '编辑'),
+        h(NButton, { size: 'small', secondary: true, loading: catalogLoading.value, onClick: () => handleFetchModels(row) }, () => '拉取'),
+        h(NButton, { size: 'small', secondary: true, onClick: () => handleToggle(row) }, () =>
+          row.isEnabled ? '禁用' : '启用'
+        ),
         h(
           NDropdown,
           {
@@ -669,9 +665,7 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
             trigger: 'click',
             placement: 'bottom-end',
             onSelect: (key: string) => {
-              if (key === 'fetch') handleFetchModels(row)
-              else if (key === 'keys') openKeysModal(row)
-              else if (key === 'toggle') handleToggle(row)
+              if (key === 'keys') openKeysModal(row)
               else if (key === 'delete') handleDeleteWithConfirm(row)
             }
           },
@@ -736,16 +730,13 @@ onBeforeUnmount(handleCatalogClosed)
         <NFormItem label="接口路径模式">
           <NSelect v-model:value="form.endpointPathMode" :options="endpointModeOptions" />
         </NFormItem>
-        <NFormItem :label="isEditMode ? '默认密钥（留空保留，多密钥请用「密钥管理」）' : '密钥'">
+        <NFormItem :label="isEditMode ? '默认密钥（留空保留）' : '密钥'">
           <NInput
             v-model:value="form.apiKey"
             type="password"
             show-password-on="click"
             placeholder="sk-..."
           />
-          <template v-if="isEditMode" #feedback>
-            <span class="site-form-tip">多密钥管理请关闭此对话框，在列表「⋯」菜单中选择「密钥管理」。</span>
-          </template>
         </NFormItem>
         <NFormItem label="协议支持">
           <NSpace vertical :size="6">
