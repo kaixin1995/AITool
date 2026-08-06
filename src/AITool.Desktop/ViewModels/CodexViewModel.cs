@@ -105,6 +105,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     }
     public bool HasResetCreditInfo => ResetCreditInfo is not null;
     public bool HasResetCreditError => ResetCreditInfo is not null && !ResetCreditInfo.Success;
+    public bool HasModalOpen => IsAccountEditorOpen || IsCredentialImportOpen || IsModelEditorOpen || IsResetCreditOpen;
     public bool CanConsumeResetCredit => !IsResetCreditLoading
         && !IsResetCreditSubmitting
         && ResetCreditInfo?.Success == true
@@ -112,6 +113,11 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     public string ResetCreditAccountText => string.IsNullOrWhiteSpace(ResetCreditAccount?.DisplayName)
         ? string.Empty
         : $"账号：{ResetCreditAccount.DisplayName}";
+
+    partial void OnIsAccountEditorOpenChanged(bool value) => OnPropertyChanged(nameof(HasModalOpen));
+    partial void OnIsCredentialImportOpenChanged(bool value) => OnPropertyChanged(nameof(HasModalOpen));
+    partial void OnIsModelEditorOpenChanged(bool value) => OnPropertyChanged(nameof(HasModalOpen));
+    partial void OnIsResetCreditOpenChanged(bool value) => OnPropertyChanged(nameof(HasModalOpen));
 
     public async Task LoadAsync()
     {

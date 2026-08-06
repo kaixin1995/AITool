@@ -11,7 +11,7 @@
         <TextBlock Classes="page-title" Text="OAuth 管理" />
         <TextBlock Classes="page-subtitle" Text="管理 Codex OAuth 账号、额度窗口、凭证和自动巡检" />
       </StackPanel>
-      <WrapPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal">
+      <WrapPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal" ItemSpacing="10" LineSpacing="8">
         <Button
             Classes="secondary-button"
             Command="{Binding OpenCredentialImportCommand}"
@@ -160,16 +160,16 @@
                         </Grid>
 
                         <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,12,0,0">
-                          <WrapPanel HorizontalAlignment="Right">
-                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Padding="10,7" Margin="0,0,6,0" />
-                            <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Padding="10,7" Margin="0,0,6,0" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="重置额度信用" Padding="10,7" Margin="0,0,6,0" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Padding="10,7" Margin="0,0,6,0" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,7" Margin="0,0,6,0" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Padding="10,7" Margin="0,0,6,0" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,7" Margin="0,0,6,0" />
-                            <Button Classes="secondary-button" Click="ConfirmDeleteAccount" Content="删除" Padding="10,7" />
-                          </WrapPanel>
+                          <UniformGrid Columns="4" HorizontalAlignment="Stretch">
+                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="重置额度信用" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Height="34" Margin="0,0,0,8" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Click="ConfirmDeleteAccount" Content="删除" Height="34" Padding="6,4" HorizontalContentAlignment="Center" />
+                          </UniformGrid>
                         </Border>
                       </StackPanel>
                     </Border>
@@ -285,7 +285,9 @@
       </StackPanel>
     </ScrollViewer>
 
-    <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsAccountEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
+    <Border Grid.RowSpan="3" Background="{DynamicResource AppPageBackgroundBrush}" Opacity="0.72" IsVisible="{Binding HasModalOpen}" ZIndex="9" />
+
+    <Border Grid.RowSpan="3" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsAccountEditorOpen}" Padding="24" Width="520" HorizontalAlignment="Center" VerticalAlignment="Center" ZIndex="10">
       <StackPanel Spacing="14">
         <Grid ColumnDefinitions="*,Auto">
           <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="编辑 Codex 账号" />
@@ -299,7 +301,7 @@
       </StackPanel>
     </Border>
 
-    <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsCredentialImportOpen}" Padding="24" Margin="12" MaxWidth="720" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="11">
+    <Border Grid.RowSpan="3" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsCredentialImportOpen}" Padding="24" Margin="12" MaxWidth="720" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="11">
       <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
         <Grid ColumnDefinitions="*,Auto">
           <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="导入 Codex 凭证 JSON" />
@@ -333,7 +335,7 @@
       </Grid>
     </Border>
 
-    <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsModelEditorOpen}" Padding="24" Margin="12" MaxWidth="760" MaxHeight="760" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="12">
+    <Border Grid.RowSpan="3" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsModelEditorOpen}" Padding="24" Margin="12" MaxWidth="760" MaxHeight="760" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="12">
       <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
         <Grid ColumnDefinitions="*,Auto">
           <StackPanel Spacing="3">
@@ -377,7 +379,7 @@
       </Grid>
     </Border>
 
-    <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsResetCreditOpen}" Padding="24" Margin="12" MaxWidth="560" MaxHeight="680" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="13">
+    <Border Grid.RowSpan="3" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsResetCreditOpen}" Padding="24" Margin="12" MaxWidth="560" MaxHeight="680" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="13">
       <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
         <Grid ColumnDefinitions="*,Auto">
           <StackPanel Spacing="3">
