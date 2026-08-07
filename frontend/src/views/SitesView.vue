@@ -456,6 +456,8 @@ async function handleImport(): Promise<void> {
 // 远端模型目录拉取/导入：恢复历史站点页的一键拉取、单站拉取、筛选和别名编辑流程。
 const catalogVisible = ref(false)
 const catalogLoading = ref(false)
+// 单站拉取按钮的独立 loading 状态（按行），避免点一个全部转圈
+const fetchingSiteId = ref<string | null>(null)
 const catalogImporting = ref(false)
 const catalogSearch = ref('')
 const catalogTaskId = ref('')
@@ -507,7 +509,7 @@ function openCatalog(results: SiteFetchResult[]): void {
 }
 
 async function handleFetchModels(row: SiteListItem): Promise<void> {
-  catalogLoading.value = true
+  fetchingSiteId.value = row.id
   catalogTaskId.value = ''
   catalogProgress.value = { total: 1, completed: 0 }
   try {
@@ -518,7 +520,7 @@ async function handleFetchModels(row: SiteListItem): Promise<void> {
     }
     openCatalog([{ siteId: row.id, siteName: row.name, status: 'success', models: result }])
   } finally {
-    catalogLoading.value = false
+    fetchingSiteId.value = null
     catalogProgress.value = { total: 0, completed: 0 }
   }
 }
@@ -654,7 +656,7 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
       ]
       return h(NSpace, { size: 4, wrap: false, align: 'center' }, () => [
         h(NButton, { size: 'small', secondary: true, onClick: () => openEdit(row) }, () => '编辑'),
-        h(NButton, { size: 'small', secondary: true, loading: catalogLoading.value, onClick: () => handleFetchModels(row) }, () => '拉取'),
+        h(NButton, { size: 'small', secondary: true, loading: fetchingSiteId.value === row.id, onClick: () => handleFetchModels(row) }, () => '拉取'),
         h(NButton, { size: 'small', secondary: true, onClick: () => handleToggle(row) }, () =>
           row.isEnabled ? '禁用' : '启用'
         ),
@@ -1168,16 +1170,23 @@ onBeforeUnmount(handleCatalogClosed)
 
 .catalog-model-row {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  grid-template-columns: auto minmax(220px, 280px) minmax(200px, 1fr) 72px;
   gap: 8px;
   align-items: center;
   min-width: 0;
 }
 
 .catalog-remote-name {
+  display: block;
+  width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.catalog-model-row :deep(.n-input) {
+  width: 100%;
+  min-width: 0;
 }
 
 @media (max-width: 768px) {

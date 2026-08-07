@@ -10,7 +10,6 @@ const message = useMessage()
 const selectedModelId = ref<string | null>(null)
 const targets = ref<ChatModelTarget[]>([])
 const selectedMappingId = ref<string | null>(null)
-const modelSearch = ref('')
 const input = ref('')
 const sending = ref(false)
 const messages = ref<Message[]>([])
@@ -39,10 +38,10 @@ async function loadModels(): Promise<void> {
 async function loadTargets(): Promise<void> {
   lastAttempts.value = null
   targets.value = await chatApi.getChatTargets()
-  if (!selectedMappingId.value && targets.value.length > 0) {
-    selectedMappingId.value = targets.value[0].mappingId
-    selectedModelId.value = targets.value[0].modelId
-  }
+  // 刷新后若原映射已被删除或禁用，清空旧 value，避免选择框回退显示 mappingId。
+  const nextTarget = targets.value.find((item) => item.mappingId === selectedMappingId.value) ?? targets.value[0]
+  selectedMappingId.value = nextTarget?.mappingId ?? null
+  selectedModelId.value = nextTarget?.modelId ?? null
 }
 
 watch(selectedMappingId, (mappingId) => {
@@ -51,12 +50,9 @@ watch(selectedMappingId, (mappingId) => {
 })
 
 const targetOptionsComputed = computed<SelectOption[]>(() => {
-  const keyword = modelSearch.value.trim().toLowerCase()
+  // 不再用 modelSearch 过滤 options：选中项被过滤掉时 NSelect 会回退显示 value（乱码）。
+  // 搜索交由 NSelect 自身的 filterable 处理，保证选中项始终在 options 中。
   return targets.value
-    .filter((t) => {
-      const text = `${t.modelDisplayName} ${t.siteName} ${t.siteModelName}`.toLowerCase()
-      return !keyword || text.includes(keyword)
-    })
     .map((t) => ({ label: `${t.siteName} / ${t.siteModelName}`, value: t.mappingId }))
 })
 
@@ -238,10 +234,6 @@ onMounted(loadModels)
       <div class="chat-admin-main">
         <NCard class="chat-card" :content-style="{ padding: '0', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }">
           <div class="chat-toolbar">
-            <label class="chat-toolbar-field chat-toolbar-field-search">
-              <span class="chat-toolbar-field-label">模型搜索</span>
-              <NInput v-model:value="modelSearch" placeholder="搜索模型" clearable />
-            </label>
             <label class="chat-toolbar-field chat-toolbar-field-target">
               <span class="chat-toolbar-field-label">站点 / 模型</span>
               <NSelect v-model:value="selectedMappingId" :options="targetOptionsComputed" placeholder="-- 请选择站点模型 --" filterable />

@@ -207,6 +207,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             return new
             {
                 siteId = x.SiteId,
+                concurrencyKey = x.ConcurrencyKey,
                 modelName = x.SiteModelName,
                 siteName = siteNames.TryGetValue(x.SiteId, out var n) ? n : "-",
                 activeCount = x.ActiveCount,

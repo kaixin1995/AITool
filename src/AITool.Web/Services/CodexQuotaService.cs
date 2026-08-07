@@ -76,33 +76,37 @@ public sealed class CodexQuotaService : ICodexQuotaService
 
             var info = await QueryUpstreamAsync(account, cancellationToken);
 
-            // 持久化（用 CopyNew 独立连接写入）
-            try
+            // 失败响应不覆盖上一次成功额度，避免“刷新时间已更新但额度窗口为空”。
+            if (info.Success)
             {
-                using var writeClient = _dbContext.Client.CopyNew();
-                writeClient.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-                account.LastQuotaRawJson = info.RawJson;
-                account.LastQuotaCheckedAt = DateTimeOffset.UtcNow;
-                await writeClient.Updateable(account).ExecuteCommandAsync(cancellationToken);
-                // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
-                _metadataCache.InvalidateCodexAccounts();
-
-                // 自动禁用判定：任一窗口使用百分比达到全局阈值时禁用（阈值用百分比 0-100 表达）
-                var runtime = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
-                if (info.Success && account.IsEnabled)
+                // 持久化（用 CopyNew 独立连接写入）
+                try
                 {
-                    var maxPercent = GetMaxUsedPercent(info);
-                    var threshold = (double)runtime.CodexAutoDisableThresholdPercent;
-                    if (maxPercent.HasValue && maxPercent.Value >= threshold)
+                    using var writeClient = _dbContext.Client.CopyNew();
+                    writeClient.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+                    account.LastQuotaRawJson = info.RawJson;
+                    account.LastQuotaCheckedAt = DateTimeOffset.UtcNow;
+                    await writeClient.Updateable(account).ExecuteCommandAsync(cancellationToken);
+                    // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
+                    _metadataCache.InvalidateCodexAccounts();
+
+                    // 自动禁用判定：任一窗口使用百分比达到全局阈值时禁用（阈值用百分比 0-100 表达）
+                    var runtime = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+                    if (account.IsEnabled)
                     {
-                        await DisableAccountAsync(account, cancellationToken,
-                            $"额度使用 {maxPercent.Value:F1}% 达到全局阈值 {threshold}");
+                        var maxPercent = GetMaxUsedPercent(info);
+                        var threshold = (double)runtime.CodexAutoDisableThresholdPercent;
+                        if (maxPercent.HasValue && maxPercent.Value >= threshold)
+                        {
+                            await DisableAccountAsync(account, cancellationToken,
+                                $"额度使用 {maxPercent.Value:F1}% 达到全局阈值 {threshold}");
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Persist codex quota result failed for account {Id}", account.Id);
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Persist codex quota result failed for account {Id}", account.Id);
+                }
             }
 
             // 写缓存（无论成功失败都缓存 30s，避免失败风暴）

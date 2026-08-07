@@ -67,9 +67,13 @@ public sealed class ConcurrencyAcquireResult : IDisposable
 public sealed record ActiveModelConcurrencyEntry
 {
     /// <summary>
-    /// 站点标识。
+    /// 站点标识（真实 SiteId，用于调试面板展示站点名）。
     /// </summary>
     public Guid SiteId { get; init; }
+    /// <summary>
+    /// 并发隔离键（{SiteKeyId}:{Model} 或回退 {SiteId}:{Model}），用于精确查找对应的运行时 state。
+    /// </summary>
+    public string ConcurrencyKey { get; init; } = string.Empty;
     /// <summary>
     /// 站点模型名称。
     /// </summary>
@@ -236,8 +240,9 @@ public sealed class ModelConcurrencyLimiter
     /// <summary>
     /// 配置变更后同步新的最大并发数，并尽快唤醒可立即放行的等待请求。
     /// </summary>
-    public void UpdateLimit(Guid siteId, string remoteModelName, int maxConcurrency)
+    public void UpdateLimit(Guid siteId, string remoteModelName, int maxConcurrency, Guid displaySiteId = default)
     {
+        var effectiveDisplaySiteId = displaySiteId == default ? siteId : displaySiteId;
         var key = BuildKey(siteId, remoteModelName);
         var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
         List<QueuedAcquireWaiter>? promotedWaiters;
@@ -250,7 +255,7 @@ public sealed class ModelConcurrencyLimiter
             activeCount = state.ActiveCount;
         }
 
-        ReleaseQueuedWaiters(promotedWaiters, key, siteId, remoteModelName, activeCount);
+        ReleaseQueuedWaiters(promotedWaiters, key, effectiveDisplaySiteId, remoteModelName, activeCount);
     }
 
     /// <summary>
@@ -322,8 +327,9 @@ public sealed class ModelConcurrencyLimiter
     /// </summary>
     private ActiveModelConcurrencyEntry EnrichWithStateInfo(ActiveModelConcurrencyEntry entry)
     {
-        var key = BuildKey(entry.SiteId, entry.SiteModelName);
-        if (!_states.TryGetValue(key, out var state))
+        // 用 entry 记录的 ConcurrencyKey（隔离身份键）精确查找 state，
+        // 而非用显示 SiteId 重建 key（多 Key 站点的隔离键是 {SiteKeyId}:{Model}，与真实 SiteId 不同）。
+        if (string.IsNullOrEmpty(entry.ConcurrencyKey) || !_states.TryGetValue(entry.ConcurrencyKey, out var state))
         {
             return entry;
         }
@@ -426,6 +432,7 @@ public sealed class ModelConcurrencyLimiter
         _activeEntries[key] = new ActiveModelConcurrencyEntry
         {
             SiteId = siteId,
+            ConcurrencyKey = key,
             SiteModelName = remoteModelName,
             ActiveCount = activeCount,
             LastSeenAt = DateTimeOffset.UtcNow

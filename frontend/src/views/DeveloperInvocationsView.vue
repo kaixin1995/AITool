@@ -555,7 +555,7 @@ onUnmounted(() => {
               :columns="concColumns"
               :data="concurrency"
               :loading="concurrencyLoading"
-              :row-key="(r: DeveloperConcurrencyItem) => r.siteId + r.modelName"
+              :row-key="(r: DeveloperConcurrencyItem) => r.concurrencyKey || `${r.siteId}:${r.modelName}`"
               :pagination="{ pageSize: 20 }"
               :scroll-x="760"
               size="small"

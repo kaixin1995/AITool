@@ -3,7 +3,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   NCard, NButton, NSpace, NTag, NModal, NForm, NFormItem, NInput, NInputNumber,
-  NSwitch, NSelect, NPopconfirm, NEmpty, NDrawer, NDrawerContent, NSpin, NTabs, NTabPane, useMessage
+  NSwitch, NSelect, NPopconfirm, NEmpty, NSpin, NTabs, NTabPane, useMessage
 } from 'naive-ui'
 import * as modelsApi from '@/api/models'
 import * as compatApi from '@/api/compatibility'
@@ -37,6 +37,7 @@ const matchTypeOptions = [
 ]
 
 const showModal = ref(false)
+const activeEditorTab = ref('basic')
 const editingId = ref<string | null>(null)
 const form = reactive<ModelPayload>({
   modelName: '',
@@ -47,14 +48,14 @@ const form = reactive<ModelPayload>({
 })
 const saving = ref(false)
 
-// 映射管理 Drawer
-const mappingDrawer = ref(false)
-const mappingModel = ref<ModelListItem | null>(null)
+// 映射管理（嵌入编辑弹窗，仅编辑模式可见）
 const modelDetail = ref<modelsApi.ModelDetail | null>(null)
 const newMappingSiteId = ref<string | null>(null)
 const newMappingRemoteName = ref('')
 const newMappingEnabled = ref(true)
 const mappingLoading = ref(false)
+// 详情请求序号，避免快速切换模型时旧响应覆盖当前弹窗。
+let modelDetailRequestId = 0
 
 const isEditMode = computed(() => !!editingId.value)
 const allModels = computed(() => vendorGroups.value.flatMap((g) => g.models))
@@ -110,7 +111,15 @@ async function loadModels(): Promise<void> {
 
 function openCreate(): void {
   editingId.value = null
+  activeEditorTab.value = 'basic'
+  modelDetailRequestId++
   Object.assign(form, { modelName: '', displayName: '', isEnabled: true, overrideReasoningEffort: '', compatibilityProfileId: null })
+  // 新建模式不展示映射区块，清理可能残留的上一次编辑数据
+  modelDetail.value = null
+  newMappingSiteId.value = null
+  newMappingRemoteName.value = ''
+  newMappingEnabled.value = true
+  mappingLoading.value = false
   showModal.value = true
 }
 
@@ -124,6 +133,9 @@ watch(
 
 async function openEdit(model: ModelListItem): Promise<void> {
   editingId.value = model.id
+  activeEditorTab.value = 'basic'
+  // 切换模型时先清空旧详情，避免新请求完成前短暂显示上一个模型的映射。
+  modelDetail.value = null
   Object.assign(form, {
     modelName: model.modelName,
     displayName: model.displayName,
@@ -132,6 +144,30 @@ async function openEdit(model: ModelListItem): Promise<void> {
     compatibilityProfileId: model.compatibilityProfileId
   })
   showModal.value = true
+  // 同时加载映射数据，供弹窗内映射区块展示与编辑
+  await loadModelDetail(model)
+}
+
+async function loadModelDetail(model: ModelListItem): Promise<void> {
+  newMappingSiteId.value = null
+  newMappingRemoteName.value = model.modelName
+  newMappingEnabled.value = true
+  await refreshModelDetail(model.id)
+}
+
+async function refreshModelDetail(modelId: string): Promise<void> {
+  const requestId = ++modelDetailRequestId
+  mappingLoading.value = true
+  try {
+    const detail = await modelsApi.getModelDetail(modelId)
+    if (requestId === modelDetailRequestId && editingId.value === modelId) {
+      modelDetail.value = detail
+    }
+  } finally {
+    if (requestId === modelDetailRequestId) {
+      mappingLoading.value = false
+    }
+  }
 }
 
 async function handleSave(): Promise<void> {
@@ -253,28 +289,19 @@ async function handleSaveVendorCatalog(): Promise<void> {
   }
 }
 
-async function openMappingDrawer(model: ModelListItem): Promise<void> {
-  mappingModel.value = model
-  mappingDrawer.value = true
-  mappingLoading.value = true
-  newMappingSiteId.value = null
-  newMappingRemoteName.value = model.modelName
-  newMappingEnabled.value = true
-  try {
-    modelDetail.value = await modelsApi.getModelDetail(model.id)
-  } finally { mappingLoading.value = false }
-}
-
 async function handleAddMapping(): Promise<void> {
-  if (!mappingModel.value || !newMappingSiteId.value || !newMappingRemoteName.value.trim()) {
+  if (!editingId.value || !newMappingSiteId.value || !newMappingRemoteName.value.trim()) {
     message.warning('请选择站点并填写模型名'); return
   }
+  const modelId = editingId.value
   try {
-    await modelsApi.addModelMapping(mappingModel.value.id, newMappingSiteId.value, newMappingRemoteName.value.trim(), newMappingEnabled.value)
+    await modelsApi.addModelMapping(modelId, newMappingSiteId.value, newMappingRemoteName.value.trim(), newMappingEnabled.value)
     message.success('关联已添加')
-    modelDetail.value = await modelsApi.getModelDetail(mappingModel.value.id)
-    newMappingSiteId.value = null
-    newMappingEnabled.value = true
+    if (editingId.value === modelId) {
+      await refreshModelDetail(modelId)
+      newMappingSiteId.value = null
+      newMappingEnabled.value = true
+    }
     await loadModels()
   } catch (e) { message.error((e as Error).message) }
 }
@@ -286,10 +313,13 @@ async function handleUpdateMappingConcurrency(mapping: modelsApi.ModelSiteMappin
 }
 
 async function handleDeleteMapping(mappingId: string): Promise<void> {
-  if (!mappingModel.value) return
-  await modelsApi.deleteModelMapping(mappingModel.value.id, mappingId)
+  if (!editingId.value) return
+  const modelId = editingId.value
+  await modelsApi.deleteModelMapping(modelId, mappingId)
   message.success('关联已删除')
-  modelDetail.value = await modelsApi.getModelDetail(mappingModel.value.id)
+  if (editingId.value === modelId) {
+    await refreshModelDetail(modelId)
+  }
   await loadModels()
 }
 
@@ -369,7 +399,6 @@ onMounted(loadModels)
                   {{ model.isEnabled ? '禁用' : '启用' }}
                 </NButton>
                 <NButton size="small" secondary type="primary" @click="openEdit(model)">编辑</NButton>
-                <NButton size="small" secondary @click="openMappingDrawer(model)">映射</NButton>
                 <NPopconfirm @positive-click="handleDelete(model)">
                   <template #trigger>
                     <NButton size="small" secondary type="error">删除</NButton>
@@ -435,30 +464,149 @@ onMounted(loadModels)
       v-model:show="showModal"
       :title="isEditMode ? '编辑模型' : '新建模型'"
       preset="card"
-      style="width: 480px; max-width: 92vw"
+      style="width: min(1080px, 94vw); max-width: 1080px"
       :mask-closable="false"
     >
-      <NForm label-placement="top">
-        <NFormItem label="模型名称（唯一）">
-          <NInput v-model:value="form.modelName" placeholder="如 gpt-4o" />
-        </NFormItem>
-        <NFormItem label="显示名称">
-          <NInput v-model:value="form.displayName" placeholder="留空则用模型名称" />
-        </NFormItem>
-        <NFormItem label="强制思考等级（留空=透传）">
-          <NInput v-model:value="form.overrideReasoningEffort" placeholder="如 low/medium/high" />
-        </NFormItem>
-        <NFormItem label="兼容规则集">
-          <NSelect
-            v-model:value="form.compatibilityProfileId"
-            :options="profileOptions"
-            placeholder="选择规则集（可选）"
-          />
-        </NFormItem>
-        <NFormItem label="启用">
-          <NSwitch v-model:value="form.isEnabled" />
-        </NFormItem>
-      </NForm>
+      <div class="model-editor-modal">
+        <NTabs v-model:value="activeEditorTab" type="line" animated class="model-editor-tabs">
+          <NTabPane name="basic" tab="基础设置">
+            <div class="editor-tab-intro">
+              <div>
+                <div class="editor-tab-title">模型定义</div>
+                <div class="editor-tab-description">维护模型在管理后台中的统一名称、展示方式和请求行为。</div>
+              </div>
+              <NTag :type="form.isEnabled ? 'success' : 'default'" :bordered="false" round>
+                {{ form.isEnabled ? '当前启用' : '当前禁用' }}
+              </NTag>
+            </div>
+
+            <NForm label-placement="top" class="model-editor-form">
+              <section class="editor-section">
+                <div class="editor-section-heading">
+                  <div>
+                    <h4>基本信息</h4>
+                    <p>模型名称用于路由匹配，显示名称用于页面展示。</p>
+                  </div>
+                </div>
+                <div class="model-form-grid model-form-grid-primary">
+                  <NFormItem label="模型名称（唯一）" required>
+                    <NInput v-model:value="form.modelName" placeholder="如 gpt-4o" />
+                  </NFormItem>
+                  <NFormItem label="显示名称">
+                    <NInput v-model:value="form.displayName" placeholder="留空则使用模型名称" />
+                  </NFormItem>
+                </div>
+              </section>
+
+              <section class="editor-section">
+                <div class="editor-section-heading">
+                  <div>
+                    <h4>请求策略</h4>
+                    <p>可选择统一覆盖思考等级，或为该模型指定兼容规则集。</p>
+                  </div>
+                </div>
+                <div class="model-form-grid model-form-grid-secondary">
+                  <NFormItem label="强制思考等级（留空=透传）">
+                    <NInput v-model:value="form.overrideReasoningEffort" placeholder="如 low / medium / high" />
+                  </NFormItem>
+                  <NFormItem label="兼容规则集">
+                    <NSelect
+                      v-model:value="form.compatibilityProfileId"
+                      :options="profileOptions"
+                      placeholder="选择规则集（可选）"
+                    />
+                  </NFormItem>
+                </div>
+              </section>
+
+              <section class="editor-status-card">
+                <div>
+                  <div class="editor-status-title">启用模型</div>
+                  <div class="editor-status-description">禁用后模型不会出现在可用模型和路由候选中。</div>
+                </div>
+                <NSwitch v-model:value="form.isEnabled" />
+              </section>
+            </NForm>
+          </NTabPane>
+
+          <NTabPane name="mappings" tab="站点映射" :disabled="!isEditMode">
+            <div class="editor-tab-intro">
+              <div>
+                <div class="editor-tab-title">站点映射</div>
+                <div class="editor-tab-description">为当前模型配置不同站点上的远端模型名和独立并发上限。</div>
+              </div>
+              <NTag v-if="modelDetail" type="info" :bordered="false" round>
+                {{ modelDetail.siteMappings.length }} 个关联
+              </NTag>
+            </div>
+
+            <NSpin :show="mappingLoading">
+              <div class="mapping-editor-stack">
+                <section class="mapping-list-panel editor-section">
+                  <div class="editor-section-heading">
+                    <div>
+                      <h4>已关联站点</h4>
+                      <p>每个站点可以使用不同的远端模型名，并单独设置最大并发。</p>
+                    </div>
+                  </div>
+                  <NEmpty v-if="!modelDetail || modelDetail.siteMappings.length === 0" description="暂无关联站点" size="small" />
+                  <div v-else class="mapping-list">
+                    <div v-for="m in modelDetail.siteMappings" :key="m.mappingId" class="mapping-row">
+                      <div class="mapping-row-main">
+                        <div class="mapping-site-line">
+                          <strong class="mapping-site-name">{{ m.siteName }}</strong>
+                          <NTag size="small" type="info" :bordered="false">{{ m.remoteModelName }}</NTag>
+                          <NTag v-if="!m.isEnabled" size="tiny" :bordered="false">禁用</NTag>
+                        </div>
+                        <div class="mapping-concurrency-line">
+                          <span class="mapping-field-label">最大并发</span>
+                          <NInputNumber v-model:value="m.maxConcurrency" size="small" :min="0" :precision="0" placeholder="0=不限" class="mapping-concurrency-input" />
+                          <NButton size="small" secondary @click="handleUpdateMappingConcurrency(m, m.maxConcurrency)">保存</NButton>
+                        </div>
+                      </div>
+                      <NPopconfirm @positive-click="handleDeleteMapping(m.mappingId)">
+                        <template #trigger><NButton size="small" quaternary type="error">删除</NButton></template>
+                        删除该关联？
+                      </NPopconfirm>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="mapping-add-panel editor-section">
+                  <div class="editor-section-heading">
+                    <div>
+                      <h4>添加关联</h4>
+                      <p>选择一个可用站点，并填写该站点实际接受的模型名。</p>
+                    </div>
+                  </div>
+                  <NForm label-placement="top" class="mapping-add-form">
+                    <NFormItem label="站点" required>
+                      <NSelect
+                        v-model:value="newMappingSiteId"
+                        :options="modelDetail?.availableSites.map(s => ({ label: s.name, value: s.id })) ?? []"
+                        placeholder="选择站点"
+                      />
+                    </NFormItem>
+                    <NFormItem label="站点上的模型名" required>
+                      <NInput v-model:value="newMappingRemoteName" placeholder="如 gpt-4o-mini" />
+                    </NFormItem>
+                    <NFormItem label="状态" class="mapping-enabled-item">
+                      <div class="mapping-enabled-line">
+                        <NSwitch v-model:value="newMappingEnabled" />
+                        <span>启用映射</span>
+                      </div>
+                    </NFormItem>
+                    <NFormItem label=" " class="mapping-add-action">
+                      <NButton type="primary" class="mapping-add-button" @click="handleAddMapping">添加关联</NButton>
+                    </NFormItem>
+                  </NForm>
+                </section>
+              </div>
+            </NSpin>
+          </NTabPane>
+        </NTabs>
+      </div>
+
       <template #footer>
         <NSpace justify="end">
           <NButton @click="showModal = false">取消</NButton>
@@ -557,48 +705,6 @@ onMounted(loadModels)
       </template>
     </NModal>
 
-    <!-- 映射管理 Drawer -->
-    <NDrawer v-model:show="mappingDrawer" :width="520" placement="right">
-      <NDrawerContent :title="`站点映射 - ${mappingModel?.displayName ?? ''}`" closable>
-        <NSpin :show="mappingLoading">
-          <h4 style="margin: 0 0 8px; font-size: 13px; color: var(--n-text-color-3, #888)">已关联站点</h4>
-          <NEmpty v-if="!modelDetail || modelDetail.siteMappings.length === 0" description="暂无关联" size="small" />
-          <div v-for="m in modelDetail?.siteMappings" :key="m.mappingId" class="mapping-row">
-            <div class="mapping-row-main">
-              <div class="mapping-site-line">
-                <span>{{ m.siteName }}</span>
-                <NTag size="small" :bordered="false">{{ m.remoteModelName }}</NTag>
-                <NTag v-if="!m.isEnabled" size="tiny" :bordered="false">禁用</NTag>
-              </div>
-              <div class="mapping-concurrency-line">
-                <span class="mapping-field-label">最大并发</span>
-                <NInputNumber v-model:value="m.maxConcurrency" size="tiny" :min="0" :precision="0" placeholder="0=不限" class="mapping-concurrency-input" />
-                <NButton size="tiny" secondary @click="handleUpdateMappingConcurrency(m, m.maxConcurrency)">保存</NButton>
-              </div>
-            </div>
-            <NPopconfirm @positive-click="handleDeleteMapping(m.mappingId)">
-              <template #trigger><NButton size="tiny" quaternary type="error">删除</NButton></template>
-              删除该关联？
-            </NPopconfirm>
-          </div>
-
-          <h4 style="margin: 20px 0 8px; font-size: 13px; color: var(--n-text-color-3, #888)">添加关联</h4>
-          <NSpace vertical :size="8">
-            <NSelect
-              v-model:value="newMappingSiteId"
-              :options="modelDetail?.availableSites.map(s => ({ label: s.name, value: s.id })) ?? []"
-              placeholder="选择站点"
-            />
-            <NInput v-model:value="newMappingRemoteName" placeholder="站点上的模型名" />
-            <label class="mapping-enabled-line">
-              <NSwitch v-model:value="newMappingEnabled" />
-              <span>启用映射</span>
-            </label>
-            <NButton type="primary" size="small" @click="handleAddMapping">添加</NButton>
-          </NSpace>
-        </NSpin>
-      </NDrawerContent>
-    </NDrawer>
   </div>
 </template>
 
@@ -994,12 +1100,175 @@ onMounted(loadModels)
   text-align: center;
 }
 
+.model-editor-modal {
+  min-width: 0;
+}
+
+.model-editor-tabs :deep(.n-tabs-nav) {
+  margin-bottom: 4px;
+}
+
+.model-editor-tabs :deep(.n-tab-pane) {
+  padding-top: 18px;
+}
+
+.editor-tab-intro {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+  padding: 16px 18px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 14px;
+  background: var(--bg-card);
+}
+
+.editor-tab-title {
+  color: var(--text-primary);
+  font-size: 17px;
+  font-weight: 700;
+}
+
+.editor-tab-description,
+.editor-section-heading p,
+.editor-status-description {
+  margin: 5px 0 0;
+  color: var(--text-color-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.model-editor-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.editor-section,
+.editor-status-card {
+  min-width: 0;
+  padding: 18px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 14px;
+  background: var(--bg-card);
+}
+
+.editor-section-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.editor-section-heading h4 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.editor-section-heading p {
+  max-width: 680px;
+}
+
+.model-form-grid {
+  display: grid;
+  gap: 14px 18px;
+}
+
+.model-form-grid-primary,
+.model-form-grid-secondary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.model-form-grid :deep(.n-form-item) {
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+.editor-status-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  background: color-mix(in srgb, var(--primary-color) 5%, var(--bg-card));
+}
+
+.editor-status-title {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mapping-editor-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mapping-list-panel,
+.mapping-add-panel {
+  min-width: 0;
+}
+
+.mapping-list {
+  max-height: min(42vh, 420px);
+  padding-right: 4px;
+  overflow-y: auto;
+}
+
+.mapping-add-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(200px, 300px) 130px 120px;
+  gap: 14px 16px;
+  align-items: start;
+  justify-content: start;
+}
+
+.mapping-add-form :deep(.n-form-item) {
+  min-width: 0;
+  margin-bottom: 0;
+}
+
+/* 统一复用 NFormItem 的标签和控件间距，避免自定义标签与 Naive UI 表单项错位。 */
+.mapping-add-form :deep(.n-form-item-label) {
+  white-space: nowrap;
+}
+
+.mapping-enabled-line {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.mapping-add-action :deep(.n-form-item-label) {
+  visibility: hidden;
+}
+
+.mapping-add-button {
+  width: 100%;
+  min-height: 34px;
+}
+
 .mapping-row {
   display: flex;
   align-items: flex-start;
-  gap: 8px;
-  padding: 10px 0;
+  gap: 12px;
+  padding: 14px 0;
   border-bottom: 1px solid var(--border-color-global);
+}
+
+.mapping-row:first-child {
+  padding-top: 0;
+}
+
+.mapping-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
 }
 
 .mapping-row-main {
@@ -1017,7 +1286,14 @@ onMounted(loadModels)
 
 .mapping-site-line {
   flex-wrap: wrap;
-  margin-bottom: 8px;
+  margin-bottom: 10px;
+}
+
+.mapping-site-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mapping-field-label,
@@ -1027,7 +1303,7 @@ onMounted(loadModels)
 }
 
 .mapping-concurrency-input {
-  width: 112px;
+  width: 132px;
 }
 
 @media (max-width: 768px) {
@@ -1073,6 +1349,38 @@ onMounted(loadModels)
   .vendor-rule-delete {
     padding-top: 0;
     text-align: left;
+  }
+
+  .model-form-grid-primary,
+  .model-form-grid-secondary,
+  .mapping-add-form {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 560px) {
+  .editor-tab-intro,
+  .editor-status-card {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .editor-section,
+  .editor-status-card {
+    padding: 14px;
+  }
+
+  .mapping-concurrency-line {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .mapping-concurrency-input {
+    flex: 1 1 120px;
+  }
+
+  .mapping-row {
+    gap: 8px;
   }
 }
 </style>

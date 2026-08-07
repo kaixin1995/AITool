@@ -103,10 +103,40 @@ const someVisibleModelsChecked = computed(() => (
 ))
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+let accountsRequestId = 0
+let inspectionRequestId = 0
+
+// 使巡检前已经发出的旧查询失效，避免响应晚到时覆盖巡检后的新数据。
+function invalidatePendingRefreshes(): void {
+  accountsRequestId++
+  inspectionRequestId++
+}
+
+async function loadAccounts(showError: boolean): Promise<void> {
+  const requestId = ++accountsRequestId
+  try {
+    const result = await api.listCodexAccounts()
+    if (requestId === accountsRequestId) {
+      accounts.value = result
+      featureDisabled.value = false
+    }
+  } catch (e) {
+    if (requestId !== accountsRequestId) return
+    // Codex 功能未开启时后端返回 404，显示提示而非空白。
+    if ((e as { status?: number }).status === 404) {
+      featureDisabled.value = true
+    } else if (showError) {
+      message.error((e as Error).message)
+    }
+  }
+}
 
 async function loadInspection(force = false): Promise<void> {
   if (inspectionDisabled.value && !force) return
+  // 巡检运行期间不读取中间状态，完成后由 handleRunInspection 统一刷新。
+  if (inspectionRunning.value) return
 
+  const requestId = ++inspectionRequestId
   inspectionStatusError.value = ''
   inspectionLastRunError.value = ''
   inspectionLogsError.value = ''
@@ -115,6 +145,8 @@ async function loadInspection(force = false): Promise<void> {
     api.getCodexInspectionLastRun(),
     api.getCodexInspectionLogs()
   ])
+
+  if (requestId !== inspectionRequestId) return
 
   if (statusResult.status === 'fulfilled') {
     inspection.value = statusResult.value
@@ -144,31 +176,27 @@ async function loadInspection(force = false): Promise<void> {
 async function load(): Promise<void> {
   loading.value = true
   featureDisabled.value = false
-  await Promise.all([
-    (async () => {
-      try {
-        accounts.value = await api.listCodexAccounts()
-      } catch (e) {
-        // Codex 功能未开启时后端返回 404，显示提示而非空白。
-        if ((e as { status?: number }).status === 404) {
-          featureDisabled.value = true
-        } else {
-          message.error((e as Error).message)
-        }
-      }
-    })(),
-    loadInspection(true)
-  ])
+  await Promise.all([loadAccounts(true), loadInspection(true)])
   loading.value = false
 }
 
-async function refreshSilently(): Promise<void> {
-  await Promise.all([
-    api.listCodexAccounts()
-      .then(result => { accounts.value = result })
-      .catch(() => undefined),
-    loadInspection()
-  ])
+let silentRefreshInFlight: Promise<void> | null = null
+
+async function refreshSilently(force = false): Promise<void> {
+  const inFlight = silentRefreshInFlight
+  if (inFlight) {
+    await inFlight
+    // 巡检完成后的强制刷新必须在旧请求结束后重新发起一次。
+    if (!force || (silentRefreshInFlight && silentRefreshInFlight !== inFlight)) return
+  }
+
+  const refresh: Promise<void> = Promise.all([loadAccounts(false), loadInspection()]).then(() => undefined)
+  silentRefreshInFlight = refresh
+  try {
+    await refresh
+  } finally {
+    if (silentRefreshInFlight === refresh) silentRefreshInFlight = null
+  }
 }
 
 function openOAuthModal(): void {
@@ -223,15 +251,20 @@ async function handleDelete(acc: CodexAccount): Promise<void> {
 async function handleRunInspection(force: boolean): Promise<void> {
   if (inspectionRunning.value) return
   inspectionRunning.value = true
+  // 真实巡检开始前作废已发出的轮询请求，防止旧账号列表/巡检详情回写。
+  invalidatePendingRefreshes()
+  let succeeded = false
   try {
     inspectionLastRun.value = await api.runCodexInspection(force)
+    succeeded = true
     message.success(force ? '真实巡检已完成' : '手动巡检已完成')
-    await refreshSilently()
   } catch (e) {
     message.error((e as Error).message)
   } finally {
     inspectionRunning.value = false
   }
+  // 先结束运行态，再读取账号、状态和日志，确保巡检后的最新数据完整回显。
+  if (succeeded) await refreshSilently(true)
 }
 
 // 编辑（重命名 + 修改凭证）

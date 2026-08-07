@@ -195,6 +195,16 @@ public sealed class CodexInspectionService : BackgroundService
     {
         var ar = new InspectionAccountResult { AccountId = account.Id, DisplayName = account.DisplayName };
 
+        // access_token 已过期时等待后台刷新，避免巡检继续请求必然失败的额度接口。
+        // TokenExpiresAt 刷新成功后会随账号缓存失效，下一轮巡检自动恢复。
+        if (account.TokenExpiresAt is { } tokenExpiresAt && tokenExpiresAt <= DateTimeOffset.UtcNow)
+        {
+            ar.Action = "keep";
+            ar.Reason = "access_token 已过期，等待后台刷新，暂不进行额度巡检";
+            AddLog("quota", $"账号 {account.DisplayName} access_token 已过期，暂不巡检");
+            return ar;
+        }
+
         // 1. 解析上次额度快照（从 LastQuotaRawJson）
         CodexQuotaInfo? lastInfo = null;
         if (!string.IsNullOrEmpty(account.LastQuotaRawJson))

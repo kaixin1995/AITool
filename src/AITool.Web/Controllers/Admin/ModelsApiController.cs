@@ -119,7 +119,7 @@ public sealed class ModelsApiController : ControllerBase
         {
             foreach (var keyId in siteKeyIds)
             {
-                _concurrencyLimiter.UpdateLimit(keyId, mapping.RemoteModelName, mapping.MaxConcurrency);
+                _concurrencyLimiter.UpdateLimit(keyId, mapping.RemoteModelName, mapping.MaxConcurrency, mapping.SiteId);
             }
         }
         else

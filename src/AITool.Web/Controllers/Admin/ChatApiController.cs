@@ -615,7 +615,8 @@ public sealed class ChatApiController : ControllerBase
                 route.SiteModelName,
                 concurrencyMode,
                 concurrencyQueueTimeout,
-                cancellationToken);
+                cancellationToken,
+                displaySiteId: route.SiteId);
 
             if (!concurrencyHandle.Acquired)
             {

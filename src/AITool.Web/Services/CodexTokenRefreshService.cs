@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
 using AITool.Infrastructure.Persistence;
@@ -24,10 +25,14 @@ public sealed class CodexTokenRefreshService : BackgroundService
     /// <summary>同轮内每两次刷新间的小延迟，错峰避免瞬时打满上游。</summary>
     private static readonly TimeSpan InterAccountDelay = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>上游明确拒绝刷新时的临时退避时间，避免每轮重复请求失效账号。</summary>
+    private static readonly TimeSpan RefreshFailureBackoff = TimeSpan.FromHours(1);
+
     private readonly IServiceProvider _services;
     private readonly ICodexOAuthClient _oauth;
     private readonly ILogger<CodexTokenRefreshService> _logger;
     private readonly IHostEnvironment _environment;
+    private readonly ConcurrentDictionary<Guid, DateTimeOffset> _refreshRetryAt = new();
 
     public CodexTokenRefreshService(
         IServiceProvider services,
@@ -88,6 +93,10 @@ public sealed class CodexTokenRefreshService : BackgroundService
             .OrderBy(a => a.TokenExpiresAt)
             .ToListAsync(ct);
 
+        // 上游拒绝刷新时暂时跳过该账号，避免每个扫描周期重复触发同一个失败请求。
+        var nowForBackoff = DateTimeOffset.UtcNow;
+        due = due.Where(account => !ShouldBackoffRefresh(account.Id, nowForBackoff)).ToList();
+
         if (due.Count == 0)
         {
             return;
@@ -145,13 +154,42 @@ public sealed class CodexTokenRefreshService : BackgroundService
                 }
             }, ct);
 
+            _refreshRetryAt.TryRemove(account.Id, out _);
             _logger.LogInformation("Codex account {Id} token refreshed", account.Id);
             return true;
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Refresh failed for Codex account {Id}", account.Id);
+            if (IsForbiddenRefreshFailure(ex))
+            {
+                var retryAt = DateTimeOffset.UtcNow.Add(RefreshFailureBackoff);
+                _refreshRetryAt[account.Id] = retryAt;
+                // 403 属于账号当前凭证/区域不可刷新，不让异常堆栈污染启动日志；到期后自动重试。
+                _logger.LogWarning(
+                    "Codex account {Id} token refresh was rejected (403); temporarily skipped until {RetryAt}",
+                    account.Id,
+                    retryAt);
+            }
+            else
+            {
+                _logger.LogWarning(ex, "Refresh failed for Codex account {Id}", account.Id);
+            }
+
             return false;
         }
+    }
+
+    private bool ShouldBackoffRefresh(Guid accountId, DateTimeOffset now)
+    {
+        if (!_refreshRetryAt.TryGetValue(accountId, out var retryAt)) return false;
+        if (retryAt > now) return true;
+        _refreshRetryAt.TryRemove(accountId, out _);
+        return false;
+    }
+
+    private static bool IsForbiddenRefreshFailure(Exception exception)
+    {
+        return exception is InvalidOperationException
+            && exception.Message.Contains("403 Forbidden", StringComparison.OrdinalIgnoreCase);
     }
 }

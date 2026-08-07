@@ -29,6 +29,7 @@ export interface DeveloperInvocationSummary {
 }
 export interface DeveloperConcurrencyItem {
   siteId: string
+  concurrencyKey: string
   modelName: string
   siteName: string
   activeCount: number
