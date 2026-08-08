@@ -61,6 +61,7 @@ const editAccount = ref<CodexAccount | null>(null)
 const editDisplayName = ref('')
 const editRefreshToken = ref('')
 const editLoading = ref(false)
+const editTokenRefreshing = ref(false)
 
 // 重置额度信用弹窗
 const resetCreditModal = ref(false)
@@ -293,6 +294,26 @@ async function handleSaveEdit(): Promise<void> {
     editModal.value = false
     await load()
   } catch (e) { message.error((e as Error).message) } finally { editLoading.value = false }
+}
+
+// 手动刷新 access_token（兜底手段：自动刷新未生效时用此恢复）
+async function handleManualRefreshToken(): Promise<void> {
+  if (!editAccount.value) return
+  editTokenRefreshing.value = true
+  try {
+    await api.refreshCodexToken(editAccount.value.id)
+    message.success('Token 已刷新')
+    // 刷新后更新当前编辑的账号对象和列表，让用户看到新的过期时间
+    await load()
+    if (editAccount.value) {
+      const updated = accounts.value.find(a => a.id === editAccount.value!.id)
+      if (updated) editAccount.value = updated
+    }
+  } catch (e) {
+    message.error((e as Error).message)
+  } finally {
+    editTokenRefreshing.value = false
+  }
 }
 
 // 重置额度信用
@@ -529,7 +550,8 @@ function isTokenExpiringSoon(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false
   const expires = new Date(expiresAt).getTime()
   const now = Date.now()
-  return expires > now && expires <= now + 10 * 60 * 1000
+  // 低于 3 天视为即将过期，卡片上标红提醒
+  return expires > now && expires <= now + 3 * 24 * 60 * 60 * 1000
 }
 
 function formatBeijingTime(value: string | null | undefined): string {
@@ -882,6 +904,16 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
           />
           <p class="edit-hint">填入后会立即用新凭证刷新 access_token。token 过期或失效时可用此功能恢复。</p>
         </div>
+        <div>
+          <p class="edit-label">手动刷新 Token</p>
+          <NSpace align="center" :size="8">
+            <NButton :loading="editTokenRefreshing" @click="handleManualRefreshToken">立即刷新 access_token</NButton>
+            <span v-if="editAccount?.tokenExpiresAt" class="edit-hint">
+              当前过期：{{ formatDateTime(editAccount.tokenExpiresAt) }}
+            </span>
+          </NSpace>
+          <p class="edit-hint">用现有 refresh_token 立即刷新 access_token 并更新过期时间。自动刷新未生效时可在此手动恢复。</p>
+        </div>
       </NSpace>
       <template #footer>
         <NSpace justify="end">
@@ -1133,11 +1165,12 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .codex-token-warning {
-  color: var(--status-warning-text, #d97706);
+  color: var(--status-danger-text, #e03131);
+  font-weight: 600;
 }
 
 :global([data-theme='dark']) .codex-token-expired { color: #f87171; }
-:global([data-theme='dark']) .codex-token-warning { color: #fbbf24; }
+:global([data-theme='dark']) .codex-token-warning { color: #f87171; }
 
 .reset-credit-list-title {
   margin: 0 0 8px;
@@ -1451,11 +1484,12 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 }
 
 .codex-token-expiry.codex-token-warning {
-  color: var(--status-warning-text, #d97706);
+  color: var(--status-danger-text, #e03131);
+  font-weight: 600;
 }
 
 :global([data-theme='dark']) .codex-token-expiry.codex-token-expired { color: #f87171; }
-:global([data-theme='dark']) .codex-token-expiry.codex-token-warning { color: #fbbf24; }
+:global([data-theme='dark']) .codex-token-expiry.codex-token-warning { color: #f87171; }
 :global([data-theme='dark']) .codex-token-expiry { color: rgba(255, 255, 255, 0.5); }
 
 .codex-windows-container {
