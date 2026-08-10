@@ -139,6 +139,14 @@ public sealed class OpenAiCrossProtocolProxyTests
         prepared.Should().Contain("\"call_id\":\"call_weather_1\"");
         prepared.Should().Contain("\"type\":\"function_call_output\"");
         prepared.Should().NotContain("\"content\":[{\"type\":\"output_text\",\"text\":\"让我调用工具\"},{\"type\":\"function_call\"");
+
+        using var preparedDocument = JsonDocument.Parse(prepared);
+        var functionCall = preparedDocument.RootElement
+            .GetProperty("input")
+            .EnumerateArray()
+            .Single(item => item.GetProperty("type").GetString() == "function_call");
+        functionCall.GetProperty("id").GetString().Should().StartWith("fc_");
+        functionCall.GetProperty("call_id").GetString().Should().Be("call_weather_1");
     }
 
     [Fact]

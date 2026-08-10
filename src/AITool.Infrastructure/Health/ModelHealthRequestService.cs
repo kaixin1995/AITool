@@ -75,10 +75,11 @@ public sealed class ModelHealthRequestService
             };
         }
 
-        var protocolType = ResolveSiteProtocolType(
+        var protocolType = ProxyProtocolResolver.ResolveSiteProtocolType(
             site.SupportsOpenAi,
             site.SupportsAnthropic,
-            site.SupportsResponses);
+            site.SupportsResponses,
+            site.ProtocolType);
         var runtimeSettings = await _dbContext.SystemRuntimeSettings
             .FirstAsync(x => x.Id == 1, cancellationToken)
             ?? new AITool.Domain.Operations.SystemRuntimeSettings();
@@ -191,22 +192,6 @@ public sealed class ModelHealthRequestService
             2 => $"请直接回答结果，不要解释：{left} * {right} = ?",
             _ => $"请直接回答结果，不要解释：{left * right} / {right} = ?"
         };
-    }
-
-    /// <summary>
-    /// 按站点支持能力推导一次普通非流式聊天请求协议。
-    /// </summary>
-    private static string ResolveSiteProtocolType(
-        bool supportsOpenAi,
-        bool supportsAnthropic,
-        bool supportsResponses = false)
-    {
-        if (supportsResponses || (!supportsOpenAi && !supportsAnthropic))
-        {
-            return "Responses";
-        }
-
-        return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
     }
 
     /// <summary>

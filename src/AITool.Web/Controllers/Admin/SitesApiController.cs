@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AITool.Application.Common;
+using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
@@ -99,7 +100,11 @@ public sealed class SitesApiController : ControllerBase
             endpointPathMode = SiteEndpointPathResolver.NormalizeMode(site.EndpointPathMode),
             supportsOpenAi = site.SupportsOpenAi,
             supportsAnthropic = site.SupportsAnthropic,
-            supportsResponses = site.SupportsResponses || (!site.SupportsOpenAi && !site.SupportsAnthropic),
+            supportsResponses = ProxyProtocolResolver.SupportsResponses(
+                site.SupportsOpenAi,
+                site.SupportsAnthropic,
+                site.SupportsResponses,
+                site.ProtocolType),
             protocolType = site.ProtocolType,
             isEnabled = site.IsEnabled,
             createdAt = site.CreatedAt,
@@ -136,10 +141,13 @@ public sealed class SitesApiController : ControllerBase
             BaseUrl = payload.BaseUrl.Trim(),
             EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(payload.EndpointPathMode),
             ApiKey = payload.ApiKey,
-            ProtocolType = ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic, payload.SupportsResponses),
+            ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic, payload.SupportsResponses),
             SupportsOpenAi = payload.SupportsOpenAi,
             SupportsAnthropic = payload.SupportsAnthropic,
-            SupportsResponses = payload.SupportsResponses || (!payload.SupportsOpenAi && !payload.SupportsAnthropic),
+            SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+                payload.SupportsOpenAi,
+                payload.SupportsAnthropic,
+                payload.SupportsResponses),
             IsEnabled = payload.IsEnabled
         };
         _dbContext.Sites.Add(site);
@@ -189,8 +197,11 @@ public sealed class SitesApiController : ControllerBase
         }
         site.SupportsOpenAi = payload.SupportsOpenAi;
         site.SupportsAnthropic = payload.SupportsAnthropic;
-        site.SupportsResponses = payload.SupportsResponses || (!payload.SupportsOpenAi && !payload.SupportsAnthropic);
-        site.ProtocolType = ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic, site.SupportsResponses);
+        site.SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+            payload.SupportsOpenAi,
+            payload.SupportsAnthropic,
+            payload.SupportsResponses);
+        site.ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic, site.SupportsResponses);
         site.IsEnabled = payload.IsEnabled;
 
         await _dbContext.UpdateAsync(site, cancellationToken);
@@ -489,7 +500,11 @@ public sealed class SitesApiController : ControllerBase
                 apiKey = s.ApiKey,
                 supportsOpenAi = s.SupportsOpenAi,
                 supportsAnthropic = s.SupportsAnthropic,
-                supportsResponses = s.SupportsResponses || (!s.SupportsOpenAi && !s.SupportsAnthropic),
+                supportsResponses = ProxyProtocolResolver.SupportsResponses(
+                    s.SupportsOpenAi,
+                    s.SupportsAnthropic,
+                    s.SupportsResponses,
+                    s.ProtocolType),
                 keys = keysExport
             };
         });
@@ -522,10 +537,13 @@ public sealed class SitesApiController : ControllerBase
                 BaseUrl = item.BaseUrl,
                 EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(item.EndpointPathMode),
                 ApiKey = item.ApiKey,
-                ProtocolType = ResolveSiteProtocolType(item.SupportsOpenAi, item.SupportsAnthropic, item.SupportsResponses),
+                ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(item.SupportsOpenAi, item.SupportsAnthropic, item.SupportsResponses),
                 SupportsOpenAi = item.SupportsOpenAi,
                 SupportsAnthropic = item.SupportsAnthropic,
-                SupportsResponses = item.SupportsResponses || (!item.SupportsOpenAi && !item.SupportsAnthropic),
+                SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+                    item.SupportsOpenAi,
+                    item.SupportsAnthropic,
+                    item.SupportsResponses),
                 IsEnabled = true
             };
             _dbContext.Sites.Add(site);
@@ -571,18 +589,6 @@ public sealed class SitesApiController : ControllerBase
     }
 
     /// <summary>
-    /// 根据站点能力推导协议类型（与 PageModel 中逻辑一致）。
-    /// </summary>
-    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic, bool supportsResponses = false)
-    {
-        if (supportsResponses || (!supportsOpenAi && !supportsAnthropic))
-        {
-            return "Responses";
-        }
-        return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";
-    }
-
-    /// <summary>
     /// 把站点实体映射为列表项（ApiKey 脱敏：只返回掩码前缀，不暴露完整密钥）。
     /// 多 Key 场景下展示主 Key（Priority 最小的启用项）脱敏值与 Key 总数。
     /// </summary>
@@ -607,7 +613,11 @@ public sealed class SitesApiController : ControllerBase
             keyCount,
             supportsOpenAi = site.SupportsOpenAi,
             supportsAnthropic = site.SupportsAnthropic,
-            supportsResponses = site.SupportsResponses || (!site.SupportsOpenAi && !site.SupportsAnthropic),
+            supportsResponses = ProxyProtocolResolver.SupportsResponses(
+                site.SupportsOpenAi,
+                site.SupportsAnthropic,
+                site.SupportsResponses,
+                site.ProtocolType),
             protocolType = site.ProtocolType,
             isEnabled = site.IsEnabled,
             createdAt = site.CreatedAt

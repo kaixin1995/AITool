@@ -139,9 +139,8 @@ public static partial class ProxyProtocolBridge
                 // 不能原样追加，否则会破坏 OpenAI 的 messages 顺序规范（system 只能在最前）。
                 if (string.Equals(role, "system", StringComparison.OrdinalIgnoreCase))
                 {
-                    var extraSystemText = content is JsonValue sv
-                        ? sv.GetValue<string>()
-                        : content?.GetValue<string>() ?? content?.ToJsonString() ?? string.Empty;
+                    // system 内容可能是文本数组，统一使用安全提取逻辑，避免把 JsonArray 当作 JsonValue 读取。
+                    var extraSystemText = ExtractOpenAiContentAsString(content) ?? string.Empty;
                     if (!string.IsNullOrWhiteSpace(extraSystemText))
                     {
                         if (systemMessage is null)

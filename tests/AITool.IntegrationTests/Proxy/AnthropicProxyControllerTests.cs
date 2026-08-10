@@ -689,6 +689,40 @@ public sealed class AnthropicProxyControllerTests
     }
 
     /// <summary>
+    /// 验证 Anthropic system 文本块数组桥接到 Responses 时不会因 JsonArray 读取失败。
+    /// </summary>
+    [Fact]
+    public async Task Post_messages_bridges_array_system_content_to_responses()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService();
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "Responses");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent(
+                "{\"model\":\"claude-proxy\",\"max_tokens\":128,\"messages\":[{\"role\":\"system\",\"content\":[{\"type\":\"text\",\"text\":\"system instruction\"}]},{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}]}",
+                Encoding.UTF8,
+                "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
+        fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses");
+        fakeForwardService.Requests[0].TargetModelName.Should().Be("claude-3-7-sonnet-real");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"instructions\":\"system instruction\"");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"input\"");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"model\":\"claude-3-7-sonnet-real\"");
+        body.Should().Contain("responses-anthropic-ok");
+    }
+
+    /// <summary>
     /// 验证 Responses 流式事件能够实时转换为 Anthropic SSE。
     /// </summary>
     [Fact]

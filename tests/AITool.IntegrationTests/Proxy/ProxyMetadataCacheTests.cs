@@ -431,6 +431,54 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
     }
 
     /// <summary>
+    /// 旧站点只保存 ProtocolType=Responses 时，缓存仍应识别为原生 Responses 站点。
+    /// </summary>
+    [Fact]
+    public async Task Get_route_targets_supports_legacy_responses_protocol_type()
+    {
+        await using var scope = _serviceProvider.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+
+        SqlSugarSetup.InitializeDatabase(db.Client);
+
+        var siteId = Guid.Parse("88888888-8888-8888-8888-888888888888");
+        db.Sites.Add(new Site
+        {
+            Id = siteId,
+            Name = "Legacy Responses Site",
+            BaseUrl = "https://legacy-responses.example.com",
+            ApiKey = "legacy-key",
+            ProtocolType = "Responses",
+            SupportsOpenAi = true,
+            SupportsAnthropic = false,
+            SupportsResponses = false,
+            IsEnabled = true
+        });
+        db.ProxyRouteRules.Add(new ProxyRouteRule
+        {
+            Id = Guid.Parse("99999999-9999-9999-9999-999999999999"),
+            ExternalModelName = "legacy-responses-model",
+            UpstreamModelName = "legacy-upstream",
+            SiteId = siteId,
+            SiteModelName = "legacy-site-model",
+            IsEnabled = true
+        });
+        await db.SaveChangesAsync();
+
+        var routes = await cache.GetRouteTargetsForModelAsync(
+            "Responses",
+            "legacy-responses-model",
+            CancellationToken.None);
+
+        routes.Should().ContainSingle();
+        routes[0].SupportsResponses.Should().BeTrue();
+        routes[0].ResolveProtocolForClient("Responses").Should().Be("Responses");
+        // 旧数据同时声明了 OpenAI 能力时，OpenAI 客户端仍应保留原生 OpenAI 路径。
+        routes[0].ResolveProtocolForClient("OpenAI").Should().Be("OpenAI");
+    }
+
+    /// <summary>
     /// 释放测试过程中创建的资源。
     /// </summary>
     public async ValueTask DisposeAsync()

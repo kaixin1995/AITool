@@ -2,6 +2,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Common;
+using AITool.Application.Proxy;
 using AITool.Domain.Codex;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
@@ -377,7 +378,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteKeyId = candidate.SiteKeyId,
                                 CircuitKey = BuildCircuitKey(mapping.Id, candidate.SiteKeyId),
                                 SiteName = site.Name,
-                                ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic, site.SupportsResponses),
+                                ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic, site.SupportsResponses, site.ProtocolType),
                                 BaseUrl = site.BaseUrl,
                                 EndpointPathMode = site.EndpointPathMode,
                                 ApiKey = candidate.ApiKey,
@@ -555,7 +556,11 @@ public sealed class ProxyRequestMetadataCache
                                 SiteId = site.Id,
                                 SiteName = site.Name,
                                 SiteModelName = mapping.RemoteModelName,
-                                ProtocolType = site.ProtocolType
+                                ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(
+                                    site.SupportsOpenAi,
+                                    site.SupportsAnthropic,
+                                    site.SupportsResponses,
+                                    site.ProtocolType)
                             })
                         .ToList();
                 })
@@ -817,7 +822,11 @@ public sealed class ProxyRequestMetadataCache
                                 RouteCount = g.Count(),
                                 SupportsOpenAi = g.Any(x => x.SupportsOpenAi),
                                 SupportsAnthropic = g.Any(x => x.SupportsAnthropic),
-                                SupportsResponses = g.Any(x => x.SupportsResponses || (!x.SupportsOpenAi && !x.SupportsAnthropic)),
+                                SupportsResponses = g.Any(x => ProxyProtocolResolver.SupportsResponses(
+                                    x.SupportsOpenAi,
+                                    x.SupportsAnthropic,
+                                    x.SupportsResponses,
+                                    x.ProtocolType)),
                                 CanUseOpenAi = g.Any(),
                                 CanUseAnthropic = g.Any()
                             })
@@ -1209,11 +1218,15 @@ public sealed class ProxyRequestMetadataCache
                                 CircuitKey = BuildCircuitKey(route.Id, candidate.SiteKeyId),
                                 SiteName = site.Name,
                                 ManagedSource = site.ManagedSource ?? string.Empty,
-                                ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic, site.SupportsResponses),
+                                ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic, site.SupportsResponses, site.ProtocolType),
                                 EndpointPathMode = site.EndpointPathMode,
                                 SupportsOpenAi = site.SupportsOpenAi,
                                 SupportsAnthropic = site.SupportsAnthropic,
-                                SupportsResponses = site.SupportsResponses || (!site.SupportsOpenAi && !site.SupportsAnthropic),
+                                SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+                                    site.SupportsOpenAi,
+                                    site.SupportsAnthropic,
+                                    site.SupportsResponses,
+                                    site.ProtocolType),
                                 ExternalModelName = route.ExternalModelName,
                                 UpstreamModelName = route.UpstreamModelName,
                                 SiteModelName = route.SiteModelName,
@@ -1304,6 +1317,7 @@ public sealed class ProxyRequestMetadataCache
                                 site.SupportsOpenAi,
                                 site.SupportsAnthropic,
                                 site.SupportsResponses,
+                                site.ProtocolType,
                                 site.BaseUrl,
                                 site.EndpointPathMode,
                                 site.ApiKey,
@@ -1332,7 +1346,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteKeyId = candidate.SiteKeyId,
                                 CircuitKey = BuildCircuitKey(first.MappingId, candidate.SiteKeyId),
                                 SiteName = first.SiteName,
-                                ProtocolType = ResolveSiteProtocolType(first.SupportsOpenAi, first.SupportsAnthropic, first.SupportsResponses),
+                                ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(first.SupportsOpenAi, first.SupportsAnthropic, first.SupportsResponses, first.ProtocolType),
                                 BaseUrl = first.BaseUrl,
                                 EndpointPathMode = first.EndpointPathMode,
                                 ApiKey = candidate.ApiKey,
@@ -1410,19 +1424,6 @@ public sealed class ProxyRequestMetadataCache
         var profileId = model?.CompatibilityProfileId;
         if (profileId is null || profileId == Guid.Empty) return Array.Empty<CompatibilityRule>();
         return profileRules.TryGetValue(profileId.Value, out var rules) ? rules : Array.Empty<CompatibilityRule>();
-    }
-
-    /// <summary>
-    /// 根据站点能力推导协议类型。
-    /// </summary>
-    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic, bool supportsResponses = false)
-    {
-        if (supportsResponses || (!supportsOpenAi && !supportsAnthropic))
-        {
-            return "Responses";
-        }
-
-        return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
     }
 
     /// <summary>
@@ -1860,18 +1861,12 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public bool SupportsProtocol(string protocolType)
     {
-        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
-        {
-            // 兼容旧数据：OpenAI/Anthropic 都未勾选的站点历史上即表示 Responses-only。
-            return SupportsResponses || (!SupportsOpenAi && !SupportsAnthropic);
-        }
-
-        if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
-        {
-            return SupportsAnthropic;
-        }
-
-        return SupportsOpenAi;
+        return ProxyProtocolResolver.SupportsProtocol(
+            protocolType,
+            SupportsOpenAi,
+            SupportsAnthropic,
+            SupportsResponses,
+            ProtocolType);
     }
 
     /// <summary>
@@ -1887,36 +1882,13 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public string ResolveProtocolForClient(string clientProtocol)
     {
-        if (SupportsProtocol(clientProtocol))
-        {
-            return clientProtocol;
-        }
-
-        if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
-        {
-            if (SupportsOpenAi)
-            {
-                return "OpenAI";
-            }
-
-            if (SupportsAnthropic)
-            {
-                return "Anthropic";
-            }
-
-            return "Responses";
-        }
-
-        if ((string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase))
-            && SupportsProtocol("Responses"))
-        {
-            return "Responses";
-        }
-
-        return string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
-            ? "OpenAI"
-            : "Anthropic";
+        return ProxyProtocolResolver.ResolveProtocolForClient(
+            clientProtocol,
+            ProtocolType,
+            SupportsOpenAi,
+            SupportsAnthropic,
+            SupportsResponses,
+            ProtocolType);
     }
 }
 

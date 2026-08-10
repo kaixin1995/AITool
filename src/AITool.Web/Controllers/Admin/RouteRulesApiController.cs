@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AITool.Application.Common;
+using AITool.Application.Proxy;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
@@ -553,11 +554,19 @@ public sealed class RouteRulesApiController : ControllerBase
                     SiteKeyId = candidate.SiteKeyId,
                     CircuitKey = ProxyRequestMetadataCache.BuildCircuitKey(rule.Id, candidate.SiteKeyId),
                     SiteName = site.Name,
-                    ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic, site.SupportsResponses),
+                    ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(
+                        site.SupportsOpenAi,
+                        site.SupportsAnthropic,
+                        site.SupportsResponses,
+                        site.ProtocolType),
                     EndpointPathMode = site.EndpointPathMode,
                     SupportsOpenAi = site.SupportsOpenAi,
                     SupportsAnthropic = site.SupportsAnthropic,
-                    SupportsResponses = site.SupportsResponses || (!site.SupportsOpenAi && !site.SupportsAnthropic),
+                    SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+                        site.SupportsOpenAi,
+                        site.SupportsAnthropic,
+                        site.SupportsResponses,
+                        site.ProtocolType),
                     ExternalModelName = rule.ExternalModelName,
                     UpstreamModelName = rule.UpstreamModelName,
                     SiteModelName = rule.SiteModelName,
@@ -632,22 +641,6 @@ public sealed class RouteRulesApiController : ControllerBase
         {
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
-    }
-
-    /// <summary>
-    /// 根据站点能力推导协议类型。
-    /// </summary>
-    private static string ResolveSiteProtocolType(
-        bool supportsOpenAi,
-        bool supportsAnthropic,
-        bool supportsResponses = false)
-    {
-        if (supportsResponses || (!supportsOpenAi && !supportsAnthropic))
-        {
-            return "Responses";
-        }
-
-        return supportsOpenAi || !supportsAnthropic ? "OpenAI" : "Anthropic";
     }
 
     /// <summary>

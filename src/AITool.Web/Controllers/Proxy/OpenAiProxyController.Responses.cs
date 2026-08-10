@@ -246,7 +246,7 @@ public sealed partial class OpenAiProxyController
                 {
                     RequestId = requestId,
                     AccessKeyId = accessKey.Id,
-                    ProtocolType = "OpenAI",
+                    ProtocolType = "Responses",
                     ForwardingMode = isPassthrough ? "direct" : "bridge",
                     RequestModel = modelName,
                     AttemptedModel = route.UpstreamModelName,
@@ -327,7 +327,7 @@ public sealed partial class OpenAiProxyController
             {
                 RequestId = requestId,
                 AccessKeyId = accessKey.Id,
-                ProtocolType = "OpenAI",
+                ProtocolType = "Responses",
                 ForwardingMode = isPassthrough ? "direct" : "bridge",
                 RequestModel = modelName,
                 AttemptedModel = route.UpstreamModelName,
@@ -564,7 +564,7 @@ public sealed partial class OpenAiProxyController
             {
                 RequestId = requestId,
                 AccessKeyId = accessKeyId,
-                ProtocolType = "OpenAI",
+                ProtocolType = "Responses",
                 ForwardingMode = isPassthrough ? "direct" : "bridge",
                 RequestModel = modelName,
                 AttemptedModel = route.UpstreamModelName,

@@ -80,6 +80,13 @@ public sealed class ResponsesProxyTests
         fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
         fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses");
         fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"input\"");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].ProtocolType.Should().Be("Responses");
+        logs[0].ForwardingMode.Should().Be("direct");
     }
 
     /// <summary>
@@ -117,6 +124,42 @@ public sealed class ResponsesProxyTests
         resultDoc.RootElement.GetProperty("object").GetString().Should().Be("response");
         resultDoc.RootElement.GetProperty("output")[0].GetProperty("content")[0].GetProperty("text").GetString()
             .Should().Be("chat-bridge-ok");
+    }
+
+    /// <summary>
+    /// 转发到仅支持 OpenAI Chat 的站点时，应过滤 Responses 内置工具，只保留 Chat 可识别的工具类型。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_bridge_filters_responses_builtin_tools_for_openai_chat()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"tools\":[{\"type\":\"function\",\"name\":\"get_weather\",\"parameters\":{\"type\":\"object\"}},{\"type\":\"web_search_preview\"}],\"tool_choice\":\"auto\"}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+
+        using var preparedDocument = JsonDocument.Parse(
+            fakeForwardService.Requests[0].PreparedRequestBody!);
+        var tools = preparedDocument.RootElement.GetProperty("tools");
+        tools.GetArrayLength().Should().Be(1);
+        tools[0].GetProperty("type").GetString().Should().Be("function");
+        tools[0].GetProperty("function").GetProperty("name").GetString().Should().Be("get_weather");
+        tools.ToString().Should().NotContain("web_search_preview");
     }
 
     /// <summary>
@@ -481,7 +524,7 @@ public sealed class ResponsesProxyTests
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var logs = await db.ProxyUsageLogs.ToListAsync();
         logs.Should().ContainSingle();
-        logs[0].ProtocolType.Should().Be("OpenAI");
+        logs[0].ProtocolType.Should().Be("Responses");
         logs[0].ForwardingMode.Should().Be("direct");
         logs[0].IsStreaming.Should().BeFalse();
         logs[0].Status.Should().Be("success");

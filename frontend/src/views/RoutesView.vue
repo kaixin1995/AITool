@@ -62,7 +62,7 @@ const filteredInstances = computed(
   () => filterSiteInstances(siteInstances.value, candidateSearch.value)
 )
 const siteInstanceOptions = computed(() => filteredInstances.value.map((instance) => ({
-  label: `${instance.siteName} / ${instance.siteModelName} / ${instance.protocolType}`,
+  label: `${instance.siteName} / ${instance.siteModelName}`,
   value: `${instance.siteId}::${instance.siteModelName}`
 })))
 const selectedSiteInstance = computed(() => filteredInstances.value.find(

@@ -139,7 +139,8 @@ public static partial class ProxyProtocolBridge
             payload["reasoning_effort"] = outputConfigEffort.DeepClone();
         }
 
-        // tools → 转换扁平结构为 Chat Completions 嵌套结构
+        // tools → 转换扁平结构为 Chat Completions 嵌套结构。
+        // Responses 的内置工具由 Responses 上游执行，普通 Chat 上游无法实现，不能原样转发。
         if (root.TryGetPropertyValue("tools", out var toolsNode) && toolsNode is JsonArray toolsArray)
         {
             var chatTools = new JsonArray();
@@ -151,7 +152,7 @@ public static partial class ProxyProtocolBridge
                 }
 
                 var toolType = toolObj["type"]?.ToString() ?? "function";
-                if (toolType == "function")
+                if (string.Equals(toolType, "function", StringComparison.OrdinalIgnoreCase))
                 {
                     var chatTool = new JsonObject { ["type"] = "function" };
                     var function = new JsonObject();
@@ -173,17 +174,23 @@ public static partial class ProxyProtocolBridge
                     chatTool["function"] = function;
                     chatTools.Add(chatTool);
                 }
-                else
+                else if (string.Equals(toolType, "custom", StringComparison.OrdinalIgnoreCase))
                 {
+                    // Chat Completions 新版允许 custom 工具，保留其原始结构。
                     chatTools.Add(toolObj.DeepClone());
                 }
+                // web_search、file_search、computer_use 等 Responses 内置工具直接丢弃，
+                // 避免发送 Chat 上游不认识的 tools[].type 导致整次请求失败。
             }
 
             payload["tools"] = chatTools;
-        }
 
-        // tool_choice → 转换格式
-        if (root.TryGetPropertyValue("tool_choice", out var toolChoiceNode) && toolChoiceNode is not null)
+            if (root.TryGetPropertyValue("tool_choice", out var toolChoiceNode) && toolChoiceNode is not null)
+            {
+                payload["tool_choice"] = ConvertResponsesToolChoiceToChat(toolChoiceNode, chatTools);
+            }
+        }
+        else if (root.TryGetPropertyValue("tool_choice", out var toolChoiceNode) && toolChoiceNode is not null)
         {
             payload["tool_choice"] = ConvertResponsesToolChoiceToChat(toolChoiceNode);
         }
@@ -284,11 +291,17 @@ public static partial class ProxyProtocolBridge
                         }
 
                         var callId = toolCallObj["id"]?.ToString();
+                        var responseCallId = string.IsNullOrWhiteSpace(callId)
+                            ? $"call_{Guid.NewGuid():N}"
+                            : callId;
+
+                        // Responses 要求 function_call 的资源 id 使用 fc_ 前缀；
+                        // Chat Completions 的 tool call id 通常是 call_，只能作为 call_id 保留。
                         input.Add(new JsonObject
                         {
                             ["type"] = "function_call",
-                            ["id"] = toolCallObj["id"]?.DeepClone() ?? $"fc_{Guid.NewGuid():N}",
-                            ["call_id"] = string.IsNullOrWhiteSpace(callId) ? $"call_{Guid.NewGuid():N}" : callId,
+                            ["id"] = $"fc_{Guid.NewGuid():N}",
+                            ["call_id"] = responseCallId,
                             ["name"] = toolCallObj["function"]?["name"]?.DeepClone() ?? string.Empty,
                             ["arguments"] = toolCallObj["function"]?["arguments"]?.DeepClone() ?? "{}"
                         });
@@ -1849,24 +1862,54 @@ public static partial class ProxyProtocolBridge
     /// <summary>
     /// 转换 Responses 的 tool_choice 格式为 Chat Completions 格式。
     /// </summary>
-    private static JsonNode? ConvertResponsesToolChoiceToChat(JsonNode toolChoice)
+    private static JsonNode? ConvertResponsesToolChoiceToChat(
+        JsonNode toolChoice,
+        JsonArray? availableTools = null)
     {
         if (toolChoice is JsonValue jv && jv.TryGetValue(out string? sv))
         {
-            return sv;
+            // 内置工具被过滤后，required 已无法满足，改为不强制调用工具，避免上游再次拒绝请求。
+            return string.Equals(sv, "required", StringComparison.OrdinalIgnoreCase)
+                && availableTools is not null
+                && availableTools.Count == 0
+                ? "none"
+                : sv;
         }
 
         if (toolChoice is JsonObject obj)
         {
-            var typeVal = obj["type"]?.ToString() ?? "";
-            if (typeVal == "function" && obj.ContainsKey("name"))
+            var typeVal = obj["type"]?.ToString() ?? string.Empty;
+            if (string.Equals(typeVal, "function", StringComparison.OrdinalIgnoreCase)
+                && obj.ContainsKey("name"))
             {
-                return new JsonObject
-                {
-                    ["type"] = "function",
-                    ["function"] = new JsonObject { ["name"] = obj["name"]?.DeepClone() }
-                };
+                var functionName = obj["name"]?.ToString() ?? string.Empty;
+                var functionExists = availableTools is null
+                    || availableTools
+                        .OfType<JsonObject>()
+                        .Any(tool => string.Equals(
+                            tool["type"]?.ToString(),
+                            "function",
+                            StringComparison.OrdinalIgnoreCase)
+                            && string.Equals(
+                                tool["function"]?["name"]?.ToString(),
+                                functionName,
+                                StringComparison.Ordinal));
+                return functionExists
+                    ? new JsonObject
+                    {
+                        ["type"] = "function",
+                        ["function"] = new JsonObject { ["name"] = obj["name"]?.DeepClone() }
+                    }
+                    : "none";
             }
+
+            if (string.Equals(typeVal, "custom", StringComparison.OrdinalIgnoreCase))
+            {
+                return toolChoice.DeepClone();
+            }
+
+            // Responses 内置工具的 tool_choice 在 Chat 上游没有对应能力。
+            return "none";
         }
 
         return toolChoice.DeepClone();

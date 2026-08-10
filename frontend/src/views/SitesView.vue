@@ -3,7 +3,7 @@ import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'v
 import { useRoute } from 'vue-router'
 import {
   NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput,
-  NSwitch, NPopconfirm, NSelect, NCheckbox, NProgress, NInputNumber, NDropdown,
+  NSwitch, NPopconfirm, NSelect, NCheckbox, NProgress, NInputNumber, NDropdown, NTooltip,
   useMessage, useDialog, type DataTableColumns
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
@@ -743,13 +743,18 @@ onBeforeUnmount(handleCatalogClosed)
           />
         </NFormItem>
         <NFormItem label="协议支持">
-          <NSpace vertical :size="6">
-            <NSpace>
+          <NSpace vertical :size="8">
+            <NSpace :size="[18, 8]" :wrap="true">
               <NSwitch v-model:value="form.supportsOpenAi" /> OpenAI Chat Completions
               <NSwitch v-model:value="form.supportsAnthropic" /> Anthropic Messages
-              <NSwitch v-model:value="form.supportsResponses" /> OpenAI Responses
             </NSpace>
-            <span class="site-form-tip">Responses 为独立能力：勾选后直接透传；未勾选时会按 OpenAI 或 Anthropic 能力自动转换。为兼容旧配置，三个协议都不勾选仍按仅支持 Responses 处理。</span>
+            <NSpace align="center" :size="18">
+              <NSwitch v-model:value="form.supportsResponses" /> OpenAI Responses
+              <NTooltip trigger="hover">
+                <template #trigger><span class="site-protocol-help-trigger">?</span></template>
+                Responses 为独立能力：勾选后直接透传；未勾选时会按 OpenAI 或 Anthropic 能力自动转换。为兼容旧配置，三个协议都不勾选仍按仅支持 Responses 处理。
+              </NTooltip>
+            </NSpace>
           </NSpace>
         </NFormItem>
         <NFormItem label="启用">
@@ -1047,9 +1052,18 @@ onBeforeUnmount(handleCatalogClosed)
   margin-bottom: 12px;
 }
 
-.site-form-tip {
+.site-protocol-help-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bg-surface-soft);
   color: var(--text-color-secondary);
   font-size: 12px;
+  font-weight: 800;
+  cursor: help;
 }
 
 .site-actions {

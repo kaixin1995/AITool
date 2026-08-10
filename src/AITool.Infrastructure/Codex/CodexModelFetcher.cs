@@ -61,15 +61,29 @@ public sealed class CodexModelFetcher : ICodexModelFetcher
         var list = new List<CodexRemoteModel>();
         foreach (var item in arrayEl.EnumerateArray())
         {
-            var slug = item.TryGetProperty("slug", out var slugEl) && slugEl.ValueKind == JsonValueKind.String
-                ? slugEl.GetString() : null;
+            // Codex 当前通常返回 slug/display_name；兼容部分版本返回的 id/name 字段，
+            // 避免上游模型目录字段变更后整批模型被静默过滤。
+            var slug = ReadString(item, "slug")
+                ?? ReadString(item, "id")
+                ?? ReadString(item, "model")
+                ?? ReadString(item, "name");
             if (string.IsNullOrWhiteSpace(slug)) continue;
 
-            var display = item.TryGetProperty("display_name", out var dnEl) && dnEl.ValueKind == JsonValueKind.String
-                ? dnEl.GetString() : slug;
+            var display = ReadString(item, "display_name")
+                ?? ReadString(item, "displayName")
+                ?? ReadString(item, "name")
+                ?? slug;
 
-            list.Add(new CodexRemoteModel { Slug = slug!, DisplayName = display ?? slug! });
+            list.Add(new CodexRemoteModel { Slug = slug, DisplayName = display });
         }
         return list;
+    }
+
+    private static string? ReadString(JsonElement item, string propertyName)
+    {
+        return item.TryGetProperty(propertyName, out var value)
+            && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
     }
 }
