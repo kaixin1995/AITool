@@ -10,6 +10,7 @@ export interface SiteListItem {
   keyCount: number
   supportsOpenAi: boolean
   supportsAnthropic: boolean
+  supportsResponses: boolean
   protocolType: string
   isEnabled: boolean
   createdAt: string
@@ -32,6 +33,7 @@ export interface SiteDetail {
   endpointPathMode: string
   supportsOpenAi: boolean
   supportsAnthropic: boolean
+  supportsResponses: boolean
   protocolType: string
   isEnabled: boolean
   createdAt: string
@@ -45,6 +47,7 @@ export interface SitePayload {
   apiKey: string
   supportsOpenAi?: boolean
   supportsAnthropic?: boolean
+  supportsResponses?: boolean
   isEnabled?: boolean
 }
 

@@ -48,7 +48,75 @@ public sealed class ResponsesProxyTests
         // 转发到上游时应使用 /v1/responses 路径
         fakeForwardService.Requests.Should().ContainSingle();
         fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses");
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
+    }
+
+    /// <summary>
+    /// 同时支持 OpenAI Chat 和 Responses 的上游应优先使用原生 Responses 接口。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_prefers_native_responses_when_site_supports_both_protocols()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            SupportsOpenAiAndResponses = true
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\"}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
+        fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"input\"");
+    }
+
+    /// <summary>
+    /// OpenAI Chat 上游应将 Responses 请求转换为 Chat Completions，避免把 /responses 发给不支持该接口的站点。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_bridges_to_openai_chat_non_streaming()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\"}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
         fakeForwardService.Requests[0].ProtocolType.Should().Be("OpenAI");
+        fakeForwardService.Requests[0].TargetPath.Should().BeNull();
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("messages");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().NotContain("\"input\"");
+
+        using var resultDoc = JsonDocument.Parse(body);
+        resultDoc.RootElement.GetProperty("object").GetString().Should().Be("response");
+        resultDoc.RootElement.GetProperty("output")[0].GetProperty("content")[0].GetProperty("text").GetString()
+            .Should().Be("chat-bridge-ok");
     }
 
     /// <summary>
@@ -136,6 +204,51 @@ public sealed class ResponsesProxyTests
         body.Should().Contain("response.output_text.delta");
         body.Should().Contain("hello");
         body.Should().Contain("[DONE]");
+    }
+
+    /// <summary>
+    /// OpenAI Chat 上游流式请求应转换为 Responses SSE 事件。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_bridges_openai_chat_stream_to_responses_events()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true,
+            StreamingLines =
+            [
+                "data: {\"id\":\"chatcmpl_stream\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4.1-real\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}",
+                string.Empty,
+                "data: {\"id\":\"chatcmpl_stream\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4.1-real\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"chat-stream-ok\"},\"finish_reason\":null}]}",
+                string.Empty,
+                "data: {\"id\":\"chatcmpl_stream\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4.1-real\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"stream\":true}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("OpenAI");
+        fakeForwardService.Requests[0].TargetPath.Should().BeNull();
+        body.Should().Contain("response.created");
+        body.Should().Contain("response.output_text.delta");
+        body.Should().Contain("chat-stream-ok");
+        body.Should().Contain("response.completed");
     }
 
     /// <summary>
@@ -570,7 +683,7 @@ public sealed class ResponsesProxyTests
 
         fakeForwardService.Requests.Should().ContainSingle();
         fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses");
-        fakeForwardService.Requests[0].ProtocolType.Should().Be("OpenAI");
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
         fakeForwardService.Requests[0].EnableStreaming.Should().BeTrue();
 
         await using var scope = factory.Services.CreateAsyncScope();
@@ -582,6 +695,53 @@ public sealed class ResponsesProxyTests
         logs[0].InputTokens.Should().Be(6);
         logs[0].CachedTokens.Should().Be(1);
         logs[0].OutputTokens.Should().Be(3);
+    }
+
+    /// <summary>
+    /// WebSocket 的 OpenAI Chat 上游应将 Chat SSE 事件转换为 Responses JSON 消息。
+    /// </summary>
+    [Fact]
+    public async Task Get_responses_websocket_bridges_openai_chat_stream()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            IsOpenAiChatOnly = true,
+            StreamingLines =
+            [
+                "data: {\"id\":\"chatcmpl_ws\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4.1-real\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}",
+                string.Empty,
+                "data: {\"id\":\"chatcmpl_ws\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4.1-real\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ws-chat-bridge-ok\"},\"finish_reason\":null}]}",
+                string.Empty,
+                "data: {\"id\":\"chatcmpl_ws\",\"object\":\"chat.completion.chunk\",\"created\":1,\"model\":\"gpt-4.1-real\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        _ = factory.CreateClient();
+
+        var webSocketClient = factory.Server.CreateWebSocketClient();
+        webSocketClient.ConfigureRequest = request =>
+        {
+            request.Headers["Authorization"] = "Bearer responses-test-key";
+        };
+
+        using var webSocket = await webSocketClient.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+        await SendWebSocketTextAsync(webSocket, "{\"type\":\"response.create\",\"model\":\"auto\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}]}");
+
+        var messages = await ReceiveWebSocketMessagesUntilAsync(webSocket, "response.completed");
+        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "test complete", CancellationToken.None);
+
+        messages.Should().Contain(message => message.Contains("response.created", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("response.output_text.delta", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("ws-chat-bridge-ok", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("response.completed", StringComparison.Ordinal));
+
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("OpenAI");
+        fakeForwardService.Requests[0].TargetPath.Should().BeNull();
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("messages");
     }
 
     /// <summary>
@@ -893,9 +1053,10 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
                 Name = "OpenAI Site",
                 BaseUrl = "https://openai.example.com",
                 ApiKey = "openai-key",
-                ProtocolType = "OpenAI",
-                SupportsOpenAi = true,
+                ProtocolType = _fakeForwardService.IsOpenAiChatOnly ? "OpenAI" : "Responses",
+                SupportsOpenAi = _fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses,
                 SupportsAnthropic = false,
+                SupportsResponses = !_fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses,
                 IsEnabled = true
             });
 
@@ -981,6 +1142,8 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
     public List<string>? StreamingLines { get; set; }
     public List<List<string>>? StreamingLinesByCall { get; set; }
     public bool IsAnthropicOnly { get; set; }
+    public bool IsOpenAiChatOnly { get; set; }
+    public bool SupportsOpenAiAndResponses { get; set; }
 
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {
@@ -1003,7 +1166,9 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
         {
             Success = true,
             StatusCode = 200,
-            ResponseBody = "{\"id\":\"resp_test123\",\"object\":\"response\",\"created\":1,\"status\":\"completed\",\"model\":\"auto\",\"output\":[{\"type\":\"message\",\"id\":\"msg_test\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"responses-ok\"}]}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15,\"prompt_tokens_details\":{\"cached_tokens\":0}}}",
+            ResponseBody = IsOpenAiChatOnly
+                ? "{\"id\":\"chatcmpl_test123\",\"object\":\"chat.completion\",\"created\":1,\"model\":\"gpt-4.1-real\",\"choices\":[{\"index\":0,\"message\":{\"role\":\"assistant\",\"content\":\"chat-bridge-ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15}}"
+                : "{\"id\":\"resp_test123\",\"object\":\"response\",\"created\":1,\"status\":\"completed\",\"model\":\"auto\",\"output\":[{\"type\":\"message\",\"id\":\"msg_test\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"responses-ok\"}]}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5,\"total_tokens\":15,\"prompt_tokens_details\":{\"cached_tokens\":0}}}",
             InputTokens = 10,
             OutputTokens = 5
         });

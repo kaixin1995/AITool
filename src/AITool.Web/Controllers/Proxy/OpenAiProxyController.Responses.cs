@@ -151,7 +151,8 @@ public sealed partial class OpenAiProxyController
                 continue;
 
             attemptIndex++;
-            var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
+            // Responses 客户端优先选择上游原生 Responses；不支持时再降级为 OpenAI/Anthropic 协议转换。
+            var actualProtocolType = route.ResolveProtocolForClient("Responses");
 
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                 HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
@@ -163,21 +164,21 @@ public sealed partial class OpenAiProxyController
             }
 
             // Responses 端点的转发逻辑：
-            // - 上游原生 Responses（OpenAI / Codex 隐藏站点）：直接透传 Responses 请求体，URL 指向 /responses
-            // - 上游 Anthropic：先将 Responses 转为 Chat Completions，再走兼容中转
-            // 注意：Codex 隐藏站点 ProtocolType 解析为 "Responses"，同样属于原生透传——若纳入 else 分支，
-            // TargetPath 会回落到 chat/completions，请求体会被错误桥接，导致上游返回 Cloudflare 拦截页。
-            var isPassthrough = string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
+            // - 原生 Responses 站点：直接透传 Responses 请求体，URL 指向 /responses
+            // - OpenAI Chat 站点：先转换为 Chat Completions，URL 指向 /chat/completions
+            // - Anthropic 站点：先转换为 Chat Completions，再由协议桥接转为 Anthropic 请求
+            // 不能把 actualProtocolType=OpenAI 当作 Responses 透传，否则普通 OpenAI Chat 上游会收到
+            // 不支持的 /responses 请求，常见表现为 HTTP 406。
+            var isPassthrough = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
             string preparedRequestBody;
 
             if (isPassthrough)
             {
-                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", "OpenAI", requestBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort, route.BaseUrl, route.CompatibilityRules, isPassthrough: true);
+                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("Responses", "Responses", requestBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort, route.BaseUrl, route.CompatibilityRules, isPassthrough: true);
             }
             else
             {
-                // Responses → Chat Completions → Anthropic：先转为 Chat Completions，再由协议桥接转为目标格式
+                // Responses → Chat Completions → OpenAI/Anthropic：先转为 Chat Completions，再由协议桥接转发。
                 var chatBody = ProxyProtocolBridge.ConvertResponsesRequestToChat(requestBody, route.SiteModelName, enableStreaming);
                 preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", actualProtocolType, chatBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort, route.BaseUrl, route.CompatibilityRules, isPassthrough: false);
             }
@@ -215,9 +216,18 @@ public sealed partial class OpenAiProxyController
                     // OpenAI 上游直接透传
                     streamOutcome = await ForwardOpenAiStreamPassthroughAsync(forwardRequest, cancellationToken);
                 }
+                else if (string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+                {
+                    // OpenAI Chat Completions 上游：逐个 SSE 块转换为 Responses 事件。
+                    var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName };
+                    streamOutcome = await ForwardOpenAiStreamPassthroughAsync(
+                        forwardRequest,
+                        cancellationToken,
+                        chunk => ConvertOpenAiChatSseBlockToResponses(chunk, responsesState));
+                }
                 else
                 {
-                    // Anthropic 上游：流式 Anthropic → Responses
+                    // Anthropic 上游：流式 Anthropic → Responses。
                     streamOutcome = await ForwardAnthropicStreamAsResponsesAsync(forwardRequest, modelName, cancellationToken);
                 }
 
@@ -466,7 +476,8 @@ public sealed partial class OpenAiProxyController
                 continue;
 
             attemptIndex++;
-            var actualProtocolType = route.ResolveProtocolForClient("OpenAI");
+            // Responses 客户端优先选择上游原生 Responses；不支持时再降级为 OpenAI/Anthropic 协议转换。
+            var actualProtocolType = route.ResolveProtocolForClient("Responses");
 
             using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
                 HttpContext.RequestServices, route.SiteKeyId ?? route.SiteId, route.SiteModelName,
@@ -476,10 +487,18 @@ public sealed partial class OpenAiProxyController
                 continue;
             }
 
-            var isPassthrough = string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
+            var isPassthrough = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
             var preparedRequestBody = isPassthrough
-                ? ProxyProtocolBridge.PrepareRequestBody("OpenAI", "OpenAI", normalizedRequestBody, route.SiteModelName, true, route.OverrideReasoningEffort, route.BaseUrl, route.CompatibilityRules, isPassthrough: true)
+                ? ProxyProtocolBridge.PrepareRequestBody(
+                    "Responses",
+                    "Responses",
+                    normalizedRequestBody,
+                    route.SiteModelName,
+                    true,
+                    route.OverrideReasoningEffort,
+                    route.BaseUrl,
+                    route.CompatibilityRules,
+                    isPassthrough: true)
                 : ProxyProtocolBridge.PrepareRequestBody(
                     "OpenAI",
                     actualProtocolType,
@@ -516,9 +535,25 @@ public sealed partial class OpenAiProxyController
                 TargetPath = isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
             };
 
-            var streamOutcome = isPassthrough
-                ? await ForwardOpenAiResponsesAsWebSocketAsync(webSocket, forwardRequest, cancellationToken)
-                : await ForwardAnthropicResponsesAsWebSocketAsync(webSocket, forwardRequest, modelName, cancellationToken);
+            StreamForwardOutcome streamOutcome;
+            if (isPassthrough)
+            {
+                streamOutcome = await ForwardOpenAiResponsesAsWebSocketAsync(webSocket, forwardRequest, cancellationToken);
+            }
+            else if (string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                // OpenAI Chat Completions SSE 逐块转换后再发送 Responses WebSocket 事件。
+                var responsesState = new ChatToResponsesStreamState { Model = route.SiteModelName };
+                streamOutcome = await ForwardOpenAiResponsesAsWebSocketAsync(
+                    webSocket,
+                    forwardRequest,
+                    cancellationToken,
+                    payload => ProxyProtocolBridge.ConvertChatStreamChunkToResponses(payload, responsesState));
+            }
+            else
+            {
+                streamOutcome = await ForwardAnthropicResponsesAsWebSocketAsync(webSocket, forwardRequest, modelName, cancellationToken);
+            }
             var streamResult = streamOutcome.Result;
             SafeWriteConsoleProxyLog("ResponsesWebSocket", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, rawRequestBody.Length);
             var canFallback = !streamResult.Success

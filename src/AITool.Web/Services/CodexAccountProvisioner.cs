@@ -91,7 +91,9 @@ public sealed class CodexAccountProvisioner
                 EndpointPathMode = "versioned-base",
                 ApiKey = input.AccessToken,
                 SupportsOpenAi = false,
-                SupportsAnthropic = false, // → ResolveSiteProtocolType 返回 "Responses"
+                SupportsAnthropic = false,
+                // Codex 上游使用 Responses 原生接口，显式声明以避免依赖旧配置兼容分支。
+                SupportsResponses = true,
                 ManagedSource = CodexManagedSource,
                 IsEnabled = true,
             };

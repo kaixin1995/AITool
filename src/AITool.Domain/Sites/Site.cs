@@ -57,6 +57,12 @@ public sealed class Site
     public bool SupportsAnthropic { get; set; }
 
     /// <summary>
+    /// 标记站点是否支持 OpenAI Responses 原生接口；支持时 Responses 请求直接透传，否则转换为目标协议。
+    /// </summary>
+    [SugarColumn(IsNullable = false)]
+    public bool SupportsResponses { get; set; }
+
+    /// <summary>
     /// 标记站点当前是否启用，禁用后通常不再参与路由和实际调用。
     /// </summary>
     [SugarColumn(IsNullable = false)]

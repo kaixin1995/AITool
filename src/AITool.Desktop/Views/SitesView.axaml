@@ -82,7 +82,7 @@
                           <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="10" Padding="6,3" IsVisible="{Binding SupportsAnthropic}">
                             <TextBlock FontSize="11" Foreground="{DynamicResource AppInfoTextBrush}" Text="Anthropic" />
                           </Border>
-                          <Border Background="{DynamicResource AppWarningSoftBrush}" CornerRadius="10" Padding="6,3" IsVisible="{Binding SupportsResponses}">
+                          <Border Background="{DynamicResource AppWarningSoftBrush}" CornerRadius="10" Padding="6,3" IsVisible="{Binding HasResponsesSupport}">
                             <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="Responses" />
                           </Border>
                         </StackPanel>
@@ -141,9 +141,10 @@
               <StackPanel Orientation="Horizontal" Spacing="18">
                 <CheckBox Content="支持 OpenAI" IsChecked="{Binding Form.SupportsOpenAi, Mode=TwoWay}" />
                 <CheckBox Content="支持 Anthropic" IsChecked="{Binding Form.SupportsAnthropic, Mode=TwoWay}" />
+                <CheckBox Content="支持 Responses" IsChecked="{Binding Form.SupportsResponses, Mode=TwoWay}" />
                 <CheckBox Content="启用" IsChecked="{Binding Form.IsEnabled, Mode=TwoWay}" />
               </StackPanel>
-              <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" FontSize="12" Text="两个协议均未勾选时，后端按仅支持 Responses 处理。" TextWrapping="Wrap" />
+              <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" FontSize="12" Text="Responses 是独立能力；未勾选时会按 OpenAI 或 Anthropic 能力自动转换。三个协议均未勾选时，后端兼容为仅支持 Responses。" TextWrapping="Wrap" />
               <Button Classes="primary-button" Command="{Binding SaveCommand}" Content="保存站点" IsEnabled="{Binding CanSave}" HorizontalContentAlignment="Center" Padding="12,9" />
             </StackPanel>
           </ScrollViewer>

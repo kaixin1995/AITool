@@ -22,7 +22,8 @@ import type { UsageLogItem, UsageLogRequestDetail, UsageLogSummary } from '@/api
 import {
   buildUsageLogsDefaultCustomRange,
   buildVisibleUsageLogPages,
-  canAutoLoadUsageLogs
+  canAutoLoadUsageLogs,
+  formatUsageLogModel
 } from './usageLogsState'
 import { getUsageSourceMeta as getSourceMeta, usageSourceOptions as sourceOptions } from './usageSource'
 
@@ -464,7 +465,7 @@ onUnmounted(() => {
             <tr v-for="item in items" :key="item.id">
               <td>{{ formatDateTime(item.requestedAt) }}</td>
               <td><NTag size="small" :type="getSourceMeta(item.source).type" :bordered="false">{{ getSourceMeta(item.source).label }}</NTag></td>
-              <td><code>{{ item.attemptedModel || item.requestModel || '-' }}</code></td>
+              <td><code>{{ formatUsageLogModel(item.requestModel, item.attemptedModel) }}</code></td>
               <td>{{ item.siteName || '-' }}</td>
               <td>{{ item.accessKeyName || '-' }}</td>
               <td><NTag size="small" :type="getStatusMeta(item).type" :bordered="false">{{ getStatusMeta(item).label }}</NTag></td>

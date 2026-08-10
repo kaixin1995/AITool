@@ -99,6 +99,7 @@ public sealed class SitesApiController : ControllerBase
             endpointPathMode = SiteEndpointPathResolver.NormalizeMode(site.EndpointPathMode),
             supportsOpenAi = site.SupportsOpenAi,
             supportsAnthropic = site.SupportsAnthropic,
+            supportsResponses = site.SupportsResponses || (!site.SupportsOpenAi && !site.SupportsAnthropic),
             protocolType = site.ProtocolType,
             isEnabled = site.IsEnabled,
             createdAt = site.CreatedAt,
@@ -135,9 +136,10 @@ public sealed class SitesApiController : ControllerBase
             BaseUrl = payload.BaseUrl.Trim(),
             EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(payload.EndpointPathMode),
             ApiKey = payload.ApiKey,
-            ProtocolType = ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic),
+            ProtocolType = ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic, payload.SupportsResponses),
             SupportsOpenAi = payload.SupportsOpenAi,
             SupportsAnthropic = payload.SupportsAnthropic,
+            SupportsResponses = payload.SupportsResponses || (!payload.SupportsOpenAi && !payload.SupportsAnthropic),
             IsEnabled = payload.IsEnabled
         };
         _dbContext.Sites.Add(site);
@@ -187,7 +189,8 @@ public sealed class SitesApiController : ControllerBase
         }
         site.SupportsOpenAi = payload.SupportsOpenAi;
         site.SupportsAnthropic = payload.SupportsAnthropic;
-        site.ProtocolType = ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic);
+        site.SupportsResponses = payload.SupportsResponses || (!payload.SupportsOpenAi && !payload.SupportsAnthropic);
+        site.ProtocolType = ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic, site.SupportsResponses);
         site.IsEnabled = payload.IsEnabled;
 
         await _dbContext.UpdateAsync(site, cancellationToken);
@@ -486,6 +489,7 @@ public sealed class SitesApiController : ControllerBase
                 apiKey = s.ApiKey,
                 supportsOpenAi = s.SupportsOpenAi,
                 supportsAnthropic = s.SupportsAnthropic,
+                supportsResponses = s.SupportsResponses || (!s.SupportsOpenAi && !s.SupportsAnthropic),
                 keys = keysExport
             };
         });
@@ -518,9 +522,10 @@ public sealed class SitesApiController : ControllerBase
                 BaseUrl = item.BaseUrl,
                 EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(item.EndpointPathMode),
                 ApiKey = item.ApiKey,
-                ProtocolType = ResolveSiteProtocolType(item.SupportsOpenAi, item.SupportsAnthropic),
+                ProtocolType = ResolveSiteProtocolType(item.SupportsOpenAi, item.SupportsAnthropic, item.SupportsResponses),
                 SupportsOpenAi = item.SupportsOpenAi,
                 SupportsAnthropic = item.SupportsAnthropic,
+                SupportsResponses = item.SupportsResponses || (!item.SupportsOpenAi && !item.SupportsAnthropic),
                 IsEnabled = true
             };
             _dbContext.Sites.Add(site);
@@ -568,9 +573,9 @@ public sealed class SitesApiController : ControllerBase
     /// <summary>
     /// 根据站点能力推导协议类型（与 PageModel 中逻辑一致）。
     /// </summary>
-    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
+    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic, bool supportsResponses = false)
     {
-        if (!supportsOpenAi && !supportsAnthropic)
+        if (supportsResponses || (!supportsOpenAi && !supportsAnthropic))
         {
             return "Responses";
         }
@@ -602,6 +607,7 @@ public sealed class SitesApiController : ControllerBase
             keyCount,
             supportsOpenAi = site.SupportsOpenAi,
             supportsAnthropic = site.SupportsAnthropic,
+            supportsResponses = site.SupportsResponses || (!site.SupportsOpenAi && !site.SupportsAnthropic),
             protocolType = site.ProtocolType,
             isEnabled = site.IsEnabled,
             createdAt = site.CreatedAt
@@ -654,6 +660,10 @@ public sealed class SitePayload
     /// 是否支持 Anthropic 协议。
     /// </summary>
     public bool SupportsAnthropic { get; set; }
+    /// <summary>
+    /// 是否支持 OpenAI Responses 原生接口。
+    /// </summary>
+    public bool SupportsResponses { get; set; }
     /// <summary>
     /// 是否启用（仅创建时生效）。
     /// </summary>

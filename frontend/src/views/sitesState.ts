@@ -18,9 +18,10 @@ export interface ParseSitesImportResult {
 
 function resolveProtocolFromFlags(
   supportsOpenAi = true,
-  supportsAnthropic = false
+  supportsAnthropic = false,
+  supportsResponses = false
 ): SiteImportPreviewItem['protocolType'] {
-  if (!supportsOpenAi && !supportsAnthropic) return 'Responses'
+  if (supportsResponses || (!supportsOpenAi && !supportsAnthropic)) return 'Responses'
   return supportsAnthropic && !supportsOpenAi ? 'Anthropic' : 'OpenAI'
 }
 
@@ -33,17 +34,18 @@ function resolveProtocolFromTsv(baseUrl: string, apiKey: string): SiteImportPrev
 function toCapabilities(protocolType: SiteImportPreviewItem['protocolType']): {
   supportsOpenAi: boolean
   supportsAnthropic: boolean
+  supportsResponses: boolean
 } {
-  if (protocolType === 'Anthropic') return { supportsOpenAi: false, supportsAnthropic: true }
-  if (protocolType === 'Responses') return { supportsOpenAi: false, supportsAnthropic: false }
-  return { supportsOpenAi: true, supportsAnthropic: false }
+  if (protocolType === 'Anthropic') return { supportsOpenAi: false, supportsAnthropic: true, supportsResponses: false }
+  if (protocolType === 'Responses') return { supportsOpenAi: false, supportsAnthropic: false, supportsResponses: true }
+  return { supportsOpenAi: true, supportsAnthropic: false, supportsResponses: false }
 }
 
 function normalizeJsonItem(item: Partial<SitePayload> & { protocolType?: string }): SiteImportPreviewItem | null {
   if (!item.name?.trim() || !item.baseUrl?.trim() || !item.apiKey?.trim()) return null
   const protocolType = item.protocolType === 'Anthropic' || item.protocolType === 'Responses'
     ? item.protocolType
-    : resolveProtocolFromFlags(item.supportsOpenAi, item.supportsAnthropic)
+    : resolveProtocolFromFlags(item.supportsOpenAi, item.supportsAnthropic, item.supportsResponses)
   const capabilities = toCapabilities(protocolType)
 
   return {
@@ -53,6 +55,7 @@ function normalizeJsonItem(item: Partial<SitePayload> & { protocolType?: string 
     apiKey: item.apiKey.trim(),
     supportsOpenAi: item.supportsOpenAi ?? capabilities.supportsOpenAi,
     supportsAnthropic: item.supportsAnthropic ?? capabilities.supportsAnthropic,
+    supportsResponses: item.supportsResponses ?? capabilities.supportsResponses,
     isEnabled: item.isEnabled ?? true,
     protocolType,
     selected: true

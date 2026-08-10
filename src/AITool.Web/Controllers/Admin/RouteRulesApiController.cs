@@ -553,10 +553,11 @@ public sealed class RouteRulesApiController : ControllerBase
                     SiteKeyId = candidate.SiteKeyId,
                     CircuitKey = ProxyRequestMetadataCache.BuildCircuitKey(rule.Id, candidate.SiteKeyId),
                     SiteName = site.Name,
-                    ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic),
+                    ProtocolType = ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic, site.SupportsResponses),
                     EndpointPathMode = site.EndpointPathMode,
                     SupportsOpenAi = site.SupportsOpenAi,
                     SupportsAnthropic = site.SupportsAnthropic,
+                    SupportsResponses = site.SupportsResponses || (!site.SupportsOpenAi && !site.SupportsAnthropic),
                     ExternalModelName = rule.ExternalModelName,
                     UpstreamModelName = rule.UpstreamModelName,
                     SiteModelName = rule.SiteModelName,
@@ -636,9 +637,12 @@ public sealed class RouteRulesApiController : ControllerBase
     /// <summary>
     /// 根据站点能力推导协议类型。
     /// </summary>
-    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
+    private static string ResolveSiteProtocolType(
+        bool supportsOpenAi,
+        bool supportsAnthropic,
+        bool supportsResponses = false)
     {
-        if (!supportsOpenAi && !supportsAnthropic)
+        if (supportsResponses || (!supportsOpenAi && !supportsAnthropic))
         {
             return "Responses";
         }

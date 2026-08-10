@@ -1,3 +1,12 @@
+// 仅格式化日志列表的显示文本，不修改接口返回的原始模型字段。
+export function formatUsageLogModel(routeEntry: string | null | undefined, upstreamModel: string | null | undefined): string {
+  const entry = routeEntry?.trim() ?? ''
+  const upstream = upstreamModel?.trim() || entry
+  if (!entry) return upstream || '-'
+  if (!upstream || entry === upstream) return entry
+  return `${entry}->${upstream}`
+}
+
 export function buildUsageLogsDefaultCustomRange(now = new Date()): {
   startTime: number
   endTime: number

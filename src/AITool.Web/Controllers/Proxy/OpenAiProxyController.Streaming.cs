@@ -22,11 +22,13 @@ public sealed partial class OpenAiProxyController
     /// <param name="webSocket">已经完成鉴权并接受的下游 WebSocket 连接。</param>
     /// <param name="forwardRequest">已经完成路由选择和请求体准备的上游转发请求。</param>
     /// <param name="cancellationToken">用于中断当前 WebSocket 转发的取消令牌。</param>
+    /// <param name="payloadConverter">可选的上游 SSE 数据转换器，用于将 Chat Completions 事件转换为 Responses 事件。</param>
     /// <returns>返回本轮 WebSocket 流式转发结果和可用于续传的输出内容。</returns>
     private async Task<StreamForwardOutcome> ForwardOpenAiResponsesAsWebSocketAsync(
         WebSocket webSocket,
         ProxyForwardRequest forwardRequest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<string, string>? payloadConverter = null)
     {
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
@@ -54,14 +56,29 @@ public sealed partial class OpenAiProxyController
                 else
                 {
                     UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
-                    if (TryExtractResponsesCompletedOutput(payload, out var outputJson))
+                    var responsePayload = payloadConverter is null ? payload : payloadConverter(payload);
+                    if (string.IsNullOrWhiteSpace(responsePayload))
                     {
-                        // 保存 response.completed 的 output，供下一轮 response.append 合并上下文。
-                        completedOutputJson = outputJson;
-                        receivedDoneEvent = true;
-                    }                    if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.AppendLine(payload); }
-                    await SendWebSocketJsonPayloadAsync(webSocket, payload, token);
-                    startedWriting = true;
+                        pendingSseLines.Clear();
+                        return;
+                    }
+
+                    IEnumerable<string> responsePayloads = payloadConverter is null
+                        ? [responsePayload]
+                        : ExtractWebSocketJsonPayloadsFromSseText(responsePayload);
+                    foreach (var convertedPayload in responsePayloads)
+                    {
+                        if (TryExtractResponsesCompletedOutput(convertedPayload, out var outputJson))
+                        {
+                            // 保存 response.completed 的 output，供下一轮 response.append 合并上下文。
+                            completedOutputJson = outputJson;
+                            receivedDoneEvent = true;
+                        }
+
+                        if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.AppendLine(convertedPayload); }
+                        await SendWebSocketJsonPayloadAsync(webSocket, convertedPayload, token);
+                        startedWriting = true;
+                    }
                 }
             }
 
@@ -567,6 +584,26 @@ public sealed partial class OpenAiProxyController
             Result = result,
             CanFallback = !startedWriting
         };
+    }
+
+    /// <summary>
+    /// 将一个 OpenAI Chat Completions SSE 块转换为 Responses SSE 事件。
+    /// </summary>
+    private static string ConvertOpenAiChatSseBlockToResponses(
+        string sseBlock,
+        ChatToResponsesStreamState responsesState)
+    {
+        var lines = sseBlock
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .ToList();
+        if (!TryExtractSseDataPayload(lines, out var payload)
+            || string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        return ProxyProtocolBridge.ConvertChatStreamChunkToResponses(payload, responsesState);
     }
 
     /// <summary>

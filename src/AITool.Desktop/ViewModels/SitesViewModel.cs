@@ -192,6 +192,7 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
             ApiKey = item.ApiKey,
             SupportsOpenAi = item.SupportsOpenAi,
             SupportsAnthropic = item.SupportsAnthropic,
+            SupportsResponses = item.SupportsResponses,
             IsEnabled = item.IsEnabled
         }).ToList(),
         JsonOptions);
@@ -257,6 +258,7 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
                 EndpointPathMode = NormalizeEndpointPathMode(detail.EndpointPathMode),
                 SupportsOpenAi = detail.SupportsOpenAi,
                 SupportsAnthropic = detail.SupportsAnthropic,
+                SupportsResponses = detail.SupportsResponses,
                 IsEnabled = detail.IsEnabled
             };
             IsEditorOpen = true;
@@ -307,6 +309,7 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
                 ApiKey = Form.ApiKey,
                 SupportsOpenAi = Form.SupportsOpenAi,
                 SupportsAnthropic = Form.SupportsAnthropic,
+                SupportsResponses = Form.SupportsResponses,
                 IsEnabled = Form.IsEnabled
             };
             if (EditingSite is null)
@@ -546,6 +549,7 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
                     ApiKey = item.ApiKey.Trim(),
                     SupportsOpenAi = item.SupportsOpenAi,
                     SupportsAnthropic = item.SupportsAnthropic,
+                    SupportsResponses = item.SupportsResponses,
                     IsEnabled = item.IsEnabled
                 })
                 .ToList();

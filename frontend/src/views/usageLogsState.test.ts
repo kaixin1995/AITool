@@ -2,8 +2,17 @@ import { describe, expect, it } from 'vitest'
 import {
   buildUsageLogsDefaultCustomRange,
   buildVisibleUsageLogPages,
-  canAutoLoadUsageLogs
+  canAutoLoadUsageLogs,
+  formatUsageLogModel
 } from './usageLogsState'
+
+describe('Usage Logs 模型显示', () => {
+  it('仅在路由入口与上游模型不同时拼接显示值', () => {
+    expect(formatUsageLogModel('auto', 'gpt-5.2')).toBe('auto->gpt-5.2')
+    expect(formatUsageLogModel('gpt-5.2', 'gpt-5.2')).toBe('gpt-5.2')
+    expect(formatUsageLogModel('', 'gpt-5.2')).toBe('gpt-5.2')
+  })
+})
 
 describe('Usage Logs 分页', () => {
   it('在末页仍显示完整五个连续页码', () => {

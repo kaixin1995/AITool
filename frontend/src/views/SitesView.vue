@@ -34,6 +34,7 @@ const form = reactive<SitePayload>({
   apiKey: '',
   supportsOpenAi: true,
   supportsAnthropic: false,
+  supportsResponses: false,
   isEnabled: true
 })
 const saving = ref(false)
@@ -59,7 +60,7 @@ function openCreate(): void {
   editingId.value = null
   Object.assign(form, {
     name: '', baseUrl: '', endpointPathMode: 'standard-root', apiKey: '',
-    supportsOpenAi: true, supportsAnthropic: false, isEnabled: true
+    supportsOpenAi: true, supportsAnthropic: false, supportsResponses: false, isEnabled: true
   })
   showModal.value = true
 }
@@ -82,6 +83,7 @@ async function openEdit(row: SiteListItem): Promise<void> {
     apiKey: '', // 编辑时留空表示保留原密钥
     supportsOpenAi: detail.supportsOpenAi,
     supportsAnthropic: detail.supportsAnthropic,
+    supportsResponses: detail.supportsResponses,
     isEnabled: detail.isEnabled
   })
   showModal.value = true
@@ -617,12 +619,12 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
   {
     title: '协议',
     key: 'protocol',
-    width: 170,
+    width: 230,
     render: (row) => {
       return h(NSpace, { size: 4, wrap: false }, () => [
         row.supportsOpenAi ? h(NTag, { size: 'small', type: 'success', bordered: false }, () => 'OpenAI') : null,
         row.supportsAnthropic ? h(NTag, { size: 'small', type: 'info', bordered: false }, () => 'Anthropic') : null,
-        !row.supportsOpenAi && !row.supportsAnthropic ? h(NTag, { size: 'small', type: 'warning', bordered: false }, () => row.protocolType || 'Responses') : null
+        row.supportsResponses ? h(NTag, { size: 'small', type: 'warning', bordered: false }, () => 'Responses') : null
       ])
     }
   },
@@ -709,7 +711,7 @@ onBeforeUnmount(handleCatalogClosed)
         :loading="loading"
         :row-key="(row: SiteListItem) => row.id"
         :pagination="{ pageSize: 20 }"
-        :scroll-x="1180"
+        :scroll-x="1240"
         size="small"
         striped
       />
@@ -743,10 +745,11 @@ onBeforeUnmount(handleCatalogClosed)
         <NFormItem label="协议支持">
           <NSpace vertical :size="6">
             <NSpace>
-              <NSwitch v-model:value="form.supportsOpenAi" /> OpenAI
-              <NSwitch v-model:value="form.supportsAnthropic" /> Anthropic
+              <NSwitch v-model:value="form.supportsOpenAi" /> OpenAI Chat Completions
+              <NSwitch v-model:value="form.supportsAnthropic" /> Anthropic Messages
+              <NSwitch v-model:value="form.supportsResponses" /> OpenAI Responses
             </NSpace>
-            <span class="site-form-tip">如果两个都不勾选，则按仅支持 Responses 的站点处理。</span>
+            <span class="site-form-tip">Responses 为独立能力：勾选后直接透传；未勾选时会按 OpenAI 或 Anthropic 能力自动转换。为兼容旧配置，三个协议都不勾选仍按仅支持 Responses 处理。</span>
           </NSpace>
         </NFormItem>
         <NFormItem label="启用">
@@ -882,7 +885,7 @@ onBeforeUnmount(handleCatalogClosed)
                   <NSpace size="small">
                     <NTag v-if="site.supportsOpenAi" size="small" type="success" :bordered="false">OpenAI</NTag>
                     <NTag v-if="site.supportsAnthropic" size="small" type="info" :bordered="false">Anthropic</NTag>
-                    <NTag v-if="!site.supportsOpenAi && !site.supportsAnthropic" size="small" type="warning" :bordered="false">Responses</NTag>
+                    <NTag v-if="site.supportsResponses" size="small" type="warning" :bordered="false">Responses</NTag>
                   </NSpace>
                 </td>
               </tr>

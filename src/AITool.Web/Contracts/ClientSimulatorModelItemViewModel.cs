@@ -28,6 +28,11 @@ public sealed class ClientSimulatorModelItemViewModel
     public bool SupportsAnthropic { get; set; }
 
     /// <summary>
+    /// 模型是否存在支持 OpenAI Responses 原生接口的路由。
+    /// </summary>
+    public bool SupportsResponses { get; set; }
+
+    /// <summary>
     /// 当前环境下是否允许通过 OpenAI 协议调用。
     /// </summary>
     public bool CanUseOpenAi { get; set; }

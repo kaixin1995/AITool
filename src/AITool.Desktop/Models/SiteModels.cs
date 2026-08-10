@@ -24,6 +24,7 @@ public partial class SiteListItem : ObservableObject
     public string ApiKeyMasked { get; set; } = string.Empty;
     public bool SupportsOpenAi { get; set; }
     public bool SupportsAnthropic { get; set; }
+    public bool SupportsResponses { get; set; }
     public string ProtocolType { get; set; } = string.Empty;
     public DateTimeOffset CreatedAt { get; set; }
 
@@ -35,7 +36,8 @@ public partial class SiteListItem : ObservableObject
 
     public string StatusText => IsEnabled ? "已启用" : "已停用";
     public string ToggleActionText => IsEnabled ? "停用" : "启用";
-    public bool SupportsResponses => !SupportsOpenAi && !SupportsAnthropic;
+    // 旧站点没有该字段时，继续将两个旧协议均未启用的记录识别为 Responses-only。
+    public bool HasResponsesSupport => SupportsResponses || (!SupportsOpenAi && !SupportsAnthropic);
     // 状态颜色交给主题资源处理，避免模型层固定浅色主题颜色。
     public bool IsDisabled => !IsEnabled;
     public string CreatedAtText => CreatedAt == default ? "-" : CreatedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm");
@@ -60,6 +62,7 @@ public sealed class SiteDetail
     public string EndpointPathMode { get; set; } = "standard-root";
     public bool SupportsOpenAi { get; set; }
     public bool SupportsAnthropic { get; set; }
+    public bool SupportsResponses { get; set; }
     public string ProtocolType { get; set; } = string.Empty;
     public bool IsEnabled { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
@@ -73,6 +76,7 @@ public partial class SitePayload : ObservableObject
     public string ApiKey { get; set; } = string.Empty;
     public bool SupportsOpenAi { get; set; } = true;
     public bool SupportsAnthropic { get; set; }
+    public bool SupportsResponses { get; set; }
     public bool IsEnabled { get; set; } = true;
 }
 
@@ -89,7 +93,7 @@ public sealed partial class SiteImportPreviewItem : SitePayload
     [ObservableProperty]
     private bool _isSelected = true;
 
-    public string ProtocolType => !SupportsOpenAi && !SupportsAnthropic
+    public string ProtocolType => SupportsResponses || (!SupportsOpenAi && !SupportsAnthropic)
         ? "Responses"
         : SupportsAnthropic && !SupportsOpenAi
             ? "Anthropic"
@@ -108,6 +112,7 @@ public sealed class SiteEditForm : ObservableObject
     private string _apiKey = string.Empty;
     private bool _supportsOpenAi = true;
     private bool _supportsAnthropic;
+    private bool _supportsResponses;
     private bool _isEnabled = true;
 
     public string Name { get => _name; set => SetProperty(ref _name, value); }
@@ -116,6 +121,7 @@ public sealed class SiteEditForm : ObservableObject
     public string ApiKey { get => _apiKey; set => SetProperty(ref _apiKey, value); }
     public bool SupportsOpenAi { get => _supportsOpenAi; set => SetProperty(ref _supportsOpenAi, value); }
     public bool SupportsAnthropic { get => _supportsAnthropic; set => SetProperty(ref _supportsAnthropic, value); }
+    public bool SupportsResponses { get => _supportsResponses; set => SetProperty(ref _supportsResponses, value); }
     public bool IsEnabled { get => _isEnabled; set => SetProperty(ref _isEnabled, value); }
 
     public void Reset()
@@ -126,6 +132,7 @@ public sealed class SiteEditForm : ObservableObject
         ApiKey = string.Empty;
         SupportsOpenAi = true;
         SupportsAnthropic = false;
+        SupportsResponses = false;
         IsEnabled = true;
     }
 }

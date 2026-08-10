@@ -23,7 +23,7 @@ public sealed class DeveloperSimulatorModel
     public bool SupportsAnthropic { get; set; }
     public bool CanUseOpenAi { get; set; }
     public bool CanUseAnthropic { get; set; }
-    public bool SupportsResponses => SupportsOpenAi;
+    public bool SupportsResponses { get; set; }
 }
 
 public sealed class DeveloperListResponse
