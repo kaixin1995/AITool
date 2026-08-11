@@ -398,15 +398,20 @@ public sealed class SiteCatalogApiController : ControllerBase
                 .ToListAsync(cancellationToken);
 
             var modelNames = remoteModels.ToList();
+            // 模型库的 ModelName 可能是自定义对外名，需同时通过映射引用的 ModelLibraryItemId 加载。
+            var batchMappingModelIds = existingMappings.Where(m => m.ModelLibraryItemId != Guid.Empty).Select(m => m.ModelLibraryItemId).Distinct().ToList();
             var modelItems = await db.ModelLibraryItems
-                .Where(m => modelNames.Contains(m.ModelName))
+                .Where(m => modelNames.Contains(m.ModelName) || batchMappingModelIds.Contains(m.Id))
                 .ToListAsync(cancellationToken);
+            var modelItemById = modelItems.ToDictionary(m => m.Id);
 
             var models = new List<RemoteModelInfo>();
             foreach (var remoteName in remoteModels)
             {
                 var mapping = existingMappings.FirstOrDefault(m => m.RemoteModelName == remoteName);
-                var modelItem = modelItems.FirstOrDefault(m => m.ModelName == remoteName);
+                var modelItem = mapping is not null && modelItemById.TryGetValue(mapping.ModelLibraryItemId, out var mi)
+                    ? mi
+                    : modelItems.FirstOrDefault(m => m.ModelName == remoteName);
                 var hasValidImport = mapping is not null && modelItem is not null && mapping.ModelLibraryItemId == modelItem.Id;
 
                 models.Add(new RemoteModelInfo
@@ -414,7 +419,7 @@ public sealed class SiteCatalogApiController : ControllerBase
                     RemoteModelName = remoteName,
                     ExistingMappingId = hasValidImport ? mapping!.Id : null,
                     IsEnabled = hasValidImport && mapping!.IsEnabled,
-                    ExistingDisplayName = modelItem?.DisplayName
+                    ExistingDisplayName = modelItem?.ModelName != remoteName ? modelItem?.ModelName : null
                 });
             }
 
