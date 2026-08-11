@@ -189,15 +189,21 @@ public sealed class SiteCatalogApiController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var modelNames = remoteModels.ToList();
+        // 模型库的 ModelName 可能是自定义对外名（不等于远端名），需同时通过映射引用的 ModelLibraryItemId 加载。
+        var mappingModelIds = existingMappings.Where(m => m.ModelLibraryItemId != Guid.Empty).Select(m => m.ModelLibraryItemId).Distinct().ToList();
         var modelItems = await _dbContext.ModelLibraryItems
-            .Where(m => modelNames.Contains(m.ModelName))
+            .Where(m => modelNames.Contains(m.ModelName) || mappingModelIds.Contains(m.Id))
             .ToListAsync(cancellationToken);
 
         var result = new List<RemoteModelInfo>();
         foreach (var remoteName in remoteModels)
         {
             var mapping = existingMappings.FirstOrDefault(m => m.RemoteModelName == remoteName);
-            var modelItem = modelItems.FirstOrDefault(m => m.ModelName == remoteName);
+            // 模型库的 ModelName 可能是用户自定义的对外名（不等于 remoteName），
+            // 需要通过映射的 ModelLibraryItemId 查找对应的模型库记录。
+            var modelItem = mapping is not null
+                ? modelItems.FirstOrDefault(m => m.Id == mapping.ModelLibraryItemId)
+                : modelItems.FirstOrDefault(m => m.ModelName == remoteName);
             var hasValidImport = mapping is not null && modelItem is not null && mapping.ModelLibraryItemId == modelItem.Id;
 
             result.Add(new RemoteModelInfo
@@ -205,7 +211,8 @@ public sealed class SiteCatalogApiController : ControllerBase
                 RemoteModelName = remoteName,
                 ExistingMappingId = hasValidImport ? mapping!.Id : null,
                 IsEnabled = hasValidImport && mapping!.IsEnabled,
-                ExistingDisplayName = modelItem?.DisplayName
+                // 返回模型库的对外名（可能是自定义名），供前端预填到输入框
+                ExistingDisplayName = modelItem?.ModelName != remoteName ? modelItem?.ModelName : null
             });
         }
 
@@ -293,13 +300,15 @@ public sealed class SiteCatalogApiController : ControllerBase
             .Where(m => allSiteIds.Contains(m.SiteId))
             .ToListAsync(cancellationToken);
 
-        var allRemoteNames = request.Selections
+        // 用户可自定义对外模型名（displayName），自定义名不为空且与原始名不同时用它作为 ModelLibraryItem.ModelName。
+        // 没有自定义名时回退到原始名。模型库按"对外名"查重（而非原始名），确保同一个自定义名只创建一条模型库记录。
+        var allPublicNames = request.Selections
             .Where(s => s.Selected)
-            .Select(s => s.RemoteModelName)
+            .Select(s => string.IsNullOrWhiteSpace(s.DisplayName) ? s.RemoteModelName : s.DisplayName.Trim())
             .Distinct()
             .ToList();
         var existingModelItems = await _dbContext.ModelLibraryItems
-            .Where(m => allRemoteNames.Contains(m.ModelName))
+            .Where(m => allPublicNames.Contains(m.ModelName))
             .ToDictionaryAsync(m => m.ModelName, m => m, cancellationToken);
 
         var siteGroups = request.Selections.GroupBy(s => s.SiteId);
@@ -310,24 +319,23 @@ public sealed class SiteCatalogApiController : ControllerBase
 
             foreach (var item in group)
             {
+                // 对外名：用户自定义优先，否则用原始名
+                var publicName = string.IsNullOrWhiteSpace(item.DisplayName)
+                    ? item.RemoteModelName
+                    : item.DisplayName.Trim();
                 var mapping = siteMappings.FirstOrDefault(m => m.RemoteModelName == item.RemoteModelName);
 
                 if (item.Selected)
                 {
-                    if (!existingModelItems.TryGetValue(item.RemoteModelName, out var modelItem))
+                    if (!existingModelItems.TryGetValue(publicName, out var modelItem))
                     {
                         modelItem = new ModelLibraryItem
                         {
-                            ModelName = item.RemoteModelName,
-                            DisplayName = string.IsNullOrWhiteSpace(item.DisplayName) ? item.RemoteModelName : item.DisplayName
+                            ModelName = publicName,
+                            DisplayName = publicName
                         };
                         _dbContext.ModelLibraryItems.Add(modelItem);
-                        existingModelItems[item.RemoteModelName] = modelItem;
-                    }
-                    else if (!string.IsNullOrWhiteSpace(item.DisplayName) && item.DisplayName != modelItem.DisplayName)
-                    {
-                        modelItem.DisplayName = item.DisplayName;
-                        await _dbContext.UpdateAsync(modelItem, cancellationToken);
+                        existingModelItems[publicName] = modelItem;
                     }
 
                     if (mapping is null)

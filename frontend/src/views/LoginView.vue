@@ -124,7 +124,8 @@ async function handleSubmit(): Promise<void> {
   background: linear-gradient(135deg, #6C9EFF 0%, #A5B4FC 100%);
 }
 .login-card {
-  width: 400px;
+  width: min(400px, calc(100vw - 32px));
+  box-sizing: border-box;
   border-radius: 16px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.15);
 }

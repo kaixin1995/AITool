@@ -1003,11 +1003,11 @@ onBeforeUnmount(handleCatalogClosed)
                   :checked="selectionFor(site.siteId, model.remoteModelName)?.selected"
                   @update:checked="(value) => updateCatalogSelected(site.siteId, model.remoteModelName, value)"
                 />
-                <code class="catalog-remote-name">{{ model.remoteModelName }}</code>
+                <code class="catalog-remote-name" :title="model.remoteModelName">{{ model.remoteModelName }}</code>
                 <NInput
                   :value="selectionFor(site.siteId, model.remoteModelName)?.displayName"
                   size="small"
-                  placeholder="显示名称 / 别名"
+                  placeholder="对外模型名（留空用原始名）"
                   @update:value="(value) => updateCatalogDisplayName(site.siteId, model.remoteModelName, value)"
                 />
                 <NTag v-if="model.existingMappingId" size="small" :type="model.isEnabled ? 'success' : 'default'" :bordered="false">{{ model.isEnabled ? '已导入' : '已禁用' }}</NTag>
