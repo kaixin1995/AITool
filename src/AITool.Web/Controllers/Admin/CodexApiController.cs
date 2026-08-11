@@ -381,19 +381,25 @@ public sealed class CodexApiController : ControllerBase
                 .ToListAsync(ct);
 
             var remoteNames = remoteModels.Select(m => m.Slug).ToList();
+            // 模型库的 ModelName 可能是用户自定义的对外名（不等于远端 slug），
+            // 需同时通过映射引用的 ModelLibraryItemId 加载，避免已导入的模型查不到。
+            var mappingModelIds = existingMappings.Where(m => m.ModelLibraryItemId != Guid.Empty).Select(m => m.ModelLibraryItemId).Distinct().ToList();
             var modelItems = await _dbContext.ModelLibraryItems
-                .Where(m => remoteNames.Contains(m.ModelName))
+                .Where(m => remoteNames.Contains(m.ModelName) || mappingModelIds.Contains(m.Id))
                 .ToListAsync(ct);
 
             // 使用 Dictionary 优化 Join，避免 O(n²) 复杂度
             var mappingDict = existingMappings.ToDictionary(m => m.RemoteModelName);
-            var modelItemDict = modelItems.ToDictionary(m => m.ModelName);
+            var modelItemByIdDict = modelItems.ToDictionary(m => m.Id);
 
             var result = new List<object>();
             foreach (var remote in remoteModels)
             {
                 mappingDict.TryGetValue(remote.Slug, out var mapping);
-                modelItemDict.TryGetValue(remote.Slug, out var modelItem);
+                // 通过映射的 ModelLibraryItemId 查找模型库记录（ModelName 可能是自定义名）
+                var modelItem = mapping is not null && modelItemByIdDict.TryGetValue(mapping.ModelLibraryItemId, out var mi)
+                    ? mi
+                    : modelItems.FirstOrDefault(m => m.ModelName == remote.Slug);
                 var hasValidImport = mapping != null && modelItem != null && mapping.ModelLibraryItemId == modelItem.Id;
 
                 result.Add(new
@@ -402,7 +408,7 @@ public sealed class CodexApiController : ControllerBase
                     displayName = remote.DisplayName,
                     existingMappingId = hasValidImport ? mapping!.Id : (Guid?)null,
                     isEnabled = hasValidImport && mapping!.IsEnabled,
-                    existingDisplayName = modelItem?.DisplayName
+                    existingDisplayName = modelItem?.ModelName != remote.Slug ? modelItem?.ModelName : null
                 });
             }
 
