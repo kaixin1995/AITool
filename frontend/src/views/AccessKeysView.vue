@@ -14,6 +14,7 @@ const newKeyName = ref('')
 const newKeyPlain = ref('')
 const newKeyRoutes = ref<string[]>([])
 const saving = ref(false)
+const copyingKeyId = ref<string | null>(null)
 
 // 可用路由入口列表（供权限选择）
 const routeEntries = ref<string[]>([])
@@ -107,6 +108,19 @@ async function copyText(text: string, successMessage = '已复制到剪贴板'):
   }
 }
 
+async function handleCopyPlain(row: AccessKeyItem): Promise<void> {
+  if (copyingKeyId.value) return
+  copyingKeyId.value = row.id
+  try {
+    const { plainKey } = await api.getAccessKeyPlain(row.id)
+    await copyText(plainKey, '已复制完整密钥')
+  } catch (e) {
+    message.error((e as Error).message)
+  } finally {
+    copyingKeyId.value = null
+  }
+}
+
 async function handleToggle(row: AccessKeyItem): Promise<void> {
   await api.toggleAccessKey(row.id)
   row.isEnabled = !row.isEnabled
@@ -171,7 +185,7 @@ const columns = computed<DataTableColumns<AccessKeyItem>>(() => [
   } },
   { title: '状态', key: 'isEnabled', width: 80, render: (r) => h(NTag, { size: 'small', type: r.isEnabled ? 'success' : 'default', bordered: false }, () => r.isEnabled ? '启用' : '禁用') },
   { title: '操作', key: 'actions', width: 292, fixed: 'right', render: (row) => h(NSpace, { size: 6, wrap: false }, () => [
-    h(NButton, { size: 'small', quaternary: true, onClick: () => copyText(row.maskedValue, '已复制脱敏值；历史密钥不会再次显示明文') }, () => '复制脱敏值'),
+    h(NButton, { size: 'small', quaternary: true, loading: copyingKeyId.value === row.id, onClick: () => handleCopyPlain(row) }, () => '复制密钥'),
     h(NButton, { size: 'small', quaternary: true, disabled: !routeEntriesReady.value, onClick: () => openEditRoutes(row) }, () => '编辑路由'),
     h(NButton, { size: 'small', quaternary: true, onClick: () => handleToggle(row) }, () => row.isEnabled ? '禁用' : '启用'),
     h(NPopconfirm, { onPositiveClick: () => handleDelete(row) }, { trigger: () => h(NButton, { size: 'small', quaternary: true, type: 'error' }, () => '删除'), default: () => `确认删除「${row.keyName}」？` })

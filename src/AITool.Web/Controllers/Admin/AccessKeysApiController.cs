@@ -107,6 +107,19 @@ public sealed class AccessKeysApiController : ControllerBase
     }
 
     /// <summary>
+    /// 按密钥标识获取其完整明文，供后台按需复制。
+    /// 列表接口不批量返回明文，避免一次请求泄漏所有密钥；此端点按需返回单条。
+    /// </summary>
+    [HttpGet("{keyId}/plain")]
+    public async Task<IActionResult> GetPlain(Guid keyId, CancellationToken cancellationToken)
+    {
+        var key = await _dbContext.ProxyAccessKeys.InSingleAsync(keyId);
+        if (key is null) return NotFound(new { message = "密钥不存在" });
+
+        return Ok(new { keyId, plainKey = key.PlainKey });
+    }
+
+    /// <summary>
     /// 创建访问密钥。
     /// </summary>
     [HttpPost("create")]
