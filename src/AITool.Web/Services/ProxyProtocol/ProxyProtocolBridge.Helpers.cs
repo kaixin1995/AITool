@@ -1190,7 +1190,7 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string ExtractReasoningFromElement(JsonElement element)
     {
-        if (element.ValueKind == JsonValueKind.Undefined)
+        if (element.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
         {
             return string.Empty;
         }
@@ -1218,7 +1218,7 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string? ExtractDeltaContent(JsonElement delta)
     {
-        if (delta.ValueKind == JsonValueKind.Undefined)
+        if (delta.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
         {
             return null;
         }
@@ -1301,6 +1301,11 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string? ExtractElementText(JsonElement element, params string[] propertyNames)
     {
+        if (element.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            return null;
+        }
+
         foreach (var propertyName in propertyNames)
         {
             if (!element.TryGetProperty(propertyName, out var propertyValue))

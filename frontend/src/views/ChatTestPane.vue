@@ -52,8 +52,14 @@ watch(selectedMappingId, (mappingId) => {
 const targetOptionsComputed = computed<SelectOption[]>(() => {
   // 不再用 modelSearch 过滤 options：选中项被过滤掉时 NSelect 会回退显示 value（乱码）。
   // 搜索交由 NSelect 自身的 filterable 处理，保证选中项始终在 options 中。
-  return targets.value
-    .map((t) => ({ label: `${t.siteName} / ${t.siteModelName}`, value: t.mappingId }))
+  // 同一站点模型会按多个 Key 展开为多个调度候选；选择值仍是 mappingId，界面只保留一项，避免重复展示。
+  const uniqueTargets = new Map<string, ChatModelTarget>()
+  for (const target of targets.value) {
+    if (!uniqueTargets.has(target.mappingId)) uniqueTargets.set(target.mappingId, target)
+  }
+
+  return [...uniqueTargets.values()]
+    .map((target) => ({ label: `${target.siteName} / ${target.siteModelName}`, value: target.mappingId }))
 })
 
 const currentReasoning = computed(() => streamingReasoning.value || [...messages.value].reverse().find((m) => m.reasoning)?.reasoning || '')

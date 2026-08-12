@@ -1709,6 +1709,11 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private static string ExtractReasoningText(JsonElement element)
     {
+        if (element.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            return string.Empty;
+        }
+
         var directText = ExtractElementText(element, "reasoning_content", "reasoning", "thinking", "summary_text", "output_text", "text");
         if (!string.IsNullOrWhiteSpace(directText))
         {
@@ -1741,6 +1746,11 @@ public sealed class ChatApiController : ControllerBase
     /// </summary>
     private static string ExtractElementText(JsonElement element, params string[] propertyNames)
     {
+        if (element.ValueKind is JsonValueKind.Undefined or JsonValueKind.Null)
+        {
+            return string.Empty;
+        }
+
         foreach (var propertyName in propertyNames)
         {
             if (!element.TryGetProperty(propertyName, out var value))
