@@ -105,6 +105,17 @@ public sealed class ProxyForwardService : IProxyForwardService
                 var responseBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
                 stopwatch.Stop();
 
+                // 上游(Codex /responses）强制 stream=true，客户端非流式时上游会返回 SSE 流；
+                // 透明聚合成完整 JSON，上层 usage 提取与协议转换均无感。
+                if (!isStreaming && IsSseContent(response, responseBody))
+                {
+                    var aggregated = TryExtractResponsesCompletion(responseBody);
+                    if (!string.IsNullOrEmpty(aggregated))
+                    {
+                        responseBody = aggregated;
+                    }
+                }
+
                 var usage = ExtractUsageMetrics(responseBody, request.ProtocolType);
                 var totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
 
@@ -651,6 +662,85 @@ public sealed class ProxyForwardService : IProxyForwardService
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// 判断上游响应是否为 SSE 流（content-type 为 text/event-stream，或正文以 event:/data: 开头）。
+    /// 用于识别 Codex /responses 等强制 stream=true 的上游在客户端非流式请求下返回的 SSE。
+    /// </summary>
+    private static bool IsSseContent(HttpResponseMessage response, string responseBody)
+    {
+        if (string.Equals(response.Content.Headers.ContentType?.MediaType,
+                "text/event-stream", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var span = responseBody.AsSpan().TrimStart();
+        return span.StartsWith("event:", StringComparison.OrdinalIgnoreCase)
+            || span.StartsWith("data:", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 从上游 Responses SSE 流中提取 response.completed 事件携带的完整 response 对象（JSON 文本）。
+    /// Codex /responses 强制 stream=true，客户端非流式时用它把流聚合成完整 JSON 响应体。
+    /// 找不到 response.completed 时返回 null（由调用方走原有失败路径）。
+    /// </summary>
+    private static string? TryExtractResponsesCompletion(string sseBody)
+    {
+        string? currentEvent = null;
+        var dataBuilder = new StringBuilder();
+
+        string? FlushAndCheck()
+        {
+            var json = dataBuilder.ToString().Trim();
+            dataBuilder.Clear();
+            if (!string.IsNullOrEmpty(json)
+                && string.Equals(currentEvent, "response.completed", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(json);
+                    if (doc.RootElement.TryGetProperty("response", out var response))
+                    {
+                        return response.GetRawText();
+                    }
+                }
+                catch
+                {
+                    // 非 JSON 的 data 行忽略
+                }
+            }
+            return null;
+        }
+
+        foreach (var rawLine in sseBody.Replace("\r\n", "\n").Split('\n'))
+        {
+            var line = rawLine.Trim();
+            if (line.Length == 0)
+            {
+                var result = FlushAndCheck();
+                if (result is not null) return result;
+                currentEvent = null;
+                continue;
+            }
+
+            if (line.StartsWith("event:", StringComparison.OrdinalIgnoreCase))
+            {
+                // 新事件开始，先结算上一块
+                var result = FlushAndCheck();
+                if (result is not null) return result;
+                currentEvent = line["event:".Length..].Trim();
+            }
+            else if (line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+            {
+                dataBuilder.AppendLine(line["data:".Length..].TrimStart());
+            }
+            // 其他行（注释 `:` 开头等）忽略
+        }
+
+        // 流末无空行结尾的情况
+        return FlushAndCheck();
     }
 
     /// <summary>

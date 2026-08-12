@@ -305,6 +305,10 @@ public static partial class ProxyProtocolBridge
                 {
                     rootNode.Remove(unsupported);
                 }
+
+                // ChatGPT /responses 端点强制 stream=true，否则返回 {"detail":"Stream must be set to true"}。
+                // 客户端非流式请求由 ProxyForwardService.ForwardAsync 透明聚合成完整 JSON 返回。
+                rootNode["stream"] = true;
             }
 
             return rootNode.ToJsonString();
