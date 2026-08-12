@@ -218,7 +218,8 @@ public sealed class ProxyRequestMetadataCache
                             CodexInspectionEnabled = settings.CodexInspectionEnabled,
                             CodexInspectionIntervalSeconds = settings.CodexInspectionIntervalSeconds,
                             CodexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours,
-                            CodexAutoDisableThresholdPercent = settings.CodexAutoDisableThresholdPercent
+                            CodexAutoDisableThresholdPercent = settings.CodexAutoDisableThresholdPercent,
+                            CodexInspectionCacheEnabled = settings.CodexInspectionCacheEnabled
                         };
                 })
             ?? new CachedProxyRuntimeSettings();
@@ -1705,6 +1706,10 @@ public sealed class CachedProxyRuntimeSettings
     /// Codex 自动禁用阈值（百分比，1-100）。
     /// </summary>
     public int CodexAutoDisableThresholdPercent { get; set; } = 95;
+    /// <summary>
+    /// Codex 巡检缓存复用开关。关闭时每轮巡检都真实刷新额度；开启时未被使用的账号沿用缓存快照。
+    /// </summary>
+    public bool CodexInspectionCacheEnabled { get; set; }
 }
 
 /// <summary>

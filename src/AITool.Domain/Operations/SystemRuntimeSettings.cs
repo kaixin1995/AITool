@@ -116,4 +116,11 @@ public sealed class SystemRuntimeSettings
     /// 这是全局配置，对所有 Codex 账号统一生效。
     /// </summary>
     public int CodexAutoDisableThresholdPercent { get; set; } = 95;
+
+    /// <summary>
+    /// Codex 巡检缓存复用开关。仅在 CodexFeaturesEnabled 开启时生效。
+    /// 关闭（默认）：每轮巡检都对所有账号真实刷新额度，无论是否被调用。
+    /// 开启：未被使用且窗口未过期且未超过 CodexQuotaMaxCacheHours 的账号沿用上次额度快照（减少上游请求）。
+    /// </summary>
+    public bool CodexInspectionCacheEnabled { get; set; }
 }

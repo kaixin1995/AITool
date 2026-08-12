@@ -92,7 +92,7 @@ public sealed class CodexInspectionService : BackgroundService
             _nextScheduledAt = now + interval;
             // 巡检流程：HTTP 额度查询在锁外执行（避免长时间持锁阻塞其他 DB 操作），
             // 只有 DB 写入（禁用/启用账号）在 SerialExecuteAsync 锁内。
-            await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh: false, autoTriggered: true, ct);
+            await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexInspectionCacheEnabled, runtime.CodexAutoDisableThresholdPercent, forceRefresh: false, autoTriggered: true, ct);
         }
         finally
         {
@@ -116,7 +116,7 @@ public sealed class CodexInspectionService : BackgroundService
             var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
             var quotaService = scope.ServiceProvider.GetRequiredService<ICodexQuotaService>();
             var runtime = await cache.GetRuntimeSettingsAsync(ct);
-            return await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexAutoDisableThresholdPercent, forceRefresh, autoTriggered: false, ct);
+            return await RunInspectionAsync(dbContext, cache, quotaService, runtime.CodexQuotaMaxCacheHours, runtime.CodexInspectionCacheEnabled, runtime.CodexAutoDisableThresholdPercent, forceRefresh, autoTriggered: false, ct);
         }
         finally
         {
@@ -150,7 +150,7 @@ public sealed class CodexInspectionService : BackgroundService
     // —— 核心 ——
     private async Task<InspectionRunResult> RunInspectionAsync(
         AppDbContext dbContext, ProxyRequestMetadataCache cache, ICodexQuotaService quotaService, int maxCacheHours,
-        int autoDisableThresholdPercent,
+        bool inspectionCacheEnabled, int autoDisableThresholdPercent,
         bool forceRefresh, bool autoTriggered, CancellationToken ct)
     {
         var result = new InspectionRunResult
@@ -170,7 +170,7 @@ public sealed class CodexInspectionService : BackgroundService
             foreach (var account in accounts)
             {
                 if (ct.IsCancellationRequested) break;
-                var ar = await InspectAccountAsync(dbContext, cache, quotaService, account, maxCacheHours, autoDisableThresholdPercent, forceRefresh, ct);
+                var ar = await InspectAccountAsync(dbContext, cache, quotaService, account, maxCacheHours, inspectionCacheEnabled, autoDisableThresholdPercent, forceRefresh, ct);
                 result.Accounts.Add(ar);
             }
 
@@ -191,7 +191,7 @@ public sealed class CodexInspectionService : BackgroundService
 
     private async Task<InspectionAccountResult> InspectAccountAsync(
         AppDbContext dbContext, ProxyRequestMetadataCache cache, ICodexQuotaService quotaService,
-        CodexAccount account, int maxCacheHours, int autoDisableThresholdPercent, bool forceRefresh, CancellationToken ct)
+        CodexAccount account, int maxCacheHours, bool inspectionCacheEnabled, int autoDisableThresholdPercent, bool forceRefresh, CancellationToken ct)
     {
         var ar = new InspectionAccountResult { AccountId = account.Id, DisplayName = account.DisplayName };
 
@@ -213,9 +213,10 @@ public sealed class CodexInspectionService : BackgroundService
         }
 
         // 2. 判定缓存 vs 真实刷新
+        // 允许使用缓存的条件：非强制刷新，且开启了巡检缓存复用开关（默认关闭 → 每轮都真实刷新额度）。
         var now = DateTimeOffset.UtcNow;
         bool usedCache = false;
-        if (!forceRefresh)
+        if (!forceRefresh && inspectionCacheEnabled)
         {
             // 是否被使用：读内存映射（SiteUsageTracker），不查 DB
             var hasUsage = HasRecentUsage(account.LinkedSiteId, account.LastQuotaCheckedAt);
@@ -306,7 +307,7 @@ public sealed class CodexInspectionService : BackgroundService
         catch { return null; }
     }
 
-    private static async Task DisableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
+    private async Task DisableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
     {
         // 用 CopyNew 独立连接写入，不碰单例 SqlSugarScope，无需串行锁
         using var client = dbContext.Client.CopyNew();
@@ -321,9 +322,11 @@ public sealed class CodexInspectionService : BackgroundService
         }
         cache.InvalidateRouteTargets();
         cache.InvalidateCodexAccounts();
+        AddLog("account", $"账号 {account.DisplayName} 已自动禁用：{reason}");
+        _logger.LogWarning("Codex account {Id} auto-disabled: {Reason}", account.Id, reason);
     }
 
-    private static async Task EnableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
+    private async Task EnableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
     {
         using var client = dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
@@ -338,6 +341,8 @@ public sealed class CodexInspectionService : BackgroundService
         }
         cache.InvalidateRouteTargets();
         cache.InvalidateCodexAccounts();
+        AddLog("account", $"账号 {account.DisplayName} 已自动启用：{reason}");
+        _logger.LogInformation("Codex account {Id} auto-enabled: {Reason}", account.Id, reason);
     }
 
     private void AddLog(string category, string message)

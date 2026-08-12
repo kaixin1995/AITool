@@ -82,9 +82,8 @@ public static class QuotaCachePolicy
             return false;
         }
 
-        reason = hasRecentUsage
-            ? "命中缓存：未到额度重置时间"
-            : "命中缓存：上次刷新后无新调用，且未到额度重置时间";
+        // 走到这里 hasRecentUsage 必为 false（上面已拦截），返回纯原因描述，由调用方统一加「命中缓存：」前缀。
+        reason = "上次刷新后无新调用，且未到额度重置时间";
         return true;
     }
 }

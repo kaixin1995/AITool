@@ -18,6 +18,7 @@ export interface SystemSettings {
   codexInspectionIntervalSeconds: number
   codexQuotaMaxCacheHours: number
   codexAutoDisableThresholdPercent: number
+  codexInspectionCacheEnabled: boolean
   lastUsageLogPrunedAt: string | null
   lastUsageLogPrunedCount: number
 }

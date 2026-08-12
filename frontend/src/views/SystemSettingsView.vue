@@ -57,6 +57,7 @@ const form = reactive<SystemSettings>({
   codexInspectionIntervalSeconds: 1800,
   codexQuotaMaxCacheHours: 6,
   codexAutoDisableThresholdPercent: 95,
+  codexInspectionCacheEnabled: false,
   lastUsageLogPrunedAt: null,
   lastUsageLogPrunedCount: 0
 })
@@ -202,19 +203,22 @@ onMounted(loadSettings)
         <NCard class="settings-card settings-body-card">
           <h5 class="settings-card-title form-label-tip">Codex 巡检<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在 Codex 功能总开关开启时生效。巡检会周期性检查各 Codex 账号额度。</NTooltip></h5>
           <NForm label-placement="top">
-            <div class="settings-grid cols-4">
+            <div class="codex-inspection-row">
               <NFormItem>
-                <label class="settings-switch-inline"><NSwitch v-model:value="form.codexInspectionEnabled" :disabled="!form.codexFeaturesEnabled" />启用自动巡检</label>
+                <div class="codex-switch-pair">
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.codexInspectionEnabled" :disabled="!form.codexFeaturesEnabled" />启用自动巡检</label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.codexInspectionCacheEnabled" :disabled="!form.codexFeaturesEnabled" /><span class="form-label-tip">启用巡检缓存<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后，未被使用的账号可命中近期缓存额度，减少上游请求；关闭（默认）后每次巡检都真实刷新额度，数据最准但会增加上游请求。</NTooltip></span></label>
+                </div>
               </NFormItem>
-              <NFormItem>
+              <NFormItem class="codex-field">
                 <template #label><span class="form-label-tip">巡检周期（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>每隔多少秒执行一轮自动巡检，下限 30 秒。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.codexInspectionIntervalSeconds" :min="30" :step="30" :disabled="!form.codexFeaturesEnabled" />
               </NFormItem>
-              <NFormItem>
+              <NFormItem class="codex-field">
                 <template #label><span class="form-label-tip">额度缓存最大小时数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>未被使用的账号可以命中缓存，但超过该小时数后会强制真实刷新一次额度。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.codexQuotaMaxCacheHours" :min="1" :disabled="!form.codexFeaturesEnabled" />
               </NFormItem>
-              <NFormItem>
+              <NFormItem class="codex-field">
                 <template #label><span class="form-label-tip">自动禁用阈值（%）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>当账号额度达到该使用百分比时自动禁用，建议 95。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.codexAutoDisableThresholdPercent" :min="1" :max="100" :disabled="!form.codexFeaturesEnabled" />
               </NFormItem>
@@ -307,6 +311,34 @@ onMounted(loadSettings)
 
 .settings-grid.cols-4 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+/* Codex 巡检：开关组 + 三个数值输入框用 flex 紧凑连续排列，输入框紧跟开关、宽度容下最长标签 */
+.codex-inspection-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px 28px;
+}
+
+.codex-inspection-row .codex-field {
+  width: 168px;
+}
+
+.codex-inspection-row :deep(.n-input-number) {
+  width: 100%;
+}
+
+.codex-inspection-row :deep(.n-form-item-label) {
+  white-space: nowrap;
+}
+
+.codex-switch-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: center;
+  min-height: 34px;
 }
 
 .compact-row {
@@ -423,6 +455,10 @@ onMounted(loadSettings)
   .settings-grid.cols-3,
   .clear-logs-grid {
     grid-template-columns: 1fr;
+  }
+
+  .codex-inspection-row .codex-field {
+    width: 100%;
   }
 }
 </style>

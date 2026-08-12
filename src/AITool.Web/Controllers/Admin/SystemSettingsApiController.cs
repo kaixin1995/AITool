@@ -75,6 +75,7 @@ public sealed class SystemSettingsApiController : ControllerBase
             codexInspectionIntervalSeconds = settings.CodexInspectionIntervalSeconds,
             codexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours,
             codexAutoDisableThresholdPercent = settings.CodexAutoDisableThresholdPercent,
+            codexInspectionCacheEnabled = settings.CodexInspectionCacheEnabled,
             lastUsageLogPrunedAt = settings.LastUsageLogPrunedAt,
             lastUsageLogPrunedCount = settings.LastUsageLogPrunedCount
         }));

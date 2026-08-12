@@ -113,6 +113,11 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     /// 当任一关键额度窗口的已使用百分比达到该阈值时，账号自动禁用。
     /// </summary>
     public int CodexAutoDisableThresholdPercent { get; set; }
+
+    /// <summary>
+    /// Codex 巡检缓存复用开关。关闭时每轮巡检都真实刷新额度；开启时未被使用的账号沿用缓存快照。
+    /// </summary>
+    public bool CodexInspectionCacheEnabled { get; set; }
 }
 
 /// <summary>
