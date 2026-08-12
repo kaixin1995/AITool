@@ -50,6 +50,10 @@ public static partial class ProxyProtocolBridge
         /// </summary>
         public bool ReceivedDoneEvent { get; set; }
         /// <summary>
+        /// 是否出现无法解析的上游流片段。
+        /// </summary>
+        public bool ConversionFailed { get; set; }
+        /// <summary>
         /// 输入 token 数。
         /// </summary>
         public int InputTokens { get; set; }
@@ -552,6 +556,11 @@ public static partial class ProxyProtocolBridge
             var openAiResponseBody = isStreaming
                 ? ConvertResponsesStreamingToChat(responseBody, modelName, inputTokens, cachedTokens, outputTokens)
                 : ConvertResponsesResponseToChat(responseBody, modelName, inputTokens, cachedTokens, outputTokens);
+
+            if (string.IsNullOrEmpty(openAiResponseBody))
+            {
+                return string.Empty;
+            }
 
             return isStreaming
                 ? BuildAnthropicStreamingResponseFromOpenAi(openAiResponseBody, modelName, inputTokens, cachedTokens, outputTokens)

@@ -394,15 +394,6 @@ public sealed class AnthropicProxyController : ControllerBase
 
             if (result.Success)
             {
-                // 成功时清除该路由的连续失败计数
-                SafeSucceedRoute(route.CircuitKey);
-                if (result.IsStreaming &&
-                    string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
-                    HttpContext.Response.HasStarted)
-                {
-                    return new EmptyResult();
-                }
-
                 var responseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
                     "Anthropic",
                     actualProtocolType,
@@ -412,6 +403,32 @@ public sealed class AnthropicProxyController : ControllerBase
                     result.InputTokens,
                     result.CachedTokens,
                     result.OutputTokens);
+
+                // 转换失败返回空结果时不能标记路由成功，也不能把空消息返回给客户端。
+                if (string.IsNullOrEmpty(responseBody))
+                {
+                    result.Success = false;
+                    result.ErrorMessage ??= "upstream response protocol conversion failed";
+                    SafeBlockRoute(route.CircuitKey);
+                    lastResult = result;
+                    if (!canFallback)
+                    {
+                        return StatusCode(result.StatusCode > 0 ? result.StatusCode : StatusCodes.Status502BadGateway,
+                            new { error = new { type = "api_error", message = result.ErrorMessage } });
+                    }
+
+                    continue;
+                }
+
+                // 成功时清除该路由的连续失败计数
+                SafeSucceedRoute(route.CircuitKey);
+                if (result.IsStreaming &&
+                    string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase) &&
+                    HttpContext.Response.HasStarted)
+                {
+                    return new EmptyResult();
+                }
+
                 if (result.IsStreaming && result.HasStartedStreaming && result.IsStreamInterrupted &&
                     string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
                 {
@@ -619,6 +636,10 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         var state = new ProxyProtocolBridge.AnthropicOpenAiStreamState();
+        var responsesToChatState = new ResponsesToChatStreamState
+        {
+            Model = modelName
+        };
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
@@ -655,20 +676,15 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 // 累积原始 Responses 正文，不受 64KB 诊断副本限制。
 
+                responsesToChatState.InputTokens = state.InputTokens;
+                responsesToChatState.CachedTokens = state.CachedTokens;
+                responsesToChatState.OutputTokens = state.OutputTokens;
                 var openAiSse = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
                     $"event: {responsesEventName}\ndata: {responsesPayload}\n\n",
-                    modelName,
-                    state.InputTokens,
-                    state.CachedTokens,
-                    state.OutputTokens);
+                    responsesToChatState);
                 if (string.IsNullOrEmpty(openAiSse))
                 {
                     return;
-                }
-
-                if (!startedWriting)
-                {
-                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
                 }
 
                 using var reader = new StringReader(openAiSse);
@@ -688,7 +704,15 @@ public sealed class AnthropicProxyController : ControllerBase
                             }
 
                             var convertedResponsesChunk = ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(openAiJsonText, state);
-                            await WriteChunkAsync(convertedResponsesChunk, token);
+                            if (!string.IsNullOrEmpty(convertedResponsesChunk))
+                            {
+                                if (!startedWriting)
+                                {
+                                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
+                                }
+
+                                await WriteChunkAsync(convertedResponsesChunk, token);
+                            }
                         }
                         else
                         {
@@ -729,15 +753,18 @@ public sealed class AnthropicProxyController : ControllerBase
                 }
             }
 
-            // 累积原始 OpenAI Chat 正文，不受 64KB 诊断副本限制。
-
-            if (!startedWriting)
-            {
-                await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
-            }
-
+            // 只有转换器实际产生 Anthropic 事件时才发送 message_start，避免 role-only、usage-only
+            // 或无法识别的 chunk 被包装成空响应并阻断 fallback。
             var convertedChunk = ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(jsonText, state);
-            await WriteChunkAsync(convertedChunk, token);
+            if (!string.IsNullOrEmpty(convertedChunk))
+            {
+                if (!startedWriting)
+                {
+                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
+                }
+
+                await WriteChunkAsync(convertedChunk, token);
+            }
         }
 
         var result = await _forwardService.ForwardStreamingAsync(
@@ -762,6 +789,12 @@ public sealed class AnthropicProxyController : ControllerBase
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
+
+        if (result.Success && state.ConversionFailed && !startedWriting)
+        {
+            result.Success = false;
+            result.ErrorMessage ??= "upstream response protocol conversion failed";
+        }
 
         if (result.Success)
         {

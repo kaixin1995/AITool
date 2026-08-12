@@ -672,6 +672,11 @@ public sealed partial class OpenAiProxyController
         var inputTokens = 0;
         var cachedTokens = 0;
         var outputTokens = 0;
+        var conversionFailed = false;
+        var responsesState = new ResponsesToChatStreamState
+        {
+            Model = modelName
+        };
 
         async Task WriteChunkAsync(string chunk, CancellationToken token)
         {
@@ -701,10 +706,20 @@ public sealed partial class OpenAiProxyController
             }
 
             UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
-            // 累积原始 Responses 正文，不受 64KB 诊断副本限制。            var openAiChunk = ProxyProtocolBridge.ConvertResponsesStreamingToChat($"event: {eventName}\ndata: {payload}\n\n", modelName, inputTokens, cachedTokens, outputTokens);
+            responsesState.InputTokens = inputTokens;
+            responsesState.CachedTokens = cachedTokens;
+            responsesState.OutputTokens = outputTokens;
+            // 累积原始 Responses 正文，不受 64KB 诊断副本限制。
+            var openAiChunk = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
+                $"event: {eventName}\ndata: {payload}\n\n",
+                responsesState);
             if (!string.IsNullOrEmpty(openAiChunk))
             {
                 await WriteChunkAsync(openAiChunk, token);
+            }
+            else if (responsesState.ConversionFailed)
+            {
+                conversionFailed = true;
             }
 
             if (string.Equals(eventName, "response.completed", StringComparison.OrdinalIgnoreCase))
@@ -739,7 +754,13 @@ public sealed partial class OpenAiProxyController
         result.CachedTokens = cachedTokens;
         result.OutputTokens = outputTokens;
 
-        if (result.Success && !receivedDoneEvent)
+        if (result.Success && conversionFailed && !startedWriting)
+        {
+            result.Success = false;
+            result.ErrorMessage ??= "upstream response protocol conversion failed";
+        }
+
+        if (result.Success && !responsesState.Completed && !receivedDoneEvent)
         {
             result.Success = false;
             result.IsStreamInterrupted = startedWriting;

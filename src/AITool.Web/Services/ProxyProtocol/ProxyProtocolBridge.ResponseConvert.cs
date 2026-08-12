@@ -305,118 +305,167 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string BuildAnthropicResponseFromOpenAi(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
     {
-        string? upstreamId = null;
-        string contentText = "";
-        string reasoningText = "";
-        string finishReason = "stop";
-        int cacheCreation = 0;
-        int upstreamInput = 0;
-        int upstreamOutput = 0;
-        JsonArray? toolUseBlocks = null;
-
         try
         {
             using var doc = JsonDocument.Parse(responseBody);
             var root = doc.RootElement;
-
-            if (root.TryGetProperty("id", out var idEl))
-                upstreamId = idEl.GetString();
-
-            if (root.TryGetProperty("usage", out var usageEl))
+            if (!root.TryGetProperty("choices", out var choices)
+                || choices.ValueKind != JsonValueKind.Array
+                || choices.GetArrayLength() == 0)
             {
-                if (usageEl.TryGetProperty("prompt_tokens", out var pt))
-                    upstreamInput = pt.GetInt32();
-                if (usageEl.TryGetProperty("completion_tokens", out var ct))
-                    upstreamOutput = ct.GetInt32();
-                if (usageEl.TryGetProperty("prompt_tokens_details", out var ptd)
-                    && ptd.TryGetProperty("cached_tokens", out var cachedEl))
-                    cachedTokens = cachedEl.GetInt32();
-                if (ptd.TryGetProperty("cached_creation_tokens", out var cctEl))
-                    cacheCreation = cctEl.GetInt32();
+                return string.Empty;
             }
 
-            if (root.TryGetProperty("choices", out var choices)
-                && choices.ValueKind == JsonValueKind.Array && choices.GetArrayLength() > 0)
+            var upstreamId = root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                ? idEl.GetString()
+                : null;
+            var upstreamInput = 0;
+            var upstreamOutput = 0;
+            var cacheCreation = 0;
+            var cacheRead = cachedTokens;
+
+            if (root.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
             {
-                var selectedChoice = GetPreferredOpenAiChoice(choices);
-                if (selectedChoice is { } choice)
+                if (usageEl.TryGetProperty("prompt_tokens", out var promptEl) && promptEl.ValueKind == JsonValueKind.Number)
                 {
-                    if (choice.TryGetProperty("finish_reason", out var fr) && fr.ValueKind == JsonValueKind.String)
-                        finishReason = fr.GetString() ?? "stop";
+                    upstreamInput = promptEl.GetInt32();
+                }
 
-                    if (choice.TryGetProperty("message", out var message))
+                if (usageEl.TryGetProperty("completion_tokens", out var completionEl) && completionEl.ValueKind == JsonValueKind.Number)
+                {
+                    upstreamOutput = completionEl.GetInt32();
+                }
+
+                if (usageEl.TryGetProperty("prompt_tokens_details", out var detailsEl)
+                    && detailsEl.ValueKind == JsonValueKind.Object)
+                {
+                    if (detailsEl.TryGetProperty("cached_tokens", out var cachedEl) && cachedEl.ValueKind == JsonValueKind.Number)
                     {
-                        reasoningText = ExtractReasoningFromElement(message);
-                        contentText = ExtractContentFromMessage(message);
+                        cacheRead = cachedEl.GetInt32();
+                    }
 
-                        // 提取 tool_calls
-                        if (message.TryGetProperty("tool_calls", out var toolCalls)
-                            && toolCalls.ValueKind == JsonValueKind.Array)
-                        {
-                            toolUseBlocks = new JsonArray();
-                            foreach (var tc in toolCalls.EnumerateArray())
-                            {
-                                var tcId = tc.TryGetProperty("id", out var tcIdEl) ? tcIdEl.GetString() ?? "" : "";
-                                var tcName = "";
-                                var tcArgs = "{}";
-                                if (tc.TryGetProperty("function", out var funcEl))
-                                {
-                                    if (funcEl.TryGetProperty("name", out var nEl)) tcName = nEl.GetString() ?? "";
-                                    if (funcEl.TryGetProperty("arguments", out var aEl)) tcArgs = aEl.GetString() ?? "{}";
-                                }
-                                JsonNode? tcInput;
-                                try { tcInput = JsonNode.Parse(tcArgs); } catch { tcInput = tcArgs; }
-                                toolUseBlocks.Add(new JsonObject
-                                {
-                                    ["type"] = "tool_use",
-                                    ["id"] = tcId,
-                                    ["name"] = tcName,
-                                    ["input"] = tcInput
-                                });
-                            }
-                        }
+                    if (detailsEl.TryGetProperty("cached_creation_tokens", out var creationEl) && creationEl.ValueKind == JsonValueKind.Number)
+                    {
+                        cacheCreation = creationEl.GetInt32();
                     }
                 }
             }
-        }
-        catch { }
 
-        var stopReason = MapOpenAiFinishReason(finishReason);
-        var effectiveInput = upstreamInput > 0 ? upstreamInput : inputTokens;
-        var effectiveOutput = upstreamOutput > 0 ? upstreamOutput : outputTokens;
-
-        var contentArray = new JsonArray();
-        if (!string.IsNullOrWhiteSpace(reasoningText))
-            contentArray.Add(new JsonObject { ["type"] = "thinking", ["thinking"] = reasoningText });
-
-        if (!string.IsNullOrWhiteSpace(contentText))
-            contentArray.Add(new JsonObject { ["type"] = "text", ["text"] = contentText });
-
-        if (toolUseBlocks is not null)
-        {
-            foreach (var b in toolUseBlocks) contentArray.Add(b);
-        }
-
-        if (contentArray.Count == 0)
-            contentArray.Add(new JsonObject { ["type"] = "text", ["text"] = "" });
-
-        return new JsonObject
-        {
-            ["id"] = upstreamId ?? $"msg_{Guid.NewGuid():N}",
-            ["type"] = "message",
-            ["role"] = "assistant",
-            ["model"] = modelName,
-            ["content"] = contentArray,
-            ["stop_reason"] = stopReason,
-            ["stop_sequence"] = null,
-            ["usage"] = new JsonObject
+            var selectedChoice = GetPreferredOpenAiChoice(choices);
+            if (selectedChoice is not { } choice
+                || !choice.TryGetProperty("message", out var message)
+                || message.ValueKind != JsonValueKind.Object)
             {
-                ["input_tokens"] = effectiveInput,
-                ["cache_creation_input_tokens"] = cacheCreation,
-                ["cache_read_input_tokens"] = cachedTokens,
-                ["output_tokens"] = effectiveOutput
+                return string.Empty;
             }
-        }.ToJsonString();
+
+            var finishReason = choice.TryGetProperty("finish_reason", out var finishEl)
+                && finishEl.ValueKind == JsonValueKind.String
+                ? finishEl.GetString() ?? "stop"
+                : "stop";
+            var reasoningText = ExtractReasoningFromElement(message);
+            var contentText = ExtractContentFromMessage(message);
+            var contentArray = new JsonArray();
+
+            if (!string.IsNullOrEmpty(reasoningText))
+            {
+                contentArray.Add(new JsonObject { ["type"] = "thinking", ["thinking"] = reasoningText });
+            }
+
+            if (!string.IsNullOrEmpty(contentText))
+            {
+                contentArray.Add(new JsonObject { ["type"] = "text", ["text"] = contentText });
+            }
+
+            AddOpenAiToolUseBlocks(message, contentArray);
+
+            var effectiveInput = upstreamInput > 0 ? upstreamInput : inputTokens;
+            var effectiveOutput = upstreamOutput > 0 ? upstreamOutput : outputTokens;
+            return new JsonObject
+            {
+                ["id"] = upstreamId ?? $"msg_{Guid.NewGuid():N}",
+                ["type"] = "message",
+                ["role"] = "assistant",
+                ["model"] = modelName,
+                ["content"] = contentArray,
+                ["stop_reason"] = MapOpenAiFinishReason(finishReason),
+                ["stop_sequence"] = null,
+                ["usage"] = new JsonObject
+                {
+                    // Anthropic 的 input_tokens 不包含缓存 token，和 cc-switch 保持一致。
+                    ["input_tokens"] = Math.Max(effectiveInput - cacheRead - cacheCreation, 0),
+                    ["cache_creation_input_tokens"] = cacheCreation,
+                    ["cache_read_input_tokens"] = cacheRead,
+                    ["output_tokens"] = effectiveOutput
+                }
+            }.ToJsonString();
+        }
+        catch
+        {
+            // 转换失败必须返回空结果，由调用层触发 fallback，而不是伪装成空消息成功。
+            return string.Empty;
+        }
+    }
+
+    /// <summary>
+    /// 将 OpenAI tool_calls/function_call 统一转换为 Anthropic tool_use blocks。
+    /// </summary>
+    private static void AddOpenAiToolUseBlocks(JsonElement message, JsonArray contentArray)
+    {
+        if (message.TryGetProperty("tool_calls", out var toolCalls)
+            && toolCalls.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var toolCall in toolCalls.EnumerateArray())
+            {
+                AddOpenAiToolUseBlock(toolCall, contentArray);
+            }
+        }
+
+        if (message.TryGetProperty("function_call", out var functionCall)
+            && functionCall.ValueKind == JsonValueKind.Object
+            && (!message.TryGetProperty("tool_calls", out var existingCalls)
+                || existingCalls.ValueKind != JsonValueKind.Array
+                || existingCalls.GetArrayLength() == 0))
+        {
+            AddOpenAiToolUseBlock(functionCall, contentArray);
+        }
+    }
+
+    /// <summary>
+    /// 转换一个 OpenAI 工具调用，并兼容 arguments 为字符串或 JSON 节点的实现。
+    /// </summary>
+    private static void AddOpenAiToolUseBlock(JsonElement toolCall, JsonArray contentArray)
+    {
+        var function = toolCall.TryGetProperty("function", out var functionElement)
+            && functionElement.ValueKind == JsonValueKind.Object
+            ? functionElement
+            : toolCall;
+        var id = toolCall.TryGetProperty("id", out var idElement) && idElement.ValueKind == JsonValueKind.String
+            ? idElement.GetString() ?? string.Empty
+            : string.Empty;
+        var name = function.TryGetProperty("name", out var nameElement) && nameElement.ValueKind == JsonValueKind.String
+            ? nameElement.GetString() ?? string.Empty
+            : string.Empty;
+        var arguments = function.TryGetProperty("arguments", out var argumentsElement)
+            ? argumentsElement.ValueKind == JsonValueKind.String ? argumentsElement.GetString() ?? "{}" : argumentsElement.GetRawText()
+            : "{}";
+        JsonNode? input;
+        try
+        {
+            input = JsonNode.Parse(arguments);
+        }
+        catch
+        {
+            input = arguments;
+        }
+
+        contentArray.Add(new JsonObject
+        {
+            ["type"] = "tool_use",
+            ["id"] = string.IsNullOrWhiteSpace(id) ? $"toolu_{Guid.NewGuid():N}" : id,
+            ["name"] = name,
+            ["input"] = input
+        });
     }
 
     /// <summary>
@@ -424,123 +473,129 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string BuildOpenAiResponseFromAnthropic(string responseBody, string modelName, int inputTokens, int cachedTokens, int outputTokens)
     {
-        string? upstreamId = null;
-        string? responseText = null;
-        var thinkingParts = new List<string>();
-        string stopReason = "end_turn";
-        int cacheCreation = 0;
-        int cacheRead = 0;
-        int upstreamInput = 0;
-        int upstreamOutput = 0;
-        var tools = new JsonArray();
-
         try
         {
             using var doc = JsonDocument.Parse(responseBody);
             var root = doc.RootElement;
-
-            if (root.TryGetProperty("id", out var idEl))
-                upstreamId = idEl.GetString();
-
-            if (root.TryGetProperty("stop_reason", out var sr) && sr.ValueKind == JsonValueKind.String)
-                stopReason = sr.GetString() ?? "end_turn";
-
-            if (root.TryGetProperty("usage", out var usageEl))
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("content", out var contentArr)
+                || contentArr.ValueKind != JsonValueKind.Array)
             {
-                if (usageEl.TryGetProperty("input_tokens", out var it)) upstreamInput = it.GetInt32();
-                if (usageEl.TryGetProperty("output_tokens", out var ot)) upstreamOutput = ot.GetInt32();
-                if (usageEl.TryGetProperty("cache_read_input_tokens", out var crit)) cacheRead = crit.GetInt32();
-                if (usageEl.TryGetProperty("cache_creation_input_tokens", out var ccit)) cacheCreation = ccit.GetInt32();
+                return string.Empty;
             }
 
-            if (root.TryGetProperty("content", out var contentArr) && contentArr.ValueKind == JsonValueKind.Array)
+            var upstreamId = root.TryGetProperty("id", out var idEl) && idEl.ValueKind == JsonValueKind.String
+                ? idEl.GetString()
+                : null;
+            var stopReason = root.TryGetProperty("stop_reason", out var sr) && sr.ValueKind == JsonValueKind.String
+                ? sr.GetString() ?? "end_turn"
+                : "end_turn";
+            var cacheCreation = 0;
+            var cacheRead = 0;
+            var upstreamInput = 0;
+            var upstreamOutput = 0;
+            var responseText = new StringBuilder();
+            var thinkingParts = new List<string>();
+            var tools = new JsonArray();
+
+            if (root.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
             {
-                foreach (var block in contentArr.EnumerateArray())
+                if (usageEl.TryGetProperty("input_tokens", out var inputEl) && inputEl.ValueKind == JsonValueKind.Number)
+                    upstreamInput = inputEl.GetInt32();
+                if (usageEl.TryGetProperty("output_tokens", out var outputEl) && outputEl.ValueKind == JsonValueKind.Number)
+                    upstreamOutput = outputEl.GetInt32();
+                if (usageEl.TryGetProperty("cache_read_input_tokens", out var readEl) && readEl.ValueKind == JsonValueKind.Number)
+                    cacheRead = readEl.GetInt32();
+                if (usageEl.TryGetProperty("cache_creation_input_tokens", out var creationEl) && creationEl.ValueKind == JsonValueKind.Number)
+                    cacheCreation = creationEl.GetInt32();
+            }
+
+            foreach (var block in contentArr.EnumerateArray())
+            {
+                var type = block.TryGetProperty("type", out var typeEl) && typeEl.ValueKind == JsonValueKind.String
+                    ? typeEl.GetString()
+                    : string.Empty;
+                switch (type)
                 {
-                    var type = block.TryGetProperty("type", out var t) ? t.GetString() : "";
-                    switch (type)
+                    case "tool_use":
+                        var arguments = block.TryGetProperty("input", out var inputEl)
+                            ? inputEl.ValueKind == JsonValueKind.String ? inputEl.GetString() ?? "{}" : inputEl.GetRawText()
+                            : "{}";
+                        tools.Add(new JsonObject
+                        {
+                            ["id"] = block.TryGetProperty("id", out var toolIdEl) && toolIdEl.ValueKind == JsonValueKind.String
+                                ? toolIdEl.GetString() ?? $"call_{Guid.NewGuid():N}"
+                                : $"call_{Guid.NewGuid():N}",
+                            ["type"] = "function",
+                            ["function"] = new JsonObject
+                            {
+                                ["name"] = block.TryGetProperty("name", out var nameEl) && nameEl.ValueKind == JsonValueKind.String
+                                    ? nameEl.GetString() ?? string.Empty
+                                    : string.Empty,
+                                ["arguments"] = arguments
+                            }
+                        });
+                        break;
+                    case "thinking":
+                        if (block.TryGetProperty("thinking", out var thinkingEl) && thinkingEl.ValueKind == JsonValueKind.String)
+                            AppendIfNotEmpty(thinkingParts, thinkingEl.GetString());
+                        break;
+                    case "text":
+                        if (block.TryGetProperty("text", out var textEl) && textEl.ValueKind == JsonValueKind.String)
+                            responseText.Append(textEl.GetString());
+                        break;
+                }
+            }
+
+            var effectiveInput = upstreamInput > 0 ? upstreamInput : inputTokens;
+            var effectiveOutput = upstreamOutput > 0 ? upstreamOutput : outputTokens;
+            var totalInput = effectiveInput + cacheRead + cacheCreation;
+            var messageObject = new JsonObject
+            {
+                ["role"] = "assistant",
+                ["content"] = responseText.ToString()
+            };
+
+            if (tools.Count > 0)
+                messageObject["tool_calls"] = tools;
+
+            var reasoning = string.Join("\n", thinkingParts);
+            if (!string.IsNullOrWhiteSpace(reasoning))
+                messageObject["reasoning_content"] = reasoning;
+
+            return new JsonObject
+            {
+                ["id"] = upstreamId ?? $"chatcmpl-{Guid.NewGuid():N}",
+                ["object"] = "chat.completion",
+                ["created"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                ["model"] = modelName,
+                ["choices"] = new JsonArray
+                {
+                    new JsonObject
                     {
-                        case "tool_use":
-                            var tcArgs = "{}";
-                            if (block.TryGetProperty("input", out var inputEl))
-                            {
-                                try { tcArgs = inputEl.ValueKind == JsonValueKind.String ? inputEl.GetString() ?? "{}" : inputEl.GetRawText(); } catch { }
-                            }
-                            tools.Add(new JsonObject
-                            {
-                                ["id"] = block.TryGetProperty("id", out var bid) ? bid.GetString() ?? "" : "",
-                                ["type"] = "function",
-                                ["function"] = new JsonObject
-                                {
-                                    ["name"] = block.TryGetProperty("name", out var bn) ? bn.GetString() ?? "" : "",
-                                    ["arguments"] = tcArgs
-                                }
-                            });
-                            break;
-                        case "thinking":
-                            if (block.TryGetProperty("thinking", out var thEl) && thEl.ValueKind == JsonValueKind.String)
-                                AppendIfNotEmpty(thinkingParts, thEl.GetString());
-                            break;
-                        case "text":
-                            if (block.TryGetProperty("text", out var txtEl) && txtEl.ValueKind == JsonValueKind.String)
-                            {
-                                responseText = string.Concat(responseText, txtEl.GetString() ?? string.Empty);
-                            }
-                            break;
+                        ["index"] = 0,
+                        ["message"] = messageObject,
+                        ["finish_reason"] = MapAnthropicStopReason(stopReason)
                     }
-                }
-            }
-        }
-        catch { }
-
-        var finishReason = MapAnthropicStopReason(stopReason);
-        var effectiveInput = upstreamInput > 0 ? upstreamInput : inputTokens;
-        var effectiveOutput = upstreamOutput > 0 ? upstreamOutput : outputTokens;
-        var totalInput = effectiveInput + cacheRead + cacheCreation;
-
-        var messageObject = new JsonObject
-        {
-            ["role"] = "assistant"
-        };
-
-        if (!string.IsNullOrWhiteSpace(responseText))
-        {
-            messageObject["content"] = responseText;
-        }
-
-        if (tools.Count > 0)
-            messageObject["tool_calls"] = tools;
-
-        if (!string.IsNullOrWhiteSpace(string.Join("", thinkingParts)))
-            messageObject["reasoning_content"] = string.Join("\n", thinkingParts);
-
-        return new JsonObject
-        {
-            ["id"] = upstreamId ?? $"chatcmpl-{Guid.NewGuid():N}",
-            ["object"] = "chat.completion",
-            ["created"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-            ["model"] = modelName,
-            ["choices"] = new JsonArray
-            {
-                new JsonObject
-                {
-                    ["index"] = 0,
-                    ["message"] = messageObject,
-                    ["finish_reason"] = finishReason
-                }
-            },
-            ["usage"] = new JsonObject
-            {
-                ["prompt_tokens"] = totalInput,
-                ["prompt_tokens_details"] = new JsonObject
-                {
-                    ["cached_tokens"] = cacheRead,
-                    ["cached_creation_tokens"] = cacheCreation
                 },
-                ["completion_tokens"] = effectiveOutput,
-                ["total_tokens"] = totalInput + effectiveOutput
-            }
-        }.ToJsonString();
+                ["usage"] = new JsonObject
+                {
+                    ["prompt_tokens"] = totalInput,
+                    ["prompt_tokens_details"] = new JsonObject
+                    {
+                        ["cached_tokens"] = cacheRead,
+                        ["cached_creation_tokens"] = cacheCreation
+                    },
+                    ["completion_tokens"] = effectiveOutput,
+                    ["total_tokens"] = totalInput + effectiveOutput
+                }
+            }.ToJsonString();
+        }
+        catch
+        {
+            // 转换失败必须返回空结果，由调用层触发 fallback，而不是伪装成空消息成功。
+            return string.Empty;
+        }
     }
 
     /// <summary>

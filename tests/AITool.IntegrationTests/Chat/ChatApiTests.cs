@@ -172,6 +172,37 @@ public sealed class ChatApiTests
     }
 
     /// <summary>
+    /// 验证 OpenAI 流式分片中的 usage:null 不会中断聊天页的正文和推理解析。
+    /// </summary>
+    [Fact]
+    public async Task Post_send_stream_ignores_null_usage_from_openai_chunks()
+    {
+        var fakeForwardService = new ChatFakeProxyForwardService();
+        var fakeHttpFactory = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("OpenAI"));
+        await using var factory = new ChatWebApplicationFactory(fakeForwardService, fakeHttpFactory, "OpenAI");
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/chat/send-stream",
+            new StringContent(
+                $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"message\":\"hello-stream\",\"enableReasoning\":true,\"enableStreaming\":true}}",
+                Encoding.UTF8,
+                "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("event: reasoning");
+        body.Should().Contain("openai-ponder");
+        body.Should().Contain("event: token");
+        body.Should().Contain("openai-stream-ok");
+        body.Should().Contain("event: meta");
+        body.Should().Contain("\"success\":true");
+        body.Should().Contain("\"inputTokens\":4");
+        body.Should().Contain("\"outputTokens\":6");
+        body.Should().Contain("event: done");
+    }
+
+    /// <summary>
     /// 验证流式聊天命中 Responses-only 目标时，会打到 responses 路径并把 Responses SSE 转回聊天流。
     /// </summary>
     [Fact]
@@ -625,7 +656,20 @@ internal sealed class ChatStreamingHttpMessageHandler : HttpMessageHandler
     {
         Requests.Add(CloneRequest(request));
 
-        var payload = string.Equals(_siteProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
+        var payload = string.Equals(_siteProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
+            ? string.Join(
+                "\n",
+                "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"openai-model\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"\"}}],\"usage\":null}",
+                string.Empty,
+                "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"openai-model\",\"choices\":[{\"delta\":{\"content\":null,\"reasoning_content\":\"openai-ponder\"}}],\"usage\":null}",
+                string.Empty,
+                "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"openai-model\",\"choices\":[{\"delta\":{\"content\":\"openai-stream-ok\",\"reasoning_content\":null}}],\"usage\":null}",
+                string.Empty,
+                "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"openai-model\",\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":4,\"completion_tokens\":6,\"prompt_tokens_details\":{\"cached_tokens\":0}}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty)
+            : string.Equals(_siteProtocol, "Responses", StringComparison.OrdinalIgnoreCase)
             ? string.Join(
                 "\n",
                 "event: response.created",

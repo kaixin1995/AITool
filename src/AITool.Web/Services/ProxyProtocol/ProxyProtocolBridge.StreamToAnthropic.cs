@@ -49,7 +49,9 @@ public static partial class ProxyProtocolBridge
             using var document = JsonDocument.Parse(jsonText);
             var root = document.RootElement;
 
-            if (root.TryGetProperty("usage", out var usage))
+            // 真实 OpenAI 流式分片常携带 usage:null，只有对象值才能提取用量。
+            if (root.TryGetProperty("usage", out var usage)
+                && usage.ValueKind == JsonValueKind.Object)
             {
                 var extracted = ExtractUsageFromElement(usage, "OpenAI");
                 if (extracted.InputTokens > 0)
@@ -140,7 +142,8 @@ public static partial class ProxyProtocolBridge
                 }
 
                 var contentText = ExtractDeltaContent(delta);
-                if (contentText is null)
+                // role-only/usage-only 分片通常会携带空字符串，不能因此创建空 text block。
+                if (string.IsNullOrEmpty(contentText))
                 {
                     continue;
                 }
@@ -185,6 +188,8 @@ public static partial class ProxyProtocolBridge
         }
         catch
         {
+            // 标记当前分片转换失败，调用层可在尚未输出时继续 fallback。
+            state.ConversionFailed = true;
         }
 
         return builder.ToString();

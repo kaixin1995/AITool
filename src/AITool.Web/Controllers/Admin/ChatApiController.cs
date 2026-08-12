@@ -1402,6 +1402,10 @@ public sealed class ChatApiController : ControllerBase
         /// 是否收到过有效内容。
         /// </summary>
         public bool HadAnyContent { get; set; }
+        /// <summary>
+        /// Responses 流式转换的跨事件状态。
+        /// </summary>
+        public ResponsesToChatStreamState? ResponsesState { get; set; }
     }
 
     /// <summary>
@@ -1482,7 +1486,19 @@ public sealed class ChatApiController : ControllerBase
 
         if (protocolType == "Responses")
         {
-            var openAiSse = ProxyProtocolBridge.ConvertResponsesStreamingToChat($"event: {eventName}\ndata: {data}\n\n", string.Empty, state.InputTokens, state.CachedTokens, state.OutputTokens);
+            state.ResponsesState ??= new ResponsesToChatStreamState
+            {
+                Model = string.Empty,
+                InputTokens = state.InputTokens,
+                CachedTokens = state.CachedTokens,
+                OutputTokens = state.OutputTokens
+            };
+            state.ResponsesState.InputTokens = state.InputTokens;
+            state.ResponsesState.CachedTokens = state.CachedTokens;
+            state.ResponsesState.OutputTokens = state.OutputTokens;
+            var openAiSse = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
+                $"event: {eventName}\ndata: {data}\n\n",
+                state.ResponsesState);
             if (string.IsNullOrEmpty(openAiSse))
             {
                 return false;
@@ -1604,7 +1620,9 @@ public sealed class ChatApiController : ControllerBase
         SseBlockProcessState state,
         CancellationToken cancellationToken)
     {
-        if (root.TryGetProperty("usage", out var rootUsage))
+        // OpenAI 兼容流通常在非统计分片中返回 usage:null，不能对 null 调用 TryGetProperty。
+        if (root.TryGetProperty("usage", out var rootUsage)
+            && rootUsage.ValueKind == JsonValueKind.Object)
         {
             (state.InputTokens, state.CachedTokens, state.OutputTokens) = ExtractUsageMetrics(rootUsage, state.InputTokens, state.CachedTokens, state.OutputTokens);
         }

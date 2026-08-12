@@ -1154,22 +1154,33 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string ExtractContentFromMessage(JsonElement message)
     {
+        var parts = new List<string>();
+        if (message.TryGetProperty("refusal", out var refusalElement) && refusalElement.ValueKind == JsonValueKind.String)
+        {
+            AppendIfNotEmpty(parts, refusalElement.GetString());
+        }
+
         if (!message.TryGetProperty("content", out var contentElement))
         {
-            return string.Empty;
+            return string.Join("\n", parts);
         }
 
         if (contentElement.ValueKind == JsonValueKind.String)
         {
-            return contentElement.GetString() ?? string.Empty;
+            AppendIfNotEmpty(parts, contentElement.GetString());
+            return string.Join("\n", parts);
+        }
+
+        if (contentElement.ValueKind == JsonValueKind.Null)
+        {
+            return string.Join("\n", parts);
         }
 
         if (contentElement.ValueKind != JsonValueKind.Array)
         {
-            return string.Empty;
+            return string.Join("\n", parts);
         }
 
-        var parts = new List<string>();
         foreach (var item in contentElement.EnumerateArray())
         {
             var itemType = item.TryGetProperty("type", out var typeValue) ? typeValue.GetString() : string.Empty;
@@ -1179,10 +1190,17 @@ public static partial class ProxyProtocolBridge
                 continue;
             }
 
+            if (string.Equals(itemType, "refusal", StringComparison.OrdinalIgnoreCase))
+            {
+                AppendIfNotEmpty(parts, ExtractElementText(item, "refusal", "text", "content"));
+                continue;
+            }
+
             AppendIfNotEmpty(parts, ExtractElementText(item, "text", "content"));
         }
 
         return string.Join("\n", parts);
+
     }
 
     /// <summary>

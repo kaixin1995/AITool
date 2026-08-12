@@ -754,8 +754,27 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
             if (result.Success)
             {
-                SafeSucceedRoute(route.CircuitKey);
                 var responseBody = responseFactory(result, actualProtocolType, modelName);
+                if (string.IsNullOrEmpty(responseBody))
+                {
+                    // 转换失败不能伪装成成功响应，保留 fallback 机会给下一条路由。
+                    var conversionCanFallback = allRoutes.Skip(routeIndex + 1).Any(candidate =>
+                        !IsRouteBlockedSafely(candidate.CircuitKey)
+                        && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
+                    result.Success = false;
+                    result.ErrorMessage ??= "upstream response protocol conversion failed";
+                    SafeBlockRoute(route.CircuitKey);
+                    lastResult = result;
+                    if (conversionCanFallback)
+                    {
+                        continue;
+                    }
+
+                    return StatusCode(result.StatusCode > 0 ? result.StatusCode : StatusCodes.Status502BadGateway,
+                        new { error = new { message = result.ErrorMessage } });
+                }
+
+                SafeSucceedRoute(route.CircuitKey);
                 SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                 {
                     Status = "success",
