@@ -1001,11 +1001,11 @@ public sealed class ResponsesProxyTests
 
         response.StatusCode.Should().Be(HttpStatusCode.OK, body);
 
-        // 返回体应包含 usage，Responses 格式用 prompt_tokens / completion_tokens
+        // 返回体应包含 usage，Responses 格式用 input_tokens / output_tokens
         using var doc = JsonDocument.Parse(body);
         doc.RootElement.TryGetProperty("usage", out var usage).Should().BeTrue();
-        usage.TryGetProperty("prompt_tokens", out _).Should().BeTrue();
-        usage.TryGetProperty("completion_tokens", out _).Should().BeTrue();
+        usage.TryGetProperty("input_tokens", out _).Should().BeTrue();
+        usage.TryGetProperty("output_tokens", out _).Should().BeTrue();
     }
 
     private static async Task SendWebSocketTextAsync(WebSocket webSocket, string payload)
