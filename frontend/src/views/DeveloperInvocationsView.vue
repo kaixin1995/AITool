@@ -22,6 +22,7 @@ import type { DeveloperInvocationSummary, DeveloperConcurrencyItem } from '@/api
 import PageHeader from '@/components/PageHeader.vue'
 import ClientSimulator from './ClientSimulator.vue'
 import CircuitBreakerTab from './CircuitBreakerTab.vue'
+import ProtocolDiagnosticsTab from './ProtocolDiagnosticsTab.vue'
 import {
   developerHashForTab,
   developerTabFromHash,
@@ -564,6 +565,9 @@ onUnmounted(() => {
         </NTabPane>
         <NTabPane name="circuit-breaker" tab="熔断监控">
           <CircuitBreakerTab />
+        </NTabPane>
+        <NTabPane name="protocol-diagnostics" tab="协议诊断">
+          <ProtocolDiagnosticsTab />
         </NTabPane>
       </NTabs>
     </NCard>

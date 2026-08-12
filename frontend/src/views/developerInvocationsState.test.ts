@@ -11,6 +11,8 @@ describe('Developer Invocations 页签深链接', () => {
     expect(developerTabFromHash('#developerSimulatorPane')).toBe('simulator')
     expect(developerTabFromHash('#developerConcurrencyPane')).toBe('concurrency')
     expect(developerTabFromHash('#developerCircuitBreakerPane')).toBe('circuit-breaker')
+    expect(developerTabFromHash('#developerProtocolDiagnosticsPane')).toBe('protocol-diagnostics')
+    expect(developerTabFromHash('#protocol-diagnostics')).toBe('protocol-diagnostics')
   })
 
   it('页签切换时生成旧入口兼容 hash', () => {
@@ -18,6 +20,7 @@ describe('Developer Invocations 页签深链接', () => {
     expect(developerHashForTab('simulator')).toBe('#developerSimulatorPane')
     expect(developerHashForTab('concurrency')).toBe('#developerConcurrencyPane')
     expect(developerHashForTab('circuit-breaker')).toBe('#developerCircuitBreakerPane')
+    expect(developerHashForTab('protocol-diagnostics')).toBe('#developerProtocolDiagnosticsPane')
   })
 
   it('兼容旧页面的 Responses 原生能力推断', () => {

@@ -1,10 +1,12 @@
-export type DeveloperToolTab = 'invocations' | 'simulator' | 'concurrency' | 'circuit-breaker'
+export type DeveloperToolTab = 'invocations' | 'simulator' | 'concurrency' | 'circuit-breaker' | 'protocol-diagnostics'
 
 const hashToTab: Record<string, DeveloperToolTab> = {
   '#developerInvocationsPane': 'invocations',
   '#developerSimulatorPane': 'simulator',
   '#developerConcurrencyPane': 'concurrency',
   '#developerCircuitBreakerPane': 'circuit-breaker',
+  '#developerProtocolDiagnosticsPane': 'protocol-diagnostics',
+  '#protocol-diagnostics': 'protocol-diagnostics',
   '#invocations': 'invocations',
   '#simulator': 'simulator',
   '#concurrency': 'concurrency',
@@ -15,7 +17,8 @@ const tabToHash: Record<DeveloperToolTab, string> = {
   invocations: '#developerInvocationsPane',
   simulator: '#developerSimulatorPane',
   concurrency: '#developerConcurrencyPane',
-  'circuit-breaker': '#developerCircuitBreakerPane'
+  'circuit-breaker': '#developerCircuitBreakerPane',
+  'protocol-diagnostics': '#developerProtocolDiagnosticsPane'
 }
 
 export function developerTabFromHash(hash: string): DeveloperToolTab {
