@@ -95,7 +95,7 @@ internal static class CpaFieldGroupBuilder
 
         var fields = usages.Values
             .OrderBy(usage => usage.FieldName, StringComparer.OrdinalIgnoreCase)
-            .Select(usage => new GoStructField(
+            .Select(usage => new ProtocolField(
                 usage.FieldName,
                 usage.ReferenceTypeHint,
                 usage.FieldName,
@@ -315,11 +315,12 @@ internal static class GoDynamicFieldScanner
     }
 
     /// <summary>
-    /// 过滤明显不是协议主体字段的通用键。
+    /// 过滤不会单独表达协议字段含义的通用包装键。
     /// </summary>
     private static bool IsIgnoredField(string field)
     {
-        return field is "error" or "message" or "type" or "object" or "data" or "index" or "text";
+        // 保留 type、text、index、message 和 data，它们在 Responses/Anthropic 流式事件中具有协议语义。
+        return field is "error" or "object";
     }
 }
 
