@@ -1291,6 +1291,9 @@ public static partial class ProxyProtocolBridge
     {
         if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
         {
+            // Anthropic 的 input_tokens 已包含缓存 token（cache_read + cache_creation 是其子集），
+            // 必须减去缓存才是真正的"新输入"，否则缓存会在"输入"列和"缓存"列重复统计，
+            // 导致总 token 虚高、缓存命中率看起来偏低。
             var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
             var cached = 0;
             if (usage.TryGetProperty("cache_read_input_tokens", out var readCache))
@@ -1303,8 +1306,9 @@ public static partial class ProxyProtocolBridge
                 cached += createCache.GetInt32();
             }
 
+            var newInput = Math.Max(0, input - cached);
             var output = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
-            return (input, cached, output);
+            return (newInput, cached, output);
         }
 
         var openAiInputTokens = usage.TryGetProperty("input_tokens", out var inputTokens)
