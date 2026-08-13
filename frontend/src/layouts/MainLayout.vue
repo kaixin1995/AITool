@@ -127,6 +127,12 @@ onBeforeUnmount(() => {
           </a>
         </div>
       </nav>
+
+      <!-- 侧边栏底部：版本号 + 编译时间，折叠时隐藏 -->
+      <div v-if="!collapsed" class="sidebar-footer">
+        <div class="sidebar-footer-version">AI Tool v{{ version }}</div>
+        <div v-if="buildTimeDisplay" class="sidebar-footer-build">Build {{ buildTimeDisplay }}</div>
+      </div>
     </aside>
     <button v-if="mobileSidebarOpen" class="sidebar-overlay" type="button" aria-label="关闭导航" @click="mobileSidebarOpen = false" />
 
@@ -142,12 +148,6 @@ onBeforeUnmount(() => {
               <button class="theme-icon-toggle" type="button" @click="toggleTheme">{{ isDark ? '☀️' : '🌙' }}</button>
             </template>
             {{ isDark ? '切换到经典模式' : '切换到暗夜模式' }}
-          </NTooltip>
-          <NTooltip :show-arrow="false">
-            <template #trigger>
-              <span class="topbar-version">AI Tool v{{ version }}{{ buildTimeDisplay ? ' · ' + buildTimeDisplay : '' }}</span>
-            </template>
-            编译时间：{{ buildTimeDisplay || '未知' }}
           </NTooltip>
           <NButton size="small" quaternary @click="handleLogout">退出</NButton>
         </div>
@@ -263,7 +263,18 @@ onBeforeUnmount(() => {
 }
 .theme-icon-toggle:hover { background: rgba(0, 0, 0, 0.03); }
 [data-theme='dark'] .theme-icon-toggle:hover { background: rgba(255, 255, 255, 0.05); }
-.topbar-version { font-size: 13px; color: var(--text-color-secondary); }
+
+/* 侧边栏底部：版本号 + 编译时间，文字小、两行展示，折叠时整体隐藏 */
+.sidebar-footer {
+  flex-shrink: 0; padding: 10px 16px 14px;
+  border-top: 1px solid var(--border-color-global);
+}
+.sidebar-footer-version {
+  font-size: 12px; font-weight: 600; color: var(--text-color-secondary); line-height: 1.4;
+}
+.sidebar-footer-build {
+  font-size: 11px; color: var(--text-color-secondary); opacity: 0.7; line-height: 1.4; margin-top: 2px;
+}
 
 /* 内容区 */
 .app-content { flex: 1; background: var(--bg-page); overflow: hidden; }
@@ -411,10 +422,6 @@ onBeforeUnmount(() => {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .topbar-version {
-    display: none;
   }
 }
 
