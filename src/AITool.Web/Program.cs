@@ -34,7 +34,12 @@ builder.Host.UseNLog();
 var startupLogger = LogManager.GetLogger("Startup");
 
 var applicationVersion = "1.0.1.8";
-builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
+// 编译时间取主程序集 dll 的最后写入时间，反映实际构建时刻，用于确认运行的是否是最新版本。
+var assemblyLocation = typeof(Program).Assembly.Location;
+var buildTime = File.Exists(assemblyLocation)
+    ? new DateTimeOffset(File.GetLastWriteTimeUtc(assemblyLocation))
+    : DateTimeOffset.UtcNow;
+builder.Services.AddSingleton(new AppVersionInfo(applicationVersion, buildTime));
 
 var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 15029;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");

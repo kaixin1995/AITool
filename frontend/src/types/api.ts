@@ -23,6 +23,10 @@ export interface TokenPair {
 export interface AuthStatus {
   hasPassword: boolean
   isAuthenticated: boolean
+  // 应用版本号（对应后端 Program.cs applicationVersion）
+  version?: string
+  // 程序集编译时间（ISO 字符串），用于确认运行的程序是否是最新版本
+  buildTime?: string
   features: {
     codexEnabled: boolean
     codexInspectionEnabled: boolean

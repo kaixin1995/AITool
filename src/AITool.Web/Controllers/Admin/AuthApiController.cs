@@ -28,17 +28,23 @@ public sealed class AuthApiController : ControllerBase
     private readonly JwtTokenService _tokenService;
     private readonly ISystemRuntimeSettingsService _settingsService;
     private readonly LoginRateLimitService _rateLimiter;
+    /// <summary>
+    /// 当前应用版本号与编译时间，用于在 status 接口返回给前端展示。
+    /// </summary>
+    private readonly AppVersionInfo _appVersion;
 
     public AuthApiController(
         AdminAuthService adminAuthService,
         JwtTokenService tokenService,
         ISystemRuntimeSettingsService settingsService,
-        LoginRateLimitService rateLimiter)
+        LoginRateLimitService rateLimiter,
+        AppVersionInfo appVersion)
     {
         _adminAuthService = adminAuthService;
         _tokenService = tokenService;
         _settingsService = settingsService;
         _rateLimiter = rateLimiter;
+        _appVersion = appVersion;
     }
 
     /// <summary>
@@ -58,6 +64,9 @@ public sealed class AuthApiController : ControllerBase
         {
             hasPassword,
             isAuthenticated,
+            // 版本号与编译时间：前端右上角展示，便于确认运行的程序是否是最新版本。
+            version = _appVersion.Value,
+            buildTime = _appVersion.BuildTime,
             features = new
             {
                 codexEnabled = settings.CodexFeaturesEnabled,

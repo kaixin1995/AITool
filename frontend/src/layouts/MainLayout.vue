@@ -4,7 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { NLayoutContent, NButton, NTooltip } from 'naive-ui'
 import { useTheme } from '@/composables/useTheme'
 import { useAuthStore } from '@/stores/auth'
-import { version } from '@/composables/useVersion'
+import { version, buildTimeDisplay } from '@/composables/useVersion'
 
 const router = useRouter()
 const route = useRoute()
@@ -143,7 +143,12 @@ onBeforeUnmount(() => {
             </template>
             {{ isDark ? '切换到经典模式' : '切换到暗夜模式' }}
           </NTooltip>
-          <span class="topbar-version">AI Tool v{{ version }}</span>
+          <NTooltip :show-arrow="false">
+            <template #trigger>
+              <span class="topbar-version">AI Tool v{{ version }}{{ buildTimeDisplay ? ' · ' + buildTimeDisplay : '' }}</span>
+            </template>
+            编译时间：{{ buildTimeDisplay || '未知' }}
+          </NTooltip>
           <NButton size="small" quaternary @click="handleLogout">退出</NButton>
         </div>
       </header>
