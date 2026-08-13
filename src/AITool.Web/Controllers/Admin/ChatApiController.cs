@@ -7,6 +7,7 @@ using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
+using AITool.Protocol;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Http.Features;
 using Microsoft.AspNetCore.Mvc;
@@ -458,9 +459,13 @@ public sealed class ChatApiController : ControllerBase
 
                 var requestBody = BuildChatRequestBody(route.ProtocolType, route.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
                 // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数。
+                // 注意：Normalize 后 Codex 请求体的 stream 会被强制改成 true（上游要求），
+                // 但客户端是非流式调用。RequestBody 必须保留 Normalize 前的原始请求体（stream=false），
+                // 否则 ForwardAsync 的 IsStreamingRequest 会误判为流式，走流式路径导致非流式调用拿不到聚合结果。
+                string preparedRequestBody = requestBody;
                 if (string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
                 {
-                    requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(route.BaseUrl));
+                    preparedRequestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(route.BaseUrl));
                 }
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
@@ -470,7 +475,7 @@ public sealed class ChatApiController : ControllerBase
                     ProtocolType = route.ProtocolType,
                     TargetModelName = route.SiteModelName,
                     RequestBody = requestBody,
-                    PreparedRequestBody = requestBody,
+                    PreparedRequestBody = preparedRequestBody,
                     EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                     RetryCount = runtimeSettings.ProxyRetryCount,
@@ -840,9 +845,11 @@ public sealed class ChatApiController : ControllerBase
         var requestBody = BuildChatRequestBody(mapping.ProtocolType, mapping.SiteModelName, request.Message, request.EnableReasoning, false, request.ReasoningEffort);
         // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数（max_output_tokens / metadata 等），
         // 否则会返回 {"detail":"Unsupported parameter: xxx"}（400）。
+        // RequestBody 保留 Normalize 前的原始请求体（stream=false），避免 ForwardAsync 误判为流式。
+        string preparedRequestBody = requestBody;
         if (string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
         {
-            requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(mapping.BaseUrl));
+            preparedRequestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(mapping.BaseUrl));
         }
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
@@ -852,7 +859,7 @@ public sealed class ChatApiController : ControllerBase
             ProtocolType = mapping.ProtocolType,
             TargetModelName = mapping.SiteModelName,
             RequestBody = requestBody,
-            PreparedRequestBody = requestBody,
+            PreparedRequestBody = preparedRequestBody,
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount,

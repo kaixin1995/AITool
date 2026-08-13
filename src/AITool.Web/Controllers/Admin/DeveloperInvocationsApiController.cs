@@ -3,6 +3,7 @@ using AITool.Application.Operations;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Web.Contracts;
+using AITool.Protocol;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 

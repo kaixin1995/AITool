@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace AITool.Web.Services;
+namespace AITool.Protocol;
 
 /// <summary>
 /// Responses 协议转换所需的流式转换状态。

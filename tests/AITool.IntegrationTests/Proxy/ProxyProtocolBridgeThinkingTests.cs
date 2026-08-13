@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using AITool.Protocol;
 using AITool.Web.Services;
 using FluentAssertions;
 

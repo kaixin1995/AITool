@@ -1,4 +1,5 @@
 using System.Reflection;
+using System.Text.Json;
 using AITool.Infrastructure.Proxy;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -192,5 +193,116 @@ public sealed class ProxyForwardServiceResponseTests
         method.Should().NotBeNull();
         return ((int InputTokens, int CachedTokens, int OutputTokens))method!
             .Invoke(null, new object?[] { responseBody, protocolType })!;
+    }
+
+    // ========== TryExtractResponsesCompletion（Codex 非流式 SSE 聚合） ==========
+
+    // Codex /responses 强制 stream=true，客户端非流式时上游返回 SSE 流，
+    // 由 TryExtractResponsesCompletion 聚合成完整 Responses JSON。
+    // 历史上该方法依赖空行分块，但 Codex 事件之间不一定有空行，导致聚合失败、
+    // 上层把 SSE 原文当 JSON 解析报 "no usable choices"。以下覆盖各 SSE 形态。
+
+    // 聚合后期望得到的完整 response 对象 JSON（不含外层事件包装）
+    private const string CompletedResponseJson =
+        """{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}],"usage":{"input_tokens":5,"input_tokens_details":{"cached_tokens":1},"output_tokens":2,"total_tokens":7}}""";
+
+    // response.completed 事件的 data 行（外层带 type 与 response 字段）
+    private const string CompletedDataLine =
+        """{"type":"response.completed","response":""" + CompletedResponseJson + "}";
+
+    private static string? TryExtractResponsesCompletionCore(string sseBody)
+    {
+        var method = typeof(ProxyForwardService).GetMethod(
+            "TryExtractResponsesCompletion", BindingFlags.NonPublic | BindingFlags.Static);
+
+        method.Should().NotBeNull();
+        return (string?)method!.Invoke(null, new object?[] { sseBody });
+    }
+
+    [Fact]
+    public void TryExtractResponsesCompletion_StandardSseWithEventLines_ReturnsResponse()
+    {
+        // 标准 SSE：每事件带 event: 行，事件间空行分隔
+        var sse = string.Concat(
+            "event: response.created\n",
+            """data: {"type":"response.created","response":{"id":"resp_1"}}""", "\n\n",
+            "event: response.completed\n",
+            "data: ", CompletedDataLine, "\n\n");
+
+        TryExtractResponsesCompletionCore(sse).Should().Be(CompletedResponseJson);
+    }
+
+    [Fact]
+    public void TryExtractResponsesCompletion_CodexStyleNoEventLinesBlankSeparated_ReturnsResponse()
+    {
+        // Codex 风格：无 event: 行，事件间空行分隔
+        var sse = string.Concat(
+            """data: {"type":"response.created","response":{"id":"resp_1"}}""", "\n\n",
+            "data: ", CompletedDataLine, "\n\n");
+
+        TryExtractResponsesCompletionCore(sse).Should().Be(CompletedResponseJson);
+    }
+
+    [Fact]
+    public void TryExtractResponsesCompletion_NoBlankLineBetweenEvents_ReturnsResponse()
+    {
+        // Codex 事件之间无空行分隔（历史 bug 场景）：每 data 行是完整 JSON，
+        // 必须逐行独立解析命中 response.completed，不能依赖空行分块。
+        var sse = string.Concat(
+            """data: {"type":"response.created","response":{"id":"resp_1"}}""", "\n",
+            "data: ", CompletedDataLine, "\n");
+
+        TryExtractResponsesCompletionCore(sse).Should().Be(CompletedResponseJson);
+    }
+
+    [Fact]
+    public void TryExtractResponsesCompletion_OnlyCompletedEvent_ReturnsResponse()
+    {
+        var sse = string.Concat("data: ", CompletedDataLine, "\n\n");
+
+        TryExtractResponsesCompletionCore(sse).Should().Be(CompletedResponseJson);
+    }
+
+    [Fact]
+    public void TryExtractResponsesCompletion_NoCompletedEvent_ReturnsNull()
+    {
+        var sse = """data: {"type":"response.created","response":{"id":"resp_1"}}""";
+
+        TryExtractResponsesCompletionCore(sse).Should().BeNull();
+    }
+
+    // 真实 Codex 上游的 response.completed.output 始终为空 []，
+    // 内容只通过 response.output_text.delta 推送。聚合必须从 delta 重建 output message。
+    // 历史 bug：delta 在 TryParsePayload 的副作用里累积，独立解析和 join 重试会重复累积同一 delta
+    // （如 delta="95" 变成 "9595"）。以下用真实 Codex SSE 结构验证不重复。
+    private const string CodexEmptyOutputCompletedJson =
+        """{"id":"resp_1","object":"response","status":"completed","output":[],"usage":{"input_tokens":8,"output_tokens":6,"total_tokens":14}}""";
+
+    private const string CodexEmptyOutputCompletedDataLine =
+        """{"type":"response.completed","response":""" + CodexEmptyOutputCompletedJson + "}";
+
+    [Fact]
+    public void TryExtractResponsesCompletion_CodexEmptyOutputRebuildsFromDeltaWithoutDuplication()
+    {
+        // 真实 Codex SSE 结构：output_text.delta + output_text.done + output_item.done + completed(output=[])
+        // delta="95"，聚合后 output message 的 text 必须是 "95"，不能是 "9595"（重复累积）。
+        var sse = string.Concat(
+            "event: response.output_text.delta\n",
+            """data: {"type":"response.output_text.delta","delta":"95","output_index":1,"content_index":0}""", "\n\n",
+            "event: response.output_text.done\n",
+            """data: {"type":"response.output_text.done","text":"95","output_index":1,"content_index":0}""", "\n\n",
+            "event: response.completed\n",
+            "data: ", CodexEmptyOutputCompletedDataLine, "\n\n");
+
+        var result = TryExtractResponsesCompletionCore(sse);
+        result.Should().NotBeNullOrEmpty();
+
+        using var document = JsonDocument.Parse(result!);
+        var output = document.RootElement.GetProperty("output");
+        output.GetArrayLength().Should().Be(1, "应从 delta 重建一条 message");
+        var message = output[0];
+        message.GetProperty("type").GetString().Should().Be("message");
+        // 核心断言：delta 只累积一次，不能重复成 "9595"
+        message.GetProperty("content")[0].GetProperty("text").GetString().Should().Be("95");
     }
 }

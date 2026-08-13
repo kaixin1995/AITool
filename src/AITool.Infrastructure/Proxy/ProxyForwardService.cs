@@ -2,8 +2,10 @@ using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
+using AITool.Protocol;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.Logging;
 
@@ -113,6 +115,11 @@ public sealed class ProxyForwardService : IProxyForwardService
                     if (!string.IsNullOrEmpty(aggregated))
                     {
                         responseBody = aggregated;
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Failed to aggregate upstream SSE into response.completed JSON. Body head: {Head}",
+                            responseBody.Length > 800 ? responseBody[..800] : responseBody);
                     }
                 }
 
@@ -688,28 +695,61 @@ public sealed class ProxyForwardService : IProxyForwardService
     /// </summary>
     private static string? TryExtractResponsesCompletion(string sseBody)
     {
-        string? currentEvent = null;
-        var dataBuilder = new StringBuilder();
+        // Codex SSE 的事件类型在 data.type（不一定有 event: 行），与 TryExtractResponsesCompletedOutput 对齐。
+        // Codex 实际每个 data: 行就是一个完整的事件 JSON（流式逐行解析也依赖这一点），
+        // 且事件之间不一定有空行分隔，因此不能依赖空行分块。
+        // 这里逐行处理：先累积 output_text.delta 文本，每个 data 行再尝试独立解析，
+        // 命中 response.completed 即返回；解析失败（JSON 跨多行）则累积后重试，兼容标准 SSE 多 data 行事件块。
+        // 注意：delta 累积只在主循环对独立 data 行做一次，不能放进 TryParsePayload，
+        // 否则独立解析和 join 重试会重复累积同一 delta。
+        var pending = new List<string>();
+        // 累积 response.output_text.delta 的文本片段，用于在 response.completed.output 为空时重建 message。
+        // Codex 上游的 response.completed.response.output 始终为 []，内容只在 delta 事件里。
+        var deltaBuilder = new StringBuilder();
 
-        string? FlushAndCheck()
+        string? TryParsePayload(string payload)
         {
-            var json = dataBuilder.ToString().Trim();
-            dataBuilder.Clear();
-            if (!string.IsNullOrEmpty(json)
-                && string.Equals(currentEvent, "response.completed", StringComparison.OrdinalIgnoreCase))
+            try
             {
-                try
+                using var doc = JsonDocument.Parse(payload);
+                var root = doc.RootElement;
+                if (!root.TryGetProperty("type", out var typeEl)
+                    || typeEl.ValueKind != JsonValueKind.String)
                 {
-                    using var doc = JsonDocument.Parse(json);
-                    if (doc.RootElement.TryGetProperty("response", out var response))
-                    {
-                        return response.GetRawText();
-                    }
+                    return null;
                 }
-                catch
+
+                var eventType = typeEl.GetString();
+
+                if (!string.Equals(eventType, "response.completed", StringComparison.OrdinalIgnoreCase)
+                    || !root.TryGetProperty("response", out var response)
+                    || response.ValueKind != JsonValueKind.Object)
                 {
-                    // 非 JSON 的 data 行忽略
+                    return null;
                 }
+
+                // 命中 response.completed，取 response 对象。
+                // 若 output 为空但有 delta 文本，从 delta 重建 message 项塞进 output，
+                // 否则上层 HasUsableResponse 会判为空响应（"no usable choices"）。
+                var responseText = response.GetRawText();
+                if (deltaBuilder.Length == 0)
+                {
+                    return responseText;
+                }
+
+                var hasOutput = response.TryGetProperty("output", out var outputEl)
+                    && outputEl.ValueKind == JsonValueKind.Array
+                    && outputEl.GetArrayLength() > 0;
+                if (hasOutput)
+                {
+                    return responseText;
+                }
+
+                return RebuildResponseWithDeltaMessage(responseText, deltaBuilder.ToString());
+            }
+            catch
+            {
+                // 非 JSON 或不匹配，继续累积
             }
             return null;
         }
@@ -719,28 +759,122 @@ public sealed class ProxyForwardService : IProxyForwardService
             var line = rawLine.Trim();
             if (line.Length == 0)
             {
-                var result = FlushAndCheck();
-                if (result is not null) return result;
-                currentEvent = null;
+                // 空行仅作为事件块分隔，清空累积后继续（不依赖它触发判定）
+                pending.Clear();
                 continue;
             }
 
-            if (line.StartsWith("event:", StringComparison.OrdinalIgnoreCase))
+            if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
             {
-                // 新事件开始，先结算上一块
-                var result = FlushAndCheck();
-                if (result is not null) return result;
-                currentEvent = line["event:".Length..].Trim();
+                // event: 行与注释行忽略，事件类型统一从 data.type 判定
+                continue;
             }
-            else if (line.StartsWith("data:", StringComparison.OrdinalIgnoreCase))
+
+            var data = line.Length > 5 ? line[5..] : string.Empty;
+            if (data.StartsWith(' '))
             {
-                dataBuilder.AppendLine(line["data:".Length..].TrimStart());
+                data = data[1..];
             }
-            // 其他行（注释 `:` 开头等）忽略
+
+            // 先把当前 data 行当作完整事件独立解析（Codex / OpenAI 流式常见格式，每行即完整 JSON）。
+            // delta 累积只在独立解析时做一次，避免 join 重试时重复累积。
+            if (TryAccumulateDelta(data, deltaBuilder))
+            {
+                pending.Clear();
+                continue;
+            }
+
+            var single = TryParsePayload(data);
+            if (single is not null)
+            {
+                return single;
+            }
+
+            // 解析失败则累积跨行 JSON，重新尝试（兜底标准 SSE 多 data 行事件块）
+            pending.Add(data);
+            var joined = string.Join("\n", pending);
+            var multi = TryParsePayload(joined);
+            if (multi is not null)
+            {
+                return multi;
+            }
         }
 
-        // 流末无空行结尾的情况
-        return FlushAndCheck();
+        return null;
+    }
+
+    /// <summary>
+    /// 若 data 行是 response.output_text.delta 事件，把 delta 文本累积到 builder 并返回 true；
+    /// 否则返回 false。单独提取出来避免在 TryParsePayload 的 join 重试路径里重复累积。
+    /// </summary>
+    private static bool TryAccumulateDelta(string payload, StringBuilder deltaBuilder)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(payload);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("type", out var typeEl) || typeEl.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            if (!string.Equals(typeEl.GetString(), "response.output_text.delta", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (root.TryGetProperty("delta", out var deltaEl) && deltaEl.ValueKind == JsonValueKind.String)
+            {
+                deltaBuilder.Append(deltaEl.GetString());
+            }
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// 在 response.completed 的 response 对象里重建 output message（当上游 output 为空但有 delta 文本时）。
+    /// 用 JsonNode 改写：解析 response 文本，把累积的 delta 文本包成 message 项写入 output 数组。
+    /// </summary>
+    private static string RebuildResponseWithDeltaMessage(string responseJson, string deltaText)
+    {
+        try
+        {
+            var responseNode = JsonNode.Parse(responseJson);
+            if (responseNode is not JsonObject obj)
+            {
+                return responseJson;
+            }
+
+            // output 为空或不存在时，用 delta 文本重建一条 assistant message。
+            obj["output"] = new JsonArray
+            {
+                new JsonObject
+                {
+                    ["type"] = "message",
+                    ["role"] = "assistant",
+                    ["status"] = "completed",
+                    ["content"] = new JsonArray
+                    {
+                        new JsonObject
+                        {
+                            ["type"] = "output_text",
+                            ["text"] = deltaText,
+                            ["annotations"] = new JsonArray()
+                        }
+                    }
+                }
+            };
+            return obj.ToJsonString();
+        }
+        catch
+        {
+            // 改写失败时回退原文，避免把可用响应变成不可用
+            return responseJson;
+        }
     }
 
     /// <summary>
@@ -853,51 +987,8 @@ public sealed class ProxyForwardService : IProxyForwardService
     }
 
     /// <summary>
-    /// 从 usage JSON 元素中提取 Token 用量
+    /// 从 usage JSON 元素中提取 Token 用量（转发到 AITool.Protocol 统一实现，避免与协议层口径漂移）。
     /// </summary>
     private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
-    {
-        if (protocolType == "Anthropic")
-        {
-            var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
-            var cached = 0;
-            if (usage.TryGetProperty("cache_read_input_tokens", out var readCache))
-            {
-                cached += readCache.GetInt32();
-            }
-            if (usage.TryGetProperty("cache_creation_input_tokens", out var createCache))
-            {
-                cached += createCache.GetInt32();
-            }
-            var output = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
-            return (input, cached, output);
-        }
-
-        var openAiInputTokens = usage.TryGetProperty("input_tokens", out var inputTokens)
-            ? inputTokens.GetInt32()
-            : usage.TryGetProperty("prompt_tokens", out var promptTokens)
-                ? promptTokens.GetInt32()
-                : 0;
-
-        // OpenAI Chat Completions 与 Responses 的缓存字段结构不同，这里统一兼容两种格式。
-        // 部分中间层（如 newapi）的 input_tokens_details 为 null，需要回退到 prompt_tokens_details。
-        var inputDetails = usage.TryGetProperty("input_tokens_details", out var itd) && itd.ValueKind == JsonValueKind.Object
-            ? itd
-            : usage.TryGetProperty("prompt_tokens_details", out var ptd) && ptd.ValueKind == JsonValueKind.Object
-                ? ptd
-                : default;
-        var cachedTokens = inputDetails.ValueKind == JsonValueKind.Object && inputDetails.TryGetProperty("cached_tokens", out var ct)
-            ? ct.GetInt32()
-            : 0;
-
-        // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
-        // 所以 output_tokens=0 时回退到 completion_tokens。
-        var openAiOutputTokens = usage.TryGetProperty("output_tokens", out var outputTokens) && outputTokens.GetInt32() > 0
-            ? outputTokens.GetInt32()
-            : usage.TryGetProperty("completion_tokens", out var completionTokens)
-                ? completionTokens.GetInt32()
-                : 0;
-
-        return (openAiInputTokens, cachedTokens, openAiOutputTokens);
-    }
+        => ProxyProtocolBridge.ExtractUsageFromElement(usage, protocolType);
 }

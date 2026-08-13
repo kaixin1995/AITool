@@ -2,6 +2,7 @@ using System.Text.Json;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
+using AITool.Protocol;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Sites;
 
@@ -89,7 +90,7 @@ public sealed class ModelHealthRequestService
         // BuildProbeRequestBody 对 Responses 会设 max_output_tokens，此处按需剔除。
         if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
             && !string.IsNullOrWhiteSpace(site.BaseUrl)
-            && site.BaseUrl.Contains("chatgpt.com/backend-api", StringComparison.OrdinalIgnoreCase))
+            && ProxyProtocolBridge.IsCodexTarget(site.BaseUrl))
         {
             requestBody = StripCodexUnsupportedFields(requestBody);
         }
@@ -266,7 +267,7 @@ public sealed class ModelHealthRequestService
     /// Codex（chatgpt.com/backend-api/codex/responses）对参数白名单很严格，
     /// max_output_tokens / temperature / metadata 等任一字段都会触发
     /// {"detail":"Unsupported parameter: xxx"}（400）。
-    /// 基础架构层不能引用 Web 层的 ProxyProtocolBridge，此处内联实现等价逻辑。
+    /// 复用 AITool.Protocol 的 CodexUnsupportedParameters 字段清单，避免与协议层漂移。
     /// </summary>
     private static string StripCodexUnsupportedFields(string requestBody)
     {
@@ -278,16 +279,7 @@ public sealed class ModelHealthRequestService
                 return requestBody;
             }
 
-            var stripped = new[]
-            {
-                "metadata", "temperature", "top_p",
-                "max_output_tokens", "max_completion_tokens",
-                "truncation", "user", "previous_response_id",
-                "prompt_cache_retention", "safety_identifier",
-                "stream_options", "context_management"
-            };
-
-            foreach (var field in stripped)
+            foreach (var field in ProxyProtocolBridge.CodexUnsupportedParameters)
             {
                 rootNode.Remove(field);
             }

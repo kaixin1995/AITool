@@ -8,6 +8,7 @@ using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using AITool.Protocol;
 using AITool.Web.Services;
 
 namespace AITool.Web.Controllers.Proxy;

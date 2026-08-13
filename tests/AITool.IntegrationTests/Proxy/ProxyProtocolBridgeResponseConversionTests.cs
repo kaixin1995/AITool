@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AITool.Protocol;
 using AITool.Web.Services;
 using FluentAssertions;
 
@@ -52,6 +53,45 @@ public sealed class ProxyProtocolBridgeResponseConversionTests
         ProxyProtocolBridge.ConvertResponsesResponseToChat(
             "{\"id\":\"resp-empty\",\"output\":[],\"status\":\"completed\"}",
             "test-model", 0, 0, 0).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Responses_non_streaming_response_extracts_output_text_to_chat_content()
+    {
+        // 真实 CPA 上游非流式 Responses 返回的结构（已脱敏）
+        // 核心字段：output[].content[].type=output_text, text=实际回复
+        var body = """
+        {
+          "id":"resp_023316174082d7a9016a7cc4e382748199847d20d120dd066d",
+          "object":"response",
+          "created_at":1786561763,
+          "status":"completed",
+          "error":null,
+          "model":"gpt-5.6-luna",
+          "output":[
+            {
+              "id":"msg_023316174082d7a9016a7cc4e3fa7c8199abde524ded7a72b7",
+              "type":"message",
+              "status":"completed",
+              "content":[{"type":"output_text","annotations":[],"logprobs":[],"text":"Hi! How can I help?"}],
+              "phase":"final_answer",
+              "role":"assistant"
+            }
+          ],
+          "usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}
+        }
+        """;
+
+        var converted = ProxyProtocolBridge.ConvertResponsesResponseToChat(body, "gpt-5.6-luna", 5, 0, 2);
+        converted.Should().NotBeEmpty("非流式 Responses 响应含 output_text，必须能转成 Chat 格式");
+
+        using var document = JsonDocument.Parse(converted);
+        var root = document.RootElement;
+        root.GetProperty("object").GetString().Should().Be("chat.completion");
+        var message = root.GetProperty("choices")[0].GetProperty("message");
+        message.GetProperty("role").GetString().Should().Be("assistant");
+        // 核心断言：上游 output_text.text 必须成为 chat content
+        message.GetProperty("content").GetString().Should().Be("Hi! How can I help?");
     }
 
     [Fact]

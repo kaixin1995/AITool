@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace AITool.Web.Services;
+namespace AITool.Protocol;
 
 /// <summary>
 /// 负责在 OpenAI 与 Anthropic 协议之间转换请求和响应内容。

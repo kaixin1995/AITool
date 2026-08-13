@@ -5,7 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using AITool.Domain.Proxy;
 
-namespace AITool.Web.Services;
+namespace AITool.Protocol;
 
 /// <summary>
 /// 负责在 OpenAI 与 Anthropic 协议之间转换请求和响应内容。
@@ -512,7 +512,7 @@ public static partial class ProxyProtocolBridge
     /// 清单与 CPA codex_openai-responses_request.go 的 DeleteBytes 列表保持一致，
     /// 并补充 metadata（CPA 同样遗漏，但实测会被 Codex 拒绝）。
     /// </summary>
-    private static readonly string[] CodexUnsupportedParameters =
+    public static readonly string[] CodexUnsupportedParameters =
     {
         "metadata",
         "temperature",

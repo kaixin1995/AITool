@@ -2,7 +2,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace AITool.Web.Services;
+namespace AITool.Protocol;
 
 /// <summary>
 /// 负责在 OpenAI 与 Anthropic 协议之间转换请求和响应内容。
@@ -1284,8 +1284,10 @@ public static partial class ProxyProtocolBridge
 
     /// <summary>
     /// 按协议类型从 usage 节点中提取输入、缓存和输出 token 数。
+    /// 兼容标准 OpenAI（prompt_tokens）、Responses（input_tokens）以及 newapi 等中间层：
+    /// input_tokens 优先、缺失时回退 prompt_tokens；output_tokens 为 0 时回退 completion_tokens。
     /// </summary>
-    private static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
+    public static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
     {
         if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
         {
@@ -1305,13 +1307,32 @@ public static partial class ProxyProtocolBridge
             return (input, cached, output);
         }
 
-        var prompt = usage.TryGetProperty("prompt_tokens", out var pt) ? pt.GetInt32() : 0;
-        var promptDetails = usage.TryGetProperty("prompt_tokens_details", out var ptd) ? ptd : default;
-        var cachedTokens = promptDetails.ValueKind == JsonValueKind.Object && promptDetails.TryGetProperty("cached_tokens", out var ct)
+        var openAiInputTokens = usage.TryGetProperty("input_tokens", out var inputTokens)
+            ? inputTokens.GetInt32()
+            : usage.TryGetProperty("prompt_tokens", out var promptTokens)
+                ? promptTokens.GetInt32()
+                : 0;
+
+        // OpenAI Chat Completions 与 Responses 的缓存字段结构不同，这里统一兼容两种格式。
+        // 部分中间层（如 newapi）的 input_tokens_details 为 null，需要回退到 prompt_tokens_details。
+        var inputDetails = usage.TryGetProperty("input_tokens_details", out var itd) && itd.ValueKind == JsonValueKind.Object
+            ? itd
+            : usage.TryGetProperty("prompt_tokens_details", out var ptd) && ptd.ValueKind == JsonValueKind.Object
+                ? ptd
+                : default;
+        var cachedTokens = inputDetails.ValueKind == JsonValueKind.Object && inputDetails.TryGetProperty("cached_tokens", out var ct)
             ? ct.GetInt32()
             : 0;
-        var completion = usage.TryGetProperty("completion_tokens", out var completionTokens) ? completionTokens.GetInt32() : 0;
-        return (prompt, cachedTokens, completion);
+
+        // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
+        // 所以 output_tokens=0 时回退到 completion_tokens。
+        var openAiOutputTokens = usage.TryGetProperty("output_tokens", out var outputTokens) && outputTokens.GetInt32() > 0
+            ? outputTokens.GetInt32()
+            : usage.TryGetProperty("completion_tokens", out var completionTokens)
+                ? completionTokens.GetInt32()
+                : 0;
+
+        return (openAiInputTokens, cachedTokens, openAiOutputTokens);
     }
 
     /// <summary>

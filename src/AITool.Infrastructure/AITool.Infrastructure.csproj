@@ -11,6 +11,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\AITool.Application\AITool.Application.csproj" />
+    <ProjectReference Include="..\AITool.Protocol\AITool.Protocol.csproj" />
   </ItemGroup>
 
   <ItemGroup>
