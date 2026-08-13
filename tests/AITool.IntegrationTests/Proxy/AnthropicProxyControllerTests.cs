@@ -522,6 +522,14 @@ public sealed class AnthropicProxyControllerTests
         using var document = JsonDocument.Parse(body);
         document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("hello world");
         document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("reasoning_content").GetString().Should().Be("step-1\nstep-2");
+
+        // Anthropic input_tokens 已含缓存（cache_read=1），转为 OpenAI 的 prompt_tokens 不应再叠加缓存，
+        // 否则缓存被重复统计（prompt_tokens 变成 6+1=7 而非 6）。
+        var usage = document.RootElement.GetProperty("usage");
+        usage.GetProperty("prompt_tokens").GetInt32().Should().Be(6);
+        usage.GetProperty("prompt_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(1);
+        usage.GetProperty("completion_tokens").GetInt32().Should().Be(3);
+        usage.GetProperty("total_tokens").GetInt32().Should().Be(9);
     }
 
     /// <summary>

@@ -549,7 +549,12 @@ public static partial class ProxyProtocolBridge
 
             var effectiveInput = upstreamInput > 0 ? upstreamInput : inputTokens;
             var effectiveOutput = upstreamOutput > 0 ? upstreamOutput : outputTokens;
-            var totalInput = effectiveInput + cacheRead + cacheCreation;
+            // Anthropic 的 input_tokens 已包含缓存（cache_read + cache_creation 是其子集），
+            // 转为 OpenAI 时 prompt_tokens 语义同样含缓存，直接映射即可，不能再叠加缓存。
+            // 回退参数 inputTokens 是"新输入"（不含缓存），需补回缓存才是含缓存的总输入。
+            var totalInput = upstreamInput > 0
+                ? upstreamInput
+                : effectiveInput + cacheRead + cacheCreation;
             var messageObject = new JsonObject
             {
                 ["role"] = "assistant",

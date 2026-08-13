@@ -48,7 +48,9 @@ public sealed class OpenAiCrossProtocolProxyTests
         using var document = JsonDocument.Parse(body);
         document.RootElement.GetProperty("object").GetString().Should().Be("chat.completion");
         document.RootElement.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString().Should().Be("anthropic-bridged-ok");
-        document.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32().Should().Be(8);
+        // Anthropic 上游 input_tokens=7 已含缓存（cache_read=1），转 OpenAI 的 prompt_tokens 直接映射为 7，
+        // 不再叠加缓存（旧逻辑 7+1=8 导致缓存重复统计）。
+        document.RootElement.GetProperty("usage").GetProperty("prompt_tokens").GetInt32().Should().Be(7);
         document.RootElement.GetProperty("usage").GetProperty("prompt_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(1);
         document.RootElement.GetProperty("usage").GetProperty("completion_tokens").GetInt32().Should().Be(8);
 
