@@ -34,11 +34,9 @@ builder.Host.UseNLog();
 var startupLogger = LogManager.GetLogger("Startup");
 
 var applicationVersion = "1.0.1.8";
-// 编译时间取主程序集 dll 的最后写入时间，反映实际构建时刻，用于确认运行的是否是最新版本。
-var assemblyLocation = typeof(Program).Assembly.Location;
-var buildTime = File.Exists(assemblyLocation)
-    ? new DateTimeOffset(File.GetLastWriteTimeUtc(assemblyLocation))
-    : DateTimeOffset.UtcNow;
+// 编译时间从程序集元数据（AssemblyMetadata）读取，构建时由 csproj 注入。
+// 相比读取 dll 文件时间戳，这种方式在单文件/独立发布（Assembly.Location 为空）下依然可用。
+var buildTime = ReadBuildTimestamp() ?? DateTimeOffset.UtcNow;
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion, buildTime));
 
 var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 15029;
@@ -468,6 +466,26 @@ if (!app.Environment.IsEnvironment("Testing"))
 }
 
 app.Run();
+
+/// <summary>
+/// 从主程序集元数据读取编译时间戳（csproj 构建时注入的 AssemblyMetadata "BuildTimestamp"）。
+/// 单文件/独立发布下程序集无独立 dll 文件，读取文件时间戳会失效，故用元数据方案。
+/// 找不到或解析失败时返回 null，由调用方回退到当前时间。
+/// </summary>
+static DateTimeOffset? ReadBuildTimestamp()
+{
+    var attr = typeof(Program).Assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+        .OfType<System.Reflection.AssemblyMetadataAttribute>()
+        .FirstOrDefault(a => string.Equals(a.Key, "BuildTimestamp", StringComparison.OrdinalIgnoreCase));
+    if (attr is null || string.IsNullOrWhiteSpace(attr.Value))
+    {
+        return null;
+    }
+    return DateTimeOffset.TryParse(attr.Value, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out var ts)
+        ? ts
+        : null;
+}
 
 /// <summary>
 /// 判断是否为后台接口请求（/api/admin 前缀）。
