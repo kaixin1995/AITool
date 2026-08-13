@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using AITool.Domain.Proxy;
 using AITool.Protocol;
 using AITool.Web.Services;
 using FluentAssertions;
@@ -356,5 +357,92 @@ public sealed class ProxyProtocolBridgeThinkingTests
         thinking.Should().NotBeNull();
         thinking!["type"]?.GetValue<string>().Should().Be("enabled");
         thinking["budget_tokens"]?.GetValue<int>().Should().Be(16384);
+    }
+
+    // ---- keep_reasoning 规则：deepseek 等上游要求工具调用时回传 reasoning_content ----
+
+    /// <summary>
+    /// 构造一个带 thinking block 的多轮 Anthropic 请求体（assistant 上一轮含 thinking + tool_use）。
+    /// </summary>
+    private static string BuildAnthropicRequestBodyWithThinkingAssistant()
+    {
+        return new JsonObject
+        {
+            ["model"] = "auto",
+            ["max_tokens"] = 1024,
+            ["messages"] = new JsonArray
+            {
+                new JsonObject { ["role"] = "user", ["content"] = "查天气" },
+                new JsonObject
+                {
+                    ["role"] = "assistant",
+                    ["content"] = new JsonArray
+                    {
+                        // deepseek 要求：工具调用时 reasoning_content 必须回传
+                        new JsonObject { ["type"] = "thinking", ["thinking"] = "需要先获取日期再查天气" },
+                        new JsonObject { ["type"] = "text", ["text"] = "我来查一下天气" },
+                        new JsonObject
+                        {
+                            ["type"] = "tool_use",
+                            ["id"] = "toolu_1",
+                            ["name"] = "get_date",
+                            ["input"] = new JsonObject()
+                        }
+                    }
+                },
+                new JsonObject
+                {
+                    ["role"] = "user",
+                    ["content"] = new JsonArray
+                    {
+                        new JsonObject { ["type"] = "tool_result", ["tool_use_id"] = "toolu_1", ["content"] = "2026-08-13" }
+                    }
+                }
+            }
+        }.ToJsonString();
+    }
+
+    /// <summary>
+    /// 未绑定 keep_reasoning 规则时，thinking block 被丢弃，assistant 不含 reasoning_content。
+    /// 标准 OpenAI 不认 reasoning_content，这是默认行为。
+    /// </summary>
+    [Fact]
+    public void Anthropic_assistant_thinking_dropped_without_keep_reasoning_rule()
+    {
+        var body = BuildAnthropicRequestBodyWithThinkingAssistant();
+
+        var openAi = ConvertToOpenAi(body);
+
+        var messages = openAi["messages"]!.AsArray();
+        // assistant 消息是第二条（index=1）
+        var assistant = messages[1]!.AsObject();
+        assistant["reasoning_content"]?.Should().BeNull("未绑定 keep_reasoning 规则时应丢弃 thinking");
+        assistant["content"]?.GetValue<string>().Should().Be("我来查一下天气");
+        assistant["tool_calls"]?.Should().NotBeNull("tool_use 仍应保留");
+    }
+
+    /// <summary>
+    /// 绑定 keep_reasoning 规则时，assistant 的 thinking block 转成 reasoning_content 保留。
+    /// deepseek 上游要求工具调用时 reasoning_content 必须回传。
+    /// </summary>
+    [Fact]
+    public void Anthropic_assistant_thinking_kept_as_reasoning_content_with_rule()
+    {
+        var body = BuildAnthropicRequestBodyWithThinkingAssistant();
+
+        var prepared = ProxyProtocolBridge.PrepareRequestBody(
+            "Anthropic", "OpenAI", body, "deepseek-v4-flash", enableStreaming: false,
+            compatibilityRules: new[] { new CompatibilityRule { Op = "keep_reasoning" } });
+
+        var openAi = JsonNode.Parse(prepared) as JsonObject
+            ?? throw new InvalidOperationException("转换结果不是合法 JSON 对象");
+
+        var messages = openAi["messages"]!.AsArray();
+        var assistant = messages[1]!.AsObject();
+        // 核心断言：thinking 映射成 reasoning_content 保留
+        var reasoningContent = assistant["reasoning_content"]?.GetValue<string>();
+        reasoningContent.Should().Be("需要先获取日期再查天气");
+        assistant["content"]?.GetValue<string>().Should().Be("我来查一下天气");
+        assistant["tool_calls"]?.Should().NotBeNull("tool_use 仍应保留");
     }
 }

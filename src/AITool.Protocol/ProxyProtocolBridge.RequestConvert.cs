@@ -12,7 +12,7 @@ public static partial class ProxyProtocolBridge
     /// <summary>
     /// 将 Anthropic 请求体转换为 OpenAI 请求格式。
     /// </summary>
-    private static string BuildOpenAiRequestFromAnthropic(JsonObject rootNode, string targetModelName, bool enableStreaming)
+    private static string BuildOpenAiRequestFromAnthropic(JsonObject rootNode, string targetModelName, bool enableStreaming, bool keepReasoning = false)
     {
         var messages = new JsonArray();
 
@@ -50,7 +50,15 @@ public static partial class ProxyProtocolBridge
                 if (string.Equals(role, "assistant", StringComparison.OrdinalIgnoreCase))
                 {
                     var openAiMsg = new JsonObject { ["role"] = "assistant" };
-                    var (textContent, toolUseBlocks, imageBlocks) = ParseAnthropicContentBlocks(content);
+                    var (textContent, toolUseBlocks, imageBlocks, reasoningText) = ParseAnthropicContentBlocks(content);
+
+                    // keep_reasoning 规则：deepseek 等上游在 thinking 模式 + 工具调用时，
+                    // 要求把上一轮 assistant 的思维链以 reasoning_content 字段传回，否则返回 400。
+                    // 标准 OpenAI 不认该字段，所以仅在绑定规则时保留。
+                    if (keepReasoning && !string.IsNullOrWhiteSpace(reasoningText))
+                    {
+                        openAiMsg["reasoning_content"] = reasoningText;
+                    }
 
                     if (textContent is not null)
                     {

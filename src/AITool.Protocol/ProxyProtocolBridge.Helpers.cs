@@ -12,23 +12,26 @@ public static partial class ProxyProtocolBridge
     /// <summary>
     /// 解析 Anthropic assistant 内容块，拆分出文本、工具调用和图片内容。
     /// </summary>
-    private static (string? TextContent, JsonArray ToolUseBlocks, JsonArray ImageBlocks) ParseAnthropicContentBlocks(JsonNode? content)
+    private static (string? TextContent, JsonArray ToolUseBlocks, JsonArray ImageBlocks, string? ReasoningText) ParseAnthropicContentBlocks(JsonNode? content)
     {
         string? textContent = null;
         var toolUseBlocks = new JsonArray();
         var imageBlocks = new JsonArray();
+        // thinking block 的文本，供 keep_reasoning 规则映射成 OpenAI 的 reasoning_content。
+        // 默认丢弃（标准 OpenAI 不认 reasoning_content），仅在 deepseek 等要求回传的上游按规则保留。
+        string? reasoningText = null;
 
         if (content is null)
-            return (null, toolUseBlocks, imageBlocks);
+            return (null, toolUseBlocks, imageBlocks, null);
 
         if (content is JsonValue value)
         {
             try { textContent = value.GetValue<string>(); } catch { textContent = value.ToJsonString(); }
-            return (textContent, toolUseBlocks, imageBlocks);
+            return (textContent, toolUseBlocks, imageBlocks, null);
         }
 
         if (content is not JsonArray blocks)
-            return (content.ToJsonString(), toolUseBlocks, imageBlocks);
+            return (content.ToJsonString(), toolUseBlocks, imageBlocks, null);
 
         var textParts = new List<string>();
         foreach (var block in blocks)
@@ -41,6 +44,14 @@ public static partial class ProxyProtocolBridge
                 case "text":
                     var t = blockObj["text"]?.GetValue<string>();
                     if (t is not null) textParts.Add(t);
+                    break;
+                case "thinking":
+                    // 提取思维链文本（thinking 字段，兼容 text/content 写法），由调用方决定是否保留。
+                    var thinking = blockObj["thinking"]?.GetValue<string>();
+                    if (string.IsNullOrWhiteSpace(thinking))
+                        thinking = blockObj["text"]?.GetValue<string>() ?? blockObj["content"]?.GetValue<string>();
+                    if (!string.IsNullOrWhiteSpace(thinking))
+                        reasoningText = string.Concat(reasoningText, thinking);
                     break;
                 case "tool_use":
                     toolUseBlocks.Add(new JsonObject
@@ -72,7 +83,7 @@ public static partial class ProxyProtocolBridge
         if (textParts.Count > 0)
             textContent = string.Join("\n", textParts);
 
-        return (textContent, toolUseBlocks, imageBlocks);
+        return (textContent, toolUseBlocks, imageBlocks, reasoningText);
     }
 
     /// <summary>

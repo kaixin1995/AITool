@@ -23,7 +23,8 @@ const form = reactive({
 const operationOptions: SelectOption[] = [
   { label: '剔除 strip', value: 'strip' },
   { label: '重命名 rename', value: 'rename' },
-  { label: '补默认值 default', value: 'default' }
+  { label: '补默认值 default', value: 'default' },
+  { label: '保留思维链 keep_reasoning', value: 'keep_reasoning' }
 ]
 const scopeOptions: SelectOption[] = [
   { label: '两者 all', value: 'all' },
@@ -201,6 +202,9 @@ onMounted(load)
                   <NInput v-model:value="rule.from" placeholder="from 旧名" />
                   <NInput v-model:value="rule.to" placeholder="to 新名" />
                 </template>
+                <template v-else-if="rule.op === 'keep_reasoning'">
+                  <span class="rule-hint">Anthropic→OpenAI 转换时保留 thinking 为 reasoning_content（deepseek 等上游工具调用时要求回传）</span>
+                </template>
                 <template v-else>
                   <NInput v-model:value="rule.key" placeholder="key 字段名" />
                   <NInput v-model:value="rule.value" placeholder="value 值" />
@@ -306,6 +310,13 @@ onMounted(load)
   display: flex;
   min-width: 0;
   gap: 8px;
+}
+
+.rule-hint {
+  font-size: 12px;
+  color: var(--n-text-color-3, #909399);
+  line-height: 1.5;
+  align-self: center;
 }
 
 .editor-actions {

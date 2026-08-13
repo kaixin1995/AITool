@@ -156,16 +156,21 @@ public static partial class ProxyProtocolBridge
                 return requestBody;
             }
 
+            // keep_reasoning 规则：deepseek 等上游在 thinking 模式 + 工具调用时要求回传 reasoning_content，
+            // 仅在 Anthropic→OpenAI/Responses 转换时生效。规则在转换前检查，避免转换后 thinking 已丢失。
+            var keepReasoning = compatibilityRules is { Count: > 0 }
+                && compatibilityRules.Any(r => string.Equals((r.Op ?? "").Trim(), "keep_reasoning", StringComparison.OrdinalIgnoreCase));
+
             if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(targetProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
             {
-                var openAiRequestBody = BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming);
+                var openAiRequestBody = BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming, keepReasoning);
                 result = ConvertChatRequestToResponses(openAiRequestBody, targetModelName, enableStreaming);
             }
             else
             {
                 result = string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
-                    ? BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming)
+                    ? BuildOpenAiRequestFromAnthropic(rootNode, targetModelName, enableStreaming, keepReasoning)
                     : BuildAnthropicRequestFromOpenAi(rootNode, targetModelName, enableStreaming);
             }
         }
