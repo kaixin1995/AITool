@@ -1,6 +1,8 @@
 using System.Net;
 using System.Net.Http;
+using AITool.Application.Codex;
 using AITool.Infrastructure.Codex;
+using Microsoft.Extensions.Options;
 using FluentAssertions;
 
 namespace AITool.ApplicationTests.Codex;
@@ -12,7 +14,7 @@ public sealed class CodexModelFetcherTests
     {
         using var httpClient = new HttpClient(new StubHandler(
             "{\"models\":[{\"id\":\"gpt-5.6-codex\",\"name\":\"GPT-5.6 Codex\"}]}"));
-        var fetcher = new CodexModelFetcher(httpClient);
+        var fetcher = new CodexModelFetcher(httpClient, Options.Create(new CodexUpstreamOptions()));
 
         var models = await fetcher.FetchAsync("access-token", "account-id", default);
 

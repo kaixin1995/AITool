@@ -33,7 +33,7 @@ builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
 
-var applicationVersion = "1.0.1.7";
+var applicationVersion = "1.0.1.8";
 builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
 
 var serverPort = builder.Configuration.GetValue<int?>("Server:Port") ?? 15029;
@@ -184,6 +184,10 @@ builder.Services.AddSqlSugar(connectionString);
 builder.Services.Configure<ProxyForwardingOptions>(
     builder.Configuration.GetSection(ProxyForwardingOptions.SectionName));
 
+// 注册 Codex 上游客户端伪装配置（版本号等），便于不发版调整上游校验参数。
+builder.Services.Configure<CodexUpstreamOptions>(
+    builder.Configuration.GetSection(CodexUpstreamOptions.SectionName));
+
 // 注册站点目录客户端，用于拉取远程站点模型列表。
 builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 
@@ -283,9 +287,10 @@ var app = builder.Build();
 using (var scope = app.Services.CreateScope())
 {
     var sqlSugarClient = scope.ServiceProvider.GetRequiredService<ISqlSugarClient>();
+    var dbInitLogger = scope.ServiceProvider.GetService<ILoggerFactory>()?.CreateLogger("SqlSugarSetup");
     // CodeFirst 建表 + 补齐历史库缺失列（差量更新，只增不删）+ 持久化 PRAGMA（WAL、synchronous）。
     // 替代原 EF 的 EnsureCreated + 手写 ALTER TABLE 升级脚本：SqlSugar 的 InitTables 会自动补齐缺失列。
-    SqlSugarSetup.InitializeDatabase(sqlSugarClient);
+    SqlSugarSetup.InitializeDatabase(sqlSugarClient, dbInitLogger);
 
     // 预热 SiteUsageTracker：从 DB 读每个 Site 最近一次使用时间，避免重启后历史丢失。
     var siteUsageTracker = scope.ServiceProvider.GetRequiredService<SiteUsageTracker>();

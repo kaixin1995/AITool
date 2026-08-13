@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using AITool.Application.Codex;
+using Microsoft.Extensions.Options;
 
 namespace AITool.Infrastructure.Codex;
 
@@ -10,24 +11,28 @@ namespace AITool.Infrastructure.Codex;
 /// </summary>
 public sealed class CodexModelFetcher : ICodexModelFetcher
 {
-    private const string ModelsUrl = "https://chatgpt.com/backend-api/codex/models?client_version=0.133.0";
-    private const string UserAgent = "codex_cli_rs/0.133.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
+    private const string ModelsBaseUrl = "https://chatgpt.com/backend-api/codex/models";
+    private const string UserAgentSuffix = " (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
 
     private readonly HttpClient _httpClient;
+    private readonly string _clientVersion;
+    private readonly string _userAgent;
 
-    public CodexModelFetcher(HttpClient httpClient)
+    public CodexModelFetcher(HttpClient httpClient, IOptions<CodexUpstreamOptions> options)
     {
         _httpClient = httpClient;
+        _clientVersion = options?.Value?.ClientVersion ?? "0.133.0";
+        _userAgent = $"codex_cli_rs/{_clientVersion}{UserAgentSuffix}";
     }
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<CodexRemoteModel>> FetchAsync(string accessToken, string accountId, CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, ModelsUrl);
+        using var request = new HttpRequestMessage(HttpMethod.Get, $"{ModelsBaseUrl}?client_version={_clientVersion}");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         request.Headers.TryAddWithoutValidation("Originator", "codex_cli_rs");
-        request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+        request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
         if (!string.IsNullOrEmpty(accountId))
         {
             request.Headers.TryAddWithoutValidation("Chatgpt-Account-Id", accountId);

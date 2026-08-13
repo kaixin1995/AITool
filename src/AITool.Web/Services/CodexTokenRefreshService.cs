@@ -29,19 +29,16 @@ public sealed class CodexTokenRefreshService : BackgroundService
     private static readonly TimeSpan RefreshFailureBackoff = TimeSpan.FromHours(1);
 
     private readonly IServiceProvider _services;
-    private readonly ICodexOAuthClient _oauth;
     private readonly ILogger<CodexTokenRefreshService> _logger;
     private readonly IHostEnvironment _environment;
     private readonly ConcurrentDictionary<Guid, DateTimeOffset> _refreshRetryAt = new();
 
     public CodexTokenRefreshService(
         IServiceProvider services,
-        ICodexOAuthClient oauth,
         ILogger<CodexTokenRefreshService> logger,
         IHostEnvironment environment)
     {
         _services = services;
-        _oauth = oauth;
         _logger = logger;
         _environment = environment;
     }
@@ -75,6 +72,8 @@ public sealed class CodexTokenRefreshService : BackgroundService
         using var scope = _services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+        // 现取 typed HttpClient，避免单例持有导致 HttpMessageHandler 被钉死（DNS 陈旧）。
+        var oauthClient = scope.ServiceProvider.GetRequiredService<ICodexOAuthClient>();
 
         // 尊重 Codex 功能总开关：关闭时跳过本轮
         var runtime = await cache.GetRuntimeSettingsAsync(ct);
@@ -106,7 +105,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
         foreach (var account in due)
         {
             if (ct.IsCancellationRequested) break;
-            var updated = await RefreshOneAsync(dbContext, cache, account, ct);
+            var updated = await RefreshOneAsync(dbContext, cache, oauthClient, account, ct);
             if (updated) anyUpdated = true;
             // 错峰
             await Task.Delay(InterAccountDelay, ct);
@@ -119,13 +118,13 @@ public sealed class CodexTokenRefreshService : BackgroundService
         }
     }
 
-    private async Task<bool> RefreshOneAsync(AppDbContext db, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct)
+    private async Task<bool> RefreshOneAsync(AppDbContext db, ProxyRequestMetadataCache cache, ICodexOAuthClient oauthClient, CodexAccount account, CancellationToken ct)
     {
         try
         {
             // single-flight：OAuth 客户端内部保证同 refresh_token 并发只刷一次
             // HTTP 调用在锁外执行，避免长时间持有串行锁
-            var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken!, ct);
+            var tokens = await oauthClient.RefreshTokenAsync(account.RefreshToken!, ct);
 
             // DB 写入用串行锁包裹，避免并发竞态
             await db.SerialExecuteAsync(async () =>

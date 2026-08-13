@@ -427,7 +427,9 @@ public sealed class SitesApiController : ControllerBase
 
         await _cascadeDeleter.RemoveSitesAsync([id], cancellationToken);
         // SiteCascadeDeleter 内部用 RemoveRange（立即执行），无需额外 SaveChanges。
+        // 删站点会级联删除 SiteModelMappings，需同时失效模型元数据缓存，避免 /v1/models 短时残留。
         _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateModelMetadata();
 
         return Ok(ApiResponse.Ok("站点已删除"));
     }
@@ -456,7 +458,9 @@ public sealed class SitesApiController : ControllerBase
 
         var deletedCount = await _cascadeDeleter.RemoveSitesAsync(siteIds, cancellationToken);
         // SiteCascadeDeleter 内部用 RemoveRange（立即执行），无需额外 SaveChanges。
+        // 删站点会级联删除 SiteModelMappings，需同时失效模型元数据缓存，避免 /v1/models 短时残留。
         _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateModelMetadata();
 
         return Ok(ApiResponse.Ok(new { deletedCount }, $"已批量删除 {deletedCount} 个站点"));
     }

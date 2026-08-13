@@ -8,6 +8,7 @@ using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using SqlSugar;
 
 namespace AITool.Infrastructure.Persistence;
@@ -209,7 +210,7 @@ public static class SqlSugarSetup
     /// 初始化数据库：CodeFirst 建表 + 持久化 PRAGMA（WAL、synchronous）。
     /// 等价于原 EF 的 EnsureCreated + 启动期 PRAGMA。
     /// </summary>
-    public static void InitializeDatabase(ISqlSugarClient db)
+    public static void InitializeDatabase(ISqlSugarClient db, ILogger? logger = null)
     {
         // 持久化 PRAGMA：WAL 模式与 synchronous=NORMAL 设置一次永久生效。
         // 连接级 PRAGMA：cache_size、busy_timeout 在每次连接生命周期内生效（SqlSugarScope 单例 + 连接池复用）。
@@ -220,7 +221,11 @@ public static class SqlSugarSetup
             db.Ado.ExecuteCommand("PRAGMA cache_size=-65536;");
             db.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            // PRAGMA 失败会影响并发/锁行为，记录告警便于定位；不抛出以放行建表。
+            logger?.LogWarning(ex, "Failed to apply SQLite PRAGMA during database initialization");
+        }
 
         // CodeFirst 建表（表已存在时只增不删，自动补齐缺失列）。
         db.CodeFirst.InitTables(
