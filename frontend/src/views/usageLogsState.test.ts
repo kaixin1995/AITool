@@ -7,10 +7,11 @@ import {
 } from './usageLogsState'
 
 describe('Usage Logs 模型显示', () => {
-  it('仅在路由入口与上游模型不同时拼接显示值', () => {
-    expect(formatUsageLogModel('auto', 'gpt-5.2')).toBe('auto->gpt-5.2')
+  it('只显示对外名（路由入口），不拼接上游站点模型名', () => {
+    expect(formatUsageLogModel('deepseek-v4-flash', 'deepseek-ai/deepseek-v4-flash-0731')).toBe('deepseek-v4-flash')
     expect(formatUsageLogModel('gpt-5.2', 'gpt-5.2')).toBe('gpt-5.2')
     expect(formatUsageLogModel('', 'gpt-5.2')).toBe('gpt-5.2')
+    expect(formatUsageLogModel(null, null)).toBe('-')
   })
 })
 

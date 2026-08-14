@@ -1,10 +1,10 @@
 // 仅格式化日志列表的显示文本，不修改接口返回的原始模型字段。
+// 只保留对外名（路由入口/客户端请求名）；上游站点模型名不在列表展示，避免 `对外名->站点名` 拼接。
 export function formatUsageLogModel(routeEntry: string | null | undefined, upstreamModel: string | null | undefined): string {
   const entry = routeEntry?.trim() ?? ''
   const upstream = upstreamModel?.trim() || entry
   if (!entry) return upstream || '-'
-  if (!upstream || entry === upstream) return entry
-  return `${entry}->${upstream}`
+  return entry
 }
 
 export function buildUsageLogsDefaultCustomRange(now = new Date()): {
