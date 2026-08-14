@@ -67,6 +67,7 @@ public partial class UsageLogsViewModel : ViewModelBase, IDisposable
             new() { Id = "codex", Name = "Codex" },
             new() { Id = "open-code", Name = "Open Code" },
             new() { Id = "zcode", Name = "ZCode" },
+            new() { Id = "deepseek-harness", Name = "DeepSeek Harness" },
             new() { Id = "detection-manual", Name = "手动检测" },
             new() { Id = "detection-task", Name = "定时检测" }
         };

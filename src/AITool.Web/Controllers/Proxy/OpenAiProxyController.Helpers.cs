@@ -420,6 +420,11 @@ public sealed partial class OpenAiProxyController
             return "zcode";
         }
 
+        if (normalizedUserAgent.Contains("deepseek-harness"))
+        {
+            return "deepseek-harness";
+        }
+
         return "proxy";
     }
 

@@ -941,6 +941,47 @@ public sealed class ProxyFallbackFlowTests
     }
 
     /// <summary>
+    /// 验证 deepseek-harness 客户端的 User-Agent 会被识别为独立来源。
+    /// </summary>
+    [Fact]
+    public async Task Post_chat_completions_identifies_deepseek_harness_user_agent_source()
+    {
+        var fakeForwardService = new FakeProxyForwardService
+        {
+            ForwardResultFactory = _ => new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "{\"choices\":[{\"message\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}",
+                InputTokens = 2,
+                OutputTokens = 1
+            }
+        };
+        await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"chat-prod\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+        request.Headers.TryAddWithoutValidation(
+            "User-Agent",
+            "deepseek-harness/0.1.0-rc.6 (+https://github.com/deepseek-ai/deepseek-harness)");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.OrderBy(x => x.AttemptIndex).ToListAsync();
+
+        logs.Should().ContainSingle();
+        logs[0].Source.Should().Be("deepseek-harness");
+    }
+
+    /// <summary>
     /// 验证流式响应一旦写出首个分片，即使后续中断也不会再回退到下一条路由。
     /// </summary>
     [Fact]

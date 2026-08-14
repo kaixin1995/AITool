@@ -76,6 +76,7 @@ public partial class AnalyticsViewModel : ViewModelBase
             new("codex", "Codex"),
             new("open-code", "Open Code"),
             new("zcode", "ZCode"),
+            new("deepseek-harness", "DeepSeek Harness"),
             new("detection-manual", "手动检测"),
             new("detection-task", "定时检测")
         };

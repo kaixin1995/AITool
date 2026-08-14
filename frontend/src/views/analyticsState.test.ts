@@ -36,6 +36,7 @@ describe('Analytics 汇总', () => {
 describe('Analytics 来源筛选', () => {
   it('来源筛选使用与 Usage Logs 相同的稳定值', () => {
     expect(getUsageSourceLabel('claude-code')).toBe('Claude Code')
+    expect(getUsageSourceLabel('deepseek-harness')).toBe('DeepSeek Harness')
     expect(getUsageSourceLabel('detection-task')).toBe('定时检测')
   })
 

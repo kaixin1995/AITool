@@ -17,6 +17,7 @@ import {
   type SelectOption
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
+import SourceIcon from '@/components/SourceIcon.vue'
 import * as api from '@/api/usageLogs'
 import type { UsageLogItem, UsageLogRequestDetail, UsageLogSummary } from '@/api/usageLogs'
 import {
@@ -25,7 +26,7 @@ import {
   canAutoLoadUsageLogs,
   formatUsageLogModel
 } from './usageLogsState'
-import { getUsageSourceMeta as getSourceMeta, usageSourceOptions as sourceOptions } from './usageSource'
+import { usageSourceOptions as sourceOptions } from './usageSource'
 
 const message = useMessage()
 const loading = ref(false)
@@ -135,11 +136,6 @@ function getStatusMeta(row: UsageLogItem): { label: string; type: 'success' | 'e
 
 function statusTag(row: UsageLogItem) {
   const meta = getStatusMeta(row)
-  return h(NTag, { size: 'small', type: meta.type, bordered: false }, () => meta.label)
-}
-
-function sourceTag(source: string) {
-  const meta = getSourceMeta(source)
   return h(NTag, { size: 'small', type: meta.type, bordered: false }, () => meta.label)
 }
 
@@ -464,8 +460,8 @@ onUnmounted(() => {
           <template v-else>
             <tr v-for="item in items" :key="item.id">
               <td>{{ formatDateTime(item.requestedAt) }}</td>
-              <td><NTag size="small" :type="getSourceMeta(item.source).type" :bordered="false">{{ getSourceMeta(item.source).label }}</NTag></td>
-              <td><code>{{ formatUsageLogModel(item.requestModel, item.attemptedModel) }}</code></td>
+              <td><SourceIcon :source="item.source" /></td>
+              <td><code>{{ formatUsageLogModel(item.requestModel, item.attemptedModel, item.source) }}</code></td>
               <td>{{ item.siteName || '-' }}</td>
               <td>{{ item.accessKeyName || '-' }}</td>
               <td><NTag size="small" :type="getStatusMeta(item).type" :bordered="false">{{ getStatusMeta(item).label }}</NTag></td>

@@ -39,6 +39,7 @@ public partial class SystemSettingsViewModel : ViewModelBase
         new() { Value = "codex", Label = "Codex" },
         new() { Value = "open-code", Label = "Open Code" },
         new() { Value = "zcode", Label = "ZCode" },
+        new() { Value = "deepseek-harness", Label = "DeepSeek Harness" },
         new() { Value = "detection-manual", Label = "手动检测" },
         new() { Value = "detection-task", Label = "定时检测" }
     ];

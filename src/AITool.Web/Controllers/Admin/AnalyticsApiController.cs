@@ -1207,6 +1207,7 @@ public sealed class AnalyticsApiController : ControllerBase
             "codex" => "Codex",
             "open-code" => "Open Code",
             "zcode" => "ZCode",
+            "deepseek-harness" => "DeepSeek Harness",
             "detection-manual" => "手动检测",
             "detection-task" => "定时检测",
             _ => NormalizeAnalyticsLabel(key)

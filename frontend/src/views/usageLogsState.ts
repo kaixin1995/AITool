@@ -1,10 +1,19 @@
 // 仅格式化日志列表的显示文本，不修改接口返回的原始模型字段。
-// 只保留对外名（路由入口/客户端请求名）；上游站点模型名不在列表展示，避免 `对外名->站点名` 拼接。
-export function formatUsageLogModel(routeEntry: string | null | undefined, upstreamModel: string | null | undefined): string {
+// 路由调用（proxy/检测等）：显示 "路由入口名 -> 对外模型"，如 "chat-prod -> gpt-5.5"；
+// chat 页等非路由调用：只显示对外模型（客户端请求的模型名）。
+// 上游模型名与入口名相同或缺失时不重复拼接。
+export function formatUsageLogModel(
+  routeEntry: string | null | undefined,
+  upstreamModel: string | null | undefined,
+  source?: string | null
+): string {
   const entry = routeEntry?.trim() ?? ''
-  const upstream = upstreamModel?.trim() || entry
-  if (!entry) return upstream || '-'
-  return entry
+  const upstream = upstreamModel?.trim() ?? ''
+  if (!entry && !upstream) return '-'
+  if (source === 'chat') return entry || upstream
+  if (!entry) return upstream
+  if (!upstream || upstream === entry) return entry
+  return entry + ' -> ' + upstream
 }
 
 export function buildUsageLogsDefaultCustomRange(now = new Date()): {

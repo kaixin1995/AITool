@@ -905,6 +905,11 @@ public sealed class AnthropicProxyController : ControllerBase
             return "zcode";
         }
 
+        if (normalizedUserAgent.Contains("deepseek-harness"))
+        {
+            return "deepseek-harness";
+        }
+
         return "proxy";
     }
 
