@@ -47,7 +47,8 @@ const refreshingPool = ref(false)
 const creatingEntry = ref(false)
 const saving = ref(false)
 const dirty = ref(false)
-const editingRanges = ref<Record<string, TimeRange[]>>({})
+// 时间规则编辑草稿：模式与时间段只改草稿，点「确定」才写回规则并保存，点「取消」或再次点击按钮丢弃。
+const availabilityDraft = ref<{ key: string; mode: RouteAvailabilityMode; ranges: TimeRange[] } | null>(null)
 const openAvailabilityKey = ref<string | null>(null)
 const draggingRuleIndex = ref<number | null>(null)
 const resolveRuleKey = createRuleKeyResolver()
@@ -89,16 +90,8 @@ function serializeTimeRanges(ranges: TimeRange[]): string {
   return JSON.stringify(ranges)
 }
 
-function getRanges(rule: RouteRuleItem): TimeRange[] {
-  const key = resolveRuleKey(rule)
-  if (!editingRanges.value[key]) {
-    editingRanges.value[key] = parseTimeRanges(rule.timeRangesJson)
-  }
-  return editingRanges.value[key]
-}
-
 function getAvailabilitySummary(rule: RouteRuleItem): { text: string; className: string } {
-  const ranges = rule.availabilityMode === 'AllDay' ? [] : getRanges(rule)
+  const ranges = rule.availabilityMode === 'AllDay' ? [] : parseTimeRanges(rule.timeRangesJson)
   if (rule.availabilityMode === 'AllDay' || ranges.length === 0) {
     return { text: '全天可用', className: 'route-badge-muted' }
   }
@@ -117,7 +110,15 @@ function isAvailabilityOpen(rule: RouteRuleItem): boolean {
 
 function toggleAvailabilityEditor(rule: RouteRuleItem): void {
   const key = resolveRuleKey(rule)
-  openAvailabilityKey.value = openAvailabilityKey.value === key ? null : key
+  if (openAvailabilityKey.value === key) {
+    // 再次点击同一行：丢弃草稿并折叠
+    availabilityDraft.value = null
+    openAvailabilityKey.value = null
+    return
+  }
+  // 打开编辑器：用已保存值初始化草稿，编辑期间不落库
+  availabilityDraft.value = { key, mode: rule.availabilityMode, ranges: parseTimeRanges(rule.timeRangesJson) }
+  openAvailabilityKey.value = key
 }
 
 function markDirty(): void {
@@ -129,21 +130,30 @@ function saveAfterChange(): void {
   void handleSave()
 }
 
-function handleAvailabilityChange(
-  rule: RouteRuleItem,
-  index: number,
-  mode: RouteAvailabilityMode
-): void {
-  rule.availabilityMode = mode
-  openAvailabilityKey.value = resolveRuleKey(rule)
-
-  if (mode === 'AllDay') {
-    rule.timeRangesJson = ''
-  } else {
-    rule.timeRangesJson = serializeTimeRanges(getRanges(rule))
+function handleAvailabilityChange(mode: RouteAvailabilityMode): void {
+  // 只改草稿，不保存；由「确定」统一写回
+  if (availabilityDraft.value) {
+    availabilityDraft.value.mode = mode
   }
+}
 
-  saveAfterChange()
+function confirmAvailability(): void {
+  const draft = availabilityDraft.value
+  if (!draft) return
+  const rule = rules.value.find((item) => resolveRuleKey(item) === draft.key)
+  if (rule) {
+    rule.availabilityMode = draft.mode
+    rule.timeRangesJson = draft.mode === 'AllDay' ? '' : serializeTimeRanges(draft.ranges)
+    saveAfterChange()
+  }
+  availabilityDraft.value = null
+  openAvailabilityKey.value = null
+}
+
+function cancelAvailability(): void {
+  // 丢弃草稿并折叠，规则保持已保存状态
+  availabilityDraft.value = null
+  openAvailabilityKey.value = null
 }
 
 function timeToTimestamp(value: string): number {
@@ -182,7 +192,8 @@ async function loadSelectedEntry(entryName: string | null): Promise<void> {
 
   if (!entryName) {
     rules.value = []
-    editingRanges.value = {}
+    availabilityDraft.value = null
+    openAvailabilityKey.value = null
     loading.value = false
     return
   }
@@ -193,7 +204,8 @@ async function loadSelectedEntry(entryName: string | null): Promise<void> {
     if (!isLatestRouteLoad(token, latestLoadToken)) return
 
     rules.value = loadedRules
-    editingRanges.value = {}
+    // 规则重载后旧的编辑草稿/展开状态失效，一并清理
+    availabilityDraft.value = null
     openAvailabilityKey.value = null
     dirty.value = false
   } finally {
@@ -269,7 +281,8 @@ async function deleteCurrentEntry(): Promise<void> {
 
   await api.deleteRouteEntry(entryName)
   rules.value = []
-  editingRanges.value = {}
+  availabilityDraft.value = null
+  openAvailabilityKey.value = null
   dirty.value = false
   await loadEntries()
   await loadSelectedEntry(selectedEntryName.value)
@@ -315,7 +328,8 @@ function handleRuleDragEnd(): void {
 
 function removeRule(index: number): void {
   rules.value = rules.value.filter((_, ruleIndex) => ruleIndex !== index)
-  editingRanges.value = {}
+  availabilityDraft.value = null
+  openAvailabilityKey.value = null
   saveAfterChange()
 }
 
@@ -477,7 +491,8 @@ onMounted(() => {
                       <span :class="['route-badge', getAvailabilitySummary(rule).className]">{{ getAvailabilitySummary(rule).text }}</span>
                       <span v-if="!rule.isEnabled" class="route-badge route-badge-muted">规则已禁用</span>
                     </div>
-                    <div class="remote-name">上游模型：{{ rule.upstreamModelName }} · 站点实例：{{ rule.siteModelName }}</div>
+                    <!-- 上游模型优先显示对外名（显示名称），未匹配模型库时回退站点名 -->
+                    <div class="remote-name">上游模型：{{ rule.modelDisplayName || rule.upstreamModelName }} · 站点实例：{{ rule.siteModelName }}</div>
                   </div>
                   <NButton size="small" secondary class="availability-trigger" :disabled="!canEdit" @click="toggleAvailabilityEditor(rule)">时间规则</NButton>
                   <div class="route-actions">
@@ -489,31 +504,36 @@ onMounted(() => {
                     </NPopconfirm>
                   </div>
                   <div :class="['availability-popover', { open: isAvailabilityOpen(rule) }]">
+                    <!-- 编辑只改草稿（availabilityDraft），点「确定」才写回规则并保存，点「取消」丢弃 -->
                     <NSelect
-                      :value="rule.availabilityMode"
+                      :value="availabilityDraft?.mode"
                       :options="availabilityOptions"
                       size="small"
                       :disabled="!canEdit"
                       class="availability-select"
-                      @update:value="(value: RouteAvailabilityMode) => handleAvailabilityChange(rule, index, value)"
+                      @update:value="(value: RouteAvailabilityMode) => handleAvailabilityChange(value)"
                     />
-                    <span v-show="rule.availabilityMode !== 'AllDay'" class="time-range-fields">
+                    <span v-show="availabilityDraft?.mode && availabilityDraft.mode !== 'AllDay'" class="time-range-fields">
                       <NTimePicker
-                        :value="timeToTimestamp(getRanges(rule)[0]?.start ?? '00:00')"
+                        :value="timeToTimestamp(availabilityDraft?.ranges[0]?.start ?? '00:00')"
                         format="HH:mm"
                         size="small"
                         :disabled="!canEdit"
-                        @update:value="(value: number | null) => { if (value !== null) { getRanges(rule)[0].start = timestampToTime(value); rule.timeRangesJson = serializeTimeRanges([getRanges(rule)[0]]); saveAfterChange() } }"
+                        @update:value="(value: number | null) => { if (value !== null && availabilityDraft) availabilityDraft.ranges[0].start = timestampToTime(value) }"
                       />
                       <span>至</span>
                       <NTimePicker
-                        :value="timeToTimestamp(getRanges(rule)[0]?.end ?? '23:59')"
+                        :value="timeToTimestamp(availabilityDraft?.ranges[0]?.end ?? '23:59')"
                         format="HH:mm"
                         size="small"
                         :disabled="!canEdit"
-                        @update:value="(value: number | null) => { if (value !== null) { getRanges(rule)[0].end = timestampToTime(value); rule.timeRangesJson = serializeTimeRanges([getRanges(rule)[0]]); saveAfterChange() } }"
+                        @update:value="(value: number | null) => { if (value !== null && availabilityDraft) availabilityDraft.ranges[0].end = timestampToTime(value) }"
                       />
                     </span>
+                    <div class="availability-actions">
+                      <NButton size="tiny" secondary :disabled="!canEdit" @click="cancelAvailability">取消</NButton>
+                      <NButton size="tiny" type="primary" :disabled="!canEdit" @click="confirmAvailability">确定</NButton>
+                    </div>
                     <span class="availability-hint">留空或无效配置会按全天可用处理</span>
                   </div>
                 </div>
@@ -800,6 +820,13 @@ onMounted(() => {
   border-radius: 8px;
   background: var(--bg-page);
   cursor: default;
+}
+
+.availability-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
 }
 
 .availability-popover.open {

@@ -146,6 +146,10 @@ public sealed class RouteRuleListItem
     /// </summary>
     public string UpstreamModelName { get; set; } = string.Empty;
     /// <summary>
+    /// 上游模型的显示名称（按 UpstreamModelName 匹配模型库取 DisplayName，供展示层优先显示对外名）。
+    /// </summary>
+    public string ModelDisplayName { get; set; } = string.Empty;
+    /// <summary>
     /// 站点模型名称。
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;

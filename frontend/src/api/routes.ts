@@ -35,6 +35,7 @@ export interface RouteRuleItem {
   siteName: string
   siteEnabled: boolean
   upstreamModelName: string
+  modelDisplayName?: string | null
   siteModelName: string
   priority: number
   modelPriority: number

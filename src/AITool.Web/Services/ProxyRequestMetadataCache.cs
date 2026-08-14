@@ -730,11 +730,16 @@ public sealed class ProxyRequestMetadataCache
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     // 查询全部站点（含禁用），以便在管理页面展示真实站点名和启用状态。
                     var siteRows = await dbContext.Sites
-                        
+
                         .Select(s => new { s.Id, s.Name, s.IsEnabled })
                         .ToListAsync(cancellationToken);
                     var sites = siteRows.ToDictionary(s => s.Id, s => s.Name);
                     var siteEnabledMap = siteRows.ToDictionary(s => s.Id, s => s.IsEnabled);
+                    // 上游模型名匹配模型库 ModelName 时回填显示名称，供候选队列展示对外名（未匹配时前端回退原名）。
+                    var displayNameByModel = (await dbContext.ModelLibraryItems
+                            .Select(m => new { m.ModelName, m.DisplayName })
+                            .ToListAsync(cancellationToken))
+                        .ToDictionary(x => x.ModelName, x => x.DisplayName, StringComparer.Ordinal);
                     var rules = await dbContext.ProxyRouteRules
                         
                         .OrderBy(r => r.Priority)
@@ -765,6 +770,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteName = sites.TryGetValue(r.SiteId, out var siteName) ? siteName : "(已删除站点)",
                                 SiteEnabled = siteEnabledMap.TryGetValue(r.SiteId, out var enabled) && enabled,
                                 UpstreamModelName = r.UpstreamModelName,
+                                ModelDisplayName = displayNameByModel.GetValueOrDefault(r.UpstreamModelName) ?? string.Empty,
                                 SiteModelName = r.SiteModelName,
                                 Priority = r.Priority,
                                 ModelPriority = r.ModelPriority,
@@ -1132,8 +1138,9 @@ public sealed class ProxyRequestMetadataCache
         _memoryCache.Remove(ChatTargetsCacheKey);
         _memoryCache.Remove(FallbackMappingsCacheKey);
         _memoryCache.Remove(EnabledModelsCacheKey);
-        // 路由入口列表回填了模型显示名称，模型变更（含显示名称编辑）时一并失效。
+        // 路由入口列表与候选规则都回填了模型显示名称，模型变更（含显示名称编辑）时一并失效。
         _memoryCache.Remove(RouteEntriesCacheKey);
+        _memoryCache.Remove(RouteRulesByEntryCacheKey);
     }
 
     /// <summary>
