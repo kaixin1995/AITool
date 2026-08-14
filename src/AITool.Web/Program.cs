@@ -273,6 +273,9 @@ builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();
 // 注册系统运行时设置服务，统一管理持久化的超时、重试和日志保留配置。
 builder.Services.AddScoped<ISystemRuntimeSettingsService, SystemRuntimeSettingsService>();
 
+// 注册 SQL 迁移脚本执行器（调试工具页 SQL 迁移 Tab）：只执行服务器 sql-migrations 目录下已放置的 .sql 文件。
+builder.Services.AddScoped<SqlMigrationRunnerService>();
+
 // 注册 Hangfire 检测调度器。
 builder.Services.AddSingleton<HangfireDetectionScheduler>();
 builder.Services.AddSingleton<AnalyticsBackgroundQueryExecutor>();

@@ -98,6 +98,7 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<ModelHealthMonitor> ModelHealthMonitors => _client.Queryable<ModelHealthMonitor>();
     public ISugarQueryable<SystemRuntimeSettings> SystemRuntimeSettings => _client.Queryable<SystemRuntimeSettings>();
     public ISugarQueryable<CompatibilityProfile> CompatibilityProfiles => _client.Queryable<CompatibilityProfile>();
+    public ISugarQueryable<SqlMigrationExecution> SqlMigrationExecutions => _client.Queryable<SqlMigrationExecution>();
 
     /// <summary>
     /// 由 DI 注入的 SqlSugar 客户端构造。
@@ -243,6 +244,7 @@ public static class SqlSugarSetup
             typeof(ModelHealthMonitor),
             typeof(SystemRuntimeSettings),
             typeof(CompatibilityProfile),
+            typeof(SqlMigrationExecution),
             typeof(AITool.Domain.Auth.RefreshTokenRecord));
 
         // 一次性数据迁移：把老站点的 Site.ApiKey 复制成一条默认 SiteKey，保证老站点立即具备多 Key 能力。
