@@ -325,14 +325,15 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             }
             else
             {
-                // 候选已不存在（路由/Key 被删除），仍展示熔断状态以便手动解除。
+                // 候选已不存在（站点/模型被移除或未进任何路由），熔断状态按"站点+模型"全局共享，
+                // 仍展示状态以便手动解除；用熔断时记录的归属元数据兜底显示站点/模型名，而非"(候选已移除)"。
                 result.Add(new
                 {
                     routeId = Guid.Empty,
                     circuitKey,
-                    entryName = "(候选已移除)",
+                    entryName = state.Meta?.SiteModelName ?? "(候选已移除)",
                     upstreamModelName = string.Empty,
-                    siteName = string.Empty,
+                    siteName = state.Meta?.SiteName ?? string.Empty,
                     siteKeyId = (Guid?)null,
                     isBlocked = state.IsBlocked,
                     failureCount = state.FailureCount,

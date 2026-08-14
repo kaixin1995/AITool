@@ -933,13 +933,13 @@ public sealed partial class OpenAiProxyController
 
     /// <summary>
     /// 安全地累计路由失败状态。
-    /// 参数为熔断身份键（多 Key 展开后用合成键，区分同一路由的不同 Key）。
+    /// 参数为熔断身份键（站点+Key+模型维度）；meta 携带站点/模型归属，供面板在候选移除后展示。
     /// </summary>
-    private void SafeBlockRoute(Guid circuitKey)
+    private void SafeBlockRoute(Guid circuitKey, CircuitRouteMeta? meta = null)
     {
         try
         {
-            _circuitStore.Block(circuitKey);
+            _circuitStore.Block(circuitKey, meta);
         }
         catch (Exception ex)
         {

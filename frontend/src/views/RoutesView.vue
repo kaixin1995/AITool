@@ -403,7 +403,7 @@ onMounted(() => {
             :class="{ active: entry.entryName === selectedEntryName }"
             @click="changeEntry(entry.entryName)"
           >
-            <span class="entry-name">{{ entry.entryName }}</span>
+            <span class="entry-name">{{ entry.displayName || entry.entryName }}</span>
             <span class="entry-count">{{ entry.candidateCount }} 个候选</span>
           </button>
         </div>
@@ -414,7 +414,7 @@ onMounted(() => {
           <div>
             <h5 class="route-panel-title">候选实例队列</h5>
             <div class="route-panel-subtitle">
-              <template v-if="selectedEntry">当前主入口：{{ selectedEntry.entryName }}</template>
+              <template v-if="selectedEntry">当前主入口：{{ selectedEntry.displayName || selectedEntry.entryName }}</template>
               <template v-else>请选择或创建一个主入口</template>
             </div>
           </div>

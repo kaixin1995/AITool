@@ -380,8 +380,8 @@ onMounted(loadModels)
             <article v-for="model in group.models" :key="model.id" class="model-card">
               <div class="model-card-top">
                 <div class="model-card-title">
-                  <div class="model-card-name">{{ model.modelName }}</div>
-                  <div class="model-card-display">{{ model.displayName || model.modelName }}</div>
+                  <!-- 主标题优先显示名称（未填时回退模型名称）；各站点实际调用名在编辑弹窗的站点映射里查看 -->
+                  <div class="model-card-name">{{ model.displayName || model.modelName }}</div>
                 </div>
                 <NTag size="small" :type="modelStatusType(model)" :bordered="false">
                   {{ model.isEnabled ? '启用' : '禁用' }}
@@ -857,13 +857,6 @@ onMounted(loadModels)
   font-size: 16px;
   font-weight: 700;
   line-height: 1.4;
-  word-break: break-word;
-}
-
-.model-card-display {
-  margin-top: 4px;
-  color: var(--text-color-secondary);
-  font-size: 13px;
   word-break: break-word;
 }
 

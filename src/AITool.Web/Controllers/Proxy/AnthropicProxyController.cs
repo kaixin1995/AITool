@@ -344,7 +344,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 });
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
 
-                SafeBlockRoute(route.CircuitKey);
+                SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
                 {
@@ -410,7 +410,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 {
                     result.Success = false;
                     result.ErrorMessage ??= "upstream response protocol conversion failed";
-                    SafeBlockRoute(route.CircuitKey);
+                    SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
                     lastResult = result;
                     if (!canFallback)
                     {
@@ -1215,11 +1215,11 @@ public sealed class AnthropicProxyController : ControllerBase
     /// <summary>
     /// 安全地累计路由失败状态。
     /// </summary>
-    private void SafeBlockRoute(Guid routeId)
+    private void SafeBlockRoute(Guid routeId, CircuitRouteMeta? meta = null)
     {
         try
         {
-            _circuitStore.Block(routeId);
+            _circuitStore.Block(routeId, meta);
         }
         catch (Exception ex)
         {

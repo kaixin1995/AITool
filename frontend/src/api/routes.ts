@@ -19,6 +19,7 @@ export const routeAvailabilityOptions: Array<{
 
 export interface RouteEntry {
   entryName: string
+  displayName?: string | null
   candidateCount: number
 }
 export interface SiteInstanceItem {

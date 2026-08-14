@@ -377,7 +377,7 @@ public sealed class ProxyRequestMetadataCache
                                 ModelDisplayName = model.DisplayName,
                                 SiteId = site.Id,
                                 SiteKeyId = candidate.SiteKeyId,
-                                CircuitKey = BuildCircuitKey(mapping.Id, candidate.SiteKeyId),
+                                CircuitKey = BuildCircuitKey(site.Id, candidate.SiteKeyId, mapping.RemoteModelName),
                                 SiteName = site.Name,
                                 ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic, site.SupportsResponses, site.ProtocolType),
                                 BaseUrl = site.BaseUrl,
@@ -516,13 +516,22 @@ public sealed class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
 
                     var countsByName = candidateCounts.ToDictionary(x => x.EntryName, x => x.CandidateCount, StringComparer.Ordinal);
-                    return storedEntries
+                    var entryNames = storedEntries
                         .Concat(candidateCounts.Select(x => x.EntryName))
                         .Distinct(StringComparer.Ordinal)
                         .OrderBy(x => x, StringComparer.Ordinal)
+                        .ToList();
+                    // 入口名匹配模型库 ModelName 时回填显示名称，供展示层优先显示（未匹配时为空，前端回退入口名）。
+                    var displayNameByEntry = (await dbContext.ModelLibraryItems
+                            .Where(m => entryNames.Contains(m.ModelName))
+                            .Select(m => new { m.ModelName, m.DisplayName })
+                            .ToListAsync(cancellationToken))
+                        .ToDictionary(x => x.ModelName, x => x.DisplayName, StringComparer.Ordinal);
+                    return entryNames
                         .Select(entryName => new RouteEntryListItem
                         {
                             EntryName = entryName,
+                            DisplayName = displayNameByEntry.GetValueOrDefault(entryName),
                             CandidateCount = countsByName.GetValueOrDefault(entryName, 0)
                         })
                         .ToList();
@@ -1123,6 +1132,8 @@ public sealed class ProxyRequestMetadataCache
         _memoryCache.Remove(ChatTargetsCacheKey);
         _memoryCache.Remove(FallbackMappingsCacheKey);
         _memoryCache.Remove(EnabledModelsCacheKey);
+        // 路由入口列表回填了模型显示名称，模型变更（含显示名称编辑）时一并失效。
+        _memoryCache.Remove(RouteEntriesCacheKey);
     }
 
     /// <summary>
@@ -1216,7 +1227,7 @@ public sealed class ProxyRequestMetadataCache
                                 RouteId = route.Id,
                                 SiteId = site.Id,
                                 SiteKeyId = candidate.SiteKeyId,
-                                CircuitKey = BuildCircuitKey(route.Id, candidate.SiteKeyId),
+                                CircuitKey = BuildCircuitKey(site.Id, candidate.SiteKeyId, route.SiteModelName),
                                 SiteName = site.Name,
                                 ManagedSource = site.ManagedSource ?? string.Empty,
                                 ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(site.SupportsOpenAi, site.SupportsAnthropic, site.SupportsResponses, site.ProtocolType),
@@ -1345,7 +1356,7 @@ public sealed class ProxyRequestMetadataCache
                                 ModelName = first.ModelName,
                                 SiteId = first.SiteId,
                                 SiteKeyId = candidate.SiteKeyId,
-                                CircuitKey = BuildCircuitKey(first.MappingId, candidate.SiteKeyId),
+                                CircuitKey = BuildCircuitKey(first.SiteId, candidate.SiteKeyId, first.SiteModelName),
                                 SiteName = first.SiteName,
                                 ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(first.SupportsOpenAi, first.SupportsAnthropic, first.SupportsResponses, first.ProtocolType),
                                 BaseUrl = first.BaseUrl,
@@ -1484,22 +1495,27 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
-    /// 合成熔断/并发身份键。多 Key 候选用确定性派生的 Guid，保证同一 (RouteId, SiteKeyId) 组合
-    /// 始终映射到相同的合成键——这样某个 Key 连续失败只熔断它自己，不误伤同站点其他 Key。
-    /// SiteKey 为 null 的兼容候选用 RouteId 本身。
+    /// 合成熔断身份键：按 (SiteId, SiteKeyId, SiteModelName) 维度确定性派生。
+    /// 熔断状态是"该站点该模型"的全局共享状态，不区分路由规则——路由规则的增删/排序
+    /// （保存时规则 Id 会重建）不影响熔断键，同一站点同一模型出现在多个路由时共享熔断。
+    /// SiteKeyId 维度保留：同一站点不同 Key（账号/凭证）各自熔断，不互相误伤。
     /// </summary>
-    internal static Guid BuildCircuitKey(Guid routeId, Guid? siteKeyId)
+    internal static Guid BuildCircuitKey(Guid siteId, Guid? siteKeyId, string siteModelName)
     {
-        if (siteKeyId is null)
+        // 确定性派生：SiteId + SiteKeyId + 模型名的字节拼接后做 SHA256，取前 16 字节为 Guid。
+        // 合成键稳定且与真实 Guid 空间冲突概率可忽略（不同组合必然不同键）。
+        var modelNameBytes = System.Text.Encoding.UTF8.GetBytes(siteModelName ?? string.Empty);
+        Span<byte> buffer = stackalloc byte[32 + modelNameBytes.Length];
+        siteId.TryWriteBytes(buffer[..16]);
+        if (siteKeyId is not null)
         {
-            return routeId;
+            siteKeyId.Value.TryWriteBytes(buffer[16..32]);
         }
-
-        // 确定性派生：把 RouteId 和 SiteKeyId 的字节拼接后做 SHA256，取前 16 字节为 Guid。
-        // 这样合成键稳定且与真实 RouteRule.Id 空间冲突概率可忽略（不同 RouteId 必然不同键）。
-        Span<byte> buffer = stackalloc byte[32];
-        routeId.TryWriteBytes(buffer[..16]);
-        siteKeyId.Value.TryWriteBytes(buffer[16..]);
+        else
+        {
+            buffer[16..32].Clear();
+        }
+        modelNameBytes.CopyTo(buffer[32..]);
         Span<byte> hash = stackalloc byte[32];
         SHA256.HashData(buffer, hash);
         return new Guid(hash[..16]);

@@ -524,7 +524,7 @@ public sealed class ChatApiController : ControllerBase
                     return Ok(BuildSuccessResult(requestId, payload.Content, payload.ReasoningContent, request.EnableReasoning, false, forwardResult, attempts, sw.ElapsedMilliseconds));
                 }
 
-                _circuitStore.Block(route.CircuitKey);
+                _circuitStore.Block(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             }
 
             sw.Stop();
@@ -719,7 +719,7 @@ public sealed class ChatApiController : ControllerBase
                 return;
             }
 
-            _circuitStore.Block(route.CircuitKey);
+            _circuitStore.Block(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             if (streamResult.HadAnyContent)
             {
                 await WriteSseEventAsync("error", new { message = streamResult.ErrorMessage }, cancellationToken);

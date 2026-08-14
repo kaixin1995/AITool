@@ -43,6 +43,10 @@ public sealed class RouteEntryListItem
     /// </summary>
     public string EntryName { get; set; } = string.Empty;
     /// <summary>
+    /// 模型显示名称（入口名匹配模型库 ModelName 时回填，供展示层优先显示；否则为空）。
+    /// </summary>
+    public string? DisplayName { get; set; }
+    /// <summary>
     /// 候选实例数量。
     /// </summary>
     public int CandidateCount { get; set; }
@@ -552,7 +556,7 @@ public sealed class RouteRulesApiController : ControllerBase
                     RouteId = rule.Id,
                     SiteId = site.Id,
                     SiteKeyId = candidate.SiteKeyId,
-                    CircuitKey = ProxyRequestMetadataCache.BuildCircuitKey(rule.Id, candidate.SiteKeyId),
+                    CircuitKey = ProxyRequestMetadataCache.BuildCircuitKey(site.Id, candidate.SiteKeyId, rule.SiteModelName),
                     SiteName = site.Name,
                     ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(
                         site.SupportsOpenAi,

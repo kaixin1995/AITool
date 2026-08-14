@@ -25,6 +25,10 @@ public sealed class RouteCircuitStateStore
     /// 被熔断的路由及其解除时间
     /// </summary>
     private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, DateTimeOffset> _blockedRoutes = [];
+    /// <summary>
+    /// 熔断键对应的站点/模型归属（面板在候选移除后仍能展示其归属；成功/解除/过期时一并清理）。
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<Guid, CircuitRouteMeta> _routeMeta = [];
 
     /// <summary>
     /// 注入熔断屏蔽时长和连续失败阈值
@@ -48,14 +52,19 @@ public sealed class RouteCircuitStateStore
     }
 
     /// <summary>
-    /// 记录一次失败，连续失败达到阈值时触发熔断
+    /// 记录一次失败，连续失败达到阈值时触发熔断。
+    /// meta 携带站点/模型归属（仅在提供时覆盖旧值），供面板在候选移除后仍能展示归属。
     /// </summary>
-    public void Block(Guid routeId)
+    public void Block(Guid routeId, CircuitRouteMeta? meta = null)
     {
         // 如果已经被熔断，不再重复计数
         if (IsBlocked(routeId)) return;
 
         var count = _failCounts.AddOrUpdate(routeId, 1, (_, current) => current + 1);
+        if (meta is not null)
+        {
+            _routeMeta[routeId] = meta;
+        }
         var failThreshold = Volatile.Read(ref _failThreshold);
         var blockDuration = TimeSpan.FromTicks(Volatile.Read(ref _blockDurationTicks));
 
@@ -71,6 +80,7 @@ public sealed class RouteCircuitStateStore
     public void Succeed(Guid routeId)
     {
         _failCounts.TryRemove(routeId, out _);
+        _routeMeta.TryRemove(routeId, out _);
     }
 
     /// <summary>
@@ -83,6 +93,7 @@ public sealed class RouteCircuitStateStore
             if (until > DateTimeOffset.UtcNow) return true;
             _blockedRoutes.TryRemove(routeId, out _);
             _failCounts.TryRemove(routeId, out _);
+            _routeMeta.TryRemove(routeId, out _);
         }
         return false;
     }
@@ -102,6 +113,7 @@ public sealed class RouteCircuitStateStore
             {
                 _blockedRoutes.TryRemove(pair.Key, out _);
                 _failCounts.TryRemove(pair.Key, out _);
+                _routeMeta.TryRemove(pair.Key, out _);
             }
         }
 
@@ -113,7 +125,8 @@ public sealed class RouteCircuitStateStore
                 IsBlocked: true,
                 FailureCount: failCount,
                 BlockedUntil: pair.Value,
-                RemainingTime: pair.Value > now ? pair.Value - now : TimeSpan.Zero);
+                RemainingTime: pair.Value > now ? pair.Value - now : TimeSpan.Zero,
+                Meta: _routeMeta.GetValueOrDefault(pair.Key));
         }
 
         // 收集正在累计失败但尚未熔断的路由
@@ -125,20 +138,22 @@ public sealed class RouteCircuitStateStore
                 IsBlocked: false,
                 FailureCount: pair.Value,
                 BlockedUntil: null,
-                RemainingTime: null);
+                RemainingTime: null,
+                Meta: _routeMeta.GetValueOrDefault(pair.Key));
         }
 
         return result;
     }
 
     /// <summary>
-    /// 手动解除指定路由的熔断状态（同时清除失败计数）。
+    /// 手动解除指定路由的熔断状态（同时清除失败计数与归属元数据）。
     /// </summary>
     public bool Reset(Guid routeId)
     {
         var removed = false;
         removed |= _blockedRoutes.TryRemove(routeId, out _);
         removed |= _failCounts.TryRemove(routeId, out _);
+        removed |= _routeMeta.TryRemove(routeId, out _);
         return removed;
     }
 
@@ -161,4 +176,10 @@ public sealed record CircuitRouteInfo(
     bool IsBlocked,
     int FailureCount,
     DateTimeOffset? BlockedUntil,
-    TimeSpan? RemainingTime);
+    TimeSpan? RemainingTime,
+    CircuitRouteMeta? Meta = null);
+
+/// <summary>
+/// 熔断键对应的站点/模型归属，供面板在候选移除后仍能展示归属。
+/// </summary>
+public sealed record CircuitRouteMeta(string SiteName, string SiteModelName);

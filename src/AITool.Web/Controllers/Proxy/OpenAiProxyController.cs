@@ -702,7 +702,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     TotalDurationMs = streamResult.TotalDurationMs
                 });
                 SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
-                SafeBlockRoute(route.CircuitKey);
+                SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
                 {
@@ -764,7 +764,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                         && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
                     result.Success = false;
                     result.ErrorMessage ??= "upstream response protocol conversion failed";
-                    SafeBlockRoute(route.CircuitKey);
+                    SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
                     lastResult = result;
                     if (conversionCanFallback)
                     {
