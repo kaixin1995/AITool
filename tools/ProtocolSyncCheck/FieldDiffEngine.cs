@@ -144,9 +144,6 @@ internal static class FieldDiffEngine
 }
 
 /// <summary>
-/// 一个协议接口对应的动态字段分组。
-/// </summary>
-/// <summary>
 /// 参考项目动态 JSON 处理逻辑中检测到的字段。
 /// </summary>
 internal sealed record ProtocolField(
@@ -155,14 +152,24 @@ internal sealed record ProtocolField(
     string JsonName,
     bool Optional);
 
+/// <summary>
+/// 一个协议接口对应的动态字段分组。
+/// </summary>
 internal sealed class ProtocolStructGroup(
     string label,
     string description,
+    string[] routeKeys,
     List<string> structNames,
     List<ProtocolField> fields)
 {
     public string Label { get; } = label;
     public string Description { get; } = description;
+
+    /// <summary>
+    /// 该分组关联的协议接口键（Protocol:Method Path），用于接口状态表。
+    /// </summary>
+    public IReadOnlyList<string> RouteKeys { get; } = routeKeys;
+
     public List<string> StructNames { get; } = structNames;
     public List<ProtocolField> Fields { get; } = fields;
 }
