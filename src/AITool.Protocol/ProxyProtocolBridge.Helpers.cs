@@ -47,11 +47,25 @@ public static partial class ProxyProtocolBridge
                     break;
                 case "thinking":
                     // 提取思维链文本（thinking 字段，兼容 text/content 写法），由调用方决定是否保留。
-                    var thinking = blockObj["thinking"]?.GetValue<string>();
-                    if (string.IsNullOrWhiteSpace(thinking))
-                        thinking = blockObj["text"]?.GetValue<string>() ?? blockObj["content"]?.GetValue<string>();
-                    if (!string.IsNullOrWhiteSpace(thinking))
+                    // 字段可能是数组/对象（非标准客户端），非字符串时跳过，避免 GetValue<string> 抛异常。
+                    if (blockObj["thinking"] is JsonValue thinkingVal
+                        && thinkingVal.TryGetValue<string>(out var thinking)
+                        && !string.IsNullOrWhiteSpace(thinking))
+                    {
                         reasoningText = string.Concat(reasoningText, thinking);
+                    }
+                    else if (blockObj["text"] is JsonValue textVal
+                        && textVal.TryGetValue<string>(out var thinkingText)
+                        && !string.IsNullOrWhiteSpace(thinkingText))
+                    {
+                        reasoningText = string.Concat(reasoningText, thinkingText);
+                    }
+                    else if (blockObj["content"] is JsonValue contentVal
+                        && contentVal.TryGetValue<string>(out var thinkingContent)
+                        && !string.IsNullOrWhiteSpace(thinkingContent))
+                    {
+                        reasoningText = string.Concat(reasoningText, thinkingContent);
+                    }
                     break;
                 case "tool_use":
                     toolUseBlocks.Add(new JsonObject

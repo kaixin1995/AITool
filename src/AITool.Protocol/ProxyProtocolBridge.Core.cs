@@ -158,8 +158,15 @@ public static partial class ProxyProtocolBridge
 
             // keep_reasoning 规则：deepseek 等上游在 thinking 模式 + 工具调用时要求回传 reasoning_content，
             // 仅在 Anthropic→OpenAI/Responses 转换时生效。规则在转换前检查，避免转换后 thinking 已丢失。
+            // 按 scope 过滤（仅 all/bridge 生效），与 ApplyCompatibilityProfile 的筛选语义一致：此分支为跨协议
+            // 转换（isPassthrough 恒为 false），scope=passthrough 的规则不应在这里生效。
             var keepReasoning = compatibilityRules is { Count: > 0 }
-                && compatibilityRules.Any(r => string.Equals((r.Op ?? "").Trim(), "keep_reasoning", StringComparison.OrdinalIgnoreCase));
+                && compatibilityRules.Any(r =>
+                {
+                    var ruleScope = (r.Scope ?? "all").Trim().ToLowerInvariant();
+                    return string.Equals((r.Op ?? "").Trim(), "keep_reasoning", StringComparison.OrdinalIgnoreCase)
+                        && (ruleScope == "all" || ruleScope == "bridge");
+                });
 
             if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
                 && string.Equals(targetProtocol, "Responses", StringComparison.OrdinalIgnoreCase))

@@ -445,4 +445,63 @@ public sealed class ProxyProtocolBridgeThinkingTests
         assistant["content"]?.GetValue<string>().Should().Be("我来查一下天气");
         assistant["tool_calls"]?.Should().NotBeNull("tool_use 仍应保留");
     }
+
+    /// <summary>
+    /// thinking block 的 thinking 字段若是非字符串（数组/数字等非标准写法），
+    /// 应安全跳过而不抛异常，转换仍正常完成。
+    /// </summary>
+    [Fact]
+    public void Anthropic_thinking_block_with_non_string_thinking_does_not_throw()
+    {
+        var body = new JsonObject
+        {
+            ["model"] = "auto",
+            ["max_tokens"] = 1024,
+            ["messages"] = new JsonArray
+            {
+                new JsonObject { ["role"] = "user", ["content"] = "查天气" },
+                new JsonObject
+                {
+                    ["role"] = "assistant",
+                    ["content"] = new JsonArray
+                    {
+                        // 非字符串 thinking（异常防御场景），不应导致 GetValue<string> 抛异常
+                        new JsonObject { ["type"] = "thinking", ["thinking"] = new JsonArray { "a", "b" } },
+                        new JsonObject { ["type"] = "text", ["text"] = "我来查一下天气" }
+                    }
+                }
+            }
+        }.ToJsonString();
+
+        var prepared = ProxyProtocolBridge.PrepareRequestBody(
+            "Anthropic", "OpenAI", body, "deepseek-v4-flash", enableStreaming: false,
+            compatibilityRules: new[] { new CompatibilityRule { Op = "keep_reasoning" } });
+
+        var openAi = JsonNode.Parse(prepared) as JsonObject
+            ?? throw new InvalidOperationException("转换结果不是合法 JSON 对象");
+
+        var assistant = openAi["messages"]![1]!.AsObject();
+        assistant["reasoning_content"]?.Should().BeNull("非字符串 thinking 应跳过而不是保留");
+        assistant["content"]?.GetValue<string>().Should().Be("我来查一下天气");
+    }
+
+    /// <summary>
+    /// keep_reasoning 规则配置为 scope=passthrough 时，跨协议转换（bridge）不应生效，
+    /// 与 ApplyCompatibilityProfile 的 scope 筛选语义一致。
+    /// </summary>
+    [Fact]
+    public void Anthropic_keep_reasoning_rule_with_passthrough_scope_not_applied_in_bridge()
+    {
+        var body = BuildAnthropicRequestBodyWithThinkingAssistant();
+
+        var prepared = ProxyProtocolBridge.PrepareRequestBody(
+            "Anthropic", "OpenAI", body, "deepseek-v4-flash", enableStreaming: false,
+            compatibilityRules: new[] { new CompatibilityRule { Op = "keep_reasoning", Scope = "passthrough" } });
+
+        var openAi = JsonNode.Parse(prepared) as JsonObject
+            ?? throw new InvalidOperationException("转换结果不是合法 JSON 对象");
+
+        var assistant = openAi["messages"]![1]!.AsObject();
+        assistant["reasoning_content"]?.Should().BeNull("scope=passthrough 的规则在 bridge 转换时不生效");
+    }
 }
