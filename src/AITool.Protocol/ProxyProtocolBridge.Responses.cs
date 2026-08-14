@@ -1476,11 +1476,13 @@ public static partial class ProxyProtocolBridge
 
             var promptTokens = inputTokens;
             var completionTokens = outputTokens;
+            var inputTokensFromUsage = false;
             if (root.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
             {
                 if (usageEl.TryGetProperty("input_tokens", out var inputEl) && inputEl.ValueKind == JsonValueKind.Number)
                 {
                     promptTokens = inputEl.GetInt32();
+                    inputTokensFromUsage = true;
                 }
 
                 if (usageEl.TryGetProperty("output_tokens", out var usageOutputTokensEl) && usageOutputTokensEl.ValueKind == JsonValueKind.Number)
@@ -1495,6 +1497,13 @@ public static partial class ProxyProtocolBridge
                 {
                     cachedTokens = cachedEl.GetInt32();
                 }
+            }
+
+            // OpenAI 协议的 prompt_tokens 含缓存命中部分。响应体未提供 input_tokens 时，
+            // 传入参数是不含缓存的新输入，必须还原为 新输入+缓存 再输出，避免客户端计费低估。
+            if (!inputTokensFromUsage)
+            {
+                promptTokens = promptTokens + cachedTokens;
             }
 
             if (toolCalls.Count == 0 && string.IsNullOrWhiteSpace(contentText) && string.IsNullOrWhiteSpace(reasoningText))
@@ -2100,11 +2109,13 @@ public static partial class ProxyProtocolBridge
                         }
                     }
 
+                    var inputTokensFromUsage = false;
                     if (completedResponse.TryGetProperty("usage", out var usageEl) && usageEl.ValueKind == JsonValueKind.Object)
                     {
                         if (usageEl.TryGetProperty("input_tokens", out var inputEl) && inputEl.ValueKind == JsonValueKind.Number)
                         {
                             state.InputTokens = inputEl.GetInt32();
+                            inputTokensFromUsage = true;
                         }
 
                         if (usageEl.TryGetProperty("output_tokens", out var outputEl) && outputEl.ValueKind == JsonValueKind.Number)
@@ -2123,16 +2134,20 @@ public static partial class ProxyProtocolBridge
 
                     finishReason = toolCalls.Count > 0 ? "tool_calls" : "stop";
                     state.Completed = true;
+                    // OpenAI 协议的 prompt_tokens 含缓存命中部分。completed 未提供 input_tokens 时，
+                    // state.InputTokens 是调用方 seeding 的"不含缓存的新输入"，必须还原为 新输入+缓存
+                    // 再输出，否则客户端侧按 prompt_tokens 计费会低估。
+                    var promptTokens = inputTokensFromUsage ? state.InputTokens : state.InputTokens + state.CachedTokens;
                     builder.Append(BuildChatCompletionChunk(state.Model, new JsonObject(), finishReason, new JsonObject
                     {
-                        ["prompt_tokens"] = state.InputTokens,
+                        ["prompt_tokens"] = promptTokens,
                         ["prompt_tokens_details"] = new JsonObject
                         {
                             ["cached_tokens"] = state.CachedTokens,
                             ["cached_creation_tokens"] = 0
                         },
                         ["completion_tokens"] = state.OutputTokens,
-                        ["total_tokens"] = state.InputTokens + state.OutputTokens
+                        ["total_tokens"] = promptTokens + state.OutputTokens
                     }));
                     builder.Append("data: [DONE]\n\n");
                 }

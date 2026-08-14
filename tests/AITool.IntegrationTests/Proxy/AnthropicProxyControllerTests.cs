@@ -190,6 +190,58 @@ public sealed class AnthropicProxyControllerTests
     }
 
     /// <summary>
+    /// 验证 message_delta 重复携带累计 usage（兼容 newapi 类中间层）时缓存不重复累加。
+    /// </summary>
+    [Fact]
+    public async Task Post_messages_stream_delta_with_cumulative_usage_does_not_double_count_cached_tokens()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            AnthropicStreamingLines =
+            [
+                "event: message_start",
+                "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":80,\"output_tokens\":0},\"content\":[]}}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}",
+                string.Empty,
+                // 中间层在 message_delta 里重复携带累计 usage（input_tokens + cache_read_input_tokens 均为累计值）。
+                "event: message_delta",
+                "data: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":100,\"cache_read_input_tokens\":80,\"output_tokens\":1},\"delta\":{\"stop_reason\":\"end_turn\"}}",
+                string.Empty,
+                "event: message_stop",
+                "data: {\"type\":\"message_stop\"}",
+                string.Empty
+            ]
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "Anthropic");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+        request.Headers.Add("anthropic-version", "2023-06-01");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.OrderBy(x => x.AttemptIndex).ToListAsync();
+
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("success");
+        // 缓存只按累计值记一次：80（而非 start 80 + delta 80 = 160）；新输入 = 100 - 80 = 20。
+        logs[0].InputTokens.Should().Be(20);
+        logs[0].CachedTokens.Should().Be(80);
+        logs[0].OutputTokens.Should().Be(1);
+    }
+
+    /// <summary>
     /// 验证 OpenAI 流式桥接到 Anthropic 时会保留仅包含换行的分片内容。
     /// </summary>
     [Fact]

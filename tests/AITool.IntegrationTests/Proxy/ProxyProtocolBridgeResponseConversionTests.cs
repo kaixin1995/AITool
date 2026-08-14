@@ -133,6 +133,50 @@ public sealed class ProxyProtocolBridgeResponseConversionTests
     }
 
     [Fact]
+    public void Responses_stream_completed_without_usage_restores_cache_inclusive_prompt_tokens()
+    {
+        // 调用方 seeding 的是"不含缓存的新输入"（aba2773 后语义）：输入 7 = 已减缓存 2。
+        var state = new ResponsesToChatStreamState { Model = "test-model", InputTokens = 7, CachedTokens = 2, OutputTokens = 3 };
+        var converted = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"test-model\",\"output\":[]}}\n\n",
+            state);
+
+        // OpenAI 协议 prompt_tokens 含缓存命中部分：缺 usage 时必须还原为 新输入+缓存 = 9。
+        converted.Should().NotBeEmpty(converted);
+        var dataLine = converted
+            .Split('\n')
+            .First(line => line.StartsWith("data: ", StringComparison.Ordinal));
+        using var document = JsonDocument.Parse(dataLine.Substring("data: ".Length));
+        var usage = document.RootElement.GetProperty("usage");
+        usage.GetProperty("prompt_tokens").GetInt32().Should().Be(9);
+        usage.GetProperty("prompt_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(2);
+        usage.GetProperty("completion_tokens").GetInt32().Should().Be(3);
+        usage.GetProperty("total_tokens").GetInt32().Should().Be(12);
+    }
+
+    [Fact]
+    public void Responses_non_streaming_without_usage_restores_cache_inclusive_prompt_tokens()
+    {
+        // 传入参数是不含缓存的新输入：输入 7 = 已减缓存 2。
+        var body = """
+        {
+          "id":"resp-no-usage",
+          "model":"test-model",
+          "created_at":1,
+          "output":[{"type":"message","content":[{"type":"output_text","text":"hi"}]}]
+        }
+        """;
+
+        var converted = ProxyProtocolBridge.ConvertResponsesResponseToChat(body, "test-model", 7, 2, 3);
+        using var document = JsonDocument.Parse(converted);
+        var usage = document.RootElement.GetProperty("usage");
+        usage.GetProperty("prompt_tokens").GetInt32().Should().Be(9);
+        usage.GetProperty("prompt_tokens_details").GetProperty("cached_tokens").GetInt32().Should().Be(2);
+        usage.GetProperty("completion_tokens").GetInt32().Should().Be(3);
+        usage.GetProperty("total_tokens").GetInt32().Should().Be(12);
+    }
+
+    [Fact]
     public void Anthropic_metadata_event_does_not_start_responses_stream()
     {
         var state = new ChatToResponsesStreamState { Model = "test-model" };

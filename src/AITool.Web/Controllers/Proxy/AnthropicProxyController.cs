@@ -1041,7 +1041,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 // 必须减去缓存才是"新输入"，否则缓存会在输入列与缓存列重复统计，总 token 虚高。
                 if (startUsage.TryGetProperty("cache_read_input_tokens", out var startCached) && startCached.ValueKind == JsonValueKind.Number)
                 {
-                    cachedTokens += startCached.GetInt32();
+                    cachedTokens = startCached.GetInt32();
                 }
 
                 if (startUsage.TryGetProperty("cache_creation_input_tokens", out var startCreated) && startCreated.ValueKind == JsonValueKind.Number)
@@ -1066,9 +1066,11 @@ public sealed class AnthropicProxyController : ControllerBase
                         inputTokens = deltaInput.GetInt32();
                     }
 
+                    // usage 字段是累计值（不是增量）：delta 重复携带累计 usage 时用覆盖语义，
+                    // 否则缓存会被重复累加（与 OpenAiProxyController.UpdateAnthropicUsageFromElement 保持一致）。
                     if (deltaUsage.TryGetProperty("cache_read_input_tokens", out var deltaCached) && deltaCached.ValueKind == JsonValueKind.Number)
                     {
-                        cachedTokens += deltaCached.GetInt32();
+                        cachedTokens = deltaCached.GetInt32();
                     }
 
                     if (deltaUsage.TryGetProperty("cache_creation_input_tokens", out var deltaCreated) && deltaCreated.ValueKind == JsonValueKind.Number)
