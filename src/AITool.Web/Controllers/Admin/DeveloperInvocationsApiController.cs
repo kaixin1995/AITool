@@ -169,6 +169,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     /// </summary>
     /// <param name="traceId">追踪 Id。</param>
     /// <param name="summarize">true 时对超长 JSON 字符串做摘要（截断），减少传输量。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
     [HttpGet("{traceId:guid}")]
     public async Task<IActionResult> GetDetail(Guid traceId, [FromQuery] bool summarize = false, CancellationToken cancellationToken = default)
     {

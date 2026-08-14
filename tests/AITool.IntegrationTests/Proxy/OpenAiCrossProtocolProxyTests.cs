@@ -284,7 +284,8 @@ public sealed class OpenAiCrossProtocolProxyTests
         body.Should().Contain("\"reasoning_content\":\"step-1\"");
         body.Should().Contain("\"content\":\"bridged-openai-stream\"");
         body.Should().Contain("\"finish_reason\":\"stop\"");
-        body.Should().Contain("\"prompt_tokens\":8");
+        // 上游 input_tokens=7 已含缓存（cache_read=1），输出 prompt_tokens 还原为 7，不再叠加缓存。
+        body.Should().Contain("\"prompt_tokens\":7");
         body.Should().Contain("\"cached_tokens\":1");
         body.Should().Contain("\"completion_tokens\":8");
         body.Should().Contain("data: [DONE]");
@@ -334,7 +335,8 @@ public sealed class OpenAiCrossProtocolProxyTests
         body.Should().Contain("\"object\":\"text_completion\"");
         body.Should().Contain("\"text\":\"legacy-stream\"");
         body.Should().Contain("\"finish_reason\":\"stop\"");
-        body.Should().Contain("\"prompt_tokens\":8");
+        // 上游 input_tokens=7 已含缓存（cache_read=1），输出 prompt_tokens 还原为 7，不再叠加缓存。
+        body.Should().Contain("\"prompt_tokens\":7");
         body.Should().Contain("data: [DONE]");
         body.Should().NotContain("chat.completion.chunk");
     }

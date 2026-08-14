@@ -71,7 +71,8 @@ public sealed class ProxyForwardServiceRealHttpTests
 
         result.Success.Should().BeTrue("非流式 Responses 上游返回了含 output 的标准 JSON，应判定成功");
         result.ResponseBody.Should().Contain("Hi! How can I help?", "响应体应保留上游原文");
-        result.InputTokens.Should().Be(5, "应从 usage.input_tokens 提取");
+        // 上游 input_tokens=5 已含缓存（cached=1），日志输入统一为不含缓存的新输入。
+        result.InputTokens.Should().Be(4, "应从 usage.input_tokens 提取并减去缓存");
         result.OutputTokens.Should().Be(2, "应从 usage.output_tokens 提取");
         result.CachedTokens.Should().Be(1, "应从 input_tokens_details.cached_tokens 提取");
     }

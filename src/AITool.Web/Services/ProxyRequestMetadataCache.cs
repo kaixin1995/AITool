@@ -21,8 +21,11 @@ public sealed class ProxyRequestMetadataCache
 {
     /// <summary>
     /// 缓存有效时长。
+    /// 所有业务写操作（站点/模型/路由/密钥/兼容规则/运行时设置/Codex 账号等）都有对应的
+    /// Invalidate* 显式失效，TTL 仅作兜底，故从 5s 提高到 30s 以降低管理页面的重复查库压力；
+    /// 显式失效后下一次读取立即重建缓存，配置变更仍即时生效。
     /// </summary>
-    private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan CacheDuration = TimeSpan.FromSeconds(30);
     /// <summary>
     /// 访问密钥缓存键。
     /// </summary>

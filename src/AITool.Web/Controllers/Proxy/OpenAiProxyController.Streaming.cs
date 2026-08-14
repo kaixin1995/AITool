@@ -1065,12 +1065,12 @@ public sealed partial class OpenAiProxyController
             await FlushAnthropicSseBlockAsync(cancellationToken);
         }
 
-        var totalPromptTokens = state.InputTokens + state.CachedTokens + state.CacheCreationTokens;
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
-        result.InputTokens = totalPromptTokens;
-        result.CachedTokens = state.CachedTokens;
+        // 日志统一语义：InputTokens 为不含缓存的新输入，缓存列合并 cache_read + cache_creation。
+        result.InputTokens = state.InputTokens;
+        result.CachedTokens = state.CachedTokens + state.CacheCreationTokens;
         result.OutputTokens = state.OutputTokens;
 
         if (result.Success && !state.ReceivedMessageStop)

@@ -575,7 +575,8 @@ public sealed class ResponsesProxyTests
         logs[0].IsStreaming.Should().BeTrue();
         logs[0].Status.Should().Be("success");
         logs[0].IsFinalResult.Should().BeTrue();
-        logs[0].InputTokens.Should().Be(5);
+        // 上游 input_tokens=5 已含缓存（cached=1），日志输入统一为不含缓存的新输入。
+        logs[0].InputTokens.Should().Be(4);
         logs[0].CachedTokens.Should().Be(1);
         logs[0].OutputTokens.Should().Be(2);
     }
@@ -735,7 +736,8 @@ public sealed class ResponsesProxyTests
         logs.Should().ContainSingle();
         logs[0].IsStreaming.Should().BeTrue();
         logs[0].Status.Should().Be("success");
-        logs[0].InputTokens.Should().Be(6);
+        // 上游 input_tokens=6 已含缓存（cached=1），日志输入统一为不含缓存的新输入。
+        logs[0].InputTokens.Should().Be(5);
         logs[0].CachedTokens.Should().Be(1);
         logs[0].OutputTokens.Should().Be(3);
     }

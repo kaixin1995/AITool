@@ -934,7 +934,8 @@ public sealed class ProxyFallbackFlowTests
         logs.Should().ContainSingle();
         logs[0].Status.Should().Be("success");
         logs[0].IsStreaming.Should().BeTrue();
-        logs[0].InputTokens.Should().Be(4);
+        // 上游 prompt_tokens=4 已含缓存（cached=2），日志输入统一为不含缓存的新输入。
+        logs[0].InputTokens.Should().Be(2);
         logs[0].CachedTokens.Should().Be(2);
         logs[0].OutputTokens.Should().Be(3);
     }

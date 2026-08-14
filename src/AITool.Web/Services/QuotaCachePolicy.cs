@@ -18,9 +18,12 @@ public static class QuotaCachePolicy
     ///       ④无窗口已到重置时间 ⑤距上次刷新未超过 maxCacheHours（TTL 兜底）
     ///       ⑥账号自上次刷新后未被使用（hasRecentUsage=false）。
     /// </summary>
+    /// <param name="existing">已有的额度快照（可为 null）。</param>
     /// <param name="lastRefreshedAt">上次真实刷新时间（来自 CodexAccount.LastQuotaCheckedAt）。</param>
     /// <param name="hasRecentUsage">账号自上次刷新后是否有新调用（查 ProxyUsageLogs 判定）。</param>
     /// <param name="maxCacheHours">额度缓存最大小时数，超过强制真实刷新。</param>
+    /// <param name="nowUtc">当前 UTC 时间。</param>
+    /// <param name="reason">未命中缓存时的原因说明。</param>
     public static bool TryReuseQuota(
         CodexQuotaInfo? existing,
         DateTimeOffset? lastRefreshedAt,

@@ -33,7 +33,8 @@ public sealed class ProxyForwardServiceResponseTests
 
         var usage = ExtractUsageMetricsCore(body, "OpenAI");
 
-        usage.InputTokens.Should().Be(120);
+        // prompt_tokens=120 已含缓存（cached=45），输入统一为不含缓存的新输入。
+        usage.InputTokens.Should().Be(75);
         usage.CachedTokens.Should().Be(45);
         usage.OutputTokens.Should().Be(30);
     }
@@ -45,7 +46,8 @@ public sealed class ProxyForwardServiceResponseTests
 
         var usage = ExtractUsageMetricsCore(body, "OpenAI");
 
-        usage.InputTokens.Should().Be(240);
+        // input_tokens=240 已含缓存（cached=80），输入统一为不含缓存的新输入。
+        usage.InputTokens.Should().Be(160);
         usage.CachedTokens.Should().Be(80);
         usage.OutputTokens.Should().Be(60);
     }

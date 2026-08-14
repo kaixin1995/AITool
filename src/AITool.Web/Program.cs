@@ -467,11 +467,9 @@ if (!app.Environment.IsEnvironment("Testing"))
 
 app.Run();
 
-/// <summary>
-/// 从主程序集元数据读取编译时间戳（csproj 构建时注入的 AssemblyMetadata "BuildTimestamp"）。
-/// 单文件/独立发布下程序集无独立 dll 文件，读取文件时间戳会失效，故用元数据方案。
-/// 找不到或解析失败时返回 null，由调用方回退到当前时间。
-/// </summary>
+// 从主程序集元数据读取编译时间戳（csproj 构建时注入的 AssemblyMetadata "BuildTimestamp"）。
+// 单文件/独立发布下程序集无独立 dll 文件，读取文件时间戳会失效，故用元数据方案。
+// 找不到或解析失败时返回 null，由调用方回退到当前时间。
 static DateTimeOffset? ReadBuildTimestamp()
 {
     var attr = typeof(Program).Assembly
@@ -487,25 +485,19 @@ static DateTimeOffset? ReadBuildTimestamp()
         : null;
 }
 
-/// <summary>
-/// 判断是否为后台接口请求（/api/admin 前缀）。
-/// </summary>
+// 判断是否为后台接口请求（/api/admin 前缀）。
 static bool IsAdminApiRequest(HttpRequest request)
 {
     return request.Path.StartsWithSegments("/api/admin", StringComparison.OrdinalIgnoreCase);
 }
 
-/// <summary>
-/// 判断是否为 Hangfire 请求。
-/// </summary>
+// 判断是否为 Hangfire 请求。
 static bool IsHangfireRequest(HttpRequest request)
 {
     return request.Path.StartsWithSegments("/hangfire", StringComparison.OrdinalIgnoreCase);
 }
 
-/// <summary>
-/// 获取本机 IPv4 地址。
-/// </summary>
+// 获取本机 IPv4 地址。
 static string GetLocalIpAddress()
 {
     try
@@ -520,9 +512,7 @@ static string GetLocalIpAddress()
     }
 }
 
-/// <summary>
-/// 安全读取请求体。
-/// </summary>
+// 安全读取请求体。
 static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, CancellationToken cancellationToken)
 {
     try

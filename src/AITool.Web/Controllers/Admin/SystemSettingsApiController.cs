@@ -104,8 +104,10 @@ public sealed class SystemSettingsApiController : ControllerBase
 
     /// <summary>
     /// 按条件清空使用日志。
-    /// <param name="clearAll">true 表示清空全部；false 表示按 source/时间范围筛选清空。</param>
     /// </summary>
+    /// <param name="clearAll">true 表示清空全部；false 表示按 source/时间范围筛选清空。</param>
+    /// <param name="request">按条件清空的筛选参数（clearAll=false 时生效）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
     [HttpPost("clear-usage-logs")]
     public async Task<IActionResult> ClearUsageLogs([FromQuery] bool clearAll, [FromBody] ClearUsageLogsRequest? request, CancellationToken cancellationToken)
     {

@@ -45,7 +45,7 @@ public sealed class CodexOAuthClient : ICodexOAuthClient
     }
 
     /// <inheritdoc />
-    public string BuildAuthorizeUrl(string state, string verifier)
+    public async Task<string> BuildAuthorizeUrlAsync(string state, string verifier, CancellationToken cancellationToken = default)
     {
         var challenge = GenerateCodeChallenge(verifier);
 
@@ -65,7 +65,7 @@ public sealed class CodexOAuthClient : ICodexOAuthClient
         };
 
         using var content = new FormUrlEncodedContent(parameters);
-        var query = content.ReadAsStringAsync().Result;
+        var query = await content.ReadAsStringAsync(cancellationToken);
         return $"{AuthURL}?{query}";
     }
 

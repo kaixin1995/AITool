@@ -61,11 +61,11 @@ public sealed class CodexApiController : ControllerBase
 
     /// <summary>启动 OAuth 登录，返回授权 URL 与 state。</summary>
     [HttpPost("start-oauth")]
-    public IActionResult StartOAuth([FromBody] StartOAuthRequest? req)
+    public async Task<IActionResult> StartOAuth([FromBody] StartOAuthRequest? req, CancellationToken ct)
     {
         CleanupExpiredSessions();
         var (state, verifier) = _oauth.CreateOAuthSession();
-        var url = _oauth.BuildAuthorizeUrl(state, verifier);
+        var url = await _oauth.BuildAuthorizeUrlAsync(state, verifier, ct);
         Sessions[state] = new OAuthSession(state, verifier, DateTimeOffset.UtcNow.AddMinutes(10));
         return Ok(new { url, state });
     }

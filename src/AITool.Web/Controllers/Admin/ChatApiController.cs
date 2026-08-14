@@ -1448,7 +1448,22 @@ public sealed class ChatApiController : ControllerBase
         {
             if (eventName == "message_start" && root.TryGetProperty("message", out var message) && message.TryGetProperty("usage", out var usage))
             {
-                state.InputTokens = usage.TryGetProperty("input_tokens", out var input) ? input.GetInt32() : state.InputTokens;
+                // Anthropic 的 input_tokens 已含缓存（cache_read + cache_creation 是其子集），
+                // 减去缓存才是"新输入"，缓存单独记入 CachedTokens，避免重复统计。
+                var inputTokens = usage.TryGetProperty("input_tokens", out var input) ? input.GetInt32() : state.InputTokens;
+                var cachedTokens = 0;
+                if (usage.TryGetProperty("cache_read_input_tokens", out var readCache))
+                {
+                    cachedTokens += readCache.GetInt32();
+                }
+
+                if (usage.TryGetProperty("cache_creation_input_tokens", out var createCache))
+                {
+                    cachedTokens += createCache.GetInt32();
+                }
+
+                state.InputTokens = Math.Max(0, inputTokens - cachedTokens);
+                state.CachedTokens = cachedTokens;
                 state.OutputTokens = usage.TryGetProperty("output_tokens", out var output) ? output.GetInt32() : state.OutputTokens;
             }
             else if (eventName == "message_delta" && root.TryGetProperty("usage", out var deltaUsage))
@@ -1700,7 +1715,9 @@ public sealed class ChatApiController : ControllerBase
             cachedTokens = cached.GetInt32();
         }
 
-        return (inputTokens, cachedTokens, outputTokens);
+        // OpenAI 的 prompt_tokens 已含缓存命中部分，返回的输入统一为"不含缓存的新输入"，
+        // 保证 新输入 + 缓存 + 输出 = 总 token 且缓存不重复统计。
+        return (Math.Max(0, inputTokens - cachedTokens), cachedTokens, outputTokens);
     }
 
     /// <summary>

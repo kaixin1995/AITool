@@ -61,7 +61,8 @@ public sealed class ChatRealForwardResponsesTests
         var root = document.RootElement;
         root.GetProperty("success").GetBoolean().Should().BeTrue(body);
         root.GetProperty("content").GetString().Should().Be("Hi! How can I help?", body);
-        root.GetProperty("inputTokens").GetInt32().Should().Be(5, body);
+        // 上游 input_tokens=5 已含缓存（cached=1），输入统一为不含缓存的新输入。
+        root.GetProperty("inputTokens").GetInt32().Should().Be(4, body);
         root.GetProperty("outputTokens").GetInt32().Should().Be(2, body);
     }
 

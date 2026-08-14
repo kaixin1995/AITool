@@ -104,9 +104,19 @@ public sealed class ChatToResponsesStreamState
     /// </summary>
     public long CreatedAt { get; set; }
     /// <summary>
+    /// 已累积的输出文本（用 StringBuilder 累积，避免流式 delta 逐次整串复制导致 O(n²)）。
+    /// </summary>
+    private readonly StringBuilder _outputTextBuilder = new();
+
+    /// <summary>
     /// 已累积的输出文本。
     /// </summary>
-    public string OutputText { get; set; } = string.Empty;
+    public string OutputText => _outputTextBuilder.ToString();
+
+    /// <summary>
+    /// 追加一段输出文本增量。
+    /// </summary>
+    public void AppendOutputText(string deltaText) => _outputTextBuilder.Append(deltaText);
     /// <summary>
     /// 下一个可分配的工具调用索引。
     /// </summary>
@@ -906,7 +916,7 @@ public static partial class ProxyProtocolBridge
                     EnsureMessageStarted(state, builder);
                     builder.Append(BuildResponsesEvent("response.output_text.delta",
                         deltaText, outputIndex: 0, contentIndex: 0));
-                    state.OutputText += deltaText;
+                    state.AppendOutputText(deltaText);
                 }
             }
 
@@ -989,13 +999,15 @@ public static partial class ProxyProtocolBridge
                 // 关闭 message 输出项
                 if (state.MessageAdded)
                 {
+                    // 只取一次最终文本，避免 StringBuilder 支撑的属性多次 ToString 重复分配。
+                    var outputText = state.OutputText;
                     builder.Append(BuildResponsesEvent("response.output_text.done",
-                        state.OutputText, outputIndex: 0, contentIndex: 0));
+                        outputText, outputIndex: 0, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.content_part.done", new JsonObject
                     {
                         ["type"] = "output_text",
-                        ["text"] = state.OutputText
+                        ["text"] = outputText
                     }, outputIndex: 0, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
@@ -1006,7 +1018,7 @@ public static partial class ProxyProtocolBridge
                         ["role"] = "assistant",
                         ["content"] = new JsonArray
                         {
-                            new JsonObject { ["type"] = "output_text", ["text"] = state.OutputText }
+                            new JsonObject { ["type"] = "output_text", ["text"] = outputText }
                         }
                     }, outputIndex: 0));
                 }
@@ -1236,7 +1248,7 @@ public static partial class ProxyProtocolBridge
                         EnsureMessageStarted(state, builder);
                         builder.Append(BuildResponsesEvent("response.output_text.delta",
                             deltaText, outputIndex: 0, contentIndex: 0));
-                        state.OutputText += deltaText;
+                        state.AppendOutputText(deltaText);
                     }
                     else if (deltaType == "thinking_delta" && !string.IsNullOrEmpty(deltaText))
                     {
@@ -1280,13 +1292,15 @@ public static partial class ProxyProtocolBridge
 
                 if (state.MessageAdded)
                 {
+                    // 只取一次最终文本，避免 StringBuilder 支撑的属性多次 ToString 重复分配。
+                    var outputText = state.OutputText;
                     builder.Append(BuildResponsesEvent("response.output_text.done",
-                        state.OutputText, outputIndex: 0, contentIndex: 0));
+                        outputText, outputIndex: 0, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.content_part.done", new JsonObject
                     {
                         ["type"] = "output_text",
-                        ["text"] = state.OutputText
+                        ["text"] = outputText
                     }, outputIndex: 0, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
@@ -1297,7 +1311,7 @@ public static partial class ProxyProtocolBridge
                         ["role"] = "assistant",
                         ["content"] = new JsonArray
                         {
-                            new JsonObject { ["type"] = "output_text", ["text"] = state.OutputText }
+                            new JsonObject { ["type"] = "output_text", ["text"] = outputText }
                         }
                     }, outputIndex: 0));
                 }

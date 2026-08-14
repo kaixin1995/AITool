@@ -225,12 +225,14 @@ public sealed class ChatApiTests
         response.Content.Headers.ContentType!.MediaType.Should().Be("text/event-stream");
         fakeHttpFactory.Handler.Requests.Should().HaveCount(1);
         fakeHttpFactory.Handler.Requests[0].RequestUri!.AbsoluteUri.Should().EndWith("/v1/responses");
-        fakeHttpFactory.Handler.Requests[0].Content!.ReadAsStringAsync().GetAwaiter().GetResult().Should().Contain("\"input\"");
+        var forwardedBody = await fakeHttpFactory.Handler.Requests[0].Content!.ReadAsStringAsync();
+        forwardedBody.Should().Contain("\"input\"");
         body.Should().Contain("event: token");
         body.Should().Contain("responses-stream-ok");
         body.Should().Contain("event: meta");
         body.Should().Contain("\"success\":true");
-        body.Should().Contain("\"inputTokens\":5");
+        // 上游 input_tokens=5 已含缓存（cached=1），meta 的输入统一为不含缓存的新输入。
+        body.Should().Contain("\"inputTokens\":4");
         body.Should().Contain("\"outputTokens\":7");
         body.Should().Contain("event: done");
     }

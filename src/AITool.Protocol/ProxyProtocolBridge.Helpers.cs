@@ -1311,6 +1311,11 @@ public static partial class ProxyProtocolBridge
     /// 按协议类型从 usage 节点中提取输入、缓存和输出 token 数。
     /// 兼容标准 OpenAI（prompt_tokens）、Responses（input_tokens）以及 newapi 等中间层：
     /// input_tokens 优先、缺失时回退 prompt_tokens；output_tokens 为 0 时回退 completion_tokens。
+    /// <para>
+    /// 返回的 InputTokens 统一为"不含缓存的新输入"：OpenAI/Responses/Anthropic 的输入字段
+    /// 都包含缓存命中部分（cached_tokens / cache_read+cache_creation 是其子集），
+    /// 此处一律先减去缓存，保证 新输入 + 缓存 + 输出 = 总 token 且不重复统计。
+    /// </para>
     /// </summary>
     public static (int InputTokens, int CachedTokens, int OutputTokens) ExtractUsageFromElement(JsonElement usage, string protocolType)
     {
@@ -1361,7 +1366,11 @@ public static partial class ProxyProtocolBridge
                 ? completionTokens.GetInt32()
                 : 0;
 
-        return (openAiInputTokens, cachedTokens, openAiOutputTokens);
+        // OpenAI 的 input_tokens/prompt_tokens 已包含缓存命中部分（cached_tokens 是其子集）。
+        // 与上方 Anthropic 分支一致，返回的 InputTokens 统一为"不含缓存的新输入"，
+        // 否则"输入"列与"缓存"列重复统计，TotalTokens（新输入+缓存+输出）虚高。
+        var newOpenAiInput = Math.Max(0, openAiInputTokens - cachedTokens);
+        return (newOpenAiInput, cachedTokens, openAiOutputTokens);
     }
 
     /// <summary>

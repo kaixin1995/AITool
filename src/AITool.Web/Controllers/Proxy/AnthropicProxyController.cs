@@ -1032,10 +1032,19 @@ public sealed class AnthropicProxyController : ControllerBase
                     inputTokens = startInput.GetInt32();
                 }
 
+                // Anthropic 的 input_tokens 已含缓存（cache_read + cache_creation 是其子集），
+                // 必须减去缓存才是"新输入"，否则缓存会在输入列与缓存列重复统计，总 token 虚高。
                 if (startUsage.TryGetProperty("cache_read_input_tokens", out var startCached) && startCached.ValueKind == JsonValueKind.Number)
                 {
-                    cachedTokens = startCached.GetInt32();
+                    cachedTokens += startCached.GetInt32();
                 }
+
+                if (startUsage.TryGetProperty("cache_creation_input_tokens", out var startCreated) && startCreated.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens += startCreated.GetInt32();
+                }
+
+                inputTokens = Math.Max(0, inputTokens - cachedTokens);
 
                 if (startUsage.TryGetProperty("output_tokens", out var startOutput) && startOutput.ValueKind == JsonValueKind.Number)
                 {
@@ -1054,7 +1063,19 @@ public sealed class AnthropicProxyController : ControllerBase
 
                     if (deltaUsage.TryGetProperty("cache_read_input_tokens", out var deltaCached) && deltaCached.ValueKind == JsonValueKind.Number)
                     {
-                        cachedTokens = deltaCached.GetInt32();
+                        cachedTokens += deltaCached.GetInt32();
+                    }
+
+                    if (deltaUsage.TryGetProperty("cache_creation_input_tokens", out var deltaCreated) && deltaCreated.ValueKind == JsonValueKind.Number)
+                    {
+                        cachedTokens += deltaCreated.GetInt32();
+                    }
+
+                    // 减法只在该事件自带 input_tokens 时执行（官方 message_delta 通常只有 output_tokens），
+                    // 否则会对已减去缓存的新输入再次减法，导致输入被重复扣减。
+                    if (deltaUsage.TryGetProperty("input_tokens", out var _))
+                    {
+                        inputTokens = Math.Max(0, inputTokens - cachedTokens);
                     }
 
                     if (deltaUsage.TryGetProperty("output_tokens", out var deltaOutput) && deltaOutput.ValueKind == JsonValueKind.Number)
@@ -1120,6 +1141,9 @@ public sealed class AnthropicProxyController : ControllerBase
     /// <summary>
     /// 为当前追踪追加一次路由尝试记录。
     /// </summary>
+    /// <param name="traceId">调用追踪 Id（未启用追踪时为 null）。</param>
+    /// <param name="route">本次尝试命中的路由目标。</param>
+    /// <param name="actualProtocolType">实际发给上游的协议类型（可能因桥接与入口不同）。</param>
     /// <param name="preparedRequestBody">转换后实际发给上游的请求体，用于在调用追踪页排查上游参数错误。</param>
     private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType, string preparedRequestBody)
     {

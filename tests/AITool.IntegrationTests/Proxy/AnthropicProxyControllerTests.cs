@@ -183,7 +183,8 @@ public sealed class AnthropicProxyControllerTests
         logs[0].Status.Should().Be("success");
         logs[0].HttpStatusCode.Should().Be(200);
         logs[0].IsStreaming.Should().BeTrue();
-        logs[0].InputTokens.Should().Be(6);
+        // 上游 input_tokens=6 已含缓存（cache_read=2），日志输入统一为不含缓存的新输入。
+        logs[0].InputTokens.Should().Be(4);
         logs[0].CachedTokens.Should().Be(2);
         logs[0].OutputTokens.Should().Be(5);
     }

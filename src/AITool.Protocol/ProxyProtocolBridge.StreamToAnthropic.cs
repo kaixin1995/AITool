@@ -229,7 +229,9 @@ public static partial class ProxyProtocolBridge
             ["type"] = "message_delta",
             ["usage"] = new JsonObject
             {
-                ["input_tokens"] = state.InputTokens,
+                // Anthropic 的 input_tokens 含缓存子集：上游 OpenAI prompt_tokens 被提取为
+                // 新输入后，这里还原为 新输入 + cache_read + cache_creation，保持协议语义。
+                ["input_tokens"] = state.InputTokens + state.CachedTokens + state.CacheCreationTokens,
                 ["cache_creation_input_tokens"] = state.CacheCreationTokens,
                 ["cache_read_input_tokens"] = state.CachedTokens,
                 ["output_tokens"] = state.OutputTokens

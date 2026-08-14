@@ -6,7 +6,7 @@ namespace AITool.Web.Services;
 /// <summary>
 /// 后台服务：周期扫描冷却到期的 Codex 账号，自动清除冷却并恢复 Site（若账号未被手动禁用）。
 /// <para>
-/// 性能（P7）：周期 2 分钟；查询条件 IsQuotaCooling && QuotaCoolingUntil<=now（冷却账号极少）；
+/// 性能（P7）：周期 2 分钟；查询条件 IsQuotaCooling 且 QuotaCoolingUntil 不晚于当前时间（冷却账号极少）；
 /// 恢复前检查 account.IsEnabled（手动禁用优先，不被冷却到期自动覆盖）。
 /// </para>
 /// </summary>

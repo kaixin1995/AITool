@@ -384,7 +384,7 @@ public sealed class UsageLogsApiController : ControllerBase
     {
         var sites = await _dbContext.Sites
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
-        var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+        var siteModelNameMap = await BuildSiteModelNameMapAsync(cancellationToken);
         var accessKeyNames = await _dbContext.ProxyAccessKeys
             .ToDictionaryAsync(x => x.Id, x => x.KeyName, cancellationToken);
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
@@ -423,7 +423,7 @@ public sealed class UsageLogsApiController : ControllerBase
                 ProtocolType = x.ProtocolType,
                 RequestModel = x.RequestModel,
                 AttemptedModel = x.AttemptedModel,
-                SiteModelName = ResolveSiteModelName(routeRules, x.TargetSiteId, x.AttemptedModel),
+                SiteModelName = ResolveSiteModelName(siteModelNameMap, x.TargetSiteId, x.AttemptedModel),
                 Status = x.Status,
                 Source = x.Source,
                 SiteName = sites.TryGetValue(x.TargetSiteId, out var siteName) ? siteName : "-",
@@ -463,7 +463,7 @@ public sealed class UsageLogsApiController : ControllerBase
     {
         var sites = await _dbContext.Sites
             .ToDictionaryAsync(x => x.Id, x => x.Name, cancellationToken);
-        var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
+        var siteModelNameMap = await BuildSiteModelNameMapAsync(cancellationToken);
         var accessKeyNames = await _dbContext.ProxyAccessKeys
             .ToDictionaryAsync(x => x.Id, x => x.KeyName, cancellationToken);
         var logs = await _dbContext.ProxyUsageLogs
@@ -495,7 +495,7 @@ public sealed class UsageLogsApiController : ControllerBase
                     AttemptIndex = x.AttemptIndex,
                     AttemptedModel = x.AttemptedModel,
                     ForwardingMode = x.ForwardingMode ?? string.Empty,
-                    SiteModelName = ResolveSiteModelName(routeRules, x.TargetSiteId, x.AttemptedModel),
+                    SiteModelName = ResolveSiteModelName(siteModelNameMap, x.TargetSiteId, x.AttemptedModel),
                     SiteName = sites.TryGetValue(x.TargetSiteId, out var siteName) ? siteName : "-",
                     AccessKeyName = accessKeyNames.TryGetValue(x.AccessKeyId, out var keyName) ? keyName : "-",
                     Status = x.Status,
@@ -628,14 +628,36 @@ public sealed class UsageLogsApiController : ControllerBase
     }
 
     /// <summary>
-    /// 解析站点模型名称。
+    /// 构建 (SiteId, UpstreamModelName) → 站点模型名称映射。
+    /// 同一组合存在多条规则时取 Priority 最小（优先级最高）的那条，与原逐条线性扫描语义一致。
     /// </summary>
-    private static string ResolveSiteModelName(IEnumerable<AITool.Domain.Proxy.ProxyRouteRule> routeRules, Guid siteId, string attemptedModel)
+    private async Task<Dictionary<(Guid SiteId, string UpstreamModelName), string>> BuildSiteModelNameMapAsync(CancellationToken cancellationToken)
     {
-        return routeRules
-            .Where(x => x.SiteId == siteId && x.UpstreamModelName == attemptedModel)
+        var rules = await _dbContext.ProxyRouteRules
             .OrderBy(x => x.Priority)
-            .Select(x => x.SiteModelName)
-            .FirstOrDefault() ?? string.Empty;
+            .Select(x => new { x.SiteId, x.UpstreamModelName, x.SiteModelName })
+            .ToListAsync(cancellationToken);
+
+        var map = new Dictionary<(Guid, string), string>();
+        foreach (var rule in rules)
+        {
+            // 升序遍历下首次遇到的即最小 Priority，后续同组合规则直接忽略。
+            map.TryAdd((rule.SiteId, rule.UpstreamModelName), rule.SiteModelName);
+        }
+
+        return map;
+    }
+
+    /// <summary>
+    /// 解析站点模型名称（O(1) 字典查找）。
+    /// </summary>
+    private static string ResolveSiteModelName(
+        IReadOnlyDictionary<(Guid SiteId, string UpstreamModelName), string> siteModelNameMap,
+        Guid siteId,
+        string attemptedModel)
+    {
+        return siteModelNameMap.TryGetValue((siteId, attemptedModel), out var siteModelName)
+            ? siteModelName
+            : string.Empty;
     }
 }

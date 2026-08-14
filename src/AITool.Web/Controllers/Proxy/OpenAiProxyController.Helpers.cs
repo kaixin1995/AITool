@@ -570,6 +570,10 @@ public sealed partial class OpenAiProxyController
             {
                 cachedTokens = cachedTokenElement.GetInt32();
             }
+
+            // OpenAI 的 input_tokens/prompt_tokens 已包含缓存命中部分（cached_tokens 是其子集），
+            // 统一减去缓存，日志输入记录"不含缓存的新输入"，避免缓存重复统计。
+            inputTokens = Math.Max(0, inputTokens - cachedTokens);
         }
         catch
         {
@@ -583,9 +587,14 @@ public sealed partial class OpenAiProxyController
     /// <param name="state">正在转换为 OpenAI SSE 的流式状态对象。</param>
     private static void UpdateAnthropicUsageFromElement(JsonElement usage, AnthropicToOpenAiStreamState state)
     {
+        // Anthropic 的 input_tokens 已含缓存（cache_read + cache_creation 是其子集），
+        // 这里记录"不含缓存的新输入"，缓存分别记入 CachedTokens / CacheCreationTokens，
+        // 输出与日志需要"含缓存"时再按 新输入 + 缓存 还原，避免缓存重复统计。
+        var hasInputTokens = false;
         if (usage.TryGetProperty("input_tokens", out var inputTokens) && inputTokens.ValueKind == JsonValueKind.Number)
         {
             state.InputTokens = inputTokens.GetInt32();
+            hasInputTokens = true;
         }
 
         if (usage.TryGetProperty("cache_read_input_tokens", out var cachedTokens) && cachedTokens.ValueKind == JsonValueKind.Number)
@@ -601,6 +610,13 @@ public sealed partial class OpenAiProxyController
         if (usage.TryGetProperty("output_tokens", out var outputTokens) && outputTokens.ValueKind == JsonValueKind.Number)
         {
             state.OutputTokens = outputTokens.GetInt32();
+        }
+
+        // 减法只在本事件自带 input_tokens 时执行：message_delta 通常只有 output_tokens，
+        // 否则会对已减去缓存的输入再次扣减。
+        if (hasInputTokens)
+        {
+            state.InputTokens = Math.Max(0, state.InputTokens - state.CachedTokens - state.CacheCreationTokens);
         }
     }
 
@@ -762,6 +778,9 @@ public sealed partial class OpenAiProxyController
     /// <summary>
     /// 为当前追踪追加一次路由尝试记录。
     /// </summary>
+    /// <param name="traceId">调用追踪 Id（未启用追踪时为 null）。</param>
+    /// <param name="route">本次尝试命中的路由目标。</param>
+    /// <param name="actualProtocolType">实际发给上游的协议类型（可能因桥接与入口不同）。</param>
     /// <param name="preparedRequestBody">转换后实际发给上游的请求体，用于在调用追踪页排查上游参数错误。</param>
     private Guid AddDeveloperTraceAttempt(Guid? traceId, CachedProxyRouteTarget route, string actualProtocolType, string preparedRequestBody)
     {

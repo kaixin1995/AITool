@@ -40,6 +40,7 @@ public sealed class ModelHealthApiController : ControllerBase
     /// 获取健康监控面板数据（监控模型列表 + 每个模型各站点的健康详情 + 48 段时间线）。
     /// </summary>
     /// <param name="range">时间范围：1d / 7d（默认）/ 30d。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
     [HttpGet]
     public async Task<IActionResult> GetDashboard([FromQuery] string? range, CancellationToken cancellationToken)
     {
