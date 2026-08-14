@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, h, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NAlert,
@@ -23,10 +23,13 @@ import PageHeader from '@/components/PageHeader.vue'
 import ClientSimulator from './ClientSimulator.vue'
 import CircuitBreakerTab from './CircuitBreakerTab.vue'
 import ProtocolDiagnosticsTab from './ProtocolDiagnosticsTab.vue'
+import SqlMigrationsTab from './SqlMigrationsTab.vue'
 import {
   developerHashForTab,
   developerTabFromHash,
-  type DeveloperToolTab
+  setProtocolDiagnosticsPrefill,
+  type DeveloperToolTab,
+  type ProtocolDiagnosticsPrefill
 } from './developerInvocationsState'
 
 interface DeveloperInvocationAttempt {
@@ -80,6 +83,8 @@ const message = useMessage()
 const route = useRoute()
 const router = useRouter()
 const activeTab = ref<DeveloperToolTab>(developerTabFromHash(route.hash))
+const prefillSignal = ref(0)
+provide('protocol-diagnostics-prefill', prefillSignal)
 const loading = ref(false)
 const concurrencyLoading = ref(false)
 const concurrencyError = ref('')
@@ -167,6 +172,90 @@ function attemptStats(entry: DeveloperInvocationSummary): string {
 
 function canShowDetailBody(value: unknown): boolean {
   return bodyText(value) !== '无'
+}
+
+// ── 调用记录 → 协议诊断台 联动 ──────────────────────────────
+function clientProtocolFromPath(path: string | undefined): string {
+  if (path?.includes('/v1/messages')) return 'Anthropic'
+  if (path?.includes('/v1/responses')) return 'Responses'
+  return 'OpenAI'
+}
+
+// 响应方向流式离线转换支持矩阵（与后端 IsSupportedStreamingDirection 的 response 分支一致）。
+// 键 = 上游协议，值 = 支持流式转换的客户端协议列表。
+const STREAM_RESPONSE_SUPPORTED: Record<string, readonly string[]> = {
+  OpenAI: ['Anthropic'],
+  Anthropic: ['OpenAI'],
+  Responses: ['OpenAI', 'Anthropic']
+}
+
+function isStreamResponseSupported(upstream: string, client: string): boolean {
+  if (upstream === client) return true
+  return STREAM_RESPONSE_SUPPORTED[upstream]?.includes(client) ?? false
+}
+
+function openProtocolDiagnostics(prefill: ProtocolDiagnosticsPrefill): void {
+  setProtocolDiagnosticsPrefill(prefill)
+  prefillSignal.value += 1
+  if (activeTab.value !== 'protocol-diagnostics') {
+    activeTab.value = 'protocol-diagnostics'
+  }
+}
+
+function diagnoseEntryRequest(entry: DeveloperInvocationDetail): void {
+  // 请求方向永远是整体转换（PrepareRequestBody 一次改写），与客户端是否流式无关。
+  openProtocolDiagnostics({
+    direction: 'request',
+    sourceProtocol: clientProtocolFromPath(entry.requestPath),
+    targetProtocol: entry.attempts[0]?.upstreamProtocolType || entry.protocolType || 'OpenAI',
+    streaming: false,
+    modelName: entry.requestModel,
+    payload: entry.requestBody
+  })
+}
+
+function diagnoseEntryResponse(entry: DeveloperInvocationDetail): void {
+  const upstream = entry.protocolType || 'OpenAI'
+  const client = clientProtocolFromPath(entry.requestPath)
+  openProtocolDiagnostics({
+    direction: 'response',
+    sourceProtocol: upstream,
+    targetProtocol: client,
+    // 流式响应转换只支持部分组合；不支持的组合退化为非流式（保留完整 SSE 便于手动调整）。
+    streaming: entry.isStreaming && isStreamResponseSupported(upstream, client),
+    modelName: entry.requestModel,
+    payload: entry.responseBody,
+    inputTokens: entry.inputTokens,
+    cachedTokens: entry.cachedTokens,
+    outputTokens: entry.outputTokens
+  })
+}
+
+function diagnoseAttemptRequest(entry: DeveloperInvocationDetail, attempt: DeveloperInvocationAttempt): void {
+  openProtocolDiagnostics({
+    direction: 'request',
+    sourceProtocol: clientProtocolFromPath(entry.requestPath),
+    targetProtocol: attempt.upstreamProtocolType || 'OpenAI',
+    streaming: false,
+    modelName: entry.requestModel,
+    payload: attempt.preparedRequestBody
+  })
+}
+
+function diagnoseAttemptResponse(entry: DeveloperInvocationDetail, attempt: DeveloperInvocationAttempt): void {
+  const upstream = attempt.upstreamProtocolType || 'OpenAI'
+  const client = clientProtocolFromPath(entry.requestPath)
+  openProtocolDiagnostics({
+    direction: 'response',
+    sourceProtocol: upstream,
+    targetProtocol: client,
+    streaming: attempt.isStreaming && isStreamResponseSupported(upstream, client),
+    modelName: entry.requestModel,
+    payload: attempt.responseBody,
+    inputTokens: attempt.inputTokens,
+    cachedTokens: attempt.cachedTokens,
+    outputTokens: attempt.outputTokens
+  })
 }
 
 function configureAutoRefresh(): void {
@@ -490,14 +579,20 @@ onUnmounted(() => {
                         <div v-if="canShowDetailBody(attempt.preparedRequestBody)" class="trace-code-panel">
                           <div class="trace-panel-header">
                             <div class="trace-section-title">转换后请求体（发往上游）</div>
-                            <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.preparedRequestBody))">复制</NButton>
+                            <div class="trace-panel-actions">
+                              <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="diagnoseAttemptRequest(details[entry.traceId], attempt)">诊断</NButton>
+                              <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.preparedRequestBody))">复制</NButton>
+                            </div>
                           </div>
                           <pre class="trace-pre">{{ bodyText(attempt.preparedRequestBody) }}</pre>
                         </div>
                         <div v-if="canShowDetailBody(attempt.responseBody)" class="trace-code-panel">
                           <div class="trace-panel-header">
                             <div class="trace-section-title">尝试返回体</div>
-                            <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.responseBody))">复制</NButton>
+                            <div class="trace-panel-actions">
+                              <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="diagnoseAttemptResponse(details[entry.traceId], attempt)">诊断</NButton>
+                              <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.responseBody))">复制</NButton>
+                            </div>
                           </div>
                           <pre class="trace-pre">{{ bodyText(attempt.responseBody) }}</pre>
                         </div>
@@ -509,14 +604,20 @@ onUnmounted(() => {
                     <div class="trace-code-panel">
                       <div class="trace-panel-header">
                         <div class="trace-section-title">请求体</div>
-                        <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(details[entry.traceId].requestBody))">复制</NButton>
+                        <div class="trace-panel-actions">
+                          <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="diagnoseEntryRequest(details[entry.traceId])">诊断此请求</NButton>
+                          <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(details[entry.traceId].requestBody))">复制</NButton>
+                        </div>
                       </div>
                       <pre class="trace-pre">{{ bodyText(details[entry.traceId].requestBody) }}</pre>
                     </div>
                     <div class="trace-code-panel">
                       <div class="trace-panel-header">
                         <div class="trace-section-title">响应体</div>
-                        <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(details[entry.traceId].responseBody))">复制</NButton>
+                        <div class="trace-panel-actions">
+                          <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="diagnoseEntryResponse(details[entry.traceId])">诊断此响应</NButton>
+                          <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(details[entry.traceId].responseBody))">复制</NButton>
+                        </div>
                       </div>
                       <pre class="trace-pre">{{ bodyText(details[entry.traceId].responseBody) }}</pre>
                     </div>
@@ -568,6 +669,9 @@ onUnmounted(() => {
         </NTabPane>
         <NTabPane name="protocol-diagnostics" tab="协议诊断">
           <ProtocolDiagnosticsTab />
+        </NTabPane>
+        <NTabPane name="sql-migrations" tab="SQL 迁移">
+          <SqlMigrationsTab />
         </NTabPane>
       </NTabs>
     </NCard>
@@ -927,6 +1031,16 @@ onUnmounted(() => {
 
 .trace-copy-btn {
   min-width: 96px;
+}
+
+.trace-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trace-panel-header .trace-panel-actions .trace-copy-btn {
+  min-width: auto;
 }
 
 .trace-pre {

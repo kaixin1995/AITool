@@ -337,7 +337,7 @@ public static partial class ProxyProtocolBridge
     /// 任一规则失败静默跳过，不影响其他规则和转发可用性。
     /// </summary>
     /// <param name="isPassthrough">当前是否透传路径（clientProtocol==targetProtocol）。true 保留 scope=passthrough/all 的规则；false 保留 scope=bridge/all 的规则。</param>
-    private static string ApplyCompatibilityProfile(string requestBody, IReadOnlyList<CompatibilityRule> rules, bool isPassthrough)
+    public static string ApplyCompatibilityProfile(string requestBody, IReadOnlyList<CompatibilityRule> rules, bool isPassthrough)
     {
         if (rules.Count == 0) return requestBody;
 

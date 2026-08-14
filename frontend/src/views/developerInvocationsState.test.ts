@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   developerHashForTab,
   developerTabFromHash,
-  supportsResponsesNatively
+  setProtocolDiagnosticsPrefill,
+  supportsResponsesNatively,
+  takeProtocolDiagnosticsPrefill
 } from './developerInvocationsState'
 
 describe('Developer Invocations 页签深链接', () => {
@@ -30,5 +32,26 @@ describe('Developer Invocations 页签深链接', () => {
       supportsAnthropic: false
     })).toBe(true)
     expect(supportsResponsesNatively({ supportsOpenAi: true })).toBe(false)
+  })
+})
+
+describe('Developer Invocations → 协议诊断台 联动', () => {
+  it('预填数据取走即清空（避免重复执行）', () => {
+    expect(takeProtocolDiagnosticsPrefill()).toBeNull()
+    setProtocolDiagnosticsPrefill({
+      direction: 'request',
+      sourceProtocol: 'OpenAI',
+      targetProtocol: 'Anthropic',
+      streaming: true,
+      modelName: 'gpt-4.1',
+      payload: '{"model":"gpt-4.1"}',
+      eventName: 'content_block_delta'
+    })
+    const prefill = takeProtocolDiagnosticsPrefill()
+    expect(prefill).not.toBeNull()
+    expect(prefill?.direction).toBe('request')
+    expect(prefill?.targetProtocol).toBe('Anthropic')
+    expect(prefill?.eventName).toBe('content_block_delta')
+    expect(takeProtocolDiagnosticsPrefill()).toBeNull()
   })
 })

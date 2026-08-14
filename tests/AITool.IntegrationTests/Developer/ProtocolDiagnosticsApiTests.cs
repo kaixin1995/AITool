@@ -140,6 +140,363 @@ public sealed class ProtocolDiagnosticsApiTests
     }
 
     /// <summary>
+    /// 模型名不再受限：诊断台应支持任意模型名自由测试协议转换。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_accepts_any_model_name()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["modelName"] = "gpt-4.1-custom";
+        request["payload"] = "{\"model\":\"gpt-4.1-custom\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("success").GetBoolean().Should().BeTrue();
+        factory.ForwardService.ForwardAsyncCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// 诊断结果应附带转换路径、输入摘要和字段映射表，便于定位转换关系。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_result_includes_path_summary_and_field_mappings()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        using var content = JsonContent(CreateValidRequest());
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var data = document.RootElement.GetProperty("data");
+        data.GetProperty("conversionPath").GetString().Should().Be("PrepareRequestBody");
+        data.GetProperty("inputSummary").GetProperty("模型").GetString().Should().Be("deepseek-v4-flash");
+        data.GetProperty("fieldMappings").GetArrayLength().Should().BeGreaterThan(0);
+        data.GetProperty("fieldMappings")[0].GetProperty("source").GetString().Should().NotBeNullOrWhiteSpace();
+        data.GetProperty("conversionFailed").GetBoolean().Should().BeFalse();
+    }
+
+    /// <summary>
+    /// 跨协议组合应返回 bridge 模式链路：5 个环节 + 双向转换函数名；流式时附带事件映射。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_chain_shows_bridge_mode_stages_and_stream_event_mappings()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["sourceProtocol"] = "OpenAI";
+        request["targetProtocol"] = "Anthropic";
+        request["streaming"] = true;
+        request["payload"] = "{\"choices\":[{\"delta\":{\"content\":\"hi\"},\"index\":0}]}";
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var data = document.RootElement.GetProperty("data");
+        var chain = data.GetProperty("chain");
+        chain.GetProperty("mode").GetString().Should().Be("bridge");
+        chain.GetProperty("stages").GetArrayLength().Should().Be(5);
+        chain.GetProperty("stages")[0].GetProperty("kind").GetString().Should().Be("client-request");
+        chain.GetProperty("stages")[1].GetProperty("function").GetString()
+            .Should().Contain("BuildAnthropicRequestFromOpenAi");
+        chain.GetProperty("stages")[3].GetProperty("function").GetString()
+            .Should().Contain("BuildOpenAiStreamingResponseFromAnthropic");
+        var eventMappings = chain.GetProperty("eventMappings");
+        eventMappings.GetArrayLength().Should().BeGreaterThan(0);
+        eventMappings[0].GetProperty("sourceEvent").GetString().Should().Be("message_start");
+        factory.ForwardService.ForwardAsyncCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// 同协议组合应返回 direct 模式链路，转换环节标注透传且无事件映射。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_chain_shows_direct_mode_for_same_protocol()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["sourceProtocol"] = "OpenAI";
+        request["targetProtocol"] = "OpenAI";
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var chain = document.RootElement.GetProperty("data").GetProperty("chain");
+        chain.GetProperty("mode").GetString().Should().Be("direct");
+        chain.GetProperty("stages")[1].GetProperty("isBridge").GetBoolean().Should().BeFalse();
+        chain.GetProperty("stages")[1].GetProperty("note").GetString().Should().Contain("透传");
+        chain.GetProperty("eventMappings").GetArrayLength().Should().Be(0);
+    }
+
+    /// <summary>
+    /// 响应方向 上游 Anthropic 流式 → 客户端 OpenAI：接受完整 SSE 帧并整体转换为 OpenAI 事件流。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_stream_response_anthropic_to_openai_accepts_full_sse()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["direction"] = "response";
+        request["sourceProtocol"] = "Anthropic";
+        request["targetProtocol"] = "OpenAI";
+        request["streaming"] = true;
+        request["payload"] =
+            "event: content_block_delta\n" +
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+            "event: message_stop\n" +
+            "data: {\"type\":\"message_stop\"}\n\n";
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var data = document.RootElement.GetProperty("data");
+        data.GetProperty("conversionFailed").GetBoolean().Should().BeFalse();
+        var converted = data.GetProperty("convertedPayload").GetString();
+        converted.Should().Contain("data: ");
+        converted.Should().Contain("content");
+        factory.ForwardService.ForwardAsyncCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// 响应方向 上游 Responses 流式 → 客户端 Anthropic：两级转换 Responses→Chat→Anthropic。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_stream_response_responses_to_anthropic_two_stage_conversion()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["direction"] = "response";
+        request["sourceProtocol"] = "Responses";
+        request["targetProtocol"] = "Anthropic";
+        request["streaming"] = true;
+        request["payload"] =
+            "event: response.output_text.delta\n" +
+            "data: {\"type\":\"response.output_text.delta\",\"item_id\":\"i1\",\"output_index\":0,\"delta\":\"hi\"}\n\n" +
+            "event: response.completed\n" +
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"output\":[],\"status\":\"completed\"}}\n\n";
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var data = document.RootElement.GetProperty("data");
+        data.GetProperty("conversionFailed").GetBoolean().Should().BeFalse();
+        data.GetProperty("convertedPayload").GetString().Should().Contain("event: message_start");
+        factory.ForwardService.ForwardAsyncCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// 同协议流式：事件原样透传，不解析内容。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_stream_same_protocol_passthrough()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["sourceProtocol"] = "OpenAI";
+        request["targetProtocol"] = "OpenAI";
+        request["streaming"] = true;
+        request["payload"] = "data: {\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"hi\"},\"index\":0}]}\n\ndata: [DONE]\n\n";
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var data = document.RootElement.GetProperty("data");
+        data.GetProperty("conversionFailed").GetBoolean().Should().BeFalse();
+        data.GetProperty("convertedPayload").GetString().Should().Contain("data: ");
+        data.GetProperty("chain").GetProperty("mode").GetString().Should().Be("direct");
+        factory.ForwardService.ForwardAsyncCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// 流式输入是单个事件片段，不应触发整体字段缺失误报（如单事件无 usage/content/messages）。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_streaming_skips_whole_body_field_checks()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["sourceProtocol"] = "OpenAI";
+        request["targetProtocol"] = "Anthropic";
+        request["streaming"] = true;
+        request["payload"] = "{\"choices\":[{\"delta\":{\"content\":\"hi\"},\"index\":0}]}";
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var data = document.RootElement.GetProperty("data");
+        // 单事件无 messages/usage 是正常的，不应出现在缺失提醒里。
+        data.GetProperty("missingFields").GetArrayLength().Should().Be(0);
+    }
+
+    /// <summary>
+    /// 试运行规则：请求方向转换完成后应用兼容规则（strip），并标记 rulesApplied。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_applies_trial_rules_after_conversion()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["payload"] = "{\"model\":\"deepseek-v4-flash\",\"metadata\":{\"tag\":\"x\"},\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+        request["rules"] = new[]
+        {
+            new { op = "strip", target = "metadata", scope = "bridge" },
+            new { op = "strip", target = "nope", scope = "passthrough" }
+        };
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var data = document.RootElement.GetProperty("data");
+        data.GetProperty("rulesApplied").GetBoolean().Should().BeTrue();
+        var converted = data.GetProperty("convertedPayload").GetString();
+        // strip(metadata) 已生效（跨协议兼容路径，scope=bridge 规则生效）；
+        // 转换本身正常（messages → input），passthrough 规则未误伤转换结果。
+        converted.Should().NotContain("metadata");
+        converted.Should().Contain("\"input\"");
+        factory.ForwardService.ForwardAsyncCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// 兼容规则是请求体规则：响应方向即使传了 rules 也不应应用。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_trial_rules_ignored_for_response_direction()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["direction"] = "response";
+        request["sourceProtocol"] = "Responses";
+        request["targetProtocol"] = "OpenAI";
+        request["streaming"] = false;
+        request["payload"] = "{\"id\":\"resp-1\",\"output\":[{\"type\":\"message\",\"id\":\"m1\",\"status\":\"completed\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hi\",\"annotations\":[]}]}],\"status\":\"completed\"}";
+        request["rules"] = new[]
+        {
+            new { op = "strip", target = "id", scope = "all" }
+        };
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var data = document.RootElement.GetProperty("data");
+        data.GetProperty("rulesApplied").GetBoolean().Should().BeFalse();
+        // 若规则被误应用，id 会被 strip 掉；保留说明响应方向确实忽略规则。
+        data.GetProperty("convertedPayload").GetString().Should().Contain("resp-1");
+        factory.ForwardService.ForwardAsyncCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// 试运行规则按透传/兼容路径筛选 scope：同协议透传时仅 passthrough/all 规则生效。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_trial_rules_respect_passthrough_scope()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["sourceProtocol"] = "OpenAI";
+        request["targetProtocol"] = "OpenAI";
+        request["payload"] = "{\"model\":\"deepseek-v4-flash\",\"metadata\":{\"tag\":\"x\"},\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}";
+        request["rules"] = new[]
+        {
+            new { op = "strip", target = "metadata", scope = "passthrough" },
+            new { op = "strip", target = "messages", scope = "bridge" }
+        };
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var data = document.RootElement.GetProperty("data");
+        var converted = data.GetProperty("convertedPayload").GetString();
+        converted.Should().NotContain("metadata");
+        converted.Should().Contain("\"messages\"");
+        factory.ForwardService.ForwardAsyncCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// 转换结果为空时应在 200 响应中返回 conversionFailed + failureReason，而不是笼统 400。
+    /// </summary>
+    [Fact]
+    public async Task Diagnostic_empty_conversion_returns_failure_reason_in_ok_response()
+    {
+        await using var factory = new ProtocolDiagnosticsWebApplicationFactory(developerFeaturesEnabled: true);
+        using var client = factory.CreateClient();
+
+        var request = CreateValidRequest();
+        request["direction"] = "response";
+        request["sourceProtocol"] = "Responses";
+        request["targetProtocol"] = "OpenAI";
+        request["streaming"] = false;
+        request["modelName"] = "deepseek-v4-flash";
+        request["payload"] = "{\"id\":\"resp-empty\",\"output\":[],\"status\":\"completed\"}";
+        using var content = JsonContent(request);
+
+        var response = await client.PostAsync(Endpoint, content);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        using var document = JsonDocument.Parse(body);
+        var data = document.RootElement.GetProperty("data");
+        data.GetProperty("conversionFailed").GetBoolean().Should().BeTrue();
+        data.GetProperty("failureReason").GetString().Should().NotBeNullOrWhiteSpace();
+        data.GetProperty("missingFields").GetArrayLength().Should().BeGreaterThan(0);
+        factory.ForwardService.ForwardAsyncCalls.Should().Be(0);
+        factory.ForwardService.ForwardStreamingAsyncCalls.Should().Be(0);
+    }
+
+    /// <summary>
     /// 首版未公开逐事件状态桥接的方向应明确返回不支持，而不是尝试真实调用或伪造转换结果。
     /// </summary>
     [Fact]

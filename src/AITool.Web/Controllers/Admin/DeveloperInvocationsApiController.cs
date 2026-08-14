@@ -1,6 +1,8 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using AITool.Application.Operations;
 using AITool.Infrastructure.Persistence;
+using AITool.Domain.Proxy;
 using AITool.Infrastructure.Proxy;
 using AITool.Web.Contracts;
 using AITool.Protocol;
@@ -90,11 +92,8 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         try
         {
             var result = ConvertProtocolDiagnostics(request);
-            if (result.ConversionFailed)
-            {
-                return BadRequest(ApiResponse.Fail("协议转换失败", "conversion_failed"));
-            }
 
+            // 转换失败也返回 200 + conversionFailed + failureReason，让前端展示具体原因而非笼统报错。
             return Ok(ApiResponse.Ok(new
             {
                 direction = request.Direction,
@@ -104,16 +103,41 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                 convertedPayload = result.Payload,
                 eventCount = result.EventCount,
                 completionDetected = result.CompletionDetected,
-                conversionFailed = false
+                conversionFailed = result.ConversionFailed,
+                conversionPath = result.ConversionPath,
+                failureReason = result.FailureReason,
+                inputSummary = result.InputSummary,
+                fieldMappings = result.FieldMappings.Select(m => new { source = m.Source, target = m.Target, note = m.Note }),
+                missingFields = result.MissingFields,
+                rulesApplied = result.RulesApplied,
+                chain = new
+                {
+                    mode = result.Chain.Mode,
+                    stages = result.Chain.Stages.Select(s => new
+                    {
+                        kind = s.Kind,
+                        label = s.Label,
+                        protocol = s.Protocol,
+                        function = s.Function,
+                        note = s.Note,
+                        isBridge = s.IsBridge
+                    }),
+                    eventMappings = result.Chain.EventMappings.Select(e => new
+                    {
+                        sourceEvent = e.SourceEvent,
+                        targetEvent = e.TargetEvent,
+                        note = e.Note
+                    })
+                }
             }));
         }
         catch (JsonException)
         {
             return BadRequest(ApiResponse.Fail("payload 不是合法 JSON", "invalid_json"));
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            return BadRequest(ApiResponse.Fail("协议转换失败", "conversion_failed"));
+            return BadRequest(ApiResponse.Fail($"协议转换失败：{ex.Message}", "conversion_failed"));
         }
     }
 
@@ -406,14 +430,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             return false;
         }
 
-        // 诊断页面与当前项目约定保持一致，避免误用未经授权的真实模型名。
-        if (!string.Equals(request.ModelName.Trim(), "deepseek-v4-flash", StringComparison.OrdinalIgnoreCase))
-        {
-            error = "模型名只允许 deepseek-v4-flash";
-            errorCode = "invalid_model";
-            return false;
-        }
-
+        // 模型名仅用于写入转换后的目标协议字段，与鉴权无关，允许任意值以自由测试协议转换。
         if (string.IsNullOrWhiteSpace(request.Payload))
         {
             error = "payload 不能为空";
@@ -467,6 +484,12 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             return false;
         }
 
+        // 同协议流式：事件原样透传，不解析内容，任何格式都接受。
+        if (sourceProtocol.Equals(targetProtocol, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
         if (string.Equals(sourceProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
         {
             if (!HasValidResponsesSsePayload(request.Payload))
@@ -479,7 +502,27 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             return true;
         }
 
+        // 上游 Anthropic 流式 → 客户端 OpenAI：整体转换（BuildOpenAiStreamingResponseFromAnthropic）
+        // 解析完整 SSE 帧，因此要求 event: + data: 块结构。
+        if (string.Equals(sourceProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(direction, "response", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(targetProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
+        {
+            if (!HasValidResponsesSsePayload(request.Payload))
+            {
+                error = "Anthropic 流式 payload 必须是完整 SSE 事件块（event: + data:），data 必须是 JSON 对象";
+                errorCode = "invalid_stream_payload";
+                return false;
+            }
+
+            return true;
+        }
+
+        // 整体流式响应转换（上游 OpenAI → 客户端 Anthropic）接受 SSE 全文或裸 JSON（转换器内部有 fallback）；
+        // 其余 OpenAI 源的逐事件转换器只接受 data 后的原始 JSON。
         if (string.Equals(sourceProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
+            && !(string.Equals(direction, "response", StringComparison.OrdinalIgnoreCase)
+                 && string.Equals(targetProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase))
             && (request.Payload.TrimStart().StartsWith("data:", StringComparison.OrdinalIgnoreCase)
                 || request.Payload.Contains("event:", StringComparison.OrdinalIgnoreCase)))
         {
@@ -513,48 +556,155 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         var direction = request.Direction.Trim();
         var sourceProtocol = request.SourceProtocol.Trim();
         var targetProtocol = request.TargetProtocol.Trim();
+        var conversionPath = BuildConversionPath(direction, sourceProtocol, targetProtocol, request.Streaming);
+        var inputSummary = ExtractInputSummary(direction, sourceProtocol, request.Streaming, request.Payload, request.EventName);
+        var fieldMappings = GetFieldMappings(direction, sourceProtocol, targetProtocol);
+        var missingFields = GetMissingFields(direction, sourceProtocol, request.Streaming, request.Payload);
+        // 链路与"方向"无关：请求方向 source=客户端/target=上游，响应方向相反，统一还原为完整双向链路。
+        var clientProtocol = direction.Equals("request", StringComparison.OrdinalIgnoreCase) ? sourceProtocol : targetProtocol;
+        var upstreamProtocol = direction.Equals("request", StringComparison.OrdinalIgnoreCase) ? targetProtocol : sourceProtocol;
+        var chain = BuildChain(clientProtocol, upstreamProtocol, request.Streaming);
+        var rulesApplied = false;
 
-        if (!request.Streaming)
+        try
         {
-            var payload = string.Equals(direction, "request", StringComparison.OrdinalIgnoreCase)
-                ? ProxyProtocolBridge.PrepareRequestBody(
-                    sourceProtocol,
-                    targetProtocol,
-                    request.Payload,
-                    request.ModelName.Trim(),
-                    false,
-                    request.OverrideReasoningEffort)
-                : ProxyProtocolBridge.AdaptResponseBodyForClient(
-                    targetProtocol,
-                    sourceProtocol,
-                    request.Payload,
-                    false,
-                    request.ModelName.Trim(),
-                    request.InputTokens,
-                    request.CachedTokens,
-                    request.OutputTokens);
+            string convertedPayload;
+            string? failureReason = null;
+            var completionDetected = false;
 
-            return new ProtocolDiagnosticsConversionResult(
-                payload,
-                CountSseEvents(payload),
-                false,
-                string.IsNullOrWhiteSpace(payload));
-        }
-
-        var state = new ChatToResponsesStreamState();
-        string convertedPayload;
-        if (string.Equals(direction, "request", StringComparison.OrdinalIgnoreCase))
-        {
-            if (sourceProtocol.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
-                && targetProtocol.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+            if (!request.Streaming)
             {
-                convertedPayload = ProxyProtocolBridge.ConvertChatStreamChunkToResponses(request.Payload, state);
+                convertedPayload = string.Equals(direction, "request", StringComparison.OrdinalIgnoreCase)
+                    ? ProxyProtocolBridge.PrepareRequestBody(
+                        sourceProtocol,
+                        targetProtocol,
+                        request.Payload,
+                        request.ModelName.Trim(),
+                        false,
+                        request.OverrideReasoningEffort)
+                    : ProxyProtocolBridge.AdaptResponseBodyForClient(
+                        targetProtocol,
+                        sourceProtocol,
+                        request.Payload,
+                        false,
+                        request.ModelName.Trim(),
+                        request.InputTokens,
+                        request.CachedTokens,
+                        request.OutputTokens);
+
+                if (string.IsNullOrWhiteSpace(convertedPayload))
+                {
+                    failureReason = "转换结果为空，请检查输入协议与字段结构是否符合源协议要求";
+                }
+                else if (direction.Equals("request", StringComparison.OrdinalIgnoreCase)
+                         && request.Rules is { Count: > 0 })
+                {
+                    // 试运行规则：仅请求方向（兼容规则本就是请求体规则），转换完成后按真实链路的
+                    // 顺序应用（scope 按透传/兼容筛选）；响应方向传了 rules 也忽略。
+                    var isPassthrough = sourceProtocol.Equals(targetProtocol, StringComparison.OrdinalIgnoreCase);
+                    convertedPayload = ProxyProtocolBridge.ApplyCompatibilityProfile(
+                        convertedPayload, request.Rules, isPassthrough);
+                    rulesApplied = true;
+                }
+            }
+            else if (string.Equals(direction, "request", StringComparison.OrdinalIgnoreCase))
+            {
+                if (sourceProtocol.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+                    && targetProtocol.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+                {
+                    var chatState = new ChatToResponsesStreamState();
+                    convertedPayload = ProxyProtocolBridge.ConvertChatStreamChunkToResponses(request.Payload, chatState);
+                    completionDetected = chatState.Done;
+                    failureReason = chatState.ConversionFailed
+                        ? BuildStreamFailureReason("Chat→Responses") : null;
+                }
+                else if (sourceProtocol.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+                         && targetProtocol.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+                {
+                    var chatState = new ChatToResponsesStreamState();
+                    convertedPayload = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(
+                        request.EventName!.Trim(), request.Payload, chatState);
+                    completionDetected = chatState.Done;
+                    failureReason = chatState.ConversionFailed
+                        ? BuildStreamFailureReason("Anthropic→Responses") : null;
+                }
+                else if (sourceProtocol.Equals(targetProtocol, StringComparison.OrdinalIgnoreCase))
+                {
+                    // 同协议流式：无逐事件转换器，事件原样透传。
+                    convertedPayload = request.Payload;
+                    completionDetected = convertedPayload.Contains("[DONE]", StringComparison.OrdinalIgnoreCase)
+                        || convertedPayload.Contains("message_stop", StringComparison.OrdinalIgnoreCase);
+                    failureReason = null;
+                }
+                else
+                {
+                    var anthropicState = new ProxyProtocolBridge.AnthropicOpenAiStreamState();
+                    convertedPayload = ProxyProtocolBridge.BuildAnthropicStreamStart(request.ModelName.Trim(), anthropicState)
+                        + ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(request.Payload, anthropicState);
+                    if (request.Payload.Trim().Equals("[DONE]", StringComparison.OrdinalIgnoreCase))
+                    {
+                        convertedPayload += ProxyProtocolBridge.CompleteAnthropicStream(anthropicState);
+                    }
+
+                    completionDetected = convertedPayload.Contains("event: message_stop", StringComparison.OrdinalIgnoreCase);
+                    failureReason = anthropicState.ConversionFailed
+                        ? BuildStreamFailureReason("OpenAI→Anthropic") : null;
+                }
+            }
+            else if (sourceProtocol.Equals("Responses", StringComparison.OrdinalIgnoreCase)
+                     && targetProtocol.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                var responsesState = new ResponsesToChatStreamState
+                {
+                    Model = request.ModelName.Trim(),
+                    InputTokens = request.InputTokens,
+                    CachedTokens = request.CachedTokens,
+                    OutputTokens = request.OutputTokens
+                };
+                convertedPayload = ProxyProtocolBridge.ConvertResponsesStreamingToChat(request.Payload, responsesState);
+                completionDetected = responsesState.Completed;
+                failureReason = responsesState.ConversionFailed
+                    ? BuildStreamFailureReason("Responses→Chat") : null;
             }
             else if (sourceProtocol.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
-                     && targetProtocol.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+                     && targetProtocol.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
             {
-                convertedPayload = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(
-                    request.EventName!.Trim(), request.Payload, state);
+                // 上游 Anthropic 流式 → 客户端 OpenAI：走 AdaptResponseBodyForClient 的
+                // BuildOpenAiStreamingResponseFromAnthropic（整体转换，非逐事件状态机）。
+                convertedPayload = ProxyProtocolBridge.AdaptResponseBodyForClient(
+                    "OpenAI", "Anthropic", request.Payload, true,
+                    request.ModelName.Trim(), request.InputTokens, request.CachedTokens, request.OutputTokens);
+                completionDetected = convertedPayload.Contains("[DONE]", StringComparison.OrdinalIgnoreCase)
+                    || convertedPayload.Contains("finish_reason", StringComparison.OrdinalIgnoreCase);
+                failureReason = string.IsNullOrWhiteSpace(convertedPayload)
+                    ? "转换结果为空，请检查输入协议与字段结构是否符合源协议要求" : null;
+            }
+            else if (sourceProtocol.Equals("Responses", StringComparison.OrdinalIgnoreCase)
+                     && targetProtocol.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+            {
+                // 上游 Responses 流式 → 客户端 Anthropic：两级转换 Responses→Chat→Anthropic。
+                var responsesState = new ResponsesToChatStreamState
+                {
+                    Model = request.ModelName.Trim(),
+                    InputTokens = request.InputTokens,
+                    CachedTokens = request.CachedTokens,
+                    OutputTokens = request.OutputTokens
+                };
+                var openAiPayload = ProxyProtocolBridge.ConvertResponsesStreamingToChat(request.Payload, responsesState);
+                convertedPayload = ProxyProtocolBridge.AdaptResponseBodyForClient(
+                    "Anthropic", "OpenAI", openAiPayload, true,
+                    request.ModelName.Trim(), request.InputTokens, request.CachedTokens, request.OutputTokens);
+                completionDetected = responsesState.Completed;
+                failureReason = responsesState.ConversionFailed
+                    ? BuildStreamFailureReason("Responses→Chat") : null;
+            }
+            else if (sourceProtocol.Equals(targetProtocol, StringComparison.OrdinalIgnoreCase))
+            {
+                // 同协议流式：事件原样透传。
+                convertedPayload = request.Payload;
+                completionDetected = convertedPayload.Contains("[DONE]", StringComparison.OrdinalIgnoreCase)
+                    || convertedPayload.Contains("message_stop", StringComparison.OrdinalIgnoreCase);
+                failureReason = null;
             }
             else
             {
@@ -565,47 +715,619 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                 {
                     convertedPayload += ProxyProtocolBridge.CompleteAnthropicStream(anthropicState);
                 }
+
+                completionDetected = convertedPayload.Contains("event: message_stop", StringComparison.OrdinalIgnoreCase);
+                failureReason = anthropicState.ConversionFailed
+                    ? BuildStreamFailureReason("OpenAI→Anthropic") : null;
             }
-        }
-        else if (sourceProtocol.Equals("Responses", StringComparison.OrdinalIgnoreCase)
-                 && targetProtocol.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
-        {
-            var responsesState = new ResponsesToChatStreamState
-            {
-                Model = request.ModelName.Trim(),
-                InputTokens = request.InputTokens,
-                CachedTokens = request.CachedTokens,
-                OutputTokens = request.OutputTokens
-            };
-            convertedPayload = ProxyProtocolBridge.ConvertResponsesStreamingToChat(request.Payload, responsesState);
+
             return new ProtocolDiagnosticsConversionResult(
                 convertedPayload,
                 CountSseEvents(convertedPayload),
-                responsesState.ConversionFailed,
-                responsesState.Completed);
+                failureReason is not null,
+                completionDetected,
+                conversionPath,
+                failureReason,
+                inputSummary,
+                fieldMappings,
+                missingFields,
+                chain,
+                rulesApplied);
+        }
+        catch (Exception ex)
+        {
+            // 转换内部抛出的异常（如字段类型不符）也返回具体原因，方便定位。
+            return new ProtocolDiagnosticsConversionResult(
+                string.Empty,
+                0,
+                true,
+                false,
+                conversionPath,
+                ex.Message,
+                inputSummary,
+                fieldMappings,
+                missingFields,
+                chain,
+                rulesApplied);
+        }
+    }
+
+    /// <summary>
+    /// 构建完整的转换链路（客户端 → 网关 → 上游 → 网关 → 客户端），
+    /// 展示每个环节是透传还是兼容转换、走的哪个转换函数、流式事件如何映射。
+    /// </summary>
+    /// <param name="clientProtocol">客户端（入口）协议。</param>
+    /// <param name="upstreamProtocol">上游站点协议。</param>
+    /// <param name="streaming">是否流式。</param>
+    private static ProtocolChainInfo BuildChain(string clientProtocol, string upstreamProtocol, bool streaming)
+    {
+        var isDirect = string.Equals(clientProtocol, upstreamProtocol, StringComparison.OrdinalIgnoreCase);
+        var stages = new List<ProtocolChainStage>
+        {
+            new("client-request", "客户端请求", clientProtocol, null,
+                "客户端原始请求体", false),
+            new("transform", "请求转换", $"{clientProtocol} → {upstreamProtocol}",
+                BuildRequestConversionFunction(clientProtocol, upstreamProtocol),
+                isDirect
+                    ? "同协议透传：仅替换 model / 校正 stream 与 store 字段"
+                    : "跨协议转换：请求体整体改写为目标协议",
+                !isDirect),
+            new("upstream", "上游处理", upstreamProtocol, null,
+                "站点按上游协议处理", false),
+            new("transform-response", "响应转换", $"{upstreamProtocol} → {clientProtocol}",
+                BuildResponseConversionFunction(clientProtocol, upstreamProtocol, streaming),
+                BuildResponseConversionNote(clientProtocol, upstreamProtocol, streaming),
+                !isDirect),
+            new("client-response", "客户端响应", clientProtocol, null,
+                "客户端按入口协议接收", false)
+        };
+
+        var eventMappings = streaming && !isDirect
+            ? BuildEventMappings(clientProtocol, upstreamProtocol)
+            : [];
+
+        return new ProtocolChainInfo(isDirect ? "direct" : "bridge", stages, eventMappings);
+    }
+
+    private static string? BuildRequestConversionFunction(string client, string upstream)
+    {
+        if (string.Equals(client, upstream, StringComparison.OrdinalIgnoreCase))
+        {
+            return client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+                ? "ReplaceModelName"
+                : "ReplaceOpenAiModelAndEnsureStreamUsage";
+        }
+
+        if (client.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ConvertChatRequestToResponses";
+        }
+
+        if (client.Equals("Responses", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+        {
+            return "ConvertResponsesRequestToChat";
+        }
+
+        if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return "BuildOpenAiRequestFromAnthropic → ConvertChatRequestToResponses";
+        }
+
+        if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            return "BuildOpenAiRequestFromAnthropic";
+        }
+
+        return "BuildAnthropicRequestFromOpenAi";
+    }
+
+    private static string? BuildResponseConversionFunction(string client, string upstream, bool streaming)
+    {
+        if (string.Equals(client, upstream, StringComparison.OrdinalIgnoreCase))
+        {
+            return "直接透传";
+        }
+
+        if (client.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return streaming ? "ConvertResponsesStreamingToChat" : "ConvertResponsesResponseToChat";
+        }
+
+        if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return streaming
+                ? "ConvertResponsesStreamingToChat → BuildAnthropicStreamingResponseFromOpenAi"
+                : "ConvertResponsesResponseToChat → BuildAnthropicResponseFromOpenAi";
+        }
+
+        if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            return streaming ? "BuildAnthropicStreamingResponseFromOpenAi" : "BuildAnthropicResponseFromOpenAi";
+        }
+
+        if (client.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+        {
+            return streaming ? "BuildOpenAiStreamingResponseFromAnthropic" : "BuildOpenAiResponseFromAnthropic";
+        }
+
+        // Responses 客户端组合：AdaptResponseBodyForClient 无专用分支，会落入默认路径（按 Anthropic 输入处理），
+        // 大概率不正确——在链路图中明确标出，便于用户发现协议组合缺口。
+        return streaming ? "BuildOpenAiStreamingResponseFromAnthropic（默认兜底路径 ⚠️）" : "BuildOpenAiResponseFromAnthropic（默认兜底路径 ⚠️）";
+    }
+
+    private static string? BuildResponseConversionNote(string client, string upstream, bool streaming)
+    {
+        if (string.Equals(client, upstream, StringComparison.OrdinalIgnoreCase))
+        {
+            return "同协议透传：上游响应原样返回客户端";
+        }
+
+        if (client.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return "⚠️ 该组合无专用响应转换分支：AdaptResponseBodyForClient 按默认路径处理（把上游响应当作 OpenAI 输入转换），结果可能不正确，建议改用 OpenAI/Anthropic 客户端协议或检查上游协议";
+        }
+
+        return streaming
+            ? "流式：逐事件转换（下方为事件对应关系）"
+            : "非流式：响应体整体改写为客户端协议";
+    }
+
+    /// <summary>
+    /// 流式响应转换的事件级映射表（源事件 → 目标事件）。
+    /// </summary>
+    private static IReadOnlyList<ProtocolEventMapping> BuildEventMappings(string client, string upstream)
+    {
+        if (client.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                new("response.created", "chat.completion.chunk", "首块：role=assistant"),
+                new("response.output_text.delta", "chat.completion.chunk", "delta.content"),
+                new("response.reasoning_summary_text.delta", "chat.completion.chunk", "delta.reasoning_content"),
+                new("response.function_call_arguments.delta", "chat.completion.chunk", "delta.tool_calls"),
+                new("response.completed", "chat.completion.chunk + [DONE]", "finish_reason + usage")
+            ];
+        }
+
+        if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                new("response.created", "message_start", "会话起始"),
+                new("response.output_item.added", "content_block_start", "text → 文本块；function_call → tool_use"),
+                new("response.output_text.delta", "content_block_delta", "delta.type=text_delta"),
+                new("response.reasoning_summary_text.delta", "content_block_delta", "delta.type=thinking_delta"),
+                new("response.function_call_arguments.delta", "content_block_delta", "delta.type=input_json_delta"),
+                new("response.completed", "message_delta + message_stop", "stop_reason + 结束")
+            ];
+        }
+
+        if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                new("chat.completion.chunk（首块）", "message_start", "会话起始 + usage"),
+                new("chat.completion.chunk（delta.content）", "content_block_delta", "delta.type=text_delta"),
+                new("chat.completion.chunk（delta.reasoning_content）", "content_block_delta", "delta.type=thinking_delta"),
+                new("chat.completion.chunk（delta.tool_calls）", "content_block_start + content_block_delta", "tool_use + input_json_delta"),
+                new("[DONE]", "message_delta + message_stop", "stop_reason + 结束")
+            ];
+        }
+
+        if (client.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                new("message_start", "chat.completion.chunk", "首块：role=assistant"),
+                new("content_block_delta（text_delta）", "chat.completion.chunk", "delta.content"),
+                new("content_block_delta（thinking_delta）", "chat.completion.chunk", "delta.reasoning_content"),
+                new("content_block_start + content_block_delta（input_json_delta）", "chat.completion.chunk", "delta.tool_calls"),
+                new("message_delta", "chat.completion.chunk", "finish_reason"),
+                new("message_stop", "[DONE]", "流结束")
+            ];
+        }
+
+        return [];
+    }
+
+    private static string BuildConversionPath(string direction, string source, string target, bool streaming)
+    {
+        if (streaming)
+        {
+            if (direction.Equals("request", StringComparison.OrdinalIgnoreCase))
+            {
+                if (source.Equals("OpenAI", StringComparison.OrdinalIgnoreCase) && target.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "ConvertChatStreamChunkToResponses";
+                }
+
+                if (source.Equals("Anthropic", StringComparison.OrdinalIgnoreCase) && target.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "ConvertAnthropicStreamChunkToResponses";
+                }
+
+                return "ConvertOpenAiStreamChunkToAnthropic (+ BuildAnthropicStreamStart / CompleteAnthropicStream)";
+            }
+
+            return source.Equals("Responses", StringComparison.OrdinalIgnoreCase)
+                ? "ConvertResponsesStreamingToChat"
+                : "ConvertOpenAiStreamChunkToAnthropic (+ BuildAnthropicStreamStart / CompleteAnthropicStream)";
+        }
+
+        return direction.Equals("request", StringComparison.OrdinalIgnoreCase)
+            ? "PrepareRequestBody"
+            : "AdaptResponseBodyForClient";
+    }
+
+    private static string BuildStreamFailureReason(string conversion)
+        => $"流式转换失败（{conversion}）：事件类型或字段结构与目标协议不匹配，请对照下方的字段映射检查输入片段";
+
+    /// <summary>
+    /// 从输入 payload 中提取关键字段摘要，帮助用户一眼看出"网关识别到了什么"。
+    /// </summary>
+    private static JsonObject? ExtractInputSummary(
+        string direction,
+        string sourceProtocol,
+        bool streaming,
+        string payload,
+        string? eventName)
+    {
+        try
+        {
+            var summary = new JsonObject();
+            string? dataJson = payload;
+
+            if (streaming)
+            {
+                // 流式输入优先提取事件名（完整 SSE 块或原始 JSON 都兼容）
+                if (!string.IsNullOrWhiteSpace(eventName))
+                {
+                    summary["事件"] = eventName!.Trim();
+                }
+                else
+                {
+                    var eventLine = payload.Split('\n')
+                        .FirstOrDefault(line => line.StartsWith("event:", StringComparison.OrdinalIgnoreCase));
+                    if (eventLine is not null)
+                    {
+                        summary["事件"] = eventLine.Length > 6 ? eventLine[6..].Trim() : string.Empty;
+                    }
+                }
+
+                var dataLine = payload.Split('\n')
+                    .FirstOrDefault(line => line.StartsWith("data:", StringComparison.OrdinalIgnoreCase));
+                if (dataLine is not null)
+                {
+                    dataJson = dataLine.Length > 5 ? dataLine[5..].TrimStart() : string.Empty;
+                }
+
+                if (string.Equals(dataJson, "[DONE]", StringComparison.OrdinalIgnoreCase))
+                {
+                    summary["结束标记"] = "[DONE]";
+                    return summary;
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(dataJson))
+            {
+                return summary;
+            }
+
+            using var document = JsonDocument.Parse(dataJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return summary;
+            }
+
+            var isRequest = direction.Equals("request", StringComparison.OrdinalIgnoreCase);
+            if (sourceProtocol.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                TryAddSummary(summary, root, "模型", "model");
+                TryAddSummary(summary, root, "流式", "stream");
+                if (isRequest)
+                {
+                    TryAddSummary(summary, root, "消息数", "messages");
+                    TryAddSummary(summary, root, "最大 token", "max_tokens");
+                    TryAddSummary(summary, root, "温度", "temperature");
+                    TryAddSummary(summary, root, "工具数", "tools");
+                    TryAddSummary(summary, root, "推理等级", "reasoning_effort");
+                }
+                else
+                {
+                    TryAddSummary(summary, root, "返回条数", "choices");
+                    TryAddSummary(summary, root, "输入 token", "usage", "prompt_tokens");
+                    TryAddSummary(summary, root, "输出 token", "usage", "completion_tokens");
+                    TryAddSummary(summary, root, "缓存 token", "usage", "prompt_tokens_details", "cached_tokens");
+                    TryAddSummary(summary, root, "结束原因", "choices", "0", "finish_reason");
+                }
+            }
+            else if (sourceProtocol.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+            {
+                TryAddSummary(summary, root, "模型", "model");
+                TryAddSummary(summary, root, "流式", "stream");
+                if (isRequest)
+                {
+                    TryAddSummary(summary, root, "消息数", "messages");
+                    TryAddSummary(summary, root, "最大 token", "max_tokens");
+                    TryAddSummary(summary, root, "温度", "temperature");
+                    TryAddSummary(summary, root, "工具数", "tools");
+                }
+                else
+                {
+                    TryAddSummary(summary, root, "内容块数", "content");
+                    TryAddSummary(summary, root, "停止原因", "stop_reason");
+                    TryAddSummary(summary, root, "输入 token", "usage", "input_tokens");
+                    TryAddSummary(summary, root, "输出 token", "usage", "output_tokens");
+                    TryAddSummary(summary, root, "缓存读", "usage", "cache_read_input_tokens");
+                    TryAddSummary(summary, root, "缓存写", "usage", "cache_creation_input_tokens");
+                }
+            }
+            else
+            {
+                TryAddSummary(summary, root, "模型", "model");
+                TryAddSummary(summary, root, "流式", "stream");
+                if (isRequest)
+                {
+                    TryAddSummary(summary, root, "输入条数", "input");
+                    TryAddSummary(summary, root, "工具数", "tools");
+                }
+                else
+                {
+                    TryAddSummary(summary, root, "状态", "status");
+                    TryAddSummary(summary, root, "输出条数", "output");
+                    TryAddSummary(summary, root, "输入 token", "usage", "input_tokens");
+                    TryAddSummary(summary, root, "输出 token", "usage", "output_tokens");
+                    TryAddSummary(summary, root, "缓存 token", "usage", "input_tokens_details", "cached_tokens");
+                }
+            }
+
+            return summary;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static void TryAddSummary(JsonObject summary, JsonElement root, string label, params string[] path)
+    {
+        var current = root;
+        foreach (var segment in path)
+        {
+            if (segment == "0")
+            {
+                if (current.ValueKind != JsonValueKind.Array || current.GetArrayLength() == 0)
+                {
+                    return;
+                }
+
+                current = current[0];
+                continue;
+            }
+
+            if (!current.TryGetProperty(segment, out var next))
+            {
+                return;
+            }
+
+            current = next;
+        }
+
+        summary[label] = current.ValueKind switch
+        {
+            JsonValueKind.String => JsonValue.Create(current.GetString()),
+            JsonValueKind.Number => JsonValue.Create(current.GetRawText()),
+            JsonValueKind.True => JsonValue.Create(true),
+            JsonValueKind.False => JsonValue.Create(false),
+            JsonValueKind.Array => JsonValue.Create($"[{current.GetArrayLength()} 项]"),
+            JsonValueKind.Object => JsonValue.Create("{...}"),
+            _ => null
+        };
+    }
+
+    /// <summary>
+    /// 返回当前方向/协议组合的字段对应关系表，帮助定位转换后字段去向。
+    /// </summary>
+    private static IReadOnlyList<ProtocolFieldMapping> GetFieldMappings(string direction, string source, string target)
+    {
+        var isRequest = direction.Equals("request", StringComparison.OrdinalIgnoreCase);
+        var key = $"{source}->{target}";
+        var mappings = new List<ProtocolFieldMapping>();
+
+        if (isRequest)
+        {
+            switch (key)
+            {
+                case "OpenAI->Anthropic":
+                    mappings.Add(new("model", "model", "模型名透传"));
+                    mappings.Add(new("messages", "messages", "角色/内容结构转换（system 并入、数组内容取文本）"));
+                    mappings.Add(new("stream", "stream", "透传"));
+                    mappings.Add(new("max_tokens", "max_tokens", "透传"));
+                    mappings.Add(new("temperature", "temperature", "透传"));
+                    mappings.Add(new("top_p", "top_p", "透传"));
+                    mappings.Add(new("stop", "stop_sequences", "字符串自动转数组"));
+                    mappings.Add(new("tools", "tools", "function → tool 结构转换"));
+                    mappings.Add(new("tool_choice", "tool_choice", "auto/none 保持，指定名转 { type: tool }"));
+                    mappings.Add(new("reasoning_effort", "thinking", "强制思考等级时内联覆盖"));
+                    mappings.Add(new("frequency_penalty / presence_penalty / logit_bias", "—", "Anthropic 无对应字段，忽略"));
+                    break;
+                case "Anthropic->OpenAI":
+                    mappings.Add(new("model", "model", "模型名透传"));
+                    mappings.Add(new("messages", "messages", "角色/内容结构转换"));
+                    mappings.Add(new("stream", "stream", "透传"));
+                    mappings.Add(new("max_tokens", "max_tokens", "透传"));
+                    mappings.Add(new("temperature", "temperature", "透传"));
+                    mappings.Add(new("stop_sequences", "stop", "数组转字符串（单个时）"));
+                    mappings.Add(new("tools", "tools", "tool → function 结构转换"));
+                    mappings.Add(new("tool_choice", "tool_choice", "结构转换"));
+                    mappings.Add(new("thinking", "reasoning_effort", "按策略转换"));
+                    break;
+                case "OpenAI->Responses":
+                    mappings.Add(new("model", "model", "模型名透传"));
+                    mappings.Add(new("messages", "input", "角色映射 + 内容结构转换"));
+                    mappings.Add(new("stream", "stream", "透传"));
+                    mappings.Add(new("max_tokens", "max_output_tokens", "透传（若存在）"));
+                    mappings.Add(new("temperature", "temperature", "透传"));
+                    mappings.Add(new("tools", "tools", "结构转换"));
+                    mappings.Add(new("tool_choice", "tool_choice", "结构转换"));
+                    mappings.Add(new("reasoning_effort", "reasoning", "结构转换"));
+                    break;
+                case "Anthropic->Responses":
+                    mappings.Add(new("model", "model", "模型名透传"));
+                    mappings.Add(new("messages", "input", "角色映射 + 内容结构转换"));
+                    mappings.Add(new("stream", "stream", "透传"));
+                    mappings.Add(new("max_tokens", "max_output_tokens", "透传（若存在）"));
+                    mappings.Add(new("temperature", "temperature", "透传"));
+                    mappings.Add(new("tools", "tools", "结构转换"));
+                    mappings.Add(new("thinking", "reasoning", "结构转换"));
+                    break;
+                default:
+                    mappings.Add(new(source + " 请求体", target + " 请求体", "逐字段转换，无对应字段时忽略"));
+                    break;
+            }
         }
         else
         {
-            var anthropicState = new ProxyProtocolBridge.AnthropicOpenAiStreamState();
-            convertedPayload = ProxyProtocolBridge.BuildAnthropicStreamStart(request.ModelName.Trim(), anthropicState)
-                + ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(request.Payload, anthropicState);
-            if (request.Payload.Trim().Equals("[DONE]", StringComparison.OrdinalIgnoreCase))
+            switch (key)
             {
-                convertedPayload += ProxyProtocolBridge.CompleteAnthropicStream(anthropicState);
+                case "OpenAI->Anthropic":
+                    mappings.Add(new("choices[].message.content", "content[].text", "输出文本转换"));
+                    mappings.Add(new("choices[].message.tool_calls", "content[].type=tool_use", "工具调用转换"));
+                    mappings.Add(new("choices[].finish_reason", "stop_reason", "stop → end_turn、tool_calls → tool_use 等"));
+                    mappings.Add(new("usage.prompt_tokens", "usage.input_tokens", "含缓存口径还原"));
+                    mappings.Add(new("usage.completion_tokens", "usage.output_tokens", "透传"));
+                    mappings.Add(new("usage.prompt_tokens_details.cached_tokens", "usage.cache_read_input_tokens", "缓存命中映射"));
+                    break;
+                case "Anthropic->OpenAI":
+                    mappings.Add(new("content[].text", "choices[].message.content", "输出文本转换"));
+                    mappings.Add(new("content[].type=tool_use", "choices[].message.tool_calls", "工具调用转换"));
+                    mappings.Add(new("stop_reason", "choices[].finish_reason", "end_turn → stop、tool_use → tool_calls 等"));
+                    mappings.Add(new("usage.input_tokens", "usage.prompt_tokens", "含缓存口径还原"));
+                    mappings.Add(new("usage.output_tokens", "usage.completion_tokens", "透传"));
+                    mappings.Add(new("usage.cache_read_input_tokens", "usage.prompt_tokens_details.cached_tokens", "缓存命中映射"));
+                    break;
+                case "Responses->OpenAI":
+                    mappings.Add(new("output[].output_text", "choices[].message.content", "输出文本转换"));
+                    mappings.Add(new("output[].function_call", "choices[].message.tool_calls", "工具调用转换"));
+                    mappings.Add(new("status", "choices[].finish_reason", "completed → stop 等"));
+                    mappings.Add(new("usage.input_tokens", "usage.prompt_tokens", "含缓存口径还原"));
+                    mappings.Add(new("usage.output_tokens", "usage.completion_tokens", "透传"));
+                    mappings.Add(new("usage.input_tokens_details.cached_tokens", "usage.prompt_tokens_details.cached_tokens", "缓存命中映射"));
+                    break;
+                case "Responses->Anthropic":
+                    mappings.Add(new("output[].output_text", "content[].text", "输出文本转换"));
+                    mappings.Add(new("output[].function_call", "content[].type=tool_use", "工具调用转换"));
+                    mappings.Add(new("status", "stop_reason", "completed → end_turn 等"));
+                    mappings.Add(new("usage.input_tokens", "usage.input_tokens", "含缓存口径还原"));
+                    mappings.Add(new("usage.output_tokens", "usage.output_tokens", "透传"));
+                    mappings.Add(new("usage.input_tokens_details.cached_tokens", "usage.cache_read_input_tokens", "缓存命中映射"));
+                    break;
+                default:
+                    mappings.Add(new(source + " 响应体", target + " 响应体", "逐字段转换，无对应字段时忽略"));
+                    break;
             }
-
-            return new ProtocolDiagnosticsConversionResult(
-                convertedPayload,
-                CountSseEvents(convertedPayload),
-                anthropicState.ConversionFailed,
-                convertedPayload.Contains("event: message_stop", StringComparison.OrdinalIgnoreCase));
         }
 
-        return new ProtocolDiagnosticsConversionResult(
-            convertedPayload,
-            CountSseEvents(convertedPayload),
-            state.ConversionFailed,
-            state.Done);
+        return mappings;
+    }
+
+    /// <summary>
+    /// 检查输入中缺失的关键字段，输出可执行的补全建议。
+    /// </summary>
+    private static IReadOnlyList<string> GetMissingFields(
+        string direction,
+        string sourceProtocol,
+        bool streaming,
+        string payload)
+    {
+        var missing = new List<string>();
+        if (streaming)
+        {
+            // 流式诊断输入是单个事件片段（chat chunk / Anthropic 事件 / Responses SSE 块），
+            // 没有"整体请求/响应字段"语义：messages/max_tokens/usage/content 等整体字段检查
+            // 在单事件上必然缺失，会误报。返回空列表，由校验层负责格式正确性。
+            return missing;
+        }
+
+        string? dataJson = payload;
+
+        if (string.IsNullOrWhiteSpace(dataJson) || string.Equals(dataJson, "[DONE]", StringComparison.OrdinalIgnoreCase))
+        {
+            return missing;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(dataJson);
+            var root = document.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return missing;
+            }
+
+            var isRequest = direction.Equals("request", StringComparison.OrdinalIgnoreCase);
+            if (isRequest)
+            {
+                if (sourceProtocol.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+                    && !root.TryGetProperty("max_tokens", out _))
+                {
+                    missing.Add("Anthropic 请求缺少必填字段 max_tokens");
+                }
+
+                if (sourceProtocol.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+                    && !root.TryGetProperty("messages", out _))
+                {
+                    missing.Add("OpenAI 请求缺少 messages，上游会返回参数错误");
+                }
+
+                if (sourceProtocol.Equals("Responses", StringComparison.OrdinalIgnoreCase)
+                    && !root.TryGetProperty("input", out _))
+                {
+                    missing.Add("Responses 请求缺少 input");
+                }
+            }
+            else
+            {
+                if (!root.TryGetProperty("usage", out _))
+                {
+                    missing.Add("响应缺少 usage 对象，token 统计与客户端计费会显示为 0");
+                }
+
+                if (sourceProtocol.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+                    && !root.TryGetProperty("choices", out _))
+                {
+                    missing.Add("OpenAI 响应缺少 choices");
+                }
+
+                if (sourceProtocol.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+                    && !root.TryGetProperty("content", out _))
+                {
+                    missing.Add("Anthropic 响应缺少 content（空响应）");
+                }
+
+                if (sourceProtocol.Equals("Responses", StringComparison.OrdinalIgnoreCase)
+                    && !root.TryGetProperty("output", out _))
+                {
+                    missing.Add("Responses 响应缺少 output");
+                }
+            }
+        }
+        catch
+        {
+            // payload 解析失败不在此处报错，校验层已处理
+        }
+
+        return missing;
     }
 
     private static bool IsSupportedProtocol(string protocol)
@@ -614,7 +1336,9 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             || protocol.Equals("Responses", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSupportedStreamingDirection(string direction, string source, string target)
-        => (direction.Equals("request", StringComparison.OrdinalIgnoreCase)
+        // 同协议：流式事件原样透传。
+        => source.Equals(target, StringComparison.OrdinalIgnoreCase)
+        || (direction.Equals("request", StringComparison.OrdinalIgnoreCase)
             && ((source.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
                  && target.Equals("Responses", StringComparison.OrdinalIgnoreCase))
                 || (source.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
@@ -625,6 +1349,10 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             && ((source.Equals("Responses", StringComparison.OrdinalIgnoreCase)
                  && target.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
                 || (source.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+                    && target.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+                || (source.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+                    && target.Equals("OpenAI", StringComparison.OrdinalIgnoreCase))
+                || (source.Equals("Responses", StringComparison.OrdinalIgnoreCase)
                     && target.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))));
 
     private static bool HasSseFraming(string payload)
@@ -712,10 +1440,52 @@ public sealed class ProtocolDiagnosticsRequest
     public int InputTokens { get; set; }
     public int CachedTokens { get; set; }
     public int OutputTokens { get; set; }
+
+    /// <summary>
+    /// 试运行时要套用的兼容规则（可选）。仅对非流式请求方向生效，scope 按透传/兼容路径筛选，
+    /// 与真实链路 PrepareRequestBody 的规则应用语义一致。
+    /// </summary>
+    public List<CompatibilityRule>? Rules { get; set; }
 }
 
 internal sealed record ProtocolDiagnosticsConversionResult(
     string Payload,
     int EventCount,
     bool ConversionFailed,
-    bool CompletionDetected);
+    bool CompletionDetected,
+    string ConversionPath,
+    string? FailureReason,
+    JsonObject? InputSummary,
+    IReadOnlyList<ProtocolFieldMapping> FieldMappings,
+    IReadOnlyList<string> MissingFields,
+    ProtocolChainInfo Chain,
+    bool RulesApplied);
+
+/// <summary>
+/// 一条协议字段对应关系（源字段 → 目标字段）。
+/// </summary>
+internal sealed record ProtocolFieldMapping(string Source, string Target, string? Note);
+
+/// <summary>
+/// 一次调用在 客户端 → 网关 → 上游 → 网关 → 客户端 链路中的完整转换可视化信息。
+/// </summary>
+internal sealed record ProtocolChainInfo(
+    string Mode, // direct（透传）| bridge（兼容转换）
+    IReadOnlyList<ProtocolChainStage> Stages,
+    IReadOnlyList<ProtocolEventMapping> EventMappings);
+
+/// <summary>
+/// 链路中的一个环节。
+/// </summary>
+internal sealed record ProtocolChainStage(
+    string Kind, // client-request | transform | upstream | transform-response | client-response
+    string Label,
+    string Protocol,
+    string? Function,
+    string? Note,
+    bool IsBridge);
+
+/// <summary>
+/// 流式响应转换中的事件级对应关系（源事件 → 目标事件）。
+/// </summary>
+internal sealed record ProtocolEventMapping(string SourceEvent, string TargetEvent, string? Note);
