@@ -357,10 +357,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     result.OutputTokens);
                 return ProxyProtocolBridge.ConvertChatResponseToCompletions(chatBody);
             },
-            streamingBridgeFactory: static (controller, forwardRequest, modelName, _) =>
+            streamingBridgeFactory: static (controller, forwardRequest, modelName, cancellationToken) =>
                 string.Equals(forwardRequest.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
-                    ? controller.ForwardAnthropicStreamAsCompletionsAsync(forwardRequest, modelName, CancellationToken.None)
-                    : controller.ForwardOpenAiStreamAsCompletionsAsync(forwardRequest, modelName, CancellationToken.None),
+                    ? controller.ForwardAnthropicStreamAsCompletionsAsync(forwardRequest, modelName, cancellationToken)
+                    : controller.ForwardOpenAiStreamAsCompletionsAsync(forwardRequest, modelName, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -419,12 +419,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     result.InputTokens,
                     result.CachedTokens,
                     result.OutputTokens),
-            streamingBridgeFactory: static (controller, forwardRequest, modelName, _) =>
+            streamingBridgeFactory: static (controller, forwardRequest, modelName, cancellationToken) =>
                 string.Equals(forwardRequest.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
-                    ? controller.ForwardAnthropicStreamAsOpenAiAsync(forwardRequest, modelName, CancellationToken.None)
+                    ? controller.ForwardAnthropicStreamAsOpenAiAsync(forwardRequest, modelName, cancellationToken)
                     : string.Equals(forwardRequest.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                        ? controller.ForwardResponsesStreamAsOpenAiAsync(forwardRequest, modelName, CancellationToken.None)
-                        : controller.ForwardOpenAiStreamPassthroughAsync(forwardRequest, CancellationToken.None),
+                        ? controller.ForwardResponsesStreamAsOpenAiAsync(forwardRequest, modelName, cancellationToken)
+                        : controller.ForwardOpenAiStreamPassthroughAsync(forwardRequest, cancellationToken),
             cancellationToken: cancellationToken);
     }
 

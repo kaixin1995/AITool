@@ -550,15 +550,25 @@ async function handleFetchAllModels(): Promise<void> {
 
 async function pollCatalogProgress(): Promise<void> {
   if (!catalogTaskId.value) return
-  const progress = await sitesApi.getFetchAllProgress(catalogTaskId.value)
-  catalogProgress.value = { total: progress.totalSites, completed: progress.completedSites }
-  applyCatalogSites(progress.sites)
-  if (progress.isCompleted) {
-    catalogLoading.value = false
+  // 失败即停止轮询并复位状态：任务过期/网络断开时若不停止，会每 1.2s 弹一次全局错误直到关闭页面。
+  try {
+    const progress = await sitesApi.getFetchAllProgress(catalogTaskId.value)
+    catalogProgress.value = { total: progress.totalSites, completed: progress.completedSites }
+    applyCatalogSites(progress.sites)
+    if (progress.isCompleted) {
+      catalogLoading.value = false
+      if (catalogTimer) {
+        window.clearInterval(catalogTimer)
+        catalogTimer = undefined
+      }
+    }
+  } catch (e) {
     if (catalogTimer) {
       window.clearInterval(catalogTimer)
       catalogTimer = undefined
     }
+    catalogLoading.value = false
+    message.error(`拉取进度已停止：${(e as Error).message}`)
   }
 }
 

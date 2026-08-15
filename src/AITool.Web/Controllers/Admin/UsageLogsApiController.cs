@@ -594,9 +594,12 @@ public sealed class UsageLogsApiController : ControllerBase
         // 结束时间统一用"今天结束"（明天0点），与 Analytics 口径一致，
         // 避免不同页面对"当天"的结束时刻定义不同导致统计范围偏差。
         var endOfToday = now.Date.AddDays(1);
+        // 周起点也统一为周一（与 AnalyticsApiController 相同公式）；.DayOfWeek 周日=0，
+        // 直接 -(int)DayOfWeek 会把周日起算成"本周"，导致两页"本周"范围相差 1-2 天。
+        var daysFromMonday = (7 + (int)now.DayOfWeek - 1) % 7;
         return normalized switch
         {
-            "week" => (now.Date.AddDays(-(int)now.DayOfWeek), endOfToday),
+            "week" => (now.Date.AddDays(-daysFromMonday), endOfToday),
             "month" => (new DateTimeOffset(new DateTime(now.Year, now.Month, 1), now.Offset), endOfToday),
             "all" => (DateTimeOffset.MinValue, DateTimeOffset.MaxValue),
             _ => (now.Date, endOfToday)

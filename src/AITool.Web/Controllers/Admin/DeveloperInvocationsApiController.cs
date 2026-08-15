@@ -321,8 +321,12 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
 
         // 熔断存储的 key 现在是 CircuitKey（多 Key 候选为合成 Guid，单 Key/兼容候选为 RouteId 本身）。
         // 从缓存层展开后的路由候选构建 CircuitKey → 候选信息 字典，正确匹配每条熔断状态。
+        // 同一站点同一站点模型可能被多个模型入口引用（CircuitKey 按站点+模型派生会重复），
+        // 取首条即可——同键候选的站点/模型信息相同，重复键若直接 ToDictionary 会抛异常打挂整个面板。
         var allTargets = await _metadataCache.GetAllRouteTargetsAsync(cancellationToken);
-        var targetByCircuitKey = allTargets.ToDictionary(x => x.CircuitKey, x => x);
+        var targetByCircuitKey = allTargets
+            .GroupBy(x => x.CircuitKey)
+            .ToDictionary(g => g.Key, g => g.First());
 
         var result = new List<object>(states.Count);
         foreach (var pair in states)

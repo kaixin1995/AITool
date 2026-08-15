@@ -912,18 +912,18 @@ public static partial class ProxyProtocolBridge
                 using var doc = JsonDocument.Parse(jsonText);
                 var root = doc.RootElement;
 
-                // 用量
-                if (root.TryGetProperty("usage", out var usage))
+                // 用量：OpenAI 开启 include_usage 后常规分片会带 "usage": null，必须判 Object 再读子字段。
+                if (root.TryGetProperty("usage", out var usage) && usage.ValueKind == JsonValueKind.Object)
                 {
-                    if (usage.TryGetProperty("prompt_tokens", out var pt))
+                    if (usage.TryGetProperty("prompt_tokens", out var pt) && pt.ValueKind == JsonValueKind.Number)
                         usageInfo.UpstreamInput = pt.GetInt32();
-                    if (usage.TryGetProperty("completion_tokens", out var ct))
+                    if (usage.TryGetProperty("completion_tokens", out var ct) && ct.ValueKind == JsonValueKind.Number)
                         usageInfo.UpstreamOutput = ct.GetInt32();
-                    if (usage.TryGetProperty("prompt_tokens_details", out var ptd))
+                    if (usage.TryGetProperty("prompt_tokens_details", out var ptd) && ptd.ValueKind == JsonValueKind.Object)
                     {
-                        if (ptd.TryGetProperty("cached_tokens", out var cacht))
+                        if (ptd.TryGetProperty("cached_tokens", out var cacht) && cacht.ValueKind == JsonValueKind.Number)
                             usageInfo.UpstreamCached = cacht.GetInt32();
-                        if (ptd.TryGetProperty("cached_creation_tokens", out var cct))
+                        if (ptd.TryGetProperty("cached_creation_tokens", out var cct) && cct.ValueKind == JsonValueKind.Number)
                             usageInfo.CacheCreation = cct.GetInt32();
                     }
                 }

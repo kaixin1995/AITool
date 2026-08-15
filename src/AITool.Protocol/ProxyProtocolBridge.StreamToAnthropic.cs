@@ -71,9 +71,11 @@ public static partial class ProxyProtocolBridge
                     state.OutputTokens = extracted.OutputTokens;
                 }
 
-                // 提取 cache_creation_tokens
+                // 提取 cache_creation_tokens（防御中间层给 null/字符串形态的值）
                 if (usage.TryGetProperty("prompt_tokens_details", out var ptd)
-                    && ptd.TryGetProperty("cached_creation_tokens", out var cct))
+                    && ptd.ValueKind == JsonValueKind.Object
+                    && ptd.TryGetProperty("cached_creation_tokens", out var cct)
+                    && cct.ValueKind == JsonValueKind.Number)
                 {
                     state.CacheCreationTokens = cct.GetInt32();
                 }
@@ -102,9 +104,12 @@ public static partial class ProxyProtocolBridge
                 if (reasoningText.Length > 0)
                 {
                     state.HadAnyContent = true;
-                    if (state.ThinkingIndex < 0)
+                    // 工具调用已关闭 thinking 块后又出现新的推理增量（GLM/DeepSeek 分段思考）：
+                    // 对已 stop 的索引继续发 delta 违反 Anthropic 事件序，这里分配新索引重开一个 thinking 块。
+                    if (state.ThinkingIndex < 0 || state.ThinkingClosed)
                     {
                         state.ThinkingIndex = state.NextContentIndex++;
+                        state.ThinkingClosed = false;
                         AppendSseEvent(builder, "content_block_start", new JsonObject
                         {
                             ["type"] = "content_block_start",
@@ -159,9 +164,11 @@ public static partial class ProxyProtocolBridge
                     state.ThinkingClosed = true;
                 }
 
-                if (state.TextIndex < 0)
+                if (state.TextIndex < 0 || state.TextClosed)
                 {
+                    // 同 thinking：工具调用关闭 text 块后再来的尾段文本用新索引重开，避免对已 stop 的块发 delta。
                     state.TextIndex = state.NextContentIndex++;
+                    state.TextClosed = false;
                     AppendSseEvent(builder, "content_block_start", new JsonObject
                     {
                         ["type"] = "content_block_start",

@@ -309,11 +309,14 @@ public sealed class CodexInspectionService : BackgroundService
 
     private async Task DisableAccountAsync(AppDbContext dbContext, ProxyRequestMetadataCache cache, CodexAccount account, CancellationToken ct, string reason)
     {
-        // 用 CopyNew 独立连接写入，不碰单例 SqlSugarScope，无需串行锁
+        // 用 CopyNew 独立连接写入，不碰单例 SqlSugarScope，无需串行锁；
+        // 只更新目标列，account 可能来自 30s 缓存快照，整行回写会覆盖并发写入的其他字段（如刚刷新的 token）。
         using var client = dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         account.IsEnabled = false;
-        await client.Updateable(account).ExecuteCommandAsync(ct);
+        await client.Updateable(account)
+            .UpdateColumns(x => new { x.IsEnabled })
+            .ExecuteCommandAsync(ct);
         var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null && site.IsEnabled)
         {
@@ -332,7 +335,9 @@ public sealed class CodexInspectionService : BackgroundService
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         account.IsEnabled = true;
         account.ManuallyDisabled = false;
-        await client.Updateable(account).ExecuteCommandAsync(ct);
+        await client.Updateable(account)
+            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled })
+            .ExecuteCommandAsync(ct);
         var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null && !site.IsEnabled)
         {

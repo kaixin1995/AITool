@@ -183,7 +183,7 @@ public static class SqlSugarSetup
             // SqlSugar 存储 DateTimeOffset 时只存时钟值（不带 offset），读取时配本地时区 offset。
             // 若写入的是 UTC（+00:00），读回配 +08:00 会导致瞬时偏移（时钟值不变但 offset 变了）。
             // 这里在写入前把所有 DateTimeOffset 转为本地时区，使存储的时钟值与读回的 offset 一致，
-            // 保证往返瞬时正确。查询参数（也是 DateTimeOffset）由 SqlSugar 同样处理，存查一致。
+            // 保证往返瞬时正确。
             config.Aop.DataExecuting = (oldValue, entityInfo) =>
             {
                 if (entityInfo.OperationType == DataFilterType.InsertByObject
@@ -194,6 +194,27 @@ public static class SqlSugarSetup
                         entityInfo.SetValue(dto.ToLocalTime());
                     }
                 }
+            };
+
+            // 查询参数侧的对称修复：DataExecuting 只作用于实体写入，不作用于 Where 条件参数。
+            // 若查询参数是 UTC（如 DateTimeOffset.UtcNow）而存储值是本地时钟，SQLite 按字符串比较
+            // 会导致所有时间过滤系统性偏移一个时区（UTC+8 部署下即 8 小时：token 刷新判定、冷却恢复、
+            // 日志保留清理等全部延后）。这里在命令执行前把所有 DateTimeOffset 参数统一转本地时钟，
+            // 与存储侧对齐；对已是本地时区的参数（前端传入的本地时间）ToLocalTime 是幂等操作。
+            config.Aop.OnExecutingChangeSql = (sql, pars) =>
+            {
+                if (pars is { Length: > 0 })
+                {
+                    foreach (var parameter in pars)
+                    {
+                        if (parameter?.Value is DateTimeOffset dto)
+                        {
+                            parameter.Value = dto.ToLocalTime();
+                        }
+                    }
+                }
+
+                return new KeyValuePair<string, SugarParameter[]>(sql, pars);
             };
         });
 

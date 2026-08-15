@@ -16,6 +16,11 @@ namespace AITool.Domain.Codex;
 public sealed class CodexAccount
 {
     /// <summary>
+    /// 浅拷贝当前账号。元数据缓存返回副本，避免调用方原地修改共享实体污染缓存。
+    /// </summary>
+    public CodexAccount Clone() => (CodexAccount)MemberwiseClone();
+
+    /// <summary>
     /// 账号唯一标识。
     /// </summary>
     [SugarColumn(IsPrimaryKey = true, IsIdentity = false, ColumnName = "Id")]

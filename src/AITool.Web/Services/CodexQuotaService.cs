@@ -33,8 +33,8 @@ public sealed class CodexQuotaService : ICodexQuotaService
     private readonly CodexCredentialRefreshService _credentialRefreshService;
     private readonly ILogger<CodexQuotaService> _logger;
 
-    /// <summary>single-flight：同 accountId 并发只一次真实请求。</summary>
-    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _locks = new();
+    /// <summary>single-flight：同 accountId 并发只一次真实请求。必须 static：本服务经 typed HttpClient 注册为 transient，实例级字典无法跨实例合并并发。</summary>
+    private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> Locks = new();
 
     public CodexQuotaService(
         HttpClient httpClient,
@@ -64,7 +64,7 @@ public sealed class CodexQuotaService : ICodexQuotaService
         }
 
         // single-flight
-        var gate = _locks.GetOrAdd(account.Id, _ => new SemaphoreSlim(1, 1));
+        var gate = Locks.GetOrAdd(account.Id, static _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync(cancellationToken);
         try
         {
@@ -86,7 +86,11 @@ public sealed class CodexQuotaService : ICodexQuotaService
                     writeClient.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
                     account.LastQuotaRawJson = info.RawJson;
                     account.LastQuotaCheckedAt = DateTimeOffset.UtcNow;
-                    await writeClient.Updateable(account).ExecuteCommandAsync(cancellationToken);
+                    // 只更新本次变更的列：account 可能来自 30s 元数据缓存（旧快照），整行回写会把
+                    // 后台 token 刷新服务刚写入的 AccessToken/TokenExpiresAt 回滚成旧值。
+                    await writeClient.Updateable(account)
+                        .UpdateColumns(x => new { x.LastQuotaRawJson, x.LastQuotaCheckedAt })
+                        .ExecuteCommandAsync(cancellationToken);
                     // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
                     _metadataCache.InvalidateCodexAccounts();
 
@@ -117,10 +121,10 @@ public sealed class CodexQuotaService : ICodexQuotaService
         {
             gate.Release();
             // 清理无竞争的 entry，避免账号删除后 SemaphoreSlim 泄漏。
-            // 仅当此刻空闲（无人等待）才移除；并发等待中则保留复用。
-            if (gate.CurrentCount == 1 && _locks.TryRemove(account.Id, out var removed) && ReferenceEquals(removed, gate))
+            // 仅当此刻空闲（无人等待）才移除；不 Dispose——并发等待方仍持有引用，释放已 Dispose 的信号量会抛 ObjectDisposedException。
+            if (gate.CurrentCount == 1)
             {
-                removed.Dispose();
+                Locks.TryRemove(account.Id, out _);
             }
         }
     }
@@ -207,11 +211,13 @@ public sealed class CodexQuotaService : ICodexQuotaService
 
     private async Task DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)
     {
-        // 用 CopyNew 独立连接写入
+        // 用 CopyNew 独立连接写入；只更新目标列，避免整行覆盖并发写入的其他字段。
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         account.IsEnabled = false;
-        await client.Updateable(account).ExecuteCommandAsync(ct);
+        await client.Updateable(account)
+            .UpdateColumns(x => new { x.IsEnabled })
+            .ExecuteCommandAsync(ct);
 
         var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null && site.IsEnabled)

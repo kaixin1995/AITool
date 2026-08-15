@@ -920,12 +920,10 @@ public static partial class ProxyProtocolBridge
                 }
             }
 
-            // reasoning 增量
-            if (delta.ValueKind != JsonValueKind.Undefined
-                && delta.TryGetProperty("reasoning_content", out var reasoningEl)
-                && reasoningEl.ValueKind == JsonValueKind.String)
+            // reasoning 增量：兼容 reasoning_content / reasoning / thinking 三种字段（DeepSeek/OpenRouter/Anthropic 风格）。
+            if (delta.ValueKind == JsonValueKind.Object)
             {
-                var reasoningText = reasoningEl.GetString() ?? string.Empty;
+                var reasoningText = ExtractReasoningFromElement(delta);
                 if (!string.IsNullOrEmpty(reasoningText))
                 {
                     builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", reasoningText));
@@ -1054,7 +1052,13 @@ public static partial class ProxyProtocolBridge
                         ["prompt_tokens"] = inp,
                         ["completion_tokens"] = outp,
                         ["total_tokens"] = inp + outp,
-                        ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached }
+                        ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached },
+                        // Responses 协议的 usage 字段名（Codex CLI 等客户端按 input_tokens 读取）。
+                        // Chat 方向的 inp 取自 prompt_tokens（已含缓存），与 prompt_tokens 同值即可。
+                        ["input_tokens"] = inp,
+                        ["output_tokens"] = outp,
+                        ["total_output_tokens"] = outp,
+                        ["input_tokens_details"] = new JsonObject { ["cached_tokens"] = cached }
                     }
                 }));
 
@@ -1233,10 +1237,16 @@ public static partial class ProxyProtocolBridge
                 {
                     var deltaType = delta.TryGetProperty("type", out var dt) ? dt.GetString() : null;
                     var deltaText = delta.TryGetProperty("text", out var dtEl) ? dtEl.GetString() ?? "" : "";
+                    // Anthropic 的思维链增量在 delta.thinking 字段（delta.text 只是正文）；
+                    // 兼容个别把 thinking 放 text 的中间层，thinking 优先、text 兜底。
+                    var thinkingText = delta.TryGetProperty("thinking", out var thinkingEl) && thinkingEl.ValueKind == JsonValueKind.String
+                        ? thinkingEl.GetString() ?? ""
+                        : string.Empty;
+                    var effectiveThinkingText = thinkingText.Length > 0 ? thinkingText : deltaText;
                     var partialJson = delta.TryGetProperty("partial_json", out var pjEl) ? pjEl.GetString() ?? "" : "";
 
                     if ((deltaType == "text_delta" && !string.IsNullOrEmpty(deltaText))
-                        || (deltaType == "thinking_delta" && !string.IsNullOrEmpty(deltaText))
+                        || (deltaType == "thinking_delta" && !string.IsNullOrEmpty(effectiveThinkingText))
                         || (deltaType == "input_json_delta" && !string.IsNullOrEmpty(partialJson)))
                     {
                         state.SawMeaningfulEvent = true;
@@ -1250,9 +1260,9 @@ public static partial class ProxyProtocolBridge
                             deltaText, outputIndex: 0, contentIndex: 0));
                         state.AppendOutputText(deltaText);
                     }
-                    else if (deltaType == "thinking_delta" && !string.IsNullOrEmpty(deltaText))
+                    else if (deltaType == "thinking_delta" && !string.IsNullOrEmpty(effectiveThinkingText))
                     {
-                        builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", deltaText));
+                        builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", effectiveThinkingText));
                     }
                     else if (deltaType == "input_json_delta" && !string.IsNullOrEmpty(partialJson))
                     {
@@ -1345,7 +1355,13 @@ public static partial class ProxyProtocolBridge
                         ["prompt_tokens"] = inp,
                         ["completion_tokens"] = outp,
                         ["total_tokens"] = inp + outp,
-                        ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached }
+                        ["prompt_tokens_details"] = new JsonObject { ["cached_tokens"] = cached },
+                        // Responses 协议的 usage 字段名（Codex CLI 等客户端按 input_tokens 读取）。
+                        // Anthropic 方向的 inp 取自 message_start.input_tokens（不含缓存），需加回缓存命中部分。
+                        ["input_tokens"] = inp + cached,
+                        ["output_tokens"] = outp,
+                        ["total_output_tokens"] = outp,
+                        ["input_tokens_details"] = new JsonObject { ["cached_tokens"] = cached }
                     }
                 }));
 

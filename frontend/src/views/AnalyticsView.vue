@@ -297,7 +297,11 @@ async function load(maxAttempts = 5): Promise<void> {
     await nextTick()
     renderCharts()
   } catch (error) {
-    if (!controller.signal.aborted) throw error
+    // 错误已由 http 拦截器统一 toast；这里不再 rethrow（调用方均为 void load()，
+    // rethrow 只会产生 unhandled rejection 污染控制台）。
+    if (!controller.signal.aborted) {
+      console.warn('[analytics] load failed', error)
+    }
   } finally {
     if (loadController === controller) {
       loadController = null

@@ -44,6 +44,8 @@ const requestDetail = ref<UsageLogRequestDetail | null>(null)
 let refreshTimer: number | undefined
 let searchTimer: number | undefined
 let incrementalRefreshInFlight = false
+// load() 的请求序号：仅最后一次触发的加载允许写回状态。
+let loadRequestSeq = 0
 
 const query = reactive({
   page: 1,
@@ -171,6 +173,9 @@ async function loadFilters(): Promise<void> {
 }
 
 async function load(page = query.page): Promise<void> {
+  // 请求序号守卫：快速切换筛选/翻页时并发多个 load，慢的旧响应后返回
+  // 会把表格覆盖成过期筛选条件的结果（与 refreshIncrementally 的 requestKey 守卫同思路）。
+  const requestSeq = ++loadRequestSeq
   loading.value = true
   try {
     query.page = page
@@ -179,6 +184,7 @@ async function load(page = query.page): Promise<void> {
       api.listUsageLogs(params),
       api.getUsageLogSummary(params)
     ])
+    if (requestSeq !== loadRequestSeq) return
     items.value = listResp.items ?? []
     query.page = listResp.page
     query.pageSize = listResp.pageSize
@@ -186,9 +192,13 @@ async function load(page = query.page): Promise<void> {
     totalPages.value = listResp.totalPages
     summary.value = summaryResp
   } catch (e) {
-    message.error((e as Error).message)
+    if (requestSeq === loadRequestSeq) {
+      message.error((e as Error).message)
+    }
   } finally {
-    loading.value = false
+    if (requestSeq === loadRequestSeq) {
+      loading.value = false
+    }
   }
 }
 
@@ -305,6 +315,8 @@ function configureAutoRefresh(): void {
   }
   if (autoRefresh.value) {
     refreshTimer = window.setInterval(() => {
+      // 后台标签页不轮询（与其他页面一致），避免不可见时持续打两个接口。
+      if (document.visibilityState !== 'visible') return
       void refreshIncrementally()
     }, 5000)
   }

@@ -1346,6 +1346,11 @@ public sealed class AnalyticsApiController : ControllerBase
 
     private static List<AnalyticsBucket> BuildBuckets(DateTimeOffset startTime, DateTimeOffset endTime, string bucketType)
     {
+        // 桶数上限：自定义范围可任意长（rangeType=all 时从 MinValue 起算），不设限会导致
+        // 标签字典膨胀与 O(日志数×桶数) 的分桶循环爆炸。超限时保留最近的一段（日志总在近期），
+        // 汇总与分布仍覆盖全部日志，仅趋势图按上限截断。
+        const int maxBuckets = 2000;
+
         var buckets = new List<AnalyticsBucket>();
         var alignedStart = AlignBucketStart(startTime, bucketType);
         // 范围筛选以用户选中的起点为准，避免按月视图因为按周分桶回退到上个月。
@@ -1361,6 +1366,11 @@ public sealed class AnalyticsApiController : ControllerBase
                 Label = FormatBucketLabel(cursor, next, bucketType)
             });
             cursor = next;
+        }
+
+        if (buckets.Count > maxBuckets)
+        {
+            buckets.RemoveRange(0, buckets.Count - maxBuckets);
         }
 
         if (buckets.Count == 0)
@@ -1484,15 +1494,15 @@ public sealed class AnalyticsApiController : ControllerBase
     }
 
     /// <summary>
-    /// 生成时间桶标签。
+    /// 生成时间桶标签。标签会作为字典键使用，必须包含年份以保证超长范围（跨年）下唯一。
     /// </summary>
     private static string FormatBucketLabel(DateTimeOffset start, DateTimeOffset end, string bucketType)
     {
         return bucketType switch
         {
-            "hour" => $"{start:MM-dd HH}:00",
+            "hour" => $"{start:yyyy-MM-dd HH}:00",
             // 周桶可能来自按月范围内的截断区间，因此展示实际日期范围更直观。
-            "week" => $"{start:MM-dd} ~ {end.AddDays(-1):MM-dd}",
+            "week" => $"{start:yyyy-MM-dd} ~ {end.AddDays(-1):MM-dd}",
             "month" => $"{start:yyyy-MM}",
             _ => $"{start:yyyy-MM-dd}"
         };

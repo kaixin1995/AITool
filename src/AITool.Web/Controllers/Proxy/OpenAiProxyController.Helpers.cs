@@ -539,13 +539,16 @@ public sealed partial class OpenAiProxyController
                 return;
             }
 
+            var hasInputTokens = false;
             if (usage.TryGetProperty("input_tokens", out var inputTokenElement) && inputTokenElement.ValueKind == JsonValueKind.Number)
             {
                 inputTokens = inputTokenElement.GetInt32();
+                hasInputTokens = true;
             }
             else if (usage.TryGetProperty("prompt_tokens", out var promptTokens) && promptTokens.ValueKind == JsonValueKind.Number)
             {
                 inputTokens = promptTokens.GetInt32();
+                hasInputTokens = true;
             }
 
             // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
@@ -578,7 +581,12 @@ public sealed partial class OpenAiProxyController
 
             // OpenAI 的 input_tokens/prompt_tokens 已包含缓存命中部分（cached_tokens 是其子集），
             // 统一减去缓存，日志输入记录"不含缓存的新输入"，避免缓存重复统计。
-            inputTokens = Math.Max(0, inputTokens - cachedTokens);
+            // 减法只在本事件自带输入字段时执行：部分中间层的后续 usage 事件只带 cached 字段，
+            // 否则会对已减去缓存的输入再次扣减（与 UpdateAnthropicUsageFromElement 的守卫一致）。
+            if (hasInputTokens)
+            {
+                inputTokens = Math.Max(0, inputTokens - cachedTokens);
+            }
         }
         catch
         {

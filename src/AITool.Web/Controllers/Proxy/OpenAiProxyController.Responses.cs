@@ -573,6 +573,12 @@ public sealed partial class OpenAiProxyController
                 streamOutcome = await ForwardAnthropicResponsesAsWebSocketAsync(webSocket, forwardRequest, modelName, cancellationToken);
             }
             var streamResult = streamOutcome.Result;
+            // 客户端断开导致的取消：不记失败、不计熔断、不尝试下一条路由（与 HTTP 路径的 EmptyResult 早退一致）。
+            if (streamResult.IsCanceled)
+            {
+                return false;
+            }
+
             SafeWriteConsoleProxyLog("ResponsesWebSocket", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, rawRequestBody.Length);
             var canFallback = !streamResult.Success
                 && streamOutcome.CanFallback
@@ -648,7 +654,7 @@ public sealed partial class OpenAiProxyController
             {
                 if (webSocket.State == WebSocketState.Open)
                 {
-                    await WriteResponsesWebSocketErrorAsync(webSocket, streamResult.StatusCode > 0 ? streamResult.StatusCode : StatusCodes.Status502BadGateway, streamResult.ErrorMessage ?? "All upstream routes failed", cancellationToken);
+                    await TryWriteResponsesWebSocketErrorAsync(webSocket, streamResult.StatusCode > 0 ? streamResult.StatusCode : StatusCodes.Status502BadGateway, streamResult.ErrorMessage ?? "All upstream routes failed", cancellationToken);
                 }
                 return false;
             }
@@ -656,9 +662,25 @@ public sealed partial class OpenAiProxyController
 
         if (webSocket.State == WebSocketState.Open)
         {
-            await WriteResponsesWebSocketErrorAsync(webSocket, lastResult?.StatusCode > 0 ? lastResult.StatusCode : StatusCodes.Status502BadGateway, lastResult?.ErrorMessage ?? "All upstream routes failed", cancellationToken);
+            await TryWriteResponsesWebSocketErrorAsync(webSocket, lastResult?.StatusCode > 0 ? lastResult.StatusCode : StatusCodes.Status502BadGateway, lastResult?.ErrorMessage ?? "All upstream routes failed", cancellationToken);
         }
         return false;
+    }
+
+    /// <summary>
+    /// 对可能已断开的 WebSocket 安全发送终态错误帧：发送失败只吞异常，不把
+    /// ObjectDisposedException 抛穿整个会话循环（与 SSE 终态写入的防护一致）。
+    /// </summary>
+    private static async Task TryWriteResponsesWebSocketErrorAsync(WebSocket webSocket, int statusCode, string message, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await WriteResponsesWebSocketErrorAsync(webSocket, statusCode, message, cancellationToken);
+        }
+        catch
+        {
+            // 客户端已断开或连接已释放，无需处理。
+        }
     }
 
 }

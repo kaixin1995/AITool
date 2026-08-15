@@ -86,17 +86,21 @@ public sealed class CodexQuotaCooldownService : ICodexQuotaCooldownService
             try
             {
                 var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, ct);
-                account.AccessToken = tokens.AccessToken;
-                account.RefreshToken = tokens.RefreshToken;
-                if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
-                account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
-                account.LastRefreshAt = DateTimeOffset.UtcNow;
-
-                var site = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
-                if (site != null)
+                // 空响应不回写：避免清空有效凭证导致账号永久无法刷新（与 CodexTokenRefreshService 的防护一致）。
+                if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
                 {
-                    site.ApiKey = tokens.AccessToken;
-                    await queryClient.Updateable(site).ExecuteCommandAsync(ct);
+                    account.AccessToken = tokens.AccessToken;
+                    account.RefreshToken = tokens.RefreshToken;
+                    if (!string.IsNullOrEmpty(tokens.IdToken)) account.IdToken = tokens.IdToken;
+                    account.TokenExpiresAt = DateTimeOffset.UtcNow.AddSeconds(tokens.ExpiresIn > 0 ? tokens.ExpiresIn : 3600);
+                    account.LastRefreshAt = DateTimeOffset.UtcNow;
+
+                    var site = await queryClient.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
+                    if (site != null)
+                    {
+                        site.ApiKey = tokens.AccessToken;
+                        await queryClient.Updateable(site).ExecuteCommandAsync(ct);
+                    }
                 }
             }
             catch (Exception ex)

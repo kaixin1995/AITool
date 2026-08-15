@@ -1441,8 +1441,17 @@ public sealed class ChatApiController : ControllerBase
             return true;
         }
 
-        using var doc = JsonDocument.Parse(data);
-        var root = doc.RootElement;
+        // 部分上游会发送非 JSON 的保活帧（空 data、注释行、纯文本 ping 等），
+        // 解析失败只跳过该块继续读流，不能让整次尝试被标记失败（内容可能已正常推给用户）。
+        var doc = TryParseSseJson(data);
+        if (doc is null)
+        {
+            return false;
+        }
+
+        using (doc)
+        {
+            var root = doc.RootElement;
 
         if (protocolType == "Anthropic")
         {
@@ -1549,6 +1558,22 @@ public sealed class ChatApiController : ControllerBase
 
         await ProcessOpenAiChunkAsync(root, stopwatch, onContentChunk, onReasoningChunk, contentBuilder, reasoningBuilder, state, cancellationToken);
         return false;
+        }
+    }
+
+    /// <summary>
+    /// 安全解析 SSE data 块为 JSON；非 JSON 文本（保活帧等）返回 null，由调用方跳过。
+    /// </summary>
+    private static JsonDocument? TryParseSseJson(string data)
+    {
+        try
+        {
+            return JsonDocument.Parse(data);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

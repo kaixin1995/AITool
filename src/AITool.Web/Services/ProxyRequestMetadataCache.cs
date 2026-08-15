@@ -907,7 +907,9 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<List<CodexAccount>> GetCodexAccountsAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        // 返回浅拷贝：调用方（额度巡检/自动禁用等）会原地修改这些实体并回写，
+        // 共享同一实例会污染缓存内容并与其他并发调用方互相踩踏。
+        var cached = await _memoryCache.GetOrCreateAsync(
                 CodexAccountsCacheKey,
                 async entry =>
                 {
@@ -921,6 +923,8 @@ public sealed class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
                 })
             ?? [];
+
+        return cached.Select(static a => a.Clone()).ToList();
     }
 
     /// <summary>

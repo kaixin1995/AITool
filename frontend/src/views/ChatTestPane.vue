@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NCard, NSelect, NInput, NButton, NSwitch, useMessage, type SelectOption } from 'naive-ui'
 import * as chatApi from '@/api/chat'
 import type { ChatModelTarget, ChatAttemptResult, ChatSendResult } from '@/api/chat'
@@ -231,6 +231,11 @@ function toggleAttemptDetail(index: number): void {
 }
 
 onMounted(loadModels)
+// 组件卸载（切换路由）时中止进行中的流式请求：fetch 循环会持续回调写入已卸载组件的状态，
+// 长回复可拖数分钟，连接与内存都无法回收。
+onUnmounted(() => {
+  abortController?.abort()
+})
 </script>
 
 <template>
