@@ -721,12 +721,59 @@ public sealed class AnalyticsApiController : ControllerBase
             .ToDictionary(x => x.Id, x => x.KeyName);
 
         var (startTime, endTime) = ResolveTimeRange(query.RangeType, query.StartTime, query.EndTime);
+
+        // rangeType=all 时把起点收敛到最早一条日志（按 RequestedAt 索引取第一行），
+        // 避免从 0001 年起建桶与无意义的时间范围扫描；表为空时保持原值。
+        // 注：不能用 MinAsync / Select(单列) / First(标量)——SqlSugar 对 DateTimeOffset 列的
+        // 标量读取会抛 InvalidCastException，整行实体映射则正常。
+        if (startTime == DateTimeOffset.MinValue)
+        {
+            var earliestRow = await dbContext.ProxyUsageLogs
+                .OrderBy(x => x.RequestedAt)
+                .FirstAsync(cancellationToken);
+            if (earliestRow is not null)
+            {
+                var earliest = earliestRow.RequestedAt;
+                if (earliest.Offset != TimeSpan.Zero)
+                {
+                    earliest = new DateTimeOffset(earliest.DateTime, TimeSpan.Zero);
+                }
+
+                startTime = earliest;
+            }
+        }
+
         var bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
         var source = NormalizeAnalyticsSource(query.Source);
 
         // 先只按时间范围读取日志，确保请求级归并不会丢失中间尝试。
+        // 只投影统计实际使用的列（错误正文/请求模型等大列不载入内存，大范围查询内存占用显著下降）。
         var rangeLogs = await dbContext.ProxyUsageLogs
             .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
+            .Select(x => new AITool.Domain.Proxy.ProxyUsageLog
+            {
+                RequestedAt = x.RequestedAt,
+                RequestId = x.RequestId,
+                AttemptIndex = x.AttemptIndex,
+                AttemptedModel = x.AttemptedModel,
+                TargetSiteId = x.TargetSiteId,
+                AccessKeyId = x.AccessKeyId,
+                ProtocolType = x.ProtocolType,
+                Source = x.Source,
+                Status = x.Status,
+                HttpStatusCode = x.HttpStatusCode,
+                IsStreamInterrupted = x.IsStreamInterrupted,
+                IsFinalResult = x.IsFinalResult,
+                FallbackTriggered = x.FallbackTriggered,
+                ErrorMessage = x.ErrorMessage,
+                ErrorCategory = x.ErrorCategory,
+                InputTokens = x.InputTokens,
+                CachedTokens = x.CachedTokens,
+                OutputTokens = x.OutputTokens,
+                TotalTokens = x.TotalTokens,
+                TotalDurationMs = x.TotalDurationMs,
+                FirstTokenLatencyMs = x.FirstTokenLatencyMs
+            })
             .ToListAsync(cancellationToken);
 
         // SqlSugar 读回 DateTimeOffset 时 offset 被配成本地时区（+08:00），但存储的是 UTC 值，

@@ -41,6 +41,7 @@ const clearLogsScopeText = computed(() => {
 
 const form = reactive<SystemSettings>({
   proxyRequestTimeoutSeconds: 60,
+  proxyStreamIdleTimeoutSeconds: 0,
   proxyRetryCount: 1,
   detectionRequestTimeoutSeconds: 60,
   detectionRetryCount: 0,
@@ -141,6 +142,10 @@ onMounted(loadSettings)
               <NFormItem>
                 <template #label><span class="form-label-tip">代理超时时间（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>单次代理转发请求等待上游响应的最长时间。值过小容易让慢响应被截断。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.proxyRequestTimeoutSeconds" :min="1" :step="5" />
+              </NFormItem>
+              <NFormItem>
+                <template #label><span class="form-label-tip">流式空闲超时（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>流式转发时相邻两次收到上游数据的最大间隔，超过即判定上游挂起并终止。0 表示不启用（默认）。推理模型首 token 前可能长时间静默，请谨慎调小。</NTooltip></span></template>
+                <NInputNumber v-model:value="form.proxyStreamIdleTimeoutSeconds" :min="0" :step="30" />
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">代理重试次数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>当前路由失败后允许重新尝试的次数。值越大越有机会切到其他路由。</NTooltip></span></template>

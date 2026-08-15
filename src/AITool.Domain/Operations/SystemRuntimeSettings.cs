@@ -20,6 +20,12 @@ public sealed class SystemRuntimeSettings
     public int ProxyRequestTimeoutSeconds { get; set; } = 60;
 
     /// <summary>
+    /// 流式转发空闲超时（秒）：相邻两次读到上游数据的最大间隔，超过即判定上游挂起并终止本次转发。
+    /// 0 表示不启用（默认）——推理模型首 token 前可能长时间静默，误配会中断合法慢流。
+    /// </summary>
+    public int ProxyStreamIdleTimeoutSeconds { get; set; }
+
+    /// <summary>
     /// 代理请求失败后的最大重试次数，用于控制路由重试或重新转发的上限。
     /// </summary>
     public int ProxyRetryCount { get; set; } = 1;

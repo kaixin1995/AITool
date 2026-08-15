@@ -2,6 +2,7 @@ import { httpGet, httpPut, httpPost } from './http'
 
 export interface SystemSettings {
   proxyRequestTimeoutSeconds: number
+  proxyStreamIdleTimeoutSeconds: number
   proxyRetryCount: number
   detectionRequestTimeoutSeconds: number
   detectionRetryCount: number

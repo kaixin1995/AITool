@@ -394,11 +394,60 @@ public sealed class ProxyForwardService : IProxyForwardService
         using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
         using var reader = new StreamReader(stream, Encoding.UTF8);
 
+        // 流式空闲超时（默认关闭）：每次成功读取后重新计时，防止上游"发完响应头后挂起"
+        // 永久占用连接与并发槽。用单个 linked CTS 复用计时器，避免逐行分配。
+        var idleTimeout = request.StreamIdleTimeoutSeconds > 0
+            ? TimeSpan.FromSeconds(request.StreamIdleTimeoutSeconds)
+            : TimeSpan.Zero;
+        CancellationTokenSource? idleCts = idleTimeout > TimeSpan.Zero
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : null;
+
         try
         {
             while (true)
             {
-                var line = await reader.ReadLineAsync(cancellationToken);
+                string? line;
+                if (idleCts is not null)
+                {
+                    idleCts.CancelAfter(idleTimeout);
+                    try
+                    {
+                        line = await reader.ReadLineAsync(idleCts.Token);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        stopwatch.Stop();
+                        totalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds);
+                        var idleMessage = $"上游流式响应空闲超过 {request.StreamIdleTimeoutSeconds} 秒，已判定挂起并终止";
+                        _logger.LogWarning(
+                            "代理流空闲超时终止。Protocol={Protocol}, Target={Target}, IdleSeconds={Seconds}, HasContent={HasContent}",
+                            request.ProtocolType, request.TargetBaseUrl, request.StreamIdleTimeoutSeconds, hasFirstContent);
+                        return new ProxyForwardResult
+                        {
+                            // 已有内容时按"中断"处理（客户端已收到部分数据，不算路由失败）；
+                            // 尚无内容时按失败处理，允许上层回退到下一条路由。
+                            Success = hasFirstContent,
+                            StatusCode = (int)response.StatusCode,
+                            ResponseBody = sb.ToString(),
+                            InputTokens = inputTokens,
+                            CachedTokens = cachedTokens,
+                            OutputTokens = outputTokens,
+                            IsStreaming = isStreaming,
+                            HasStartedStreaming = hasFirstContent,
+                            IsStreamInterrupted = hasFirstContent,
+                            FirstTokenLatencyMs = firstTokenLatencyMs,
+                            StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
+                            TotalDurationMs = totalDurationMs,
+                            ErrorMessage = idleMessage
+                        };
+                    }
+                }
+                else
+                {
+                    line = await reader.ReadLineAsync(cancellationToken);
+                }
+
                 if (line == null) break;
 
                 // 仅累积诊断副本，达到上限后停止追加（转发本身不受影响）。
@@ -446,17 +495,26 @@ public sealed class ProxyForwardService : IProxyForwardService
                     }
 
                     // Responses 协议（如 Codex 上游）以 response.completed 事件结束流，而非 [DONE]。
-                    // 若不识别该事件，流虽正常完成也会被误判为 IsStreamInterrupted=true（UsageLog 红点）。
-                    if (string.Equals(request.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                        && root.TryGetProperty("type", out var responsesEventType)
+                    // 不限定协议类型：个别 OpenAI 协议中间层（包装 Responses 上游）也会以该事件收尾。
+                    if (root.TryGetProperty("type", out var responsesEventType)
                         && string.Equals(responsesEventType.GetString(), "response.completed", StringComparison.OrdinalIgnoreCase))
                     {
                         receivedDoneEvent = true;
                     }
 
-                    if (root.TryGetProperty("usage", out var usage))
+                    // usage 兼容顶层与 response.usage 嵌套两种形态（newapi 类中间层）；
+                    // "usage": null 分片跳过（include_usage 开启后常规分片会带 null）。
+                    var usageElement = root.TryGetProperty("usage", out var topLevelUsage) && topLevelUsage.ValueKind == JsonValueKind.Object
+                        ? topLevelUsage
+                        : root.TryGetProperty("response", out var responseWrapper)
+                          && responseWrapper.ValueKind == JsonValueKind.Object
+                          && responseWrapper.TryGetProperty("usage", out var nestedUsage)
+                          && nestedUsage.ValueKind == JsonValueKind.Object
+                            ? nestedUsage
+                            : default;
+                    if (usageElement.ValueKind == JsonValueKind.Object)
                     {
-                        var extracted = ExtractUsageFromElement(usage, request.ProtocolType);
+                        var extracted = ExtractUsageFromElement(usageElement, request.ProtocolType);
                         if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
                         if (extracted.CachedTokens > 0) cachedTokens = extracted.CachedTokens;
                         if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
@@ -465,7 +523,9 @@ public sealed class ProxyForwardService : IProxyForwardService
                     // Anthropic message_start 事件中的 usage 嵌套在 message 里
                     if (request.ProtocolType == "Anthropic"
                         && root.TryGetProperty("message", out var message)
-                        && message.TryGetProperty("usage", out var msgUsage))
+                        && message.ValueKind == JsonValueKind.Object
+                        && message.TryGetProperty("usage", out var msgUsage)
+                        && msgUsage.ValueKind == JsonValueKind.Object)
                     {
                         var extracted = ExtractUsageFromElement(msgUsage, request.ProtocolType);
                         if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
@@ -551,6 +611,10 @@ public sealed class ProxyForwardService : IProxyForwardService
                 TotalDurationMs = totalDurationMs,
                 ErrorMessage = ex.Message
             };
+        }
+        finally
+        {
+            idleCts?.Dispose();
         }
 
         stopwatch.Stop();

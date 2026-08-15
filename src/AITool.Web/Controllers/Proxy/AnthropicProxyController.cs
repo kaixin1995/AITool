@@ -261,6 +261,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 PreparedRequestBody = preparedRequestBody,
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
+                StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = forwardHeaders,
                 RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),

@@ -54,6 +54,12 @@ public sealed class ProxyForwardRequest
     public int RequestTimeoutSeconds { get; set; }
 
     /// <summary>
+    /// 流式转发的空闲超时（秒）：相邻两次读到上游数据的最大间隔，超时判定上游挂起并终止。
+    /// 0 表示不启用（默认）。请求建立阶段的超时仍由 <see cref="RequestTimeoutSeconds"/> 控制。
+    /// </summary>
+    public int StreamIdleTimeoutSeconds { get; set; }
+
+    /// <summary>
     /// 同一路由在内部允许的失败重试次数，不包含首次请求。
     /// </summary>
     public int RetryCount { get; set; }

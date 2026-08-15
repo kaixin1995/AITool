@@ -34,6 +34,11 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public int ProxyRequestTimeoutSeconds { get; set; }
 
     /// <summary>
+    /// 流式转发空闲超时（秒），相邻两次读到上游数据的最大间隔；0 表示不启用（默认）。
+    /// </summary>
+    public int ProxyStreamIdleTimeoutSeconds { get; set; }
+
+    /// <summary>
     /// 控制代理转发在失败时的重试次数。
     /// </summary>
     public int ProxyRetryCount { get; set; }

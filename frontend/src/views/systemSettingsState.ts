@@ -1,5 +1,6 @@
 const numericFieldLabels: Record<string, string> = {
   proxyRequestTimeoutSeconds: '代理超时时间',
+  proxyStreamIdleTimeoutSeconds: '流式空闲超时',
   proxyRetryCount: '代理重试次数',
   detectionRequestTimeoutSeconds: '检测超时时间',
   detectionRetryCount: '检测重试次数',

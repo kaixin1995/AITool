@@ -482,7 +482,9 @@ public sealed partial class OpenAiProxyController
 
         async Task FlushOpenAiSseBlockAsync(CancellationToken token)
         {
-            // OpenAI SSE 事件块可能包含 usage 或完成事件，需要先提取统计再原样写出。
+            // 每块不再无条件 JSON 解析：usage 与完成事件都先做子串命中，命中才解析。
+            // 语义与逐块解析完全一致（无 "usage" 子串的块本来也提取不到任何统计），
+            // 常规增量块的每块开销从"一次全量 Parse"降为"两次 IndexOf 扫描"。
             if (pendingSseLines.Count == 0)
             {
                 return;
@@ -496,11 +498,13 @@ public sealed partial class OpenAiProxyController
                 }
                 else
                 {
-                    UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+                    if (payload.Contains("\"usage\"", StringComparison.Ordinal))
+                    {
+                        UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+                    }
 
-                    // 累积 AI 正文（同时兼容 Chat Completions 的 delta.content 和 Responses 的 delta 文本，
-                    // payload 格式不匹配时对应方法会自动跳过）。                    // 兼容 Responses API：上游可能以 response.completed 事件而非 [DONE] 结束流
-                    if (!receivedDoneEvent)
+                    // 兼容 Responses API：上游可能以 response.completed 事件而非 [DONE] 结束流。
+                    if (!receivedDoneEvent && payload.Contains("response.completed", StringComparison.Ordinal))
                     {
                         try
                         {

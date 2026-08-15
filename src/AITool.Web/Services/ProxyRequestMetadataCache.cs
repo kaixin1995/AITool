@@ -207,6 +207,7 @@ public sealed class ProxyRequestMetadataCache
                         : new CachedProxyRuntimeSettings
                         {
                             ProxyRequestTimeoutSeconds = settings.ProxyRequestTimeoutSeconds,
+                            ProxyStreamIdleTimeoutSeconds = settings.ProxyStreamIdleTimeoutSeconds,
                             ProxyRetryCount = settings.ProxyRetryCount,
                             DetectionRequestTimeoutSeconds = settings.DetectionRequestTimeoutSeconds,
                             DetectionRetryCount = settings.DetectionRetryCount,
@@ -1676,6 +1677,10 @@ public sealed class CachedProxyRuntimeSettings
     /// 代理请求超时时间（秒）。
     /// </summary>
     public int ProxyRequestTimeoutSeconds { get; set; } = 60;
+    /// <summary>
+    /// 流式转发空闲超时（秒）；0 表示不启用。
+    /// </summary>
+    public int ProxyStreamIdleTimeoutSeconds { get; set; }
     /// <summary>
     /// 代理重试次数。
     /// </summary>

@@ -96,6 +96,72 @@ public sealed class ProxyForwardServiceRealHttpTests
         result.OutputTokens.Should().Be(6, "应从 usage.output_tokens 提取");
     }
 
+    /// <summary>
+    /// 验证流式空闲超时：上游发完首包后挂起时，超过设定秒数即判定挂起并终止，
+    /// 不会无限占用读取循环（默认 0 不启用，本用例显式开启 1 秒）。
+    /// </summary>
+    [Fact]
+    public async Task ForwardStreamingAsync_idle_timeout_terminates_hanging_upstream()
+    {
+        var service = CreateService(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StreamContent(new HangingSseStream(
+                Encoding.UTF8.GetBytes("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n")))
+            {
+                Headers = { ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("text/event-stream") }
+            }
+        });
+
+        var request = ResponsesRequest();
+        request.EnableStreaming = true;
+        request.StreamIdleTimeoutSeconds = 1;
+
+        var result = await service.ForwardStreamingAsync(request, null, CancellationToken.None);
+
+        result.Success.Should().BeTrue("首包已写出，空闲超时按中断而非路由失败处理");
+        result.IsStreamInterrupted.Should().BeTrue();
+        result.ErrorMessage.Should().Contain("空闲超过", "应给出明确的挂起诊断信息");
+    }
+
+    /// <summary>
+    /// 先返回一段 SSE 首包，随后模拟上游挂起：ReadAsync 永久等待直到调用方取消。
+    /// </summary>
+    private sealed class HangingSseStream(byte[] prefix) : Stream
+    {
+        private int _offset;
+        private bool _drained;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (!_drained)
+            {
+                var count = Math.Min(buffer.Length, prefix.Length - _offset);
+                prefix.AsSpan(_offset, count).CopyTo(buffer.Span);
+                _offset += count;
+                if (_offset >= prefix.Length)
+                {
+                    _drained = true;
+                }
+                return count;
+            }
+
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return 0;
+        }
+
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
     private sealed class StubHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;

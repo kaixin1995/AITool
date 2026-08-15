@@ -51,6 +51,8 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
 
         // 对运行时设置做最小边界保护，避免写入无效值
         settings.ProxyRequestTimeoutSeconds = Math.Max(1, request.ProxyRequestTimeoutSeconds);
+        // 空闲超时允许 0（不启用），并做宽松上限钳制避免误填异常值。
+        settings.ProxyStreamIdleTimeoutSeconds = Math.Max(0, Math.Min(86400, request.ProxyStreamIdleTimeoutSeconds));
         settings.ProxyRetryCount = Math.Max(0, request.ProxyRetryCount);
         settings.DetectionRequestTimeoutSeconds = Math.Max(1, request.DetectionRequestTimeoutSeconds);
         settings.DetectionRetryCount = Math.Max(0, request.DetectionRetryCount);
