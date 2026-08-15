@@ -100,9 +100,10 @@ public static string AdaptResponseBodyForClient(
 - 缓存大于输入的异常数据下限为 0，不出负数
 
 **跨协议还原语义**（转出方向）：
-- 转成 **Anthropic** 输出：`input_tokens = 新输入 + cache_read + cache_creation`（Anthropic 语义 input 含缓存）——见 `BuildAnthropicResponseFromOpenAi`(L396)、`CompleteAnthropicStream`(L234)、`BuildAnthropicStreamFromOpenAiResponse`(L371)
+- 转成 **Anthropic** 输出：统一 `input_tokens = 新输入`（**不含**缓存），`cache_read_input_tokens` / `cache_creation_input_tokens` 独立成桶，三桶相加 = 总输入——与官方语义一致（cookbook 实例 input=4、cache_read=2051），流式与非流式同口径——见 `BuildAnthropicResponseFromOpenAi`(L396)、`CompleteAnthropicStream`(L234)、`BuildAnthropicStreamFromOpenAiResponse`、`BuildAnthropicStreamingResponseFromOpenAi`。按官方加法公式计费的客户端（claude-code/ccusage 等）总输入精确；`message_start` 与 `message_delta` 使用同一数值，回退入参（已是新输入）不再二次扣减缓存。
 - 转成 **OpenAI** 输出：上游缺 `input_tokens` 时 `prompt_tokens = 新输入 + cached`（OpenAI 语义 prompt 含缓存命中），并带 `prompt_tokens_details.cached_tokens`——见 `ConvertResponsesResponseToChat`(L1504)、`ConvertResponsesStreamingToChat`(L2140)
 - Anthropic → OpenAI：`BuildOpenAiResponseFromAnthropic`(L552)：Anthropic input 已含缓存，直接映射 prompt_tokens
+- ⚠️ 入口侧已知歧义：`ExtractUsageFromElement` 的 Anthropic 分支按"`input_tokens` 含缓存"口径做减法（`新输入 = input − cache`，见上文）。该口径对 newapi 类中间层（把 OpenAI prompt_tokens 语义带进 Anthropic 格式）成立；对官方 Anthropic 上游（官方为三桶加法、input 不含缓存）则会低估。是否需要按上游类型区分口径，待实际流量验证后再定。
 
 **流式累计覆盖语义**（防 newapi 类中间层重复累计）：`message_start` 与 `message_delta` 都带 usage 时按**覆盖**而非累加处理（`ConvertOpenAiStreamChunkToAnthropic` L53-80 只在 `usage` 为 JSON 对象时提取，`cached` 用 `>0` 守卫防 0 覆盖外部值；Anthropic 透传的 `UpdateAnthropicUsageFromPayload` 同口径）。
 

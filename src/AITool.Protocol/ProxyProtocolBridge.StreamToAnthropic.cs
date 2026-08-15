@@ -236,9 +236,10 @@ public static partial class ProxyProtocolBridge
             ["type"] = "message_delta",
             ["usage"] = new JsonObject
             {
-                // Anthropic 的 input_tokens 含缓存子集：上游 OpenAI prompt_tokens 被提取为
-                // 新输入后，这里还原为 新输入 + cache_read + cache_creation，保持协议语义。
-                ["input_tokens"] = state.InputTokens + state.CachedTokens + state.CacheCreationTokens,
+                // Anthropic 官方语义：input_tokens 不含缓存，与 cache_read/creation 三桶相加才是总输入
+                //（官方 cookbook 实例 input=4、cache_read=2051）。与非流式 BuildAnthropicResponseFromOpenAi
+                // 的出口口径一致；此前按"含缓存"输出会导致按官方加法公式计费的客户端重复计算缓存。
+                ["input_tokens"] = state.InputTokens,
                 ["cache_creation_input_tokens"] = state.CacheCreationTokens,
                 ["cache_read_input_tokens"] = state.CachedTokens,
                 ["output_tokens"] = state.OutputTokens
@@ -373,9 +374,13 @@ public static partial class ProxyProtocolBridge
         }
 
         var stopReason = MapOpenAiFinishReason(finishReason);
-        var effectiveInput = upstreamInput > 0 ? upstreamInput : inputTokens;
         var effectiveOutput = upstreamOutput > 0 ? upstreamOutput : outputTokens;
-        var directInputTokens = Math.Max(effectiveInput - cachedTokens - cacheCreation, 0);
+        // 统一为"不含缓存的新输入"（Anthropic 出口口径）：响应体的 upstreamInput 是原始
+        // prompt_tokens（含缓存），需减缓存；回退入参 inputTokens 本身已是新输入
+        //（aba2773 后的统一口径），不能再减——否则回退分支会被双重扣减导致低估甚至归零。
+        var directInputTokens = upstreamInput > 0
+            ? Math.Max(upstreamInput - cachedTokens - cacheCreation, 0)
+            : inputTokens;
 
         var builder = new StringBuilder();
         AppendSseEvent(builder, "message_start", new JsonObject
@@ -510,7 +515,7 @@ public static partial class ProxyProtocolBridge
             ["type"] = "message_delta",
             ["usage"] = new JsonObject
             {
-                ["input_tokens"] = effectiveInput,
+                ["input_tokens"] = directInputTokens,
                 ["cache_creation_input_tokens"] = cacheCreation,
                 ["cache_read_input_tokens"] = cachedTokens,
                 ["output_tokens"] = effectiveOutput

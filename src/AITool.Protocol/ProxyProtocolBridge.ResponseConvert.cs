@@ -635,10 +635,15 @@ public static partial class ProxyProtocolBridge
             }
         }
 
-        int upstreamInput = usageInfo.UpstreamInput > 0 ? usageInfo.UpstreamInput : inputTokens;
         int upstreamOutput = usageInfo.UpstreamOutput > 0 ? usageInfo.UpstreamOutput : outputTokens;
         int cacheCreation = usageInfo.CacheCreation;
         int cacheRead = usageInfo.UpstreamCached > 0 ? usageInfo.UpstreamCached : cachedTokens;
+        // 统一为"不含缓存的新输入"（Anthropic 出口口径）：usageInfo.UpstreamInput 是上游原始
+        // prompt_tokens（含缓存），需减缓存；回退入参 inputTokens 本身已是新输入
+        //（aba2773 后的统一口径），不能再减。message_start 与 message_delta 用同一个值，保持流内一致。
+        int newInputTokens = usageInfo.UpstreamInput > 0
+            ? Math.Max(usageInfo.UpstreamInput - cacheRead - cacheCreation, 0)
+            : inputTokens;
 
         var builder = new StringBuilder();
 
@@ -653,7 +658,7 @@ public static partial class ProxyProtocolBridge
                 ["model"] = modelName,
                 ["usage"] = new JsonObject
                 {
-                    ["input_tokens"] = Math.Max(upstreamInput - cacheRead - cacheCreation, 0),
+                    ["input_tokens"] = newInputTokens,
                     ["cache_creation_input_tokens"] = cacheCreation,
                     ["cache_read_input_tokens"] = cacheRead,
                     ["output_tokens"] = 0
@@ -744,7 +749,7 @@ public static partial class ProxyProtocolBridge
             ["type"] = "message_delta",
             ["usage"] = new JsonObject
             {
-                ["input_tokens"] = upstreamInput,
+                ["input_tokens"] = newInputTokens,
                 ["cache_creation_input_tokens"] = cacheCreation,
                 ["cache_read_input_tokens"] = cacheRead,
                 ["output_tokens"] = upstreamOutput

@@ -75,4 +75,95 @@ public sealed class ProxyProtocolBridgeStreamStateTests
         output.Should().Contain("response.reasoning_summary_text.delta", "thinking 增量应转发为 reasoning summary 事件");
         output.Should().Contain("chain-of-thought", "思维链正文来自 delta.thinking 字段（修复前误读 delta.text 导致整段丢失）");
     }
+
+    // —— Anthropic 出口 usage 口径一致性：input_tokens 不含缓存，三桶相加 = 总输入（官方语义）。 ——
+
+    private static (string Start, string Delta) ExtractAnthropicUsageEvents(string sse)
+    {
+        var start = System.Text.RegularExpressions.Regex.Match(sse, "\"message_start\"[\\s\\S]*?\"usage\":\\{([\\s\\S]*?)\\}").Groups[1].Value;
+        var delta = System.Text.RegularExpressions.Regex.Match(sse, "\"message_delta\",[\\s\\S]*?\"usage\":\\{([\\s\\S]*?)\\}").Groups[1].Value;
+        return (start, delta);
+    }
+
+    [Fact]
+    public void Realtime_stream_delta_reports_input_tokens_excluding_cache()
+    {
+        var state = new ProxyProtocolBridge.AnthropicOpenAiStreamState();
+
+        // 上游最后一帧带 usage：prompt_tokens=100（含缓存 80）→ 新输入 20。
+        ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(
+            """{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":80}}}""",
+            state);
+        var sse = ProxyProtocolBridge.CompleteAnthropicStream(state);
+        var (_, delta) = ExtractAnthropicUsageEvents(sse);
+
+        delta.Should().Contain("\"input_tokens\":20", "delta 的 input_tokens 不含缓存（官方三桶加法语义）");
+        delta.Should().Contain("\"cache_read_input_tokens\":80", "缓存在独立桶中完整上报");
+    }
+
+    [Fact]
+    public void Replay_stream_start_and_delta_agree_on_excluding_cache()
+    {
+        var sse = ProxyProtocolBridge.BuildAnthropicStreamFromOpenAiResponse(
+            """{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":80}}}""",
+            "test-model", 0, 0, 0);
+        var (start, delta) = ExtractAnthropicUsageEvents(sse);
+
+        start.Should().Contain("\"input_tokens\":20");
+        delta.Should().Contain("\"input_tokens\":20", "message_delta 与 message_start 同口径，且不含缓存");
+        delta.Should().Contain("\"cache_read_input_tokens\":80");
+    }
+
+    [Fact]
+    public void Replay_stream_fallback_params_are_not_double_subtracted()
+    {
+        // 响应体不带 usage，回退到入参（aba2773 后入参已是"新输入"20）——不能再减缓存 80。
+        var sse = ProxyProtocolBridge.BuildAnthropicStreamFromOpenAiResponse(
+            """{"id":"chatcmpl-1","choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}""",
+            "test-model", 20, 80, 5);
+        var (start, delta) = ExtractAnthropicUsageEvents(sse);
+
+        start.Should().Contain("\"input_tokens\":20", "回退分支入参已是新输入，双重扣减会把它错算成 0");
+        delta.Should().Contain("\"input_tokens\":20");
+        delta.Should().Contain("\"cache_read_input_tokens\":80");
+    }
+
+    [Fact]
+    public void Buffered_stream_via_adapt_agrees_on_excluding_cache()
+    {
+        var upstreamSse = string.Join("\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}",
+            "",
+            "data: {\"choices\":[{\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":5,\"prompt_tokens_details\":{\"cached_tokens\":80}}}",
+            "",
+            "data: [DONE]",
+            "");
+
+        var sse = ProxyProtocolBridge.AdaptResponseBodyForClient(
+            "Anthropic", "OpenAI", upstreamSse, isStreaming: true, "test-model",
+            inputTokens: 0, cachedTokens: 0, outputTokens: 0);
+        var (start, delta) = ExtractAnthropicUsageEvents(sse);
+
+        start.Should().Contain("\"input_tokens\":20");
+        delta.Should().Contain("\"input_tokens\":20");
+        delta.Should().Contain("\"cache_read_input_tokens\":80");
+    }
+
+    [Fact]
+    public void Buffered_stream_fallback_params_are_not_double_subtracted()
+    {
+        var upstreamSse = string.Join("\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}",
+            "",
+            "data: [DONE]",
+            "");
+
+        var sse = ProxyProtocolBridge.AdaptResponseBodyForClient(
+            "Anthropic", "OpenAI", upstreamSse, isStreaming: true, "test-model",
+            inputTokens: 20, cachedTokens: 80, outputTokens: 5);
+        var (start, delta) = ExtractAnthropicUsageEvents(sse);
+
+        start.Should().Contain("\"input_tokens\":20", "回退分支不得双重扣减缓存");
+        delta.Should().Contain("\"input_tokens\":20");
+    }
 }
