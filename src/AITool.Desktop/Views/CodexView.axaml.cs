@@ -35,8 +35,8 @@ public partial class CodexView : UserControl
         {
             var file = await storageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
             {
-                Title = "导出 Codex 凭证",
-                SuggestedFileName = $"codex_credentials_{DateTime.Now:yyyyMMdd}.json",
+                Title = "导出 OAuth 凭证",
+                SuggestedFileName = $"oauth_credentials_{DateTime.Now:yyyyMMdd}.json",
                 DefaultExtension = "json",
                 FileTypeChoices = JsonFileTypes
             });
@@ -45,7 +45,7 @@ public partial class CodexView : UserControl
             await using var stream = await file.OpenWriteAsync();
             await using var writer = new StreamWriter(stream, new UTF8Encoding(false));
             await writer.WriteAsync(json);
-            viewModel.Message = "Codex 凭证已导出到所选文件";
+            viewModel.Message = "OAuth 凭证已导出到所选文件";
         }
         catch (Exception exception)
         {
@@ -65,7 +65,7 @@ public partial class CodexView : UserControl
         if (string.IsNullOrWhiteSpace(json) || clipboard is null) return;
 
         await clipboard.SetTextAsync(json);
-        viewModel.Message = "Codex 凭证 JSON 已复制到剪贴板";
+        viewModel.Message = "OAuth 凭证 JSON 已复制到剪贴板";
     }
 
     private async void ImportCredentialFiles(object? sender, RoutedEventArgs e)
@@ -78,7 +78,7 @@ public partial class CodexView : UserControl
 
         var files = await storageProvider.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "选择 Codex 凭证 JSON 文件",
+            Title = "选择 OAuth 凭证 JSON 文件",
             AllowMultiple = true,
             FileTypeFilter =
             [
@@ -153,8 +153,8 @@ public partial class CodexView : UserControl
         var accountName = string.IsNullOrWhiteSpace(account.DisplayName)
             ? account.Email
             : account.DisplayName;
-        var message = $"确定删除 Codex 账号“{accountName}”吗？删除会同时移除关联站点、模型映射和路由规则，此操作不可撤销。";
-        if (await ConfirmAsync(message, "确认删除", "确认删除 Codex 账号"))
+        var message = $"确定删除 OAuth 账号“{accountName}”吗？删除会同时移除关联站点、模型映射和路由规则，此操作不可撤销。";
+        if (await ConfirmAsync(message, "确认删除", "确认删除 OAuth 账号"))
         {
             await viewModel.DeleteCommand.ExecuteAsync(account);
         }

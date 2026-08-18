@@ -70,12 +70,12 @@ public sealed class SystemSettingsApiController : ControllerBase
             developerFeaturesEnabled = settings.DeveloperFeaturesEnabled,
             concurrencyMode = settings.ConcurrencyMode,
             concurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
-            codexFeaturesEnabled = settings.CodexFeaturesEnabled,
-            codexInspectionEnabled = settings.CodexInspectionEnabled,
-            codexInspectionIntervalSeconds = settings.CodexInspectionIntervalSeconds,
-            codexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours,
-            codexAutoDisableThresholdPercent = settings.CodexAutoDisableThresholdPercent,
-            codexInspectionCacheEnabled = settings.CodexInspectionCacheEnabled,
+            oauthFeaturesEnabled = settings.OAuthFeaturesEnabled,
+            oauthInspectionEnabled = settings.OAuthInspectionEnabled,
+            oauthInspectionIntervalSeconds = settings.OAuthInspectionIntervalSeconds,
+            oauthQuotaMaxCacheHours = settings.OAuthQuotaMaxCacheHours,
+            oauthAutoDisableThresholdPercent = settings.OAuthAutoDisableThresholdPercent,
+            oauthInspectionCacheEnabled = settings.OAuthInspectionCacheEnabled,
             lastUsageLogPrunedAt = settings.LastUsageLogPrunedAt,
             lastUsageLogPrunedCount = settings.LastUsageLogPrunedCount
         }));

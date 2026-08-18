@@ -37,7 +37,7 @@ const navGroups = computed<NavGroup[]>(() => {
       title: '资源管理',
       items: [
         { label: '站点管理', key: 'sites', icon: '🌐' },
-        ...(features?.codexEnabled ? [{ label: 'OAuth 管理', key: 'codex', icon: '🔐' }] : []),
+        ...((features?.oauthEnabled ?? features?.codexEnabled) ? [{ label: 'OAuth 管理', key: 'oauth', icon: '🔐' }] : []),
         { label: '模型库', key: 'models', icon: '🧠' }
       ]
     },

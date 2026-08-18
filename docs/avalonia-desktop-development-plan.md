@@ -100,7 +100,7 @@ src/AITool.Desktop/
 ### 4.4 NavigationService —— 页面导航
 
 - 维护当前页面 ViewModel
-- 功能开关：根据 `/api/auth/status` 返回的 `features.{codexEnabled, codexInspectionEnabled, developerEnabled}` 控制菜单可见性
+- 功能开关：根据 `/api/auth/status` 返回的 `features.{oauthEnabled, oauthInspectionEnabled, developerEnabled}` 控制菜单可见性
 - 页面切换时正确清理/初始化
 
 ### 4.5 MainWindow —— 主窗口布局
@@ -109,7 +109,7 @@ src/AITool.Desktop/
 
 - **侧边栏**：菜单项列表（可折叠），选中态高亮
 - **内容区**：根据选中菜单切换 View + ViewModel
-- **功能开关**：Codex 菜单仅在 `codexEnabled` 时显示，开发者工具仅在 `developerEnabled` 时显示
+- **功能开关**：OAuth 菜单仅在 `oauthEnabled` 时显示，开发者工具仅在 `developerEnabled` 时显示
 
 ---
 
@@ -161,7 +161,7 @@ src/AITool.Desktop/
 |---|---|---|---|---|
 | 16 | ChatView | ChatTestPane.vue | 难 | SSE 流式对话 + Markdown 渲染 |
 | 17 | DeveloperInvocationsView | DeveloperInvocationsView.vue | 难 | trace 分页 + 详情 + 并发监视 |
-| 18 | CodexView | CodexView.vue | 极难 | OAuth loopback + 账号管理 + 巡检 |
+| 18 | OAuth 管理页 | OAuthView.vue | 极难 | OAuth loopback + 账号管理 + 多窗口额度巡检 |
 
 ### 暂不做（占位页，后续补）
 
@@ -199,7 +199,7 @@ src/AITool.Desktop/
 | Detection | `/api/admin/detection` | matrix + probe + progress |
 | DetectionTasks | `/api/admin/detection-tasks` | CRUD + toggle + execute |
 | ModelHealth | `/api/admin/model-health` | dashboard + monitor（暂不做） |
-| Codex | `/api/admin/codex` | accounts CRUD + OAuth + inspection + import/export |
+| OAuth 账号 | `/api/admin/oauth` | accounts CRUD + OAuth + 多窗口额度巡检 + import/export |
 | Developer | `/api/admin/developer/invocations` | init + list + detail + concurrency + circuit-breaker |
 | CompatibilityProfiles | `/api/admin/compatibility-profiles` | CRUD + toggle |
 | UsageLogs | `/api/admin/usage-logs` | filters + list + summary + request-detail |
@@ -236,8 +236,8 @@ src/AITool.Desktop/
   "hasPassword": true,
   "isAuthenticated": false,
   "features": {
-    "codexEnabled": true,
-    "codexInspectionEnabled": false,
+    "oauthEnabled": true,
+    "oauthInspectionEnabled": false,
     "developerEnabled": false
   }
 }

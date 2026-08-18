@@ -23,11 +23,11 @@ public partial class SystemSettings : ObservableObject
     [ObservableProperty] private bool _developerFeaturesEnabled;
     [ObservableProperty] private int _concurrencyMode;
     [ObservableProperty] private int _concurrencyQueueTimeoutSeconds = 120;
-    [ObservableProperty] private bool _codexFeaturesEnabled;
-    [ObservableProperty] private bool _codexInspectionEnabled;
-    [ObservableProperty] private int _codexInspectionIntervalSeconds = 1800;
-    [ObservableProperty] private int _codexQuotaMaxCacheHours = 6;
-    [ObservableProperty] private int _codexAutoDisableThresholdPercent = 95;
+    [ObservableProperty] private bool _oAuthFeaturesEnabled;
+    [ObservableProperty] private bool _oAuthInspectionEnabled;
+    [ObservableProperty] private int _oAuthInspectionIntervalSeconds = 1800;
+    [ObservableProperty] private int _oAuthQuotaMaxCacheHours = 6;
+    [ObservableProperty] private int _oAuthAutoDisableThresholdPercent = 95;
     public string? LastUsageLogPrunedAt { get; set; }
     public int LastUsageLogPrunedCount { get; set; }
     public string LastUsageLogPrunedText

@@ -91,4 +91,4 @@ npm run type-check    # vue-tsc --noEmit
 npm run build         # 类型检查 + vite build
 ```
 
-前端 vitest 覆盖：`api/http.test.ts`、`api/chat.test.ts`、`api/routes.test.ts`、`api/analytics.test.ts`、`api/codex.test.ts` + 各视图 `*State.test.ts`（约 20 个文件）。
+前端 vitest 覆盖：`api/http.test.ts`、`api/chat.test.ts`、`api/routes.test.ts`、`api/analytics.test.ts`、`api/oauth.test.ts` + 各视图 `*State.test.ts`（约 20 个文件）。

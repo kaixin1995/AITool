@@ -1,17 +1,15 @@
-using AITool.Application.Codex;
+using AITool.Application.Accounts;
 
 namespace AITool.Web.Services;
 
 /// <summary>
 /// 额度缓存复用策略：判断巡检时是否可沿用上次额度快照，避免对未被使用的账号重复打上游。
-/// 移植自 codex-patrol QuotaCachePolicy.TryReuseQuota，并新增「每隔 N 小时强制真实刷新」的 TTL 兜底
-/// （codex-patrol 缺失此检查，会导致未被使用的账号无限期使用缓存）。
+/// 通用额度缓存复用策略：所有 OAuth 账号提供程序共享同一套缓存判定，
+/// 由各提供程序负责解析自己的原始额度响应。
 /// </summary>
 public static class QuotaCachePolicy
 {
     /// <summary>周窗口的秒数常量（604800）。</summary>
-    private const int WeekSeconds = 604_800;
-
     /// <summary>
     /// 尝试复用已有的额度快照。满足全部条件返回 true。
     /// 条件：①有历史快照且成功 ②有窗口数据 ③至少一个窗口有重置时间
@@ -19,13 +17,13 @@ public static class QuotaCachePolicy
     ///       ⑥账号自上次刷新后未被使用（hasRecentUsage=false）。
     /// </summary>
     /// <param name="existing">已有的额度快照（可为 null）。</param>
-    /// <param name="lastRefreshedAt">上次真实刷新时间（来自 CodexAccount.LastQuotaCheckedAt）。</param>
-    /// <param name="hasRecentUsage">账号自上次刷新后是否有新调用（查 ProxyUsageLogs 判定）。</param>
+    /// <param name="lastRefreshedAt">上次真实刷新时间（来自账号提供程序的持久化快照）。</param>
+    /// <param name="hasRecentUsage">账号自上次刷新后是否有新调用。</param>
     /// <param name="maxCacheHours">额度缓存最大小时数，超过强制真实刷新。</param>
     /// <param name="nowUtc">当前 UTC 时间。</param>
     /// <param name="reason">未命中缓存时的原因说明。</param>
     public static bool TryReuseQuota(
-        CodexQuotaInfo? existing,
+        AccountQuotaSnapshot? existing,
         DateTimeOffset? lastRefreshedAt,
         bool hasRecentUsage,
         int maxCacheHours,

@@ -9,7 +9,7 @@
     <Grid ColumnDefinitions="*,1.8*" ColumnSpacing="16" VerticalAlignment="Center">
       <StackPanel Spacing="4">
         <TextBlock Classes="page-title" Text="OAuth 管理" />
-        <TextBlock Classes="page-subtitle" Text="管理 Codex OAuth 账号、额度窗口、凭证和自动巡检" />
+        <TextBlock Classes="page-subtitle" Text="管理 OAuth 账号、额度窗口、凭证和自动巡检" />
       </StackPanel>
       <WrapPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal" ItemSpacing="10" LineSpacing="8">
         <Button
@@ -53,8 +53,8 @@
       <StackPanel Spacing="16">
         <Border Background="{DynamicResource AppResponseBackgroundBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasFeatureDisabled}">
           <StackPanel Spacing="4">
-            <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="Codex 功能未启用" />
-            <TextBlock Foreground="{DynamicResource AppWarningTextBrush}" Text="请先在系统设置中启用 Codex 功能后再管理 OAuth 账号。" TextWrapping="Wrap" />
+            <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppWarningTextBrush}" Text="OAuth 账号功能未启用" />
+            <TextBlock Foreground="{DynamicResource AppWarningTextBrush}" Text="请先在系统设置中启用 OAuth 账号功能后再管理 OAuth 账号。" TextWrapping="Wrap" />
           </StackPanel>
         </Border>
         <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasMessage}">
@@ -89,7 +89,7 @@
                 </StackPanel>
               </Border>
 
-              <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoAccounts}" Margin="0,35" Text="暂无 Codex 账号，请点击右上角 OAuth 登录" />
+              <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoAccounts}" Margin="0,35" Text="暂无 OAuth 账号，请点击右上角 OAuth 登录" />
               <ItemsControl ItemsSource="{Binding Accounts}">
                 <ItemsControl.ItemsPanel>
                   <ItemsPanelTemplate>
@@ -183,14 +183,14 @@
             </StackPanel>
           </TabItem>
 
-          <TabItem Header="Codex 巡检">
+          <TabItem Header="额度巡检">
             <StackPanel Margin="0,16,0,0" Spacing="16">
               <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasInspectionError}">
                 <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding InspectionError}" TextWrapping="Wrap" />
               </Border>
               <Border Classes="content-card" Padding="18" IsVisible="{Binding InspectionDisabled}">
                 <StackPanel HorizontalAlignment="Center" Spacing="10">
-                  <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="Codex 巡检功能未开启" />
+                  <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="额度巡检功能未开启" />
                   <Button Classes="secondary-button" Command="{Binding RefreshInspectionCommand}" Content="重新检测" Padding="12,7" />
                 </StackPanel>
               </Border>
@@ -204,7 +204,7 @@
                       <TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="空闲" />
                     </Border>
                     <StackPanel Spacing="3">
-                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="Codex 巡检状态" />
+                      <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="账号额度巡检状态" />
                       <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding InspectionStatus.LastFinishedText, FallbackValue=从未完成}" />
                     </StackPanel>
                   </StackPanel>
@@ -294,7 +294,7 @@
     <Border Grid.RowSpan="3" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsAccountEditorOpen}" Padding="24" Margin="12" MaxWidth="520" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="10">
       <StackPanel Spacing="14">
         <Grid ColumnDefinitions="*,Auto">
-          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="编辑 Codex 账号" />
+          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="编辑 OAuth 账号" />
           <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseAccountEditorCommand}" Content="关闭" Padding="10,6" />
         </Grid>
         <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding EditingAccountEmailText}" TextWrapping="Wrap" />
@@ -308,7 +308,7 @@
     <Border Grid.RowSpan="3" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsCredentialImportOpen}" Padding="24" Margin="12" MaxWidth="720" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="11">
       <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
         <Grid ColumnDefinitions="*,Auto">
-          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="导入 Codex 凭证 JSON" />
+          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="导入 OAuth 凭证 JSON" />
           <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseCredentialImportCommand}" Content="关闭" Padding="10,6" />
         </Grid>
         <StackPanel Grid.Row="1" Spacing="5">
@@ -343,7 +343,7 @@
       <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
         <Grid ColumnDefinitions="*,Auto">
           <StackPanel Spacing="3">
-            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="拉取 Codex 模型" />
+            <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="拉取账号模型" />
             <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding ModelAccount.DisplayName, FallbackValue=当前账号}" />
           </StackPanel>
           <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseModelEditorCommand}" Content="关闭" Padding="10,6" />

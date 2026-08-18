@@ -94,35 +94,36 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public int ConcurrencyQueueTimeoutSeconds { get; set; }
 
     /// <summary>
-    /// Codex 功能总开关（含 OAuth 账号、凭证导入、巡检）。关闭后隐藏 Codex 页面并禁用所有 Codex 托管站点。
+    /// OAuth 账号功能总开关（含 OAuth 登录账号、凭证导入和额度巡检）。
+    /// 关闭后隐藏 OAuth 页面并禁用所有托管账号站点。
     /// </summary>
-    public bool CodexFeaturesEnabled { get; set; }
+    public bool OAuthFeaturesEnabled { get; set; }
 
     /// <summary>
-    /// Codex 巡检自动执行开关。
+    /// OAuth 账号额度巡检自动执行开关。
     /// </summary>
-    public bool CodexInspectionEnabled { get; set; }
+    public bool OAuthInspectionEnabled { get; set; }
 
     /// <summary>
-    /// Codex 巡检周期（秒），下限 30。
+    /// OAuth 账号额度巡检周期（秒），下限 30。
     /// </summary>
-    public int CodexInspectionIntervalSeconds { get; set; }
+    public int OAuthInspectionIntervalSeconds { get; set; }
 
     /// <summary>
-    /// Codex 额度缓存最大小时数，超过则强制真实刷新。
+    /// OAuth 账号额度缓存最大小时数，超过则强制真实刷新。
     /// </summary>
-    public int CodexQuotaMaxCacheHours { get; set; }
+    public int OAuthQuotaMaxCacheHours { get; set; }
 
     /// <summary>
-    /// Codex 自动禁用阈值（百分比，1-100）。
+    /// OAuth 账号自动禁用阈值（百分比，1-100）。
     /// 当任一关键额度窗口的已使用百分比达到该阈值时，账号自动禁用。
     /// </summary>
-    public int CodexAutoDisableThresholdPercent { get; set; }
+    public int OAuthAutoDisableThresholdPercent { get; set; }
 
     /// <summary>
-    /// Codex 巡检缓存复用开关。关闭时每轮巡检都真实刷新额度；开启时未被使用的账号沿用缓存快照。
+    /// OAuth 账号额度巡检缓存复用开关。关闭时每轮巡检都真实刷新额度；开启时未被使用的账号沿用缓存快照。
     /// </summary>
-    public bool CodexInspectionCacheEnabled { get; set; }
+    public bool OAuthInspectionCacheEnabled { get; set; }
 }
 
 /// <summary>

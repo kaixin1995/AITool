@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Headers;
+using AITool.Application.Accounts;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
 using AITool.Infrastructure.Codex;
@@ -17,7 +18,7 @@ namespace AITool.Web.Services;
 /// 5 小时窗口(18000s)与周窗口(604800s)。
 /// </para>
 /// </summary>
-public sealed class CodexQuotaService : ICodexQuotaService
+public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvider
 {
     // wham/usage 端点（codex-patrol 同款）
     private const string UsageUrl = "https://chatgpt.com/backend-api/wham/usage";
@@ -50,6 +51,137 @@ public sealed class CodexQuotaService : ICodexQuotaService
         _resultCache = resultCache;
         _credentialRefreshService = credentialRefreshService;
         _logger = logger;
+    }
+
+    public string ProviderKey => "codex";
+
+    public async Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken)
+    {
+        var accounts = await _dbContext.CodexAccounts
+            .Where(a => !a.DisabledByFeatureToggle)
+            .OrderBy(a => a.LastQuotaCheckedAt)
+            .ToListAsync(cancellationToken);
+
+        return accounts.Select(ToQuotaTarget).ToList();
+    }
+
+    public AccountQuotaSnapshot? ParseCachedQuota(string rawJson)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson)) return null;
+
+        try
+        {
+            var (planType, windows) = CodexUsageParser.Parse(rawJson);
+            return new AccountQuotaSnapshot
+            {
+                Success = windows.Count > 0,
+                PlanType = planType,
+                RawJson = rawJson,
+                Windows = windows.Select(ToQuotaWindow).ToList(),
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public async Task<AccountQuotaSnapshot> QueryAsync(
+        AccountQuotaTarget account,
+        bool forceRefresh,
+        CancellationToken cancellationToken)
+    {
+        var current = (await _dbContext.CodexAccounts
+            .Where(a => a.Id == account.AccountId)
+            .ToListAsync(cancellationToken))
+            .FirstOrDefault();
+
+        if (current is null)
+        {
+            return new AccountQuotaSnapshot
+            {
+                Success = false,
+                Error = "账号不存在",
+                CheckedAt = DateTimeOffset.UtcNow,
+            };
+        }
+
+        return ToQuotaSnapshot(await QueryAsync(current, forceRefresh, cancellationToken));
+    }
+
+    public async Task SetEnabledAsync(
+        AccountQuotaTarget account,
+        bool enabled,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        var current = (await client.Queryable<CodexAccount>()
+            .Where(a => a.Id == account.AccountId)
+            .ToListAsync(cancellationToken))
+            .FirstOrDefault();
+        if (current is null) return;
+
+        if (enabled)
+        {
+            current.IsEnabled = true;
+            if (string.Equals(reason, "quota-recovered", StringComparison.OrdinalIgnoreCase))
+            {
+                current.ManuallyDisabled = false;
+            }
+            if (string.Equals(reason, "feature-toggle-on", StringComparison.OrdinalIgnoreCase))
+            {
+                current.DisabledByFeatureToggle = false;
+            }
+        }
+        else
+        {
+            current.IsEnabled = false;
+            if (string.Equals(reason, "feature-toggle-off", StringComparison.OrdinalIgnoreCase))
+            {
+                current.DisabledByFeatureToggle = account.IsEnabled;
+            }
+        }
+
+        await client.Updateable(current)
+            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled, x.DisabledByFeatureToggle })
+            .ExecuteCommandAsync(cancellationToken);
+        await SetLinkedSiteEnabledAsync(client, current.LinkedSiteId, enabled, cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateCodexAccounts();
+    }
+
+    public async Task ApplyFeatureToggleAsync(bool enabled, CancellationToken cancellationToken)
+    {
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        var accounts = await client.Queryable<CodexAccount>().ToListAsync(cancellationToken);
+
+        foreach (var account in accounts)
+        {
+            if (!enabled)
+            {
+                account.DisabledByFeatureToggle = account.IsEnabled;
+                account.IsEnabled = false;
+                await client.Updateable(account)
+                    .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
+                    .ExecuteCommandAsync(cancellationToken);
+                await SetLinkedSiteEnabledAsync(client, account.LinkedSiteId, false, cancellationToken);
+            }
+            else if (account.DisabledByFeatureToggle)
+            {
+                account.IsEnabled = true;
+                account.DisabledByFeatureToggle = false;
+                await client.Updateable(account)
+                    .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
+                    .ExecuteCommandAsync(cancellationToken);
+                await SetLinkedSiteEnabledAsync(client, account.LinkedSiteId, true, cancellationToken);
+            }
+        }
+
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateCodexAccounts();
     }
 
     /// <inheritdoc />
@@ -99,7 +231,7 @@ public sealed class CodexQuotaService : ICodexQuotaService
                     if (account.IsEnabled)
                     {
                         var maxPercent = GetMaxUsedPercent(info);
-                        var threshold = (double)runtime.CodexAutoDisableThresholdPercent;
+                        var threshold = (double)runtime.OAuthAutoDisableThresholdPercent;
                         if (maxPercent.HasValue && maxPercent.Value >= threshold)
                         {
                             await DisableAccountAsync(account, cancellationToken,
@@ -207,6 +339,66 @@ public sealed class CodexQuotaService : ICodexQuotaService
         var fiveHour = info.Windows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
         if (fiveHour.HasValue) return fiveHour;
         return info.Windows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;
+    }
+
+    private static AccountQuotaTarget ToQuotaTarget(CodexAccount account) => new()
+    {
+        ProviderKey = "codex",
+        AccountId = account.Id,
+        DisplayName = account.DisplayName,
+        LinkedSiteId = account.LinkedSiteId,
+        IsEnabled = account.IsEnabled,
+        IsQuotaCooling = account.IsQuotaCooling,
+        DisabledByFeatureToggle = account.DisabledByFeatureToggle,
+        ManuallyDisabled = account.ManuallyDisabled,
+        TokenExpiresAt = account.TokenExpiresAt,
+        LastQuotaCheckedAt = account.LastQuotaCheckedAt,
+        LastQuotaRawJson = account.LastQuotaRawJson,
+    };
+
+    private static AccountQuotaSnapshot ToQuotaSnapshot(CodexQuotaInfo info) => new()
+    {
+        Success = info.Success,
+        Error = info.Error,
+        PlanType = info.PlanType,
+        RawJson = info.RawJson,
+        CheckedAt = info.CheckedAt,
+        Windows = info.Windows.Select(ToQuotaWindow).ToList(),
+    };
+
+    private static AccountQuotaWindow ToQuotaWindow(CodexQuotaWindow window) => new()
+    {
+        Id = window.Id,
+        Label = window.Label,
+        UsedPercent = window.UsedPercent,
+        ResetLabel = window.ResetLabel,
+        ResetAtUtc = window.ResetAtUtc,
+        LimitWindowSeconds = window.LimitWindowSeconds,
+    };
+
+    private static AccountQuotaWindow ToQuotaWindow(CodexUsageParser.Window window) => new()
+    {
+        Id = window.Id,
+        Label = window.Label,
+        UsedPercent = window.UsedPercent,
+        ResetLabel = window.ResetLabel,
+        ResetAtUtc = window.ResetAtUtc,
+        LimitWindowSeconds = window.LimitWindowSeconds,
+    };
+
+    private static async Task SetLinkedSiteEnabledAsync(
+        SqlSugar.ISqlSugarClient client,
+        Guid linkedSiteId,
+        bool enabled,
+        CancellationToken cancellationToken)
+    {
+        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(linkedSiteId);
+        if (site is null || site.IsEnabled == enabled) return;
+
+        site.IsEnabled = enabled;
+        await client.Updateable(site)
+            .UpdateColumns(x => new { x.IsEnabled })
+            .ExecuteCommandAsync(cancellationToken);
     }
 
     private async Task DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)

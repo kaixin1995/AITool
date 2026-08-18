@@ -17,7 +17,7 @@ public sealed class AuthStatus
 
 public sealed class AuthFeatures
 {
-    public bool CodexEnabled { get; set; }
-    public bool CodexInspectionEnabled { get; set; }
+    public bool OAuthEnabled { get; set; }
+    public bool OAuthInspectionEnabled { get; set; }
     public bool DeveloperEnabled { get; set; }
 }

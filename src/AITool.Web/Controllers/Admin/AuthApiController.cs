@@ -69,8 +69,8 @@ public sealed class AuthApiController : ControllerBase
             buildTime = _appVersion.BuildTime,
             features = new
             {
-                codexEnabled = settings.CodexFeaturesEnabled,
-                codexInspectionEnabled = settings.CodexInspectionEnabled,
+                oauthEnabled = settings.OAuthFeaturesEnabled,
+                oauthInspectionEnabled = settings.OAuthInspectionEnabled,
                 developerEnabled = settings.DeveloperFeaturesEnabled
             }
         };

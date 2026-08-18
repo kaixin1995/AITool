@@ -69,7 +69,7 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
             _logger.LogWarning("GetRuntimeSettingsAsync failed in cooldown recovery, skipping this round");
             return;
         }
-        if (!runtime.CodexFeaturesEnabled)
+        if (!runtime.OAuthFeaturesEnabled)
         {
             return;
         }

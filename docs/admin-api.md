@@ -29,7 +29,7 @@
 
 | 方法 | 端点 | Action | 说明 |
 |------|------|--------|------|
-| GET | `/status` | L55 | 登录状态 + 功能开关（codexEnabled/codexInspectionEnabled/developerEnabled）+ 版本号/编译时间 |
+| GET | `/status` | L55 | 登录状态 + 功能开关（oauthEnabled/oauthInspectionEnabled/developerEnabled）+ 版本号/编译时间 |
 | POST | `/login` | L88 | 密码登录（`LoginRateLimitService` IP 失败计数锁定），签发 access + refresh token |
 | POST | `/refresh` | L150 | refresh token 换新 access（轮换语义，旧 token 失效） |
 | POST | `/logout` | L176 | 登出（吊销 refresh token） |
@@ -204,7 +204,7 @@
 
 > 详见 [debug-tools.md](debug-tools.md)。
 
-## 18. Codex `api/admin/codex`（类级 `CodexFeatureToggleAttribute`，关闭时 404）
+## 18. OAuth 账号 `api/admin/oauth`（类级 OAuth 功能开关，关闭时 404；旧 `api/admin/codex` 兼容保留）
 
 | 方法 | 端点 | 说明 |
 |------|------|------|

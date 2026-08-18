@@ -1,5 +1,6 @@
 using System.Data.Common;
 using System.Net.Http;
+using AITool.Application.Accounts;
 using AITool.Application.Codex;
 using AITool.Application.Common;
 using AITool.Application.Operations;
@@ -196,7 +197,7 @@ builder.Services.Configure<CodexUpstreamOptions>(
 // 注册站点目录客户端，用于拉取远程站点模型列表。
 builder.Services.AddHttpClient<ISiteCatalogClient, OpenAiSiteCatalogClient>();
 
-// 注册 Codex OAuth 客户端，用于 PKCE 授权、token 交换与刷新（复用连接池）。
+// 注册 OAuth 客户端，用于 PKCE 授权、token 交换与刷新（当前提供 Codex 上游实现）。
 builder.Services.AddHttpClient<ICodexOAuthClient, CodexOAuthClient>(c =>
 {
     c.Timeout = TimeSpan.FromSeconds(20);
@@ -211,11 +212,13 @@ builder.Services.AddHttpClient<ICodexModelFetcher, CodexModelFetcher>(c =>
     c.Timeout = TimeSpan.FromSeconds(30);
 });
 
-// 注册 Codex 额度主动查询服务（30s 结果缓存防抖 + single-flight）。
-builder.Services.AddHttpClient<ICodexQuotaService, CodexQuotaService>(c =>
+// 注册当前 OAuth 提供程序的额度服务（30s 结果缓存防抖 + single-flight）。
+builder.Services.AddHttpClient<CodexQuotaService>(c =>
 {
     c.Timeout = TimeSpan.FromSeconds(20);
 });
+builder.Services.AddTransient<ICodexQuotaService>(sp => sp.GetRequiredService<CodexQuotaService>());
+builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<CodexQuotaService>());
 
 // 注册代理主入口实体配置，配置 SocketsHttpHandler 连接池提高并发能力。
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>()
@@ -232,13 +235,13 @@ builder.Services.AddScoped<AITool.Infrastructure.Sites.SiteKeySelector>();
 // 注册使用日志服务，记录每次代理调用的 Token 用量。
 builder.Services.AddSingleton<ProxyUsageLogBatchWriter>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProxyUsageLogBatchWriter>());
-// Site 使用时间内存映射：日志入队时增量更新，Codex 巡检读它判断账号是否被使用，避免回查 DB。
+// Site 使用时间内存映射：日志入队时增量更新，账号额度巡检读它判断账号是否被使用，避免回查 DB。
 builder.Services.AddSingleton<SiteUsageTracker>();
 // 定期压缩 LOH，回收大对象碎片，避免代理转发产生的大字符串碎片导致工作集居高不下。
 builder.Services.AddHostedService<MemoryMaintenanceService>();
-// 周期刷新 Codex 账号 OAuth token，写回隐藏 Site.ApiKey 并失效路由缓存。
+// 周期刷新当前 OAuth 提供程序账号 token，写回隐藏 Site.ApiKey 并失效路由缓存。
 builder.Services.AddHostedService<CodexTokenRefreshService>();
-// 周期恢复冷却到期的 Codex 账号（清除冷却，恢复 Site，若未被手动禁用）。
+// 周期恢复冷却到期的当前 OAuth 提供程序账号（清除冷却，恢复 Site，若未被手动禁用）。
 builder.Services.AddHostedService<CodexCooldownRecoveryService>();
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
 builder.Services.AddSingleton<ModelConcurrencyLimiter>();
@@ -251,7 +254,7 @@ builder.Services.AddSingleton<ModelVendorCatalogService>();
 // 模型价格表（本地 JSON，查询时动态计价，不落数据库）。
 builder.Services.AddSingleton<IModelPricingService, ModelPricingService>();
 
-// 注册 Codex 账号供给相关服务（站点级联删除工具 + 账号工厂）。
+// 注册 OAuth 账号供给相关服务（当前为 Codex 凭证实现）。
 builder.Services.AddScoped<SiteCascadeDeleter>();
 builder.Services.AddScoped<CodexAccountProvisioner>();
 // 实时代理命中 Codex 上游 401 时立即刷新凭证并同步隐藏站点。
@@ -263,13 +266,13 @@ builder.Services.AddHttpClient<ICodexResetCreditsService, CodexResetCreditsServi
 {
     client.Timeout = TimeSpan.FromSeconds(30);
 });
-// Codex 功能总开关过滤器（控制器级 gating）。
-builder.Services.AddScoped<CodexFeatureToggleAttribute>();
-// Codex 巡检开关过滤器（仅巡检相关 action 使用，关闭时返回 404）。
-builder.Services.AddScoped<CodexInspectionToggleAttribute>();
-// Codex 巡检后台服务（周期额度巡检 + 缓存策略 + 自动禁用）。单例，供 API 与后台共用状态。
-builder.Services.AddSingleton<CodexInspectionService>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<CodexInspectionService>());
+// OAuth 功能总开关过滤器（控制器级 gating）。
+builder.Services.AddScoped<OAuthFeatureToggleAttribute>();
+// 通用账号巡检开关过滤器（仅巡检相关 action 使用，关闭时返回 404）。
+builder.Services.AddScoped<AccountInspectionToggleAttribute>();
+// 通用账号额度巡检后台服务（周期巡检 + 缓存策略 + 自动禁用）。
+builder.Services.AddSingleton<AccountQuotaInspectionService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AccountQuotaInspectionService>());
 
 // 注册日志保留策略服务，定时清理过期日志。
 builder.Services.AddScoped<ILogRetentionService, LogRetentionService>();

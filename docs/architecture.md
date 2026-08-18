@@ -96,10 +96,10 @@ graph TD
 - `AddScoped<ModelHealthRequestService>()`、`AddScoped<SiteKeySelector>()`
 
 ### 2.7 代理热路径单例与后台服务（L230-289）
-逐条注册（完整语义见第 4 节 DI 全表）：`ProxyUsageLogBatchWriter`(+HostedService)、`SiteUsageTracker`、`MemoryMaintenanceService`、`CodexTokenRefreshService`、`CodexCooldownRecoveryService`、`DeveloperInvocationTraceStore`、`ModelConcurrencyLimiter`、`UsageLogService`、`RouteCircuitStateStore`、`ProxyRequestMetadataCache`、`ModelVendorCatalogService`、`SiteCascadeDeleter`、`CodexAccountProvisioner`、`CodexCredentialRefreshService`、`CodexQuotaCooldownService`、`CodexResetCreditsService`、`CodexFeatureToggleAttribute`、`CodexInspectionToggleAttribute`、`CodexInspectionService`(+HostedService)、`LogRetentionService`、`SystemRuntimeSettingsService`、**`SqlMigrationRunnerService`**、`HangfireDetectionScheduler`、`AnalyticsBackgroundQueryExecutor`(+HostedService)、`AddHangfire(InMemoryStorage)` + `AddHangfireServer()`
+逐条注册（完整语义见第 4 节 DI 全表）：`ProxyUsageLogBatchWriter`(+HostedService)、`SiteUsageTracker`、`MemoryMaintenanceService`、`CodexTokenRefreshService`、`CodexCooldownRecoveryService`、`DeveloperInvocationTraceStore`、`ModelConcurrencyLimiter`、`UsageLogService`、`RouteCircuitStateStore`、`ProxyRequestMetadataCache`、`ModelVendorCatalogService`、`SiteCascadeDeleter`、`CodexAccountProvisioner`、`CodexCredentialRefreshService`、`CodexQuotaCooldownService`、`CodexResetCreditsService`、`OAuthFeatureToggleAttribute`、`AccountInspectionToggleAttribute`、`AccountQuotaInspectionService`(+HostedService)、`LogRetentionService`、`SystemRuntimeSettingsService`、**`SqlMigrationRunnerService`**、`HangfireDetectionScheduler`、`AnalyticsBackgroundQueryExecutor`(+HostedService)、`AddHangfire(InMemoryStorage)` + `AddHangfireServer()`
 
 ### 2.8 启动作用域初始化（L291-338，`builder.Build()` 之后）
-1. `SqlSugarSetup.InitializeDatabase(db, logger)` — CodeFirst 建表/差量补列 + PRAGMA（WAL / synchronous=NORMAL / cache_size=-65536 / busy_timeout=5000），随后 `MigrateLegacySiteKeys` 幂等迁移（把自建站点 `Site.ApiKey` 复制成一条 Priority=0 的默认 `SiteKey`；Codex 托管站点不迁移）。失败不阻断启动
+1. `SqlSugarSetup.InitializeDatabase(db, logger)` — CodeFirst 建表/差量补列 + PRAGMA（WAL / synchronous=NORMAL / cache_size=-65536 / busy_timeout=5000），随后 `MigrateLegacySiteKeys` 幂等迁移（把自建站点 `Site.ApiKey` 复制成一条 Priority=0 的默认 `SiteKey`；OAuth 托管站点不迁移）。失败不阻断启动
 2. `SiteUsageTracker.WarmupAsync()` — 从 `ProxyUsageLogs` 取最近 7 天按 `TargetSiteId` 分组 Max(RequestedAt) 预热站点使用时间
 3. `HangfireDetectionScheduler.ScheduleAllAsync()` — 把所有启用的检测任务注册为 RecurringJob（失败仅告警）
 4. 非 Testing 环境：预热 `ProxyRequestMetadataCache.GetRuntimeSettingsAsync()`（避免首请求查库）
@@ -183,8 +183,8 @@ graph TD
 | `CodexCredentialRefreshService` | Scoped | 代理命中 Codex 401 时即时刷凭证 |
 | `CodexTokenRefreshService` | HostedService | 周期刷新 OAuth token |
 | `CodexCooldownRecoveryService` | HostedService | 冷却到期恢复 |
-| `CodexInspectionService` | Singleton + HostedService | 周期额度巡检 + 自动禁用 |
-| `CodexFeatureToggleAttribute` / `CodexInspectionToggleAttribute` | Scoped（ServiceFilter） | Codex 功能 gating，关闭时 404 |
+| `AccountQuotaInspectionService` | Singleton + HostedService | 多提供程序、多额度窗口巡检 + 自动禁用 |
+| `OAuthFeatureToggleAttribute` / `AccountInspectionToggleAttribute` | Scoped（ServiceFilter） | OAuth 账号/额度巡检 gating，关闭时 404 |
 | `MemoryMaintenanceService` | HostedService | 周期 `GC.Collect(2, Forced, Blocking)` 压缩 LOH |
 | `SiteCascadeDeleter` | Scoped | 站点级联删除（映射/规则/空入口清理） |
 
@@ -403,14 +403,14 @@ sealed class SystemRuntimeSettings
     int ConcurrencyMode;                 // 0=SkipOnFull 跳下一顺位；1=WaitForSlot 排队
     int ConcurrencyQueueTimeoutSeconds = 120;
     bool DeveloperFeaturesEnabled;
-    bool CodexFeaturesEnabled;           // 总开关（关→禁全部托管站点+账号记 DisabledByFeatureToggle）
-    bool CodexInspectionEnabled;
-    int CodexInspectionIntervalSeconds = 1800;   // 下限 30
-    int CodexQuotaMaxCacheHours = 6;
-    int CodexAutoDisableThresholdPercent = 95;   // 1-100
-    bool CodexInspectionCacheEnabled;
+    bool OAuthFeaturesEnabled;           // 总开关（关→禁全部 OAuth 托管站点+账号记 DisabledByFeatureToggle）
+    bool OAuthInspectionEnabled;
+    int OAuthInspectionIntervalSeconds = 1800;   // 下限 30
+    int OAuthQuotaMaxCacheHours = 6;
+    int OAuthAutoDisableThresholdPercent = 95;   // 1-100
+    bool OAuthInspectionCacheEnabled;
 }
-// UpdateAsync 含逐字段钳制 + Codex 总开关联动（重开仅恢复 DisabledByFeatureToggle 账号）
+// UpdateAsync 含逐字段钳制 + OAuth 总开关联动（重开仅恢复 DisabledByFeatureToggle 账号）
 ```
 
 **SqlMigrationExecution**（`Domain/Operations/SqlMigrationExecution.cs`）：`Id`、`FileName`（≤255）、`FileHash`（SHA256，64）、`DryRun`、`Success`、`RowsAffected`、`StatementCount`、`DurationMs`、`ErrorMessage`、`OperatorIp`、`ExecutedAt`；(FileName, ExecutedAt) 索引。每次执行（含试运行）一条审计。
@@ -536,7 +536,7 @@ static class SiteEndpointPathResolver
 | BackgroundService | `AnalyticsBackgroundQueryExecutor` | 队列驱动 | 重统计查询单消费者（容量 4 的 BoundedChannel + 20s 结果缓存 + 版本失效） |
 | BackgroundService | `CodexTokenRefreshService` | 周期 | 到期前刷新 OAuth token 写回隐藏 Site |
 | BackgroundService | `CodexCooldownRecoveryService` | 周期 | 恢复 `QuotaCoolingUntil` 到期账号（跳过手动禁用） |
-| BackgroundService | `CodexInspectionService` | `CodexInspectionIntervalSeconds`（下限 30s） | 额度巡检 + 缓存复用 + 按阈值自动禁用 |
+| BackgroundService | `AccountQuotaInspectionService` | `OAuthInspectionIntervalSeconds`（下限 30s） | 多提供程序额度巡检 + 缓存复用 + 按阈值自动禁用 |
 | BackgroundService | `MemoryMaintenanceService` | 周期 | 压缩 LOH 回收大对象碎片 |
 
 Hangfire 使用 InMemoryStorage（重启丢任务注册，启动时重新 `ScheduleAllAsync`）。仪表盘 `/hangfire`，未登录重定向前端 `/login`。

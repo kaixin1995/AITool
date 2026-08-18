@@ -80,7 +80,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
 
         // 尊重 Codex 功能总开关：关闭时跳过本轮
         var runtime = await cache.GetRuntimeSettingsAsync(ct);
-        if (!runtime.CodexFeaturesEnabled)
+        if (!runtime.OAuthFeaturesEnabled)
         {
             return;
         }

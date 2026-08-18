@@ -96,37 +96,44 @@ public sealed class SystemRuntimeSettings
     public int LastUsageLogPrunedCount { get; set; }
 
     /// <summary>
-    /// Codex 功能总开关（含 OAuth 账号、凭证导入、巡检）。
-    /// 关闭后隐藏 Codex 页面入口，并把所有 Codex 托管站点置为禁用（路由/模型/对话测试不再命中）。
+    /// OAuth 账号功能总开关（含 OAuth 登录账号、凭证导入和额度巡检）。
+    /// 关闭后隐藏 OAuth 页面入口，并把所有托管账号站点置为禁用（路由/模型/对话测试不再命中）。
     /// </summary>
-    public bool CodexFeaturesEnabled { get; set; }
+    // 保留旧数据库列名，避免 CodeFirst 只增不改时丢失现有配置。
+    [SugarColumn(ColumnName = "CodexFeaturesEnabled")]
+    public bool OAuthFeaturesEnabled { get; set; }
 
     /// <summary>
-    /// Codex 巡检自动执行开关。仅在 CodexFeaturesEnabled 开启时生效。
+    /// OAuth 账号额度巡检自动执行开关。仅在 OAuthFeaturesEnabled 开启时生效。
     /// </summary>
-    public bool CodexInspectionEnabled { get; set; }
+    [SugarColumn(ColumnName = "CodexInspectionEnabled")]
+    public bool OAuthInspectionEnabled { get; set; }
 
     /// <summary>
-    /// Codex 巡检周期（秒），下限 30。每隔该周期执行一轮账号额度巡检。
+    /// OAuth 账号额度巡检周期（秒），下限 30。每隔该周期执行一轮账号额度巡检。
     /// </summary>
-    public int CodexInspectionIntervalSeconds { get; set; } = 1800;
+    [SugarColumn(ColumnName = "CodexInspectionIntervalSeconds")]
+    public int OAuthInspectionIntervalSeconds { get; set; } = 1800;
 
     /// <summary>
-    /// Codex 额度缓存最大小时数。超过该时长未真实刷新的账号，巡检时强制真实刷新（codex-patrol 缺失的兜底）。
+    /// OAuth 账号额度缓存最大小时数。超过该时长未真实刷新的账号，巡检时强制真实刷新。
     /// </summary>
-    public int CodexQuotaMaxCacheHours { get; set; } = 6;
+    [SugarColumn(ColumnName = "CodexQuotaMaxCacheHours")]
+    public int OAuthQuotaMaxCacheHours { get; set; } = 6;
 
     /// <summary>
-    /// Codex 自动禁用阈值（百分比，1-100）。
+    /// OAuth 账号自动禁用阈值（百分比，1-100）。
     /// 当任一关键额度窗口的已使用百分比达到该阈值时，账号自动禁用。
-    /// 这是全局配置，对所有 Codex 账号统一生效。
+    /// 这是全局配置，对所有 OAuth 账号统一生效。
     /// </summary>
-    public int CodexAutoDisableThresholdPercent { get; set; } = 95;
+    [SugarColumn(ColumnName = "CodexAutoDisableThresholdPercent")]
+    public int OAuthAutoDisableThresholdPercent { get; set; } = 95;
 
     /// <summary>
-    /// Codex 巡检缓存复用开关。仅在 CodexFeaturesEnabled 开启时生效。
+    /// OAuth 账号额度巡检缓存复用开关。仅在 OAuthFeaturesEnabled 开启时生效。
     /// 关闭（默认）：每轮巡检都对所有账号真实刷新额度，无论是否被调用。
-    /// 开启：未被使用且窗口未过期且未超过 CodexQuotaMaxCacheHours 的账号沿用上次额度快照（减少上游请求）。
+    /// 开启：未被使用且窗口未过期且未超过 OAuthQuotaMaxCacheHours 的账号沿用上次额度快照（减少上游请求）。
     /// </summary>
-    public bool CodexInspectionCacheEnabled { get; set; }
+    [SugarColumn(ColumnName = "CodexInspectionCacheEnabled")]
+    public bool OAuthInspectionCacheEnabled { get; set; }
 }

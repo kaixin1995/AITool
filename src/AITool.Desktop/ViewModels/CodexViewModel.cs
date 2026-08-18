@@ -129,7 +129,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             {
                 var accounts = await _apiService.SendAsync<List<CodexAccount>>(
                     HttpMethod.Get,
-                    "/api/admin/codex/accounts",
+                    "/api/admin/oauth/accounts",
                     null);
 
                 FeatureDisabled = false;
@@ -202,7 +202,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             var accounts = await _apiService.SendAsync<List<CodexAccount>>(
                 HttpMethod.Get,
-                "/api/admin/codex/accounts",
+                "/api/admin/oauth/accounts",
                 null);
             if (_disposed) return;
 
@@ -222,7 +222,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
 
             var inspectionStatus = await _apiService.SendAsync<CodexInspectionStatus>(
                 HttpMethod.Get,
-                "/api/admin/codex/inspection/status",
+                "/api/admin/oauth/inspection/status",
                 null);
             if (!_disposed)
             {
@@ -318,17 +318,17 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             InspectionStatus = await _apiService.SendAsync<CodexInspectionStatus>(
                 HttpMethod.Get,
-                "/api/admin/codex/inspection/status",
+                "/api/admin/oauth/inspection/status",
                 null);
             InspectionDisabled = false;
 
             var lastRunTask = _apiService.SendAsync<CodexInspectionRunResult?>(
                 HttpMethod.Get,
-                "/api/admin/codex/inspection/last-run",
+                "/api/admin/oauth/inspection/last-run",
                 null);
             var logsTask = _apiService.SendAsync<List<CodexInspectionLog>>(
                 HttpMethod.Get,
-                "/api/admin/codex/inspection/logs",
+                "/api/admin/oauth/inspection/logs",
                 null);
             InspectionLastRun = await lastRunTask;
             InspectionLogs = new ObservableCollection<CodexInspectionLog>(await logsTask);
@@ -352,7 +352,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     {
         return await _apiService.SendAsync<CodexAccount>(
             HttpMethod.Post,
-            $"/api/admin/codex/accounts/{account.Id}/refresh-token",
+            $"/api/admin/oauth/accounts/{account.Id}/refresh-token",
             null);
     }
 
@@ -409,7 +409,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             var result = await _apiService.SendAsync<CodexOAuthResult>(
                 HttpMethod.Post,
-                "/api/admin/codex/start-oauth",
+                "/api/admin/oauth/start-oauth",
                 new { });
             OAuthUrl = result.Url;
             Message = "请在浏览器完成授权后，将回调 URL 粘贴到下方。";
@@ -440,7 +440,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             await _apiService.SendAsync<object>(
                 HttpMethod.Post,
-                "/api/admin/codex/complete-oauth",
+                "/api/admin/oauth/complete-oauth",
                 new
                 {
                     callbackUrl = OAuthCallbackUrl.Trim(),
@@ -495,7 +495,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             .ToList();
         if (selectedAccountIds.Count == 0)
         {
-            Message = "请至少选择一个 Codex 账号后再导出";
+            Message = "请至少选择一个 OAuth 账号后再导出";
             return null;
         }
 
@@ -504,7 +504,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             var result = await _apiService.SendAsync<JsonElement>(
                 HttpMethod.Post,
-                "/api/admin/codex/accounts/export-credentials",
+                "/api/admin/oauth/accounts/export-credentials",
                 new { accountIds = selectedAccountIds });
             return JsonSerializer.Serialize(
                 result,
@@ -554,7 +554,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             var models = await _apiService.SendAsync<List<CodexRemoteModelItem>>(
                 HttpMethod.Get,
-                $"/api/admin/codex/accounts/{account.Id}/fetch-models",
+                $"/api/admin/oauth/accounts/{account.Id}/fetch-models",
                 null);
             foreach (var model in models)
             {
@@ -604,9 +604,9 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             }).ToList();
             await _apiService.SendAsync<object>(
                 HttpMethod.Post,
-                $"/api/admin/codex/accounts/{ModelAccount.Id}/import-selected-models",
+                $"/api/admin/oauth/accounts/{ModelAccount.Id}/import-selected-models",
                 new { selections });
-            Message = $"已导入 {SelectedModelCount} 个 Codex 模型";
+            Message = $"已导入 {SelectedModelCount} 个 OAuth 账号模型";
             CloseModelEditor();
             await LoadAsync();
         }
@@ -635,7 +635,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             ResetCreditInfo = await _apiService.SendAsync<CodexResetCreditsInfo>(
                 HttpMethod.Get,
-                $"/api/admin/codex/accounts/{account.Id}/reset-credits",
+                $"/api/admin/oauth/accounts/{account.Id}/reset-credits",
                 null);
             if (ResetCreditInfo.Success == false
                 && !string.IsNullOrWhiteSpace(ResetCreditInfo.Error))
@@ -674,7 +674,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             await _apiService.SendAsync<object>(
                 HttpMethod.Post,
-                $"/api/admin/codex/accounts/{ResetCreditAccount.Id}/consume-reset-credit",
+                $"/api/admin/oauth/accounts/{ResetCreditAccount.Id}/consume-reset-credit",
                 null);
             Message = "手动重置额度成功";
             CloseResetCredit();
@@ -763,7 +763,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                     using var document = JsonDocument.Parse(jsonText);
                     var result = await _apiService.SendAsync<CodexCredentialImportResult>(
                         HttpMethod.Post,
-                        $"/api/admin/codex/import-credential?name={Uri.EscapeDataString(fileName)}",
+                        $"/api/admin/oauth/import-credential?name={Uri.EscapeDataString(fileName)}",
                         document.RootElement);
                     successes.AddRange(result.Successes);
                     failures.AddRange(result.Failures);
@@ -794,7 +794,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                     failures.Select(f => $"{f.FileName ?? "凭证"}：{f.Error}"));
             }
 
-            Message = $"已导入 {successes.Count} 个 Codex 账号";
+            Message = $"已导入 {successes.Count} 个 OAuth 账号";
             await LoadAsync();
         }
         catch (Exception exception)
@@ -840,14 +840,14 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             var account = await _apiService.SendAsync<CodexAccount>(
                 HttpMethod.Put,
-                $"/api/admin/codex/accounts/{EditingAccount.Id}",
+                $"/api/admin/oauth/accounts/{EditingAccount.Id}",
                 new
                 {
                     displayName = AccountDisplayName.Trim(),
                     refreshToken = string.IsNullOrWhiteSpace(AccountRefreshToken) ? null : AccountRefreshToken.Trim()
                 });
             ReplaceAccount(account);
-            Message = "Codex 账号已更新";
+            Message = "OAuth 账号已更新";
             CloseAccountEditor();
         }
         catch (Exception exception)
@@ -869,7 +869,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             await _apiService.SendAsync<object>(
                 HttpMethod.Post,
-                $"/api/admin/codex/accounts/{account.Id}/reset-quota",
+                $"/api/admin/oauth/accounts/{account.Id}/reset-quota",
                 null);
             Message = $"账号“{account.DisplayName}”的额度状态已重置";
             await LoadAsync();
@@ -903,7 +903,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             await _apiService.SendAsync<object>(
                 HttpMethod.Post,
-                $"/api/admin/codex/accounts/{account.Id}/toggle",
+                $"/api/admin/oauth/accounts/{account.Id}/toggle",
                 null);
             account.IsEnabled = !account.IsEnabled;
         }
@@ -926,7 +926,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
 
             await _apiService.SendAsync<object>(
                 HttpMethod.Post,
-                $"/api/admin/codex/accounts/{account.Id}/refresh-quota",
+                $"/api/admin/oauth/accounts/{account.Id}/refresh-quota",
                 null);
             Message = "额度已刷新";
             await LoadAsync();
@@ -951,7 +951,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             await _apiService.SendAsync<object>(
                 HttpMethod.Delete,
-                $"/api/admin/codex/accounts/{account.Id}",
+                $"/api/admin/oauth/accounts/{account.Id}",
                 null);
             await LoadAsync();
         }
@@ -972,7 +972,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             InspectionLastRun = await _apiService.SendAsync<CodexInspectionRunResult>(
                 HttpMethod.Post,
-                $"/api/admin/codex/inspection/run?force={force.ToString().ToLowerInvariant()}",
+                $"/api/admin/oauth/inspection/run?force={force.ToString().ToLowerInvariant()}",
                 null);
             Message = force ? "真实巡检已完成" : "手动巡检已完成";
             await LoadInspectionAsync(true);

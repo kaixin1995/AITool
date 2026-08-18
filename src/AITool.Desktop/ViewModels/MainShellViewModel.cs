@@ -202,7 +202,7 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 await page.LoadAsync();
                 return page;
             }
-            case "codex":
+            case "oauth":
             {
                 var page = new CodexViewModel(_apiService);
                 await page.LoadAsync();
@@ -390,9 +390,9 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 })
         };
 
-        if (features.CodexEnabled)
+        if (features.OAuthEnabled)
         {
-            groups[1].Items.Insert(1, new NavigationItemViewModel("codex", "OAuth 管理", "🔐"));
+            groups[1].Items.Insert(1, new NavigationItemViewModel("oauth", "OAuth 管理", "🔐"));
         }
 
         if (features.DeveloperEnabled)

@@ -23,7 +23,7 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 - 模型价格（**本地 JSON 价格表**（`model-pricing.json`，不入数据库），内置主流模型 USD 单价 seed；模型页可编辑、保存即生效；支持 **DeepSeek 类峰谷分档计价**；匹配自动归一化 namespace/日期/effort 后缀）
 - 开发者调试（进程内环形调用追踪 + 客户端模拟器 + 并发/熔断监控 + **离线协议诊断台**（转换链路可视化/字段级对比/规则试运行/一键保存规则） + **SQL 迁移执行**（密码确认+事务+试运行+全量审计））
 - OpenAI Responses API 代理（HTTP、WebSocket、Compact 三种模式）
-- Codex 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、定期巡检、手动重置 credits）
+- OAuth 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、通用账号额度巡检、手动重置 credits；当前内置 Codex 提供程序）
 
 ---
 
@@ -39,7 +39,7 @@ README 是全貌入口；`docs/` 下按主题提供**函数级**细节文档：
 | [docs/admin-api.md](docs/admin-api.md) | 代理端点 + 全部管理 API 端点表 |
 | [docs/frontend.md](docs/frontend.md) | 前端工程：路由、页面功能、api 层、stores、composables、UI 规范 |
 | [docs/debug-tools.md](docs/debug-tools.md) | 调试工具六页签：调用追踪 / 模拟器 / 并发 / 熔断 / 协议诊断 / SQL 迁移 |
-| [docs/codex.md](docs/codex.md) | Codex 账号托管：OAuth、额度、冷却、巡检、credits、禁用状态矩阵 |
+| [docs/codex.md](docs/codex.md) | OAuth 账号托管：当前 Codex 提供程序、额度、冷却、通用巡检、credits、禁用状态矩阵 |
 | [docs/testing.md](docs/testing.md) | 测试体系：策略、用例清单、usage 断言口径 |
 | [docs/tools.md](docs/tools.md) | build.ps1 / publish.ps1 / ProtocolSyncCheck、仓库目录速查 |
 
@@ -196,7 +196,7 @@ flowchart TD
 
 ### 5. 模型导入流程
 
-单站拉取 / 全站异步拉取（taskId 轮询）→ 标记已导入/未导入 → 勾选导入（预加载模型库字典防同名 UNIQUE 冲突，同名复用 `ModelLibraryItem`）→ 支持别名（自定义名作为对外路由名）。Codex 账号模型拉取同构（映射反查模型库）。
+单站拉取 / 全站异步拉取（taskId 轮询）→ 标记已导入/未导入 → 勾选导入（预加载模型库字典防同名 UNIQUE 冲突，同名复用 `ModelLibraryItem`）→ 支持别名（自定义名作为对外路由名）。OAuth 账号模型拉取同构（当前由 Codex 提供程序实现，映射反查模型库）。
 
 ### 6. 对话测试流程
 
@@ -245,7 +245,7 @@ flowchart TD
 | `admin/system` | settings 读写 / **clear-usage-logs** |
 | `admin/developer/invocations` | init / list / `{traceId}` / concurrency / **circuit-breaker（查询/单条解除/全部解除）** / **protocol-diagnostics（离线协议诊断）** |
 | `admin/sql-migrations` | 列表 / `{fileName}/execute`（密码确认 + 事务 + 试运行 + 审计） |
-| `admin/codex` | OAuth / 凭证导入导出 / 账号 CRUD / 额度 / 模型 / 巡检 / reset-credits（详见 [docs/codex.md](docs/codex.md)） |
+| `admin/oauth` | OAuth / 凭证导入导出 / 账号 CRUD / 额度 / 模型 / 通用巡检 / reset-credits（详见 [docs/codex.md](docs/codex.md)；旧 `admin/codex` 仅兼容保留） |
 | `/hangfire` | Hangfire 仪表盘（未登录重定向登录页） |
 
 ---
@@ -258,13 +258,13 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 
 ```
 概览       仪表盘(/) · 可视化分析(/analytics) · 对话(/chat)
-资源管理   站点管理(/sites) · OAuth 管理(/codex)🔒 · 模型库(/models)
+资源管理   站点管理(/sites) · OAuth 管理(/oauth)🔒 · 模型库(/models)
 代理配置   路由管理(/routes) · 访问密钥(/access-keys)
 监控运维   模型检测(/detection) · 检测任务(/detection-tasks) · 模型健康(/model-health)
            · 调试工具(/developer/invocations)🛠️ · 使用日志(/usage-logs) · 系统设置(/system/settings)
 ```
 
-🔒 仅 `CodexFeaturesEnabled` 开启时显示；🛠️ 仅 `DeveloperFeaturesEnabled` 开启时显示。侧边栏左下角显示当前版本号与编译时间（读自后端程序集元数据）。
+🔒 仅 `OAuthFeaturesEnabled` 开启时显示；🛠️ 仅 `DeveloperFeaturesEnabled` 开启时显示。侧边栏左下角显示当前版本号与编译时间（读自后端程序集元数据）。
 
 **调试工具六页签**（`/developer/invocations`，hash 深链）：调用调试（环形追踪 40 条/20 分钟，含每段尝试的转换后请求体）· 客户端模拟器（8 个端点）· 当前模型并发数检测 · 熔断监控（站点+模型维度，可手动解除）· 协议诊断（离线转换 + 链路可视化 + 字段对比 + 规则试运行 + 一键保存规则）· SQL 迁移（详见 [docs/debug-tools.md](docs/debug-tools.md)）。
 
@@ -273,8 +273,8 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 - **模型库**：模型分组（厂商图标卡片）+ 厂商规则（exact/wildcard/regex 匹配）两页签；编辑含 OverrideReasoningEffort 与兼容规则集绑定
 - **路由管理**：候选实例队列拖拽排序、改动即存、时间规则草稿确认保存、兼容规则集页签（strip/rename/default/keep_reasoning × scope）
 - **使用日志**：来源品牌图标（含 DeepSeek Harness）、模型列显示「路由入口名 -> 对外模型」、输入/缓存/输出三段 token、查看链路抽屉（同 RequestId 全部尝试）、5s 增量刷新
-- **Codex**：账号额度 + 巡检两页签（额度窗口进度条、token 过期预警、缓存命中统计）
-- **系统设置**：检测/代理（超时重试熔断并发）/日志/开发者功能/Codex 巡检分组卡；按来源/时间清空日志
+- **OAuth 管理**：账号额度 + 通用巡检两页签（额度窗口进度条、token 过期预警、缓存命中统计）
+- **系统设置**：检测/代理（超时重试熔断并发）/日志/开发者功能/账号额度巡检分组卡；按来源/时间清空日志
 
 ---
 
@@ -297,7 +297,7 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 | `RouteCircuitStateStore`（Infra） | 熔断状态（内存，站点+Key+模型维度键） |
 | `ProxyForwardService`（Infra） | 上游转发（重试/超时 CTS/401 刷 Key 重发/流式逐行回调/Codex SSE 聚合 `TryExtractResponsesCompletion`；**非流式 Codex 聚合在此内联实现，无独立 Bridge 类**） |
 | `ProxyUsageLogBatchWriter`（Infra） | 日志批量写（Channel 4096 / 100 条 / 800ms，Testing 直写） |
-| Codex 服务群 | 见 [docs/codex.md](docs/codex.md) |
+| OAuth 账号服务群 | 见 [docs/codex.md](docs/codex.md) |
 
 ---
 
@@ -346,7 +346,7 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 | Hangfire | `detection-{taskId}` | 各任务 Cron | 定时模型检测 |
 | HostedService | `ProxyUsageLogBatchWriter` | 800ms/100 条 | 日志批量落库 |
 | HostedService | `AnalyticsBackgroundQueryExecutor` | 队列驱动 | 重统计查询 |
-| HostedService | `CodexTokenRefreshService` / `CodexCooldownRecoveryService` / `CodexInspectionService` | 周期 | 见 [docs/codex.md](docs/codex.md) |
+| HostedService | `CodexTokenRefreshService` / `CodexCooldownRecoveryService` / `AccountQuotaInspectionService` | 周期 | 见 [docs/codex.md](docs/codex.md) |
 | HostedService | `MemoryMaintenanceService` | 周期 | LOH 压缩 |
 
 Hangfire 仪表盘 `/hangfire`（未登录重定向登录页）。
@@ -370,7 +370,7 @@ Hangfire 仪表盘 `/hangfire`（未登录重定向登录页）。
 13. **后台统计单消费者队列**：防昂贵聚合查询打挂 SQLite
 14. **离线协议诊断**：只调内存桥接，不触发转发/不用密钥/不写记录；试运行规则与真实链路语义一致；可一键把缺失字段修复保存为规则集
 15. **SQL 迁移安全执行**：只执行服务器 sql-migrations 目录脚本（不接收 SQL 文本）、密码确认、事务回滚、试运行、全量审计（SqlMigrationExecution 表）
-16. **Codex 托管**：账号⇆隐藏站点复用全链路；多种禁用状态（总开关/手动/自动/冷却）相互区分避免误启用；401 实时刷凭证重发
+16. **OAuth 账号托管**：账号⇆隐藏站点复用全链路；额度提供程序可插拔；通用巡检支持多个额度窗口；多种禁用状态（总开关/手动/自动/冷却）相互区分避免误启用；401 实时刷凭证重发
 
 ---
 
@@ -445,8 +445,8 @@ cd frontend && npm run type-check        # vue-tsc 类型检查
 ### 跨协议混合使用
 注册 Anthropic 与 OpenAI/Responses 站点为同一入口配路由 → 客户端协议与站点协议不一致时网关自动桥接（请求/响应/流式 SSE 全维度）→ 协议诊断页可离线复现转换问题
 
-### Codex 账号托管
-系统设置开启 Codex → OAuth/PKCE 登录或导入凭证（自动建隐藏站点）→ 拉取模型导入并配路由 → 后台自动刷新 token、周期巡检额度、被动冷却恢复、额度耗尽自动禁用 → 需要时消耗 reset credit 手动重置。详见 [docs/codex.md](docs/codex.md)
+### OAuth 账号托管
+系统设置开启 OAuth 账号功能 → OAuth/PKCE 登录或导入凭证（自动建隐藏站点）→ 拉取模型导入并配路由 → 后台自动刷新 token、周期巡检各提供程序额度窗口、被动冷却恢复、额度耗尽自动禁用 → 需要时消耗 reset credit 手动重置。详见 [docs/codex.md](docs/codex.md)
 
 ### 兼容规则集
 路由管理「兼容规则集」页签新建（如 strip `metadata`、rename `reasoning_effort→effort`、default `store=false`、keep_reasoning 保留思维链）→ 模型库为对应模型绑定 → 转发前按透传/中转作用域自动应用

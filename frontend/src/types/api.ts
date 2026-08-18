@@ -28,8 +28,13 @@ export interface AuthStatus {
   // 程序集编译时间（ISO 字符串），用于确认运行的程序是否是最新版本
   buildTime?: string
   features: {
-    codexEnabled: boolean
-    codexInspectionEnabled: boolean
+    /** 通用 OAuth 账号功能开关。 */
+    oauthEnabled?: boolean
+    /** 通用账号额度巡检开关。 */
+    oauthInspectionEnabled?: boolean
+    /** 兼容尚未升级的旧后端。 */
+    codexEnabled?: boolean
+    codexInspectionEnabled?: boolean
     developerEnabled: boolean
   }
 }

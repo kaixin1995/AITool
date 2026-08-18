@@ -3,31 +3,32 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NCard, NButton, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
-import * as api from '@/api/codex'
+import * as api from '@/api/oauth'
 import type {
-  CodexAccount,
-  CodexCredentialImportFailure,
-  CodexInspectionLog,
-  CodexInspectionRunResult,
-  CodexInspectionStatus,
-  CodexModelSelection,
-  CodexRemoteModelItem,
-  CodexResetCreditsInfo
-} from '@/api/codex'
+  OAuthAccount,
+  OAuthCredentialImportFailure,
+  OAuthInspectionAccountResult,
+  OAuthInspectionLog,
+  OAuthInspectionRunResult,
+  OAuthInspectionStatus,
+  OAuthModelSelection,
+  OAuthRemoteModelItem,
+  OAuthResetCreditsInfo
+} from '@/api/oauth'
 import {
   inspectionActionLabel,
   isInspectionDisabledError
-} from './codexInspectionState'
+} from './accountInspectionState'
 
 const message = useMessage()
 const route = useRoute()
 const router = useRouter()
 const activeTab = ref(route.query.tab === 'inspection' ? 'inspection' : 'accounts')
 const loading = ref(false)
-const accounts = ref<CodexAccount[]>([])
-const inspection = ref<CodexInspectionStatus | null>(null)
-const inspectionLastRun = ref<CodexInspectionRunResult | null>(null)
-const inspectionLogs = ref<CodexInspectionLog[]>([])
+const accounts = ref<OAuthAccount[]>([])
+const inspection = ref<OAuthInspectionStatus | null>(null)
+const inspectionLastRun = ref<OAuthInspectionRunResult | null>(null)
+const inspectionLogs = ref<OAuthInspectionLog[]>([])
 const inspectionRunning = ref(false)
 const inspectionDisabled = ref(false)
 const inspectionStatusError = ref('')
@@ -49,7 +50,7 @@ const importModal = ref(false)
 const importJsonText = ref('')
 const importFiles = ref<File[]>([])
 const importLoading = ref(false)
-const importFailures = ref<CodexCredentialImportFailure[]>([])
+const importFailures = ref<OAuthCredentialImportFailure[]>([])
 
 const exportMode = ref(false)
 const selectedExportAccountIds = ref<string[]>([])
@@ -57,7 +58,7 @@ const exportLoading = ref(false)
 
 // 编辑账号（重命名 + 修改凭证）弹窗
 const editModal = ref(false)
-const editAccount = ref<CodexAccount | null>(null)
+const editAccount = ref<OAuthAccount | null>(null)
 const editDisplayName = ref('')
 const editRefreshToken = ref('')
 const editLoading = ref(false)
@@ -65,17 +66,17 @@ const editTokenRefreshing = ref(false)
 
 // 重置额度信用弹窗
 const resetCreditModal = ref(false)
-const resetCreditAccount = ref<CodexAccount | null>(null)
-const resetCreditInfo = ref<CodexResetCreditsInfo | null>(null)
+const resetCreditAccount = ref<OAuthAccount | null>(null)
+const resetCreditInfo = ref<OAuthResetCreditsInfo | null>(null)
 const resetCreditLoading = ref(false)
 const resetCreditSubmitting = ref(false)
 
 // 拉取/导入模型弹窗
 const modelModal = ref(false)
-const modelAccount = ref<CodexAccount | null>(null)
-type EditableCodexModel = CodexRemoteModelItem & { alias: string }
+const modelAccount = ref<OAuthAccount | null>(null)
+type EditableOAuthModel = OAuthRemoteModelItem & { alias: string }
 
-const modelList = ref<EditableCodexModel[]>([])
+const modelList = ref<EditableOAuthModel[]>([])
 const checkedModels = ref<string[]>([])
 const modelSearch = ref('')
 const modelLoading = ref(false)
@@ -116,14 +117,14 @@ function invalidatePendingRefreshes(): void {
 async function loadAccounts(showError: boolean): Promise<void> {
   const requestId = ++accountsRequestId
   try {
-    const result = await api.listCodexAccounts()
+    const result = await api.listOAuthAccounts()
     if (requestId === accountsRequestId) {
       accounts.value = result
       featureDisabled.value = false
     }
   } catch (e) {
     if (requestId !== accountsRequestId) return
-    // Codex 功能未开启时后端返回 404，显示提示而非空白。
+    // OAuth 功能未开启时后端返回 404，显示提示而非空白。
     if ((e as { status?: number }).status === 404) {
       featureDisabled.value = true
     } else if (showError) {
@@ -142,9 +143,9 @@ async function loadInspection(force = false): Promise<void> {
   inspectionLastRunError.value = ''
   inspectionLogsError.value = ''
   const [statusResult, lastRunResult, logsResult] = await Promise.allSettled([
-    api.getCodexInspectionStatus(),
-    api.getCodexInspectionLastRun(),
-    api.getCodexInspectionLogs()
+    api.getOAuthInspectionStatus(),
+    api.getOAuthInspectionLastRun(),
+    api.getOAuthInspectionLogs()
   ])
 
   if (requestId !== inspectionRequestId) return
@@ -210,7 +211,7 @@ function openOAuthModal(): void {
 async function handleStartOAuth(): Promise<void> {
   oauthStartLoading.value = true
   try {
-    const result = await api.startCodexOAuth()
+    const result = await api.startOAuth()
     oauthUrl.value = result.url
     oauthCallbackInput.value = ''
   } catch (e) {
@@ -224,28 +225,28 @@ async function handleCompleteOAuth(): Promise<void> {
   if (!oauthCallbackInput.value.trim()) { message.warning('请粘贴回调 URL'); return }
   oauthLoading.value = true
   try {
-    await api.completeCodexOAuth(oauthCallbackInput.value.trim(), oauthDisplayName.value.trim() || undefined)
+    await api.completeOAuth(oauthCallbackInput.value.trim(), oauthDisplayName.value.trim() || undefined)
     message.success('OAuth 登录成功')
     oauthModal.value = false
     await load()
   } catch (e) { message.error((e as Error).message) } finally { oauthLoading.value = false }
 }
 
-async function handleToggle(acc: CodexAccount): Promise<void> {
+async function handleToggle(acc: OAuthAccount): Promise<void> {
   try {
-    await api.toggleCodexAccount(acc.id)
+    await api.toggleOAuthAccount(acc.id)
     acc.isEnabled = !acc.isEnabled
   } catch (e) { message.error((e as Error).message) }
 }
-async function handleRefreshQuota(acc: CodexAccount): Promise<void> {
+async function handleRefreshQuota(acc: OAuthAccount): Promise<void> {
   try {
-    await api.refreshCodexQuota(acc.id)
+    await api.refreshOAuthQuota(acc.id)
     message.success('已刷新额度')
     await load()
   } catch (e) { message.error((e as Error).message) }
 }
-async function handleDelete(acc: CodexAccount): Promise<void> {
-  await api.deleteCodexAccount(acc.id)
+async function handleDelete(acc: OAuthAccount): Promise<void> {
+  await api.deleteOAuthAccount(acc.id)
   message.success('已删除账号')
   await load()
 }
@@ -256,7 +257,7 @@ async function handleRunInspection(force: boolean): Promise<void> {
   invalidatePendingRefreshes()
   let succeeded = false
   try {
-    inspectionLastRun.value = await api.runCodexInspection(force)
+    inspectionLastRun.value = await api.runOAuthInspection(force)
     succeeded = true
     message.success(force ? '真实巡检已完成' : '手动巡检已完成')
   } catch (e) {
@@ -269,7 +270,7 @@ async function handleRunInspection(force: boolean): Promise<void> {
 }
 
 // 编辑（重命名 + 修改凭证）
-function openEdit(acc: CodexAccount): void {
+function openEdit(acc: OAuthAccount): void {
   editAccount.value = acc
   editDisplayName.value = acc.displayName
   editRefreshToken.value = ''
@@ -279,7 +280,7 @@ async function handleSaveEdit(): Promise<void> {
   if (!editAccount.value || !editDisplayName.value.trim()) { message.warning('名称不能为空'); return }
   editLoading.value = true
   try {
-    const result = await api.updateCodexAccount(
+    const result = await api.updateOAuthAccount(
       editAccount.value.id,
       editDisplayName.value.trim(),
       editRefreshToken.value || undefined
@@ -301,7 +302,7 @@ async function handleManualRefreshToken(): Promise<void> {
   if (!editAccount.value) return
   editTokenRefreshing.value = true
   try {
-    await api.refreshCodexToken(editAccount.value.id)
+    await api.refreshOAuthToken(editAccount.value.id)
     message.success('Token 已刷新')
     // 刷新后更新当前编辑的账号对象和列表，让用户看到新的过期时间
     await load()
@@ -317,7 +318,7 @@ async function handleManualRefreshToken(): Promise<void> {
 }
 
 // 重置额度信用
-async function openResetCredit(acc: CodexAccount): Promise<void> {
+async function openResetCredit(acc: OAuthAccount): Promise<void> {
   resetCreditAccount.value = acc
   resetCreditInfo.value = null
   resetCreditModal.value = true
@@ -346,7 +347,7 @@ async function handleConsumeResetCredit(): Promise<void> {
 }
 
 // 拉取/导入模型
-async function openFetchModels(acc: CodexAccount): Promise<void> {
+async function openFetchModels(acc: OAuthAccount): Promise<void> {
   modelAccount.value = acc
   modelList.value = []
   checkedModels.value = []
@@ -354,7 +355,7 @@ async function openFetchModels(acc: CodexAccount): Promise<void> {
   modelLoading.value = true
   try {
     modelSearch.value = ''
-    const models = await api.fetchCodexModels(acc.id)
+    const models = await api.fetchOAuthModels(acc.id)
     modelList.value = models.map(model => ({
       ...model,
       alias: model.existingDisplayName
@@ -390,12 +391,12 @@ async function handleImportModels(): Promise<void> {
   if (!modelAccount.value || checkedModels.value.length === 0) { message.warning('请选择要导入的模型'); return }
   modelLoading.value = true
   try {
-    const selections: CodexModelSelection[] = modelList.value.map(model => ({
+    const selections: OAuthModelSelection[] = modelList.value.map(model => ({
       remoteModelName: model.remoteModelName,
       displayName: model.alias.trim() || model.remoteModelName,
       selected: checkedModels.value.includes(model.remoteModelName)
     }))
-    await api.importSelectedCodexModels(modelAccount.value.id, selections)
+    await api.importSelectedOAuthModels(modelAccount.value.id, selections)
     message.success(`已导入 ${checkedModels.value.length} 个模型`)
     modelModal.value = false
     await load()
@@ -469,7 +470,7 @@ function toggleExportAccount(id: string, checked: boolean): void {
 }
 
 function downloadCredential(
-  credential: api.CodexExportCredential,
+  credential: api.OAuthExportCredential,
   index: number
 ): void {
   const identity = String(
@@ -484,7 +485,7 @@ function downloadCredential(
   const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = `codex_credential_${identity}.json`
+  link.download = `oauth_credential_${identity}.json`
   link.click()
   URL.revokeObjectURL(url)
 }
@@ -572,7 +573,21 @@ function formatInspectionPercent(value: number | null | undefined): string {
   return `${Number(value).toFixed(1)}%`
 }
 
-function accountQuotaPercent(acc: CodexAccount): number | null {
+function formatInspectionWindows(item: OAuthInspectionAccountResult): string {
+  if (item.windows && item.windows.length > 0) {
+    return item.windows
+      .map(window => `${window.label} ${formatInspectionPercent(window.usedPercent)}`)
+      .join(' · ')
+  }
+
+  const fallback = [
+    item.fiveHourUsedPercent == null ? null : `5 小时 ${formatInspectionPercent(item.fiveHourUsedPercent)}`,
+    item.weeklyUsedPercent == null ? null : `周额度 ${formatInspectionPercent(item.weeklyUsedPercent)}`
+  ].filter(Boolean)
+  return fallback.length > 0 ? fallback.join(' · ') : '-'
+}
+
+function accountQuotaPercent(acc: OAuthAccount): number | null {
   if (acc.windows && acc.windows.length > 0) {
     return Math.min(...acc.windows.map((w) => Math.max(0, 100 - Number(w.usedPercent || 0))))
   }
@@ -581,12 +596,12 @@ function accountQuotaPercent(acc: CodexAccount): number | null {
   return percents.length ? Math.min(...percents.map((value) => Math.max(0, 100 - value))) : null
 }
 
-function accountStatusLabel(acc: CodexAccount): string {
+function accountStatusLabel(acc: OAuthAccount): string {
   if (acc.isQuotaCooling) return '冷却中'
   return acc.isEnabled ? '正常' : '已禁用'
 }
 
-function accountStatusType(acc: CodexAccount): 'success' | 'warning' | 'default' {
+function accountStatusType(acc: OAuthAccount): 'success' | 'warning' | 'default' {
   if (acc.isQuotaCooling) return 'warning'
   return acc.isEnabled ? 'success' : 'default'
 }
@@ -628,7 +643,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
 <template>
   <div class="page-container">
-    <PageHeader title="OAuth 管理" subtitle="管理 Codex OAuth 登录账号、凭证导入、额度、巡检与自动禁用">
+    <PageHeader title="OAuth 管理" subtitle="管理 OAuth 登录账号、凭证导入、额度、巡检与自动禁用">
       <template #actions>
         <template v-if="!exportMode">
           <NButton secondary :disabled="accounts.length === 0" @click="beginExportCredentials">导出凭证</NButton>
@@ -640,94 +655,94 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     <NSpin :show="loading">
       <NTabs v-model:value="activeTab" type="line" animated>
         <NTabPane name="accounts" tab="账号额度">
-          <div v-if="exportMode" class="codex-export-toolbar">
+          <div v-if="exportMode" class="oauth-export-toolbar">
             <strong>已选中 {{ selectedExportAccountIds.length }} 个账号</strong>
             <NButton size="small" type="warning" :loading="exportLoading" :disabled="selectedExportAccountIds.length === 0" @click="handleExportCredentials">下载凭证 JSON</NButton>
             <NButton size="small" secondary @click="cancelExportCredentials">取消</NButton>
           </div>
-          <div class="codex-stack">
-            <NEmpty v-if="featureDisabled" description="Codex 功能未开启，请在系统设置中开启" />
-            <NEmpty v-else-if="accounts.length === 0" description="暂无 Codex 账号，可使用右上角 OAuth 登录或导入凭证" />
+          <div class="oauth-stack">
+            <NEmpty v-if="featureDisabled" description="OAuth 功能未开启，请在系统设置中开启" />
+            <NEmpty v-else-if="accounts.length === 0" description="暂无 OAuth 账号，可使用右上角 OAuth 登录或导入凭证" />
 
-            <div v-else class="codex-grid" :class="{ 'export-mode': exportMode }">
+            <div v-else class="oauth-grid" :class="{ 'export-mode': exportMode }">
               <article
                 v-for="acc in accounts"
                 :key="acc.id"
-                class="codex-card"
+                class="oauth-card"
                 :class="{ disabled: !acc.isEnabled, selected: selectedExportAccountIds.includes(acc.id) }"
                 @click="exportMode && toggleExportAccount(acc.id, !selectedExportAccountIds.includes(acc.id))"
               >
                 <NCheckbox
                   v-if="exportMode"
-                  class="codex-export-checkbox"
+                  class="oauth-export-checkbox"
                   :checked="selectedExportAccountIds.includes(acc.id)"
                   @click.stop
                   @update:checked="(checked: boolean) => toggleExportAccount(acc.id, checked)"
                 />
-                <div class="codex-card-header">
-                  <div class="codex-card-header-main">
-                    <div class="codex-account-name">{{ acc.displayName }}</div>
-                    <div class="codex-account-email">
+                <div class="oauth-card-header">
+                  <div class="oauth-card-header-main">
+                    <div class="oauth-account-name">{{ acc.displayName }}</div>
+                    <div class="oauth-account-email">
                       {{ acc.email || '' }}
                       <button
                         v-if="(acc.resetCreditsAvailableCount ?? 0) > 0"
                         type="button"
-                        class="codex-reset-credits-hint"
+                        class="oauth-reset-credits-hint"
                         title="点击查看详情"
                         @click.stop="openResetCredit(acc)"
                       >
                         剩余 {{ acc.resetCreditsAvailableCount }} 次手动重置
                       </button>
                     </div>
-                    <div class="codex-badges">
+                    <div class="oauth-badges">
                       <NTag size="small" :type="accountStatusType(acc)" :bordered="false">{{ accountStatusLabel(acc) }}</NTag>
-                      <span v-if="acc.planType" class="codex-plan">{{ acc.planType }}</span>
-                      <span v-if="acc.tokenExpiresAt" class="codex-token-expiry" :class="{ 'codex-token-expired': isTokenExpired(acc.tokenExpiresAt), 'codex-token-warning': isTokenExpiringSoon(acc.tokenExpiresAt) }">
+                      <span v-if="acc.planType" class="oauth-plan">{{ acc.planType }}</span>
+                      <span v-if="acc.tokenExpiresAt" class="oauth-token-expiry" :class="{ 'oauth-token-expired': isTokenExpired(acc.tokenExpiresAt), 'oauth-token-warning': isTokenExpiringSoon(acc.tokenExpiresAt) }">
                         Token：{{ formatDateTime(acc.tokenExpiresAt) }}
                       </span>
                     </div>
                   </div>
                 </div>
 
-                <div v-if="acc.windows && acc.windows.length > 0" class="codex-windows-container">
-                  <div v-for="w in acc.windows" :key="w.id" class="codex-window">
-                    <div class="codex-window-label">{{ w.label }}</div>
+                <div v-if="acc.windows && acc.windows.length > 0" class="oauth-windows-container">
+                  <div v-for="w in acc.windows" :key="w.id" class="oauth-window">
+                    <div class="oauth-window-label">{{ w.label }}</div>
                     <NProgress
-                      :percentage="Math.max(0, 100 - Math.round(w.usedPercent))"
-                      :status="quotaColor(100 - w.usedPercent)"
+                      :percentage="Math.max(0, 100 - Math.round(Number(w.usedPercent ?? 0)))"
+                      :status="quotaColor(100 - Number(w.usedPercent ?? 0))"
                       :show-indicator="false"
                       :height="6"
                       :border-radius="3"
                     />
-                    <span class="codex-window-percent">{{ Math.max(0, 100 - Math.round(w.usedPercent)) }}%</span>
-                    <div v-if="w.resetLabel" class="codex-window-reset">重置于 {{ w.resetLabel }}</div>
+                    <span class="oauth-window-percent">{{ Math.max(0, 100 - Math.round(Number(w.usedPercent ?? 0))) }}%</span>
+                    <div v-if="w.resetLabel" class="oauth-window-reset">重置于 {{ w.resetLabel }}</div>
                   </div>
                 </div>
-                <div v-else class="codex-window-placeholder">
+                <div v-else class="oauth-window-placeholder">
                   {{ acc.lastQuotaCheckedAt ? '暂无额度窗口数据' : '未刷新额度，点击下方「刷新额度」获取' }}
                 </div>
 
-                <div v-if="!exportMode" class="codex-card-meta">
-                  <div class="codex-source-meta">
+                <div v-if="!exportMode" class="oauth-card-meta">
+                  <div class="oauth-source-meta">
                     <div v-if="acc.lastQuotaCheckedAt">刷新时间：{{ formatDateTime(acc.lastQuotaCheckedAt) }}</div>
                   </div>
-                  <div class="codex-card-actions">
-                    <NButton class="codex-icon-button" circle secondary title="刷新额度" aria-label="刷新额度" @click="handleRefreshQuota(acc)">
+                  <div class="oauth-card-actions">
+                    <NButton class="oauth-icon-button" circle secondary title="刷新额度" aria-label="刷新额度" @click="handleRefreshQuota(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="23 4 23 10 17 10" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
                     </NButton>
-                    <NButton class="codex-icon-button" circle secondary :title="acc.isEnabled ? '禁用账号' : '启用账号'" :aria-label="acc.isEnabled ? '禁用账号' : '启用账号'" @click="handleToggle(acc)">
+                    <NButton class="oauth-icon-button" circle secondary :title="acc.isEnabled ? '禁用账号' : '启用账号'" :aria-label="acc.isEnabled ? '禁用账号' : '启用账号'" @click="handleToggle(acc)">
                       <svg v-if="acc.isEnabled" viewBox="0 0 24 24" aria-hidden="true"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                       <svg v-else viewBox="0 0 24 24" aria-hidden="true"><polyline points="20 6 9 17 4 12" /></svg>
                     </NButton>
-                    <NButton class="codex-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" @click="openEdit(acc)">
+                    <NButton class="oauth-icon-button primary" circle secondary title="编辑账号" aria-label="编辑账号" @click="openEdit(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                     </NButton>
-                    <NButton class="codex-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
+                    <NButton class="oauth-icon-button info" circle secondary title="拉取模型" aria-label="拉取模型" @click="openFetchModels(acc)">
                       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
                     </NButton>
                     <NPopconfirm @positive-click="handleDelete(acc)">
                       <template #trigger>
-                        <NButton class="codex-icon-button danger" circle secondary title="删除账号" aria-label="删除账号">
+                        <NButton class="oauth-icon-button danger" circle secondary title="删除账号" aria-label="删除账号">
                           <svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6" /><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /></svg>
                         </NButton>
                       </template>
@@ -742,7 +757,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 
         <NTabPane name="inspection" tab="巡检">
           <div v-if="inspectionDisabled" class="inspection-empty-state">
-            <NEmpty description="Codex 巡检功能未开启" />
+            <NEmpty description="OAuth 巡检功能未开启" />
             <NButton size="small" secondary @click="loadInspection(true)">重新检测</NButton>
           </div>
           <div v-else-if="!inspection" class="inspection-empty-state">
@@ -760,7 +775,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                     {{ inspection.isRunning || inspectionRunning ? '巡检中' : '空闲' }}
                   </NTag>
                   <div>
-                    <div class="inspection-title">Codex 巡检状态</div>
+                    <div class="inspection-title">OAuth 巡检状态</div>
                     <div class="inspection-meta">上次完成：{{ formatDateTime(inspection.lastFinishedAt) }}</div>
                   </div>
                 </div>
@@ -792,12 +807,11 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               <div class="inspection-table-scroll">
                 <div class="inspection-table">
                   <div class="inspection-table-head">
-                    <span>账号</span><span>5 小时</span><span>周额度</span><span>来源</span><span>动作</span><span>原因</span>
+                    <span>账号</span><span>额度窗口</span><span>来源</span><span>动作</span><span>原因</span>
                   </div>
-                  <div v-for="item in inspectionLastRun.accounts" :key="item.accountId" class="inspection-table-row">
+                  <div v-for="item in inspectionLastRun.accounts" :key="`${item.providerKey ?? 'account'}-${item.accountId}`" class="inspection-table-row">
                     <strong>{{ item.displayName }}</strong>
-                    <span>{{ formatInspectionPercent(item.fiveHourUsedPercent) }}</span>
-                    <span>{{ formatInspectionPercent(item.weeklyUsedPercent) }}</span>
+                    <span>{{ formatInspectionWindows(item) }}</span>
                     <NTag size="tiny" :bordered="false">{{ item.fromCache ? '缓存' : '实时' }}</NTag>
                     <NTag size="tiny" :type="item.action === 'disable' ? 'error' : item.action === 'enable' ? 'success' : 'default'" :bordered="false">{{ inspectionActionLabel(item.action) }}</NTag>
                     <span class="inspection-reason">{{ item.reason }}</span>
@@ -825,7 +839,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     </NSpin>
 
     <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序。 -->
-    <NModal v-model:show="oauthModal" title="Codex OAuth 登录" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false">
+    <NModal v-model:show="oauthModal" title="OAuth 登录" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false">
       <div class="oauth-form-group">
         <p class="oauth-form-label">账号显示名称（可选）</p>
         <NInput v-model:value="oauthDisplayName" placeholder="留空则用邮箱" />
@@ -860,7 +874,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     </NModal>
 
     <!-- 导入凭证弹窗 -->
-    <NModal v-model:show="importModal" title="导入 Codex 凭证" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
+    <NModal v-model:show="importModal" title="导入 OAuth 凭证" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
       <p class="credential-import-label">选择一个或多个 CPA 凭证 JSON 文件：</p>
       <input class="credential-file-input" type="file" accept=".json,application/json" multiple @change="handleCredentialFiles">
       <div v-if="importFiles.length" class="credential-file-summary">已选择 {{ importFiles.length }} 个文件，将优先导入所选文件。</div>
@@ -975,7 +989,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       <NSpin :show="modelLoading">
         <NEmpty v-if="!modelLoading && modelList.length === 0" description="该账号无可用模型" size="small" />
         <template v-else>
-          <div class="codex-model-toolbar">
+          <div class="oauth-model-toolbar">
             <NInput v-model:value="modelSearch" size="small" clearable placeholder="搜索模型" />
             <NCheckbox
               :checked="allVisibleModelsChecked"
@@ -985,11 +999,11 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               已选 {{ visibleCheckedModelCount }} / {{ filteredModelList.length }} 个
             </NCheckbox>
           </div>
-          <div class="codex-model-list">
+          <div class="oauth-model-list">
             <div
               v-for="m in filteredModelList"
               :key="m.remoteModelName"
-              class="codex-model-row"
+              class="oauth-model-row"
             >
               <NCheckbox
                 :checked="checkedModels.includes(m.remoteModelName)"
@@ -1023,23 +1037,23 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 </template>
 
 <style scoped>
-.codex-model-toolbar {
+.oauth-model-toolbar {
   display: flex;
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
 }
 
-.codex-model-toolbar :deep(.n-input) {
+.oauth-model-toolbar :deep(.n-input) {
   flex: 1;
 }
 
-.codex-model-list {
+.oauth-model-list {
   max-height: 420px;
   overflow: auto;
 }
 
-.codex-model-row {
+.oauth-model-row {
   display: grid;
   grid-template-columns: 30px minmax(140px, 1fr) 200px auto;
   align-items: center;
@@ -1048,7 +1062,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   border-bottom: 1px solid var(--border-color-global);
 }
 
-.codex-model-row code {
+.oauth-model-row code {
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
@@ -1159,18 +1173,18 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   line-height: 1.5;
 }
 
-.codex-token-expired {
+.oauth-token-expired {
   color: var(--status-danger-text, #e03131);
   font-weight: 600;
 }
 
-.codex-token-warning {
+.oauth-token-warning {
   color: var(--status-danger-text, #e03131);
   font-weight: 600;
 }
 
-:global([data-theme='dark']) .codex-token-expired { color: #f87171; }
-:global([data-theme='dark']) .codex-token-warning { color: #f87171; }
+:global([data-theme='dark']) .oauth-token-expired { color: #f87171; }
+:global([data-theme='dark']) .oauth-token-warning { color: #f87171; }
 
 .reset-credit-list-title {
   margin: 0 0 8px;
@@ -1209,7 +1223,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   color: var(--status-warning-text);
 }
 
-.codex-export-toolbar {
+.oauth-export-toolbar {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -1221,7 +1235,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   color: var(--status-warning-text);
 }
 
-.codex-stack {
+.oauth-stack {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -1318,7 +1332,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .inspection-table-head,
 .inspection-table-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) 80px 80px 72px 72px minmax(220px, 1.4fr);
+  grid-template-columns: minmax(150px, 1fr) minmax(220px, 1.2fr) 72px 72px minmax(220px, 1.4fr);
   gap: 12px;
   align-items: center;
   padding: 11px 12px;
@@ -1356,14 +1370,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   font-size: 12px;
 }
 
-.codex-grid {
+.oauth-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
   gap: 18px;
   margin-top: 16px;
 }
 
-.codex-card {
+.oauth-card {
   display: flex;
   position: relative;
   flex-direction: column;
@@ -1376,33 +1390,33 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
 }
 
-.codex-card:hover {
+.oauth-card:hover {
   border-color: color-mix(in srgb, var(--primary-color, #3b82f6) 42%, var(--border-color-global));
   box-shadow: 0 4px 16px rgba(15, 23, 42, 0.1);
 }
 
-.codex-card.disabled {
+.oauth-card.disabled {
   opacity: 0.64;
 }
 
-.export-mode .codex-card {
+.export-mode .oauth-card {
   padding-left: 48px;
   cursor: pointer;
 }
 
-.codex-card.selected {
+.oauth-card.selected {
   border-color: var(--primary-color, #3b82f6);
   background: color-mix(in srgb, var(--primary-color, #3b82f6) 10%, var(--bg-card));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary-color, #3b82f6) 20%, transparent);
 }
 
-.codex-export-checkbox {
+.oauth-export-checkbox {
   position: absolute;
   top: 18px;
   left: 16px;
 }
 
-.codex-card-header {
+.oauth-card-header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
@@ -1412,12 +1426,12 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   border-bottom: 1px solid var(--border-color-global);
 }
 
-.codex-card-header-main {
+.oauth-card-header-main {
   min-width: 0;
   flex: 1;
 }
 
-.codex-account-name {
+.oauth-account-name {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1429,7 +1443,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   word-break: break-all;
 }
 
-.codex-account-email {
+.oauth-account-email {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1440,7 +1454,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   word-break: break-all;
 }
 
-.codex-badges {
+.oauth-badges {
   display: flex;
   align-items: center;
   gap: 6px;
@@ -1448,7 +1462,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   margin-top: 8px;
 }
 
-.codex-reset-credits-hint {
+.oauth-reset-credits-hint {
   padding: 0;
   border: 0;
   background: transparent;
@@ -1458,11 +1472,11 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   text-decoration: underline dotted;
 }
 
-.codex-reset-credits-hint:hover {
+.oauth-reset-credits-hint:hover {
   color: var(--status-info-text);
 }
 
-.codex-plan {
+.oauth-plan {
   flex-shrink: 0;
   padding: 3px 10px;
   border-radius: 12px;
@@ -1472,32 +1486,32 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   font-weight: 500;
 }
 
-.codex-token-expiry {
+.oauth-token-expiry {
   flex-shrink: 0;
   font-size: 11px;
   color: var(--text-color-secondary);
 }
 
-.codex-token-expiry.codex-token-expired {
+.oauth-token-expiry.oauth-token-expired {
   color: var(--status-danger-text, #e03131);
   font-weight: 600;
 }
 
-.codex-token-expiry.codex-token-warning {
+.oauth-token-expiry.oauth-token-warning {
   color: var(--status-danger-text, #e03131);
   font-weight: 600;
 }
 
-:global([data-theme='dark']) .codex-token-expiry.codex-token-expired { color: #f87171; }
-:global([data-theme='dark']) .codex-token-expiry.codex-token-warning { color: #f87171; }
-:global([data-theme='dark']) .codex-token-expiry { color: rgba(255, 255, 255, 0.5); }
+:global([data-theme='dark']) .oauth-token-expiry.oauth-token-expired { color: #f87171; }
+:global([data-theme='dark']) .oauth-token-expiry.oauth-token-warning { color: #f87171; }
+:global([data-theme='dark']) .oauth-token-expiry { color: rgba(255, 255, 255, 0.5); }
 
-.codex-windows-container {
+.oauth-windows-container {
   min-height: 60px;
   margin: 16px 0;
 }
 
-.codex-window {
+.oauth-window {
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr) 56px;
   align-items: center;
@@ -1507,11 +1521,11 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   border-bottom: 1px solid var(--border-color-soft);
 }
 
-.codex-window:last-child {
+.oauth-window:last-child {
   border-bottom: none;
 }
 
-.codex-window-label {
+.oauth-window-label {
   min-width: 0;
   overflow: hidden;
   color: var(--text-color-secondary);
@@ -1520,7 +1534,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   white-space: nowrap;
 }
 
-.codex-window-percent {
+.oauth-window-percent {
   min-width: 56px;
   color: var(--text-primary);
   font-size: 13px;
@@ -1528,7 +1542,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   text-align: right;
 }
 
-.codex-window-reset {
+.oauth-window-reset {
   grid-column: 2 / 4;
   min-width: 0;
   overflow: hidden;
@@ -1539,7 +1553,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   white-space: nowrap;
 }
 
-.codex-window-placeholder {
+.oauth-window-placeholder {
   padding: 20px;
   border: 1px dashed var(--border-color-global);
   border-radius: 8px;
@@ -1549,13 +1563,13 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   text-align: center;
 }
 
-.codex-card-meta {
+.oauth-card-meta {
   margin-top: 12px;
   padding-top: 16px;
   border-top: 1px solid var(--border-color-global);
 }
 
-.codex-source-meta {
+.oauth-source-meta {
   min-height: 16px;
   margin-bottom: 12px;
   color: var(--text-color-secondary);
@@ -1563,22 +1577,22 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   line-height: 1.5;
 }
 
-.codex-card-actions {
+.oauth-card-actions {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.codex-icon-button {
+.oauth-icon-button {
   width: 36px;
   height: 36px;
 }
 
-.codex-icon-button :deep(.n-button__content) {
+.oauth-icon-button :deep(.n-button__content) {
   line-height: 0;
 }
 
-.codex-icon-button svg {
+.oauth-icon-button svg {
   width: 16px;
   height: 16px;
   fill: none;
@@ -1588,63 +1602,63 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   stroke-linejoin: round;
 }
 
-.codex-icon-button.primary { color: var(--primary-color, #3b82f6); }
-.codex-icon-button.info { color: var(--status-info-text, #3b82f6); }
-.codex-icon-button.danger { color: var(--status-danger-text, #e03131); }
+.oauth-icon-button.primary { color: var(--primary-color, #3b82f6); }
+.oauth-icon-button.info { color: var(--status-info-text, #3b82f6); }
+.oauth-icon-button.danger { color: var(--status-danger-text, #e03131); }
 
 /* 暗色模式下确保图标按钮在深色背景上清晰可见 */
-:global([data-theme='dark']) .codex-icon-button.primary { color: #60a5fa; }
-:global([data-theme='dark']) .codex-icon-button.info { color: #38bdf8; }
-:global([data-theme='dark']) .codex-icon-button.danger { color: #f87171; }
+:global([data-theme='dark']) .oauth-icon-button.primary { color: #60a5fa; }
+:global([data-theme='dark']) .oauth-icon-button.info { color: #38bdf8; }
+:global([data-theme='dark']) .oauth-icon-button.danger { color: #f87171; }
 
-:global([data-theme='dark']) .codex-card {
+:global([data-theme='dark']) .oauth-card {
   border-color: var(--border-color-global);
   background: var(--bg-card);
 }
 
-:global([data-theme='dark']) .codex-card-header,
-:global([data-theme='dark']) .codex-card-meta {
+:global([data-theme='dark']) .oauth-card-header,
+:global([data-theme='dark']) .oauth-card-meta {
   border-color: var(--border-color-global);
 }
 
-:global([data-theme='dark']) .codex-account-name {
+:global([data-theme='dark']) .oauth-account-name {
   color: var(--text-primary);
 }
 
-:global([data-theme='dark']) .codex-window-placeholder {
+:global([data-theme='dark']) .oauth-window-placeholder {
   border-color: var(--border-color-global);
   background: var(--bg-input);
 }
 
-:global([data-theme='dark']) .codex-export-toolbar {
+:global([data-theme='dark']) .oauth-export-toolbar {
   border-color: color-mix(in srgb, var(--status-warning-text) 35%, transparent);
   background: var(--status-warning-bg);
   color: var(--status-warning-text);
 }
 
 @media (max-width: 720px) {
-  .codex-grid,
+  .oauth-grid,
   .account-kpi-row,
   .account-meta-grid,
-  .codex-window,
+  .oauth-window,
   .inspection-summary-grid,
   .inspection-log-row {
     grid-template-columns: 1fr;
   }
 
-  .codex-window-reset {
+  .oauth-window-reset {
     grid-column: 1;
   }
 
-  .codex-card-header,
+  .oauth-card-header,
   .inspection-content,
   .reset-credit-item {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .codex-export-toolbar,
-  .codex-card-actions {
+  .oauth-export-toolbar,
+  .oauth-card-actions {
     flex-wrap: wrap;
   }
 
@@ -1652,11 +1666,11 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     grid-template-columns: 1fr;
   }
 
-  .codex-model-row {
+  .oauth-model-row {
     grid-template-columns: 30px minmax(0, 1fr) auto;
   }
 
-  .codex-model-row :deep(.n-input) {
+  .oauth-model-row :deep(.n-input) {
     grid-column: 2 / -1;
   }
 

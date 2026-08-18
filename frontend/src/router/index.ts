@@ -29,6 +29,15 @@ const routes: RouteRecordRaw[] = [
     })
   },
   {
+    // 兼容旧书签：OAuth 管理页的规范地址为 /oauth。
+    path: '/codex',
+    redirect: to => ({
+      path: '/oauth',
+      query: to.query,
+      hash: to.hash
+    })
+  },
+  {
     path: '/Admin/Analytics',
     redirect: to => ({
       path: '/analytics',
@@ -44,7 +53,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'analytics', name: 'analytics', component: () => import('@/views/AnalyticsView.vue'), meta: { title: '可视化分析' } },
       { path: 'chat', name: 'chat', component: () => import('@/views/ChatView.vue'), meta: { title: '对话' } },
       { path: 'sites', name: 'sites', component: () => import('@/views/SitesView.vue'), meta: { title: '站点管理' } },
-      { path: 'codex', name: 'codex', component: () => import('@/views/CodexView.vue'), meta: { title: 'OAuth 管理', requiresCodex: true } },
+      { path: 'oauth', name: 'oauth', component: () => import('@/views/OAuthView.vue'), meta: { title: 'OAuth 管理', requiresOAuth: true } },
       { path: 'models', name: 'models', component: () => import('@/views/ModelsView.vue'), meta: { title: '模型库' } },
       { path: 'routes', name: 'routes', component: () => import('@/views/RouteManagementView.vue'), meta: { title: '路由管理' } },
       {
@@ -104,7 +113,8 @@ router.beforeEach(async (to) => {
 
   // 功能开关：未开启对应功能的页面重定向到仪表盘，避免空白页。
   const features = auth.status?.features
-  if (to.meta.requiresCodex && !features?.codexEnabled) {
+  const oauthEnabled = features?.oauthEnabled ?? features?.codexEnabled
+  if (to.meta.requiresOAuth && !oauthEnabled) {
     return { name: 'dashboard' }
   }
   if (to.meta.requiresDeveloper && !features?.developerEnabled) {

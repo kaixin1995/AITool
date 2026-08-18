@@ -36,7 +36,7 @@ public partial class SystemSettingsViewModel : ViewModelBase
         new() { Value = "proxy", Label = "代理" },
         new() { Value = "chat", Label = "对话测试" },
         new() { Value = "claude-code", Label = "Claude Code" },
-        new() { Value = "codex", Label = "Codex" },
+        new() { Value = "codex", Label = "OAuth 账号" },
         new() { Value = "open-code", Label = "Open Code" },
         new() { Value = "zcode", Label = "ZCode" },
         new() { Value = "deepseek-harness", Label = "DeepSeek Harness" },
