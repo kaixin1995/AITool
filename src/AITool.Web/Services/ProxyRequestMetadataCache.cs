@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -8,6 +7,7 @@ using AITool.Domain.Codex;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Domain.Sites;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
 using AITool.Web.Controllers.Admin;
 using AITool.Web.Contracts;
@@ -105,9 +105,13 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
     /// <summary>
-    /// 缓存键级别的加载锁，避免冷缓存并发 miss 重复执行全表查询。
+    /// 缓存键级别的加载锁，避免冷缓存并发 miss 重复执行全表查询；锁条目在无人使用时自动回收。
     /// </summary>
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _cacheLoadLocks = new(StringComparer.Ordinal);
+    private readonly KeyedAsyncLock _cacheLoadLocks = new();
+    /// <summary>
+    /// 每个缓存键的失效代数。构建期间若发生显式失效，旧构建结果不会重新写回缓存。
+    /// </summary>
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _cacheGenerations = new(StringComparer.Ordinal);
     /// <summary>
     /// 正在等待活跃调用结束的路由快照，确保调用中的模型不会被新顺序影响。
     /// </summary>
@@ -143,30 +147,54 @@ public sealed class ProxyRequestMetadataCache
     /// <summary>
     /// 读取或构建缓存项，并确保同一键在冷缓存期间只执行一次构建委托。
     /// </summary>
-    private async Task<T?> GetOrCreateCachedAsync<T>(string key, Func<ICacheEntry, Task<T>> factory)
+    private async Task<T?> GetOrCreateCachedAsync<T>(
+        string key,
+        Func<ICacheEntry, Task<T>> factory,
+        CancellationToken cancellationToken)
     {
         if (_memoryCache.TryGetValue(key, out T? cached))
         {
             return cached;
         }
 
-        var gate = _cacheLoadLocks.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync();
-        try
+        using (await _cacheLoadLocks.WaitAsync(key, cancellationToken))
         {
             if (_memoryCache.TryGetValue(key, out cached))
             {
                 return cached;
             }
 
+            var generation = GetCacheGeneration(key);
             using var entry = _memoryCache.CreateEntry(key);
             var value = await factory(entry);
-            entry.Value = value;
+            if (generation == GetCacheGeneration(key))
+            {
+                entry.Value = value;
+            }
+
             return value;
         }
-        finally
+    }
+
+    private long GetCacheGeneration(string key)
+    {
+        return _cacheGenerations.TryGetValue(key, out var generation) ? generation : 0;
+    }
+
+    private void InvalidateCacheKey(string key)
+    {
+        _cacheGenerations.AddOrUpdate(
+            key,
+            1,
+            static (_, generation) => generation == long.MaxValue ? 0 : generation + 1);
+        _memoryCache.Remove(key);
+    }
+
+    private void InvalidateCacheKeys(params string[] keys)
+    {
+        foreach (var key in keys)
         {
-            gate.Release();
+            InvalidateCacheKey(key);
         }
     }
 
@@ -261,7 +289,7 @@ public sealed class ProxyRequestMetadataCache
                             OAuthAutoDisableThresholdPercent = settings.OAuthAutoDisableThresholdPercent,
                             OAuthInspectionCacheEnabled = settings.OAuthInspectionCacheEnabled
                         };
-                })
+                }, cancellationToken)
             ?? new CachedProxyRuntimeSettings();
     }
 
@@ -360,7 +388,7 @@ public sealed class ProxyRequestMetadataCache
                         .ToList();
 
                     return models;
-                })
+                }, cancellationToken)
             ?? [];
     }
 
@@ -443,7 +471,7 @@ public sealed class ProxyRequestMetadataCache
                         .ThenBy(x => x.SiteName, StringComparer.OrdinalIgnoreCase)
                         .ThenBy(x => x.SiteModelName, StringComparer.OrdinalIgnoreCase)
                         .ToList();
-                })
+                }, cancellationToken)
             ?? [];
     }
 
@@ -507,7 +535,7 @@ public sealed class ProxyRequestMetadataCache
                     }
 
                     return limits;
-                })
+                }, cancellationToken)
             ?? new Dictionary<string, int>(StringComparer.Ordinal);
     }
 
@@ -535,7 +563,7 @@ public sealed class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
 
                     return sites.ToDictionary(x => x.Id, x => x.Name);
-                })
+                }, cancellationToken)
             ?? new Dictionary<Guid, string>();
     }
 
@@ -583,7 +611,7 @@ public sealed class ProxyRequestMetadataCache
                             CandidateCount = countsByName.GetValueOrDefault(entryName, 0)
                         })
                         .ToList();
-                })
+                }, cancellationToken)
             ?? [];
     }
 
@@ -621,7 +649,7 @@ public sealed class ProxyRequestMetadataCache
                                     site.ProtocolType)
                             })
                         .ToList();
-                })
+                }, cancellationToken)
             ?? [];
     }
 
@@ -686,7 +714,7 @@ public sealed class ProxyRequestMetadataCache
                     }
 
                     return models;
-                })
+                }, cancellationToken)
             ?? [];
     }
 
@@ -749,7 +777,7 @@ public sealed class ProxyRequestMetadataCache
                     }
 
                     return results;
-                })
+                }, cancellationToken)
             ?? new Dictionary<string, List<DiscoveredSiteItem>>(StringComparer.Ordinal);
 
         return allDiscoveredSites.TryGetValue(normalizedModelName, out var items)
@@ -828,7 +856,7 @@ public sealed class ProxyRequestMetadataCache
                                 TimeRangesJson = NormalizeTimeRangesJson(r.AvailabilityMode, r.TimeRangesJson)
                             }).ToList(),
                             StringComparer.Ordinal);
-                })
+                }, cancellationToken)
             ?? new Dictionary<string, List<RouteRuleListItem>>(StringComparer.Ordinal);
 
         return rulesByEntry.TryGetValue(normalizedModelName, out var items)
@@ -855,7 +883,7 @@ public sealed class ProxyRequestMetadataCache
                         .OrderBy(k => k.KeyName)
                         .Select(k => k.PlainKey)
                         .FirstAsync(cancellationToken) ?? string.Empty;
-                })
+                }, cancellationToken)
             ?? string.Empty;
     }
 
@@ -895,7 +923,7 @@ public sealed class ProxyRequestMetadataCache
                                 CanUseAnthropic = g.Any()
                             })
                         .ToList();
-                })
+                }, cancellationToken)
             ?? [];
     }
 
@@ -926,8 +954,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateAccessKeys()
     {
-        _memoryCache.Remove(AccessKeyCacheKey);
-        _memoryCache.Remove(DeveloperDefaultAccessKeyCacheKey);
+        InvalidateCacheKeys(AccessKeyCacheKey, DeveloperDefaultAccessKeyCacheKey);
     }
 
     /// <summary>
@@ -935,7 +962,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateCodexAccounts()
     {
-        _memoryCache.Remove(CodexAccountsCacheKey);
+        InvalidateCacheKey(CodexAccountsCacheKey);
     }
 
     /// <summary>
@@ -944,7 +971,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateGoogleAccounts()
     {
-        _memoryCache.Remove(GoogleAccountsCacheKey);
+        InvalidateCacheKey(GoogleAccountsCacheKey);
         InvalidateRouteTargets();
     }
 
@@ -976,7 +1003,7 @@ public sealed class ProxyRequestMetadataCache
                         .Where(a => !a.DisabledByFeatureToggle)
                         .OrderBy(a => a.LastQuotaCheckedAt)
                         .ToListAsync(cancellationToken);
-                })
+                }, cancellationToken)
             ?? [];
 
         return cached.Select(static a => a.Clone()).ToList();
@@ -1002,7 +1029,7 @@ public sealed class ProxyRequestMetadataCache
                         .Where(a => !a.DisabledByFeatureToggle)
                         .OrderBy(a => a.LastQuotaCheckedAt)
                         .ToListAsync(cancellationToken);
-                })
+                }, cancellationToken)
             ?? [];
 
         return cached.Select(static a => a.Clone()).ToList();
@@ -1013,7 +1040,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateRuntimeSettings()
     {
-        _memoryCache.Remove(RuntimeSettingsCacheKey);
+        InvalidateCacheKey(RuntimeSettingsCacheKey);
     }
 
     /// <summary>
@@ -1030,16 +1057,17 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateRuntimeRouteTargets()
     {
-        _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "OpenAI");
-        _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "Anthropic");
-        _memoryCache.Remove(RouteTargetsCacheKeyPrefix + "all");
-        _memoryCache.Remove(ChatModelsCacheKey);
-        _memoryCache.Remove(ChatTargetsCacheKey);
-        _memoryCache.Remove(ModelConcurrencyLimitsCacheKey);
-        _memoryCache.Remove(EnabledSiteNamesCacheKey);
-        _memoryCache.Remove(DeveloperDebugModelsCacheKey);
-        _memoryCache.Remove(FallbackMappingsCacheKey);
-        _memoryCache.Remove(EnabledModelsCacheKey);
+        InvalidateCacheKeys(
+            RouteTargetsCacheKeyPrefix + "OpenAI",
+            RouteTargetsCacheKeyPrefix + "Anthropic",
+            RouteTargetsCacheKeyPrefix + "all",
+            ChatModelsCacheKey,
+            ChatTargetsCacheKey,
+            ModelConcurrencyLimitsCacheKey,
+            EnabledSiteNamesCacheKey,
+            DeveloperDebugModelsCacheKey,
+            FallbackMappingsCacheKey,
+            EnabledModelsCacheKey);
     }
 
     /// <summary>
@@ -1047,11 +1075,12 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateAdminRouteMetadata()
     {
-        _memoryCache.Remove(RouteEntriesCacheKey);
-        _memoryCache.Remove(RouteSiteInstancesCacheKey);
-        _memoryCache.Remove(RouteModelsCacheKey);
-        _memoryCache.Remove(RouteDiscoveredSitesCacheKey);
-        _memoryCache.Remove(RouteRulesByEntryCacheKey);
+        InvalidateCacheKeys(
+            RouteEntriesCacheKey,
+            RouteSiteInstancesCacheKey,
+            RouteModelsCacheKey,
+            RouteDiscoveredSitesCacheKey,
+            RouteRulesByEntryCacheKey);
     }
 
     /// <summary>
@@ -1222,13 +1251,13 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public void InvalidateModelMetadata()
     {
-        _memoryCache.Remove(ChatModelsCacheKey);
-        _memoryCache.Remove(ChatTargetsCacheKey);
-        _memoryCache.Remove(FallbackMappingsCacheKey);
-        _memoryCache.Remove(EnabledModelsCacheKey);
+        InvalidateCacheKeys(
+            ChatModelsCacheKey,
+            ChatTargetsCacheKey,
+            FallbackMappingsCacheKey,
+            EnabledModelsCacheKey);
         // 路由入口列表与候选规则都回填了模型显示名称，模型变更（含显示名称编辑）时一并失效。
-        _memoryCache.Remove(RouteEntriesCacheKey);
-        _memoryCache.Remove(RouteRulesByEntryCacheKey);
+        InvalidateCacheKeys(RouteEntriesCacheKey, RouteRulesByEntryCacheKey);
     }
 
     /// <summary>
@@ -1256,7 +1285,7 @@ public sealed class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
 
                     return accessKeys.ToDictionary(x => x.AccessKeyHash, x => x, StringComparer.Ordinal);
-                })
+                }, cancellationToken)
             ?? [];
     }
 
@@ -1359,7 +1388,7 @@ public sealed class ProxyRequestMetadataCache
                     }
 
                     return expanded;
-                })
+                }, cancellationToken)
             ?? [];
     }
 
@@ -1389,7 +1418,7 @@ public sealed class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
 
                     return models.ToDictionary(x => x.ModelId, x => x);
-                })
+                }, cancellationToken)
             ?? [];
     }
 
@@ -1482,7 +1511,7 @@ public sealed class ProxyRequestMetadataCache
                     return mappings
                         .GroupBy(x => x.ModelId)
                         .ToDictionary(g => g.Key, g => g.First());
-                })
+                }, cancellationToken)
             ?? [];
     }
 

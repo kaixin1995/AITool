@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
+using SqlSugar;
 
 namespace AITool.Infrastructure.Proxy;
 
@@ -55,14 +56,21 @@ public sealed class SiteUsageTracker
             var cutoff = DateTimeOffset.UtcNow.AddDays(-7);
             var recent = await dbContext.ProxyUsageLogs
                 .Where(l => l.TargetSiteId != Guid.Empty && l.RequestedAt >= cutoff)
-                .Select(l => new { l.TargetSiteId, l.RequestedAt })
+                .GroupBy(l => l.TargetSiteId)
+                .Select(group => new
+                {
+                    TargetSiteId = group.TargetSiteId,
+                    RequestedAt = SqlFunc.AggregateMax(group.RequestedAt)
+                })
                 .ToListAsync(cancellationToken);
 
-            foreach (var g in recent.GroupBy(x => x.TargetSiteId))
+            foreach (var item in recent)
             {
-                var max = g.Max(x => x.RequestedAt);
                 // 用 AddOrUpdate 与 RecordUsage 同样的"取较新"语义，避免预热值被空 Guid 误覆盖。
-                _lastUsedAt.AddOrUpdate(g.Key, max, (_, existing) => max > existing ? max : existing);
+                _lastUsedAt.AddOrUpdate(
+                    item.TargetSiteId,
+                    item.RequestedAt,
+                    (_, existing) => item.RequestedAt > existing ? item.RequestedAt : existing);
             }
         }
         catch

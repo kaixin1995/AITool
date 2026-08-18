@@ -152,7 +152,7 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     /// </summary>
     public Task<int> DeleteAsync<T>(Expression<Func<T, bool>> predicate, CancellationToken cancellationToken = default) where T : class, new()
     {
-        return _client.Deleteable<T>().Where(predicate).ExecuteCommandAsync();
+        return _client.Deleteable<T>().Where(predicate).ExecuteCommandAsync(cancellationToken);
     }
 }
 

@@ -12,6 +12,8 @@ namespace AITool.Infrastructure.Operations;
 /// </summary>
 public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
 {
+    private const int UsageLogDeleteBatchSize = 500;
+
     /// <summary>
     /// 数据库上下文，用于读写系统运行时配置
     /// </summary>
@@ -117,10 +119,19 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         var deletedCount = await query.CountAsync(cancellationToken);
 
         // SqlSugar 的 Deleteable.Where(复杂表达式) 在 SQLite 下可能静默不生成 DELETE，
-        // 改为先查出待删除的 Id，再用 In 删除，确保删除真正执行。
-        var idsToDelete = await query.Select(x => x.Id).ToListAsync(cancellationToken);
-        if (idsToDelete.Count > 0)
+        // 改为分批查出 Id，再用 In 删除，确保删除真正执行，同时避免一次性加载全部日志 Id。
+        while (true)
         {
+            var idsToDelete = await query
+                .OrderBy(x => x.RequestedAt)
+                .Take(UsageLogDeleteBatchSize)
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken);
+            if (idsToDelete.Count == 0)
+            {
+                break;
+            }
+
             await _dbContext.Client.Deleteable<ProxyUsageLog>()
                 .In(idsToDelete)
                 .ExecuteCommandAsync(cancellationToken);

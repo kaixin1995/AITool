@@ -1,6 +1,6 @@
-using System.Collections.Concurrent;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
 
 namespace AITool.Web.Services;
@@ -13,7 +13,7 @@ public sealed class CodexCredentialRefreshService
     /// <summary>
     /// 同一隐藏站点的 401 刷新采用 single-flight，避免并发请求重复轮换 refresh_token。
     /// </summary>
-    private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> RefreshLocks = new();
+    private static readonly KeyedAsyncLock RefreshLocks = new();
 
     private readonly AppDbContext _dbContext;
     private readonly ICodexOAuthClient _oauth;
@@ -37,15 +37,9 @@ public sealed class CodexCredentialRefreshService
         string staleAccessToken,
         CancellationToken cancellationToken)
     {
-        var refreshLock = RefreshLocks.GetOrAdd(linkedSiteId, static _ => new SemaphoreSlim(1, 1));
-        await refreshLock.WaitAsync(cancellationToken);
-        try
+        using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
         {
             return await RefreshCoreAsync(linkedSiteId, staleAccessToken, cancellationToken);
-        }
-        finally
-        {
-            refreshLock.Release();
         }
     }
 

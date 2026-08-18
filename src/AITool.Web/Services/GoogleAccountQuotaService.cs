@@ -1,10 +1,10 @@
-using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Accounts;
 using AITool.Application.Google;
 using AITool.Domain.Google;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Google;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.Caching.Memory;
@@ -30,8 +30,8 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
     private readonly GoogleCredentialRefreshService _credentialRefreshService;
     private readonly ILogger<GoogleAccountQuotaService> _logger;
 
-    /// <summary>single-flight：同 accountId 并发只一次真实请求。必须 static（typed HttpClient transient）。</summary>
-    private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> Locks = new();
+    /// <summary>single-flight：同 accountId 并发只一次真实请求。KeyedAsyncLock 会在账号不再使用时回收锁条目。</summary>
+    private static readonly KeyedAsyncLock Locks = new();
 
     public GoogleAccountQuotaService(
         HttpClient httpClient,
@@ -218,9 +218,7 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
             return cached;
         }
 
-        var gate = Locks.GetOrAdd(account.Id, static _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken);
-        try
+        using (await Locks.WaitAsync(account.Id.ToString("N"), cancellationToken))
         {
             if (!forceRefresh && _resultCache.TryGetValue(cacheKey, out cached) && cached != null)
             {
@@ -262,10 +260,6 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
 
             _resultCache.Set(cacheKey, info, ResultCacheTtl);
             return info;
-        }
-        finally
-        {
-            gate.Release();
         }
     }
 

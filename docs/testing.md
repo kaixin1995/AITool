@@ -69,6 +69,14 @@
 | `Services/SiteCascadeDeleterTests.cs` | 6 | 级联清理映射与规则、清空孤儿 entry |
 | `Services/AdminBackgroundTaskQueueTests.cs` | 1 | 管理后台任务异常隔离，单个任务失败不阻塞后续任务 |
 | `UsageLogs/UsageLogsApiTests.cs` | 9 | 列表过滤、请求详情按 attempt 分组、汇总 |
+| `Proxy/SiteUsageTrackerTests.cs` | 1 | SQLite 预热按站点聚合最近使用时间 |
+
+### 并发与大数据量回归重点
+
+- `JwtTokenServiceTests.Refresh_concurrent_requests_consume_token_once`：同一 refresh token 的并发轮换只能成功一次。
+- `AccountQuotaInspectionTests`：巡检在多个额度窗口中取最大已用比例，不能因为五小时窗口较低而忽略周窗口。
+- Analytics 和 Usage Logs 的批处理不改变请求级归并、fallback 链路、成本和百分位统计口径；性能修复后优先运行 `AnalyticsApiTests` 与 `UsageLogsApiTests`。
+- SQLite 查询涉及 `DateTimeOffset` 时，回归测试应断言 UTC 瞬时值，不直接比较本地 offset。
 
 ## 4. usage token 断言口径（重要，对应 2026-08 的两次语义修复）
 

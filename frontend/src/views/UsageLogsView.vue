@@ -18,6 +18,7 @@ import {
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import SourceIcon from '@/components/SourceIcon.vue'
+import { isRequestCanceled } from '@/api/http'
 import * as api from '@/api/usageLogs'
 import type { UsageLogItem, UsageLogRequestDetail, UsageLogSummary } from '@/api/usageLogs'
 import { getModelPricing } from '@/api/models'
@@ -49,6 +50,9 @@ let searchTimer: number | undefined
 let incrementalRefreshInFlight = false
 // load() 的请求序号：仅最后一次触发的加载允许写回状态。
 let loadRequestSeq = 0
+// 明细请求可被后续点击取消，且序号校验避免慢请求覆盖当前选中的链路。
+let detailRequestSeq = 0
+let detailAbortController: AbortController | undefined
 
 const query = reactive({
   page: 1,
@@ -299,15 +303,28 @@ async function openRequestDetail(requestId: string): Promise<void> {
     message.warning('当前记录缺少 requestId，无法查看链路')
     return
   }
+  detailRequestSeq++
+  detailAbortController?.abort()
+  const requestSeq = detailRequestSeq
+  const abortController = new AbortController()
+  detailAbortController = abortController
   detailVisible.value = true
   detailLoading.value = true
   requestDetail.value = null
   try {
-    requestDetail.value = await api.getUsageLogRequestDetail(requestId)
+    const detail = await api.getUsageLogRequestDetail(requestId, abortController.signal)
+    if (requestSeq === detailRequestSeq) {
+      requestDetail.value = detail
+    }
   } catch (e) {
-    message.error((e as Error).message)
+    if (requestSeq === detailRequestSeq && !isRequestCanceled(e)) {
+      message.error((e as Error).message)
+    }
   } finally {
-    detailLoading.value = false
+    if (requestSeq === detailRequestSeq) {
+      detailLoading.value = false
+      detailAbortController = undefined
+    }
   }
 }
 
@@ -365,6 +382,8 @@ onMounted(async () => {
 onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
   clearSearchTimer()
+  detailRequestSeq++
+  detailAbortController?.abort()
 })
 </script>
 

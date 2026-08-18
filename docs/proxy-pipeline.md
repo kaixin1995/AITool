@@ -153,6 +153,8 @@ sequenceDiagram
 - **核心读方法**：`ValidateAccessKeyAsync`(L140)、`GetAllowedRouteNames`(L158)、`GetRuntimeSettingsAsync`(L191)、`GetRouteTargetsForModelAsync`(L270，含多 Key 展开/时间窗/熔断键合成)、`GetChatModelsAsync`(L297)/`GetChatTargetsAsync`(L333/408)、`GetModelConcurrencyLimitsAsync`(L417)、`GetEnabledModelNamesAsync`(L234/248)、`GetAllRouteTargetsAsync`(L262)、`GetDeveloperDefaultAccessKeyAsync`(L797)、`GetCodexAccountsAsync`(L908) 等
 - **失效族**：`InvalidateAccessKeys`(L882)、`InvalidateCodexAccounts`(L891)、`InvalidateCompatibilityProfiles`(L899)、`InvalidateRuntimeSettings`(L929)、`InvalidateRouteTargets`(L937)、`InvalidateRuntimeRouteTargets`(L946)、`InvalidateAdminRouteMetadata`(L963)、`InvalidateModelMetadata`(L1138)
 - **延迟刷新**（调用中路由稳定）：`DeferRuntimeRouteTargetsRefresh`(L975) / `CompleteDeferredRuntimeRouteTarget`(L1028) —— 当某路由正在被使用时缓存刷新会推迟，配合 `ModelConcurrencyLimiter.TryDeferRuntimeRouteTargetsRefresh`（L450），保证进行中的请求模型路由不漂移；配套 `RouteTargetIdentity`/`ActiveRouteTargetSnapshot`（L1613-1618）
+- **并发与失效竞态**：冷缓存按键使用 `KeyedAsyncLock` single-flight，并传递请求取消令牌；显式失效会递增缓存键代数，后台构建中的旧快照不会在失效后重新写回缓存。
+- **路由稳定性优先**：缓存代数只控制未被活跃调用保护的普通缓存；路由延迟刷新仍由活跃槽位快照决定，不能为了缩短 TTL 绕过 `DeferRuntimeRouteTargetsRefresh`。
 
 ---
 

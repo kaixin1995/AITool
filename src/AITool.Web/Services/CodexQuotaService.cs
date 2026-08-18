@@ -1,8 +1,8 @@
-using System.Collections.Concurrent;
 using System.Net.Http.Headers;
 using AITool.Application.Accounts;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.Caching.Memory;
@@ -34,8 +34,8 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
     private readonly CodexCredentialRefreshService _credentialRefreshService;
     private readonly ILogger<CodexQuotaService> _logger;
 
-    /// <summary>single-flight：同 accountId 并发只一次真实请求。必须 static：本服务经 typed HttpClient 注册为 transient，实例级字典无法跨实例合并并发。</summary>
-    private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> Locks = new();
+    /// <summary>single-flight：同 accountId 并发只一次真实请求。KeyedAsyncLock 会在账号不再使用时回收锁条目。</summary>
+    private static readonly KeyedAsyncLock Locks = new();
 
     public CodexQuotaService(
         HttpClient httpClient,
@@ -196,9 +196,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         }
 
         // single-flight
-        var gate = Locks.GetOrAdd(account.Id, static _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken);
-        try
+        using (await Locks.WaitAsync(account.Id.ToString("N"), cancellationToken))
         {
             // 二次检查缓存（等待期间可能已被并发填充）
             if (!forceRefresh && _resultCache.TryGetValue(cacheKey, out cached) && cached != null)
@@ -248,10 +246,6 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
             // 写缓存（无论成功失败都缓存 30s，避免失败风暴）
             _resultCache.Set(cacheKey, info, ResultCacheTtl);
             return info;
-        }
-        finally
-        {
-            gate.Release();
         }
     }
 
@@ -326,14 +320,10 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
     /// <summary>
     /// 获取用于自动禁用判定的已使用百分比。
-    /// 规则：优先看 5 小时窗口；没有 5 小时才看周窗口。只看一个，不叠加。
+    /// 任一额度窗口达到阈值都应触发禁用，因此取所有窗口中的最大值。
     /// </summary>
     private static double? GetMaxUsedPercent(CodexQuotaInfo info)
-    {
-        var fiveHour = info.Windows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
-        if (fiveHour.HasValue) return fiveHour;
-        return info.Windows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;
-    }
+        => info.Windows.Count == 0 ? null : info.Windows.Max(w => w.UsedPercent);
 
     private static AccountQuotaTarget ToQuotaTarget(CodexAccount account) => new()
     {

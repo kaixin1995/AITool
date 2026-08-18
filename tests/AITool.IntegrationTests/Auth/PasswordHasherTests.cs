@@ -173,6 +173,23 @@ public sealed class JwtTokenServiceTests
     }
 
     /// <summary>
+    /// 并发请求同一个 refresh token 时只能有一个请求完成轮换。
+    /// </summary>
+    [Fact]
+    public async Task Refresh_concurrent_requests_consume_token_once()
+    {
+        var svc = CreateService();
+        var original = svc.IssueTokens("admin");
+
+        var results = await Task.WhenAll(
+            Task.Run(() => svc.Refresh(original.RefreshToken)),
+            Task.Run(() => svc.Refresh(original.RefreshToken)));
+
+        results.Count(result => result is not null).Should().Be(1);
+        results.Count(result => result is null).Should().Be(1);
+    }
+
+    /// <summary>
     /// 验证 Revoke 后 refresh token 不可用。
     /// </summary>
     [Fact]

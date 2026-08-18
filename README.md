@@ -285,15 +285,15 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 
 | 服务 | 职责 |
 |------|------|
-| `ProxyRequestMetadataCache` | 代理热路径统一元数据缓存（AccessKey/设置/路由/兼容规则/并发上限），TTL 30s 兜底 + 管理写操作显式失效 + **延迟刷新**保证调用中路由稳定；熔断键 `BuildCircuitKey` 在此合成 |
+| `ProxyRequestMetadataCache` | 代理热路径统一元数据缓存（AccessKey/设置/路由/兼容规则/并发上限），TTL 30s 兜底 + 可取消 single-flight + 缓存代数失效 + **延迟刷新**保证调用中路由稳定；熔断键 `BuildCircuitKey` 在此合成 |
 | `ModelConcurrencyLimiter` | 站点+模型并发闸门（SkipOnFull/WaitForSlot，FIFO 排队， IDisposable 槽位） |
 | `ProxyProtocolBridge` | **位于 AITool.Protocol 项目**（非 Web 层），三协议互转静态引擎 |
 | `DeveloperInvocationTraceStore` | 内存环形调用追踪（40 条/20 分钟，SummarizeBody 长文本收缩） |
-| `AnalyticsBackgroundQueryExecutor` | 统计重查询单消费者队列（容量 4 + 20s 结果缓存 + 版本失效） |
+| `AnalyticsBackgroundQueryExecutor` | 统计重查询单消费者队列（容量 4 + 20s 结果缓存 + 版本失效）；看板按批聚合请求链，避免重试日志全量驻留内存 |
 | `AdminBackgroundTaskQueue` | 管理后台长任务单消费者队列（容量 8；站点模型抓取最多 4 个并发、手动模型探测；宿主停止时统一取消） |
 | `ModelVendorCatalogService` | 厂商图标/匹配规则目录（`model-vendor-catalog.json`，运行文件可编辑） |
 | `AdminAuthService` | 管理密码（PBKDF2，兼容旧 MD5 透明升级，写回 appsettings.json） |
-| `JwtTokenService` | access/refresh 签发与轮换吊销（RefreshTokenRecord 表） |
+| `JwtTokenService` | access/refresh 签发与轮换吊销（RefreshTokenRecord 表）；进程内串行消费 refresh token，过期清理按 5 分钟节流 |
 | `LoginRateLimitService` | IP 登录失败计数 + 锁定 |
 | `SqlMigrationRunnerService` | SQL 迁移执行（目录白名单、密码确认、事务、试运行回滚、审计表） |
 | `RouteCircuitStateStore`（Infra） | 熔断状态（内存，站点+Key+模型维度键） |
@@ -425,8 +425,8 @@ cd frontend && npm run test              # 前端 vitest
 cd frontend && npm run type-check        # vue-tsc 类型检查
 ```
 
-- **单元测试**（`AITool.ApplicationTests`，18 个测试文件，119 个执行用例）：业务服务 + 反射测转发私有方法，临时 SQLite 隔离
-- **集成测试**（`AITool.IntegrationTests`，31 个测试文件，313 个执行用例）：`WebApplicationFactory<Program>` 完整宿主 + Fake 转发服务 + 每工厂独立临时库；覆盖代理端到端、跨协议桥接、故障转移、并发、OAuth 刷新、额度巡检、鉴权、SQL 迁移、协议诊断、后台任务队列、DateTimeOffset 时区一致性等
+- **单元测试**（`AITool.ApplicationTests`，19 个测试文件，120 个执行用例）：业务服务 + 反射测转发私有方法，临时 SQLite 隔离
+- **集成测试**（`AITool.IntegrationTests`，31 个测试文件，314 个执行用例）：`WebApplicationFactory<Program>` 完整宿主 + Fake 转发服务 + 每工厂独立临时库；覆盖代理端到端、跨协议桥接、故障转移、并发、OAuth 刷新、额度巡检、鉴权、SQL 迁移、协议诊断、后台任务队列、DateTimeOffset 时区一致性等
 - **前端测试**（20 个 Vitest 文件，98 个执行用例）：API 契约、OAuth/账号巡检、路由/模型/日志/设置状态和工具函数
 - **usage 断言口径**（重要）：Input=不含缓存新输入；转回 OpenAI 时 prompt_tokens 必须含缓存；流式累计覆盖语义。详见 [docs/testing.md](docs/testing.md#4-usage-token-断言口径重要对应-2026-08-的两次语义修复)
 

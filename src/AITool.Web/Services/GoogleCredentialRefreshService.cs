@@ -1,6 +1,6 @@
-using System.Collections.Concurrent;
 using AITool.Application.Google;
 using AITool.Domain.Google;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
 
 namespace AITool.Web.Services;
@@ -14,7 +14,7 @@ public sealed class GoogleCredentialRefreshService
     /// 同一隐藏站点的 401 刷新采用 single-flight。Google 可能轮换 refresh_token，
     /// 并发重复刷新会让其中一个请求写回已失效的 token。
     /// </summary>
-    private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> RefreshLocks = new();
+    private static readonly KeyedAsyncLock RefreshLocks = new();
 
     private readonly AppDbContext _dbContext;
     private readonly IGoogleOAuthClient _oauth;
@@ -38,15 +38,9 @@ public sealed class GoogleCredentialRefreshService
         string staleAccessToken,
         CancellationToken cancellationToken)
     {
-        var refreshLock = RefreshLocks.GetOrAdd(linkedSiteId, static _ => new SemaphoreSlim(1, 1));
-        await refreshLock.WaitAsync(cancellationToken);
-        try
+        using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
         {
             return await RefreshCoreAsync(linkedSiteId, staleAccessToken, cancellationToken);
-        }
-        finally
-        {
-            refreshLock.Release();
         }
     }
 

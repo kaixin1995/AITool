@@ -639,6 +639,8 @@ public sealed class AnalyticsApiController : ControllerBase
     private readonly Application.Pricing.IModelPricingService _pricingService;
     // 回退链路数量上限，避免高基数链路维度撑大看板响应。
     private const int MaxFallbackChainDistributionCount = 20;
+    // 统计查询按批读取，内存只保留每个 RequestId 的最终记录和链路摘要。
+    private const int AnalyticsLogBatchSize = 2000;
 
     /// <summary>
     /// 创建统计分析控制器。
@@ -781,64 +783,91 @@ public sealed class AnalyticsApiController : ControllerBase
         var bucketType = ResolveBucketType(query.BucketType, query.RangeType, startTime, endTime);
         var source = NormalizeAnalyticsSource(query.Source);
 
-        // 先只按时间范围读取日志，确保请求级归并不会丢失中间尝试。
-        // 只投影统计实际使用的列（错误正文/请求模型等大列不载入内存，大范围查询内存占用显著下降）。
-        var rangeLogs = await dbContext.ProxyUsageLogs
-            .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
-            .Select(x => new AITool.Domain.Proxy.ProxyUsageLog
-            {
-                RequestedAt = x.RequestedAt,
-                RequestId = x.RequestId,
-                AttemptIndex = x.AttemptIndex,
-                AttemptedModel = x.AttemptedModel,
-                TargetSiteId = x.TargetSiteId,
-                AccessKeyId = x.AccessKeyId,
-                ProtocolType = x.ProtocolType,
-                Source = x.Source,
-                Status = x.Status,
-                HttpStatusCode = x.HttpStatusCode,
-                IsStreamInterrupted = x.IsStreamInterrupted,
-                IsFinalResult = x.IsFinalResult,
-                FallbackTriggered = x.FallbackTriggered,
-                ErrorMessage = x.ErrorMessage,
-                ErrorCategory = x.ErrorCategory,
-                InputTokens = x.InputTokens,
-                CachedTokens = x.CachedTokens,
-                OutputTokens = x.OutputTokens,
-                TotalTokens = x.TotalTokens,
-                TotalDurationMs = x.TotalDurationMs,
-                FirstTokenLatencyMs = x.FirstTokenLatencyMs
-            })
-            .ToListAsync(cancellationToken);
-
-        // SqlSugar 读回 DateTimeOffset 时 offset 被配成本地时区（+08:00），但存储的是 UTC 值，
-        // 导致瞬时偏移。这里统一把 RequestedAt 规范化回 UTC offset（+00:00），恢复正确瞬时时刻。
-        foreach (var log in rangeLogs)
+        // 分批读取并按 RequestId 聚合，确保请求级归并不会丢失中间尝试，
+        // 同时避免把整个时间范围内的所有重试日志一次性保留在内存中。
+        var requestAggregates = new Dictionary<Guid, AnalyticsRequestAggregate>();
+        var offset = 0;
+        while (true)
         {
-            if (log.RequestedAt.Offset != TimeSpan.Zero)
+            var batch = await dbContext.ProxyUsageLogs
+                .Where(x => x.RequestedAt >= startTime && x.RequestedAt < endTime)
+                .OrderBy(x => x.RequestedAt, SqlSugar.OrderByType.Asc)
+                .OrderBy(x => x.Id, SqlSugar.OrderByType.Asc)
+                .Skip(offset)
+                .Take(AnalyticsLogBatchSize)
+                .Select(x => new AITool.Domain.Proxy.ProxyUsageLog
+                {
+                    Id = x.Id,
+                    RequestedAt = x.RequestedAt,
+                    RequestId = x.RequestId,
+                    AttemptIndex = x.AttemptIndex,
+                    AttemptedModel = x.AttemptedModel,
+                    TargetSiteId = x.TargetSiteId,
+                    AccessKeyId = x.AccessKeyId,
+                    ProtocolType = x.ProtocolType,
+                    Source = x.Source,
+                    Status = x.Status,
+                    HttpStatusCode = x.HttpStatusCode,
+                    IsStreamInterrupted = x.IsStreamInterrupted,
+                    IsFinalResult = x.IsFinalResult,
+                    FallbackTriggered = x.FallbackTriggered,
+                    ErrorMessage = x.ErrorMessage,
+                    ErrorCategory = x.ErrorCategory,
+                    InputTokens = x.InputTokens,
+                    CachedTokens = x.CachedTokens,
+                    OutputTokens = x.OutputTokens,
+                    TotalTokens = x.TotalTokens,
+                    TotalDurationMs = x.TotalDurationMs,
+                    FirstTokenLatencyMs = x.FirstTokenLatencyMs
+                })
+                .ToListAsync(cancellationToken);
+
+            if (batch.Count == 0)
             {
-                log.RequestedAt = new DateTimeOffset(log.RequestedAt.DateTime, TimeSpan.Zero);
+                break;
+            }
+
+            // SqlSugar 读回 DateTimeOffset 时 offset 被配成本地时区（+08:00），
+            // 但存储的是 UTC 值，这里统一恢复为 UTC offset。
+            foreach (var log in batch)
+            {
+                if (log.RequestedAt.Offset != TimeSpan.Zero)
+                {
+                    log.RequestedAt = new DateTimeOffset(log.RequestedAt.DateTime, TimeSpan.Zero);
+                }
+
+                if (!requestAggregates.TryGetValue(log.RequestId, out var aggregate))
+                {
+                    aggregate = new AnalyticsRequestAggregate(log.RequestId);
+                    requestAggregates.Add(log.RequestId, aggregate);
+                }
+
+                aggregate.Add(log);
+            }
+
+            offset += batch.Count;
+            if (batch.Count < AnalyticsLogBatchSize)
+            {
+                break;
             }
         }
 
         // 先确定每个请求的最终记录，再用最终记录应用所有维度筛选。
-        var finalLogs = rangeLogs
-            .GroupBy(x => x.RequestId)
-            .Select(SelectFinalAnalyticsLog)
+        var finalLogs = requestAggregates.Values
+            .Select(x => x.FinalLog)
             .Where(x => MatchesAnalyticsFilters(x, query, source))
             .ToList();
         var matchedRequestIds = finalLogs
             .Select(x => x.RequestId)
             .ToHashSet();
 
-        // 命中请求后恢复整条请求链，仅用于回退判断，避免筛选掉失败中间尝试造成统计错误。
-        var matchedChainLogs = rangeLogs
+        // 命中请求后只保留每条链路摘要，避免为了回退判断重新恢复整条尝试列表。
+        var matchedAggregates = requestAggregates.Values
             .Where(x => matchedRequestIds.Contains(x.RequestId))
             .ToList();
-        var fallbackRequestIds = matchedChainLogs
-            .GroupBy(x => x.RequestId)
-            .Where(g => g.Any(x => x.FallbackTriggered) || g.Max(x => x.AttemptIndex) > 1)
-            .Select(g => g.Key)
+        var fallbackRequestIds = matchedAggregates
+            .Where(x => x.FallbackTriggered || x.MaxAttemptIndex > 1)
+            .Select(x => x.RequestId)
             .ToHashSet();
 
         // 一次预分桶：把 finalLogs 按 bucket 归类，后续 5 个趋势方法直接用预分桶结果，
@@ -847,13 +876,10 @@ public sealed class AnalyticsApiController : ControllerBase
         var bucketedLogs = buckets.ToDictionary(b => b.Label, _ => new List<AITool.Domain.Proxy.ProxyUsageLog>());
         foreach (var log in finalLogs)
         {
-            foreach (var b in buckets)
+            var bucketIndex = FindBucketIndex(buckets, log.RequestedAt);
+            if (bucketIndex >= 0)
             {
-                if (log.RequestedAt >= b.Start && log.RequestedAt < b.End)
-                {
-                    bucketedLogs[b.Label].Add(log);
-                    break;
-                }
+                bucketedLogs[buckets[bucketIndex].Label].Add(log);
             }
         }
 
@@ -894,7 +920,7 @@ public sealed class AnalyticsApiController : ControllerBase
             ProtocolBreakdown = BuildProtocolBreakdown(finalLogs, fallbackRequestIds, costByLog),
             FailureReasonBreakdown = BuildFailureReasonBreakdown(finalLogs, fallbackRequestIds, costByLog),
             StatusCodeBreakdown = BuildStatusCodeBreakdown(finalLogs, fallbackRequestIds, costByLog),
-            FallbackChainDistribution = BuildFallbackChainDistribution(finalLogs, matchedChainLogs, fallbackRequestIds, siteNames),
+            FallbackChainDistribution = BuildFallbackChainDistribution(finalLogs, matchedAggregates, fallbackRequestIds, siteNames),
             LatencyPercentiles = BuildLatencyPercentiles(finalLogs)
         };
     }
@@ -1215,30 +1241,23 @@ public sealed class AnalyticsApiController : ControllerBase
     /// </summary>
     private static List<AnalyticsFallbackChainPointDto> BuildFallbackChainDistribution(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        List<AITool.Domain.Proxy.ProxyUsageLog> matchedChainLogs,
+        IReadOnlyList<AnalyticsRequestAggregate> matchedAggregates,
         HashSet<Guid> fallbackRequestIds,
         IReadOnlyDictionary<Guid, string> siteNames)
     {
         var finalByRequestId = finalLogs.ToDictionary(x => x.RequestId);
-        var requestChains = matchedChainLogs
-            .GroupBy(x => x.RequestId)
-            .Where(group => fallbackRequestIds.Contains(group.Key))
-            .Select(group =>
+        var requestChains = matchedAggregates
+            .Where(aggregate => fallbackRequestIds.Contains(aggregate.RequestId))
+            .Select(aggregate =>
             {
-                var attempts = group
-                    .OrderBy(x => x.AttemptIndex)
-                    .ThenBy(x => x.RequestedAt)
-                    .ToList();
-                var firstAttempt = attempts[0];
-                var finalRecord = finalByRequestId[group.Key];
-                var finalAttempt = SelectFinalAnalyticsLog(attempts);
+                var finalRecord = finalByRequestId[aggregate.RequestId];
 
                 return new
                 {
-                    FirstSiteId = firstAttempt.TargetSiteId,
-                    FinalSiteId = finalAttempt.TargetSiteId,
+                    FirstSiteId = aggregate.FirstAttempt.TargetSiteId,
+                    FinalSiteId = aggregate.FinalLog.TargetSiteId,
                     IsSuccess = IsSuccess(finalRecord.Status),
-                    AttemptCount = Math.Max(1, attempts.Max(x => x.AttemptIndex))
+                    AttemptCount = Math.Max(1, aggregate.MaxAttemptIndex)
                 };
             });
 
@@ -1411,19 +1430,6 @@ public sealed class AnalyticsApiController : ControllerBase
     }
 
     /// <summary>
-    /// 从请求链中选择最终记录；优先使用明确标记的最终结果，再按尝试序号和时间兜底。
-    /// </summary>
-    private static AITool.Domain.Proxy.ProxyUsageLog SelectFinalAnalyticsLog(
-        IEnumerable<AITool.Domain.Proxy.ProxyUsageLog> logs)
-    {
-        return logs
-            .OrderByDescending(x => x.IsFinalResult)
-            .ThenByDescending(x => x.AttemptIndex)
-            .ThenByDescending(x => x.RequestedAt)
-            .First();
-    }
-
-    /// <summary>
     /// 判断请求最终记录是否满足看板筛选条件。
     /// </summary>
     private static bool MatchesAnalyticsFilters(
@@ -1498,6 +1504,35 @@ public sealed class AnalyticsApiController : ControllerBase
         }
 
         return buckets;
+    }
+
+    /// <summary>
+    /// 在按时间升序排列的桶集合中二分定位日志所属桶。
+    /// 找不到时表示该日志落在趋势图被截断的旧区间，保持原有忽略语义。
+    /// </summary>
+    private static int FindBucketIndex(IReadOnlyList<AnalyticsBucket> buckets, DateTimeOffset requestedAt)
+    {
+        var low = 0;
+        var high = buckets.Count - 1;
+        while (low <= high)
+        {
+            var middle = low + ((high - low) / 2);
+            var bucket = buckets[middle];
+            if (requestedAt < bucket.Start)
+            {
+                high = middle - 1;
+            }
+            else if (requestedAt >= bucket.End)
+            {
+                low = middle + 1;
+            }
+            else
+            {
+                return middle;
+            }
+        }
+
+        return -1;
     }
 
     /// <summary>
@@ -1668,6 +1703,69 @@ public sealed class AnalyticsApiController : ControllerBase
         return normalized == "all"
             ? TimeSpan.Zero
             : TimeSpan.FromMilliseconds(120);
+    }
+
+    /// <summary>
+    /// 按请求聚合 Analytics 所需的最终记录和回退链路摘要。
+    /// 只保留每个 RequestId 的少量状态，避免重试记录数量直接决定看板内存占用。
+    /// </summary>
+    private sealed class AnalyticsRequestAggregate
+    {
+        public AnalyticsRequestAggregate(Guid requestId)
+        {
+            RequestId = requestId;
+        }
+
+        public Guid RequestId { get; }
+        public AITool.Domain.Proxy.ProxyUsageLog FinalLog { get; private set; } = null!;
+        public AITool.Domain.Proxy.ProxyUsageLog FirstAttempt { get; private set; } = null!;
+        public int MaxAttemptIndex { get; private set; }
+        public bool FallbackTriggered { get; private set; }
+
+        public void Add(AITool.Domain.Proxy.ProxyUsageLog log)
+        {
+            if (FinalLog is null || IsPreferredFinalLog(log, FinalLog))
+            {
+                FinalLog = log;
+            }
+
+            if (FirstAttempt is null || IsEarlierAttempt(log, FirstAttempt))
+            {
+                FirstAttempt = log;
+            }
+
+            MaxAttemptIndex = Math.Max(MaxAttemptIndex, log.AttemptIndex);
+            FallbackTriggered |= log.FallbackTriggered;
+        }
+
+        private static bool IsPreferredFinalLog(
+            AITool.Domain.Proxy.ProxyUsageLog candidate,
+            AITool.Domain.Proxy.ProxyUsageLog current)
+        {
+            if (candidate.IsFinalResult != current.IsFinalResult)
+            {
+                return candidate.IsFinalResult;
+            }
+
+            if (candidate.AttemptIndex != current.AttemptIndex)
+            {
+                return candidate.AttemptIndex > current.AttemptIndex;
+            }
+
+            return candidate.RequestedAt > current.RequestedAt;
+        }
+
+        private static bool IsEarlierAttempt(
+            AITool.Domain.Proxy.ProxyUsageLog candidate,
+            AITool.Domain.Proxy.ProxyUsageLog current)
+        {
+            if (candidate.AttemptIndex != current.AttemptIndex)
+            {
+                return candidate.AttemptIndex < current.AttemptIndex;
+            }
+
+            return candidate.RequestedAt < current.RequestedAt;
+        }
     }
 
     /// <summary>

@@ -77,6 +77,6 @@ export async function getUsageLogSummary(params: Record<string, unknown>): Promi
   return httpGet(`/api/admin/usage-logs/summary?${buildQuery(params)}`)
 }
 
-export async function getUsageLogRequestDetail(requestId: string): Promise<UsageLogRequestDetail> {
-  return httpGet(`/api/admin/usage-logs/request-detail/${encodeURIComponent(requestId)}`)
+export async function getUsageLogRequestDetail(requestId: string, signal?: AbortSignal): Promise<UsageLogRequestDetail> {
+  return httpGet(`/api/admin/usage-logs/request-detail/${encodeURIComponent(requestId)}`, { signal })
 }

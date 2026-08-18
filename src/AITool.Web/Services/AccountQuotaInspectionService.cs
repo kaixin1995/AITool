@@ -23,9 +23,10 @@ public sealed class AccountQuotaInspectionService : BackgroundService
     private readonly IHostEnvironment _environment;
     private readonly SiteUsageTracker _siteUsageTracker;
 
+    private readonly object _stateLock = new();
     private AccountInspectionRunResult? _lastRun;
     private readonly ConcurrentQueue<AccountInspectionLogEntry> _logs = new();
-    private DateTimeOffset _nextScheduledAt;
+    private long _nextScheduledAtUtcTicks;
     private int _running;
 
     public AccountQuotaInspectionService(
@@ -75,7 +76,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
     {
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0)
         {
-            return _lastRun ?? new AccountInspectionRunResult
+            return GetLastRun() ?? new AccountInspectionRunResult
             {
                 FinishedAt = DateTimeOffset.UtcNow,
             };
@@ -106,16 +107,34 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         }
     }
 
-    public AccountInspectionRunResult? GetLastRun() => _lastRun;
+    /// <summary>
+    /// 获取最近一次巡检的不可变快照，避免管理接口序列化时与巡检结果列表并发读写。
+    /// </summary>
+    public AccountInspectionRunResult? GetLastRun()
+    {
+        lock (_stateLock)
+        {
+            return _lastRun is null ? null : CloneRunResult(_lastRun);
+        }
+    }
 
     public List<AccountInspectionLogEntry> GetLogs() => _logs.Reverse().ToList();
 
-    public object GetStatus() => new
+    public object GetStatus()
     {
-        isRunning = Volatile.Read(ref _running) != 0,
-        nextScheduledAt = _nextScheduledAt == default ? (DateTimeOffset?)null : _nextScheduledAt,
-        lastFinishedAt = _lastRun?.FinishedAt,
-    };
+        DateTimeOffset? lastFinishedAt;
+        lock (_stateLock)
+        {
+            lastFinishedAt = _lastRun?.FinishedAt;
+        }
+
+        return new
+        {
+            isRunning = Volatile.Read(ref _running) != 0,
+            nextScheduledAt = ReadNextScheduledAt(),
+            lastFinishedAt,
+        };
+    }
 
     private async Task TickAsync(CancellationToken cancellationToken)
     {
@@ -126,13 +145,24 @@ public sealed class AccountQuotaInspectionService : BackgroundService
         if (!runtime.OAuthFeaturesEnabled || !runtime.OAuthInspectionEnabled) return;
 
         var now = DateTimeOffset.UtcNow;
-        if (_nextScheduledAt == default) _nextScheduledAt = now;
-        if (now < _nextScheduledAt) return;
+        var nextScheduledAt = ReadNextScheduledAt();
+        if (nextScheduledAt is null)
+        {
+            Interlocked.CompareExchange(
+                ref _nextScheduledAtUtcTicks,
+                now.UtcDateTime.Ticks,
+                0);
+            nextScheduledAt = ReadNextScheduledAt();
+        }
+
+        if (nextScheduledAt is not null && now < nextScheduledAt.Value) return;
         if (Interlocked.CompareExchange(ref _running, 1, 0) != 0) return;
 
         try
         {
-            _nextScheduledAt = now + TimeSpan.FromSeconds(Math.Max(30, runtime.OAuthInspectionIntervalSeconds));
+            Volatile.Write(
+                ref _nextScheduledAtUtcTicks,
+                (now + TimeSpan.FromSeconds(Math.Max(30, runtime.OAuthInspectionIntervalSeconds))).UtcDateTime.Ticks);
             var providers = scope.ServiceProvider
                 .GetServices<IAccountQuotaProvider>()
                 .ToList();
@@ -170,7 +200,6 @@ public sealed class AccountQuotaInspectionService : BackgroundService
             AutoTriggered = autoTriggered,
             StartedAt = DateTimeOffset.UtcNow,
         };
-        _lastRun = result;
         AddLog("inspection", $"账号额度巡检开始{(forceRefresh ? "（强制真实刷新）" : "")}");
 
         foreach (var provider in providers)
@@ -226,11 +255,56 @@ public sealed class AccountQuotaInspectionService : BackgroundService
 
         result.IsRunning = false;
         result.FinishedAt = DateTimeOffset.UtcNow;
-        _lastRun = result;
+        lock (_stateLock)
+        {
+            _lastRun = CloneRunResult(result);
+        }
         AddLog(
             "inspection",
             $"账号额度巡检完成：保留 {result.KeepCount}、禁用 {result.DisableCount}、启用 {result.EnableCount}、缓存命中 {result.CacheCount}、真实刷新 {result.RealRefreshCount}");
         return result;
+    }
+
+    private DateTimeOffset? ReadNextScheduledAt()
+    {
+        var ticks = Volatile.Read(ref _nextScheduledAtUtcTicks);
+        return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero);
+    }
+
+    private static AccountInspectionRunResult CloneRunResult(AccountInspectionRunResult source)
+    {
+        return new AccountInspectionRunResult
+        {
+            IsRunning = source.IsRunning,
+            ForcedRefresh = source.ForcedRefresh,
+            StartedAt = source.StartedAt,
+            FinishedAt = source.FinishedAt,
+            AutoTriggered = source.AutoTriggered,
+            Accounts = source.Accounts.Select(CloneAccountResult).ToList()
+        };
+    }
+
+    private static AccountInspectionAccountResult CloneAccountResult(AccountInspectionAccountResult source)
+    {
+        return new AccountInspectionAccountResult
+        {
+            ProviderKey = source.ProviderKey,
+            AccountId = source.AccountId,
+            DisplayName = source.DisplayName,
+            Action = source.Action,
+            Reason = source.Reason,
+            FromCache = source.FromCache,
+            CheckedAt = source.CheckedAt,
+            Windows = source.Windows.Select(window => new AccountQuotaWindow
+            {
+                Id = window.Id,
+                Label = window.Label,
+                UsedPercent = window.UsedPercent,
+                ResetLabel = window.ResetLabel,
+                ResetAtUtc = window.ResetAtUtc,
+                LimitWindowSeconds = window.LimitWindowSeconds
+            }).ToList()
+        };
     }
 
     private async Task<AccountInspectionAccountResult> InspectAccountAsync(

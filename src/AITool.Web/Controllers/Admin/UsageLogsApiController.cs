@@ -352,6 +352,8 @@ public sealed class UsageLogSummaryDto
 [Route("api/admin/usage-logs")]
 public sealed class UsageLogsApiController : ControllerBase
 {
+    private const int CostCalculationBatchSize = 1000;
+
     /// <summary>
     /// 数据库上下文。
     /// </summary>
@@ -574,16 +576,45 @@ public sealed class UsageLogsApiController : ControllerBase
                 ? 0
                 : await baseQuery.MaxAsync(x => x.TotalDurationMs, cancellationToken);
 
-            // 成本无法在 SQL 层聚合（价格表在本地 JSON）：只投影计价所需的最小列集合。
+            // 成本无法在 SQL 层聚合（价格表在本地 JSON）：只投影计价所需的最小列集合，
+            // 并分批读取，避免“全部”范围把所有计价行一次性载入内存。
             var totalCostUsd = 0m;
             if (totalCount > 0)
             {
                 await _pricingService.GetCatalogAsync(cancellationToken);
-                var costRows = await baseQuery
-                    .Select(x => new { x.AttemptedModel, x.RequestedAt, x.InputTokens, x.CachedTokens, x.OutputTokens })
-                    .ToListAsync(cancellationToken);
-                totalCostUsd = Math.Round(costRows.Sum(x =>
-                    _pricingService.CalculateCostUsd(x.AttemptedModel, x.RequestedAt, x.InputTokens, x.CachedTokens, x.OutputTokens).CostUsd ?? 0m), 6);
+                var offset = 0;
+                while (true)
+                {
+                    var costRows = await baseQuery
+                        .OrderBy(x => x.RequestedAt, SqlSugar.OrderByType.Asc)
+                        .OrderBy(x => x.Id, SqlSugar.OrderByType.Asc)
+                        .Skip(offset)
+                        .Take(CostCalculationBatchSize)
+                        .Select(x => new { x.AttemptedModel, x.RequestedAt, x.InputTokens, x.CachedTokens, x.OutputTokens })
+                        .ToListAsync(cancellationToken);
+                    if (costRows.Count == 0)
+                    {
+                        break;
+                    }
+
+                    foreach (var row in costRows)
+                    {
+                        totalCostUsd += _pricingService.CalculateCostUsd(
+                            row.AttemptedModel,
+                            row.RequestedAt,
+                            row.InputTokens,
+                            row.CachedTokens,
+                            row.OutputTokens).CostUsd ?? 0m;
+                    }
+
+                    offset += costRows.Count;
+                    if (costRows.Count < CostCalculationBatchSize)
+                    {
+                        break;
+                    }
+                }
+
+                totalCostUsd = Math.Round(totalCostUsd, 6);
             }
 
             return Ok(new UsageLogSummaryDto

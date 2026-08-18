@@ -433,6 +433,15 @@ sealed class SystemRuntimeSettings
 - 批量删除陷阱：SqlSugar `Deleteable.Where` 在 SQLite 某些形态下静默不执行，清日志采用「先查 Id 再 In 删除」
 - `InitTables` 只增不删：删字段不会删列，历史库兼容性好；新增实体字段启动自动补列
 
+### 5.4 热路径缓存、并发与大数据量约束
+
+- `ProxyRequestMetadataCache` 的每个缓存键使用 `KeyedAsyncLock` single-flight；等待锁和缓存构建都接收调用方 `CancellationToken`，客户端断开后不会继续排队等待冷缓存。
+- 显式失效除了移除 `IMemoryCache` 项，还会递增缓存键代数。若管理写操作发生在后台构建期间，旧构建结果只返回给当前请求，不会重新写回缓存。
+- Codex/Google 额度查询和实时凭证刷新共用可回收的 `KeyedAsyncLock`。账号删除或频繁变更不会留下永久增长的 `SemaphoreSlim` 字典。
+- JWT refresh token 的查询、轮换、吊销在进程内串行执行，同一个 refresh token 只能被消费一次；过期 token 清理按 5 分钟惰性节流，不在每次签发时全表扫描。
+- `SiteUsageTracker.WarmupAsync` 只读取最近 7 天，并在 SQLite 中按站点 `MAX(RequestedAt)` 聚合；日志清理按 500 个 Id 分批删除。
+- Usage Logs 摘要的动态计价和 Analytics 看板都按批读取。Analytics 只保留每个 `RequestId` 的最终记录与回退链路摘要，避免重试次数直接放大内存。
+
 ---
 
 ## 6. Application 层接口与 DTO
