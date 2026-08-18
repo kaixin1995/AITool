@@ -636,6 +636,20 @@ public sealed class ProxyProtocolBridgeGeminiTests
     }
 
     [Fact]
+    public void ConvertGeminiSseChunkToOpenAi_accepts_string_and_null_usage_values()
+    {
+        var state = new ProxyProtocolBridge.GeminiToOpenAiStreamState();
+
+        ProxyProtocolBridge.ConvertGeminiSseChunkToOpenAi(
+            """{ "candidates": [ { "content": { "parts": [ { "text": "ok" } ] } } ], "usageMetadata": { "promptTokenCount": "30", "cachedContentTokenCount": null, "candidatesTokenCount": "5", "thoughtsTokenCount": 2 } }""",
+            "m", "chatcmpl-x", state);
+
+        state.InputTokens.Should().Be(30);
+        state.CachedTokens.Should().Be(0);
+        state.OutputTokens.Should().Be(7);
+    }
+
+    [Fact]
     public void CompleteGeminiToOpenAiStream_is_idempotent()
     {
         var state = new ProxyProtocolBridge.GeminiToOpenAiStreamState { FinishReason = "STOP" };

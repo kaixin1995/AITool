@@ -92,6 +92,52 @@ public sealed class ProxyForwardServiceResponseTests
         usage.OutputTokens.Should().Be(10);
     }
 
+    [Fact]
+    public void ExtractUsageMetrics_Gemini_UsageNullFallsBackToNestedUsageMetadata()
+    {
+        var body = """
+            {
+              "usage": null,
+              "response": {
+                "candidates": [{"finishReason": "STOP"}],
+                "usageMetadata": {
+                  "promptTokenCount": 120,
+                  "cachedContentTokenCount": 45,
+                  "candidatesTokenCount": 30,
+                  "thoughtsTokenCount": 6
+                }
+              }
+            }
+            """;
+
+        var usage = ExtractUsageMetricsCore(body, "Gemini");
+
+        usage.InputTokens.Should().Be(75);
+        usage.CachedTokens.Should().Be(45);
+        usage.OutputTokens.Should().Be(36);
+    }
+
+    [Fact]
+    public void ExtractUsageMetrics_Gemini_AcceptsStringAndNullFields()
+    {
+        var body = """
+            {
+              "usageMetadata": {
+                "promptTokenCount": "50",
+                "cachedContentTokenCount": null,
+                "candidatesTokenCount": "7",
+                "thoughtsTokenCount": 2
+              }
+            }
+            """;
+
+        var usage = ExtractUsageMetricsCore(body, "Gemini");
+
+        usage.InputTokens.Should().Be(50);
+        usage.CachedTokens.Should().Be(0);
+        usage.OutputTokens.Should().Be(9);
+    }
+
     // ========== HasUsableResponse ==========
 
     [Fact]

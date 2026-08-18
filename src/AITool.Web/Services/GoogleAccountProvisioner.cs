@@ -241,6 +241,21 @@ public sealed class GoogleAccountProvisioner
         _metadataCache.InvalidateGoogleAccounts();
     }
 
+    /// <summary>
+    /// 按本次上游完整模型清单同步账号映射。未选中的既有映射会禁用，
+    /// 未选中的新模型不会创建映射；这使模型选择能够真正反映到路由和聊天页。
+    /// </summary>
+    public async Task SyncRemoteModelsAsync(
+        Guid linkedSiteId,
+        IEnumerable<(string Slug, string DisplayName, bool Selected)> models,
+        CancellationToken ct)
+    {
+        await SyncModelMappingsCoreAsync(linkedSiteId, models, ct);
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateGoogleAccounts();
+    }
+
     // —— 私有 ——
 
     private async Task<GoogleAccount?> FindExistingAsync(string accountKind, string? email, CancellationToken ct)
@@ -280,6 +295,16 @@ public sealed class GoogleAccountProvisioner
         var newModelItems = new List<ModelLibraryItem>();
         foreach (var (slug, displayName) in modelList)
         {
+            if (existingModelDict.TryGetValue(slug, out var existingModel)
+                && !string.IsNullOrWhiteSpace(displayName)
+                && (string.IsNullOrWhiteSpace(existingModel.DisplayName)
+                    || string.Equals(existingModel.DisplayName, slug, StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(existingModel.DisplayName, displayName, StringComparison.Ordinal))
+            {
+                existingModel.DisplayName = displayName;
+                await _dbContext.UpdateAsync(existingModel, ct);
+            }
+
             if (existingModelDict.ContainsKey(slug)) continue;
             if (newModelItems.Any(x => x.ModelName == slug)) continue;
             var item = new ModelLibraryItem
@@ -300,6 +325,80 @@ public sealed class GoogleAccountProvisioner
             {
                 SiteId = siteId,
                 ModelLibraryItemId = libItem.Id,
+                RemoteModelName = slug,
+                LastStatus = "imported",
+                IsEnabled = true,
+            });
+        }
+    }
+
+    private async Task SyncModelMappingsCoreAsync(
+        Guid siteId,
+        IEnumerable<(string Slug, string DisplayName, bool Selected)> models,
+        CancellationToken ct)
+    {
+        var modelList = models
+            .Where(model => !string.IsNullOrWhiteSpace(model.Slug))
+            .GroupBy(model => model.Slug.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                var last = group.Last();
+                return (Slug: group.Key, DisplayName: last.DisplayName, Selected: last.Selected);
+            })
+            .ToList();
+        if (modelList.Count == 0) return;
+
+        var remoteNames = modelList.Select(model => model.Slug).ToList();
+        var selectionByRemote = modelList.ToDictionary(model => model.Slug, StringComparer.OrdinalIgnoreCase);
+
+        var existingModelItems = await _dbContext.ModelLibraryItems
+            .Where(model => remoteNames.Contains(model.ModelName))
+            .ToListAsync(ct);
+        var existingModelDict = existingModelItems.ToDictionary(model => model.ModelName, StringComparer.OrdinalIgnoreCase);
+
+        var existingMappings = await _dbContext.SiteModelMappings
+            .Where(mapping => mapping.SiteId == siteId && remoteNames.Contains(mapping.RemoteModelName))
+            .ToListAsync(ct);
+        var existingMappingDict = existingMappings.ToDictionary(mapping => mapping.RemoteModelName, StringComparer.OrdinalIgnoreCase);
+
+        foreach (var mapping in existingMappings)
+        {
+            if (!selectionByRemote.TryGetValue(mapping.RemoteModelName, out var selection)) continue;
+            mapping.IsEnabled = selection.Selected;
+            mapping.LastStatus = selection.Selected ? "imported" : "disabled";
+            await _dbContext.UpdateAsync(mapping, ct);
+        }
+
+        foreach (var (slug, displayName, selected) in modelList)
+        {
+            if (selected
+                && existingModelDict.TryGetValue(slug, out var existingModel)
+                && !string.IsNullOrWhiteSpace(displayName)
+                && (string.IsNullOrWhiteSpace(existingModel.DisplayName)
+                    || string.Equals(existingModel.DisplayName, slug, StringComparison.OrdinalIgnoreCase))
+                && !string.Equals(existingModel.DisplayName, displayName, StringComparison.Ordinal))
+            {
+                existingModel.DisplayName = displayName;
+                await _dbContext.UpdateAsync(existingModel, ct);
+            }
+
+            if (!selected || existingMappingDict.ContainsKey(slug)) continue;
+
+            if (!existingModelDict.TryGetValue(slug, out var modelItem))
+            {
+                modelItem = new ModelLibraryItem
+                {
+                    ModelName = slug,
+                    DisplayName = string.IsNullOrWhiteSpace(displayName) ? slug : displayName,
+                };
+                _dbContext.ModelLibraryItems.Add(modelItem);
+                existingModelDict[slug] = modelItem;
+            }
+
+            _dbContext.SiteModelMappings.Add(new SiteModelMapping
+            {
+                SiteId = siteId,
+                ModelLibraryItemId = modelItem.Id,
                 RemoteModelName = slug,
                 LastStatus = "imported",
                 IsEnabled = true,

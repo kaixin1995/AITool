@@ -58,7 +58,7 @@ public sealed class GoogleModelFetcher : IGoogleModelFetcher
         {
             foreach (var property in modelsElement.EnumerateObject())
             {
-                models.Add((property.Name, property.Name));
+                models.Add((property.Name, ExtractDisplayName(property.Value, property.Name)));
             }
 
             // gcli2api 同款补齐：存在 claude-sonnet-4-6 时补充其 thinking 变体。
@@ -69,5 +69,25 @@ public sealed class GoogleModelFetcher : IGoogleModelFetcher
         }
 
         return models;
+    }
+
+    private static string ExtractDisplayName(JsonElement modelValue, string fallback)
+    {
+        if (modelValue.ValueKind != JsonValueKind.Object)
+        {
+            return fallback;
+        }
+
+        foreach (var propertyName in new[] { "displayName", "name", "label" })
+        {
+            if (modelValue.TryGetProperty(propertyName, out var property)
+                && property.ValueKind == JsonValueKind.String
+                && !string.IsNullOrWhiteSpace(property.GetString()))
+            {
+                return property.GetString()!.Trim();
+            }
+        }
+
+        return fallback;
     }
 }

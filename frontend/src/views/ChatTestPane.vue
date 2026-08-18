@@ -49,6 +49,16 @@ watch(selectedMappingId, (mappingId) => {
   selectedModelId.value = target?.modelId ?? null
 })
 
+function formatTargetLabel(target: ChatModelTarget): string {
+  const siteName = target.siteName?.trim() || '未命名站点'
+  const displayName = target.modelDisplayName?.trim() || target.siteModelName?.trim() || '未知模型'
+  const remoteModelName = target.siteModelName?.trim()
+  const modelLabel = remoteModelName && remoteModelName !== displayName
+    ? `${displayName}（${remoteModelName}）`
+    : displayName
+  return `${siteName} / ${modelLabel}`
+}
+
 const targetOptionsComputed = computed<SelectOption[]>(() => {
   // 不再用 modelSearch 过滤 options：选中项被过滤掉时 NSelect 会回退显示 value（乱码）。
   // 搜索交由 NSelect 自身的 filterable 处理，保证选中项始终在 options 中。
@@ -59,7 +69,7 @@ const targetOptionsComputed = computed<SelectOption[]>(() => {
   }
 
   return [...uniqueTargets.values()]
-    .map((target) => ({ label: `${target.siteName} / ${target.siteModelName}`, value: target.mappingId }))
+    .map((target) => ({ label: formatTargetLabel(target), value: target.mappingId }))
 })
 
 const currentReasoning = computed(() => streamingReasoning.value || [...messages.value].reverse().find((m) => m.reasoning)?.reasoning || '')

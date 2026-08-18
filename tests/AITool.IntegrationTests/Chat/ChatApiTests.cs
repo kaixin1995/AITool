@@ -203,6 +203,44 @@ public sealed class ChatApiTests
     }
 
     /// <summary>
+    /// 验证 Gemini/Antigravity 最后一块同时带正文、finishReason 和 usageMetadata 时，
+    /// 聊天结果及 usage log 不会因为转换器没有再生成 usage chunk 而归零。
+    /// </summary>
+    [Fact]
+    public async Task Post_send_stream_gemini_merges_usage_from_final_content_chunk()
+    {
+        var fakeForwardService = new ChatFakeProxyForwardService();
+        var fakeHttpFactory = new ChatFakeHttpClientFactory(new ChatStreamingHttpMessageHandler("Gemini"));
+        await using var factory = new ChatWebApplicationFactory(fakeForwardService, fakeHttpFactory, "Gemini");
+        using var client = factory.CreateClient();
+
+        var response = await client.PostAsync(
+            "/api/admin/chat/send-stream",
+            new StringContent(
+                $"{{\"modelId\":\"{ChatWebApplicationFactory.ModelId}\",\"message\":\"hello-antigravity\",\"enableReasoning\":false,\"enableStreaming\":true}}",
+                Encoding.UTF8,
+                "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeHttpFactory.Handler.Requests.Should().ContainSingle();
+        fakeHttpFactory.Handler.Requests[0].RequestUri!.AbsolutePath.Should().Be("/v1internal:streamGenerateContent");
+        body.Should().Contain("antigravity-stream-ok");
+        body.Should().Contain("\"inputTokens\":16");
+        body.Should().Contain("\"cachedTokens\":4");
+        body.Should().Contain("\"outputTokens\":5");
+        body.Should().Contain("event: done");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].InputTokens.Should().Be(16);
+        logs[0].CachedTokens.Should().Be(4);
+        logs[0].OutputTokens.Should().Be(5);
+    }
+
+    /// <summary>
     /// 验证流式聊天命中 Responses-only 目标时，会打到 responses 路径并把 Responses SSE 转回聊天流。
     /// </summary>
     [Fact]
@@ -658,7 +696,14 @@ internal sealed class ChatStreamingHttpMessageHandler : HttpMessageHandler
     {
         Requests.Add(CloneRequest(request));
 
-        var payload = string.Equals(_siteProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
+        var payload = string.Equals(_siteProtocol, "Gemini", StringComparison.OrdinalIgnoreCase)
+            ? string.Join(
+                "\n",
+                "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"antigravity-\"}]} }],\"usageMetadata\":{\"promptTokenCount\":10,\"candidatesTokenCount\":1}}}",
+                string.Empty,
+                "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"stream-ok\"}]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"promptTokenCount\":20,\"cachedContentTokenCount\":4,\"candidatesTokenCount\":3,\"thoughtsTokenCount\":2}}}",
+                string.Empty)
+            : string.Equals(_siteProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)
             ? string.Join(
                 "\n",
                 "data: {\"id\":\"chatcmpl-stream\",\"object\":\"chat.completion.chunk\",\"model\":\"openai-model\",\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":null,\"reasoning_content\":\"\"}}],\"usage\":null}",

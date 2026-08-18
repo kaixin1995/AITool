@@ -24,6 +24,7 @@ import {
 
 // 统一账号视图：Codex 与 Google（GeminiCLI/Antigravity）账号合入同一列表，用 provider 区分厂商。
 type ProviderKind = 'codex' | 'geminicli' | 'antigravity'
+type ProviderFilter = 'all' | ProviderKind
 type UnifiedAccount = OAuthAccount & {
   provider: ProviderKind
   accountKind?: string | null
@@ -36,6 +37,13 @@ const PROVIDER_LABELS: Record<ProviderKind, string> = {
   geminicli: 'GeminiCLI',
   antigravity: 'Antigravity'
 }
+
+const PROVIDER_FILTER_OPTIONS: Array<{ key: ProviderFilter; label: string }> = [
+  { key: 'all', label: '全部' },
+  { key: 'codex', label: PROVIDER_LABELS.codex },
+  { key: 'geminicli', label: PROVIDER_LABELS.geminicli },
+  { key: 'antigravity', label: PROVIDER_LABELS.antigravity }
+]
 
 const PROVIDER_LOGIN_OPTIONS = [
   { key: 'codex', label: 'Codex' },
@@ -71,6 +79,16 @@ function providerTagType(acc: UnifiedAccount): 'info' | 'success' | 'warning' {
 
 // 导出凭证仅支持 Codex 账号。
 const codexAccountCount = computed(() => accounts.value.filter(acc => acc.provider === 'codex').length)
+const providerFilter = ref<ProviderFilter>('all')
+const providerFilterOptions = computed(() => PROVIDER_FILTER_OPTIONS.map(option => ({
+  ...option,
+  count: option.key === 'all'
+    ? accounts.value.length
+    : accounts.value.filter(acc => acc.provider === option.key).length
+})))
+const filteredAccounts = computed(() => providerFilter.value === 'all'
+  ? accounts.value
+  : accounts.value.filter(acc => acc.provider === providerFilter.value))
 
 const loginDropdownOptions = PROVIDER_LOGIN_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 登录` }))
 const importDropdownOptions = PROVIDER_IMPORT_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 凭证` }))
@@ -172,8 +190,13 @@ const someVisibleModelsChecked = computed(() => (
   visibleCheckedModelCount.value > 0
   && !allVisibleModelsChecked.value
 ))
+const canSubmitModelSync = computed(() => (
+  modelList.value.length > 0
+  && (modelAccount.value?.provider !== 'codex' || checkedModels.value.length > 0)
+))
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
+const pollingIntervalMs = 10_000
 let accountsRequestId = 0
 let inspectionRequestId = 0
 
@@ -261,7 +284,11 @@ async function loadInspection(force = false): Promise<void> {
 async function load(): Promise<void> {
   loading.value = true
   featureDisabled.value = false
-  await Promise.all([loadAccounts(true), loadInspection(true)])
+  const tasks: Promise<void>[] = [loadAccounts(true)]
+  if (activeTab.value === 'inspection') {
+    tasks.push(loadInspection(true))
+  }
+  await Promise.all(tasks)
   loading.value = false
 }
 
@@ -275,7 +302,11 @@ async function refreshSilently(force = false): Promise<void> {
     if (!force || (silentRefreshInFlight && silentRefreshInFlight !== inFlight)) return
   }
 
-  const refresh: Promise<void> = Promise.all([loadAccounts(false), loadInspection()]).then(() => undefined)
+  const tasks: Promise<void>[] = [loadAccounts(false)]
+  if (activeTab.value === 'inspection') {
+    tasks.push(loadInspection())
+  }
+  const refresh: Promise<void> = Promise.all(tasks).then(() => undefined)
   silentRefreshInFlight = refresh
   try {
     await refresh
@@ -480,9 +511,9 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
       : await api.fetchGoogleModels(acc.id)
     modelList.value = models.map(model => ({
       ...model,
-      alias: model.existingDisplayName
-        || model.displayName
-        || model.remoteModelName
+      alias: model.existingDisplayName && model.existingDisplayName !== model.remoteModelName
+        ? model.existingDisplayName
+        : model.displayName || model.remoteModelName
     }))
     checkedModels.value = models
       .filter(model => (
@@ -510,7 +541,11 @@ function toggleVisibleModels(checked: boolean): void {
   }
 }
 async function handleImportModels(): Promise<void> {
-  if (!modelAccount.value || checkedModels.value.length === 0) { message.warning('请选择要导入的模型'); return }
+  if (!modelAccount.value || modelList.value.length === 0) { message.warning('暂无可同步的模型'); return }
+  if (modelAccount.value.provider === 'codex' && checkedModels.value.length === 0) {
+    message.warning('请选择要导入的模型')
+    return
+  }
   modelLoading.value = true
   try {
     if (modelAccount.value.provider === 'codex') {
@@ -521,16 +556,18 @@ async function handleImportModels(): Promise<void> {
       }))
       await api.importSelectedOAuthModels(modelAccount.value.id, selections)
     } else {
-      // Google 账号导入接口只接收勾选列表。
-      const models = modelList.value
-        .filter(model => checkedModels.value.includes(model.remoteModelName))
-        .map(model => ({
-          remoteModelName: model.remoteModelName,
-          displayName: model.alias.trim() || model.remoteModelName
-        }))
-      await api.importSelectedGoogleModels(modelAccount.value.id, models)
+      // Google 账号按本次完整拉取清单同步：未勾选的既有映射会被禁用，
+      // 这样取消勾选不会在下次拉取时又继续出现在路由和聊天页。
+      const selections: OAuthModelSelection[] = modelList.value.map(model => ({
+        remoteModelName: model.remoteModelName,
+        displayName: model.alias.trim() || model.remoteModelName,
+        selected: checkedModels.value.includes(model.remoteModelName)
+      }))
+      await api.importSelectedGoogleModels(modelAccount.value.id, selections)
     }
-    message.success(`已导入 ${checkedModels.value.length} 个模型`)
+    message.success(modelAccount.value.provider === 'codex'
+      ? `已导入 ${checkedModels.value.length} 个模型`
+      : `已同步 ${checkedModels.value.length} 个启用模型`)
     modelModal.value = false
     await load()
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
@@ -781,7 +818,7 @@ onMounted(() => {
     if (document.visibilityState === 'visible') {
       void refreshSilently()
     }
-  }, 5000)
+  }, pollingIntervalMs)
 })
 onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 </script>
@@ -813,9 +850,28 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
             <NEmpty v-if="featureDisabled" description="OAuth 功能未开启，请在系统设置中开启" />
             <NEmpty v-else-if="accounts.length === 0" description="暂无 OAuth 账号，可使用右上角 OAuth 登录或导入凭证" />
 
-            <div v-else class="oauth-grid" :class="{ 'export-mode': exportMode }">
+            <template v-else>
+              <div class="oauth-provider-filters" role="tablist" aria-label="账号厂商筛选">
+                <button
+                  v-for="filter in providerFilterOptions"
+                  :key="filter.key"
+                  type="button"
+                  class="oauth-provider-filter"
+                  :class="{ active: providerFilter === filter.key }"
+                  :data-provider="filter.key"
+                  role="tab"
+                  :aria-selected="providerFilter === filter.key"
+                  @click="providerFilter = filter.key"
+                >
+                  <span>{{ filter.label }}</span>
+                  <span class="oauth-provider-filter-count">{{ filter.count }}</span>
+                </button>
+              </div>
+
+              <NEmpty v-if="filteredAccounts.length === 0" description="当前厂商暂无账号" />
+              <div v-else class="oauth-grid" :class="{ 'export-mode': exportMode }">
               <article
-                v-for="acc in accounts"
+                v-for="acc in filteredAccounts"
                 :key="acc.id"
                 class="oauth-card"
                 :class="{ disabled: !acc.isEnabled, selected: selectedExportAccountIds.includes(acc.id) }"
@@ -903,7 +959,8 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                   </div>
                 </div>
               </article>
-            </div>
+              </div>
+            </template>
           </div>
         </NTabPane>
 
@@ -1185,8 +1242,8 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       <template #footer>
         <NSpace justify="end">
           <NButton @click="modelModal = false">取消</NButton>
-          <NButton type="primary" :disabled="checkedModels.length === 0" :loading="modelLoading" @click="handleImportModels">
-            导入选中（{{ checkedModels.length }}）
+          <NButton type="primary" :disabled="!canSubmitModelSync" :loading="modelLoading" @click="handleImportModels">
+            {{ modelAccount?.provider === 'codex' ? '导入选中' : '同步启用' }}（{{ checkedModels.length }}）
           </NButton>
         </NSpace>
       </template>
@@ -1528,9 +1585,72 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   font-size: 12px;
 }
 
+.oauth-provider-filters {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.oauth-provider-filter {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 7px;
+  min-height: 32px;
+  padding: 5px 11px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 999px;
+  background: var(--bg-card);
+  color: var(--text-color-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  transition: border-color 0.2s ease, background 0.2s ease, color 0.2s ease;
+}
+
+.oauth-provider-filter::before {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-color-secondary);
+  content: '';
+}
+
+.oauth-provider-filter[data-provider='codex']::before { background: #5b8ff9; }
+.oauth-provider-filter[data-provider='geminicli']::before { background: #38c995; }
+.oauth-provider-filter[data-provider='antigravity']::before { background: #f0a020; }
+
+.oauth-provider-filter:hover,
+.oauth-provider-filter:focus-visible {
+  border-color: var(--primary-color, #3b82f6);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.oauth-provider-filter.active {
+  border-color: var(--primary-color, #3b82f6);
+  background: color-mix(in srgb, var(--primary-color, #3b82f6) 10%, var(--bg-card));
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.oauth-provider-filter-count {
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 999px;
+  background: var(--bg-page);
+  color: var(--text-color-secondary);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+}
+
 .oauth-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  align-items: start;
   gap: 18px;
   margin-top: 16px;
 }
@@ -1540,6 +1660,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   position: relative;
   flex-direction: column;
   min-width: 0;
+  align-self: start;
   padding: 20px;
   border: 1px solid var(--border-color-global);
   border-radius: 12px;
@@ -1673,8 +1794,13 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 :global([data-theme='dark']) .oauth-token-expiry { color: rgba(255, 255, 255, 0.5); }
 
 .oauth-windows-container {
+  max-height: 320px;
   min-height: 60px;
   margin: 16px 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-color: var(--border-color-global) transparent;
+  scrollbar-width: thin;
 }
 
 .oauth-window {

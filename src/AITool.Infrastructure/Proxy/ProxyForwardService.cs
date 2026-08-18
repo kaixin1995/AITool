@@ -1104,7 +1104,23 @@ public sealed class ProxyForwardService : IProxyForwardService
             using var doc = JsonDocument.Parse(responseBody);
             var root = doc.RootElement;
 
-            if (!root.TryGetProperty("usage", out var usage))
+            if (root.TryGetProperty("usage", out var usage)
+                && usage.ValueKind == JsonValueKind.Object)
+            {
+                return ExtractUsageFromElement(usage, protocolType);
+            }
+
+            // 某些中间层会保留顶层 "usage": null，同时把真实 usage 放在
+            // response.usage；因此这里必须按值类型判断，不能只看属性是否存在。
+            if (root.TryGetProperty("response", out var nestedResponse)
+                && nestedResponse.ValueKind == JsonValueKind.Object
+                && nestedResponse.TryGetProperty("usage", out var nestedUsage)
+                && nestedUsage.ValueKind == JsonValueKind.Object)
+            {
+                return ExtractUsageFromElement(nestedUsage, protocolType);
+            }
+
+            if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
             {
                 // Gemini 上游（v1internal 封套）：用量在顶层或 response.usageMetadata。
                 var geminiUsage = root.TryGetProperty("usageMetadata", out var topLevelMetadata)
@@ -1124,7 +1140,7 @@ public sealed class ProxyForwardService : IProxyForwardService
                 return ExtractUsageFromElement(geminiUsage, protocolType);
             }
 
-            return ExtractUsageFromElement(usage, protocolType);
+            return (0, 0, 0);
         }
         catch
         {

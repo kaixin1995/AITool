@@ -9,6 +9,7 @@ import {
   getResetCredits,
   importCredential,
   importCredentialFiles,
+  importSelectedGoogleModels,
   importSelectedOAuthModels,
   runOAuthInspection,
   startOAuth,
@@ -134,6 +135,21 @@ describe('OAuth 模型 API 合同', () => {
     expect(mockedHttpPost).toHaveBeenCalledWith(
       '/api/admin/oauth/accounts/account-1/import-selected-models',
       { selections }
+    )
+  })
+
+  it('Google 模型同步提交完整清单，包含未勾选状态', async () => {
+    mockedHttpPost.mockResolvedValueOnce({ imported: 1, disabled: 1 })
+    const selections: OAuthModelSelection[] = [
+      { remoteModelName: 'gemini-3-pro', displayName: 'Gemini 3 Pro', selected: true },
+      { remoteModelName: 'claude-sonnet-4-6', displayName: 'Claude Sonnet 4.6', selected: false }
+    ]
+
+    await importSelectedGoogleModels('google-account-1', selections)
+
+    expect(mockedHttpPost).toHaveBeenCalledWith(
+      '/api/admin/google-accounts/accounts/google-account-1/import-selected-models',
+      { models: selections }
     )
   })
 })

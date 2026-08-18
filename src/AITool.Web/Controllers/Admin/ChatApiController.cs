@@ -1247,6 +1247,16 @@ public sealed class ChatApiController : ControllerBase
                     timeoutCts.Token);
             }
 
+            // Gemini 的最后一块常见为“文本 + finishReason + usageMetadata”：转换器会把
+            // usage 放在跨块状态中，但不一定再产生一个带 usage 的 OpenAI chunk。
+            // 流结束前显式合并，避免聊天页和 chat 来源 usage log 仍然是全 0。
+            if (state.GeminiState is { } geminiState)
+            {
+                state.InputTokens = Math.Max(state.InputTokens, geminiState.InputTokens);
+                state.CachedTokens = Math.Max(state.CachedTokens, geminiState.CachedTokens);
+                state.OutputTokens = Math.Max(state.OutputTokens, geminiState.OutputTokens);
+            }
+
             stopwatch.Stop();
             // 流式响应的原始 body 已逐块消费，无法完整保留，用内容摘要替代
             var responseBodySummary = $"[SSE streaming] content={contentBuilder.Length} chars, reasoning={reasoningBuilder.Length} chars, input={state.InputTokens}, output={state.OutputTokens}";

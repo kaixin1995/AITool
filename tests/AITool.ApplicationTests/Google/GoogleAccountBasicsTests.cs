@@ -196,3 +196,41 @@ public sealed class GoogleModelFetcherStaticListTests
         models.Select(m => m.Slug).Should().BeEquivalentTo(GoogleAccountKinds.GeminiCliModels);
     }
 }
+
+public sealed class GoogleModelFetcherDynamicListTests
+{
+    [Fact]
+    public async Task Antigravity_fetch_keeps_slug_and_reads_display_name()
+    {
+        var handler = new StubHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                """
+                {"models":{"claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6"},"gemini-3-pro":{"label":"Gemini 3 Pro"}}}
+                """,
+                System.Text.Encoding.UTF8,
+                "application/json")
+        });
+        var fetcher = new GoogleModelFetcher(new HttpClient(handler));
+
+        var models = await fetcher.FetchAsync(GoogleAccountKinds.Antigravity, "token", CancellationToken.None);
+
+        models.Should().Contain(("claude-sonnet-4-6", "Claude Sonnet 4.6"));
+        models.Should().Contain(("gemini-3-pro", "Gemini 3 Pro"));
+    }
+
+    private sealed class StubHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
+
+        public StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder)
+        {
+            _responder = responder;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => Task.FromResult(_responder(request));
+    }
+}

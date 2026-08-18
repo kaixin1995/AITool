@@ -137,12 +137,6 @@ public sealed class GeminiForwardPipelineTests
         result.IsStreamInterrupted.Should().BeTrue("流有内容但未出现 finishReason，应视为中断");
     }
 
-    private sealed class CapturedRequestHolder
-    {
-        public Uri? Url;
-        public string? Body;
-    }
-
     private sealed class StubHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;

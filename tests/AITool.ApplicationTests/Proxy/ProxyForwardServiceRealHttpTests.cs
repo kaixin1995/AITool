@@ -116,7 +116,7 @@ public sealed class ProxyForwardServiceRealHttpTests
         request.EnableStreaming = true;
         request.StreamIdleTimeoutSeconds = 1;
 
-        var result = await service.ForwardStreamingAsync(request, null, CancellationToken.None);
+        var result = await service.ForwardStreamingAsync(request, (_, _) => Task.CompletedTask, CancellationToken.None);
 
         result.Success.Should().BeTrue("首包已写出，空闲超时按中断而非路由失败处理");
         result.IsStreamInterrupted.Should().BeTrue();

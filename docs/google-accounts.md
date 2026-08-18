@@ -68,14 +68,16 @@ ProxyProtocolBridge（Gemini 桥）──► cloudcode-pa / daily-cloudcode-pa v
 
 ## 前端
 
-- `frontend/src/views/OAuthView.vue`「账号额度」tab 统一展示 Codex 与 Google 账号（卡片带厂商标签：Codex / GeminiCLI / Antigravity，Google 卡片额外显示订阅等级、积分与项目 ID）；所有卡片操作（刷新额度/启停/编辑/拉取模型/删除）按厂商分派对应 API。重置 credits 与凭证导出仅 Codex 可用。
+- `frontend/src/views/OAuthView.vue`「账号额度」tab 统一展示 Codex 与 Google 账号（卡片带厂商标签：Codex / GeminiCLI / Antigravity，Google 卡片额外显示订阅等级、积分与项目 ID）；默认显示全部账号，也可按厂商筛选。所有卡片操作（刷新额度/启停/编辑/拉取模型/删除）按厂商分派对应 API。重置 credits 与凭证导出仅 Codex 可用。
 - 头部「＋ OAuth 登录」与「上传凭证」为厂商下拉：选择 Codex / GeminiCLI / Antigravity 后进入对应流程（OAuth 弹窗按厂商展示回调地址提示；Google 凭证导入仅支持粘贴含 refresh_token 的 gcli2api JSON）。
+- 模型拉取弹窗展示远端 slug 与友好名称。Codex 保持“仅导入勾选项”语义；Google 按本次完整模型清单同步，未勾选的既有映射会禁用，允许通过全不选清理该账号的路由模型。聊天页优先展示模型库友好名，并在名称不同时保留远端 slug 供排查。
 - API 模块：`frontend/src/api/oauth.ts`（`listGoogleAccounts` / `startGoogleOAuth` / `completeGoogleOAuth` / `importGoogleCredential` / `refreshGoogleQuota` / `toggleGoogleAccount` / `deleteGoogleAccount` / `updateGoogleAccount` / `fetchGoogleModels` / `importSelectedGoogleModels`）。
 
 ## 测试
 
 - `tests/AITool.IntegrationTests/Proxy/ProxyProtocolBridgeGeminiTests.cs`（24 个）：请求三方向转换、封套/CLI 封套、思考覆盖（含 gemini-3 等级表达）、响应块/usage/stop_reason 映射、SSE 状态机（签名切块/跨块工具索引/收尾幂等）、空内容兜底、schema $ref/allOf 清理、usage 提取口径。
-- `tests/AITool.ApplicationTests/Google/GoogleAccountBasicsTests.cs`（15 个）：kinds 常量、授权 URL 构造（offline/consent/state/scope）、额度解析（remainingFraction→窗口、无数据返回 null）、协议解析器 Gemini 分支与历史行为回归、静态模型清单。
+- `tests/AITool.ApplicationTests/Google/GoogleAccountBasicsTests.cs`（16 个）：kinds 常量、授权 URL 构造（offline/consent/state/scope）、额度解析（remainingFraction→窗口、无数据返回 null）、协议解析器 Gemini 分支与历史行为回归、静态模型清单与 Antigravity 友好名称解析。
+- `tests/AITool.ApplicationTests/Proxy/ProxyForwardServiceResponseTests.cs` 覆盖 Gemini `usage: null` 回退到 `response.usageMetadata`、字符串/null 数值容错；`tests/AITool.IntegrationTests/Chat/ChatApiTests.cs` 覆盖 Antigravity 最后一块 SSE 携带 usage 时聊天结果与 usage log 的 token 统计。
 
 ## 与 gcli2api 的取舍
 

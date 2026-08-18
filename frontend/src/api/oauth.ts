@@ -304,7 +304,7 @@ export async function fetchGoogleModels(id: string): Promise<OAuthRemoteModelIte
 }
 export async function importSelectedGoogleModels(
   id: string,
-  models: { remoteModelName: string; displayName: string }[]
+  selections: OAuthModelSelection[]
 ): Promise<void> {
-  await httpPost(`/api/admin/google-accounts/accounts/${id}/import-selected-models`, { models })
+  await httpPost(`/api/admin/google-accounts/accounts/${id}/import-selected-models`, { models: selections })
 }

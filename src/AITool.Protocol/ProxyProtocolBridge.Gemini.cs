@@ -1069,8 +1069,9 @@ public static partial class ProxyProtocolBridge
                     }
 
                     JsonObject? args = null;
-                    if (function["arguments"]?.GetValueKind() == JsonValueKind.String
-                        && function["arguments"].GetValue<string>() is { } argumentsJson)
+                    var argumentsNode = function["arguments"];
+                    if (argumentsNode?.GetValueKind() == JsonValueKind.String
+                        && argumentsNode.GetValue<string>() is { } argumentsJson)
                     {
                         try
                         {

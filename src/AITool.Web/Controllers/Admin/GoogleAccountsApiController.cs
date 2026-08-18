@@ -274,17 +274,33 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var existing = await _dbContext.SiteModelMappings
             .Where(m => m.SiteId == account.LinkedSiteId)
             .ToListAsync(ct);
-        var existingByRemote = existing.ToDictionary(m => m.RemoteModelName, m => m);
+        var mappingModelIds = existing
+            .Where(mapping => mapping.ModelLibraryItemId != Guid.Empty)
+            .Select(mapping => mapping.ModelLibraryItemId)
+            .Distinct()
+            .ToList();
+        var remoteNames = models.Select(model => model.Slug).ToList();
+        var modelItems = await _dbContext.ModelLibraryItems
+            .Where(model => remoteNames.Contains(model.ModelName) || mappingModelIds.Contains(model.Id))
+            .ToListAsync(ct);
+        var modelItemsById = modelItems.ToDictionary(model => model.Id);
+        var existingByRemote = existing.ToDictionary(m => m.RemoteModelName, m => m, StringComparer.OrdinalIgnoreCase);
 
         var items = models.Select(model =>
         {
             existingByRemote.TryGetValue(model.Slug, out var mapping);
+            var existingModelItem = mapping is not null && modelItemsById.TryGetValue(mapping.ModelLibraryItemId, out var modelItem)
+                ? modelItem
+                : null;
             return (object)new
             {
                 remoteModelName = model.Slug,
                 displayName = model.DisplayName,
                 existingMappingId = mapping?.Id,
-                existingDisplayName = mapping is null ? null : model.DisplayName,
+                existingDisplayName = existingModelItem is not null
+                    && !string.Equals(existingModelItem.DisplayName, model.Slug, StringComparison.OrdinalIgnoreCase)
+                    ? existingModelItem.DisplayName
+                    : null,
                 isEnabled = mapping?.IsEnabled ?? false,
             };
         }).ToList();
@@ -299,17 +315,26 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var account = await GetAccountAsync(id, ct);
         if (account == null) return NotFound(new { message = "账号不存在" });
 
-        var models = (req.Models ?? [])
+        var selections = (req.Models ?? [])
             .Where(m => !string.IsNullOrWhiteSpace(m.RemoteModelName))
-            .Select(m => (m.RemoteModelName!.Trim(), string.IsNullOrWhiteSpace(m.DisplayName) ? m.RemoteModelName.Trim() : m.DisplayName!.Trim()))
+            .Select(m => (
+                Slug: m.RemoteModelName!.Trim(),
+                DisplayName: string.IsNullOrWhiteSpace(m.DisplayName) ? m.RemoteModelName.Trim() : m.DisplayName!.Trim(),
+                Selected: m.Selected ?? true))
+            .GroupBy(m => m.Slug, StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.Last())
             .ToList();
-        if (models.Count == 0)
+        if (selections.Count == 0)
         {
-            return BadRequest(new { message = "未选择任何模型" });
+            return BadRequest(new { message = "未收到模型清单" });
         }
 
-        await _provisioner.UpsertRemoteModelsAsync(account.LinkedSiteId, models, ct);
-        return Ok(new { imported = models.Count });
+        await _provisioner.SyncRemoteModelsAsync(account.LinkedSiteId, selections, ct);
+        return Ok(new
+        {
+            imported = selections.Count(m => m.Selected),
+            disabled = selections.Count(m => !m.Selected)
+        });
     }
 
     // —— 私有 ——
@@ -480,4 +505,6 @@ public sealed class GoogleImportModelItem
 {
     public string? RemoteModelName { get; set; }
     public string? DisplayName { get; set; }
+    /// <summary>是否启用该模型映射；旧客户端省略时按 true 兼容。</summary>
+    public bool? Selected { get; set; }
 }

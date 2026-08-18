@@ -896,12 +896,48 @@ public static partial class ProxyProtocolBridge
             return;
         }
 
-        var prompt = usageMetadata["promptTokenCount"]?.GetValue<int>() ?? 0;
-        cachedTokens = usageMetadata["cachedContentTokenCount"]?.GetValue<int>() ?? 0;
-        var candidates = usageMetadata["candidatesTokenCount"]?.GetValue<int>() ?? 0;
-        var thoughts = usageMetadata["thoughtsTokenCount"]?.GetValue<int>() ?? 0;
+        var prompt = ReadGeminiUsageInteger(usageMetadata["promptTokenCount"]);
+        cachedTokens = ReadGeminiUsageInteger(usageMetadata["cachedContentTokenCount"]);
+        var candidates = ReadGeminiUsageInteger(usageMetadata["candidatesTokenCount"]);
+        var thoughts = ReadGeminiUsageInteger(usageMetadata["thoughtsTokenCount"]);
         inputTokens = Math.Max(0, prompt - cachedTokens);
         outputTokens = candidates + thoughts;
+    }
+
+    private static int ReadGeminiUsageInteger(JsonNode? value)
+    {
+        if (value is null)
+        {
+            return 0;
+        }
+
+        try
+        {
+            return Math.Max(0, value.GetValue<int>());
+        }
+        catch
+        {
+            // 继续尝试 long/string 形态，兼容中间层的宽数值与字符串字段。
+        }
+
+        try
+        {
+            return (int)Math.Clamp(value.GetValue<long>(), 0L, int.MaxValue);
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            return int.TryParse(value.GetValue<string>(), out var parsed)
+                ? Math.Max(0, parsed)
+                : 0;
+        }
+        catch
+        {
+            return 0;
+        }
     }
 
     /// <summary>

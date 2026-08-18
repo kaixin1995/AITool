@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -1394,20 +1395,12 @@ public static partial class ProxyProtocolBridge
             // Anthropic 的 input_tokens 已包含缓存 token（cache_read + cache_creation 是其子集），
             // 必须减去缓存才是真正的"新输入"，否则缓存会在"输入"列和"缓存"列重复统计，
             // 导致总 token 虚高、缓存命中率看起来偏低。
-            var input = usage.TryGetProperty("input_tokens", out var it) ? it.GetInt32() : 0;
-            var cached = 0;
-            if (usage.TryGetProperty("cache_read_input_tokens", out var readCache))
-            {
-                cached += readCache.GetInt32();
-            }
-
-            if (usage.TryGetProperty("cache_creation_input_tokens", out var createCache))
-            {
-                cached += createCache.GetInt32();
-            }
+            var input = ReadUsageInteger(usage, "input_tokens");
+            var cached = ReadUsageInteger(usage, "cache_read_input_tokens")
+                + ReadUsageInteger(usage, "cache_creation_input_tokens");
 
             var newInput = Math.Max(0, input - cached);
-            var output = usage.TryGetProperty("output_tokens", out var ot) ? ot.GetInt32() : 0;
+            var output = ReadUsageInteger(usage, "output_tokens");
             return (newInput, cached, output);
         }
 
@@ -1415,18 +1408,16 @@ public static partial class ProxyProtocolBridge
         {
             // Gemini usageMetadata：promptTokenCount 已含缓存命中（cachedContentTokenCount 是其子集），
             // 输出 = candidatesTokenCount + thoughtsTokenCount（思考 token 同样计费）。
-            var geminiPrompt = usage.TryGetProperty("promptTokenCount", out var prompt) ? prompt.GetInt32() : 0;
-            var geminiCached = usage.TryGetProperty("cachedContentTokenCount", out var cachedContent) ? cachedContent.GetInt32() : 0;
-            var candidatesTokens = usage.TryGetProperty("candidatesTokenCount", out var candidates) ? candidates.GetInt32() : 0;
-            var thoughtsTokens = usage.TryGetProperty("thoughtsTokenCount", out var thoughts) ? thoughts.GetInt32() : 0;
+            var geminiPrompt = ReadUsageInteger(usage, "promptTokenCount");
+            var geminiCached = ReadUsageInteger(usage, "cachedContentTokenCount");
+            var candidatesTokens = ReadUsageInteger(usage, "candidatesTokenCount");
+            var thoughtsTokens = ReadUsageInteger(usage, "thoughtsTokenCount");
             return (Math.Max(0, geminiPrompt - geminiCached), geminiCached, candidatesTokens + thoughtsTokens);
         }
 
-        var openAiInputTokens = usage.TryGetProperty("input_tokens", out var inputTokens)
-            ? inputTokens.GetInt32()
-            : usage.TryGetProperty("prompt_tokens", out var promptTokens)
-                ? promptTokens.GetInt32()
-                : 0;
+        var openAiInputTokens = usage.TryGetProperty("input_tokens", out _)
+            ? ReadUsageInteger(usage, "input_tokens")
+            : ReadUsageInteger(usage, "prompt_tokens");
 
         // OpenAI Chat Completions 与 Responses 的缓存字段结构不同，这里统一兼容两种格式。
         // 部分中间层（如 newapi）的 input_tokens_details 为 null，需要回退到 prompt_tokens_details。
@@ -1435,8 +1426,8 @@ public static partial class ProxyProtocolBridge
             : usage.TryGetProperty("prompt_tokens_details", out var ptd) && ptd.ValueKind == JsonValueKind.Object
                 ? ptd
                 : default;
-        var cachedTokens = inputDetails.ValueKind == JsonValueKind.Object && inputDetails.TryGetProperty("cached_tokens", out var ct)
-            ? ct.GetInt32()
+        var cachedTokens = inputDetails.ValueKind == JsonValueKind.Object
+            ? ReadUsageInteger(inputDetails, "cached_tokens")
             : 0;
 
         // 缓存写 token：兼容 cached_creation_tokens（本仓出口与 newapi 使用）与 cache_write_tokens 两种写法。
@@ -1444,31 +1435,59 @@ public static partial class ProxyProtocolBridge
         var cacheWriteTokens = 0;
         if (inputDetails.ValueKind == JsonValueKind.Object)
         {
-            if (inputDetails.TryGetProperty("cached_creation_tokens", out var cct) && cct.ValueKind == JsonValueKind.Number)
-            {
-                cacheWriteTokens = cct.GetInt32();
-            }
-            else if (inputDetails.TryGetProperty("cache_write_tokens", out var cwt) && cwt.ValueKind == JsonValueKind.Number)
-            {
-                cacheWriteTokens = cwt.GetInt32();
-            }
+            cacheWriteTokens = inputDetails.TryGetProperty("cached_creation_tokens", out _)
+                ? ReadUsageInteger(inputDetails, "cached_creation_tokens")
+                : ReadUsageInteger(inputDetails, "cache_write_tokens");
         }
 
         var totalCachedTokens = cachedTokens + cacheWriteTokens;
 
         // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
         // 所以 output_tokens=0 时回退到 completion_tokens。
-        var openAiOutputTokens = usage.TryGetProperty("output_tokens", out var outputTokens) && outputTokens.GetInt32() > 0
-            ? outputTokens.GetInt32()
-            : usage.TryGetProperty("completion_tokens", out var completionTokens)
-                ? completionTokens.GetInt32()
-                : 0;
+        var openAiOutputTokens = ReadUsageInteger(usage, "output_tokens");
+        if (openAiOutputTokens <= 0)
+        {
+            openAiOutputTokens = ReadUsageInteger(usage, "completion_tokens");
+        }
 
         // OpenAI 的 input_tokens/prompt_tokens 已包含缓存命中部分（cached_tokens 是其子集）。
         // 与上方 Anthropic 分支一致，返回的 InputTokens 统一为"不含缓存的新输入"（缓存读+写都需扣除），
         // 否则"输入"列与"缓存"列重复统计，TotalTokens（新输入+缓存+输出）虚高。
         var newOpenAiInput = Math.Max(0, openAiInputTokens - totalCachedTokens);
         return (newOpenAiInput, totalCachedTokens, openAiOutputTokens);
+    }
+
+    /// <summary>
+    /// 安全读取 usage 中的整数。部分中间层会返回 null 或字符串，不能让单个字段异常
+    /// 使整条成功响应的用量退化为 (0, 0, 0)。
+    /// </summary>
+    private static int ReadUsageInteger(JsonElement parent, string propertyName)
+    {
+        if (!parent.TryGetProperty(propertyName, out var value))
+        {
+            return 0;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number)
+        {
+            if (value.TryGetInt32(out var integerValue))
+            {
+                return Math.Max(0, integerValue);
+            }
+
+            if (value.TryGetInt64(out var longValue))
+            {
+                return (int)Math.Clamp(longValue, 0L, int.MaxValue);
+            }
+        }
+
+        if (value.ValueKind == JsonValueKind.String
+            && long.TryParse(value.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedValue))
+        {
+            return (int)Math.Clamp(parsedValue, 0L, int.MaxValue);
+        }
+
+        return 0;
     }
 
     /// <summary>
