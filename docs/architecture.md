@@ -166,6 +166,7 @@ graph TD
 | `ProxyRequestMetadataCache` | Singleton | 代理热路径元数据缓存（TTL 30s + 显式失效 + 延迟刷新） |
 | `DeveloperInvocationTraceStore` | Singleton | 开发者调用追踪环形缓冲（40 条 / 20 分钟） |
 | `AnalyticsBackgroundQueryExecutor` | Singleton + HostedService | 统计分析单消费者后台查询队列 |
+| `AdminBackgroundTaskQueue` | Singleton + HostedService | 管理后台长任务队列（批量模型抓取、手动探测；容量 8） |
 | `ModelVendorCatalogService` | Singleton | 厂商图标/匹配规则目录（model-vendor-catalog.json） |
 | `AdminAuthService` | Singleton | 管理密码（PBKDF2，兼容旧 MD5 透明升级） |
 | `JwtTokenService` | Scoped | JWT 签发/刷新/吊销 |

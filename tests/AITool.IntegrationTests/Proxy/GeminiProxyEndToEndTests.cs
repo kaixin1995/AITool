@@ -86,6 +86,42 @@ public sealed class GeminiProxyEndToEndTests
     }
 
     [Fact]
+    public async Task Responses_stream_on_gemini_site_preserves_usage_from_partial_final_chunk()
+    {
+        const string geminiSse =
+            "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[{\"text\":\"hello\"}]}}],\"usageMetadata\":{\"promptTokenCount\":30,\"cachedContentTokenCount\":6,\"candidatesTokenCount\":5,\"thoughtsTokenCount\":2}}}\n\n" +
+            "data: {\"response\":{\"candidates\":[{\"content\":{\"role\":\"model\",\"parts\":[]},\"finishReason\":\"STOP\"}],\"usageMetadata\":{\"totalTokenCount\":43}}}\n\n";
+        await using var factory = new GeminiProxyWebApplicationFactory(
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(geminiSse, Encoding.UTF8, "text/event-stream")
+            },
+            accountKind: "Antigravity",
+            baseUrl: "https://daily-cloudcode-pa.googleapis.com");
+        using var client = factory.CreateClient();
+
+        using var response = await client.PostAsync(
+            "/v1/responses",
+            new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"stream\":true}",
+                Encoding.UTF8,
+                "application/json"));
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        body.Should().Contain("hello");
+        body.Should().Contain("response.completed");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].InputTokens.Should().Be(24);
+        logs[0].CachedTokens.Should().Be(6);
+        logs[0].OutputTokens.Should().Be(7);
+    }
+
+    [Fact]
     public async Task Refresh_quota_for_antigravity_account_returns_model_windows()
     {
         // Antigravity 额度链路：refresh-quota → fetchAvailableModels → 每模型剩余比例窗口持久化并在账号列表回显。
@@ -122,6 +158,64 @@ public sealed class GeminiProxyEndToEndTests
         windows.GetArrayLength().Should().Be(2, "额度结果应持久化并在账号列表解析为窗口");
         windows[0].GetProperty("usedPercent").GetDouble().Should().BeApproximately(15d, 0.01);
         account.GetProperty("lastQuotaCheckedAt").GetString().Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task Import_selected_antigravity_models_disables_unselected_and_stale_mappings()
+    {
+        await using var factory = new GeminiProxyWebApplicationFactory(
+            _ => new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(GeminiUpstreamJson, Encoding.UTF8, "application/json")
+            },
+            accountKind: "Antigravity",
+            baseUrl: "https://daily-cloudcode-pa.googleapis.com");
+
+        await using (var scope = factory.Services.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var staleModel = new ModelLibraryItem
+            {
+                ModelName = "stale-antigravity-model",
+                DisplayName = "Stale Antigravity Model"
+            };
+            db.ModelLibraryItems.Add(staleModel);
+            db.SiteModelMappings.Add(new SiteModelMapping
+            {
+                SiteId = SiteId,
+                ModelLibraryItemId = staleModel.Id,
+                RemoteModelName = staleModel.ModelName,
+                IsEnabled = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        using var client = factory.CreateClient();
+        using var response = await client.PostAsync(
+            $"/api/admin/google-accounts/accounts/{GoogleAccountId}/import-selected-models",
+            new StringContent(
+                """
+                {"models":[
+                  {"remoteModelName":"gemini-2.5-pro","displayName":"Gemini 2.5 Pro","selected":false},
+                  {"remoteModelName":"new-antigravity-model","displayName":"New Antigravity Model","selected":true}
+                ]}
+                """,
+                Encoding.UTF8,
+                "application/json"));
+        var responseBody = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, responseBody);
+
+        await using var verifyScope = factory.Services.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var siteId = SiteId;
+        var mappings = await verifyDb.SiteModelMappings
+            .Where(mapping => mapping.SiteId == siteId)
+            .ToListAsync();
+
+        mappings.Single(mapping => mapping.RemoteModelName == "gemini-2.5-pro").IsEnabled.Should().BeFalse();
+        mappings.Single(mapping => mapping.RemoteModelName == "stale-antigravity-model").IsEnabled.Should().BeFalse();
+        mappings.Single(mapping => mapping.RemoteModelName == "new-antigravity-model").IsEnabled.Should().BeTrue();
     }
 
     private sealed class GeminiProxyWebApplicationFactory : WebApplicationFactory<Program>

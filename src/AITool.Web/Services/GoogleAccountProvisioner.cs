@@ -357,15 +357,23 @@ public sealed class GoogleAccountProvisioner
         var existingModelDict = existingModelItems.ToDictionary(model => model.ModelName, StringComparer.OrdinalIgnoreCase);
 
         var existingMappings = await _dbContext.SiteModelMappings
-            .Where(mapping => mapping.SiteId == siteId && remoteNames.Contains(mapping.RemoteModelName))
+            .Where(mapping => mapping.SiteId == siteId)
             .ToListAsync(ct);
         var existingMappingDict = existingMappings.ToDictionary(mapping => mapping.RemoteModelName, StringComparer.OrdinalIgnoreCase);
 
         foreach (var mapping in existingMappings)
         {
-            if (!selectionByRemote.TryGetValue(mapping.RemoteModelName, out var selection)) continue;
-            mapping.IsEnabled = selection.Selected;
-            mapping.LastStatus = selection.Selected ? "imported" : "disabled";
+            if (selectionByRemote.TryGetValue(mapping.RemoteModelName, out var selection))
+            {
+                mapping.IsEnabled = selection.Selected;
+                mapping.LastStatus = selection.Selected ? "imported" : "disabled";
+            }
+            else
+            {
+                mapping.IsEnabled = false;
+                mapping.LastStatus = "disabled";
+            }
+
             await _dbContext.UpdateAsync(mapping, ct);
         }
 

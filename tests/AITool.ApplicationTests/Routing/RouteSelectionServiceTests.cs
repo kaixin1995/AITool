@@ -89,6 +89,43 @@ public sealed class ProxyForwardServiceTests
     }
 
     /// <summary>
+    /// 上游返回空流且没有任何结束事件时，应视为失败并允许同一路由重试。
+    /// </summary>
+    [Fact]
+    public async Task ForwardAsync_treats_empty_stream_without_completion_as_failure_and_retries_next_attempt()
+    {
+        var handler = new SequenceHandler(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(string.Empty)
+            },
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+            });
+
+        var httpClient = new HttpClient(handler);
+        var service = new ProxyForwardService(httpClient, NullLogger<ProxyForwardService>.Instance);
+
+        var result = await service.ForwardAsync(new ProxyForwardRequest
+        {
+            TargetBaseUrl = "https://unit.test",
+            TargetApiKey = "token",
+            ProtocolType = "OpenAI",
+            TargetModelName = "gpt-5.5-a",
+            RequestBody = "{\"model\":\"chat-prod\",\"stream\":true}",
+            EnableStreaming = true,
+            RetryCount = 1,
+            RequestTimeoutSeconds = 5
+        });
+
+        result.Success.Should().BeTrue();
+        handler.CallCount.Should().Be(2);
+        result.IsStreamInterrupted.Should().BeFalse();
+        result.ResponseBody.Should().Contain("ok");
+    }
+
+    /// <summary>
     /// Anthropic 原生流在收到 message_stop 事件后，应视为完整结束，而不是中断。
     /// </summary>
     [Fact]

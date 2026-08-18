@@ -78,7 +78,7 @@ public sealed class GoogleModelFetcher : IGoogleModelFetcher
             return fallback;
         }
 
-        foreach (var propertyName in new[] { "displayName", "name", "label" })
+        foreach (var propertyName in new[] { "displayName", "label" })
         {
             if (modelValue.TryGetProperty(propertyName, out var property)
                 && property.ValueKind == JsonValueKind.String

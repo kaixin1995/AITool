@@ -519,7 +519,7 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
       .filter(model => (
         model.existingMappingId
           ? model.isEnabled
-          : true
+          : false
       ))
       .map(model => model.remoteModelName)
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
@@ -820,7 +820,10 @@ onMounted(() => {
     }
   }, pollingIntervalMs)
 })
-onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
+onUnmounted(() => {
+  if (pollTimer) clearInterval(pollTimer)
+  invalidatePendingRefreshes()
+})
 </script>
 
 <template>
@@ -1214,6 +1217,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               已选 {{ visibleCheckedModelCount }} / {{ filteredModelList.length }} 个
             </NCheckbox>
           </div>
+          <div class="oauth-model-hint">模型目录会完整读取上游列表；只有勾选项会导入或启用，未勾选的既有映射会禁用。</div>
           <div class="oauth-model-list">
             <div
               v-for="m in filteredModelList"
@@ -1257,6 +1261,13 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   align-items: center;
   gap: 12px;
   margin-bottom: 12px;
+}
+
+.oauth-model-hint {
+  margin: -4px 0 10px;
+  color: var(--text-color-secondary);
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .oauth-model-toolbar :deep(.n-input) {

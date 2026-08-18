@@ -79,6 +79,8 @@ export interface FetchAllProgress {
   totalSites: number
   completedSites: number
   isCompleted: boolean
+  createdAt?: string
+  completedAt?: string | null
   sites: SiteFetchResult[]
 }
 

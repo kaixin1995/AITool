@@ -469,6 +469,8 @@ const catalogSites = ref<SiteFetchResult[]>([])
 const catalogSelections = ref<ModelSelectionItem[]>([])
 const catalogTab = ref<'new' | 'imported'>('new')
 let catalogTimer: number | undefined
+let catalogGeneration = 0
+const pendingCatalogPolls = new Set<string>()
 
 const catalogProgressPercent = computed(() => {
   if (catalogProgress.value.total === 0) return 0
@@ -568,12 +570,18 @@ async function handleFetchModels(row: SiteListItem): Promise<void> {
 }
 
 async function handleFetchAllModels(): Promise<void> {
+  const generation = ++catalogGeneration
+  if (catalogTimer) {
+    window.clearInterval(catalogTimer)
+    catalogTimer = undefined
+  }
   catalogLoading.value = true
   catalogVisible.value = true
   catalogSites.value = []
   catalogSelections.value = []
   try {
     const result = await sitesApi.fetchAllSiteModels()
+    if (generation !== catalogGeneration) return
     if (!result.taskId) {
       message.warning(result.message || '没有可拉取的站点')
       catalogLoading.value = false
@@ -581,18 +589,24 @@ async function handleFetchAllModels(): Promise<void> {
     }
     catalogTaskId.value = result.taskId
     await pollCatalogProgress()
+    if (generation !== catalogGeneration || catalogTaskId.value !== result.taskId) return
     catalogTimer = window.setInterval(() => { void pollCatalogProgress() }, 1200)
   } catch (e) {
+    if (generation !== catalogGeneration) return
     message.error((e as Error).message)
     catalogLoading.value = false
   }
 }
 
 async function pollCatalogProgress(): Promise<void> {
-  if (!catalogTaskId.value) return
+  const taskId = catalogTaskId.value
+  const generation = catalogGeneration
+  if (!taskId || pendingCatalogPolls.has(taskId)) return
+  pendingCatalogPolls.add(taskId)
   // 失败即停止轮询并复位状态：任务过期/网络断开时若不停止，会每 1.2s 弹一次全局错误直到关闭页面。
   try {
-    const progress = await sitesApi.getFetchAllProgress(catalogTaskId.value)
+    const progress = await sitesApi.getFetchAllProgress(taskId)
+    if (generation !== catalogGeneration || taskId !== catalogTaskId.value) return
     catalogProgress.value = { total: progress.totalSites, completed: progress.completedSites }
     applyCatalogSites(progress.sites)
     if (progress.isCompleted) {
@@ -603,12 +617,15 @@ async function pollCatalogProgress(): Promise<void> {
       }
     }
   } catch (e) {
+    if (generation !== catalogGeneration || taskId !== catalogTaskId.value) return
     if (catalogTimer) {
       window.clearInterval(catalogTimer)
       catalogTimer = undefined
     }
     catalogLoading.value = false
     message.error(`拉取进度已停止：${(e as Error).message}`)
+  } finally {
+    pendingCatalogPolls.delete(taskId)
   }
 }
 
@@ -653,10 +670,12 @@ async function handleImportSelectedModels(): Promise<void> {
 }
 
 function handleCatalogClosed(): void {
+  catalogGeneration++
   if (catalogTimer) {
     window.clearInterval(catalogTimer)
     catalogTimer = undefined
   }
+  catalogTaskId.value = ''
 }
 
 function formatDateTime(value: string): string {

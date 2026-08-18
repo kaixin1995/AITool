@@ -101,7 +101,23 @@ public sealed class ProxyForwardService : IProxyForwardService
 
                 if (isStreaming)
                 {
-                    return await ProcessStreamingResponseAsync(response, stopwatch, request, isStreaming, null, cancellationToken);
+                    var streamingResult = await ProcessStreamingResponseAsync(
+                        response,
+                        stopwatch,
+                        request,
+                        isStreaming,
+                        null,
+                        cancellationToken);
+
+                    if (streamingResult.Success
+                        || streamingResult.IsCanceled
+                        || streamingResult.HasStartedStreaming
+                        || attempt >= attempts - 1)
+                    {
+                        return streamingResult;
+                    }
+
+                    continue;
                 }
 
                 var responseBody = await response.Content.ReadAsStringAsync(timeoutCts.Token);
@@ -294,7 +310,23 @@ public sealed class ProxyForwardService : IProxyForwardService
                     continue;
                 }
 
-                return await ProcessStreamingResponseAsync(response, stopwatch, request, true, onSseDataAsync, cancellationToken);
+                var streamingResult = await ProcessStreamingResponseAsync(
+                    response,
+                    stopwatch,
+                    request,
+                    true,
+                    onSseDataAsync,
+                    cancellationToken);
+
+                if (streamingResult.Success
+                    || streamingResult.IsCanceled
+                    || streamingResult.HasStartedStreaming
+                    || attempt >= attempts - 1)
+                {
+                    return streamingResult;
+                }
+
+                continue;
             }
             catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
             {
@@ -662,10 +694,11 @@ public sealed class ProxyForwardService : IProxyForwardService
         var streamCompletedNormally = request.ProtocolType == "Anthropic"
             ? receivedAnthropicMessageStop
             : receivedDoneEvent;
+        var streamHasUsableResponse = streamCompletedNormally || hasFirstContent;
 
         return new ProxyForwardResult
         {
-            Success = true,
+            Success = streamHasUsableResponse,
             StatusCode = (int)response.StatusCode,
             ResponseBody = sb.ToString(),
             InputTokens = inputTokens,
@@ -677,7 +710,11 @@ public sealed class ProxyForwardService : IProxyForwardService
             FirstTokenLatencyMs = firstTokenLatencyMs,
             StreamDurationMs = Math.Max(0, totalDurationMs - firstTokenLatencyMs),
             TotalDurationMs = totalDurationMs,
-            ErrorMessage = hasFirstContent && !streamCompletedNormally ? "stream interrupted before normal completion" : null
+            ErrorMessage = !streamCompletedNormally
+                ? hasFirstContent
+                    ? "stream interrupted before normal completion"
+                    : "empty stream response without completion event"
+                : null
         };
     }
 

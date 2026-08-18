@@ -47,7 +47,7 @@ ProxyProtocolBridge（Gemini 桥）──► cloudcode-pa / daily-cloudcode-pa v
 - **规范化**（`NormalizeGeminiInner`，对齐 gcli2api gemini_fix/antigravity_fix）：safetySettings 全类 BLOCK_NONE（flash-lite 用 5 类精简表）、强制 topK=64 / maxOutputTokens=64000、thinkingConfig 归一（gemini-3 用 thinkingLevel，2.5 用 thinkingBudget）、part 清理（空 part 剔除 / text 非 string 转字符串 / 尾部空白）。
 - **Antigravity CLI 封套**（`ApplyAntigravityCliWrap`）：注入 sessionId（首条用户文本 SHA256 前缀）与 labels、toolConfig 默认 VALIDATED、requestId（`agent/{uuid}/{ms}/{trajectory}/1`）、剥离 safetySettings/stopSequences/presencePenalty/frequencyPenalty（CLI 不发送）、opus/sonnet 系列剥离末尾 model 消息（不支持预填充）。
 - **thoughtSignature**：请求侧 functionCall 部件带官方跳过校验占位符 `skip_thought_signature_validator`（中转/换号后真实签名不可信）；响应侧过滤该占位符产生的 `...` 文本部件。
-- **响应**：`ProxyProtocolBridge.GeminiResponse.cs`。Gemini → Anthropic（非流式 + SSE 状态机，thinking/text/tool_use 块与签名切块）、Gemini → OpenAI（非流式 + 流式 chunk）、Responses 客户端经 Anthropic 桥链转。usage 口径：input = promptTokenCount − cachedContentTokenCount（新输入）、cached = cachedContentTokenCount、output = candidatesTokenCount + thoughtsTokenCount（思考 token 计费）。
+- **响应**：`ProxyProtocolBridge.GeminiResponse.cs`。Gemini → Anthropic（非流式 + SSE 状态机，thinking/text/tool_use 块与签名切块）、Gemini → OpenAI（非流式 + 流式 chunk）、Responses 客户端经 Anthropic 桥链转。usage 口径：input = promptTokenCount − cachedContentTokenCount（新输入）、cached = cachedContentTokenCount、output = candidatesTokenCount + thoughtsTokenCount（思考 token 计费）；流式块若只携带部分 usage 字段，会沿用前一块已知分量。
 - **思考等级强覆盖（受保护功能）**：`ApplyGeminiThinkingEffort` 在 Gemini 目标以 thinkingConfig 表达（low→1024 / medium→8192 / high→16000 / xhigh·max→24576·32768；gemini-3 转 thinkingLevel），覆盖客户端 thinking/reasoning_effort 原值。
 
 ## Web 层接入点
@@ -70,13 +70,13 @@ ProxyProtocolBridge（Gemini 桥）──► cloudcode-pa / daily-cloudcode-pa v
 
 - `frontend/src/views/OAuthView.vue`「账号额度」tab 统一展示 Codex 与 Google 账号（卡片带厂商标签：Codex / GeminiCLI / Antigravity，Google 卡片额外显示订阅等级、积分与项目 ID）；默认显示全部账号，也可按厂商筛选。所有卡片操作（刷新额度/启停/编辑/拉取模型/删除）按厂商分派对应 API。重置 credits 与凭证导出仅 Codex 可用。
 - 头部「＋ OAuth 登录」与「上传凭证」为厂商下拉：选择 Codex / GeminiCLI / Antigravity 后进入对应流程（OAuth 弹窗按厂商展示回调地址提示；Google 凭证导入仅支持粘贴含 refresh_token 的 gcli2api JSON）。
-- 模型拉取弹窗展示远端 slug 与友好名称。Codex 保持“仅导入勾选项”语义；Google 按本次完整模型清单同步，未勾选的既有映射会禁用，允许通过全不选清理该账号的路由模型。聊天页优先展示模型库友好名，并在名称不同时保留远端 slug 供排查。
+- 模型拉取弹窗展示远端 slug 与友好名称；新模型默认不勾选，已有映射按当前状态回显。Codex 保持“仅导入勾选项”语义；Google 按本次完整模型清单同步，未勾选的既有映射会禁用，允许通过全不选清理该账号的路由模型。聊天页优先展示远端 slug，并在名称不同时附带友好名供排查。
 - API 模块：`frontend/src/api/oauth.ts`（`listGoogleAccounts` / `startGoogleOAuth` / `completeGoogleOAuth` / `importGoogleCredential` / `refreshGoogleQuota` / `toggleGoogleAccount` / `deleteGoogleAccount` / `updateGoogleAccount` / `fetchGoogleModels` / `importSelectedGoogleModels`）。
 
 ## 测试
 
-- `tests/AITool.IntegrationTests/Proxy/ProxyProtocolBridgeGeminiTests.cs`（25 个）：请求三方向转换、封套/CLI 封套、思考覆盖（含 gemini-3 等级表达）、响应块/usage/stop_reason 映射、SSE 状态机（签名切块/跨块工具索引/收尾幂等）、空内容兜底、schema $ref/allOf 清理、usage 提取口径。
-- `tests/AITool.ApplicationTests/Google/GoogleAccountBasicsTests.cs`（16 个）：kinds 常量、授权 URL 构造（offline/consent/state/scope）、额度解析（remainingFraction→窗口、无数据返回 null）、协议解析器 Gemini 分支与历史行为回归、静态模型清单与 Antigravity 友好名称解析。
+- `tests/AITool.IntegrationTests/Proxy/ProxyProtocolBridgeGeminiTests.cs`（26 个）：请求三方向转换、封套/CLI 封套、思考覆盖（含 gemini-3 等级表达）、响应块/usage/stop_reason 映射、SSE 状态机（签名切块/跨块工具索引/收尾幂等）、空内容兜底、schema $ref/allOf 清理、usage 提取口径与部分 usage 跨块保留。
+- `tests/AITool.ApplicationTests/Google/GoogleAccountBasicsTests.cs`（16 个）：kinds 常量、授权 URL 构造（offline/consent/state/scope）、额度解析（remainingFraction→窗口、无数据返回 null）、协议解析器 Gemini 分支与历史行为回归、静态模型清单、Antigravity 友好名称与资源名回退解析。
 - `tests/AITool.ApplicationTests/Proxy/ProxyForwardServiceResponseTests.cs` 覆盖 Gemini `usage: null` 回退到 `response.usageMetadata`、字符串/null 数值容错；`tests/AITool.IntegrationTests/Chat/ChatApiTests.cs` 覆盖 Antigravity 最后一块 SSE 携带 usage 时聊天结果与 usage log 的 token 统计。
 
 ## 与 gcli2api 的取舍

@@ -205,9 +205,9 @@ public sealed class GoogleModelFetcherDynamicListTests
         var handler = new StubHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.OK)
         {
             Content = new StringContent(
-                """
-                {"models":{"claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6"},"gemini-3-pro":{"label":"Gemini 3 Pro"}}}
-                """,
+                 """
+                 {"models":{"claude-sonnet-4-6":{"displayName":"Claude Sonnet 4.6"},"gemini-3-pro":{"label":"Gemini 3 Pro"},"name-only":{"name":"models/name-only"}}}
+                 """,
                 System.Text.Encoding.UTF8,
                 "application/json")
         });
@@ -217,6 +217,7 @@ public sealed class GoogleModelFetcherDynamicListTests
 
         models.Should().Contain(("claude-sonnet-4-6", "Claude Sonnet 4.6"));
         models.Should().Contain(("gemini-3-pro", "Gemini 3 Pro"));
+        models.Should().Contain(("name-only", "name-only"));
     }
 
     private sealed class StubHandler : HttpMessageHandler

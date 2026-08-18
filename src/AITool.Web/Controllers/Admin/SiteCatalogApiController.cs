@@ -84,6 +84,16 @@ public sealed class FetchAllProgress
     /// 各站点抓取进度。
     /// </summary>
     public List<SiteFetchResult> Sites { get; set; } = [];
+
+    /// <summary>
+    /// 任务创建时间，用于清理长期未完成的失联任务。
+    /// </summary>
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 任务完成时间，用于保留一段时间供前端读取最终结果。
+    /// </summary>
+    public DateTimeOffset? CompletedAt { get; set; }
 }
 
 /// <summary>
@@ -127,6 +137,8 @@ public sealed class ImportSelectedRequest
 [Route("api/admin/site-catalog")]
 public sealed class SiteCatalogApiController : ControllerBase
 {
+    private const int MaxConcurrentSiteFetches = 4;
+
     /// <summary>
     /// 数据库上下文。
     /// </summary>
@@ -139,6 +151,10 @@ public sealed class SiteCatalogApiController : ControllerBase
     /// 代理元数据缓存。
     /// </summary>
     private readonly ProxyRequestMetadataCache _metadataCache;
+    /// <summary>
+    /// 管理后台长任务队列。
+    /// </summary>
+    private readonly AdminBackgroundTaskQueue _taskQueue;
 
     /// <summary>
     /// 批量抓取进度缓存。
@@ -148,11 +164,16 @@ public sealed class SiteCatalogApiController : ControllerBase
     /// <summary>
     /// 创建站点目录控制器。
     /// </summary>
-    public SiteCatalogApiController(AppDbContext dbContext, IServiceScopeFactory scopeFactory, ProxyRequestMetadataCache metadataCache)
+    public SiteCatalogApiController(
+        AppDbContext dbContext,
+        IServiceScopeFactory scopeFactory,
+        ProxyRequestMetadataCache metadataCache,
+        AdminBackgroundTaskQueue taskQueue)
     {
         _dbContext = dbContext;
         _scopeFactory = scopeFactory;
         _metadataCache = metadataCache;
+        _taskQueue = taskQueue;
     }
 
     /// <summary>
@@ -225,6 +246,8 @@ public sealed class SiteCatalogApiController : ControllerBase
     [HttpPost("fetch-all-models")]
     public async Task<IActionResult> FetchAllModels(CancellationToken cancellationToken)
     {
+        PurgeExpiredProgress();
+
         // 仅拉取用户自建站点；Codex 等托管 Site 的 baseUrl 不兼容 OpenAI catalog 接口，跳过避免误报。
         var sites = await _dbContext.Sites
             .Where(s => s.IsEnabled && string.IsNullOrEmpty(s.ManagedSource))
@@ -249,17 +272,17 @@ public sealed class SiteCatalogApiController : ControllerBase
         };
         ProgressStore[taskId] = progress;
 
-        _ = Task.Run(async () =>
+        var scopeFactory = _scopeFactory;
+        var siteSnapshot = sites.ToArray();
+        if (!_taskQueue.TryQueue(queueCancellationToken => RunFetchAllAsync(
+                scopeFactory,
+                taskId,
+                siteSnapshot,
+                queueCancellationToken)))
         {
-            var tasks = sites.Select((site, index) => FetchSingleSiteModelsAsync(taskId, index, site, cancellationToken));
-            await Task.WhenAll(tasks);
-
-            if (ProgressStore.TryGetValue(taskId, out var current))
-            {
-                current.IsCompleted = true;
-                current.CompletedSites = current.Sites.Count(s => s.Status is "success" or "fail");
-            }
-        }, cancellationToken);
+            ProgressStore.TryRemove(taskId, out _);
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = "后台模型抓取任务较多，请稍后重试" });
+        }
 
         return Ok(new { taskId });
     }
@@ -270,12 +293,39 @@ public sealed class SiteCatalogApiController : ControllerBase
     [HttpGet("fetch-all-progress/{taskId}")]
     public IActionResult GetFetchAllProgress(string taskId)
     {
+        PurgeExpiredProgress();
+
         if (!ProgressStore.TryGetValue(taskId, out var progress))
         {
             return NotFound(new { message = "任务不存在" });
         }
 
-        return Ok(progress);
+        lock (progress)
+        {
+            return Ok(new FetchAllProgress
+            {
+                TaskId = progress.TaskId,
+                TotalSites = progress.TotalSites,
+                CompletedSites = progress.CompletedSites,
+                IsCompleted = progress.IsCompleted,
+                CreatedAt = progress.CreatedAt,
+                CompletedAt = progress.CompletedAt,
+                Sites = progress.Sites.Select(site => new SiteFetchResult
+                {
+                    SiteId = site.SiteId,
+                    SiteName = site.SiteName,
+                    Status = site.Status,
+                    Error = site.Error,
+                    Models = site.Models.Select(model => new RemoteModelInfo
+                    {
+                        RemoteModelName = model.RemoteModelName,
+                        ExistingMappingId = model.ExistingMappingId,
+                        IsEnabled = model.IsEnabled,
+                        ExistingDisplayName = model.ExistingDisplayName
+                    }).ToList()
+                }).ToList()
+            });
+        }
     }
 
     /// <summary>
@@ -377,18 +427,58 @@ public sealed class SiteCatalogApiController : ControllerBase
     /// <summary>
     /// 抓取单个站点的模型并更新进度。
     /// </summary>
-    private async Task FetchSingleSiteModelsAsync(string taskId, int siteIndex, Site site, CancellationToken cancellationToken)
+    private static async Task RunFetchAllAsync(
+        IServiceScopeFactory scopeFactory,
+        string taskId,
+        IReadOnlyList<Site> sites,
+        CancellationToken cancellationToken)
+    {
+        for (var batchStart = 0; batchStart < sites.Count; batchStart += MaxConcurrentSiteFetches)
+        {
+            var tasks = sites
+                .Skip(batchStart)
+                .Take(MaxConcurrentSiteFetches)
+                .Select((site, offset) => FetchSingleSiteModelsAsync(
+                    scopeFactory,
+                    taskId,
+                    batchStart + offset,
+                    site,
+                    cancellationToken));
+
+            await Task.WhenAll(tasks);
+        }
+
+        if (ProgressStore.TryGetValue(taskId, out var current))
+        {
+            lock (current)
+            {
+                current.IsCompleted = true;
+                current.CompletedSites = current.Sites.Count(s => s.Status is "success" or "fail");
+                current.CompletedAt = DateTimeOffset.UtcNow;
+            }
+        }
+    }
+
+    private static async Task FetchSingleSiteModelsAsync(
+        IServiceScopeFactory scopeFactory,
+        string taskId,
+        int siteIndex,
+        Site site,
+        CancellationToken cancellationToken)
     {
         if (!ProgressStore.TryGetValue(taskId, out var progress))
         {
             return;
         }
 
-        progress.Sites[siteIndex].Status = "running";
+        lock (progress)
+        {
+            progress.Sites[siteIndex].Status = "running";
+        }
 
         try
         {
-            using var scope = _scopeFactory.CreateScope();
+            using var scope = scopeFactory.CreateScope();
             var catalogClient = scope.ServiceProvider.GetRequiredService<ISiteCatalogClient>();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
@@ -423,15 +513,46 @@ public sealed class SiteCatalogApiController : ControllerBase
                 });
             }
 
-            progress.Sites[siteIndex].Status = "success";
-            progress.Sites[siteIndex].Models = models;
+            lock (progress)
+            {
+                progress.Sites[siteIndex].Status = "success";
+                progress.Sites[siteIndex].Models = models;
+            }
         }
         catch (Exception ex)
         {
-            progress.Sites[siteIndex].Status = "fail";
-            progress.Sites[siteIndex].Error = ex.Message;
+            lock (progress)
+            {
+                progress.Sites[siteIndex].Status = "fail";
+                progress.Sites[siteIndex].Error = ex.Message;
+            }
         }
 
-        progress.CompletedSites = progress.Sites.Count(s => s.Status is "success" or "fail");
+        lock (progress)
+        {
+            progress.CompletedSites = progress.Sites.Count(s => s.Status is "success" or "fail");
+        }
+    }
+
+    /// <summary>
+    /// 保留已完成任务一段时间供前端读取，并清理宿主停止或请求断开后遗留的任务。
+    /// </summary>
+    private static void PurgeExpiredProgress()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var completedCutoff = now.AddMinutes(-10);
+        var staleCutoff = now.AddHours(-1);
+
+        foreach (var pair in ProgressStore)
+        {
+            var progress = pair.Value;
+            var expired = progress.IsCompleted
+                ? progress.CompletedAt is { } completedAt && completedAt <= completedCutoff
+                : progress.CreatedAt <= staleCutoff;
+            if (expired)
+            {
+                ProgressStore.TryRemove(pair.Key, out _);
+            }
+        }
     }
 }

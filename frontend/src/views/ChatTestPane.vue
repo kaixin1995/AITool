@@ -51,12 +51,13 @@ watch(selectedMappingId, (mappingId) => {
 
 function formatTargetLabel(target: ChatModelTarget): string {
   const siteName = target.siteName?.trim() || '未命名站点'
-  const displayName = target.modelDisplayName?.trim() || target.siteModelName?.trim() || '未知模型'
   const remoteModelName = target.siteModelName?.trim()
-  const modelLabel = remoteModelName && remoteModelName !== displayName
-    ? `${displayName}（${remoteModelName}）`
-    : displayName
-  return `${siteName} / ${modelLabel}`
+  const displayName = target.modelDisplayName?.trim()
+  const modelLabel = remoteModelName || displayName || '未知模型'
+  const aliasLabel = remoteModelName && displayName && remoteModelName !== displayName
+    ? `（${displayName}）`
+    : ''
+  return `${siteName} / ${modelLabel}${aliasLabel}`
 }
 
 const targetOptionsComputed = computed<SelectOption[]>(() => {

@@ -1,14 +1,14 @@
 # 测试体系
 
-> 本文是 [README.md](../README.md) 的测试细节篇。当前 master 共 **2 个测试项目**：ApplicationTests 118 个执行用例 + IntegrationTests 309 个执行用例（Fact/Theory 展开 InlineData 后的实测数，`dotnet test` 于 2026-08-18 实跑确认；下文表格内的「用例」列为源码属性数，Theory 会展开为更多执行用例）；前端有 20 个 vitest 文件、98 个执行用例。
+> 本文是 [README.md](../README.md) 的测试细节篇。当前 master 共 **2 个测试项目**：ApplicationTests 119 个执行用例 + IntegrationTests 313 个执行用例（Fact/Theory 展开 InlineData 后的实测数，`dotnet test` 于 2026-08-18 实跑确认；下文表格内的「用例」列为源码属性数，Theory 会展开为更多执行用例）；前端有 20 个 vitest 文件、98 个执行用例。
 > `tests/AITool.Core.IntegrationTests/` 与 `tests/AITool.Admin.IntegrationTests/` 目录只剩 bin/obj 构建残留（split 分支遗留，无源码、不在解决方案），不是现存测试项目。
 
 ## 1. 测试策略
 
 | 项目 | 定位 | 隔离手段 |
 |------|------|----------|
-| `tests/AITool.ApplicationTests`（xUnit + FluentAssertions） | 单元/服务测试（118 用例） | `TestDatabaseFactory.Create()`：每个测试 `%TEMP%/aitool-test-{GUID}.db` 临时 SQLite 文件，`SqlSugarSetup.InitializeDatabase` 建表，Dispose 删文件 |
-| `tests/AITool.IntegrationTests`（xUnit + FluentAssertions + `WebApplicationFactory<Program>`） | 端到端集成（309 用例） | 每个测试工厂持有独立 `%TEMP%/aitool-<场景>-{GUID}.db`；`IntegrationTestDbHelper.ReplaceWithSqlSugar` 覆盖生产 SqlSugar 注册；`UseEnvironment("Testing")`；`IProxyForwardService` 换 Fake / Stub `HttpMessageHandler`，**不打真实外部 API** |
+| `tests/AITool.ApplicationTests`（xUnit + FluentAssertions） | 单元/服务测试（119 用例） | `TestDatabaseFactory.Create()`：每个测试 `%TEMP%/aitool-test-{GUID}.db` 临时 SQLite 文件，`SqlSugarSetup.InitializeDatabase` 建表，Dispose 删文件 |
+| `tests/AITool.IntegrationTests`（xUnit + FluentAssertions + `WebApplicationFactory<Program>`） | 端到端集成（313 用例） | 每个测试工厂持有独立 `%TEMP%/aitool-<场景>-{GUID}.db`；`IntegrationTestDbHelper.ReplaceWithSqlSugar` 覆盖生产 SqlSugar 注册；`UseEnvironment("Testing")`；`IProxyForwardService` 换 Fake / Stub `HttpMessageHandler`，**不打真实外部 API** |
 
 公共工具：
 - `tests/AITool.ApplicationTests/TestDatabaseFactory.cs` — 临时库创建/销毁
@@ -44,7 +44,7 @@
 | `Analytics/AnalyticsBackgroundQueryExecutorTests.cs` | 1 | 有界队列满返回 QueueFull |
 | `Auth/AdminAuthTests.cs` | 2 | 管理端未登录 401；代理路由走 AccessKey 不受登录拦截 |
 | `Auth/PasswordHasherTests.cs` | 11 | PBKDF2 哈希/校验、legacy MD5 升级、JWT 签发/刷新/轮换/吊销 |
-| `Chat/ChatApiTests.cs` | 9 | 对话 API：按路由协议选目标、SSE 流式、null usage 忽略、并发限流即时生效 |
+| `Chat/ChatApiTests.cs` | 10 | 对话 API：按路由协议选目标、SSE 流式、Antigravity usage、null usage 忽略、并发限流即时生效 |
 | `Chat/ChatRealForwardResponsesTests.cs` | 2 | 真实 ProxyForwardService：Responses JSON 取内容、Codex SSE 聚合 |
 | `Services/CredentialRefreshTests.cs` | 1 | Codex 401 凭证刷新按隐藏站点 single-flight |
 | `Services/AccountQuotaInspectionTests.cs` | 1 | 通用巡检综合多个额度窗口的最大已用比例 |
@@ -61,12 +61,13 @@
 | `Proxy/ProxyMetadataCacheTests.cs` | 8 | 缓存失效与延迟刷新（AccessKey/设置/路由快照/协议优先） |
 | `Proxy/ProxyProtocolBridgeResponseConversionTests.cs` | 13 | 响应转换：Chat↔Responses、流式 done 只发一次、**缺 usage 时还原含缓存 prompt_tokens**、工具索引连续 |
 | `Proxy/ProxyProtocolBridgeDirectBridgeTests.cs` | 23 | 三协议直接透传桥接与协议方向判定 |
-| `Proxy/ProxyProtocolBridgeGeminiTests.cs` | 25 | Gemini 请求/响应桥接、SSE 状态机、思考等级与 usage 口径 |
+| `Proxy/ProxyProtocolBridgeGeminiTests.cs` | 26 | Gemini 请求/响应桥接、SSE 状态机、思考等级与 usage 口径 |
 | `Proxy/ProxyProtocolBridgeStreamStateTests.cs` | 3 | 流式状态机：tool_calls 后重开 thinking/text 块（新 content index）、Anthropic→Responses 读取 thinking 字段 |
 | `Proxy/ProxyProtocolBridgeThinkingTests.cs` | 18 | thinking/reasoning 双向：budget_tokens↔reasoning_effort、adaptive 默认 high、keep_reasoning 规则、metadata 不透传 |
 | `Proxy/ProxyResilienceTests.cs` | 2 | usage log 写入抛异常时代理仍成功 |
 | `Proxy/ResponsesProxyTests.cs` | 25 | /v1/responses：透传/桥接非流式与流式、WebSocket、usage 记录、effort 提取、403/401/400 |
 | `Services/SiteCascadeDeleterTests.cs` | 6 | 级联清理映射与规则、清空孤儿 entry |
+| `Services/AdminBackgroundTaskQueueTests.cs` | 1 | 管理后台任务异常隔离，单个任务失败不阻塞后续任务 |
 | `UsageLogs/UsageLogsApiTests.cs` | 9 | 列表过滤、请求详情按 attempt 分组、汇总 |
 
 ## 4. usage token 断言口径（重要，对应 2026-08 的两次语义修复）

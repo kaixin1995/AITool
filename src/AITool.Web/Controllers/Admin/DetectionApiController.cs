@@ -1,6 +1,8 @@
 using System.Collections.Concurrent;
+using AITool.Domain.SiteCatalog;
 using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Persistence;
+using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Web.Controllers.Admin;
@@ -65,6 +67,41 @@ public sealed class ProbeProgress
     /// 上次已返回的结果数。
     /// </summary>
     public int LastReportedCount { get; set; }
+
+    /// <summary>
+    /// 任务创建时间，用于清理失联任务。
+    /// </summary>
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 任务完成时间，用于保留最终进度一段时间。
+    /// </summary>
+    public DateTimeOffset? CompletedAt { get; set; }
+
+    /// <summary>
+    /// 追加一条结果并推进进度。
+    /// </summary>
+    public void AddResult(ProbeResultItem result)
+    {
+        lock (this)
+        {
+            AllResults.Add(result);
+            Completed++;
+        }
+    }
+
+    /// <summary>
+    /// 取出自上次轮询以来新增的结果。
+    /// </summary>
+    public IReadOnlyList<ProbeResultItem> TakeNewResults()
+    {
+        lock (this)
+        {
+            var newResults = AllResults.Skip(LastReportedCount).ToList();
+            LastReportedCount = AllResults.Count;
+            return newResults;
+        }
+    }
 }
 
 /// <summary>
@@ -79,6 +116,10 @@ public sealed class DetectionApiController : ControllerBase
     /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
     /// <summary>
+    /// 管理后台长任务队列。
+    /// </summary>
+    private readonly AdminBackgroundTaskQueue _taskQueue;
+    /// <summary>
     /// 探测进度缓存。
     /// </summary>
     private static readonly ConcurrentDictionary<string, ProbeProgress> _progressStore = new();
@@ -86,9 +127,10 @@ public sealed class DetectionApiController : ControllerBase
     /// <summary>
     /// 创建模型探测控制器。
     /// </summary>
-    public DetectionApiController(IServiceScopeFactory scopeFactory)
+    public DetectionApiController(IServiceScopeFactory scopeFactory, AdminBackgroundTaskQueue taskQueue)
     {
         _scopeFactory = scopeFactory;
+        _taskQueue = taskQueue;
     }
 
     /// <summary>
@@ -204,7 +246,7 @@ public sealed class DetectionApiController : ControllerBase
     [HttpPost("probe-model/{modelId}")]
     public IActionResult ProbeModel(Guid modelId)
     {
-        PurgeCompletedProgress();
+        PurgeExpiredProgress();
         var taskId = Guid.NewGuid().ToString("N")[..8];
 
         using var scope = _scopeFactory.CreateScope();
@@ -220,52 +262,17 @@ public sealed class DetectionApiController : ControllerBase
         };
         _progressStore[taskId] = progress;
 
-        _ = Task.Run(async () =>
+        var scopeFactory = _scopeFactory;
+        var mappingSnapshot = mappings.ToArray();
+        if (!_taskQueue.TryQueue(queueCancellationToken => RunProbeAsync(
+                scopeFactory,
+                taskId,
+                mappingSnapshot,
+                queueCancellationToken)))
         {
-            using var workScope = _scopeFactory.CreateScope();
-            var requestService = workScope.ServiceProvider.GetRequiredService<ModelHealthRequestService>();
-
-            foreach (var mapping in mappings)
-            {
-                try
-                {
-                    var result = await requestService.ProbeMappingAsync(mapping.Id, "detection-manual", default);
-
-                    if (_progressStore.TryGetValue(taskId, out var p))
-                    {
-                        p.AllResults.Add(new ProbeResultItem
-                        {
-                            MappingId = result.MappingId,
-                            SiteName = result.SiteName,
-                            RemoteModelName = result.RemoteModelName,
-                            Status = result.Status,
-                            DurationMs = result.DurationMs,
-                            Error = result.ErrorMessage
-                        });
-                        p.Completed++;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    if (_progressStore.TryGetValue(taskId, out var p))
-                    {
-                        p.AllResults.Add(new ProbeResultItem
-                        {
-                            MappingId = mapping.Id,
-                            RemoteModelName = mapping.RemoteModelName,
-                            Status = "fail",
-                            Error = ex.Message
-                        });
-                        p.Completed++;
-                    }
-                }
-            }
-
-            if (_progressStore.TryGetValue(taskId, out var prog))
-            {
-                prog.IsCompleted = true;
-            }
-        });
+            _progressStore.TryRemove(taskId, out _);
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = "后台探测任务较多，请稍后重试" });
+        }
 
         return Ok(new { taskId });
     }
@@ -276,7 +283,7 @@ public sealed class DetectionApiController : ControllerBase
     [HttpPost("probe-all")]
     public IActionResult ProbeAll()
     {
-        PurgeCompletedProgress();
+        PurgeExpiredProgress();
         var taskId = Guid.NewGuid().ToString("N")[..8];
 
         using var scope = _scopeFactory.CreateScope();
@@ -290,52 +297,17 @@ public sealed class DetectionApiController : ControllerBase
         };
         _progressStore[taskId] = progress;
 
-        _ = Task.Run(async () =>
+        var scopeFactory = _scopeFactory;
+        var mappingSnapshot = mappings.ToArray();
+        if (!_taskQueue.TryQueue(queueCancellationToken => RunProbeAsync(
+                scopeFactory,
+                taskId,
+                mappingSnapshot,
+                queueCancellationToken)))
         {
-            using var workScope = _scopeFactory.CreateScope();
-            var requestService = workScope.ServiceProvider.GetRequiredService<ModelHealthRequestService>();
-
-            foreach (var mapping in mappings)
-            {
-                try
-                {
-                    var result = await requestService.ProbeMappingAsync(mapping.Id, "detection-manual", default);
-
-                    if (_progressStore.TryGetValue(taskId, out var p))
-                    {
-                        p.AllResults.Add(new ProbeResultItem
-                        {
-                            MappingId = result.MappingId,
-                            SiteName = result.SiteName,
-                            RemoteModelName = result.RemoteModelName,
-                            Status = result.Status,
-                            DurationMs = result.DurationMs,
-                            Error = result.ErrorMessage
-                        });
-                        p.Completed++;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    if (_progressStore.TryGetValue(taskId, out var p))
-                    {
-                        p.AllResults.Add(new ProbeResultItem
-                        {
-                            MappingId = mapping.Id,
-                            RemoteModelName = mapping.RemoteModelName,
-                            Status = "fail",
-                            Error = ex.Message
-                        });
-                        p.Completed++;
-                    }
-                }
-            }
-
-            if (_progressStore.TryGetValue(taskId, out var prog))
-            {
-                prog.IsCompleted = true;
-            }
-        });
+            _progressStore.TryRemove(taskId, out _);
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = "后台探测任务较多，请稍后重试" });
+        }
 
         return Ok(new { taskId });
     }
@@ -346,14 +318,15 @@ public sealed class DetectionApiController : ControllerBase
     [HttpGet("progress/{taskId}")]
     public IActionResult GetProgress(string taskId)
     {
+        PurgeExpiredProgress();
+
         if (!_progressStore.TryGetValue(taskId, out var progress))
         {
             return NotFound(new { message = "任务不存在" });
         }
 
         // 取出上次报告后新增的结果
-        var newResults = progress.AllResults.Skip(progress.LastReportedCount).ToList();
-        progress.LastReportedCount = progress.AllResults.Count;
+        var newResults = progress.TakeNewResults();
 
         return Ok(new
         {
@@ -366,16 +339,83 @@ public sealed class DetectionApiController : ControllerBase
     }
 
     /// <summary>
-    /// 懒清理已完成的探测任务，避免 _progressStore 静态字典无限增长导致内存泄漏。
+    /// 保留已完成任务一段时间供前端轮询，并清理失联任务，避免静态字典无限增长。
     /// </summary>
-    private static void PurgeCompletedProgress()
+    private static void PurgeExpiredProgress()
     {
+        var now = DateTimeOffset.UtcNow;
+        var completedCutoff = now.AddMinutes(-10);
+        var staleCutoff = now.AddHours(-1);
+
         foreach (var pair in _progressStore)
         {
-            if (pair.Value.IsCompleted)
+            var progress = pair.Value;
+            var expired = progress.IsCompleted
+                ? progress.CompletedAt is { } completedAt && completedAt <= completedCutoff
+                : progress.CreatedAt <= staleCutoff;
+            if (expired)
             {
                 _progressStore.TryRemove(pair.Key, out _);
             }
+        }
+    }
+
+    private static async Task RunProbeAsync(
+        IServiceScopeFactory scopeFactory,
+        string taskId,
+        IReadOnlyList<SiteModelMapping> mappings,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var workScope = scopeFactory.CreateScope();
+            var requestService = workScope.ServiceProvider.GetRequiredService<ModelHealthRequestService>();
+
+            foreach (var mapping in mappings)
+            {
+                try
+                {
+                    var result = await requestService.ProbeMappingAsync(mapping.Id, "detection-manual", cancellationToken);
+                    AddProbeResult(taskId, new ProbeResultItem
+                    {
+                        MappingId = result.MappingId,
+                        SiteName = result.SiteName,
+                        RemoteModelName = result.RemoteModelName,
+                        Status = result.Status,
+                        DurationMs = result.DurationMs,
+                        Error = result.ErrorMessage
+                    });
+                }
+                catch (Exception ex)
+                {
+                    AddProbeResult(taskId, new ProbeResultItem
+                    {
+                        MappingId = mapping.Id,
+                        RemoteModelName = mapping.RemoteModelName,
+                        Status = "fail",
+                        Error = ex.Message
+                    });
+                }
+            }
+        }
+        finally
+        {
+            if (_progressStore.TryGetValue(taskId, out var progress))
+            {
+                lock (progress)
+                {
+                    progress.IsCompleted = true;
+                    progress.CompletedAt = DateTimeOffset.UtcNow;
+                }
+            }
+        }
+    }
+
+    private static void AddProbeResult(string taskId, ProbeResultItem result)
+    {
+        if (_progressStore.TryGetValue(taskId, out var progress))
+        {
+            progress.AddResult(result);
         }
     }
 }

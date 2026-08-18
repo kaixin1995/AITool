@@ -197,7 +197,7 @@ flowchart TD
 
 ### 5. 模型导入流程
 
-单站拉取 / 全站异步拉取（taskId 轮询）→ 标记已导入/未导入 → 勾选导入（预加载模型库字典防同名 UNIQUE 冲突，同名复用 `ModelLibraryItem`）→ 支持别名（自定义名作为对外路由名）。OAuth 账号模型拉取同构（当前由 Codex 提供程序实现，映射反查模型库）。
+单站拉取 / 全站异步拉取（taskId 轮询）→ 标记已导入/未导入 → 勾选导入（预加载模型库字典防同名 UNIQUE 冲突，同名复用 `ModelLibraryItem`）→ 支持别名（自定义名作为对外路由名）。OAuth 账号模型拉取同构（Codex 与 Google/Antigravity 提供程序，映射反查模型库；新模型默认不勾选，Google 同步时未勾选映射会禁用）。
 
 ### 6. 对话测试流程
 
@@ -290,6 +290,7 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 | `ProxyProtocolBridge` | **位于 AITool.Protocol 项目**（非 Web 层），三协议互转静态引擎 |
 | `DeveloperInvocationTraceStore` | 内存环形调用追踪（40 条/20 分钟，SummarizeBody 长文本收缩） |
 | `AnalyticsBackgroundQueryExecutor` | 统计重查询单消费者队列（容量 4 + 20s 结果缓存 + 版本失效） |
+| `AdminBackgroundTaskQueue` | 管理后台长任务单消费者队列（容量 8；站点模型抓取最多 4 个并发、手动模型探测；宿主停止时统一取消） |
 | `ModelVendorCatalogService` | 厂商图标/匹配规则目录（`model-vendor-catalog.json`，运行文件可编辑） |
 | `AdminAuthService` | 管理密码（PBKDF2，兼容旧 MD5 透明升级，写回 appsettings.json） |
 | `JwtTokenService` | access/refresh 签发与轮换吊销（RefreshTokenRecord 表） |
@@ -347,6 +348,7 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 | Hangfire | `detection-{taskId}` | 各任务 Cron | 定时模型检测 |
 | HostedService | `ProxyUsageLogBatchWriter` | 800ms/100 条 | 日志批量落库 |
 | HostedService | `AnalyticsBackgroundQueryExecutor` | 队列驱动 | 重统计查询 |
+| HostedService | `AdminBackgroundTaskQueue` | 队列驱动 | 批量模型抓取（最多 4 个上游并发）与手动探测；进度结果保留 10 分钟，失联任务 1 小时清理 |
 | HostedService | `CodexTokenRefreshService` / `CodexCooldownRecoveryService` / `AccountQuotaInspectionService` | 周期 | 见 [docs/codex.md](docs/codex.md) |
 | HostedService | `MemoryMaintenanceService` | 周期 | LOH 压缩 |
 
@@ -423,8 +425,8 @@ cd frontend && npm run test              # 前端 vitest
 cd frontend && npm run type-check        # vue-tsc 类型检查
 ```
 
-- **单元测试**（`AITool.ApplicationTests`，18 个测试文件，118 个执行用例）：业务服务 + 反射测转发私有方法，临时 SQLite 隔离
-- **集成测试**（`AITool.IntegrationTests`，30 个测试文件，309 个执行用例）：`WebApplicationFactory<Program>` 完整宿主 + Fake 转发服务 + 每工厂独立临时库；覆盖代理端到端、跨协议桥接、故障转移、并发、OAuth 刷新、额度巡检、鉴权、SQL 迁移、协议诊断、DateTimeOffset 时区一致性等
+- **单元测试**（`AITool.ApplicationTests`，18 个测试文件，119 个执行用例）：业务服务 + 反射测转发私有方法，临时 SQLite 隔离
+- **集成测试**（`AITool.IntegrationTests`，31 个测试文件，313 个执行用例）：`WebApplicationFactory<Program>` 完整宿主 + Fake 转发服务 + 每工厂独立临时库；覆盖代理端到端、跨协议桥接、故障转移、并发、OAuth 刷新、额度巡检、鉴权、SQL 迁移、协议诊断、后台任务队列、DateTimeOffset 时区一致性等
 - **前端测试**（20 个 Vitest 文件，98 个执行用例）：API 契约、OAuth/账号巡检、路由/模型/日志/设置状态和工具函数
 - **usage 断言口径**（重要）：Input=不含缓存新输入；转回 OpenAI 时 prompt_tokens 必须含缓存；流式累计覆盖语义。详见 [docs/testing.md](docs/testing.md#4-usage-token-断言口径重要对应-2026-08-的两次语义修复)
 

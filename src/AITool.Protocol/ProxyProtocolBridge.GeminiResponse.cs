@@ -53,6 +53,12 @@ public static partial class ProxyProtocolBridge
 
         /// <summary>输出 token（candidates + thoughts）。</summary>
         public int OutputTokens { get; set; }
+
+        /// <summary>candidates 输出 token，用于在部分 usageMetadata 到达时保留已知分量。</summary>
+        public int CandidatesTokens { get; set; }
+
+        /// <summary>thoughts 输出 token，用于在部分 usageMetadata 到达时保留已知分量。</summary>
+        public int ThoughtsTokens { get; set; }
     }
 
     /// <summary>
@@ -68,6 +74,12 @@ public static partial class ProxyProtocolBridge
 
         /// <summary>输出 token（candidates + thoughts）。</summary>
         public int OutputTokens { get; set; }
+
+        /// <summary>candidates 输出 token，用于在部分 usageMetadata 到达时保留已知分量。</summary>
+        public int CandidatesTokens { get; set; }
+
+        /// <summary>thoughts 输出 token，用于在部分 usageMetadata 到达时保留已知分量。</summary>
+        public int ThoughtsTokens { get; set; }
 
         /// <summary>上游 finishReason（首个非空值）。</summary>
         public string? FinishReason { get; set; }
@@ -353,10 +365,21 @@ public static partial class ProxyProtocolBridge
 
             if (response["usageMetadata"] is JsonObject usageMetadata)
             {
-                UpdateGeminiUsage(usageMetadata, state.InputTokens, state.CachedTokens, state.OutputTokens, out var input, out var cached, out var output);
+                UpdateGeminiUsage(
+                    usageMetadata,
+                    state.InputTokens,
+                    state.CachedTokens,
+                    state.CandidatesTokens,
+                    state.ThoughtsTokens,
+                    out var input,
+                    out var cached,
+                    out var candidates,
+                    out var thoughts);
                 state.InputTokens = input;
                 state.CachedTokens = cached;
-                state.OutputTokens = output;
+                state.CandidatesTokens = candidates;
+                state.ThoughtsTokens = thoughts;
+                state.OutputTokens = candidates + thoughts;
             }
 
             if (!state.MessageStartSent)
@@ -634,10 +657,21 @@ public static partial class ProxyProtocolBridge
 
             if (response["usageMetadata"] is JsonObject usageMetadata)
             {
-                UpdateGeminiUsage(usageMetadata, state.InputTokens, state.CachedTokens, state.OutputTokens, out var input, out var cached, out var output);
+                UpdateGeminiUsage(
+                    usageMetadata,
+                    state.InputTokens,
+                    state.CachedTokens,
+                    state.CandidatesTokens,
+                    state.ThoughtsTokens,
+                    out var input,
+                    out var cached,
+                    out var candidates,
+                    out var thoughts);
                 state.InputTokens = input;
                 state.CachedTokens = cached;
-                state.OutputTokens = output;
+                state.CandidatesTokens = candidates;
+                state.ThoughtsTokens = thoughts;
+                state.OutputTokens = candidates + thoughts;
             }
 
             var textBuilder = new StringBuilder();
@@ -879,50 +913,88 @@ public static partial class ProxyProtocolBridge
 
     private static JsonObject BuildAnthropicUsageFromGemini(JsonObject? usageMetadata)
     {
-        UpdateGeminiUsage(usageMetadata, 0, 0, 0, out var input, out var cached, out var output);
+        UpdateGeminiUsage(
+            usageMetadata,
+            0,
+            0,
+            0,
+            0,
+            out var input,
+            out var cached,
+            out var candidates,
+            out var thoughts);
+        var output = candidates + thoughts;
         return BuildAnthropicUsageObject(input, cached, output);
     }
 
     /// <summary>
-    /// 从 usageMetadata 刷新用量（对新输入口径）：input = prompt - cached、output = candidates + thoughts。
+    /// 从 usageMetadata 合并用量（对新输入口径）：input = prompt - cached、output = candidates + thoughts。
+    /// 上游流可能在不同块返回不完整字段；缺失字段必须保留上一块的值，不能把累计用量覆盖成 0。
     /// </summary>
-    private static void UpdateGeminiUsage(JsonObject? usageMetadata, int currentInput, int currentCached, int currentOutput, out int inputTokens, out int cachedTokens, out int outputTokens)
+    private static void UpdateGeminiUsage(
+        JsonObject? usageMetadata,
+        int currentInput,
+        int currentCached,
+        int currentCandidates,
+        int currentThoughts,
+        out int inputTokens,
+        out int cachedTokens,
+        out int candidatesTokens,
+        out int thoughtsTokens)
     {
         inputTokens = currentInput;
         cachedTokens = currentCached;
-        outputTokens = currentOutput;
+        candidatesTokens = currentCandidates;
+        thoughtsTokens = currentThoughts;
         if (usageMetadata is null)
         {
             return;
         }
 
-        var prompt = ReadGeminiUsageInteger(usageMetadata["promptTokenCount"]);
-        cachedTokens = ReadGeminiUsageInteger(usageMetadata["cachedContentTokenCount"]);
-        var candidates = ReadGeminiUsageInteger(usageMetadata["candidatesTokenCount"]);
-        var thoughts = ReadGeminiUsageInteger(usageMetadata["thoughtsTokenCount"]);
-        inputTokens = Math.Max(0, prompt - cachedTokens);
-        outputTokens = candidates + thoughts;
+        if (TryReadGeminiUsageInteger(usageMetadata, "promptTokenCount", "prompt_token_count", out var prompt))
+        {
+            inputTokens = Math.Max(0, prompt - cachedTokens);
+        }
+
+        if (TryReadGeminiUsageInteger(usageMetadata, "cachedContentTokenCount", "cached_content_token_count", out var cached))
+        {
+            cachedTokens = cached;
+            if (TryReadGeminiUsageInteger(usageMetadata, "promptTokenCount", "prompt_token_count", out prompt))
+            {
+                inputTokens = Math.Max(0, prompt - cachedTokens);
+            }
+        }
+
+        if (TryReadGeminiUsageInteger(usageMetadata, "candidatesTokenCount", "candidates_token_count", out var candidates))
+        {
+            candidatesTokens = candidates;
+        }
+
+        if (TryReadGeminiUsageInteger(usageMetadata, "thoughtsTokenCount", "thoughts_token_count", out var thoughts))
+        {
+            thoughtsTokens = thoughts;
+        }
     }
 
-    private static int ReadGeminiUsageInteger(JsonNode? value)
+    private static bool TryReadGeminiUsageInteger(JsonObject usageMetadata, string camelCaseName, string snakeCaseName, out int parsedValue)
     {
-        if (value is null)
+        if (!usageMetadata.TryGetPropertyValue(camelCaseName, out var node)
+            && !usageMetadata.TryGetPropertyValue(snakeCaseName, out node))
         {
-            return 0;
+            parsedValue = 0;
+            return false;
+        }
+
+        if (node is null)
+        {
+            parsedValue = 0;
+            return false;
         }
 
         try
         {
-            return Math.Max(0, value.GetValue<int>());
-        }
-        catch
-        {
-            // 继续尝试 long/string 形态，兼容中间层的宽数值与字符串字段。
-        }
-
-        try
-        {
-            return (int)Math.Clamp(value.GetValue<long>(), 0L, int.MaxValue);
+            parsedValue = Math.Max(0, node.GetValue<int>());
+            return true;
         }
         catch
         {
@@ -930,13 +1002,27 @@ public static partial class ProxyProtocolBridge
 
         try
         {
-            return int.TryParse(value.GetValue<string>(), out var parsed)
-                ? Math.Max(0, parsed)
-                : 0;
+            parsedValue = (int)Math.Clamp(node.GetValue<long>(), 0L, int.MaxValue);
+            return true;
         }
         catch
         {
-            return 0;
+            try
+            {
+                if (int.TryParse(node.GetValue<string>(), out var parsed))
+                {
+                    parsedValue = Math.Max(0, parsed);
+                    return true;
+                }
+
+                parsedValue = 0;
+                return false;
+            }
+            catch
+            {
+                parsedValue = 0;
+                return false;
+            }
         }
     }
 

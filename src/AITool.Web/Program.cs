@@ -312,6 +312,9 @@ builder.Services.AddScoped<SqlMigrationRunnerService>();
 
 // 注册 Hangfire 检测调度器。
 builder.Services.AddSingleton<HangfireDetectionScheduler>();
+// 管理后台长任务统一由宿主托管，避免控制器请求结束后遗留不可追踪的 fire-and-forget 任务。
+builder.Services.AddSingleton<AdminBackgroundTaskQueue>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AdminBackgroundTaskQueue>());
 builder.Services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<AnalyticsBackgroundQueryExecutor>());
 
