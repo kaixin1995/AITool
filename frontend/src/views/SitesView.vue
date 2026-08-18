@@ -505,9 +505,28 @@ const importedCatalogSites = computed(() =>
 const newCatalogCount = computed(() => newCatalogSites.value.reduce((total, site) => total + site.models.length, 0))
 const importedCatalogCount = computed(() => importedCatalogSites.value.reduce((total, site) => total + site.models.length, 0))
 
-const selectedCatalogCount = computed(() => catalogSelections.value.filter((item) => item.selected).length)
-const selectableCatalogCount = computed(() => catalogSelections.value.length)
+const activeCatalogSites = computed(() =>
+  catalogTab.value === 'imported' ? importedCatalogSites.value : newCatalogSites.value
+)
+
+// 全选/计数仅作用于当前 tab 内的模型。
+const activeTabSelectionKeys = computed(() => {
+  const keys = new Set<string>()
+  for (const site of activeCatalogSites.value) {
+    for (const model of site.models) {
+      if (model.remoteModelName) keys.add(`${site.siteId}\n${model.remoteModelName}`)
+    }
+  }
+  return keys
+})
+
+const selectedCatalogCount = computed(() =>
+  catalogSelections.value.filter((item) => item.selected && activeTabSelectionKeys.value.has(`${item.siteId}\n${item.remoteModelName}`)).length
+)
+const selectableCatalogCount = computed(() => activeTabSelectionKeys.value.size)
 const allCatalogSelected = computed(() => selectableCatalogCount.value > 0 && selectedCatalogCount.value === selectableCatalogCount.value)
+// 底部按钮用全局已选数（跨 tab），全选/标签内计数仅作用于当前 tab。
+const totalSelectedCatalogCount = computed(() => catalogSelections.value.filter((item) => item.selected).length)
 
 function selectionFor(siteId: string, remoteModelName: string): ModelSelectionItem | undefined {
   return catalogSelections.value.find((item) => item.siteId === siteId && item.remoteModelName === remoteModelName)
@@ -519,7 +538,8 @@ function applyCatalogSites(results: SiteFetchResult[]): void {
     siteId: site.siteId,
     remoteModelName: model.remoteModelName,
     displayName: model.existingDisplayName || model.remoteModelName,
-    selected: !model.existingMappingId || model.isEnabled
+    // 未导入默认不勾选（用户主动勾选要新增的）；已导入默认勾选（重新导入=更新映射）。
+    selected: Boolean(model.existingMappingId)
   })))
 }
 
@@ -593,7 +613,12 @@ async function pollCatalogProgress(): Promise<void> {
 }
 
 function toggleAllCatalog(value: boolean): void {
-  catalogSelections.value.forEach((item) => { item.selected = value })
+  const keys = activeTabSelectionKeys.value
+  catalogSelections.value.forEach((item) => {
+    if (keys.has(`${item.siteId}\n${item.remoteModelName}`)) {
+      item.selected = value
+    }
+  })
 }
 
 function updateCatalogSelected(siteId: string, remoteModelName: string, selected: boolean): void {
@@ -1083,7 +1108,7 @@ onBeforeUnmount(handleCatalogClosed)
       <template #footer>
         <NSpace justify="end">
           <NButton @click="catalogVisible = false">取消</NButton>
-          <NButton type="primary" :disabled="selectedCatalogCount === 0" :loading="catalogImporting" @click="handleImportSelectedModels">导入选中</NButton>
+          <NButton type="primary" :disabled="totalSelectedCatalogCount === 0" :loading="catalogImporting" @click="handleImportSelectedModels">导入选中</NButton>
         </NSpace>
       </template>
     </NModal>
