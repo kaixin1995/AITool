@@ -4,6 +4,7 @@ import { useRoute } from 'vue-router'
 import {
   NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput,
   NSwitch, NPopconfirm, NSelect, NCheckbox, NProgress, NInputNumber, NDropdown, NTooltip,
+  NTabs, NTabPane, NBadge,
   useMessage, useDialog, type DataTableColumns
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
@@ -466,6 +467,7 @@ const catalogTaskId = ref('')
 const catalogProgress = ref({ total: 0, completed: 0 })
 const catalogSites = ref<SiteFetchResult[]>([])
 const catalogSelections = ref<ModelSelectionItem[]>([])
+const catalogTab = ref<'new' | 'imported'>('new')
 let catalogTimer: number | undefined
 
 const catalogProgressPercent = computed(() => {
@@ -485,6 +487,23 @@ const filteredCatalogSites = computed(() => {
     }))
     .filter((site) => site.models.length > 0 || site.status === 'fail')
 })
+
+// 按导入状态拆分：新模型（无 existingMappingId）与已导入模型（有 existingMappingId）。
+// 仅影响弹窗展示——两个 tab 共享同一份 catalogSelections，勾选/全选/导入逻辑不变。
+const newCatalogSites = computed(() =>
+  filteredCatalogSites.value
+    .map((site) => ({ ...site, models: site.models.filter((model) => !model.existingMappingId) }))
+    .filter((site) => site.models.length > 0 || site.status === 'fail')
+)
+
+const importedCatalogSites = computed(() =>
+  filteredCatalogSites.value
+    .map((site) => ({ ...site, models: site.models.filter((model) => model.existingMappingId) }))
+    .filter((site) => site.models.length > 0)
+)
+
+const newCatalogCount = computed(() => newCatalogSites.value.reduce((total, site) => total + site.models.length, 0))
+const importedCatalogCount = computed(() => importedCatalogSites.value.reduce((total, site) => total + site.models.length, 0))
 
 const selectedCatalogCount = computed(() => catalogSelections.value.filter((item) => item.selected).length)
 const selectableCatalogCount = computed(() => catalogSelections.value.length)
@@ -506,6 +525,7 @@ function applyCatalogSites(results: SiteFetchResult[]): void {
 
 function openCatalog(results: SiteFetchResult[]): void {
   applyCatalogSites(results)
+  catalogTab.value = 'new'
   catalogSearch.value = ''
   catalogVisible.value = true
 }
@@ -992,40 +1012,73 @@ onBeforeUnmount(handleCatalogClosed)
             <NTag size="small" :bordered="false">已选 {{ selectedCatalogCount }} / {{ selectableCatalogCount }}</NTag>
           </NSpace>
         </div>
-        <div class="catalog-site-list">
-          <NCard v-for="site in filteredCatalogSites" :key="site.siteId" class="catalog-site-card" size="small">
-            <template #header>
-              <NSpace align="center" :wrap="false">
-                <span>{{ site.siteName }}</span>
-                <NTag size="small" :type="site.status === 'success' ? 'success' : site.status === 'fail' ? 'error' : 'warning'" :bordered="false">{{ site.status }}</NTag>
-                <span class="catalog-count">{{ site.models.length }} 个模型</span>
-              </NSpace>
-            </template>
-            <template v-if="site.status === 'fail'">
-              <div class="catalog-error">
-                <span>{{ site.error || '拉取失败' }}</span>
-                <NButton size="tiny" tertiary @click="copyCatalogError(site.error)">复制错误</NButton>
-              </div>
-            </template>
-            <div v-else class="catalog-model-list">
-              <div v-for="model in site.models" :key="model.remoteModelName" class="catalog-model-row">
-                <NCheckbox
-                  :checked="selectionFor(site.siteId, model.remoteModelName)?.selected"
-                  @update:checked="(value) => updateCatalogSelected(site.siteId, model.remoteModelName, value)"
-                />
-                <code class="catalog-remote-name" :title="model.remoteModelName">{{ model.remoteModelName }}</code>
-                <NInput
-                  :value="selectionFor(site.siteId, model.remoteModelName)?.displayName"
-                  size="small"
-                  placeholder="对外模型名（留空用原始名）"
-                  @update:value="(value) => updateCatalogDisplayName(site.siteId, model.remoteModelName, value)"
-                />
-                <NTag v-if="model.existingMappingId" size="small" :type="model.isEnabled ? 'success' : 'default'" :bordered="false">{{ model.isEnabled ? '已导入' : '已禁用' }}</NTag>
-              </div>
+        <NTabs v-model:value="catalogTab" type="line" size="small">
+          <NTabPane name="new" :tab="`未导入 (${newCatalogCount})`">
+            <div class="catalog-site-list">
+              <NCard v-for="site in newCatalogSites" :key="site.siteId" class="catalog-site-card" size="small">
+                <template #header>
+                  <NSpace align="center" :wrap="false">
+                    <span>{{ site.siteName }}</span>
+                    <NTag size="small" :type="site.status === 'success' ? 'success' : site.status === 'fail' ? 'error' : 'warning'" :bordered="false">{{ site.status }}</NTag>
+                    <span class="catalog-count">{{ site.models.length }} 个模型</span>
+                  </NSpace>
+                </template>
+                <template v-if="site.status === 'fail'">
+                  <div class="catalog-error">
+                    <span>{{ site.error || '拉取失败' }}</span>
+                    <NButton size="tiny" tertiary @click="copyCatalogError(site.error)">复制错误</NButton>
+                  </div>
+                </template>
+                <div v-else class="catalog-model-list">
+                  <div v-for="model in site.models" :key="model.remoteModelName" class="catalog-model-row">
+                    <NCheckbox
+                      :checked="selectionFor(site.siteId, model.remoteModelName)?.selected"
+                      @update:checked="(value) => updateCatalogSelected(site.siteId, model.remoteModelName, value)"
+                    />
+                    <code class="catalog-remote-name" :title="model.remoteModelName">{{ model.remoteModelName }}</code>
+                    <NInput
+                      :value="selectionFor(site.siteId, model.remoteModelName)?.displayName"
+                      size="small"
+                      placeholder="对外模型名（留空用原始名）"
+                      @update:value="(value) => updateCatalogDisplayName(site.siteId, model.remoteModelName, value)"
+                    />
+                  </div>
+                </div>
+              </NCard>
+              <NEmpty v-if="!catalogLoading && newCatalogSites.length === 0" description="暂无新模型" />
             </div>
-          </NCard>
-          <NEmpty v-if="!catalogLoading && filteredCatalogSites.length === 0" description="暂无可导入模型" />
-        </div>
+          </NTabPane>
+          <NTabPane name="imported" :tab="`已导入 (${importedCatalogCount})`">
+            <div class="catalog-site-list">
+              <NCard v-for="site in importedCatalogSites" :key="site.siteId" class="catalog-site-card" size="small">
+                <template #header>
+                  <NSpace align="center" :wrap="false">
+                    <span>{{ site.siteName }}</span>
+                    <NTag size="small" type="success" :bordered="false">success</NTag>
+                    <span class="catalog-count">{{ site.models.length }} 个模型</span>
+                  </NSpace>
+                </template>
+                <div class="catalog-model-list">
+                  <div v-for="model in site.models" :key="model.remoteModelName" class="catalog-model-row">
+                    <NCheckbox
+                      :checked="selectionFor(site.siteId, model.remoteModelName)?.selected"
+                      @update:checked="(value) => updateCatalogSelected(site.siteId, model.remoteModelName, value)"
+                    />
+                    <code class="catalog-remote-name" :title="model.remoteModelName">{{ model.remoteModelName }}</code>
+                    <NInput
+                      :value="selectionFor(site.siteId, model.remoteModelName)?.displayName"
+                      size="small"
+                      placeholder="对外模型名（留空用原始名）"
+                      @update:value="(value) => updateCatalogDisplayName(site.siteId, model.remoteModelName, value)"
+                    />
+                    <NTag size="small" :type="model.isEnabled ? 'success' : 'default'" :bordered="false">{{ model.isEnabled ? '已导入' : '已禁用' }}</NTag>
+                  </div>
+                </div>
+              </NCard>
+              <NEmpty v-if="!catalogLoading && importedCatalogSites.length === 0" description="暂无已导入模型" />
+            </div>
+          </NTabPane>
+        </NTabs>
       </NSpace>
       <template #footer>
         <NSpace justify="end">
