@@ -56,7 +56,8 @@ ProxyProtocolBridge（Gemini 桥）──► cloudcode-pa / daily-cloudcode-pa v
 - **请求头**：`OpenAiProxyController.ApplyGeminiForwardHeaders`（按封套 userAgent 字段区分两种上游：GeminiCLI UA 带模型名；Antigravity UA + requestId + requestType=agent|image_gen）。
 - **流式桥**：`OpenAiProxyController.GeminiStreaming.cs`（Gemini→OpenAI、Gemini→Responses、Gemini→Responses-WebSocket）与 `AnthropicProxyController.ForwardGeminiStreamAsAnthropicAsync`。Gemini 流无 [DONE]/message_stop 标记：candidates[0].finishReason 出现即视为正常完成（`ProxyForwardService` 流式解析与各桥的状态机均按此判定）。
 - **401 实时刷新**：`GoogleCredentialRefreshService`（同 Codex 模式，`CreateCredentialRefreshCallback` 按 ManagedSource 分派）。
-- **后台刷新**：`GoogleTokenRefreshService`（access_token 约 1 小时有效：扫描 5 分钟 / 提前 10 分钟 / 同账号最小间隔 5 分钟 / invalid_grant 退避 30 分钟）。
+- **后台刷新**：`GoogleTokenRefreshService` 同时覆盖 GeminiCLI 与 Antigravity（access_token 约 1 小时有效：扫描 5 分钟 / 提前 10 分钟 / 同账号最小间隔 5 分钟 / invalid_grant 退避 30 分钟）。
+- **使用中兜底**：代理上游返回 401 时由 `GoogleCredentialRefreshService` 按隐藏站点 single-flight 刷新，并同步账号与隐藏站点；普通临时刷新失败不会阻塞后台循环，`invalid_grant` 按 30 分钟退避，避免短暂网络故障直接导致账号永久失效。
 - **额度**：`GoogleAccountQuotaService : IAccountQuotaProvider`（ProviderKey=`google`，自动纳入通用巡检、自动禁用阈值与 OAuth 总开关）。
 - **调试聊天页**：`ChatApiController` 对 Gemini 目标走同一协议桥（非流式 + 流式），SSE 块先转 OpenAI chunk 再复用既有解析。
 

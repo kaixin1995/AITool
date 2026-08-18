@@ -729,12 +729,14 @@ function isTokenExpired(expiresAt: string | null | undefined): boolean {
   return new Date(expiresAt).getTime() <= Date.now()
 }
 
+const tokenExpiryWarningWindowMs = 24 * 60 * 60 * 1000
+
 function isTokenExpiringSoon(expiresAt: string | null | undefined): boolean {
   if (!expiresAt) return false
   const expires = new Date(expiresAt).getTime()
   const now = Date.now()
-  // 低于 3 天视为即将过期，卡片上标红提醒
-  return expires > now && expires <= now + 3 * 24 * 60 * 60 * 1000
+  // 低于 1 天视为即将过期，卡片上标红提醒
+  return expires > now && expires <= now + tokenExpiryWarningWindowMs
 }
 
 function formatBeijingTime(value: string | null | undefined): string {

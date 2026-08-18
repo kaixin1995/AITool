@@ -42,7 +42,7 @@
 
 | 场景 | 服务 | 行为 |
 |------|------|------|
-| 周期预防性刷新 | `CodexTokenRefreshService`（HostedService） | 每 5 分钟扫描；**到期前 2 天**即刷新 access_token，写回隐藏 `Site.ApiKey` 并失效路由缓存；同一账号 30 分钟内不重复刷新（防短有效期 token 刷新风暴，已过期账号不受限）；403 退避 1 小时 |
+| 周期预防性刷新 | `CodexTokenRefreshService`（HostedService） | 每 5 分钟扫描；**到期前 1 天**即刷新 access_token，写回隐藏 `Site.ApiKey` 并失效路由缓存；同一账号 30 分钟内不重复刷新（防短有效期 token 刷新风暴，已过期账号不受限）；403 退避 1 小时 |
 | 代理命中 401 实时刷新 | `CodexCredentialRefreshService.RefreshAsync`（Scoped） | 作为 `ProxyForwardRequest.RefreshTargetApiKeyAsync` 回调注入转发链（`CreateCodexCredentialRefreshCallback`，仅 `ManagedSource=="Codex"`）：401 → 刷 OAuth → 同步隐藏站点 → 重发一次 |
 | 手动刷新 | `POST /accounts/{id}/refresh-token` | 同机制 |
 
@@ -78,5 +78,5 @@
 ## 8. 前端页面（OAuthView，requiresOAuth）
 
 两个页签（URL `?tab=inspection` 同步）：
-- **账号额度**：账号卡片网格（状态 tag 正常/已禁用/冷却中、planType、Token 过期 <3 天标红、额度窗口进度条 <20% error / <50% warning、重置信用入口）；右上角 OAuth 登录弹窗 / 凭证上传（失败明细）/ 导出凭证模式；卡片操作：刷新额度/启停/编辑（改名+换 refresh_token+刷新 access_token）/拉取模型导入/删除
+- **账号额度**：账号卡片网格（状态 tag 正常/已禁用/冷却中、planType、Token 过期 <1 天标红、额度窗口进度条 <20% error / <50% warning、重置信用入口）；右上角 OAuth 登录弹窗 / 凭证上传（失败明细）/ 导出凭证模式；卡片操作：刷新额度/启停/编辑（改名+换 refresh_token+刷新 access_token）/拉取模型导入/删除
 - **额度巡检**：状态卡（巡检中/空闲、上次完成、下次计划、手动巡检/真实巡检 force）、上次结果卡、巡检日志；未开启（404）显示空态；10s 静默轮询 + requestId 防旧响应覆盖（`accountInspectionState.ts`），结果窗口按提供程序动态渲染
