@@ -53,31 +53,75 @@ public static partial class ProxyProtocolBridge
             if (root.TryGetProperty("usage", out var usage)
                 && usage.ValueKind == JsonValueKind.Object)
             {
-                var extracted = ExtractUsageFromElement(usage, "OpenAI");
-                if (extracted.InputTokens > 0)
+                // 拆桶提取：state.CachedTokens 只放缓存读、缓存写单独进 CacheCreationTokens。
+                // 不能复用 ExtractUsageFromElement 的合并值（其 CachedTokens = 读+写），
+                // 否则出口 message_delta 的 cache_read 桶会混入写、与 cache_creation 桶重复计费。
+                var rawInput = 0;
+                if (usage.TryGetProperty("prompt_tokens", out var ptEl) && ptEl.ValueKind == JsonValueKind.Number)
                 {
-                    state.InputTokens = extracted.InputTokens;
+                    rawInput = ptEl.GetInt32();
+                }
+                else if (usage.TryGetProperty("input_tokens", out var itEl) && itEl.ValueKind == JsonValueKind.Number)
+                {
+                    rawInput = itEl.GetInt32();
                 }
 
-                // 与 InputTokens/OutputTokens 一致用 > 0 守卫：
-                // 上游 usage 缺 cached 字段时返回 0，不应覆盖外部传入的有效值。
-                if (extracted.CachedTokens > 0)
+                var details = usage.TryGetProperty("prompt_tokens_details", out var ptd) && ptd.ValueKind == JsonValueKind.Object
+                    ? ptd
+                    : usage.TryGetProperty("input_tokens_details", out var itd) && itd.ValueKind == JsonValueKind.Object
+                        ? itd
+                        : default;
+                var cachedRead = 0;
+                if (details.ValueKind == JsonValueKind.Object
+                    && details.TryGetProperty("cached_tokens", out var cachedEl)
+                    && cachedEl.ValueKind == JsonValueKind.Number)
                 {
-                    state.CachedTokens = extracted.CachedTokens;
+                    cachedRead = cachedEl.GetInt32();
                 }
 
-                if (extracted.OutputTokens > 0)
+                // 缓存写兼容 cached_creation_tokens / cache_write_tokens 两种写法（防御中间层给 null/字符串形态的值）。
+                var cacheWrite = 0;
+                if (details.ValueKind == JsonValueKind.Object)
                 {
-                    state.OutputTokens = extracted.OutputTokens;
+                    if (details.TryGetProperty("cached_creation_tokens", out var ccEl) && ccEl.ValueKind == JsonValueKind.Number)
+                    {
+                        cacheWrite = ccEl.GetInt32();
+                    }
+                    else if (details.TryGetProperty("cache_write_tokens", out var cwEl) && cwEl.ValueKind == JsonValueKind.Number)
+                    {
+                        cacheWrite = cwEl.GetInt32();
+                    }
                 }
 
-                // 提取 cache_creation_tokens（防御中间层给 null/字符串形态的值）
-                if (usage.TryGetProperty("prompt_tokens_details", out var ptd)
-                    && ptd.ValueKind == JsonValueKind.Object
-                    && ptd.TryGetProperty("cached_creation_tokens", out var cct)
-                    && cct.ValueKind == JsonValueKind.Number)
+                // OpenAI 的输入 token 含缓存读+写，统一归一化为"不含缓存的新输入"（>0 守卫防止清空外部种子值）。
+                var freshInput = Math.Max(0, rawInput - cachedRead - cacheWrite);
+                if (freshInput > 0)
                 {
-                    state.CacheCreationTokens = cct.GetInt32();
+                    state.InputTokens = freshInput;
+                }
+
+                if (cachedRead > 0)
+                {
+                    state.CachedTokens = cachedRead;
+                }
+
+                state.CacheCreationTokens = cacheWrite;
+
+                // output_tokens 优先；newapi 等中间层把 output_tokens 置 0 时回退 completion_tokens。
+                var rawOutput = 0;
+                if (usage.TryGetProperty("completion_tokens", out var ctEl) && ctEl.ValueKind == JsonValueKind.Number)
+                {
+                    rawOutput = ctEl.GetInt32();
+                }
+
+                if (usage.TryGetProperty("output_tokens", out var otEl) && otEl.ValueKind == JsonValueKind.Number && otEl.GetInt32() > 0)
+                {
+                    rawOutput = otEl.GetInt32();
+                }
+
+                if (rawOutput > 0)
+                {
+                    state.OutputTokens = rawOutput;
                 }
             }
 

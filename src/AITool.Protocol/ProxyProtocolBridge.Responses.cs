@@ -153,6 +153,39 @@ public sealed class ChatToResponsesStreamState
     /// 累积的用量信息。
     /// </summary>
     public (int InputTokens, int CachedTokens, int OutputTokens) Usage { get; set; }
+    /// <summary>
+    /// message 输出项占用的 output_index（Chat→Responses 恒为 0；Anthropic→Responses 在前面
+    /// 额外创建了 reasoning 输出项时会大于 0）。
+    /// </summary>
+    public int MessageOutputIndex { get; set; }
+    /// <summary>
+    /// 在 message 之前已分配的输出项数量（reasoning 项），影响后续所有输出项的 output_index 分配。
+    /// </summary>
+    public int ReservedOutputIndexes { get; set; }
+    /// <summary>
+    /// 流式 reasoning 输出项 id（Anthropic→Responses 桥接时使用）。
+    /// </summary>
+    public string? ReasoningItemId { get; set; }
+    /// <summary>
+    /// reasoning 输出项占用的 output_index。
+    /// </summary>
+    public int ReasoningItemOutputIndex { get; set; } = -1;
+    /// <summary>
+    /// reasoning 输出项是否已发送 output_item.added。
+    /// </summary>
+    public bool ReasoningItemAdded { get; set; }
+    /// <summary>
+    /// reasoning 输出项是否已发送 output_item.done。
+    /// </summary>
+    public bool ReasoningItemClosed { get; set; }
+    /// <summary>
+    /// 累积的 thinking 文本（用于 reasoning 项收口时的 summary 与签名桥接载体）。
+    /// </summary>
+    public StringBuilder ReasoningText { get; } = new();
+    /// <summary>
+    /// 累积的 thinking 签名（Anthropic signature_delta 事件）。
+    /// </summary>
+    public string ReasoningSignature { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -299,6 +332,29 @@ public static partial class ProxyProtocolBridge
         if (enableStreaming)
         {
             payload["stream_options"] = new JsonObject { ["include_usage"] = true };
+        }
+
+        // parallel_tool_calls / service_tier：Responses 与 Chat 同名字段，直接透传。
+        CopyIfPresent(root, payload, "parallel_tool_calls");
+        CopyIfPresent(root, payload, "service_tier");
+
+        // text.format → response_format（Responses 用 text.format 表达结构化输出）。
+        if (root.TryGetPropertyValue("text", out var textNode) && textNode is JsonObject textObj
+            && textObj.TryGetPropertyValue("format", out var formatNode) && formatNode is JsonObject format)
+        {
+            var formatType = format["type"]?.ToString() ?? string.Empty;
+            if (string.Equals(formatType, "json_object", StringComparison.OrdinalIgnoreCase))
+            {
+                payload["response_format"] = new JsonObject { ["type"] = "json_object" };
+            }
+            else if (string.Equals(formatType, "json_schema", StringComparison.OrdinalIgnoreCase))
+            {
+                payload["response_format"] = new JsonObject
+                {
+                    ["type"] = "json_schema",
+                    ["json_schema"] = format["json_schema"]?.DeepClone() ?? new JsonObject()
+                };
+            }
         }
 
         return payload.ToJsonString();
@@ -758,15 +814,11 @@ public static partial class ProxyProtocolBridge
     }
 
     /// <summary>
-    /// 将 Anthropic 非流式响应转换为 Responses API 非流式响应。
+    /// 将 Anthropic 非流式响应转换为 Responses API 非流式响应（直转，不经 Chat 中转）。
     /// </summary>
     public static string ConvertAnthropicResponseToResponses(string anthropicBody)
     {
-        // 先转成 OpenAI 格式，再转成 Responses 格式
-        var openAiBody = BuildOpenAiResponseFromAnthropic(anthropicBody, "", 0, 0, 0);
-        return string.IsNullOrEmpty(openAiBody)
-            ? string.Empty
-            : ConvertChatResponseToResponses(openAiBody);
+        return BuildResponsesResponseFromAnthropic(anthropicBody);
     }
 
     /// <summary>
@@ -888,6 +940,7 @@ public static partial class ProxyProtocolBridge
             {
                 state.MessageAdded = true;
                 state.MessageId = $"msg_{Guid.NewGuid():N}";
+                state.MessageOutputIndex = state.ReservedOutputIndexes;
 
                 builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
                 {
@@ -896,13 +949,13 @@ public static partial class ProxyProtocolBridge
                     ["status"] = "in_progress",
                     ["role"] = "assistant",
                     ["content"] = new JsonArray()
-                }, outputIndex: 0));
+                }, outputIndex: state.MessageOutputIndex));
 
                 builder.Append(BuildResponsesEvent("response.content_part.added", new JsonObject
                 {
                     ["type"] = "output_text",
                     ["text"] = ""
-                }, outputIndex: 0, contentIndex: 0));
+                }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
             }
 
             // 文本增量
@@ -915,7 +968,7 @@ public static partial class ProxyProtocolBridge
                 {
                     EnsureMessageStarted(state, builder);
                     builder.Append(BuildResponsesEvent("response.output_text.delta",
-                        deltaText, outputIndex: 0, contentIndex: 0));
+                        deltaText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
                     state.AppendOutputText(deltaText);
                 }
             }
@@ -948,7 +1001,7 @@ public static partial class ProxyProtocolBridge
 
                     if (!state.ChatToolCallOutputIndices.TryGetValue(idx, out var outputIndex))
                     {
-                        outputIndex = state.SentToolCallIds.Count + (state.MessageAdded ? 1 : 0);
+                        outputIndex = state.ReservedOutputIndexes + state.SentToolCallIds.Count + (state.MessageAdded ? 1 : 0);
                         state.ChatToolCallOutputIndices[idx] = outputIndex;
                     }
 
@@ -994,19 +1047,25 @@ public static partial class ProxyProtocolBridge
                 && finishEl.ValueKind == JsonValueKind.String
                 && !string.IsNullOrEmpty(finishEl.GetString()))
             {
+                // 幂等守卫：部分上游会连发多个带 finish_reason 的分片，完成事件只能发送一次。
+                if (state.Done)
+                {
+                    return builder.ToString();
+                }
+
                 // 关闭 message 输出项
                 if (state.MessageAdded)
                 {
                     // 只取一次最终文本，避免 StringBuilder 支撑的属性多次 ToString 重复分配。
                     var outputText = state.OutputText;
                     builder.Append(BuildResponsesEvent("response.output_text.done",
-                        outputText, outputIndex: 0, contentIndex: 0));
+                        outputText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.content_part.done", new JsonObject
                     {
                         ["type"] = "output_text",
                         ["text"] = outputText
-                    }, outputIndex: 0, contentIndex: 0));
+                    }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
                     {
@@ -1018,7 +1077,7 @@ public static partial class ProxyProtocolBridge
                         {
                             new JsonObject { ["type"] = "output_text", ["text"] = outputText }
                         }
-                    }, outputIndex: 0));
+                    }, outputIndex: state.MessageOutputIndex));
                 }
 
                 // 关闭工具调用输出项，保持 Chat tool index 与输出索引的一致映射。
@@ -1174,10 +1233,28 @@ public static partial class ProxyProtocolBridge
                         EnsureResponseStarted();
                     }
 
+                    // thinking 块 → reasoning 输出项；分段思考（上一项已关闭）时开新项。
+                    if (blockType == "thinking")
+                    {
+                        if (state.ReasoningItemAdded && state.ReasoningItemClosed)
+                        {
+                            state.ReasoningItemAdded = false;
+                            state.ReasoningItemClosed = false;
+                            state.ReasoningItemId = null;
+                            state.ReasoningItemOutputIndex = -1;
+                            state.ReasoningText.Clear();
+                            state.ReasoningSignature = string.Empty;
+                        }
+
+                        EnsureReasoningItemStarted(state, builder);
+                    }
+
                     if (blockType == "text" && !state.MessageAdded)
                     {
+                        CloseReasoningItemIfNeeded(state, builder);
                         state.MessageAdded = true;
                         state.MessageId = $"msg_{Guid.NewGuid():N}";
+                        state.MessageOutputIndex = state.ReservedOutputIndexes;
 
                         builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
                         {
@@ -1186,25 +1263,26 @@ public static partial class ProxyProtocolBridge
                             ["status"] = "in_progress",
                             ["role"] = "assistant",
                             ["content"] = new JsonArray()
-                        }, outputIndex: 0));
+                        }, outputIndex: state.MessageOutputIndex));
 
                         builder.Append(BuildResponsesEvent("response.content_part.added", new JsonObject
                         {
                             ["type"] = "output_text",
                             ["text"] = ""
-                        }, outputIndex: 0, contentIndex: 0));
+                        }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
                     }
 
                     // tool_use → 创建 function_call 输出项
                     if (blockType == "tool_use")
                     {
+                        CloseReasoningItemIfNeeded(state, builder);
                         // 使用 Anthropic content block index 关联后续 input_json_delta，避免多个工具调用串线。
                         var blockIndex = root.TryGetProperty("index", out var indexEl) && indexEl.ValueKind == JsonValueKind.Number
                             ? indexEl.GetInt32()
                             : state.ToolCallOutputIndices.Count;
                         var callId = block.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? "" : "";
                         var name = block.TryGetProperty("name", out var nameEl) ? nameEl.GetString() ?? "" : "";
-                        var outputIndex = state.SentToolCallIds.Count + (state.MessageAdded ? 1 : 0);
+                        var outputIndex = state.ReservedOutputIndexes + state.SentToolCallIds.Count + (state.MessageAdded ? 1 : 0);
                         var itemId = $"fc_{Guid.NewGuid():N}";
 
                         if (string.IsNullOrEmpty(callId))
@@ -1244,9 +1322,13 @@ public static partial class ProxyProtocolBridge
                         : string.Empty;
                     var effectiveThinkingText = thinkingText.Length > 0 ? thinkingText : deltaText;
                     var partialJson = delta.TryGetProperty("partial_json", out var pjEl) ? pjEl.GetString() ?? "" : "";
+                    var signatureText = delta.TryGetProperty("signature", out var sigEl) && sigEl.ValueKind == JsonValueKind.String
+                        ? sigEl.GetString() ?? ""
+                        : string.Empty;
 
                     if ((deltaType == "text_delta" && !string.IsNullOrEmpty(deltaText))
                         || (deltaType == "thinking_delta" && !string.IsNullOrEmpty(effectiveThinkingText))
+                        || (deltaType == "signature_delta" && !string.IsNullOrEmpty(signatureText))
                         || (deltaType == "input_json_delta" && !string.IsNullOrEmpty(partialJson)))
                     {
                         state.SawMeaningfulEvent = true;
@@ -1255,14 +1337,22 @@ public static partial class ProxyProtocolBridge
 
                     if (deltaType == "text_delta" && !string.IsNullOrEmpty(deltaText))
                     {
+                        CloseReasoningItemIfNeeded(state, builder);
                         EnsureMessageStarted(state, builder);
                         builder.Append(BuildResponsesEvent("response.output_text.delta",
-                            deltaText, outputIndex: 0, contentIndex: 0));
+                            deltaText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
                         state.AppendOutputText(deltaText);
                     }
                     else if (deltaType == "thinking_delta" && !string.IsNullOrEmpty(effectiveThinkingText))
                     {
+                        EnsureReasoningItemStarted(state, builder);
+                        state.ReasoningText.Append(effectiveThinkingText);
                         builder.Append(BuildResponsesEvent("response.reasoning_summary_text.delta", effectiveThinkingText));
+                    }
+                    else if (deltaType == "signature_delta" && !string.IsNullOrEmpty(signatureText))
+                    {
+                        // Anthropic thinking 签名增量：累积后在 reasoning 项收口时编码进桥接载体。
+                        state.ReasoningSignature += signatureText;
                     }
                     else if (deltaType == "input_json_delta" && !string.IsNullOrEmpty(partialJson))
                     {
@@ -1300,18 +1390,21 @@ public static partial class ProxyProtocolBridge
 
                 EnsureResponseStarted();
 
+                // reasoning 项先于 message 项关闭，保持 Responses 事件序与 Anthropic 块序一致。
+                CloseReasoningItemIfNeeded(state, builder);
+
                 if (state.MessageAdded)
                 {
                     // 只取一次最终文本，避免 StringBuilder 支撑的属性多次 ToString 重复分配。
                     var outputText = state.OutputText;
                     builder.Append(BuildResponsesEvent("response.output_text.done",
-                        outputText, outputIndex: 0, contentIndex: 0));
+                        outputText, outputIndex: state.MessageOutputIndex, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.content_part.done", new JsonObject
                     {
                         ["type"] = "output_text",
                         ["text"] = outputText
-                    }, outputIndex: 0, contentIndex: 0));
+                    }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
 
                     builder.Append(BuildResponsesEvent("response.output_item.done", new JsonObject
                     {
@@ -1323,7 +1416,7 @@ public static partial class ProxyProtocolBridge
                         {
                             new JsonObject { ["type"] = "output_text", ["text"] = outputText }
                         }
-                    }, outputIndex: 0));
+                    }, outputIndex: state.MessageOutputIndex));
                 }
 
                 foreach (var toolCall in state.ToolCallOutputIndices.OrderBy(pair => pair.Value))
@@ -1388,6 +1481,23 @@ public static partial class ProxyProtocolBridge
             if (root.ValueKind != JsonValueKind.Object
                 || !root.TryGetProperty("output", out var output)
                 || output.ValueKind != JsonValueKind.Array)
+            {
+                return string.Empty;
+            }
+
+            // 终态校验：status=failed/cancelled 或携带 error 对象的 2xx 响应不能当成功空回答转换，
+            // 返回空串交由调用层触发 fallback（部分上游失败响应仍会带非空 output）。
+            if (root.TryGetProperty("status", out var statusEl) && statusEl.ValueKind == JsonValueKind.String)
+            {
+                var statusValue = statusEl.GetString();
+                if (string.Equals(statusValue, "failed", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(statusValue, "cancelled", StringComparison.OrdinalIgnoreCase))
+                {
+                    return string.Empty;
+                }
+            }
+
+            if (root.TryGetProperty("error", out var errorEl) && errorEl.ValueKind == JsonValueKind.Object)
             {
                 return string.Empty;
             }
@@ -2587,6 +2697,63 @@ public static partial class ProxyProtocolBridge
     }
 
     /// <summary>
+    /// 确保 reasoning 输出项已创建（Anthropic→Responses 流式桥接）。
+    /// thinking 增量在 Responses 协议必须挂在一个 reasoning 输出项下，客户端才能跨轮回传。
+    /// </summary>
+    private static void EnsureReasoningItemStarted(ChatToResponsesStreamState state, StringBuilder builder)
+    {
+        if (state.ReasoningItemAdded)
+        {
+            return;
+        }
+
+        state.ReasoningItemAdded = true;
+        state.ReasoningItemId = $"rs_{Guid.NewGuid():N}";
+        state.ReasoningItemOutputIndex = state.ReservedOutputIndexes++;
+
+        builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
+        {
+            ["type"] = "reasoning",
+            ["id"] = state.ReasoningItemId,
+            ["status"] = "in_progress",
+            ["summary"] = new JsonArray()
+        }, outputIndex: state.ReasoningItemOutputIndex));
+    }
+
+    /// <summary>
+    /// 关闭 reasoning 输出项；携带签名时把签名编码进 encrypted_content 桥接载体，
+    /// 下一轮请求方向（BuildAnthropicRequestFromResponses）识别后还原带签名的 thinking block。
+    /// </summary>
+    private static void CloseReasoningItemIfNeeded(ChatToResponsesStreamState state, StringBuilder builder)
+    {
+        if (!state.ReasoningItemAdded || state.ReasoningItemClosed)
+        {
+            return;
+        }
+
+        state.ReasoningItemClosed = true;
+        var reasoningText = state.ReasoningText.ToString();
+        var item = new JsonObject
+        {
+            ["type"] = "reasoning",
+            ["id"] = state.ReasoningItemId,
+            ["status"] = "completed",
+            ["summary"] = new JsonArray()
+        };
+        if (reasoningText.Length > 0)
+        {
+            ((JsonArray)item["summary"]!).Add(new JsonObject { ["type"] = "summary_text", ["text"] = reasoningText });
+        }
+
+        if (!string.IsNullOrEmpty(state.ReasoningSignature))
+        {
+            item["encrypted_content"] = EncodeAnthropicThinkingBridge(reasoningText, state.ReasoningSignature);
+        }
+
+        builder.Append(BuildResponsesEvent("response.output_item.done", item, outputIndex: state.ReasoningItemOutputIndex));
+    }
+
+    /// <summary>
     /// 确保 message 输出项已创建。
     /// </summary>
     private static void EnsureMessageStarted(ChatToResponsesStreamState state, StringBuilder builder)
@@ -2598,6 +2765,7 @@ public static partial class ProxyProtocolBridge
 
         state.MessageAdded = true;
         state.MessageId = $"msg_{Guid.NewGuid():N}";
+        state.MessageOutputIndex = state.ReservedOutputIndexes;
 
         builder.Append(BuildResponsesEvent("response.output_item.added", new JsonObject
         {
@@ -2606,13 +2774,13 @@ public static partial class ProxyProtocolBridge
             ["status"] = "in_progress",
             ["role"] = "assistant",
             ["content"] = new JsonArray()
-        }, outputIndex: 0));
+        }, outputIndex: state.MessageOutputIndex));
 
         builder.Append(BuildResponsesEvent("response.content_part.added", new JsonObject
         {
             ["type"] = "output_text",
             ["text"] = ""
-        }, outputIndex: 0, contentIndex: 0));
+        }, outputIndex: state.MessageOutputIndex, contentIndex: 0));
     }
 
     /// <summary>

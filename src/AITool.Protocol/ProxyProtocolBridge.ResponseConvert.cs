@@ -908,8 +908,7 @@ public static partial class ProxyProtocolBridge
         foreach (var rawLine in responseBody.Split('\n'))
         {
             var line = rawLine.TrimEnd('\r');
-            if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase)) continue;
-            var jsonText = line["data: ".Length..];
+            if (!TryExtractSseFieldPayload(line, "data", out var jsonText)) continue;
             if (string.Equals(jsonText, "[DONE]", StringComparison.OrdinalIgnoreCase)) continue;
 
             try
@@ -992,17 +991,17 @@ public static partial class ProxyProtocolBridge
         foreach (var rawLine in responseBody.Split('\n'))
         {
             var line = rawLine.TrimEnd('\r');
-            if (line.StartsWith("event: ", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractSseFieldPayload(line, "event", out var eventNameValue))
             {
                 if (dataLines.Count > 0)
                     ProcessAnthropicMetadataBlock(currentEvent, dataLines, ref stopReason, toolCalls, ref usageInfo);
-                currentEvent = line["event: ".Length..].Trim();
+                currentEvent = eventNameValue.Trim();
                 dataLines.Clear();
                 continue;
             }
-            if (line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractSseFieldPayload(line, "data", out var dataValue))
             {
-                dataLines.Add(line["data: ".Length..]);
+                dataLines.Add(dataValue);
                 continue;
             }
             if (!string.IsNullOrWhiteSpace(line) || dataLines.Count == 0) continue;

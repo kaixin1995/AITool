@@ -85,7 +85,7 @@ public sealed class ProxyProtocolBridgeThinkingTests
 
         var openAi = ConvertToOpenAi(body);
 
-        openAi["reasoning_effort"]?.GetValue<string>().Should().Be("max");
+        openAi["reasoning_effort"]?.GetValue<string>().Should().Be("xhigh"); // cc-switch: max→xhigh
     }
 
     /// <summary>
@@ -101,7 +101,7 @@ public sealed class ProxyProtocolBridgeThinkingTests
 
         var openAi = ConvertToOpenAi(body);
 
-        openAi["reasoning_effort"]?.GetValue<string>().Should().Be("high");
+        openAi["reasoning_effort"]?.GetValue<string>().Should().Be("xhigh"); // cc-switch: adaptive→xhigh
     }
 
     /// <summary>
@@ -121,7 +121,7 @@ public sealed class ProxyProtocolBridgeThinkingTests
 
         var openAi = ConvertToOpenAi(body);
 
-        openAi["reasoning_effort"]?.GetValue<string>().Should().Be("high");
+        openAi["reasoning_effort"]?.GetValue<string>().Should().Be("medium"); // cc-switch: 4000-15999→medium
     }
 
     /// <summary>
@@ -332,7 +332,7 @@ public sealed class ProxyProtocolBridgeThinkingTests
         var openAi = JsonNode.Parse(prepared) as JsonObject
             ?? throw new InvalidOperationException("转换结果不是合法 JSON 对象");
 
-        openAi["reasoning_effort"]?.GetValue<string>().Should().Be("max");
+        openAi["reasoning_effort"]?.GetValue<string>().Should().Be("max"); // 覆盖值对 OpenAI 目标原样透传（max 合法）
     }
 
     /// <summary>

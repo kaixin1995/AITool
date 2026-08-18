@@ -464,10 +464,9 @@ public sealed class ProxyForwardService : IProxyForwardService
                 // 跳过空行和注释行
                 if (string.IsNullOrWhiteSpace(line) || line.StartsWith(':')) continue;
 
-                // SSE 格式：data: {...}
-                if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase)) continue;
+                // SSE 格式：data: {...}（规范允许无空格写法 "data:{...}"，统一兼容）
+                if (!ProxyProtocolBridge.TryExtractSseFieldPayload(line, "data", out var jsonText)) continue;
 
-                var jsonText = line["data: ".Length..];
                 if (string.Equals(jsonText, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 {
                     receivedDoneEvent = true;
@@ -529,6 +528,9 @@ public sealed class ProxyForwardService : IProxyForwardService
                     {
                         var extracted = ExtractUsageFromElement(msgUsage, request.ProtocolType);
                         if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
+                        // 缓存桶不能漏：message_start 通常同时携带 input 与 cache_read/cache_creation，
+                        // 只更新 input/output 会把缓存用量整体丢掉。
+                        if (extracted.CachedTokens > 0) cachedTokens = extracted.CachedTokens;
                         if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
                     }
                 }
@@ -960,6 +962,18 @@ public sealed class ProxyForwardService : IProxyForwardService
             if (root.TryGetProperty("error", out var error) && error.ValueKind != JsonValueKind.Null)
             {
                 return false;
+            }
+
+            // Responses 顶层 status 终态校验：failed/cancelled 即使带部分 output 也不能当成功响应，
+            // 否则上游已失败、客户端却收到转换后的"成功空回答"。
+            if (root.TryGetProperty("status", out var status) && status.ValueKind == JsonValueKind.String)
+            {
+                var statusValue = status.GetString();
+                if (string.Equals(statusValue, "failed", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(statusValue, "cancelled", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
             }
 
             if (protocolType == "Anthropic")

@@ -797,9 +797,9 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     {
         if (string.Equals(client, upstream, StringComparison.OrdinalIgnoreCase))
         {
-            return client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
-                ? "ReplaceModelName"
-                : "ReplaceOpenAiModelAndEnsureStreamUsage";
+            return client.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+                ? "ReplaceOpenAiModelAndEnsureStreamUsage"
+                : "ReplaceModelName";
         }
 
         if (client.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
@@ -814,10 +814,16 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             return "ConvertResponsesRequestToChat";
         }
 
+        if (client.Equals("Responses", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            return "BuildAnthropicRequestFromResponses";
+        }
+
         if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
             && upstream.Equals("Responses", StringComparison.OrdinalIgnoreCase))
         {
-            return "BuildOpenAiRequestFromAnthropic → ConvertChatRequestToResponses";
+            return "BuildResponsesRequestFromAnthropic";
         }
 
         if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
@@ -845,8 +851,16 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             && upstream.Equals("Responses", StringComparison.OrdinalIgnoreCase))
         {
             return streaming
-                ? "ConvertResponsesStreamingToChat → BuildAnthropicStreamingResponseFromOpenAi"
-                : "ConvertResponsesResponseToChat → BuildAnthropicResponseFromOpenAi";
+                ? "BuildAnthropicStreamFromResponses"
+                : "BuildAnthropicResponseFromResponses";
+        }
+
+        if (client.Equals("Responses", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            return streaming
+                ? "BuildResponsesStreamFromAnthropic"
+                : "BuildResponsesResponseFromAnthropic";
         }
 
         if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
@@ -859,8 +873,6 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             return streaming ? "BuildOpenAiStreamingResponseFromAnthropic" : "BuildOpenAiResponseFromAnthropic";
         }
 
-        // Responses 客户端组合：AdaptResponseBodyForClient 无专用分支，会落入默认路径（按 Anthropic 输入处理），
-        // 大概率不正确——在链路图中明确标出，便于用户发现协议组合缺口。
         return streaming ? "BuildOpenAiStreamingResponseFromAnthropic（默认兜底路径 ⚠️）" : "BuildOpenAiResponseFromAnthropic（默认兜底路径 ⚠️）";
     }
 
@@ -871,9 +883,10 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             return "同协议透传：上游响应原样返回客户端";
         }
 
-        if (client.Equals("Responses", StringComparison.OrdinalIgnoreCase))
+        if (client.Equals("Responses", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
         {
-            return "⚠️ 该组合无专用响应转换分支：AdaptResponseBodyForClient 按默认路径处理（把上游响应当作 OpenAI 输入转换），结果可能不正确，建议改用 OpenAI/Anthropic 客户端协议或检查上游协议";
+            return "Anthropic → Responses 直转：thinking 签名经 encrypted_content 桥接载体保留";
         }
 
         return streaming

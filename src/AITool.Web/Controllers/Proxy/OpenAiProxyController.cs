@@ -473,12 +473,13 @@ public sealed partial class OpenAiProxyController : ControllerBase
     }
 
     /// <summary>
-    /// 处理 OpenAI Responses Compact 请求，并复用 Responses 代理链路。
+    /// 处理 OpenAI Responses Compact 请求（Codex 远程压缩）：与普通 Responses 共用链路，
+    /// 但上游端点固定为 responses/compact，且不做 Codex 的 stream=true 强制（压缩端点只接受非流式）。
     /// </summary>
     [HttpPost("/v1/responses/compact")]
     public async Task<IActionResult> ResponsesCompact(CancellationToken cancellationToken)
     {
-        return await Responses(cancellationToken);
+        return await ResponsesCore(cancellationToken, isCompact: true);
     }
 
     /// <summary>
@@ -721,10 +722,24 @@ public sealed partial class OpenAiProxyController : ControllerBase
             }
 
             SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
-            var canFallback = !result.Success
-                && allRoutes.Skip(routeIndex + 1).Any(candidate =>
-                    !IsRouteBlockedSafely(candidate.CircuitKey)
-                    && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
+            var canFallback = allRoutes.Skip(routeIndex + 1).Any(candidate =>
+                !IsRouteBlockedSafely(candidate.CircuitKey)
+                && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
+
+            // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账，
+            // 避免出现"日志已记成功、客户端却收到 502"，以及 fallback 成功后第一次尝试的真实
+            // token 消耗在 Analytics 按 RequestId 取最终行时被漏掉的口径错位。
+            string? convertedResponseBody = null;
+            if (result.Success)
+            {
+                convertedResponseBody = responseFactory(result, actualProtocolType, modelName);
+                if (string.IsNullOrEmpty(convertedResponseBody))
+                {
+                    // 转换失败不能伪装成成功响应，保留 fallback 机会给下一条路由。
+                    result.Success = false;
+                    result.ErrorMessage ??= "upstream response protocol conversion failed";
+                }
+            }
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -740,7 +755,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
                 IsFinalResult = result.Success || !canFallback,
-                FallbackTriggered = canFallback,
+                FallbackTriggered = !result.Success && canFallback,
                 ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty),
                 HttpStatusCode = result.StatusCode > 0 ? result.StatusCode : null,
                 InputTokens = result.InputTokens,
@@ -756,32 +771,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
 
             if (result.Success)
             {
-                var responseBody = responseFactory(result, actualProtocolType, modelName);
-                if (string.IsNullOrEmpty(responseBody))
-                {
-                    // 转换失败不能伪装成成功响应，保留 fallback 机会给下一条路由。
-                    var conversionCanFallback = allRoutes.Skip(routeIndex + 1).Any(candidate =>
-                        !IsRouteBlockedSafely(candidate.CircuitKey)
-                        && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
-                    result.Success = false;
-                    result.ErrorMessage ??= "upstream response protocol conversion failed";
-                    SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
-                    lastResult = result;
-                    if (conversionCanFallback)
-                    {
-                        continue;
-                    }
-
-                    return StatusCode(result.StatusCode > 0 ? result.StatusCode : StatusCodes.Status502BadGateway,
-                        new { error = new { message = result.ErrorMessage } });
-                }
-
                 SafeSucceedRoute(route.CircuitKey);
                 SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                 {
                     Status = "success",
                     StatusCode = result.StatusCode,
-                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(responseBody),
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(convertedResponseBody!),
                     ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json",
                     IsStreaming = result.IsStreaming,
                     InputTokens = result.InputTokens,
@@ -789,7 +784,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     OutputTokens = result.OutputTokens,
                     TotalDurationMs = result.TotalDurationMs
                 });
-                return Content(responseBody, result.IsStreaming ? "text/event-stream" : "application/json");
+                return Content(convertedResponseBody!, result.IsStreaming ? "text/event-stream" : "application/json");
             }
 
             SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
@@ -806,7 +801,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 TotalDurationMs = result.TotalDurationMs
             });
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
-            SafeBlockRoute(route.CircuitKey);
+            SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             lastResult = result;
         }
 

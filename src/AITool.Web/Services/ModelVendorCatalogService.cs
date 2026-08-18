@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -162,28 +163,47 @@ public sealed class ModelVendorCatalogService
     }
 
     /// <summary>
+    /// 解析上下文缓存：厂商字典 + 按 Priority 排序的规则列表对同一 catalog 实例只构建一次。
+    /// GetPricing（~150 条价格逐条解析）与模型列表（逐条分组）原先每条都重建字典 + OrderBy，
+    /// 是 O(N×M log M) 的重复分配；ConditionalWeakTable 按 catalog 引用弱缓存，catalog 被替换时自动释放。
+    /// </summary>
+    private static readonly ConditionalWeakTable<ModelVendorCatalog, VendorResolutionContext> ResolutionContexts = new();
+
+    private sealed class VendorResolutionContext
+    {
+        public required IReadOnlyDictionary<string, ModelVendorDefinition> Vendors { get; init; }
+        public required IReadOnlyList<ModelVendorRuleDefinition> OrderedRules { get; init; }
+    }
+
+    /// <summary>
     /// 根据模型名称解析厂商。
     /// </summary>
     public static ModelVendorDefinition ResolveVendor(ModelVendorCatalog catalog, string modelName)
     {
         var normalizedName = modelName?.Trim() ?? string.Empty;
-        var vendors = catalog.Vendors
-            .ToDictionary(x => x.VendorName, x => x, StringComparer.OrdinalIgnoreCase);
-
-        foreach (var rule in catalog.Rules.OrderBy(x => x.Priority).ThenBy(x => x.Pattern, StringComparer.OrdinalIgnoreCase))
+        var context = ResolutionContexts.GetValue(catalog, static c => new VendorResolutionContext
         {
-            if (!vendors.ContainsKey(rule.VendorName))
+            Vendors = c.Vendors.ToDictionary(x => x.VendorName, x => x, StringComparer.OrdinalIgnoreCase),
+            OrderedRules = c.Rules
+                .OrderBy(x => x.Priority)
+                .ThenBy(x => x.Pattern, StringComparer.OrdinalIgnoreCase)
+                .ToList()
+        });
+
+        foreach (var rule in context.OrderedRules)
+        {
+            if (!context.Vendors.ContainsKey(rule.VendorName))
             {
                 continue;
             }
 
             if (IsMatch(normalizedName, rule))
             {
-                return vendors[rule.VendorName];
+                return context.Vendors[rule.VendorName];
             }
         }
 
-        return vendors.TryGetValue(UncategorizedVendorName, out var uncategorized)
+        return context.Vendors.TryGetValue(UncategorizedVendorName, out var uncategorized)
             ? uncategorized
             : CreateFallbackVendor();
     }

@@ -3,6 +3,7 @@ using System.Net.Http;
 using AITool.Application.Codex;
 using AITool.Application.Common;
 using AITool.Application.Operations;
+using AITool.Application.Pricing;
 using AITool.Application.Proxy;
 using AITool.Application.SiteCatalog;
 using AITool.Application.UsageLogs;
@@ -11,6 +12,7 @@ using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.OpenAI;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Pricing;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
 using AITool.Infrastructure.Scheduling;
@@ -246,6 +248,8 @@ builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<ProxyRequestMetadataCache>();
 builder.Services.AddSingleton<ModelVendorCatalogService>();
+// 模型价格表（本地 JSON，查询时动态计价，不落数据库）。
+builder.Services.AddSingleton<IModelPricingService, ModelPricingService>();
 
 // 注册 Codex 账号供给相关服务（站点级联删除工具 + 账号工厂）。
 builder.Services.AddScoped<SiteCascadeDeleter>();

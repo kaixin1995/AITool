@@ -69,18 +69,21 @@ public sealed class SqlMigrationRunnerService
 
     private readonly AppDbContext _dbContext;
     private readonly AdminAuthService _adminAuth;
+    private readonly LoginRateLimitService _rateLimiter;
     private readonly ILogger<SqlMigrationRunnerService> _logger;
     private readonly string _scriptsDirectory;
 
     public SqlMigrationRunnerService(
         AppDbContext dbContext,
         AdminAuthService adminAuth,
+        LoginRateLimitService rateLimiter,
         IConfiguration configuration,
         IWebHostEnvironment environment,
         ILogger<SqlMigrationRunnerService> logger)
     {
         _dbContext = dbContext;
         _adminAuth = adminAuth;
+        _rateLimiter = rateLimiter;
         _logger = logger;
 
         // 目录可由配置 SqlMigrations:Directory 覆盖（集成测试用）；默认部署目录下的 sql-migrations。
@@ -178,12 +181,24 @@ public sealed class SqlMigrationRunnerService
             throw new FileNotFoundException($"脚本不存在：{fileName}");
         }
 
+        // 密码校验与登录接口共用同一套暴力破解防护：连续失败按 IP 锁定。
+        var rateKey = string.IsNullOrWhiteSpace(operatorIp) ? "unknown" : operatorIp;
+        var lockSeconds = _rateLimiter.CheckLocked(rateKey);
+        if (lockSeconds is not null)
+        {
+            _logger.LogWarning("SqlMigration execute rejected: ip locked (file={FileName}, ip={Ip})", fileName, operatorIp);
+            throw new InvalidOperationException($"尝试次数过多已被锁定，请约 {lockSeconds} 秒后再试");
+        }
+
         if (!_adminAuth.VerifyPassword(password))
         {
             // 密码错误不写入执行审计（身份未通过校验），但记录告警日志便于发现爆破尝试。
+            _rateLimiter.RecordFailure(rateKey);
             _logger.LogWarning("SqlMigration execute rejected: invalid admin password (file={FileName}, ip={Ip})", fileName, operatorIp);
             throw new InvalidOperationException("管理员密码校验失败，已拒绝执行");
         }
+
+        _rateLimiter.RecordSuccess(rateKey);
 
         await ExecuteLock.WaitAsync(cancellationToken);
         try
@@ -214,7 +229,17 @@ public sealed class SqlMigrationRunnerService
             }
 
             var result = await RunStatementsAsync(fileName, fileHash, statements, dryRun, cancellationToken);
-            await RecordAsync(fileName, fileHash, dryRun, result, operatorIp, cancellationToken);
+            try
+            {
+                await RecordAsync(fileName, fileHash, dryRun, result, operatorIp, cancellationToken);
+            }
+            catch (Exception recordEx)
+            {
+                // 审计写入失败不能吞掉已提交的执行结果：SQL 可能已经真实落库，
+                // 此时向调用方报错会诱导用户误以为未执行而重跑非幂等脚本。
+                _logger.LogWarning(recordEx, "SqlMigration 审计记录写入失败（脚本可能已执行）：{FileName}", fileName);
+            }
+
             return result;
         }
         finally

@@ -93,11 +93,23 @@ public sealed partial class OpenAiProxyController
     [HttpPost("/v1/responses")]
     public async Task<IActionResult> Responses(CancellationToken cancellationToken)
     {
+        return await ResponsesCore(cancellationToken, isCompact: false);
+    }
+
+    /// <summary>
+    /// Responses 主链路：isCompact=true 时为 Codex 远程压缩请求——
+    /// 上游端点使用 responses/compact（对照 cc-switch 的 handle_responses_compact_for_app），
+    /// 且压缩端点只接受非流式（不继承 Codex 的 stream=true 强制，反而删除 stream 字段）。
+    /// </summary>
+    private async Task<IActionResult> ResponsesCore(CancellationToken cancellationToken, bool isCompact)
+    {
         using var reader = new StreamReader(Request.Body, Encoding.UTF8);
         var requestBody = await reader.ReadToEndAsync(cancellationToken);
 
         var modelName = ProxyProtocolBridge.ExtractResponsesModel(requestBody);
-        var enableStreaming = ProxyProtocolBridge.ExtractResponsesStream(requestBody);
+        // 压缩端点不支持流式（CLIProxyAPI 对 stream:true 直接 400）：统一按非流式处理，
+        // body 中的 stream 字段在 NormalizeResponsesBody（Codex 目标）中删除。
+        var enableStreaming = !isCompact && ProxyProtocolBridge.ExtractResponsesStream(requestBody);
         var reasoningEffort = ProxyProtocolBridge.ExtractResponsesReasoningEffort(requestBody);
 
         if (string.IsNullOrWhiteSpace(modelName))
@@ -166,23 +178,22 @@ public sealed partial class OpenAiProxyController
 
             // Responses 端点的转发逻辑：
             // - 原生 Responses 站点：直接透传 Responses 请求体，URL 指向 /responses
-            // - OpenAI Chat 站点：先转换为 Chat Completions，URL 指向 /chat/completions
-            // - Anthropic 站点：先转换为 Chat Completions，再由协议桥接转为 Anthropic 请求
+            // - OpenAI Chat 站点：转换为 Chat Completions，URL 指向 /chat/completions
+            // - Anthropic 站点：由 PrepareRequestBody 的直转分支转换为 Anthropic 请求（不经 Chat 中转）
             // 不能把 actualProtocolType=OpenAI 当作 Responses 透传，否则普通 OpenAI Chat 上游会收到
             // 不支持的 /responses 请求，常见表现为 HTTP 406。
             var isPassthrough = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
-            string preparedRequestBody;
-
-            if (isPassthrough)
-            {
-                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("Responses", "Responses", requestBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort, route.BaseUrl, route.CompatibilityRules, isPassthrough: true);
-            }
-            else
-            {
-                // Responses → Chat Completions → OpenAI/Anthropic：先转为 Chat Completions，再由协议桥接转发。
-                var chatBody = ProxyProtocolBridge.ConvertResponsesRequestToChat(requestBody, route.SiteModelName, enableStreaming);
-                preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody("OpenAI", actualProtocolType, chatBody, route.SiteModelName, enableStreaming, route.OverrideReasoningEffort, route.BaseUrl, route.CompatibilityRules, isPassthrough: false);
-            }
+            var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+                "Responses",
+                actualProtocolType,
+                requestBody,
+                route.SiteModelName,
+                enableStreaming,
+                route.OverrideReasoningEffort,
+                route.BaseUrl,
+                route.CompatibilityRules,
+                isPassthrough: isPassthrough,
+                isCompact: isCompact);
 
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 
@@ -207,7 +218,11 @@ public sealed partial class OpenAiProxyController
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
                 RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
-                TargetPath = isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
+                // Codex 远程压缩走专用端点 responses/compact（对照 cc-switch endpoint_with_query("/responses/compact")）；
+                // 普通 Responses 请求端点不变，正常对话行为不受影响。
+                TargetPath = isPassthrough
+                    ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, isCompact ? "responses/compact" : "responses")
+                    : null
             };
 
             if (enableStreaming)
@@ -322,8 +337,24 @@ public sealed partial class OpenAiProxyController
             }
 
             SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
-            var canFallback = !result.Success
-                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+            var canFallback = allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+
+            // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账，
+            // 避免出现"日志已记成功、客户端却收到 502"的口径错位。
+            // Anthropic 上游走直转（不经 Chat 中转）；Chat 上游仍是单次转换。
+            string? convertedResponseBody = null;
+            if (result.Success && !isPassthrough)
+            {
+                convertedResponseBody = string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
+                    ? ProxyProtocolBridge.ConvertAnthropicResponseToResponses(result.ResponseBody)
+                    : ProxyProtocolBridge.ConvertChatResponseToResponses(result.ResponseBody);
+                if (string.IsNullOrEmpty(convertedResponseBody))
+                {
+                    // 转换失败不能伪装成成功响应，保留 fallback 机会给下一条路由。
+                    result.Success = false;
+                    result.ErrorMessage ??= "upstream response protocol conversion failed";
+                }
+            }
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -339,7 +370,7 @@ public sealed partial class OpenAiProxyController
                 RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
                 IsFinalResult = result.Success || !canFallback,
-                FallbackTriggered = canFallback,
+                FallbackTriggered = !result.Success && canFallback,
                 ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty),
                 HttpStatusCode = result.StatusCode > 0 ? result.StatusCode : null,
                 InputTokens = result.InputTokens,
@@ -376,34 +407,11 @@ public sealed partial class OpenAiProxyController
                     return Content(result.ResponseBody, responseContentType);
                 }
 
-                // Anthropic 上游：将 Chat Completions 响应转为 Responses 格式
-                var chatResponseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
-                    "OpenAI", actualProtocolType, result.ResponseBody,
-                    result.IsStreaming, modelName,
-                    result.InputTokens, result.CachedTokens, result.OutputTokens);
-                var responsesBody = ProxyProtocolBridge.ConvertChatResponseToResponses(chatResponseBody);
-                if (string.IsNullOrEmpty(responsesBody))
-                {
-                    // 转换失败不能伪装成成功响应，保留 fallback 机会给下一条路由。
-                    var conversionCanFallback = allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
-                    result.Success = false;
-                    result.ErrorMessage ??= "upstream response protocol conversion failed";
-                    SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
-                    lastResult = result;
-                    if (conversionCanFallback)
-                    {
-                        continue;
-                    }
-
-                    return StatusCode(result.StatusCode > 0 ? result.StatusCode : StatusCodes.Status502BadGateway,
-                        new { error = new { message = result.ErrorMessage } });
-                }
-
                 SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                 {
                     Status = "success",
                     StatusCode = result.StatusCode,
-                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(responsesBody),
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(convertedResponseBody!),
                     ResponseContentType = "application/json",
                     IsStreaming = false,
                     InputTokens = result.InputTokens,
@@ -411,7 +419,7 @@ public sealed partial class OpenAiProxyController
                     OutputTokens = result.OutputTokens,
                     TotalDurationMs = result.TotalDurationMs
                 });
-                return Content(responsesBody, "application/json");
+                return Content(convertedResponseBody!, "application/json");
             }
 
             SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
@@ -507,27 +515,17 @@ public sealed partial class OpenAiProxyController
             }
 
             var isPassthrough = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase);
-            var preparedRequestBody = isPassthrough
-                ? ProxyProtocolBridge.PrepareRequestBody(
-                    "Responses",
-                    "Responses",
-                    normalizedRequestBody,
-                    route.SiteModelName,
-                    true,
-                    route.OverrideReasoningEffort,
-                    route.BaseUrl,
-                    route.CompatibilityRules,
-                    isPassthrough: true)
-                : ProxyProtocolBridge.PrepareRequestBody(
-                    "OpenAI",
-                    actualProtocolType,
-                    ProxyProtocolBridge.ConvertResponsesRequestToChat(normalizedRequestBody, route.SiteModelName, true),
-                    route.SiteModelName,
-                    true,
-                    route.OverrideReasoningEffort,
-                    route.BaseUrl,
-                    route.CompatibilityRules,
-                    isPassthrough: false);
+            // Anthropic 上游走 PrepareRequestBody 的直转分支；Chat 上游经 ConvertResponsesRequestToChat。
+            var preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+                "Responses",
+                actualProtocolType,
+                normalizedRequestBody,
+                route.SiteModelName,
+                true,
+                route.OverrideReasoningEffort,
+                route.BaseUrl,
+                route.CompatibilityRules,
+                isPassthrough: isPassthrough);
 
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 

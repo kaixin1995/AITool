@@ -240,6 +240,10 @@ public sealed class AnalyticsSummaryDto
     /// </summary>
     public int SuccessRequests { get; set; }
     /// <summary>
+    /// 消耗总成本（USD，按本地价格表查询时动态计算；未匹配价格的请求按 0 计）。
+    /// </summary>
+    public decimal TotalCostUsd { get; set; }
+    /// <summary>
     /// 失败请求数。
     /// </summary>
     public int FailedRequests { get; set; }
@@ -348,6 +352,22 @@ public sealed class AnalyticsTokenTrendPointDto
     /// Token 总数。
     /// </summary>
     public long TotalTokens { get; set; }
+    /// <summary>
+    /// 该桶的消耗成本（USD）。未匹配价格的请求按 0 计。
+    /// </summary>
+    public decimal CostUsd { get; set; }
+    /// <summary>
+    /// 该桶的输入段成本（USD）。未定价请求按 0 计。
+    /// </summary>
+    public decimal InputCostUsd { get; set; }
+    /// <summary>
+    /// 该桶的缓存段成本（USD）。未定价请求按 0 计。
+    /// </summary>
+    public decimal CachedCostUsd { get; set; }
+    /// <summary>
+    /// 该桶的输出段成本（USD）。未定价请求按 0 计。
+    /// </summary>
+    public decimal OutputCostUsd { get; set; }
 }
 
 /// <summary>
@@ -433,6 +453,10 @@ public sealed class AnalyticsDistributionPointDto
     /// 平均总耗时（毫秒）。
     /// </summary>
     public double AverageTotalDurationMs { get; set; }
+    /// <summary>
+    /// 该维度的消耗成本（USD，按本地价格表查询时动态计算；未匹配价格的请求按 0 计）。
+    /// </summary>
+    public decimal TotalCostUsd { get; set; }
 }
 
 /// <summary>
@@ -468,6 +492,10 @@ public sealed class AnalyticsBreakdownPointDto
     /// Token 总数。
     /// </summary>
     public long TotalTokens { get; set; }
+    /// <summary>
+    /// 该维度的消耗成本（USD）。未定价模型的请求按 0 计。
+    /// </summary>
+    public decimal TotalCostUsd { get; set; }
     /// <summary>
     /// 平均总耗时（毫秒）。
     /// </summary>
@@ -605,6 +633,10 @@ public sealed class AnalyticsApiController : ControllerBase
     /// 当前宿主环境。
     /// </summary>
     private readonly IHostEnvironment _hostEnvironment;
+    /// <summary>
+    /// 模型价格服务（查询时动态计价）。
+    /// </summary>
+    private readonly Application.Pricing.IModelPricingService _pricingService;
     // 回退链路数量上限，避免高基数链路维度撑大看板响应。
     private const int MaxFallbackChainDistributionCount = 20;
 
@@ -615,12 +647,14 @@ public sealed class AnalyticsApiController : ControllerBase
         AppDbContext dbContext,
         IServiceScopeFactory scopeFactory,
         AnalyticsBackgroundQueryExecutor queryExecutor,
-        IHostEnvironment hostEnvironment)
+        IHostEnvironment hostEnvironment,
+        Application.Pricing.IModelPricingService pricingService)
     {
         _dbContext = dbContext;
         _scopeFactory = scopeFactory;
         _queryExecutor = queryExecutor;
         _hostEnvironment = hostEnvironment;
+        _pricingService = pricingService;
     }
 
     /// <summary>
@@ -680,7 +714,7 @@ public sealed class AnalyticsApiController : ControllerBase
             {
                 using var scope = _scopeFactory.CreateScope();
                 var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-                return await BuildDashboardResponseAsync(dbContext, query, innerCancellationToken);
+                return await BuildDashboardResponseAsync(dbContext, _pricingService, query, innerCancellationToken);
             },
             waitBudget,
             cancellationToken);
@@ -708,6 +742,7 @@ public sealed class AnalyticsApiController : ControllerBase
     /// </summary>
     private static async Task<AnalyticsDashboardResponseDto> BuildDashboardResponseAsync(
         AppDbContext dbContext,
+        Application.Pricing.IModelPricingService pricingService,
         AnalyticsQueryDto query,
         CancellationToken cancellationToken)
     {
@@ -822,6 +857,15 @@ public sealed class AnalyticsApiController : ControllerBase
             }
         }
 
+        // 成本按本地价格表查询时动态计算（历史日志自动兼容，价格修改后看板即时反映）。
+        // 先确保价格表已加载，再对每条最终记录只计价一次（summary / 趋势 / 分布 / 细分复用）。
+        await pricingService.GetCatalogAsync(cancellationToken);
+        var costByLog = new Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost>(finalLogs.Count);
+        foreach (var log in finalLogs)
+        {
+            costByLog[log] = pricingService.CalculateCostUsd(log.AttemptedModel, log.RequestedAt, log.InputTokens, log.CachedTokens, log.OutputTokens);
+        }
+
         return new AnalyticsDashboardResponseDto
         {
             AppliedFilter = new AnalyticsAppliedFilterDto
@@ -836,20 +880,20 @@ public sealed class AnalyticsApiController : ControllerBase
                 SiteId = query.SiteId,
                 AccessKeyId = query.AccessKeyId
             },
-            Summary = BuildSummary(finalLogs, fallbackRequestIds),
+            Summary = BuildSummary(finalLogs, fallbackRequestIds, costByLog),
             RequestTrend = BuildRequestTrend(buckets, bucketedLogs),
             ResultTrend = BuildResultTrend(buckets, bucketedLogs),
-            TokenTrend = BuildTokenTrend(buckets, bucketedLogs),
+            TokenTrend = BuildTokenTrend(buckets, bucketedLogs, costByLog),
             DurationTrend = BuildDurationTrend(buckets, bucketedLogs),
             FallbackTrend = BuildFallbackTrend(buckets, bucketedLogs, fallbackRequestIds),
-            SiteDistribution = BuildSiteDistribution(finalLogs, siteNames),
-            ModelDistribution = BuildModelDistribution(finalLogs),
+            SiteDistribution = BuildSiteDistribution(finalLogs, siteNames, costByLog),
+            ModelDistribution = BuildModelDistribution(finalLogs, costByLog),
             ModelCacheRatioDistribution = BuildModelCacheRatioDistribution(finalLogs),
-            SourceBreakdown = BuildSourceBreakdown(finalLogs, fallbackRequestIds),
-            AccessKeyBreakdown = BuildAccessKeyBreakdown(finalLogs, fallbackRequestIds, accessKeyNames),
-            ProtocolBreakdown = BuildProtocolBreakdown(finalLogs, fallbackRequestIds),
-            FailureReasonBreakdown = BuildFailureReasonBreakdown(finalLogs, fallbackRequestIds),
-            StatusCodeBreakdown = BuildStatusCodeBreakdown(finalLogs, fallbackRequestIds),
+            SourceBreakdown = BuildSourceBreakdown(finalLogs, fallbackRequestIds, costByLog),
+            AccessKeyBreakdown = BuildAccessKeyBreakdown(finalLogs, fallbackRequestIds, accessKeyNames, costByLog),
+            ProtocolBreakdown = BuildProtocolBreakdown(finalLogs, fallbackRequestIds, costByLog),
+            FailureReasonBreakdown = BuildFailureReasonBreakdown(finalLogs, fallbackRequestIds, costByLog),
+            StatusCodeBreakdown = BuildStatusCodeBreakdown(finalLogs, fallbackRequestIds, costByLog),
             FallbackChainDistribution = BuildFallbackChainDistribution(finalLogs, matchedChainLogs, fallbackRequestIds, siteNames),
             LatencyPercentiles = BuildLatencyPercentiles(finalLogs)
         };
@@ -858,7 +902,7 @@ public sealed class AnalyticsApiController : ControllerBase
     /// <summary>
     /// 构建汇总统计。
     /// </summary>
-    private static AnalyticsSummaryDto BuildSummary(List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs, HashSet<Guid> fallbackRequestIds)
+    private static AnalyticsSummaryDto BuildSummary(List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs, HashSet<Guid> fallbackRequestIds, Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost> costByLog)
     {
         var totalRequests = finalLogs.Count;
         var successRequests = finalLogs.Count(x => IsSuccess(x.Status));
@@ -876,6 +920,8 @@ public sealed class AnalyticsApiController : ControllerBase
             TotalCachedTokens = finalLogs.Sum(x => (long)x.CachedTokens),
             TotalOutputTokens = finalLogs.Sum(x => (long)x.OutputTokens),
             TotalTokens = finalLogs.Sum(x => (long)x.TotalTokens),
+            // 未匹配价格的请求按 0 计入总成本（明细仍可在模型分布中看到未定价项）。
+            TotalCostUsd = Math.Round(costByLog.Values.Sum(x => x.CostUsd ?? 0m), 6),
             AverageTotalDurationMs = totalRequests == 0 ? 0 : Math.Round(finalLogs.Average(x => x.TotalDurationMs), 2),
             AverageFirstTokenLatencyMs = totalRequests == 0 ? 0 : Math.Round(finalLogs.Average(x => x.FirstTokenLatencyMs), 2),
             FallbackRequestCount = fallbackRequestIds.Count
@@ -930,7 +976,8 @@ public sealed class AnalyticsApiController : ControllerBase
     /// </summary>
     private static List<AnalyticsTokenTrendPointDto> BuildTokenTrend(
         List<AnalyticsBucket> buckets,
-        Dictionary<string, List<AITool.Domain.Proxy.ProxyUsageLog>> bucketedLogs)
+        Dictionary<string, List<AITool.Domain.Proxy.ProxyUsageLog>> bucketedLogs,
+        Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost> costByLog)
     {
         return buckets
             .Select(bucket =>
@@ -943,7 +990,11 @@ public sealed class AnalyticsApiController : ControllerBase
                     InputTokens = bucketLogs.Sum(x => (long)x.InputTokens),
                     CachedTokens = bucketLogs.Sum(x => (long)x.CachedTokens),
                     OutputTokens = bucketLogs.Sum(x => (long)x.OutputTokens),
-                    TotalTokens = bucketLogs.Sum(x => (long)x.TotalTokens)
+                    TotalTokens = bucketLogs.Sum(x => (long)x.TotalTokens),
+                    CostUsd = Math.Round(bucketLogs.Sum(x => costByLog.TryGetValue(x, out var cost) ? cost.CostUsd ?? 0m : 0m), 6),
+                    InputCostUsd = Math.Round(bucketLogs.Sum(x => costByLog.TryGetValue(x, out var cost) ? cost.InputCostUsd : 0m), 6),
+                    CachedCostUsd = Math.Round(bucketLogs.Sum(x => costByLog.TryGetValue(x, out var cost) ? cost.CachedCostUsd : 0m), 6),
+                    OutputCostUsd = Math.Round(bucketLogs.Sum(x => costByLog.TryGetValue(x, out var cost) ? cost.OutputCostUsd : 0m), 6)
                 };
             })
             .ToList();
@@ -1001,11 +1052,13 @@ public sealed class AnalyticsApiController : ControllerBase
     /// </summary>
     private static List<AnalyticsBreakdownPointDto> BuildSourceBreakdown(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        HashSet<Guid> fallbackRequestIds)
+        HashSet<Guid> fallbackRequestIds,
+        Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost> costByLog)
     {
         return BuildBreakdown(
             finalLogs,
             fallbackRequestIds,
+            costByLog,
             x => NormalizeAnalyticsSource(x.Source) ?? "-",
             ResolveAnalyticsSourceLabel);
     }
@@ -1016,11 +1069,13 @@ public sealed class AnalyticsApiController : ControllerBase
     private static List<AnalyticsBreakdownPointDto> BuildAccessKeyBreakdown(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
         HashSet<Guid> fallbackRequestIds,
-        IReadOnlyDictionary<Guid, string> accessKeyNames)
+        IReadOnlyDictionary<Guid, string> accessKeyNames,
+        Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost> costByLog)
     {
         return BuildBreakdown(
             finalLogs,
             fallbackRequestIds,
+            costByLog,
             x => x.AccessKeyId.ToString("D"),
             key => Guid.TryParse(key, out var accessKeyId)
                 && accessKeyNames.TryGetValue(accessKeyId, out var name)
@@ -1033,11 +1088,13 @@ public sealed class AnalyticsApiController : ControllerBase
     /// </summary>
     private static List<AnalyticsBreakdownPointDto> BuildProtocolBreakdown(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        HashSet<Guid> fallbackRequestIds)
+        HashSet<Guid> fallbackRequestIds,
+        Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost> costByLog)
     {
         return BuildBreakdown(
             finalLogs,
             fallbackRequestIds,
+            costByLog,
             x => NormalizeAnalyticsLabel(x.ProtocolType),
             key => key);
     }
@@ -1048,6 +1105,7 @@ public sealed class AnalyticsApiController : ControllerBase
     private static List<AnalyticsBreakdownPointDto> BuildBreakdown(
         IEnumerable<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
         HashSet<Guid> fallbackRequestIds,
+        Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost> costByLog,
         Func<AITool.Domain.Proxy.ProxyUsageLog, string> keySelector,
         Func<string, string> labelSelector)
     {
@@ -1071,6 +1129,7 @@ public sealed class AnalyticsApiController : ControllerBase
                     FailedCount = requestCount - successCount,
                     SuccessRate = requestCount == 0 ? 0 : Math.Round(successCount * 100d / requestCount, 2),
                     TotalTokens = group.Sum(x => (long)x.TotalTokens),
+                    TotalCostUsd = Math.Round(group.Sum(x => costByLog.TryGetValue(x, out var cost) ? cost.CostUsd ?? 0m : 0m), 6),
                     AverageTotalDurationMs = requestCount == 0 ? 0 : Math.Round(group.Average(x => x.TotalDurationMs), 2),
                     FallbackRequestCount = fallbackCount
                 };
@@ -1118,11 +1177,13 @@ public sealed class AnalyticsApiController : ControllerBase
     /// </summary>
     private static List<AnalyticsBreakdownPointDto> BuildFailureReasonBreakdown(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        HashSet<Guid> fallbackRequestIds)
+        HashSet<Guid> fallbackRequestIds,
+        Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost> costByLog)
     {
         return BuildBreakdown(
             finalLogs.Where(x => !IsSuccess(x.Status)),
             fallbackRequestIds,
+            costByLog,
             x => x.ErrorCategory
                  ?? UsageLogErrorClassifier.Classify(
                      x.Status,
@@ -1138,11 +1199,13 @@ public sealed class AnalyticsApiController : ControllerBase
     /// </summary>
     private static List<AnalyticsBreakdownPointDto> BuildStatusCodeBreakdown(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        HashSet<Guid> fallbackRequestIds)
+        HashSet<Guid> fallbackRequestIds,
+        Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost> costByLog)
     {
         return BuildBreakdown(
             finalLogs.Where(x => !IsSuccess(x.Status)),
             fallbackRequestIds,
+            costByLog,
             x => x.HttpStatusCode is null or 0 ? "no-response" : x.HttpStatusCode.Value.ToString(),
             ResolveHttpStatusLabel);
     }
@@ -1266,7 +1329,8 @@ public sealed class AnalyticsApiController : ControllerBase
     /// </summary>
     private static List<AnalyticsDistributionPointDto> BuildSiteDistribution(
         List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs,
-        IReadOnlyDictionary<Guid, string> siteNames)
+        IReadOnlyDictionary<Guid, string> siteNames,
+        Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost> costByLog)
     {
         return finalLogs
             .GroupBy(x => x.TargetSiteId)
@@ -1281,7 +1345,8 @@ public sealed class AnalyticsApiController : ControllerBase
                 InputTokens = g.Sum(x => (long)x.InputTokens),
                 CachedTokens = g.Sum(x => (long)x.CachedTokens),
                 OutputTokens = g.Sum(x => (long)x.OutputTokens),
-                AverageTotalDurationMs = Math.Round(g.Average(x => x.TotalDurationMs), 2)
+                AverageTotalDurationMs = Math.Round(g.Average(x => x.TotalDurationMs), 2),
+                TotalCostUsd = Math.Round(g.Sum(x => costByLog.TryGetValue(x, out var cost) ? cost.CostUsd ?? 0m : 0m), 6)
             })
             .OrderByDescending(x => x.RequestCount)
             .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)
@@ -1291,7 +1356,7 @@ public sealed class AnalyticsApiController : ControllerBase
     /// <summary>
     /// 构建模型分布。
     /// </summary>
-    private static List<AnalyticsDistributionPointDto> BuildModelDistribution(List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs)
+    private static List<AnalyticsDistributionPointDto> BuildModelDistribution(List<AITool.Domain.Proxy.ProxyUsageLog> finalLogs, Dictionary<AITool.Domain.Proxy.ProxyUsageLog, Application.Pricing.ModelUsageCost> costByLog)
     {
         return finalLogs
             .GroupBy(x => x.AttemptedModel)
@@ -1306,7 +1371,8 @@ public sealed class AnalyticsApiController : ControllerBase
                 InputTokens = g.Sum(x => (long)x.InputTokens),
                 CachedTokens = g.Sum(x => (long)x.CachedTokens),
                 OutputTokens = g.Sum(x => (long)x.OutputTokens),
-                AverageTotalDurationMs = Math.Round(g.Average(x => x.TotalDurationMs), 2)
+                AverageTotalDurationMs = Math.Round(g.Average(x => x.TotalDurationMs), 2),
+                TotalCostUsd = Math.Round(g.Sum(x => costByLog.TryGetValue(x, out var cost) ? cost.CostUsd ?? 0m : 0m), 6)
             })
             .OrderByDescending(x => x.RequestCount)
             .ThenBy(x => x.Label, StringComparer.OrdinalIgnoreCase)

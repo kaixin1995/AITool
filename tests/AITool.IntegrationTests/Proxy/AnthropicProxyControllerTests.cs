@@ -827,6 +827,140 @@ public sealed class AnthropicProxyControllerTests
     }
 
     /// <summary>
+    /// 上游返回 200 但响应体无法协议转换时：该次尝试必须按 fail 入账（不能先记成功再转换），
+    /// token 真实消耗保留在日志中，客户端收到带错误说明的响应。
+    /// </summary>
+    [Fact]
+    public async Task Post_messages_non_stream_conversion_failure_logs_fail_attempt()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            ForwardResultFactory = static request => new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "<<not-json-upstream-garbage>>",
+                InputTokens = 6,
+                CachedTokens = 2,
+                OutputTokens = 9
+            }
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "OpenAI");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":64,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        body.Should().Contain("upstream response protocol conversion failed", "转换失败必须返回错误说明而不是伪装成功");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("fail", "转换失败的尝试不能记成 success（修复前日志先于转换写入会误记成功）");
+        logs[0].IsFinalResult.Should().BeTrue();
+        logs[0].FallbackTriggered.Should().BeFalse();
+        logs[0].ErrorMessage.Should().Contain("conversion failed");
+        // 上游确实成功消耗了 token：用量必须保留在失败日志中，供账本核对。
+        logs[0].InputTokens.Should().Be(6);
+        logs[0].CachedTokens.Should().Be(2);
+        logs[0].OutputTokens.Should().Be(9);
+    }
+
+    /// <summary>
+    /// Responses 上游流式直转（不经 Chat 中转）：reasoning/message/function_call 输出项逐事件
+    /// 转为 Anthropic 块事件，usage 归一化为 fresh 三桶，日志按"读+写"合并缓存口径。
+    /// </summary>
+    [Fact]
+    public async Task Post_messages_stream_bridges_responses_reasoning_and_tool_calls()
+    {
+        var fakeForwardService = new AnthropicFakeProxyForwardService
+        {
+            ResponsesStreamingLines =
+            [
+                "event: response.created",
+                "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_rt\",\"status\":\"in_progress\",\"model\":\"gpt-5-real\",\"output\":[],\"usage\":null}}",
+                string.Empty,
+                "event: response.output_item.added",
+                "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}",
+                string.Empty,
+                "event: response.reasoning_summary_text.delta",
+                "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"let me think\"}",
+                string.Empty,
+                "event: response.output_item.done",
+                "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs_1\"}}",
+                string.Empty,
+                "event: response.output_item.added",
+                "data: {\"type\":\"response.output_item.added\",\"output_index\":1,\"item\":{\"type\":\"message\",\"id\":\"msg_1\",\"role\":\"assistant\",\"content\":[]}}",
+                string.Empty,
+                "event: response.output_text.delta",
+                "data: {\"type\":\"response.output_text.delta\",\"output_index\":1,\"delta\":\"answer\"}",
+                string.Empty,
+                "event: response.output_item.added",
+                "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"call_id\":\"call_r1\",\"name\":\"write\",\"arguments\":\"\"}}",
+                string.Empty,
+                "event: response.function_call_arguments.delta",
+                "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":2,\"delta\":\"{\\\"a\\\":1}\"}",
+                string.Empty,
+                "event: response.completed",
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_rt\",\"status\":\"completed\",\"model\":\"gpt-5-real\",\"output\":[],\"usage\":{\"input_tokens\":100,\"input_tokens_details\":{\"cached_tokens\":30,\"cached_creation_tokens\":10},\"output_tokens\":5}}}",
+                string.Empty
+            ]
+        };
+        await using var factory = new AnthropicProxyWebApplicationFactory(fakeForwardService, "Responses");
+        using var client = factory.CreateClient();
+
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/v1/messages")
+        {
+            Content = new StringContent("{\"model\":\"claude-proxy\",\"max_tokens\":128,\"stream\":true,\"messages\":[{\"role\":\"user\",\"content\":\"hello\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Add("x-api-key", "anthropic-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
+        // Anthropic 客户端 → Responses 上游的直转出站请求体：input 顶层结构（不经 Chat 中转）。
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"input\"");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"max_output_tokens\":128");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().NotContain("\"messages\"", "经 Chat 中转的旧路径会产出 messages 结构");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().NotContain("\"choices\"");
+
+        body.Should().Contain("event: message_start");
+        body.Should().Contain("\"type\":\"thinking\"");
+        body.Should().Contain("thinking_delta");
+        body.Should().Contain("let me think");
+        body.Should().Contain("text_delta");
+        body.Should().Contain("\"answer\"");
+        body.Should().Contain("\"type\":\"tool_use\"");
+        body.Should().Contain("\"id\":\"call_r1\"");
+        body.Should().Contain("input_json_delta");
+        body.Should().Contain("\"stop_reason\":\"tool_use\"");
+        // usage 三桶：fresh=100-30-10=60；客户端出口的 cache_read 与 cache_creation 分桶。
+        body.Should().Contain("\"input_tokens\":60");
+        body.Should().Contain("\"cache_read_input_tokens\":30");
+        body.Should().Contain("\"cache_creation_input_tokens\":10");
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("success");
+        logs[0].InputTokens.Should().Be(60);
+        logs[0].CachedTokens.Should().Be(40, "日志缓存列为读+写合并口径（30+10）");
+        logs[0].OutputTokens.Should().Be(5);
+    }
+
+    /// <summary>
     /// 发送一条默认的 Anthropic Messages 请求，便于复用基础测试输入。
     /// </summary>
     private static Task<HttpResponseMessage> SendMessagesAsync(HttpClient client)

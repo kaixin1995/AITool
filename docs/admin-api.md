@@ -14,7 +14,7 @@
 | POST | `/v1/embeddings` | Bearer | Embeddings（禁流式，仅 OpenAI 协议路由） |
 | POST | `/v1/responses` | Bearer | Responses API（HTTP 模式） |
 | GET | `/v1/responses` | Bearer | Responses API（WebSocket 模式） |
-| POST | `/v1/responses/compact` | Bearer | Responses Compact（转发到 Responses 主入口） |
+| POST | `/v1/responses/compact` | Bearer | Codex 远程压缩（Responses 主链路 + 上游专用 responses/compact 端点；Codex 目标删除 stream 字段） |
 | GET | `/v1/models` | Bearer | 模型列表（按 `x-api-key`/`anthropic-version` 头自动切 OpenAI/Anthropic 格式；按 AccessKey 路由限定过滤） |
 | GET | `/v1/models/{modelId}` | Bearer | 模型详情（403 `model_not_found` / `route_forbidden`） |
 | POST | `/v1/messages` | `x-api-key: {AccessKey}`（Bearer 回退） | Anthropic Messages 主入口 |
@@ -78,6 +78,8 @@
 | POST | `/clear-all` | 清空全部模型及关联数据 |
 | GET | `/vendor-catalog` | 厂商目录（图标/匹配规则） |
 | PUT | `/vendor-catalog` | 保存厂商目录 |
+| GET | `/pricing` | 模型价格表（本地 model-pricing.json；含 usdToCny 汇率与峰谷配置；首次访问从模板初始化） |
+| PUT | `/pricing` | 保存价格表（校验+写文件+立即刷新计价缓存；保存后统计/日志金额实时更新） |
 | POST | `/{id}/mappings` | 新增站点映射 |
 | DELETE | `/{id}/mappings/{mappingId}` | 删除映射 |
 | PUT | `/mappings/{mappingId}/concurrency` | 更新映射最大并发 |

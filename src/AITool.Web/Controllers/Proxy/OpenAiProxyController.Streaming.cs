@@ -398,18 +398,34 @@ public sealed partial class OpenAiProxyController
     /// <param name="outputTokens">保存提取到的输出 token 数。</param>
     private static void UpdateAnthropicUsageFromSseEvent(string eventName, JsonElement root, ref int inputTokens, ref int cachedTokens, ref int outputTokens)
     {
+        // 口径与 AnthropicProxyController.UpdateAnthropicUsageFromElement / UpdateAnthropicUsageFromPayload 保持一致：
+        // input_tokens 按含缓存处理，扣除 cache_read + cache_creation 得到"不含缓存的新输入"；
+        // 减法仅在该事件自带 input_tokens 时执行，避免对已扣减的值重复扣减。
         if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
         {
             if (root.TryGetProperty("message", out var message) && message.TryGetProperty("usage", out var usage))
             {
-                if (usage.TryGetProperty("input_tokens", out var it))
+                var hasInputTokens = false;
+                if (usage.TryGetProperty("input_tokens", out var it) && it.ValueKind == JsonValueKind.Number)
                 {
                     inputTokens = it.GetInt32();
+                    hasInputTokens = true;
                 }
 
-                if (usage.TryGetProperty("cache_read_input_tokens", out var ct))
+                cachedTokens = 0;
+                if (usage.TryGetProperty("cache_read_input_tokens", out var ct) && ct.ValueKind == JsonValueKind.Number)
                 {
-                    cachedTokens = ct.GetInt32();
+                    cachedTokens += ct.GetInt32();
+                }
+
+                if (usage.TryGetProperty("cache_creation_input_tokens", out var cct) && cct.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens += cct.GetInt32();
+                }
+
+                if (hasInputTokens)
+                {
+                    inputTokens = Math.Max(0, inputTokens - cachedTokens);
                 }
             }
         }
@@ -417,7 +433,29 @@ public sealed partial class OpenAiProxyController
         {
             if (root.TryGetProperty("usage", out var usage))
             {
-                if (usage.TryGetProperty("output_tokens", out var ot))
+                var hasInputTokens = false;
+                if (usage.TryGetProperty("input_tokens", out var it) && it.ValueKind == JsonValueKind.Number)
+                {
+                    inputTokens = it.GetInt32();
+                    hasInputTokens = true;
+                }
+
+                if (usage.TryGetProperty("cache_read_input_tokens", out var ct) && ct.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens = ct.GetInt32();
+                }
+
+                if (usage.TryGetProperty("cache_creation_input_tokens", out var cct) && cct.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens += cct.GetInt32();
+                }
+
+                if (hasInputTokens)
+                {
+                    inputTokens = Math.Max(0, inputTokens - cachedTokens);
+                }
+
+                if (usage.TryGetProperty("output_tokens", out var ot) && ot.ValueKind == JsonValueKind.Number)
                 {
                     outputTokens = ot.GetInt32();
                 }

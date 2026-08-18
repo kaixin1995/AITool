@@ -66,15 +66,18 @@ public sealed class SqlMigrationsApiController : ControllerBase
             return BadRequest(ApiResponse.Fail("请输入管理员密码", "password_required"));
         }
 
+        // 请求体缺省 dryRun 字段时默认试运行：危险端点上"少传一个字段就真实执行"不可接受。
+        var dryRun = request.DryRun ?? true;
+
         try
         {
             var result = await _runner.ExecuteAsync(
                 fileName,
                 request.Password,
-                request.DryRun,
-                HttpContext.Connection.RemoteIpAddress?.ToString(),
+                dryRun,
+                ResolveClientIp(),
                 cancellationToken);
-            return Ok(ApiResponse.Ok(result, request.DryRun ? "试运行完成（已回滚）" : "执行完成"));
+            return Ok(ApiResponse.Ok(result, dryRun ? "试运行完成（已回滚）" : "执行完成"));
         }
         catch (FileNotFoundException ex)
         {
@@ -84,6 +87,27 @@ public sealed class SqlMigrationsApiController : ControllerBase
         {
             return BadRequest(ApiResponse.Fail(ex.Message, "execution_rejected"));
         }
+    }
+
+    /// <summary>
+    /// 获取客户端真实 IP：仅当直连 IP 是回环地址（反向代理场景）时信任 X-Forwarded-For，
+    /// 与登录接口取值逻辑一致，保证审计与限流按真实来源统计。
+    /// </summary>
+    private string? ResolveClientIp()
+    {
+        var remoteIp = HttpContext.Connection.RemoteIpAddress;
+        if (remoteIp is null) return null;
+
+        if (System.Net.IPAddress.IsLoopback(remoteIp))
+        {
+            var forwarded = Request.Headers["X-Forwarded-For"].FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(forwarded))
+            {
+                return forwarded.Split(',')[0].Trim();
+            }
+        }
+
+        return remoteIp.ToString();
     }
 
     /// <summary>
@@ -99,4 +123,4 @@ public sealed class SqlMigrationsApiController : ControllerBase
 /// <summary>
 /// 执行脚本请求体。
 /// </summary>
-public sealed record ExecuteSqlMigrationRequest(string? Password, bool DryRun);
+public sealed record ExecuteSqlMigrationRequest(string? Password, bool? DryRun = null);

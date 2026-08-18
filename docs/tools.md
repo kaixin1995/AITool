@@ -35,7 +35,7 @@
 
 ## 3. tools/ProtocolSyncCheck — 协议同步检查工具
 
-纯 net8.0 控制台程序（4 个源文件，无第三方依赖），用于离线比对 **AITool 与参考实现 CLIProxyAPI**（`reference-projects/CLIProxyAPI`，Go 语言）的协议端点与字段覆盖一致性。
+纯 net8.0 控制台程序（6 个源文件，无第三方依赖），用于比对 **AITool 与两个参考实现**——CLIProxyAPI（Go，字段级基线）与 cc-switch（Rust/Axum，字段级基线 + 路由对照）——的协议端点与字段覆盖一致性，并通过**运行间基线快照**检测参考项目的协议演进（跑一次即可看出上次运行以来新增/移除的端点与字段）。
 
 ### 命令行
 
@@ -44,16 +44,18 @@ dotnet run --project tools/ProtocolSyncCheck [--skip-pull] [仓库根目录]
 ```
 
 - 第一个非 `--` 参数：仓库根目录路径（缺省从程序目录向上找含 `src/AITool.Web` 的目录）
-- `--skip-pull`：跳过 `git pull`，只读 `reference-projects/CLIProxyAPI` 当前 HEAD（离线/无网环境）
+- `--skip-pull`：跳过 `git pull`，只读 `reference-projects/CLIProxyAPI` 与 `reference-projects/cc-switch` 当前 HEAD（离线/无网环境）
 
 ### 工作流程（4 个阶段）
 
-1. **拉取基准**（`GitPullHelper`）：对 `reference-projects/CLIProxyAPI` 执行 `git pull --ff-only`；失败回退从官方仓库 `https://github.com/router-for-me/CLIProxyAPI.git` 重试；记录基准 HEAD 短哈希与提交时间（写入报告「基准版本」）
-2. **路由扫描**（`ProtocolScanner`）：正则扫描 AITool 三个代理控制器（`OpenAiProxyController.cs`、`OpenAiProxyController.Responses.cs`、`AnthropicProxyController.cs`）的 `[HttpXxx]` 特性，与 CLIProxyAPI 的 Gin 路由（`internal/api/server_routes.go`、`server.go`，Group 前缀拼接、`:modelId/:request_id/:task_id` 归一化）比对；内置 `ProtocolCatalog`（OpenAI 27 条 + Anthropic 4 条，分主协议/legacy/扩展）；**不在目录里的路由进入未分类路由扫描（UnclassifiedRoutes）**
-3. **字段级对比**：`CpaFieldGroupBuilder` 从 Go handler/translator（gjson/sjson/字面量 map key 正则）提取 9 个字段基线分组（OpenAI Chat 请求/响应、legacy Completions、Responses 请求/响应、Anthropic Messages 请求/响应、Anthropic Models）；`CSharpFieldScanner` 扫描 `src/AITool.Protocol` 全部 .cs + `src/AITool.Web/Controllers/Proxy` + `ChatApiController.cs`（识别 indexer/Add/CopyIfPresent 透传/转换帮助方法/语义映射如 `reasoning_effort↔thinking`）；`FieldDiffEngine.ComputeDiffs` 产出每字段状态（Matched/PassThrough/BridgeHandled/SemanticHandled/DynamicHandled/Missing/TypeMismatch）
-4. **生成报告**（`ProtocolReportBuilder.Build`）：写入 **`docs/protocol-sync-report.md`**（UTF-8 无 BOM）；控制台输出路由数、未跟踪路由数、字段分组/字段数、基准版本
+1. **拉取基准**（`GitPullHelper.PullReferenceProject`）：分别对 `reference-projects/CLIProxyAPI` 与 `reference-projects/cc-switch` 执行 `git pull --ff-only`；各自失败回退官方仓库（`router-for-me/CLIProxyAPI`、`farion1231/cc-switch`）重试；记录两个基准 HEAD 短哈希与提交时间（写入报告「基准版本」）
+2. **路由扫描**（`ProtocolScanner`）：正则扫描 AITool 三个代理控制器（`OpenAiProxyController.cs`、`OpenAiProxyController.Responses.cs`、`AnthropicProxyController.cs`）的 `[HttpXxx]` 特性、CLIProxyAPI 的 Gin 路由（`internal/api/server_routes.go`、`server.go`，Group 前缀拼接、`:modelId/:request_id/:task_id` 归一化）、cc-switch 的 Axum 路由（`src-tauri/src/proxy/server.rs` 的 `build_router()`，兼容单行/多行 `.route()` 形式，`any(..)` 归一化为 ANY）；内置 `ProtocolCatalog`（OpenAI 27 条 + Anthropic 4 条，分主协议/legacy/扩展）；**不在目录里的路由进入未分类路由扫描（UnclassifiedRoutes）**。cc-switch 的等价别名前缀（`/v1/v1/*`、`/codex/*`、裸 `/responses` 等）在矩阵中折叠进主路由判断
+3. **字段级对比**：`CpaFieldGroupBuilder` 从 Go handler/translator（gjson/sjson/字面量 map key 正则）提取 9 个字段基线分组（OpenAI Chat 请求/响应、legacy Completions、Responses 请求/响应、Anthropic Messages 请求/响应、Anthropic Models）；`CSharpFieldScanner` 扫描 `src/AITool.Protocol` 全部 .cs + `src/AITool.Web/Controllers/Proxy` + `ChatApiController.cs`（识别 indexer/Add/CopyIfPresent 透传/转换帮助方法/语义映射如 `reasoning_effort↔thinking`）；`FieldDiffEngine.ComputeDiffs` 产出每字段状态（Matched/PassThrough/BridgeHandled/SemanticHandled/DynamicHandled/Missing/TypeMismatch）。字段基线仅来自 CLIProxyAPI
+4. **生成报告**（`ProtocolReportBuilder.Build`）：写入 **`docs/protocol-sync-report.md`**（UTF-8 无 BOM）；控制台输出三个项目的路由数、未跟踪路由数、字段分组/字段数、两个基准版本
 
-> `docs/protocol-sync-report.md` 是生成物（`.gitignore` 显式忽略，不入库），每次运行覆盖。报告结构：运行信息 → 扫描前提异常 → 总览状态计数 → 协议接口状态表 → 双方未跟踪路由表 → 字段对比明细 → 排查结论（优先级判断）。
+> `docs/protocol-sync-report.md` 与 `docs/protocol-sync-baseline.json`（运行间基线快照）均为生成物（`.gitignore` 显式忽略，不入库），每次运行覆盖。报告结构：运行信息（双基准版本）→ **快速结论**（一眼看清缺口数量）→ **自上次运行以来的协议变更**（基线差集：参考项目新增/移除的端点与字段）→ 扫描前提异常 → 总览状态计数 → 协议接口状态表（AITool vs CLIProxyAPI）→ **三方路由覆盖矩阵（AITool / CLIProxyAPI / cc-switch）** → **cc-switch 本地端点全量清单** → 未跟踪路由表 → **CLIProxyAPI 字段对比 + cc-switch 字段对比**（cc-switch 按 9 个转换方向分组，含 xAI 规范化）→ 排查结论（优先级判断）。
+>
+> **退出码**：CLIProxyAPI 存在未实现路由或未检测到字段时退出码 1（可直接用于脚本/CI 判断）；cc-switch 未覆盖字段（Gemini、thinking 签名桥接等 AITool 有意不做的能力）仅提示不影响退出码。首次运行建立基线；基线文件损坏时按首次运行处理，不中断扫描。
 
 ---
 

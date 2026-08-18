@@ -166,6 +166,29 @@ public sealed class ProxyForwardServiceResponseTests
     }
 
     [Fact]
+    public void HasUsableResponse_Responses_FailedStatus_WithPartialOutput_ReturnsFalse()
+    {
+        // status=failed 即使带部分 output 也不能当成功响应，否则客户端会收到"成功空回答"。
+        var body = """{"id":"resp_1","object":"response","status":"failed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}""";
+        ProxyForwardService.HasUsableResponse(body, "OpenAI").Should().BeFalse();
+    }
+
+    [Fact]
+    public void HasUsableResponse_Responses_CancelledStatus_ReturnsFalse()
+    {
+        var body = """{"id":"resp_1","object":"response","status":"cancelled","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial"}]}]}""";
+        ProxyForwardService.HasUsableResponse(body, "OpenAI").Should().BeFalse();
+    }
+
+    [Fact]
+    public void HasUsableResponse_Responses_IncompleteStatus_WithOutput_ReturnsTrue()
+    {
+        // incomplete（如 max_output_tokens 截断）不是失败终态，仍按可用响应处理。
+        var body = """{"id":"resp_1","object":"response","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}""";
+        ProxyForwardService.HasUsableResponse(body, "OpenAI").Should().BeTrue();
+    }
+
+    [Fact]
     public void HasUsableResponse_EmptyBody_ReturnsFalse()
     {
         ProxyForwardService.HasUsableResponse("", "OpenAI").Should().BeFalse();

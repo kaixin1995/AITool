@@ -82,13 +82,30 @@ public static partial class ProxyProtocolBridge
                 case "image":
                     if (blockObj["source"] is JsonObject src)
                     {
-                        var mediaType = src["media_type"]?.GetValue<string>() ?? "image/png";
-                        var data = src["data"]?.GetValue<string>() ?? "";
-                        imageBlocks.Add(new JsonObject
+                        var sourceType = src["type"]?.GetValue<string>() ?? "base64";
+                        if (string.Equals(sourceType, "url", StringComparison.OrdinalIgnoreCase))
                         {
-                            ["type"] = "image_url",
-                            ["image_url"] = new JsonObject { ["url"] = $"data:{mediaType};base64,{data}" }
-                        });
+                            // 远程图片 URL 直接透传（cache_control / prompt_cache_breakpoint 不透传）。
+                            var url = src["url"]?.GetValue<string>() ?? "";
+                            if (!string.IsNullOrEmpty(url))
+                            {
+                                imageBlocks.Add(new JsonObject
+                                {
+                                    ["type"] = "image_url",
+                                    ["image_url"] = new JsonObject { ["url"] = url }
+                                });
+                            }
+                        }
+                        else
+                        {
+                            var mediaType = src["media_type"]?.GetValue<string>() ?? "image/png";
+                            var data = src["data"]?.GetValue<string>() ?? "";
+                            imageBlocks.Add(new JsonObject
+                            {
+                                ["type"] = "image_url",
+                                ["image_url"] = new JsonObject { ["url"] = $"data:{mediaType};base64,{data}" }
+                            });
+                        }
                     }
                     break;
             }
@@ -655,6 +672,28 @@ public static partial class ProxyProtocolBridge
     }
 
     /// <summary>
+    /// 解析 SSE 单行的字段负载。SSE 规范允许 "data:value"（无空格）与 "data: value" 两种写法，
+    /// 这里统一兼容：仅剥离字段名冒号后的第一个空格，与规范一致。
+    /// </summary>
+    public static bool TryExtractSseFieldPayload(string line, string fieldName, out string value)
+    {
+        value = string.Empty;
+        var prefix = fieldName + ":";
+        if (!line.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        value = line[prefix.Length..];
+        if (value.StartsWith(' '))
+        {
+            value = value[1..];
+        }
+
+        return true;
+    }
+
+    /// <summary>
     /// 在需要时关闭当前的 thinking 内容块。
     /// </summary>
     private static void CloseThinkingBlockIfNeeded(StringBuilder builder, AnthropicOpenAiStreamState state)
@@ -839,13 +878,45 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     private static string ExtractSystemContent(JsonNode systemNode)
     {
-        return systemNode switch
+        var text = systemNode switch
         {
             JsonValue value => value.ToJsonString().Trim('"'),
             JsonArray array => string.Join("\n", array.Select(ExtractTextFromNode).Where(x => !string.IsNullOrWhiteSpace(x))),
             JsonObject obj => ExtractTextFromNode(obj),
             _ => systemNode.ToJsonString()
         };
+        return StripLeadingAnthropicBillingHeader(text);
+    }
+
+    /// <summary>
+    /// 剥离 Claude Code 动态插入的 billing header 首行（x-anthropic-billing-header: ...）。
+    /// 该行随请求变化，透传会破坏上游 prompt cache 的前缀复用（口径对齐 cc-switch
+    /// strip_leading_anthropic_billing_header，由反向推导向量测试锁定）：
+    /// 仅当文本以该前缀开头时剥离第一行（含 CRLF/LF）；非开头出现时保留原样。
+    /// </summary>
+    internal static string StripLeadingAnthropicBillingHeader(string text)
+    {
+        const string prefix = "x-anthropic-billing-header:";
+        if (string.IsNullOrEmpty(text) || !text.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return text;
+        }
+
+        var lineEnd = text.IndexOf('\n');
+        if (lineEnd < 0 && !text.Contains('\r'))
+        {
+            // 整段只有 billing header 一行 → 剥离后为空。
+            return string.Empty;
+        }
+
+        var restStart = lineEnd >= 0 ? lineEnd + 1 : text.IndexOf('\r') + 1;
+        // 兼容 \r\n 与连续换行。
+        while (restStart < text.Length && (text[restStart] == '\n' || text[restStart] == '\r'))
+        {
+            restStart++;
+        }
+
+        return text[restStart..];
     }
 
     /// <summary>
@@ -982,12 +1053,11 @@ public static partial class ProxyProtocolBridge
         foreach (var rawLine in responseBody.Split('\n'))
         {
             var line = rawLine.TrimEnd('\r');
-            if (!line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
+            if (!TryExtractSseFieldPayload(line, "data", out var jsonText))
             {
                 continue;
             }
 
-            var jsonText = line["data: ".Length..];
             if (string.Equals(jsonText, "[DONE]", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
@@ -1038,15 +1108,15 @@ public static partial class ProxyProtocolBridge
         foreach (var rawLine in responseBody.Split('\n'))
         {
             var line = rawLine.TrimEnd('\r');
-            if (line.StartsWith("event: ", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractSseFieldPayload(line, "event", out var eventNameValue))
             {
-                currentEvent = line["event: ".Length..].Trim();
+                currentEvent = eventNameValue.Trim();
                 continue;
             }
 
-            if (line.StartsWith("data: ", StringComparison.OrdinalIgnoreCase))
+            if (TryExtractSseFieldPayload(line, "data", out var dataValue))
             {
-                dataLines.Add(line["data: ".Length..]);
+                dataLines.Add(dataValue);
                 continue;
             }
 
@@ -1358,6 +1428,23 @@ public static partial class ProxyProtocolBridge
             ? ct.GetInt32()
             : 0;
 
+        // 缓存写 token：兼容 cached_creation_tokens（本仓出口与 newapi 使用）与 cache_write_tokens 两种写法。
+        // 未读取时缓存写会被计入"新输入"列，导致输入虚高、缓存列低估。
+        var cacheWriteTokens = 0;
+        if (inputDetails.ValueKind == JsonValueKind.Object)
+        {
+            if (inputDetails.TryGetProperty("cached_creation_tokens", out var cct) && cct.ValueKind == JsonValueKind.Number)
+            {
+                cacheWriteTokens = cct.GetInt32();
+            }
+            else if (inputDetails.TryGetProperty("cache_write_tokens", out var cwt) && cwt.ValueKind == JsonValueKind.Number)
+            {
+                cacheWriteTokens = cwt.GetInt32();
+            }
+        }
+
+        var totalCachedTokens = cachedTokens + cacheWriteTokens;
+
         // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
         // 所以 output_tokens=0 时回退到 completion_tokens。
         var openAiOutputTokens = usage.TryGetProperty("output_tokens", out var outputTokens) && outputTokens.GetInt32() > 0
@@ -1367,10 +1454,10 @@ public static partial class ProxyProtocolBridge
                 : 0;
 
         // OpenAI 的 input_tokens/prompt_tokens 已包含缓存命中部分（cached_tokens 是其子集）。
-        // 与上方 Anthropic 分支一致，返回的 InputTokens 统一为"不含缓存的新输入"，
+        // 与上方 Anthropic 分支一致，返回的 InputTokens 统一为"不含缓存的新输入"（缓存读+写都需扣除），
         // 否则"输入"列与"缓存"列重复统计，TotalTokens（新输入+缓存+输出）虚高。
-        var newOpenAiInput = Math.Max(0, openAiInputTokens - cachedTokens);
-        return (newOpenAiInput, cachedTokens, openAiOutputTokens);
+        var newOpenAiInput = Math.Max(0, openAiInputTokens - totalCachedTokens);
+        return (newOpenAiInput, totalCachedTokens, openAiOutputTokens);
     }
 
     /// <summary>

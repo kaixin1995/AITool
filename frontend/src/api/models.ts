@@ -71,6 +71,39 @@ export async function saveVendorCatalog(payload: ModelVendorCatalog): Promise<vo
   await httpPut('/api/admin/models/vendor-catalog', payload)
 }
 
+// 模型价格表（本地 JSON，查询时动态计价）
+export interface ModelOffPeakPricing {
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite?: number | null
+}
+export interface ModelPriceEntry {
+  id: string
+  displayName: string
+  /** 按厂商规则解析出的厂商名（GET 时服务端填充；保存时忽略） */
+  vendorName?: string | null
+  /** USD / 百万 tokens（基准/高峰档） */
+  input: number
+  output: number
+  cacheRead: number
+  cacheWrite: number
+  offPeak?: ModelOffPeakPricing | null
+  /** 高峰时段窗口（HH:mm-HH:mm，支持跨午夜）；窗口内用基准价，窗口外用低峰价 */
+  peakWindows?: string[] | null
+  peakTimeZoneOffsetMinutes?: number
+}
+export interface ModelPricingCatalog {
+  usdToCny: number
+  models: ModelPriceEntry[]
+}
+export async function getModelPricing(): Promise<ModelPricingCatalog> {
+  return httpGet<ModelPricingCatalog>('/api/admin/models/pricing')
+}
+export async function saveModelPricing(payload: ModelPricingCatalog): Promise<void> {
+  await httpPut('/api/admin/models/pricing', payload)
+}
+
 // 模型详情 + 映射管理（原 Models/Edit 功能）
 export interface ModelSiteMapping {
   mappingId: string

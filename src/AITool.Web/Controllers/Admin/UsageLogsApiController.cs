@@ -155,6 +155,10 @@ public sealed class UsageLogListItemDto
     /// </summary>
     public long TotalTokens { get; set; }
     /// <summary>
+    /// 本次尝试的消耗成本（USD，按本地价格表查询时动态计算）；null 表示该模型未定价。
+    /// </summary>
+    public decimal? CostUsd { get; set; }
+    /// <summary>
     /// 是否流式返回。
     /// </summary>
     public bool IsStreaming { get; set; }
@@ -332,6 +336,10 @@ public sealed class UsageLogSummaryDto
     /// </summary>
     public long TotalTokens { get; set; }
     /// <summary>
+    /// 消耗总成本（USD，当前筛选范围全部尝试行求和；未定价模型的行按 0 计）。
+    /// </summary>
+    public decimal TotalCostUsd { get; set; }
+    /// <summary>
     /// 最大耗时（毫秒）。
     /// </summary>
     public int MaxDurationMs { get; set; }
@@ -348,13 +356,18 @@ public sealed class UsageLogsApiController : ControllerBase
     /// 数据库上下文。
     /// </summary>
     private readonly AppDbContext _dbContext;
+    /// <summary>
+    /// 模型价格服务（列表行与摘要的动态计价）。
+    /// </summary>
+    private readonly Application.Pricing.IModelPricingService _pricingService;
 
     /// <summary>
     /// 创建用量日志控制器。
     /// </summary>
-    public UsageLogsApiController(AppDbContext dbContext)
+    public UsageLogsApiController(AppDbContext dbContext, Application.Pricing.IModelPricingService pricingService)
     {
         _dbContext = dbContext;
+        _pricingService = pricingService;
     }
 
     /// <summary>
@@ -408,6 +421,9 @@ public sealed class UsageLogsApiController : ControllerBase
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
         var page = totalPages == 0 ? 1 : Math.Min(Math.Max(1, query.Page), totalPages);
 
+        // 确保价格表已加载（首次访问时从本地 JSON 读取），行级计价才能命中。
+        await _pricingService.GetCatalogAsync(cancellationToken);
+
         // 只加载当前页的数据，不加载全表
         var pagedLogs = await baseQuery
             .OrderBy(x => x.RequestedAt, SqlSugar.OrderByType.Desc)
@@ -436,6 +452,8 @@ public sealed class UsageLogsApiController : ControllerBase
                 CachedTokens = x.CachedTokens,
                 OutputTokens = x.OutputTokens,
                 TotalTokens = x.TotalTokens,
+                // 单页最多 100 行，逐行动态计价；峰谷条目按各自请求时间取档。
+                CostUsd = _pricingService.CalculateCostUsd(x.AttemptedModel, x.RequestedAt, x.InputTokens, x.CachedTokens, x.OutputTokens).CostUsd,
                 IsStreaming = x.IsStreaming,
                 IsStreamInterrupted = x.IsStreamInterrupted,
                 FirstTokenLatencyMs = x.FirstTokenLatencyMs,
@@ -556,12 +574,25 @@ public sealed class UsageLogsApiController : ControllerBase
                 ? 0
                 : await baseQuery.MaxAsync(x => x.TotalDurationMs, cancellationToken);
 
+            // 成本无法在 SQL 层聚合（价格表在本地 JSON）：只投影计价所需的最小列集合。
+            var totalCostUsd = 0m;
+            if (totalCount > 0)
+            {
+                await _pricingService.GetCatalogAsync(cancellationToken);
+                var costRows = await baseQuery
+                    .Select(x => new { x.AttemptedModel, x.RequestedAt, x.InputTokens, x.CachedTokens, x.OutputTokens })
+                    .ToListAsync(cancellationToken);
+                totalCostUsd = Math.Round(costRows.Sum(x =>
+                    _pricingService.CalculateCostUsd(x.AttemptedModel, x.RequestedAt, x.InputTokens, x.CachedTokens, x.OutputTokens).CostUsd ?? 0m), 6);
+            }
+
             return Ok(new UsageLogSummaryDto
             {
                 TotalRequests = totalCount,
                 FailedRequests = failedRequests,
                 SuccessRate = successRate,
                 TotalTokens = totalTokens,
+                TotalCostUsd = totalCostUsd,
                 MaxDurationMs = maxDurationMs
             });
         }

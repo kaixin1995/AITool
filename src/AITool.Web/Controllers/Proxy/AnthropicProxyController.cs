@@ -363,8 +363,31 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
-            var canFallback = !result.Success
-                && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+            var canFallback = allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+
+            // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账。
+            // 否则会出现"日志已记成功、客户端却收到 502"，以及 fallback 成功后第一次尝试的真实
+            // token 消耗在 Analytics 按 RequestId 取最终行时被漏掉的口径错位。
+            string? responseBody = null;
+            if (result.Success)
+            {
+                responseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
+                    "Anthropic",
+                    actualProtocolType,
+                    result.ResponseBody,
+                    result.IsStreaming,
+                    modelName,
+                    result.InputTokens,
+                    result.CachedTokens,
+                    result.OutputTokens);
+
+                if (string.IsNullOrEmpty(responseBody))
+                {
+                    // 转换失败不能伪装成成功响应，也不能把空消息返回给客户端。
+                    result.Success = false;
+                    result.ErrorMessage ??= "upstream response protocol conversion failed";
+                }
+            }
 
             await SafeLogUsageAsync(new UsageLogEntry
             {
@@ -380,7 +403,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 RetryCount = result.Success ? attemptIndex - 1 : attemptIndex,
                 AttemptIndex = attemptIndex,
                 IsFinalResult = result.Success || !canFallback,
-                FallbackTriggered = canFallback,
+                FallbackTriggered = !result.Success && canFallback,
                 ErrorMessage = result.Success ? string.Empty : (result.ErrorMessage ?? string.Empty),
                 HttpStatusCode = result.StatusCode > 0 ? result.StatusCode : null,
                 InputTokens = result.InputTokens,
@@ -396,32 +419,6 @@ public sealed class AnthropicProxyController : ControllerBase
 
             if (result.Success)
             {
-                var responseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
-                    "Anthropic",
-                    actualProtocolType,
-                    result.ResponseBody,
-                    result.IsStreaming,
-                    modelName,
-                    result.InputTokens,
-                    result.CachedTokens,
-                    result.OutputTokens);
-
-                // 转换失败返回空结果时不能标记路由成功，也不能把空消息返回给客户端。
-                if (string.IsNullOrEmpty(responseBody))
-                {
-                    result.Success = false;
-                    result.ErrorMessage ??= "upstream response protocol conversion failed";
-                    SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
-                    lastResult = result;
-                    if (!canFallback)
-                    {
-                        return StatusCode(result.StatusCode > 0 ? result.StatusCode : StatusCodes.Status502BadGateway,
-                            new { error = new { type = "api_error", message = result.ErrorMessage } });
-                    }
-
-                    continue;
-                }
-
                 // 成功时清除该路由的连续失败计数
                 SafeSucceedRoute(route.CircuitKey);
                 if (result.IsStreaming &&
@@ -434,13 +431,13 @@ public sealed class AnthropicProxyController : ControllerBase
                 if (result.IsStreaming && result.HasStartedStreaming && result.IsStreamInterrupted &&
                     string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
                 {
-                    responseBody = ProxyProtocolBridge.EnsureAnthropicStreamClosed(responseBody, modelName, result.InputTokens, result.CachedTokens, result.OutputTokens);
+                    responseBody = ProxyProtocolBridge.EnsureAnthropicStreamClosed(responseBody!, modelName, result.InputTokens, result.CachedTokens, result.OutputTokens);
                 }
                 SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
                 {
                     Status = "success",
                     StatusCode = result.StatusCode,
-                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(responseBody),
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(responseBody!),
                     ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json",
                     IsStreaming = result.IsStreaming,
                     InputTokens = result.InputTokens,
@@ -450,7 +447,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 });
                 // 流式响应以 SSE 格式返回，使用 text/event-stream 内容类型
                 var contentType = result.IsStreaming ? "text/event-stream" : "application/json";
-                return Content(responseBody, contentType);
+                return Content(responseBody!, contentType);
             }
 
             SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
@@ -468,8 +465,8 @@ public sealed class AnthropicProxyController : ControllerBase
             });
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
 
-            // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
-            SafeBlockRoute(route.CircuitKey);
+            // 转发或转换失败，通知熔断器（达到阈值才会真正触发熔断）
+            SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             lastResult = result;
         }
 
@@ -637,11 +634,13 @@ public sealed class AnthropicProxyController : ControllerBase
             Response.Headers.Connection = "keep-alive";
         }
 
-        var state = new ProxyProtocolBridge.AnthropicOpenAiStreamState();
-        var responsesToChatState = new ResponsesToChatStreamState
+        // Responses 上游的逐事件直转状态（不经 Chat 中转，保住 reasoning/function_call/document 语义）。
+        // state 必须取直转状态的 Core：块管理、usage 与收尾事件共享同一实例。
+        var responsesToAnthropicState = new ProxyProtocolBridge.ResponsesToAnthropicStreamState
         {
             Model = modelName
         };
+        var state = responsesToAnthropicState.Core;
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
@@ -676,55 +675,17 @@ public sealed class AnthropicProxyController : ControllerBase
                     return;
                 }
 
-                // 累积原始 Responses 正文，不受 64KB 诊断副本限制。
-
-                responsesToChatState.InputTokens = state.InputTokens;
-                responsesToChatState.CachedTokens = state.CachedTokens;
-                responsesToChatState.OutputTokens = state.OutputTokens;
-                var openAiSse = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
-                    $"event: {responsesEventName}\ndata: {responsesPayload}\n\n",
-                    responsesToChatState);
-                if (string.IsNullOrEmpty(openAiSse))
+                // Responses → Anthropic 逐事件直转；只有真正产生 Anthropic 事件时才发送 message_start，
+                // 保留尚未写出时的 fallback 能力。收尾事件由流结束后的 CompleteAnthropicStream 统一补齐。
+                var responsesConvertedChunk = ProxyProtocolBridge.ConvertResponsesSseEventToAnthropic(responsesEventName, responsesPayload, responsesToAnthropicState);
+                if (!string.IsNullOrEmpty(responsesConvertedChunk))
                 {
-                    return;
-                }
-
-                using var reader = new StringReader(openAiSse);
-                string? line;
-                var openAiSseLines = new List<string>();
-                while ((line = reader.ReadLine()) is not null)
-                {
-                    if (string.IsNullOrEmpty(line))
+                    if (!startedWriting)
                     {
-                        if (TryExtractSseDataPayload(openAiSseLines, out var openAiJsonText))
-                        {
-                            openAiSseLines.Clear();
-                            if (string.Equals(openAiJsonText, "[DONE]", StringComparison.OrdinalIgnoreCase))
-                            {
-                                state.ReceivedDoneEvent = true;
-                                continue;
-                            }
-
-                            var convertedResponsesChunk = ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(openAiJsonText, state);
-                            if (!string.IsNullOrEmpty(convertedResponsesChunk))
-                            {
-                                if (!startedWriting)
-                                {
-                                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
-                                }
-
-                                await WriteChunkAsync(convertedResponsesChunk, token);
-                            }
-                        }
-                        else
-                        {
-                            openAiSseLines.Clear();
-                        }
-
-                        continue;
+                        await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
                     }
 
-                    openAiSseLines.Add(line);
+                    await WriteChunkAsync(responsesConvertedChunk, token);
                 }
 
                 return;
@@ -792,6 +753,14 @@ public sealed class AnthropicProxyController : ControllerBase
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
 
+        if (result.Success && responsesToAnthropicState.Failed)
+        {
+            // Responses 上游以 response.failed/error 终态收尾：已写出按中断处理，未写出按失败允许回退。
+            result.Success = false;
+            result.ErrorMessage ??= startedWriting ? "stream interrupted by response.failed" : "upstream responses stream failed";
+            result.IsStreamInterrupted = startedWriting;
+        }
+
         if (result.Success && state.ConversionFailed && !startedWriting)
         {
             result.Success = false;
@@ -814,7 +783,9 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             result.InputTokens = state.InputTokens;
-            result.CachedTokens = state.CachedTokens;
+            // 日志的 CachedTokens 是"读+写"合并口径（与 ExtractUsageFromElement 一致）；
+            // 客户端出口的 message_delta 由 CompleteAnthropicStream 按读/写分桶，互不影响。
+            result.CachedTokens = state.CachedTokens + state.CacheCreationTokens;
             result.OutputTokens = state.OutputTokens;
 
             if (startedWriting)
@@ -847,7 +818,8 @@ public sealed class AnthropicProxyController : ControllerBase
             await WriteChunkAsync(closingChunk, cancellationToken);
             result.ResponseBody = responseBuilder.ToString();
             result.InputTokens = state.InputTokens;
-            result.CachedTokens = state.CachedTokens;
+            // 同成功路径：日志缓存列按"读+写"合并口径。
+            result.CachedTokens = state.CachedTokens + state.CacheCreationTokens;
             result.OutputTokens = state.OutputTokens;
             result.IsStreamInterrupted = true;
 

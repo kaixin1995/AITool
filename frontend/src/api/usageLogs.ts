@@ -26,6 +26,8 @@ export interface UsageLogItem {
   cachedTokens: number
   outputTokens: number
   totalTokens: number
+  /** 消耗成本（USD，动态计价）；null 表示该模型未定价 */
+  costUsd?: number | null
   isStreaming: boolean
   isStreamInterrupted: boolean
   firstTokenLatencyMs: number
@@ -40,6 +42,8 @@ export interface UsageLogSummary {
   failedRequests: number
   successRate: number
   totalTokens: number
+  /** 消耗总成本（USD，当前筛选范围求和） */
+  totalCostUsd?: number
   maxDurationMs: number
 }
 

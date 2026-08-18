@@ -42,6 +42,10 @@ public sealed class ModelsApiController : ControllerBase
     /// </summary>
     private readonly ModelVendorCatalogService _vendorCatalogService;
     /// <summary>
+    /// 模型价格服务（读取/保存 model-pricing.json，查询计价）。
+    /// </summary>
+    private readonly Application.Pricing.IModelPricingService _pricingService;
+    /// <summary>
     /// 站点级联删除工具（复用空路由入口清理逻辑）。
     /// </summary>
     private readonly SiteCascadeDeleter _cascadeDeleter;
@@ -54,12 +58,14 @@ public sealed class ModelsApiController : ControllerBase
         ProxyRequestMetadataCache metadataCache,
         ModelConcurrencyLimiter concurrencyLimiter,
         ModelVendorCatalogService vendorCatalogService,
+        Application.Pricing.IModelPricingService pricingService,
         SiteCascadeDeleter cascadeDeleter)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _concurrencyLimiter = concurrencyLimiter;
         _vendorCatalogService = vendorCatalogService;
+        _pricingService = pricingService;
         _cascadeDeleter = cascadeDeleter;
     }
 
@@ -453,6 +459,57 @@ public sealed class ModelsApiController : ControllerBase
         }
 
         return Ok(ApiResponse.Ok("厂商规则已保存"));
+    }
+
+    /// <summary>
+    /// 获取模型价格表（本地 JSON，不存在时从模板初始化）；条目附带按厂商规则解析的厂商名，便于前端分组过滤。
+    /// </summary>
+    [HttpGet("pricing")]
+    public async Task<IActionResult> GetPricing(CancellationToken cancellationToken)
+    {
+        var catalog = await _pricingService.GetCatalogAsync(cancellationToken);
+        var vendorCatalog = await _vendorCatalogService.GetOrCreateAsync(cancellationToken);
+        var view = new Application.Pricing.ModelPricingCatalog
+        {
+            UsdToCny = catalog.UsdToCny,
+            Models = catalog.Models.Select(entry => new Application.Pricing.ModelPriceEntry
+            {
+                Id = entry.Id,
+                DisplayName = entry.DisplayName,
+                VendorName = ModelVendorCatalogService.ResolveVendor(vendorCatalog, entry.Id).VendorName,
+                Input = entry.Input,
+                Output = entry.Output,
+                CacheRead = entry.CacheRead,
+                CacheWrite = entry.CacheWrite,
+                OffPeak = entry.OffPeak,
+                PeakWindows = entry.PeakWindows,
+                PeakTimeZoneOffsetMinutes = entry.PeakTimeZoneOffsetMinutes
+            }).ToList()
+        };
+        return Ok(view);
+    }
+
+    /// <summary>
+    /// 保存模型价格表（校验 + 写入 model-pricing.json + 立即刷新计价缓存）。
+    /// </summary>
+    [HttpPut("pricing")]
+    public async Task<IActionResult> SavePricing([FromBody] Application.Pricing.ModelPricingCatalog catalog, CancellationToken cancellationToken)
+    {
+        if (catalog is null)
+        {
+            return BadRequest(ApiResponse.Fail("价格数据不能为空", "empty_input"));
+        }
+
+        try
+        {
+            await _pricingService.SaveCatalogAsync(catalog, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            return Ok(ApiResponse.Fail($"保存失败：{ex.Message}", "save_failed"));
+        }
+
+        return Ok(ApiResponse.Ok("模型价格已保存"));
     }
 
     /// <summary>

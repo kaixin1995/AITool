@@ -52,6 +52,63 @@ public sealed class ResponsesProxyTests
     }
 
     /// <summary>
+    /// Codex 远程压缩：/v1/responses/compact 应转发到上游专用 responses/compact 端点（对照 cc-switch），
+    /// 普通对话的 /v1/responses 端点行为不受影响。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_compact_forwards_to_dedicated_compact_endpoint()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses/compact")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\",\"stream\":true}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        fakeForwardService.Requests.Should().ContainSingle();
+        // 上游端点保留 /compact 后缀，且客户端携带的 stream:true 不会以流式模式转发。
+        fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses/compact");
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Responses");
+        fakeForwardService.Requests[0].EnableStreaming.Should().BeFalse("压缩端点不支持流式");
+    }
+
+    /// <summary>
+    /// 回归保护：普通 /v1/responses 请求的端点与流式行为不受 compact 改动影响。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_normal_endpoint_unchanged_after_compact_support()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"input\":\"hello\"}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].TargetPath.Should().Be("/v1/responses");
+    }
+
+    /// <summary>
     /// 同时支持 OpenAI Chat 和 Responses 的上游应优先使用原生 Responses 接口。
     /// </summary>
     [Fact]
@@ -683,6 +740,55 @@ public sealed class ResponsesProxyTests
         logs[0].IsStreaming.Should().BeTrue();
         logs[0].Status.Should().Be("success");
         logs[0].HttpStatusCode.Should().Be(200);
+        // F6 口径统一：Anthropic 上游 input_tokens=10 含缓存（cache_read=2），
+        // 桥接路径的日志输入与其他路径一致按"不含缓存的新输入"记 8，而不是旧解析器的含缓存 10。
+        logs[0].InputTokens.Should().Be(8);
+        logs[0].CachedTokens.Should().Be(2);
+        logs[0].OutputTokens.Should().Be(5);
+    }
+
+    /// <summary>
+    /// 流式透传的 usage 携带缓存写字段（cached_creation_tokens）时，
+    /// 日志缓存列按"读+写"合并口径记录，输入扣除读写后为不含缓存的新输入。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_stream_passthrough_includes_cache_write_in_log()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            StreamingLines =
+            [
+                "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\",\"output_index\":0,\"content_index\":0}",
+                string.Empty,
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_cw\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":50,\"input_tokens_details\":{\"cached_tokens\":5,\"cached_creation_tokens\":10},\"output_tokens\":7}}}",
+                string.Empty,
+                "data: [DONE]",
+                string.Empty
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent("{\"model\":\"auto\",\"input\":\"hello\",\"stream\":true}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.ToListAsync();
+        logs.Should().ContainSingle();
+        logs[0].Status.Should().Be("success");
+        // 修复前 cached_creation_tokens 完全不读：缓存写被计入"新输入"列（55 中的 50-5=45）。
+        logs[0].InputTokens.Should().Be(35, "50 - 读5 - 写10 = 35 不含缓存的新输入");
+        logs[0].CachedTokens.Should().Be(15, "缓存列 = 读5 + 写10 合并口径");
+        logs[0].OutputTokens.Should().Be(7);
     }
 
     /// <summary>
@@ -787,6 +893,82 @@ public sealed class ResponsesProxyTests
         fakeForwardService.Requests[0].ProtocolType.Should().Be("OpenAI");
         fakeForwardService.Requests[0].TargetPath.Should().BeNull();
         fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("messages");
+    }
+
+    /// <summary>
+    /// WebSocket 的 Anthropic 上游应把 Anthropic SSE 事件直转为 Responses JSON 消息：
+    /// thinking 块映射为 reasoning 输出项并携带签名桥接载体，tool_use 映射为 function_call。
+    /// </summary>
+    [Fact]
+    public async Task Get_responses_websocket_bridges_anthropic_stream_with_reasoning_and_tools()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            IsAnthropicOnly = true,
+            StreamingLines =
+            [
+                "event: message_start",
+                "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_ws_a\",\"model\":\"claude-x\",\"usage\":{\"input_tokens\":6,\"cache_read_input_tokens\":2,\"output_tokens\":0},\"content\":[]}}",
+                string.Empty,
+                "event: content_block_start",
+                "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"}}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"ws think\"}}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"ws-sig\"}}",
+                string.Empty,
+                "event: content_block_start",
+                "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"ws-anthropic-bridge-ok\"}}",
+                string.Empty,
+                "event: content_block_start",
+                "data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_ws\",\"name\":\"write\",\"input\":{}}}",
+                string.Empty,
+                "event: content_block_delta",
+                "data: {\"type\":\"content_block_delta\",\"index\":2,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}",
+                string.Empty,
+                "event: message_delta",
+                "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":4},\"delta\":{\"stop_reason\":\"tool_use\"}}",
+                string.Empty,
+                "event: message_stop",
+                "data: {\"type\":\"message_stop\"}",
+                string.Empty
+            ]
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        _ = factory.CreateClient();
+
+        var webSocketClient = factory.Server.CreateWebSocketClient();
+        webSocketClient.ConfigureRequest = request =>
+        {
+            request.Headers["Authorization"] = "Bearer responses-test-key";
+        };
+
+        using var webSocket = await webSocketClient.ConnectAsync(new Uri("ws://localhost/v1/responses"), CancellationToken.None);
+        await SendWebSocketTextAsync(webSocket, "{\"type\":\"response.create\",\"model\":\"auto\",\"input\":[{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"hello\"}]}]}");
+
+        var messages = await ReceiveWebSocketMessagesUntilAsync(webSocket, "response.completed");
+        await webSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "test complete", CancellationToken.None);
+
+        messages.Should().Contain(message => message.Contains("response.created", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("response.reasoning_summary_text.delta", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("ws think", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("aitool-anthropic-thinking-v1:", StringComparison.Ordinal),
+            "signature_delta 必须编码进 reasoning 项的 encrypted_content 桥接载体，供下一轮 append 还原");
+        messages.Should().Contain(message => message.Contains("response.output_text.delta", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("ws-anthropic-bridge-ok", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("response.function_call_arguments.delta", StringComparison.Ordinal));
+        messages.Should().Contain(message => message.Contains("response.completed", StringComparison.Ordinal));
+
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ProtocolType.Should().Be("Anthropic");
+        // 直转出站请求体为 Anthropic 格式（不经 Chat 中转）。
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().Contain("\"messages\"");
+        fakeForwardService.Requests[0].PreparedRequestBody.Should().NotContain("\"choices\"");
     }
 
     /// <summary>

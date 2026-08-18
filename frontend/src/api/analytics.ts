@@ -14,6 +14,8 @@ export interface AnalyticsSummary {
   successRate?: number
   failureRate?: number
   fallbackRequestCount?: number
+  /** 消耗总成本（USD，查询时动态计价；未定价模型按 0 计） */
+  totalCostUsd?: number
 }
 export interface AnalyticsTrendPoint {
   label: string
@@ -32,6 +34,14 @@ export interface AnalyticsTokenTrendPoint {
   cachedTokens: number
   outputTokens: number
   totalTokens: number
+  /** 该桶消耗成本（USD） */
+  costUsd?: number
+  /** 该桶输入段成本（USD） */
+  inputCostUsd?: number
+  /** 该桶缓存段成本（USD） */
+  cachedCostUsd?: number
+  /** 该桶输出段成本（USD） */
+  outputCostUsd?: number
 }
 export interface AnalyticsDurationTrendPoint {
   label: string
@@ -54,6 +64,8 @@ export interface AnalyticsDistributionPoint {
   cachedTokens?: number
   outputTokens?: number
   averageTotalDurationMs?: number
+  /** 该维度消耗成本（USD） */
+  totalCostUsd?: number
 }
 export interface AnalyticsCacheRatioPoint {
   label: string
@@ -70,6 +82,8 @@ export interface AnalyticsBreakdownPoint {
   failedCount: number
   successRate: number
   totalTokens: number
+  /** 该维度消耗成本（USD） */
+  totalCostUsd?: number
   averageTotalDurationMs: number
   fallbackRequestCount: number
 }

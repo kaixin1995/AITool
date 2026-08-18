@@ -10,26 +10,28 @@
 - 独立类库项目，**零 NuGet 依赖**（只用 BCL `System.Text.Json`），唯一项目引用是 `AITool.Domain`（为了 `CompatibilityRule` DTO）
 - 被消费方：`Infrastructure/Proxy/ProxyForwardService`（仅 `ExtractUsageFromElement`）、`Infrastructure/Health/ModelHealthRequestService`、`Web/Controllers/Proxy/*`（全部转换入口）、`Web/Controllers/Admin/ChatApiController` 与 `DeveloperInvocationsApiController`（离线诊断）
 
-整个项目 = 一个巨型 `static partial class ProxyProtocolBridge`（6 个文件，约 6,970 行）+ 5 个流式状态类：
+整个项目 = 一个巨型 `static partial class ProxyProtocolBridge`（7 个文件）+ 流式状态类：
 
-| 文件 | 行数 | 内容 |
-|------|------|------|
-| `ProxyProtocolBridge.Core.cs` | 597 | 入口分发：`PrepareRequestBody` / `AdaptResponseBodyForClient` / 规则引擎 / Codex 规范化；嵌套 `AnthropicOpenAiStreamState`、`AnthropicToolCallBlockState` |
-| `ProxyProtocolBridge.RequestConvert.cs` | 516 | 请求体转换：`BuildOpenAiRequestFromAnthropic`、`BuildAnthropicRequestFromOpenAi` |
-| `ProxyProtocolBridge.ResponseConvert.cs` | 1177 | 非流式响应互转 + 整段流式互转 + legacy Completions 四件套；嵌套 `StreamingToolCall`、`StreamingUsageInfo` |
-| `ProxyProtocolBridge.StreamToAnthropic.cs` | 522 | OpenAI 流式分片 → Anthropic 事件流（增量状态机） |
-| `ProxyProtocolBridge.Responses.cs` | 2676 | Responses 协议全家桶（请求/响应/双向流式）；顶层 `ResponsesToChatStreamState`、`ResponsesToolCallState`、`ChatToResponsesStreamState` |
-| `ProxyProtocolBridge.Helpers.cs` | 1482 | 全部共享私有辅助（内容块解析、usage 提取、SSE 写入、映射表）+ 唯一公开辅助 `ExtractUsageFromElement` |
+| 文件 | 内容 |
+|------|------|
+| `ProxyProtocolBridge.Core.cs` | 入口分发：`PrepareRequestBody` / `AdaptResponseBodyForClient` / 规则引擎 / Codex 规范化；嵌套 `AnthropicOpenAiStreamState`、`AnthropicToolCallBlockState` |
+| `ProxyProtocolBridge.RequestConvert.cs` | 请求体转换：`BuildOpenAiRequestFromAnthropic`、`BuildAnthropicRequestFromOpenAi` |
+| `ProxyProtocolBridge.ResponseConvert.cs` | 非流式响应互转 + 整段流式互转 + legacy Completions 四件套；嵌套 `StreamingToolCall`、`StreamingUsageInfo` |
+| `ProxyProtocolBridge.StreamToAnthropic.cs` | OpenAI 流式分片 → Anthropic 事件流（增量状态机） |
+| `ProxyProtocolBridge.Responses.cs` | Responses 协议全家桶（请求/响应/双向流式）；顶层 `ResponsesToChatStreamState`、`ResponsesToolCallState`、`ChatToResponsesStreamState` |
+| `ProxyProtocolBridge.BridgeAnthropicResponses.cs` | **Anthropic ↔ Responses 直转**（不经 Chat 中转）：请求双向、非流式响应双向、聚合流式双向、`ConvertResponsesSseEventToAnthropic` 逐事件状态机、thinking 签名桥接载体（`aitool-anthropic-thinking-v1:`） |
+| `ProxyProtocolBridge.Helpers.cs` | 全部共享私有辅助（内容块解析、usage 提取、SSE 写入、映射表）+ 公开辅助 `ExtractUsageFromElement` / `TryExtractSseFieldPayload`（SSE 行解析，兼容无空格 `data:`） |
 
 ### 流式状态类（均 `public sealed`，由调用方持有）
 
-| 类 | 文件:行 | 用途 |
+| 类 | 位置 | 用途 |
 |----|---------|------|
-| `ProxyProtocolBridge.AnthropicOpenAiStreamState` | Core.cs:18 | OpenAI/Responses 流 → Anthropic 事件流会话状态：块索引、thinking/text 块开闭、tool_use 字典、usage 四元组（Input/Cached/CacheCreation/Output）、`StopReason`、`ConversionFailed` |
-| `ProxyProtocolBridge.AnthropicToolCallBlockState` | Core.cs:85 | 单个 tool_use 块状态（ContentIndex/ToolUseId/Name/Started/Closed） |
-| `ResponsesToChatStreamState` | Responses.cs:10 | Responses 流 → Chat 流：`ToolCallChatIndices`（Responses output_index → Chat 连续索引映射）、reasoning/text StringBuilder、token 三元组 |
-| `ResponsesToolCallState` | Responses.cs:61 | 工具调用参数累积（Id/Name/Arguments） |
-| `ChatToResponsesStreamState` | Responses.cs:68 | Chat 流或 Anthropic 流 → Responses 事件流：`SawMeaningfulEvent`（防空响应启动）、`OutputText.AppendOutputText()`（惰性求值防 O(n²)）、三组 tool call 索引映射字典、Usage 元组 |
+| `ProxyProtocolBridge.AnthropicOpenAiStreamState` | Core.cs | OpenAI/Responses 流 → Anthropic 事件流会话状态：块索引、thinking/text 块开闭、tool_use 字典、usage 四元组（Input/Cached/CacheCreation/Output）、`StopReason`、`ConversionFailed` |
+| `ProxyProtocolBridge.AnthropicToolCallBlockState` | Core.cs | 单个 tool_use 块状态（ContentIndex/ToolUseId/Name/Started/Closed） |
+| `ResponsesToChatStreamState` | Responses.cs | Responses 流 → Chat 流：`ToolCallChatIndices`（Responses output_index → Chat 连续索引映射）、reasoning/text StringBuilder、token 三元组 |
+| `ResponsesToolCallState` | Responses.cs | 工具调用参数累积（Id/Name/Arguments） |
+| `ChatToResponsesStreamState` | Responses.cs | Chat 流或 Anthropic 流 → Responses 事件流：`SawMeaningfulEvent`（防空响应启动）、`OutputText.AppendOutputText()`（惰性求值防 O(n²)）、三组 tool call 索引映射字典、Usage 元组；Anthropic 桥接时另有 reasoning 项生命周期字段（`ReasoningItemId/ReasoningText/ReasoningSignature/ReservedOutputIndexes/MessageOutputIndex`，签名进 `encrypted_content` 桥接载体） |
+| `ProxyProtocolBridge.ResponsesToAnthropicStreamState` / `ResponsesOutputItemState` | BridgeAnthropicResponses.cs | Responses 流 → Anthropic 事件流直转状态：内嵌 `AnthropicOpenAiStreamState`（块管理复用）+ `Items`（output_index → 内容块映射）+ `Completed/Failed` 终态标记 |
 
 **失败约定**：非流式转换失败返回 `string.Empty`（调用层据此保留路由 fallback）；流式状态机解析失败置 `state.ConversionFailed = true`，尚未写出首字节时仍可 fallback。
 
@@ -52,8 +54,8 @@ public static string PrepareRequestBody(
 | client \ target | OpenAI | Anthropic | Responses |
 |---|---|---|---|
 | **OpenAI** | 同协议直通：`ReplaceOpenAiModelAndEnsureStreamUsage` | `BuildAnthropicRequestFromOpenAi` | `ConvertChatRequestToResponses` |
-| **Anthropic** | `BuildOpenAiRequestFromAnthropic`（keepReasoning 视规则） | 直通：`ReplaceModelName` | **两段式**：`BuildOpenAiRequestFromAnthropic` → `ConvertChatRequestToResponses` |
-| **Responses** | `ConvertResponsesRequestToChat` | 两段式：`ConvertResponsesRequestToChat` → `BuildAnthropicRequestFromOpenAi` | 直通（模型名替换 + stream_usage 保证） |
+| **Anthropic** | `BuildOpenAiRequestFromAnthropic`（keepReasoning 视规则） | 直通：`ReplaceModelName` | **直转**：`BuildResponsesRequestFromAnthropic`（BridgeAnthropicResponses.cs） |
+| **Responses** | `ConvertResponsesRequestToChat` | **直转**：`BuildAnthropicRequestFromResponses`（BridgeAnthropicResponses.cs） | 直通：`ReplaceModelName`（**不注入** stream_options，该字段仅对 Chat Completions 有效） |
 
 统一后处理链（顺序固定）：`ApplyReasoningEffort`（按目标协议写 `output_config.effort`+`thinking` / `reasoning.effort` / `reasoning_effort`）→ 目标为 Responses 时 `NormalizeResponsesBody`（`store=false` 兜底；`IsCodexTarget` 为真时剔除不支持字段 + 强制 `stream=true`）→ `ApplyCompatibilityProfile`（兼容规则，最后一步）。
 
@@ -69,16 +71,21 @@ public static string AdaptResponseBodyForClient(
 | client \ upstream | OpenAI | Anthropic | Responses |
 |---|---|---|---|
 | **OpenAI** | 原样 | 非流式 `BuildOpenAiResponseFromAnthropic` / 流式 `BuildOpenAiStreamingResponseFromAnthropic`（整段聚合） | 非流式 `ConvertResponsesResponseToChat` / 流式 `ConvertResponsesStreamingToChat` |
-| **Anthropic** | 非流式 `BuildAnthropicResponseFromOpenAi` / 流式 `BuildAnthropicStreamingResponseFromOpenAi` | 原样 | 两段式：先 → Chat，再 → Anthropic（流式在控制器逐块做） |
-| **Responses** | `ConvertChatResponseToResponses`（非流式）/ 控制器逐块 `ConvertChatStreamChunkToResponses` | 非流式 `ConvertAnthropicResponseToResponses`；流式走控制器 `ConvertAnthropicStreamChunkToResponses` | 原样 |
+| **Anthropic** | 非流式 `BuildAnthropicResponseFromOpenAi` / 流式 `BuildAnthropicStreamingResponseFromOpenAi` | 原样 | **直转**：非流式 `BuildAnthropicResponseFromResponses` / 聚合流式 `BuildAnthropicStreamFromResponses`（实时逐事件版在控制器走 `ConvertResponsesSseEventToAnthropic`） |
+| **Responses** | `ConvertChatResponseToResponses`（非流式）/ 控制器逐块 `ConvertChatStreamChunkToResponses` | **直转**：非流式 `BuildResponsesResponseFromAnthropic`（即 `ConvertAnthropicResponseToResponses`）/ 聚合流式 `BuildResponsesStreamFromAnthropic`；实时逐事件走控制器 `ConvertAnthropicStreamChunkToResponses` | 原样 |
 
-> 注意：Anthropic→OpenAI 的**增量**流式转换在控制器 `ForwardAnthropicStreamAsOpenAiAsync` 内联实现（事件级直转），Protocol 项目提供的是整段聚合版本；Responses 相关的部分流式方向也在控制器层分发。**代码中不存在** `ConvertAnthropicStreamChunkToOpenAi` / `ConvertResponsesSseToResponse` 这两个旧名（老版 README 笔误）。
+> **Anthropic ↔ Responses 已全部改为直转**（2026-08，BridgeAnthropicResponses.cs），不再经 Chat Completions 两段中转。直转的关键收益：
+> 1. **thinking 签名桥接**——Anthropic 上游返回的 thinking block 签名被编码进 Responses reasoning 输出项的 `encrypted_content`（前缀 `aitool-anthropic-thinking-v1:` 的 Base64 载体），客户端回传后由 `BuildAnthropicRequestFromResponses` 还原为带签名的 thinking block，Anthropic 上游多轮工具调用 + 思考的会话不再因签名丢失被拒；
+> 2. `document ↔ input_file`、`web_search` 服务端工具、`parallel_tool_calls`、`instructions ↔ system` 等字段不再丢失；
+> 3. usage 四桶（input/cache_read/cache_creation/output）按各自协议口径精确换算。
+>
+> 注意：Anthropic→OpenAI 的**增量**流式转换在控制器 `ForwardAnthropicStreamAsOpenAiAsync` 内联实现（事件级直转），Protocol 项目提供的是整段聚合版本。**代码中不存在** `ConvertAnthropicStreamChunkToOpenAi` / `ConvertResponsesSseToResponse` 这两个旧名（老版 README 笔误）。
 
 ---
 
 ## 3. 流式转换的三种模式
 
-1. **增量状态机**（边收边转，真实时）：`ConvertOpenAiStreamChunkToAnthropic`（每 data 行调一次）、`ConvertChatStreamChunkToResponses`、`ConvertAnthropicStreamChunkToResponses`、`ConvertResponsesStreamingToChat(state)`（按 SSE 事件块 `FlushEvent` 分发）
+1. **增量状态机**（边收边转，真实时）：`ConvertOpenAiStreamChunkToAnthropic`（每 data 行调一次）、`ConvertChatStreamChunkToResponses`、`ConvertAnthropicStreamChunkToResponses`、`ConvertResponsesSseEventToAnthropic`（Responses→Anthropic 逐事件直转，复用 `AnthropicOpenAiStreamState` 块管理）、`ConvertResponsesStreamingToChat(state)`（按 SSE 事件块 `FlushEvent` 分发）
 2. **整段聚合**：先读完上游整个 SSE 文本再重建（`BuildAnthropicStreamingResponseFromOpenAi`、`BuildOpenAiStreamingResponseFromAnthropic`），内部用 `ExtractOpenAiStreamingText/Metadata`、`ExtractAnthropicStreamingText/Metadata` 重组
 3. **非流式 → 流式重放**：`BuildAnthropicStreamFromOpenAiResponse` 把完整 JSON 响应一次性重放为 Anthropic 事件序列（兼容 stream=true 却返回完整对象的伪流式上游）
 
@@ -105,7 +112,12 @@ public static string AdaptResponseBodyForClient(
 - Anthropic → OpenAI：`BuildOpenAiResponseFromAnthropic`(L552)：Anthropic input 已含缓存，直接映射 prompt_tokens
 - ⚠️ 入口侧已知歧义：`ExtractUsageFromElement` 的 Anthropic 分支按"`input_tokens` 含缓存"口径做减法（`新输入 = input − cache`，见上文）。该口径对 newapi 类中间层（把 OpenAI prompt_tokens 语义带进 Anthropic 格式）成立；对官方 Anthropic 上游（官方为三桶加法、input 不含缓存）则会低估。是否需要按上游类型区分口径，待实际流量验证后再定。
 
-**流式累计覆盖语义**（防 newapi 类中间层重复累计）：`message_start` 与 `message_delta` 都带 usage 时按**覆盖**而非累加处理（`ConvertOpenAiStreamChunkToAnthropic` L53-80 只在 `usage` 为 JSON 对象时提取，`cached` 用 `>0` 守卫防 0 覆盖外部值；Anthropic 透传的 `UpdateAnthropicUsageFromPayload` 同口径）。
+**流式累计覆盖语义**（防 newapi 类中间层重复累计）：`message_start` 与 `message_delta` 都带 usage 时按**覆盖**而非累加处理（`ConvertOpenAiStreamChunkToAnthropic` 只在 `usage` 为 JSON 对象时提取，`cached` 用 `>0` 守卫防 0 覆盖外部值；Anthropic 透传的 `UpdateAnthropicUsageFromPayload` 同口径）。
+
+**流式状态的"分桶"与日志的"合并"两级口径**（2026-08 补充）：
+- **状态机内部按三桶分拆**：`AnthropicOpenAiStreamState.CachedTokens` 只放缓存**读**、`CacheCreationTokens` 单独放缓存**写**（`ConvertOpenAiStreamChunkToAnthropic` 与 `ConvertResponsesSseEventToAnthropic` 均手工拆桶，**不能**复用 `ExtractUsageFromElement` 的合并值——否则出口 `message_delta` 的 `cache_read` 桶混入写、与 `cache_creation` 桶重复计费）
+- **客户端出口三桶加法**：`CompleteAnthropicStream` 的 `message_delta` 按 fresh / cache_read / cache_creation 分桶输出（官方口径）
+- **日志缓存列合并**：控制器把 `result.CachedTokens = state.CachedTokens + state.CacheCreationTokens` 写入日志（日志表只有单一 `CachedTokens` 列，与 `ExtractUsageFromElement` 的"读+写"合并口径一致）；缓存写字段族兼容 `cached_creation_tokens` / `cache_write_tokens` 两种写法
 
 **思维链字段兼容**：Anthropic→Responses 的 `thinking_delta` 正文读 `delta.thinking`（个别把 thinking 放 `text` 的中间层兜底）；Chat→Responses 的 reasoning 增量用 `ExtractReasoningFromElement` 统一兼容 `reasoning_content`/`reasoning`/`thinking` 三种字段。
 

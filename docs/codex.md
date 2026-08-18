@@ -42,7 +42,7 @@
 
 | 场景 | 服务 | 行为 |
 |------|------|------|
-| 周期预防性刷新 | `CodexTokenRefreshService`（HostedService） | 到期前刷新 access_token，写回隐藏 `Site.ApiKey` 并失效路由缓存 |
+| 周期预防性刷新 | `CodexTokenRefreshService`（HostedService） | 每 5 分钟扫描；**到期前 2 天**即刷新 access_token，写回隐藏 `Site.ApiKey` 并失效路由缓存；同一账号 30 分钟内不重复刷新（防短有效期 token 刷新风暴，已过期账号不受限）；403 退避 1 小时 |
 | 代理命中 401 实时刷新 | `CodexCredentialRefreshService.RefreshAsync`（Scoped） | 作为 `ProxyForwardRequest.RefreshTargetApiKeyAsync` 回调注入转发链（`CreateCodexCredentialRefreshCallback`，仅 `ManagedSource=="Codex"`）：401 → 刷 OAuth → 同步隐藏站点 → 重发一次 |
 | 手动刷新 | `POST /accounts/{id}/refresh-token` | 同机制 |
 

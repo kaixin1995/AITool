@@ -9,6 +9,7 @@ import * as modelsApi from '@/api/models'
 import * as compatApi from '@/api/compatibility'
 import type { ModelListItem, ModelPayload } from '@/api/models'
 import PageHeader from '@/components/PageHeader.vue'
+import ModelPricingPanel from '@/components/ModelPricingPanel.vue'
 import {
   buildVendorIconMarkup,
   extractSvgBody,
@@ -433,12 +434,18 @@ onMounted(loadModels)
             </div>
             <div v-else class="vendor-definition-list">
               <section v-for="entry in filteredVendors" :key="`${entry.vendor.vendorName}-${entry.index}`" class="vendor-summary-card">
-                <div class="vendor-summary-header">
-                  <div>
-                    <div class="vendor-summary-name">{{ entry.vendor.vendorName || '未命名厂商' }}</div>
-                    <div class="vendor-summary-meta">规则 {{ entry.rules.length }} 条 · 排序 {{ entry.vendor.sortOrder }}</div>
+                <div class="vendor-summary-header" :style="{ background: entry.vendor.headerBackground || undefined }">
+                  <div class="vendor-summary-title-wrap">
+                    <div class="vendor-group-icon" :class="{ 'vendor-group-icon-fallback': !entry.vendor.iconSvgBody }">
+                      <span v-if="entry.vendor.iconSvgBody" v-html="buildVendorIconMarkup(entry.vendor.iconSvgBody)" />
+                      <span v-else>{{ (entry.vendor.vendorName || '厂').slice(0, 1) }}</span>
+                    </div>
+                    <div class="vendor-summary-heading">
+                      <div class="vendor-summary-name">{{ entry.vendor.vendorName || '未命名厂商' }}</div>
+                      <div class="vendor-summary-meta">规则 {{ entry.rules.length }} 条 · 排序 {{ entry.vendor.sortOrder }}</div>
+                    </div>
                   </div>
-                  <NSpace>
+                  <NSpace class="vendor-summary-actions">
                     <NButton size="small" secondary type="primary" @click="openVendorEditor(entry.index)">编辑</NButton>
                     <NPopconfirm @positive-click="deleteVendor(entry.index)">
                       <template #trigger><NButton size="small" secondary type="error">删除</NButton></template>
@@ -446,16 +453,21 @@ onMounted(loadModels)
                     </NPopconfirm>
                   </NSpace>
                 </div>
-                <div v-if="entry.rules.length" class="vendor-summary-rules">
-                  <div v-for="(rule, ruleIndex) in entry.rules" :key="`${rule.pattern}-${ruleIndex}`" class="vendor-summary-rule-item">
-                    <NTag size="small" :bordered="false">{{ matchTypeLabel(rule.matchType) }}</NTag>
-                    <span class="vendor-summary-rule-pattern">{{ rule.pattern || '未填写匹配表达式' }}</span>
+                <div class="vendor-summary-body">
+                  <div v-if="entry.rules.length" class="vendor-summary-rules">
+                    <div v-for="(rule, ruleIndex) in entry.rules" :key="`${rule.pattern}-${ruleIndex}`" class="vendor-summary-rule-item">
+                      <NTag size="small" :bordered="false">{{ matchTypeLabel(rule.matchType) }}</NTag>
+                      <span class="vendor-summary-rule-pattern">{{ rule.pattern || '未填写匹配表达式' }}</span>
+                    </div>
                   </div>
+                  <div v-else class="vendor-rule-empty compact">当前还没有配置匹配规则。</div>
                 </div>
-                <div v-else class="vendor-rule-empty compact">当前还没有配置匹配规则。</div>
               </section>
             </div>
           </div>
+        </NTabPane>
+        <NTabPane name="pricing" tab="模型价格">
+          <ModelPricingPanel />
         </NTabPane>
       </NTabs>
     </NCard>
@@ -935,11 +947,48 @@ onMounted(loadModels)
 .vendor-summary-card {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 16px;
   border: 1px solid var(--border-color-global);
   border-radius: 16px;
   background: var(--bg-card);
+  overflow: hidden;
+}
+
+/* 厂商规则卡片头部：与“模型分组”页一致的图标 + 厂商配色渐变条 */
+.vendor-summary-card .vendor-summary-header {
+  padding: 14px 18px;
+  align-items: center;
+  color: #1f2937;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+}
+
+.vendor-summary-actions {
+  flex-shrink: 0;
+}
+
+.vendor-summary-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.vendor-summary-heading {
+  min-width: 0;
+}
+
+.vendor-summary-card .vendor-summary-name {
+  color: #1f2937;
+}
+
+.vendor-summary-card .vendor-summary-meta {
+  color: #475569;
+}
+
+.vendor-summary-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 18px 16px;
 }
 
 .vendor-summary-header,

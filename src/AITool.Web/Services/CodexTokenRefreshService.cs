@@ -19,8 +19,11 @@ public sealed class CodexTokenRefreshService : BackgroundService
     /// <summary>扫描周期。</summary>
     private static readonly TimeSpan ScanInterval = TimeSpan.FromMinutes(5);
 
-    /// <summary>提前刷新量：到期前多久就刷新。</summary>
-    private static readonly TimeSpan RefreshLead = TimeSpan.FromHours(1);
+    /// <summary>提前刷新量：到期前多久就刷新（Codex access_token 有效期约 10-15 天，剩 2 天即刷新）。</summary>
+    private static readonly TimeSpan RefreshLead = TimeSpan.FromDays(2);
+
+    /// <summary>同一账号两次成功刷新的最小间隔：限制短有效期 token 的刷新频率。</summary>
+    private static readonly TimeSpan MinRefreshInterval = TimeSpan.FromMinutes(30);
 
     /// <summary>同轮内每两次刷新间的小延迟，错峰避免瞬时打满上游。</summary>
     private static readonly TimeSpan InterAccountDelay = TimeSpan.FromMilliseconds(500);
@@ -95,6 +98,15 @@ public sealed class CodexTokenRefreshService : BackgroundService
         // 上游拒绝刷新时暂时跳过该账号，避免每个扫描周期重复触发同一个失败请求。
         var nowForBackoff = DateTimeOffset.UtcNow;
         due = due.Where(account => !ShouldBackoffRefresh(account.Id, nowForBackoff)).ToList();
+
+        // 防刷新风暴：提前量放大到 2 天后，若上游返回的 expires_in 短于提前量（如导入凭证、上游变更），
+        // 账号会每轮扫描都"临期"。30 分钟内成功刷新过且尚未真正过期的账号本轮跳过，
+        // 把最坏情况的刷新频率从每 5 分钟一次限制到每小时至多两次；已过期账号不受限（转发链路急需新 token）。
+        var recentRefreshFloor = nowForBackoff - MinRefreshInterval;
+        due = due.Where(account =>
+            account.TokenExpiresAt <= nowForBackoff
+            || account.LastRefreshAt is null
+            || account.LastRefreshAt <= recentRefreshFloor).ToList();
 
         if (due.Count == 0)
         {

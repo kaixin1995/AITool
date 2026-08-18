@@ -579,6 +579,25 @@ public sealed partial class OpenAiProxyController
                 cachedTokens = cachedTokenElement.GetInt32();
             }
 
+            // 缓存写 token：兼容 cached_creation_tokens / cache_write_tokens（与 ExtractUsageFromElement 口径一致），
+            // 并入缓存列，避免被计入"新输入"。
+            var detailsForWrite = usage.TryGetProperty("input_tokens_details", out var itdWrite) && itdWrite.ValueKind == JsonValueKind.Object
+                ? itdWrite
+                : usage.TryGetProperty("prompt_tokens_details", out var ptdWrite) && ptdWrite.ValueKind == JsonValueKind.Object
+                    ? ptdWrite
+                    : default;
+            if (detailsForWrite.ValueKind == JsonValueKind.Object)
+            {
+                if (detailsForWrite.TryGetProperty("cached_creation_tokens", out var ccWrite) && ccWrite.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens += ccWrite.GetInt32();
+                }
+                else if (detailsForWrite.TryGetProperty("cache_write_tokens", out var cwWrite) && cwWrite.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens += cwWrite.GetInt32();
+                }
+            }
+
             // OpenAI 的 input_tokens/prompt_tokens 已包含缓存命中部分（cached_tokens 是其子集），
             // 统一减去缓存，日志输入记录"不含缓存的新输入"，避免缓存重复统计。
             // 减法只在本事件自带输入字段时执行：部分中间层的后续 usage 事件只带 cached 字段，

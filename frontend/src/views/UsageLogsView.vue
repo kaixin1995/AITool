@@ -20,6 +20,8 @@ import PageHeader from '@/components/PageHeader.vue'
 import SourceIcon from '@/components/SourceIcon.vue'
 import * as api from '@/api/usageLogs'
 import type { UsageLogItem, UsageLogRequestDetail, UsageLogSummary } from '@/api/usageLogs'
+import { getModelPricing } from '@/api/models'
+import { useCurrency } from '@/composables/useCurrency'
 import {
   buildUsageLogsDefaultCustomRange,
   buildVisibleUsageLogPages,
@@ -29,6 +31,7 @@ import {
 import { usageSourceOptions as sourceOptions } from './usageSource'
 
 const message = useMessage()
+const { currency, symbol, formatCost, formatTotalCost, setUsdToCny } = useCurrency()
 const loading = ref(false)
 const detailLoading = ref(false)
 const filtersExpanded = ref(false)
@@ -355,6 +358,8 @@ onMounted(async () => {
   await loadFilters()
   await load()
   configureAutoRefresh()
+  // 汇率来自本地价格表（model-pricing.json 的 usdToCny），失败时保持默认值。
+  getModelPricing().then((catalog) => setUsdToCny(catalog?.usdToCny)).catch(() => undefined)
 })
 
 onUnmounted(() => {
@@ -428,11 +433,17 @@ onUnmounted(() => {
       </div>
     </NCard>
 
-    <NGrid :cols="4" :x-gap="12" :y-gap="12" responsive="screen" item-responsive class="usage-logs-summary-row" :class="{ 'is-collapsed': !filtersExpanded }">
-      <NGi span="4 m:2 l:1"><NCard size="small"><NStatistic label="总请求" :value="formatNumber(summary.totalRequests)" /></NCard></NGi>
-      <NGi span="4 m:2 l:1"><NCard size="small"><NStatistic label="成功率" :value="formatPercent(summary.successRate)" /></NCard></NGi>
-      <NGi span="4 m:2 l:1"><NCard size="small"><NStatistic label="总 Tokens" :value="formatMetricNumber(summary.totalTokens)" /></NCard></NGi>
-      <NGi span="4 m:2 l:1"><NCard size="small"><NStatistic label="失败请求" :value="formatNumber(summary.failedRequests)" /></NCard></NGi>
+    <NGrid :cols="5" :x-gap="12" :y-gap="12" responsive="screen" item-responsive class="usage-logs-summary-row" :class="{ 'is-collapsed': !filtersExpanded }">
+      <NGi span="5 m:2 l:1"><NCard size="small" class="usage-logs-stat-card"><NStatistic label="总请求" :value="formatNumber(summary.totalRequests)" /></NCard></NGi>
+      <NGi span="5 m:2 l:1"><NCard size="small" class="usage-logs-stat-card"><NStatistic label="成功率" :value="formatPercent(summary.successRate)" /></NCard></NGi>
+      <NGi span="5 m:2 l:1"><NCard size="small" class="usage-logs-stat-card"><NStatistic label="总 Tokens" :value="formatMetricNumber(summary.totalTokens)" /></NCard></NGi>
+      <NGi span="5 m:2 l:1"><NCard size="small" class="usage-logs-stat-card"><NStatistic label="失败请求" :value="formatNumber(summary.failedRequests)" /></NCard></NGi>
+      <NGi span="5 m:2 l:1">
+        <NCard size="small" class="usage-logs-cost-card">
+          <div class="n-statistic__label">总消耗（{{ currency }}）</div>
+          <div class="n-statistic__value usage-logs-cost-value">{{ formatTotalCost(summary.totalCostUsd) }}</div>
+        </NCard>
+      </NGi>
     </NGrid>
 
     <div class="table-wrapper usage-logs-table-wrapper">
@@ -450,19 +461,20 @@ onUnmounted(() => {
             <th>缓存</th>
             <th>输出</th>
             <th>总Token数</th>
+            <th>成本({{ symbol }})</th>
             <th>操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="loading">
-            <td colspan="12">
+            <td colspan="13">
               <div class="table-empty">
                 <div class="table-empty-text">加载中...</div>
               </div>
             </td>
           </tr>
           <tr v-else-if="items.length === 0">
-            <td colspan="12">
+            <td colspan="13">
               <div class="table-empty">
                 <div class="table-empty-icon">📋</div>
                 <div class="table-empty-text">暂无调用日志</div>
@@ -486,6 +498,7 @@ onUnmounted(() => {
               <td>{{ formatNumber(item.cachedTokens) }}</td>
               <td>{{ formatNumber(item.outputTokens) }}</td>
               <td><strong>{{ formatNumber(item.totalTokens) }}</strong></td>
+              <td><strong :class="{ 'usage-logs-cost-unpriced': item.costUsd === null || item.costUsd === undefined }">{{ formatCost(item.costUsd) }}</strong></td>
               <td>
                 <NButton size="small" secondary type="primary" @click="openRequestDetail(item.requestId)">查看链路</NButton>
               </td>
@@ -680,6 +693,29 @@ onUnmounted(() => {
 
 .usage-logs-summary-row.is-collapsed {
   display: none;
+}
+
+/* 一行五卡的紧凑数值：长数字不撑破卡片 */
+.usage-logs-stat-card :deep(.n-statistic__value),
+.usage-logs-cost-value {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-logs-cost-card :deep(.n-card__content) {
+  padding-bottom: 10px;
+}
+
+.usage-logs-cost-value {
+  font-size: 24px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.usage-logs-cost-unpriced {
+  opacity: 0.45;
+  font-weight: 400;
 }
 
 .usage-logs-table-wrapper {
@@ -952,5 +988,22 @@ onUnmounted(() => {
     justify-content: center;
     margin-top: 4px;
   }
+}
+
+.usage-logs-cost-card {
+  :deep(.n-card__content) {
+    padding-bottom: 10px;
+  }
+}
+
+.usage-logs-cost-value {
+  font-size: 24px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.usage-logs-cost-unpriced {
+  opacity: 0.45;
+  font-weight: 400;
 }
 </style>

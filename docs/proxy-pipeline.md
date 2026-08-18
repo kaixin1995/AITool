@@ -16,7 +16,7 @@
 | `/v1/embeddings` | POST | `Embeddings`（`:435`） | 禁流式，仅 OpenAI 协议路由（`routeEligibility` 过滤） |
 | `/v1/responses` | POST | `Responses`（`OpenAiProxyController.Responses.cs:94`） | Responses 主入口（透传/降级/双重转换） |
 | `/v1/responses` | GET(WS) | `ResponsesWebSocket`（`OpenAiProxyController.Responses.cs:24`） | WebSocket 会话模式 |
-| `/v1/responses/compact` | POST | `ResponsesCompact`（`OpenAiProxyController.cs:479`） | 直接转发到 `Responses()` |
+| `/v1/responses/compact` | POST | `ResponsesCompact`（`OpenAiProxyController.cs:479`） | Codex 远程压缩：走 ResponsesCore(isCompact)，上游端点 responses/compact，非流式 |
 | `/v1/models` | GET | `Models`（`OpenAiProxyController.cs:171`） | 按 `x-api-key`/`anthropic-version` 头自动切 OpenAI/Anthropic 展示格式；按 AccessKey 路由限定过滤 |
 | `/v1/models/{modelId}` | GET | `ModelDetail`（`:249`） | 不存在 → 403 `model_not_found`；无权限 → 403 `route_forbidden` |
 | `/v1/messages` | POST | `AnthropicProxyController.Messages`（`AnthropicProxyController.cs:140`） | Anthropic 主入口 |
@@ -122,7 +122,7 @@ sequenceDiagram
 
 **Anthropic 客户端 `/v1/messages` 的对偶链路**（`AnthropicProxyController.cs`）：
 - `ForwardAnthropicStreamPassthroughAsync`（L484）：Anthropic 原生透传；`UpdateAnthropicUsageFromPayload`（L1018）处理缓存 token 扣减语义（`message_start` 与 `message_delta` 重复累计时按覆盖语义取值，不重复累加）
-- `ForwardOpenAiStreamAsAnthropicAsync`（L624）：OpenAI/Responses 上游 → Anthropic 事件流。Responses 上游时**双重转换**：先 `ConvertResponsesStreamingToChat`（Responses→Chat，`ResponsesToChatStreamState`）再 `ConvertOpenAiStreamChunkToAnthropic`（Chat→Anthropic，`AnthropicOpenAiStreamState`）。惰性首写：首个非空事件才 `BuildAnthropicStreamStart` 发 `message_start`；收尾 `CompleteAnthropicStream` 补齐未闭合块与 `message_delta`(usage 还原) + `message_stop`；整包 envelope 兼容 `IsOpenAiStreamingResponseEnvelope`（L919）与 `EnsureAnthropicStreamClosed`
+- `ForwardOpenAiStreamAsAnthropicAsync`（L624）：OpenAI/Responses 上游 → Anthropic 事件流。Responses 上游走**逐事件直转** `ConvertResponsesSseEventToAnthropic`（`ResponsesToAnthropicStreamState` 内嵌 `AnthropicOpenAiStreamState` 做块管理，不经 Chat 中转；`response.failed`/`error` 终态按失败或中断处理）。惰性首写：首个非空事件才 `BuildAnthropicStreamStart` 发 `message_start`；收尾 `CompleteAnthropicStream` 补齐未闭合块与 `message_delta`(usage 还原) + `message_stop`；整包 envelope 兼容 `IsOpenAiStreamingResponseEnvelope`（L919）与 `EnsureAnthropicStreamClosed`。非流式日志时序：三个控制器的非流式路径都是**先做协议转换、后写 usage 日志**——转换失败先把本次尝试置为 fail 入账再 fallback，避免"日志记成功、客户端收到 502"的口径错位
 
 **Responses WebSocket 模式**（`OpenAiProxyController.Responses.cs`）：
 - `ResponsesWebSocket`（L24）→ 循环 `ReceiveWebSocketTextMessageAsync` → `TryNormalizeResponsesWebSocketRequest`（Helpers L83：处理 `response.create`/`response.append` 归一化与上下文合并、`ShouldReplaceResponsesWebSocketTranscript`（L192）完整转录替换、`DeduplicateResponsesWebSocketInputItems`（L234）按 id 去重）→ `ProcessResponsesWebSocketTurnAsync`（L442，每轮复用**完整故障转移链路**，会话状态存 `ResponsesWebSocketSessionState`，主文件 L44，保存上轮请求/output）

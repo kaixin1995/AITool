@@ -8,8 +8,16 @@ import PageHeader from '@/components/PageHeader.vue'
 import * as systemApi from '@/api/system'
 import type { SystemSettings } from '@/api/system'
 import { validateSystemSettingsNumbers } from './systemSettingsState'
+import { useCurrency } from '@/composables/useCurrency'
+import type { SelectOption } from 'naive-ui'
 
 const message = useMessage()
+const { currency, setCurrencyDisplay } = useCurrency()
+
+const currencyOptions: SelectOption[] = [
+  { label: '美元（$）', value: 'USD' },
+  { label: '人民币（¥）', value: 'CNY' }
+]
 const loading = ref(false)
 const saving = ref(false)
 
@@ -116,9 +124,21 @@ onMounted(loadSettings)
     <NSpin :show="loading">
       <div class="settings-stack">
         <NCard class="settings-card settings-body-card">
+          <h5 class="settings-card-title">显示设置</h5>
+          <NForm label-placement="top">
+            <div class="settings-grid">
+              <NFormItem>
+                <template #label><span class="form-label-tip">金额货币<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>统计页与使用日志中消耗金额的展示货币。计价基准恒为美元，人民币按模型价格表中的汇率换算显示。选择后立即生效，无需点保存。</NTooltip></span></template>
+                <NSelect :value="currency" :options="currencyOptions" @update:value="setCurrencyDisplay" />
+              </NFormItem>
+            </div>
+          </NForm>
+        </NCard>
+
+        <NCard class="settings-card settings-body-card">
           <h5 class="settings-card-title">检测设置</h5>
           <NForm label-placement="top">
-            <div class="settings-grid cols-3">
+            <div class="settings-grid">
               <NFormItem>
                 <template #label><span class="form-label-tip">检测超时时间（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>单次检测请求在上游站点等待响应的最长时间。数值过小可能把慢站点误判为失败。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.detectionRequestTimeoutSeconds" :min="1" :step="5" />
@@ -138,7 +158,7 @@ onMounted(loadSettings)
         <NCard class="settings-card settings-body-card">
           <h5 class="settings-card-title">代理设置</h5>
           <NForm label-placement="top">
-            <div class="settings-grid cols-4">
+            <div class="settings-grid">
               <NFormItem>
                 <template #label><span class="form-label-tip">代理超时时间（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>单次代理转发请求等待上游响应的最长时间。值过小容易让慢响应被截断。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.proxyRequestTimeoutSeconds" :min="1" :step="5" />
@@ -160,7 +180,7 @@ onMounted(loadSettings)
                 <NInputNumber v-model:value="form.circuitBreakerRecoveryMinutes" :min="1" />
               </NFormItem>
             </div>
-            <div class="settings-grid cols-3 compact-row">
+            <div class="settings-grid compact-row">
               <NFormItem>
                 <template #label><span class="form-label-tip">并发打满策略<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>“跳过”直接尝试下一顺位路由；“排队等待”先等待并发槽位释放。</NTooltip></span></template>
                 <NSelect
@@ -183,7 +203,7 @@ onMounted(loadSettings)
         <NCard class="settings-card settings-body-card">
           <h5 class="settings-card-title">日志设置</h5>
           <NForm label-placement="top">
-            <div class="settings-grid cols-3">
+            <div class="settings-grid">
               <NFormItem label="UsageLogs 保留天数">
                 <NInputNumber v-model:value="form.usageLogRetentionDays" :min="1" />
               </NFormItem>
@@ -296,8 +316,11 @@ onMounted(loadSettings)
 }
 
 .settings-grid {
-  display: grid;
-  gap: 16px 24px;
+  /* 控件已是固定窄宽，用 flex 换行让相邻控件紧凑排列，
+     不再用等分网格列（会在窄控件右侧留大片空列）。 */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 32px;
   align-items: end;
 }
 
@@ -305,17 +328,16 @@ onMounted(loadSettings)
   margin-bottom: 0;
 }
 
-.settings-grid :deep(.n-input-number),
+/* 数值输入只需要少量字符，固定窄宽；下拉需容下最长选项文本 + 展开箭头。
+   小屏（<卡片单列）回退为占满，避免截断。 */
+.settings-grid :deep(.n-input-number) {
+  width: 168px;
+  max-width: 100%;
+}
+
 .settings-grid :deep(.n-select) {
-  width: 100%;
-}
-
-.settings-grid.cols-3 {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.settings-grid.cols-4 {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  width: 220px;
+  max-width: 100%;
 }
 
 /* Codex 巡检：开关组 + 三个数值输入框用 flex 紧凑连续排列，输入框紧跟开关、宽度容下最长标签 */
@@ -415,7 +437,7 @@ onMounted(loadSettings)
 
 .clear-logs-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 240px));
   gap: 16px;
   margin-bottom: 14px;
 }
@@ -431,6 +453,7 @@ onMounted(loadSettings)
 
 .danger-time-input {
   height: 34px;
+  width: 100%;
   min-width: 0;
   padding: 0 10px;
   border: 1px solid var(--border-color-global);
@@ -448,16 +471,12 @@ onMounted(loadSettings)
   border-color: rgba(255, 255, 255, 0.55);
 }
 
-@media (max-width: 1100px) {
-  .settings-grid.cols-4,
-  .settings-grid.cols-3 {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 640px) {
-  .settings-grid.cols-4,
-  .settings-grid.cols-3,
+  /* flex 换行布局下，窄屏让每个控件占满整行，标签和输入都不截断 */
+  .settings-grid :deep(.n-form-item) {
+    width: 100%;
+  }
+
   .clear-logs-grid {
     grid-template-columns: 1fr;
   }

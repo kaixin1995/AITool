@@ -18,8 +18,9 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 - 模型检测（定时/手动探测模型可用性，Cron 任务 + 增量进度）
 - 健康监控（模型可用率时间线）
 - 对话测试（内置 Chat 页端到端测试代理链路，含流式与思考等级）
-- 使用日志（Token 级用量追踪：**输入/缓存/输出三段口径**、重试次数、流中断、首字延迟；来源识别 claude-code / codex / open-code / zcode / deepseek-harness）
-- 统计分析（用量趋势、模型分布、缓存命中率、延迟分位数等可视化仪表盘）
+- 使用日志（Token 级用量追踪：**输入/缓存/输出三段口径**、重试次数、流中断、首字延迟；来源识别 claude-code / codex / open-code / zcode / deepseek-harness；**行级消耗金额**，USD/CNY 动态切换）
+- 统计分析（用量趋势、模型分布、缓存命中率、延迟分位数等可视化仪表盘；**总消耗金额 + 成本趋势 + 模型成本分布**，查询时按价格表动态计价，历史数据自动兼容）
+- 模型价格（**本地 JSON 价格表**（`model-pricing.json`，不入数据库），内置主流模型 USD 单价 seed；模型页可编辑、保存即生效；支持 **DeepSeek 类峰谷分档计价**；匹配自动归一化 namespace/日期/effort 后缀）
 - 开发者调试（进程内环形调用追踪 + 客户端模拟器 + 并发/熔断监控 + **离线协议诊断台**（转换链路可视化/字段级对比/规则试运行/一键保存规则） + **SQL 迁移执行**（密码确认+事务+试运行+全量审计））
 - OpenAI Responses API 代理（HTTP、WebSocket、Compact 三种模式）
 - Codex 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、定期巡检、手动重置 credits）
@@ -113,7 +114,7 @@ graph TD
 |----|------|
 | **Domain** | 16 个表实体 + 1 个 `CompatibilityRule` DTO，全部 `sealed`、`Guid` 主键、无导航属性（ID 手动关联）。关键实体：`Site`/`SiteKey`（多 Key）、`ModelLibraryItem`（含 OverrideReasoningEffort/CompatibilityProfileId）、`ProxyRouteEntry`/`ProxyRouteRule`（三级优先级 + 时间规则 AvailabilityMode/TimeRangesJson）、`ProxyAccessKey`（含 AllowedRouteNames 路由限定）、`ProxyUsageLog`（每次尝试一条，Input=不含缓存新输入）、`SqlMigrationExecution`（SQL 迁移审计）、`CodexAccount`、`SystemRuntimeSettings`（单例 Id=1） |
 | **Application** | 接口与 DTO：`IProxyForwardService`、`IUsageLogService`、`ISystemRuntimeSettingsService`、Codex 接口族；纯静态工具 `ProxyProtocolResolver`（透传/桥接判定）、`SiteEndpointPathResolver`（端点路径） |
-| **Protocol** | `static partial class ProxyProtocolBridge`（6 个 partial 文件约 7000 行）+ 5 个流式状态类。三协议请求体/响应体/SSE 流式任意两两转换、usage 提取、兼容规则引擎、Codex 上游规范化。见 [docs/protocol-bridge.md](docs/protocol-bridge.md) |
+| **Protocol** | `static partial class ProxyProtocolBridge`（7 个 partial 文件）+ 流式状态类。三协议请求体/响应体/SSE 流式任意两两转换（Anthropic ↔ Responses 直转并保留 thinking 签名桥接）、usage 提取、兼容规则引擎、Codex 上游规范化。见 [docs/protocol-bridge.md](docs/protocol-bridge.md) |
 | **Infrastructure** | `ProxyForwardService`（上游转发：重试/超时/401 刷 Key/流式逐行回调/Codex SSE 聚合）、`AppDbContext`+`SqlSugarSetup`（CodeFirst 差量补列）、`RouteCircuitStateStore`（熔断）、`ProxyUsageLogBatchWriter`（批量写日志）、`HangfireDetectionScheduler`、`ModelHealthRequestService`、Codex 解析器族（Credential/Jwt/Usage/ModelCatalog） |
 | **Web** | 唯一进程宿主：代理控制器（OpenAi/Anthropic）、19 个管理 API 控制器、热路径缓存 `ProxyRequestMetadataCache`（TTL 30s + 显式失效 + 延迟刷新）、`ModelConcurrencyLimiter`、Codex 后台服务群、SPA 托管 |
 

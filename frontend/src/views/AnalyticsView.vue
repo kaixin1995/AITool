@@ -42,8 +42,16 @@ import {
   type AnalyticsFilterState
 } from './analyticsState'
 import { getUsageSourceLabel, usageSourceOptions } from './usageSource'
+import { useCurrency } from '@/composables/useCurrency'
+import { getModelPricing } from '@/api/models'
 
 const { isDark } = useTheme()
+const { currency, usdToCny, isCny, formatTotalCost, setUsdToCny } = useCurrency()
+
+/** 图表数值用的 4 位小数（成本金额常用毫厘级精度）。 */
+function toFixed4(value: number): number {
+  return Math.round(value * 10000) / 10000
+}
 
 const loading = ref(false)
 const waitingForResult = ref(false)
@@ -93,16 +101,20 @@ type ChartKey =
   | 'cacheRatio'
   | 'siteDist'
   | 'modelDist'
+  | 'costTrend'
+  | 'modelCostDist'
   | 'analysisOverview'
   | 'analysisMetrics'
 const chartEls = ref<Record<ChartKey, HTMLElement | null>>({
   requestTrend: null, resultTrend: null, tokenTrend: null, durationTrend: null,
   fallbackTrend: null, cacheRatio: null, siteDist: null, modelDist: null,
+  costTrend: null, modelCostDist: null,
   analysisOverview: null, analysisMetrics: null
 })
 const charts = shallowRef<Record<ChartKey, ECharts | null>>({
   requestTrend: null, resultTrend: null, tokenTrend: null, durationTrend: null,
   fallbackTrend: null, cacheRatio: null, siteDist: null, modelDist: null,
+  costTrend: null, modelCostDist: null,
   analysisOverview: null, analysisMetrics: null
 })
 let chartResizeObserver: ResizeObserver | null = null
@@ -338,16 +350,17 @@ function getActiveBreakdownRows(): AnalyticsBreakdownPoint[] {
 
 const activeBreakdownRows = computed(getActiveBreakdownRows)
 
-const breakdownColumns: DataTableColumns<AnalyticsBreakdownPoint> = [
+const breakdownColumns = computed<DataTableColumns<AnalyticsBreakdownPoint>>(() => [
   { title: '项目', key: 'label', minWidth: 160, ellipsis: { tooltip: true } },
   { title: '请求数', key: 'requestCount', width: 100, sorter: (left, right) => left.requestCount - right.requestCount },
   { title: '成功', key: 'successCount', width: 90 },
   { title: '失败', key: 'failedCount', width: 90 },
   { title: '成功率', key: 'successRate', width: 100, render: (row) => formatPercentage(row.successRate) },
   { title: 'Tokens', key: 'totalTokens', width: 110, render: (row) => formatCompact(row.totalTokens) },
+  { title: `消耗(${currency.value === 'CNY' ? '¥' : '$'})`, key: 'totalCostUsd', width: 110, sorter: (left, right) => (left.totalCostUsd ?? 0) - (right.totalCostUsd ?? 0), render: (row) => formatTotalCost(row.totalCostUsd) },
   { title: '平均耗时', key: 'averageTotalDurationMs', width: 120, render: (row) => formatDuration(row.averageTotalDurationMs) },
   { title: '回退请求', key: 'fallbackRequestCount', width: 100 }
-]
+])
 
 function breakdownRowProps(row: AnalyticsBreakdownPoint): Record<string, unknown> {
   const dimension = activeAnalysisDimension.value
@@ -575,17 +588,23 @@ function renderCharts(): void {
           const values = asTooltipItems(items)
           const index = values[0]?.dataIndex ?? 0
           const total = data[index]?.totalTokens ?? 0
-          return `${formatAxisTooltip(values, (item) => formatCompact(Number(item.value)))}<br/>总量：${formatCompact(total)}`
+          const cost = data[index]?.costUsd
+          const costLine = cost === null || cost === undefined ? '' : `<br/>消耗：${formatTotalCost(cost)}`
+          return `${formatAxisTooltip(values, (item) => formatCompact(Number(item.value)))}<br/>总量：${formatCompact(total)}${costLine}`
         }
       },
-      legend: { data: ['输入', '输出', '缓存'], top: 0, textStyle: { fontSize: 11 } },
-      grid: { left: 50, right: 20, top: 30, bottom: 30 },
+      legend: { data: ['输入', '输出', '缓存', '消耗'], top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 50, right: 50, top: 30, bottom: 30 },
       xAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10 } },
-      yAxis: { type: 'value', axisLabel: tokenAxisLabel },
+      yAxis: [
+        { type: 'value', axisLabel: tokenAxisLabel },
+        { type: 'value', name: '$', position: 'right', axisLabel: { fontSize: 10, formatter: (v: number) => (v >= 1 ? String(v) : v.toFixed(2)) } }
+      ],
       series: [
         { name: '输入', type: 'line', smooth: true, data: data.map((t) => t.inputTokens), itemStyle: { color: PRIMARY } },
         { name: '输出', type: 'line', smooth: true, data: data.map((t) => t.outputTokens), itemStyle: { color: SUCCESS } },
-        { name: '缓存', type: 'line', smooth: true, data: data.map((t) => t.cachedTokens), itemStyle: { color: CYAN } }
+        { name: '缓存', type: 'line', smooth: true, data: data.map((t) => t.cachedTokens), itemStyle: { color: CYAN } },
+        { name: '消耗', type: 'line', yAxisIndex: 1, smooth: true, data: data.map((t) => t.costUsd ?? 0), itemStyle: { color: WARNING } }
       ]
     }, true)
   }
@@ -675,7 +694,7 @@ function renderCharts(): void {
           const values = asTooltipItems(items)
           const point = data[values[0]?.dataIndex ?? 0]
           const details = point
-            ? `<br/>成功：${formatCompact(point.successCount)}<br/>失败：${formatCompact(point.failedCount)}<br/>平均耗时：${formatDuration(point.averageTotalDurationMs)}`
+            ? `<br/>成功：${formatCompact(point.successCount)}<br/>失败：${formatCompact(point.failedCount)}<br/>消耗：${formatTotalCost(point.totalCostUsd)}<br/>平均耗时：${formatDuration(point.averageTotalDurationMs)}`
             : ''
           return `${formatAxisTooltip(values, (item) => formatCompact(Number(item.value)))}${details}`
         }
@@ -702,7 +721,7 @@ function renderCharts(): void {
           const values = asTooltipItems(items)
           const point = data[values[0]?.dataIndex ?? 0]
           const details = point
-            ? `<br/>缓存：${formatCompact(point.cachedTokens)}<br/>未命中输入：${formatCompact(point.inputTokens)}<br/>输出：${formatCompact(point.outputTokens)}<br/>调用次数：${formatCompact(point.requestCount)}<br/>成功：${formatCompact(point.successCount)}<br/>失败：${formatCompact(point.failedCount)}`
+            ? `<br/>缓存：${formatCompact(point.cachedTokens)}<br/>未命中输入：${formatCompact(point.inputTokens)}<br/>输出：${formatCompact(point.outputTokens)}<br/>消耗：${formatTotalCost(point.totalCostUsd)}<br/>调用次数：${formatCompact(point.requestCount)}<br/>成功：${formatCompact(point.successCount)}<br/>失败：${formatCompact(point.failedCount)}`
             : ''
           return `${formatAxisTooltip(values, (item) => formatCompact(Number(item.value)))}${details}`
         }
@@ -713,6 +732,73 @@ function renderCharts(): void {
       series: [{ name: 'Token 用量', type: 'bar', data: data.map((t) => t.totalTokens ?? 0), itemStyle: { color: SUCCESS }, barMaxWidth: 32 }]
     }, true)
     bindChartClick('modelDist', c8, (params) => {
+      const point = data[params.dataIndex ?? -1]
+      if (point?.key) handleDimensionClick('model', point.key)
+    })
+  }
+
+  // 成本趋势：输入/缓存/输出三段堆叠面积 + 总成本线（金额随货币设置切换展示）。
+  const c9 = initChart('costTrend')
+  if (c9 && d.tokenTrend) {
+    const data = d.tokenTrend
+    const rate = isCny.value ? usdToCny.value : 1
+    const prefix = isCny.value ? '¥' : '$'
+    const costAxisLabel = {
+      fontSize: 10,
+      formatter: (v: number) => (v >= 1 ? `${prefix}${v}` : `${prefix}${v.toFixed(2)}`)
+    }
+    c9.setOption({
+      tooltip: {
+        trigger: 'axis',
+        formatter: (items: unknown) => {
+          const values = asTooltipItems(items)
+          const index = values[0]?.dataIndex ?? 0
+          const point = data[index]
+          const lines = values
+            .map((item) => `${item.marker} ${item.seriesName}：${prefix}${(Number(item.value)).toFixed(4)}`)
+            .join('<br/>')
+          const total = point ? `${prefix}${((point.costUsd ?? 0) * rate).toFixed(4)}` : '-'
+          return `${point?.label ?? ''}<br/>${lines}<br/>合计：${total}`
+        }
+      },
+      legend: { data: ['输入成本', '缓存成本', '输出成本', '总成本'], top: 0, textStyle: { fontSize: 11 } },
+      grid: { left: 56, right: 20, top: 30, bottom: 30 },
+      xAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10 } },
+      yAxis: { type: 'value', axisLabel: costAxisLabel },
+      series: [
+        { name: '输入成本', type: 'line', stack: 'cost', areaStyle: { opacity: 0.25 }, smooth: true, data: data.map((t) => toFixed4((t.inputCostUsd ?? 0) * rate)), itemStyle: { color: PRIMARY }, emphasis: { focus: 'series' } },
+        { name: '缓存成本', type: 'line', stack: 'cost', areaStyle: { opacity: 0.25 }, smooth: true, data: data.map((t) => toFixed4((t.cachedCostUsd ?? 0) * rate)), itemStyle: { color: CYAN }, emphasis: { focus: 'series' } },
+        { name: '输出成本', type: 'line', stack: 'cost', areaStyle: { opacity: 0.25 }, smooth: true, data: data.map((t) => toFixed4((t.outputCostUsd ?? 0) * rate)), itemStyle: { color: SUCCESS }, emphasis: { focus: 'series' } },
+        { name: '总成本', type: 'line', smooth: true, symbol: 'none', lineStyle: { width: 2 }, data: data.map((t) => toFixed4((t.costUsd ?? 0) * rate)), itemStyle: { color: WARNING } }
+      ]
+    }, true)
+  }
+
+  // 模型成本分布：按消耗金额排序的柱状图，点击柱体可按模型筛选。
+  const c10 = initChart('modelCostDist')
+  if (c10 && d.modelDistribution) {
+    const rate = isCny.value ? usdToCny.value : 1
+    const prefix = isCny.value ? '¥' : '$'
+    const data = [...d.modelDistribution].sort((a, b) => (b.totalCostUsd ?? 0) - (a.totalCostUsd ?? 0))
+    c10.setOption({
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: { type: 'shadow' },
+        formatter: (items: unknown) => {
+          const values = asTooltipItems(items)
+          const point = data[values[0]?.dataIndex ?? 0]
+          const details = point
+            ? `<br/>Tokens：${formatCompact(point.totalTokens)}<br/>调用次数：${formatCompact(point.requestCount)}<br/>单次均价：${prefix}${point.requestCount > 0 ? toFixed4(((point.totalCostUsd ?? 0) / point.requestCount) * rate) : '0.0000'}`
+            : ''
+          return `${formatAxisTooltip(values, (item) => `${prefix}${Number(item.value).toFixed(4)}`)}${details}`
+        }
+      },
+      grid: { left: 56, right: 20, top: 20, bottom: 62 },
+      xAxis: { type: 'category', data: data.map((t) => t.label), axisLabel: { fontSize: 10, rotate: 30, interval: 0 } },
+      yAxis: { type: 'value', axisLabel: { fontSize: 10, formatter: (v: number) => (v >= 1 ? `${prefix}${v}` : `${prefix}${v.toFixed(2)}`) } },
+      series: [{ name: '消耗', type: 'bar', data: data.map((t) => toFixed4((t.totalCostUsd ?? 0) * rate)), itemStyle: { color: WARNING }, barMaxWidth: 32 }]
+    }, true)
+    bindChartClick('modelCostDist', c10, (params) => {
       const point = data[params.dataIndex ?? -1]
       if (point?.key) handleDimensionClick('model', point.key)
     })
@@ -896,6 +982,8 @@ onMounted(() => {
   })
   window.addEventListener('resize', handleResize)
   void Promise.all([loadFilters(), load()])
+  // 汇率来自本地价格表（model-pricing.json 的 usdToCny），失败时保持默认值。
+  getModelPricing().then((catalog) => setUsdToCny(catalog?.usdToCny)).catch(() => undefined)
 })
 onUnmounted(() => {
   loadController?.abort()
@@ -1067,6 +1155,10 @@ watch(activeAnalysisDimension, async () => {
             <span class="analytics-kpi-label">输入（含缓存） / 输出 Tokens</span>
             <strong class="analytics-kpi-value compact">{{ tokenSplit }}</strong>
           </article>
+          <article class="analytics-kpi-card">
+            <span class="analytics-kpi-label">总消耗（{{ currency }}）</span>
+            <strong class="analytics-kpi-value">{{ formatTotalCost(summary.totalCostUsd) }}</strong>
+          </article>
         </section>
 
         <div class="analytics-grid">
@@ -1113,6 +1205,16 @@ watch(activeAnalysisDimension, async () => {
           <section class="analytics-panel card">
             <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">模型调用分布</h5><div class="analytics-panel-subtitle">按调用次数排序的模型 Token 用量</div></div></div>
             <div class="analytics-chart-body"><div :ref="(el) => setEl('modelDist', el as HTMLElement | null)" class="chart-body" /></div>
+          </section>
+
+          <section class="analytics-panel analytics-panel-wide card">
+            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">消耗成本趋势</h5><div class="analytics-panel-subtitle">输入、缓存、输出三段成本堆叠 + 总成本线，货币随系统设置切换</div></div></div>
+            <div class="analytics-chart-body"><div :ref="(el) => setEl('costTrend', el as HTMLElement | null)" class="chart-body" /></div>
+          </section>
+
+          <section class="analytics-panel card">
+            <div class="analytics-panel-header"><div><h5 class="analytics-panel-title">模型成本分布</h5><div class="analytics-panel-subtitle">按消耗金额排序，点击柱体可按模型筛选</div></div></div>
+            <div class="analytics-chart-body"><div :ref="(el) => setEl('modelCostDist', el as HTMLElement | null)" class="chart-body" /></div>
           </section>
         </div>
 
