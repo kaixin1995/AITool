@@ -433,6 +433,31 @@ public sealed class ModelConcurrencyLimiterTests : IDisposable
     }
 
     /// <summary>
+    /// 空闲 state 被 ListRecent 清理后，新请求仍必须创建可正常释放的 state。
+    /// </summary>
+    [Fact]
+    public async Task AcquireAsync_recreates_state_after_idle_cleanup()
+    {
+        var siteId = Guid.NewGuid();
+
+        using (var firstHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "cleanup-model",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None))
+        {
+            firstHandle.Acquired.Should().BeTrue();
+        }
+
+        _limiter.ListRecent(TimeSpan.Zero).Should().BeEmpty();
+
+        using var secondHandle = await _limiter.AcquireAsync(
+            _serviceProvider, siteId, "cleanup-model",
+            ConcurrencyAcquireMode.SkipOnFull, TimeSpan.FromSeconds(10), CancellationToken.None);
+        secondHandle.Acquired.Should().BeTrue();
+        _limiter.ListActive().Should().ContainSingle(x =>
+            x.SiteId == siteId && x.SiteModelName == "cleanup-model" && x.ActiveCount == 1);
+    }
+
+    /// <summary>
     /// ConcurrencyAcquireResult.Dispose 无论获取成功或失败都不应抛异常。
     /// </summary>
     [Fact]

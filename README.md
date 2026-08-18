@@ -73,7 +73,7 @@ README 是全貌入口；`docs/` 下按主题提供**函数级**细节文档：
 ```
 AI-Tool/
 ├── src/
-│   ├── AITool.Domain/           # 领域实体（SqlSugar 特性 POCO，sealed，16 表实体 + 1 规则 DTO）
+│   ├── AITool.Domain/           # 领域实体（SqlSugar 特性 POCO，sealed，17 表实体 + 1 规则 DTO）
 │   ├── AITool.Application/      # 应用层接口和 DTO（纯接口定义，不含实现）
 │   ├── AITool.Protocol/         # 协议转换库（ProxyProtocolBridge，零 NuGet 依赖纯静态）
 │   ├── AITool.Infrastructure/   # 基础设施（SqlSugar、上游转发、Hangfire、熔断、Codex 解析）
@@ -113,7 +113,7 @@ graph TD
 
 | 层 | 职责 |
 |----|------|
-| **Domain** | 16 个表实体 + 1 个 `CompatibilityRule` DTO，全部 `sealed`、`Guid` 主键、无导航属性（ID 手动关联）。关键实体：`Site`/`SiteKey`（多 Key）、`ModelLibraryItem`（含 OverrideReasoningEffort/CompatibilityProfileId）、`ProxyRouteEntry`/`ProxyRouteRule`（三级优先级 + 时间规则 AvailabilityMode/TimeRangesJson）、`ProxyAccessKey`（含 AllowedRouteNames 路由限定）、`ProxyUsageLog`（每次尝试一条，Input=不含缓存新输入）、`SqlMigrationExecution`（SQL 迁移审计）、`CodexAccount`、`SystemRuntimeSettings`（单例 Id=1） |
+| **Domain** | 17 个表实体 + 1 个 `CompatibilityRule` DTO，全部 `sealed`、`Guid` 主键、无导航属性（ID 手动关联）。关键实体：`Site`/`SiteKey`（多 Key）、`ModelLibraryItem`（含 OverrideReasoningEffort/CompatibilityProfileId）、`ProxyRouteEntry`/`ProxyRouteRule`（三级优先级 + 时间规则 AvailabilityMode/TimeRangesJson）、`ProxyAccessKey`（含 AllowedRouteNames 路由限定）、`ProxyUsageLog`（每次尝试一条，Input=不含缓存新输入）、`SqlMigrationExecution`（SQL 迁移审计）、`CodexAccount`、`GoogleAccount`、`SystemRuntimeSettings`（单例 Id=1） |
 | **Application** | 接口与 DTO：`IProxyForwardService`、`IUsageLogService`、`ISystemRuntimeSettingsService`、Codex 接口族；纯静态工具 `ProxyProtocolResolver`（透传/桥接判定）、`SiteEndpointPathResolver`（端点路径） |
 | **Protocol** | `static partial class ProxyProtocolBridge`（7 个 partial 文件）+ 流式状态类。三协议请求体/响应体/SSE 流式任意两两转换（Anthropic ↔ Responses 直转并保留 thinking 签名桥接）、usage 提取、兼容规则引擎、Codex 上游规范化。见 [docs/protocol-bridge.md](docs/protocol-bridge.md) |
 | **Infrastructure** | `ProxyForwardService`（上游转发：重试/超时/401 刷 Key/流式逐行回调/Codex SSE 聚合）、`AppDbContext`+`SqlSugarSetup`（CodeFirst 差量补列）、`RouteCircuitStateStore`（熔断）、`ProxyUsageLogBatchWriter`（批量写日志）、`HangfireDetectionScheduler`、`ModelHealthRequestService`、Codex 解析器族（Credential/Jwt/Usage/ModelCatalog） |
@@ -330,7 +330,7 @@ Vue 3 SPA，路由与页面功能明细见 [docs/frontend.md](docs/frontend.md)�
 ## 数据库
 
 - SQLite（WAL、synchronous=NORMAL、busy_timeout=5000），SqlSugar CodeFirst `InitTables` **差量补列只增不删**，不用 Migration
-- 16 个表实体 + `CompatibilityRule` DTO（存于 `CompatibilityProfile.RulesJson`），全字段清单见 [docs/architecture.md](docs/architecture.md#5-数据库与实体16-表实体--1-dto)
+- 17 个表实体 + `CompatibilityRule` DTO（存于 `CompatibilityProfile.RulesJson`），全字段清单见 [docs/architecture.md](docs/architecture.md#5-数据库与实体17-表实体--1-dto)
 - 关键唯一索引：`ModelLibraryItem.ModelName`、`SiteModelMapping(SiteId,RemoteModelName)`、`ProxyRouteEntry.EntryName`、`ModelHealthMonitor.ModelLibraryItemId`
 - `ProxyUsageLog` 六个查询索引（RequestedAt/RequestId/(RequestedAt,Status)/TargetSiteId/AccessKeyId/AttemptedModel）
 - DateTimeOffset 经 AOP 写前转本地时区 + 读取物化归一 +00:00（往返瞬时正确）
@@ -423,8 +423,9 @@ cd frontend && npm run test              # 前端 vitest
 cd frontend && npm run type-check        # vue-tsc 类型检查
 ```
 
-- **单元测试**（`AITool.ApplicationTests`，14 个测试文件，84 个执行用例）：业务服务 + 反射测转发私有方法，临时 SQLite 隔离
-- **集成测试**（`AITool.IntegrationTests`，24 个测试文件，241 个执行用例）：`WebApplicationFactory<Program>` 完整宿主 + Fake 转发服务 + 每工厂独立临时库；覆盖代理端到端、跨协议桥接、故障转移、并发、鉴权、SQL 迁移、协议诊断、DateTimeOffset 时区一致性等
+- **单元测试**（`AITool.ApplicationTests`，18 个测试文件，118 个执行用例）：业务服务 + 反射测转发私有方法，临时 SQLite 隔离
+- **集成测试**（`AITool.IntegrationTests`，30 个测试文件，309 个执行用例）：`WebApplicationFactory<Program>` 完整宿主 + Fake 转发服务 + 每工厂独立临时库；覆盖代理端到端、跨协议桥接、故障转移、并发、OAuth 刷新、额度巡检、鉴权、SQL 迁移、协议诊断、DateTimeOffset 时区一致性等
+- **前端测试**（20 个 Vitest 文件，98 个执行用例）：API 契约、OAuth/账号巡检、路由/模型/日志/设置状态和工具函数
 - **usage 断言口径**（重要）：Input=不含缓存新输入；转回 OpenAI 时 prompt_tokens 必须含缓存；流式累计覆盖语义。详见 [docs/testing.md](docs/testing.md#4-usage-token-断言口径重要对应-2026-08-的两次语义修复)
 
 用例级清单见 [docs/testing.md](docs/testing.md)。

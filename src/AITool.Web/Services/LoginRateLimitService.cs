@@ -24,11 +24,17 @@ public sealed class LoginRateLimitService
     private readonly ConcurrentDictionary<string, FailureRecord> _failures = new();
 
     /// <summary>
+    /// 下一次惰性清理的时间戳，避免每次登录请求都遍历全部 IP。
+    /// </summary>
+    private long _nextCleanupTicks = DateTime.UtcNow.AddMinutes(5).Ticks;
+
+    /// <summary>
     /// 检查指定 IP 是否被锁定。
     /// </summary>
     /// <returns>锁定时返回剩余秒数；未锁定返回 null。</returns>
     public int? CheckLocked(string ip)
     {
+        CleanupIfDue();
         if (!_failures.TryGetValue(ip, out var record))
         {
             return null;
@@ -48,6 +54,7 @@ public sealed class LoginRateLimitService
     /// </summary>
     public void RecordFailure(string ip)
     {
+        CleanupIfDue();
         var now = DateTimeOffset.UtcNow;
         _failures.AddOrUpdate(
             ip,
@@ -68,6 +75,7 @@ public sealed class LoginRateLimitService
     /// </summary>
     public void RecordSuccess(string ip)
     {
+        CleanupIfDue();
         _failures.TryRemove(ip, out _);
     }
 
@@ -84,6 +92,25 @@ public sealed class LoginRateLimitService
                 _failures.TryRemove(pair.Key, out _);
             }
         }
+    }
+
+    /// <summary>
+    /// 按固定时间间隔触发过期记录清理。
+    /// </summary>
+    private void CleanupIfDue()
+    {
+        var nowTicks = DateTime.UtcNow.Ticks;
+        var scheduledTicks = Volatile.Read(ref _nextCleanupTicks);
+        if (nowTicks < scheduledTicks
+            || Interlocked.CompareExchange(
+                ref _nextCleanupTicks,
+                nowTicks + TimeSpan.FromMinutes(5).Ticks,
+                scheduledTicks) != scheduledTicks)
+        {
+            return;
+        }
+
+        Cleanup();
     }
 
     private sealed record FailureRecord(int Count, DateTimeOffset LastFailedAt, DateTimeOffset LockedUntil);

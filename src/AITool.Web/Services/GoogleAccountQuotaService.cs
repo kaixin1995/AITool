@@ -266,10 +266,6 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
         finally
         {
             gate.Release();
-            if (gate.CurrentCount == 1)
-            {
-                Locks.TryRemove(account.Id, out _);
-            }
         }
     }
 

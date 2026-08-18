@@ -165,6 +165,7 @@ public sealed class RouteCircuitStateStore
         var count = _blockedRoutes.Count;
         _blockedRoutes.Clear();
         _failCounts.Clear();
+        _routeMeta.Clear();
         return count;
     }
 }

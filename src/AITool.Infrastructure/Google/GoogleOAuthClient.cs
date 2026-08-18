@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text.Json;
 using AITool.Application.Google;
+using AITool.Infrastructure.Common;
 
 namespace AITool.Infrastructure.Google;
 
@@ -12,6 +13,11 @@ namespace AITool.Infrastructure.Google;
 /// </summary>
 public sealed class GoogleOAuthClient : IGoogleOAuthClient
 {
+    /// <summary>
+    /// 同一账号类型与 refresh_token 跨 transient 客户端实例共享刷新锁。
+    /// </summary>
+    private static readonly KeyedAsyncLock RefreshLocks = new();
+
     private readonly HttpClient _httpClient;
 
     public GoogleOAuthClient(HttpClient httpClient)
@@ -70,6 +76,15 @@ public sealed class GoogleOAuthClient : IGoogleOAuthClient
 
     /// <inheritdoc />
     public async Task<GoogleTokenSet> RefreshTokenAsync(string accountKind, string refreshToken, CancellationToken ct)
+    {
+        var lockKey = $"{accountKind}\n{refreshToken}";
+        using (await RefreshLocks.WaitAsync(lockKey, ct))
+        {
+            return await RefreshTokenCoreAsync(accountKind, refreshToken, ct);
+        }
+    }
+
+    private async Task<GoogleTokenSet> RefreshTokenCoreAsync(string accountKind, string refreshToken, CancellationToken ct)
     {
         var parameters = new Dictionary<string, string?>
         {

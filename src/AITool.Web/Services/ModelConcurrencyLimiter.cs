@@ -157,84 +157,105 @@ public sealed class ModelConcurrencyLimiter
         var maxConcurrency = limits.TryGetValue(key, out var configuredLimit)
             ? configuredLimit
             : 0;
-        var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
-
-        List<QueuedAcquireWaiter>? promotedWaiters = null;
-        LinkedListNode<QueuedAcquireWaiter>? waiterNode = null;
-        QueuedAcquireWaiter? waiter = null;
-        var acquired = false;
-        var activeCount = 0;
-        var activeSlotId = 0L;
-
-        lock (state.SyncRoot)
+        while (true)
         {
-            state.MaxConcurrency = maxConcurrency;
-            promotedWaiters = PromoteQueuedWaitersLocked(state);
+            var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
+            List<QueuedAcquireWaiter>? promotedWaiters = null;
+            LinkedListNode<QueuedAcquireWaiter>? waiterNode = null;
+            QueuedAcquireWaiter? waiter = null;
+            var acquired = false;
+            var activeCount = 0;
+            var notificationActiveCount = 0;
+            var activeSlotId = 0L;
+            var isCurrentState = true;
 
-            if (CanAcquireImmediatelyLocked(state))
+            lock (state.SyncRoot)
             {
-                state.ActiveCount++;
-                activeSlotId = TrackActiveSlotLocked(state);
-                activeCount = state.ActiveCount;
-                acquired = true;
+                // ListRecent 只在 state 空闲时清理它；如果清理与本次取 state 交错，
+                // 这里必须重试，不能在已从字典移除的旧 state 上占槽位。
+                if (!_states.TryGetValue(key, out var currentState)
+                    || !ReferenceEquals(currentState, state))
+                {
+                    isCurrentState = false;
+                }
+                else
+                {
+                    state.MaxConcurrency = maxConcurrency;
+                    promotedWaiters = PromoteQueuedWaitersLocked(state);
+
+                    if (CanAcquireImmediatelyLocked(state))
+                    {
+                        state.ActiveCount++;
+                        activeSlotId = TrackActiveSlotLocked(state);
+                        activeCount = state.ActiveCount;
+                        acquired = true;
+                    }
+                    else if (mode == ConcurrencyAcquireMode.WaitForSlot)
+                    {
+                        waiter = new QueuedAcquireWaiter();
+                        waiterNode = state.Waiters.AddLast(waiter);
+                    }
+
+                    notificationActiveCount = state.ActiveCount;
+                }
             }
-            else if (mode == ConcurrencyAcquireMode.WaitForSlot)
+
+            if (!isCurrentState)
             {
-                waiter = new QueuedAcquireWaiter();
-                waiterNode = state.Waiters.AddLast(waiter);
+                continue;
             }
-        }
 
-        ReleaseQueuedWaiters(promotedWaiters, key, effectiveDisplaySiteId, remoteModelName, state.ActiveCount);
+            ReleaseQueuedWaiters(promotedWaiters ?? [], key, effectiveDisplaySiteId, remoteModelName, notificationActiveCount);
 
-        if (acquired)
-        {
-            UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, activeCount);
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, activeSlotId, effectiveDisplaySiteId);
-        }
+            if (acquired)
+            {
+                UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, activeCount);
+                return CreateTrackedAcquireResult(key, siteId, remoteModelName, activeSlotId, effectiveDisplaySiteId);
+            }
 
-        if (mode == ConcurrencyAcquireMode.SkipOnFull)
-        {
+            if (mode == ConcurrencyAcquireMode.SkipOnFull)
+            {
+                return ConcurrencyAcquireResult.NotAcquired;
+            }
+
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            cts.CancelAfter(queueTimeout);
+            var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, cts.Token);
+            var completedTask = await Task.WhenAny(waiter!.Completion.Task, cancellationTask);
+
+            if (completedTask == waiter.Completion.Task)
+            {
+                UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, GetActiveCount(state));
+                return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId, effectiveDisplaySiteId);
+            }
+
+            var grantedDuringCancellation = false;
+            lock (state.SyncRoot)
+            {
+                if (waiter.Granted)
+                {
+                    grantedDuringCancellation = true;
+                }
+                else if (waiterNode?.List is not null)
+                {
+                    state.Waiters.Remove(waiterNode);
+                }
+            }
+
+            if (grantedDuringCancellation)
+            {
+                await waiter.Completion.Task;
+                UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, GetActiveCount(state));
+                return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId, effectiveDisplaySiteId);
+            }
+
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw new OperationCanceledException(cancellationToken);
+            }
+
             return ConcurrencyAcquireResult.NotAcquired;
         }
-
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        cts.CancelAfter(queueTimeout);
-        var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, cts.Token);
-        var completedTask = await Task.WhenAny(waiter!.Completion.Task, cancellationTask);
-
-        if (completedTask == waiter.Completion.Task)
-        {
-            UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, GetActiveCount(state));
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId, effectiveDisplaySiteId);
-        }
-
-        var grantedDuringCancellation = false;
-        lock (state.SyncRoot)
-        {
-            if (waiter.Granted)
-            {
-                grantedDuringCancellation = true;
-            }
-            else if (waiterNode?.List is not null)
-            {
-                state.Waiters.Remove(waiterNode);
-            }
-        }
-
-        if (grantedDuringCancellation)
-        {
-            await waiter.Completion.Task;
-            UpdateActiveEntry(key, effectiveDisplaySiteId, remoteModelName, GetActiveCount(state));
-            return CreateTrackedAcquireResult(key, siteId, remoteModelName, waiter.ActiveSlotId, effectiveDisplaySiteId);
-        }
-
-        if (cancellationToken.IsCancellationRequested)
-        {
-            throw new OperationCanceledException(cancellationToken);
-        }
-
-        return ConcurrencyAcquireResult.NotAcquired;
     }
 
     /// <summary>
@@ -244,18 +265,27 @@ public sealed class ModelConcurrencyLimiter
     {
         var effectiveDisplaySiteId = displaySiteId == default ? siteId : displaySiteId;
         var key = BuildKey(siteId, remoteModelName);
-        var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
-        List<QueuedAcquireWaiter>? promotedWaiters;
-        int activeCount;
-
-        lock (state.SyncRoot)
+        while (true)
         {
-            state.MaxConcurrency = Math.Max(0, maxConcurrency);
-            promotedWaiters = PromoteQueuedWaitersLocked(state);
-            activeCount = state.ActiveCount;
-        }
+            var state = _states.GetOrAdd(key, _ => new ModelConcurrencyState());
+            List<QueuedAcquireWaiter> promotedWaiters;
+            int activeCount;
+            lock (state.SyncRoot)
+            {
+                if (!_states.TryGetValue(key, out var currentState)
+                    || !ReferenceEquals(currentState, state))
+                {
+                    continue;
+                }
 
-        ReleaseQueuedWaiters(promotedWaiters, key, effectiveDisplaySiteId, remoteModelName, activeCount);
+                state.MaxConcurrency = Math.Max(0, maxConcurrency);
+                promotedWaiters = PromoteQueuedWaitersLocked(state);
+                activeCount = state.ActiveCount;
+            }
+
+            ReleaseQueuedWaiters(promotedWaiters, key, effectiveDisplaySiteId, remoteModelName, activeCount);
+            return;
+        }
     }
 
     /// <summary>
@@ -506,15 +536,19 @@ public sealed class ModelConcurrencyLimiter
     public IReadOnlyList<long> ListActiveSlotIds(Guid siteId, string remoteModelName)
     {
         var key = BuildKey(siteId, remoteModelName);
-        if (!_states.TryGetValue(key, out var state))
+        while (_states.TryGetValue(key, out var state))
         {
-            return [];
+            lock (state.SyncRoot)
+            {
+                if (_states.TryGetValue(key, out var currentState)
+                    && ReferenceEquals(currentState, state))
+                {
+                    return state.ActiveSlotIds.ToList();
+                }
+            }
         }
 
-        lock (state.SyncRoot)
-        {
-            return state.ActiveSlotIds.ToList();
-        }
+        return [];
     }
 
     /// <summary>

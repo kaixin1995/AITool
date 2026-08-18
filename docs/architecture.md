@@ -51,7 +51,7 @@ graph TD
 
 | 层 | 职责 | 约束 |
 |----|------|------|
-| Domain | 16 个表实体 + 1 个规则 DTO，`SugarTable`/`SugarColumn`/`SugarIndex` 特性标注 | 全部 `sealed`，无导航属性，`Guid` 主键（`SystemRuntimeSettings` 固定 `Id=1`） |
+| Domain | 17 个表实体 + 1 个规则 DTO，`SugarTable`/`SugarColumn`/`SugarIndex` 特性标注 | 全部 `sealed`，无导航属性，`Guid` 主键（`SystemRuntimeSettings` 固定 `Id=1`） |
 | Application | 接口与 DTO（`IProxyForwardService`、`ISystemRuntimeSettingsService`、Codex 接口族、`ProxyProtocolResolver`、`SiteEndpointPathResolver` 等纯静态工具） | 不含实现 |
 | Protocol | `ProxyProtocolBridge`（6 个 partial 文件约 7000 行）+ 5 个流式状态类，三协议互转 | 纯静态、无 IO、无状态（状态显式由调用方持有） |
 | Infrastructure | `ProxyForwardService`（上游 HTTP 转发）、`AppDbContext`/`SqlSugarSetup`（持久化）、`RouteCircuitStateStore`（熔断）、`ProxyUsageLogBatchWriter`（批量写日志）、`HangfireDetectionScheduler`、`ModelHealthRequestService`、Codex 解析器族 | 被 Web 引用；故障转移**编排**不在这一层（在 Web 控制器） |
@@ -192,7 +192,7 @@ graph TD
 
 ---
 
-## 5. 数据库与实体（16 表实体 + 1 DTO）
+## 5. 数据库与实体（17 表实体 + 1 DTO）
 
 引擎 SQLite（WAL），初始化 `SqlSugarSetup.InitializeDatabase`（`Infrastructure/Persistence/AppDbContext.cs`）：`CodeFirst.InitTables` **差量更新只增不删**，自动补齐历史库缺失列；不使用 EF Migration。
 
@@ -220,7 +220,7 @@ graph TD
 
 ### 5.2 实体全字段清单
 
-以下为 16 个实体 + 规则 DTO 的完整字段（伪 C#，来源为各实体源文件，含关键语义注释）。
+以下为 17 个实体 + 规则 DTO 的完整字段（伪 C#，来源为各实体源文件，含关键语义注释）。
 
 **Site**（`Domain/Sites/Site.cs`）
 

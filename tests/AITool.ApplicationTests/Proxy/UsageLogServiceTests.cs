@@ -242,6 +242,48 @@ public sealed class UsageLogServiceTests : IDisposable
     }
 
     /// <summary>
+    /// 后台批量写入第一次失败时，应保留原批次并在临时故障恢复后重试落库。
+    /// </summary>
+    [Fact]
+    public async Task Background_writer_retries_batch_after_transient_flush_failure()
+    {
+        var writer = new ProxyUsageLogBatchWriter(
+            new FailFirstScopeFactory(_serviceProvider),
+            NullLogger<ProxyUsageLogBatchWriter>.Instance,
+            new TestHostEnvironment { EnvironmentName = "Production" },
+            new SiteUsageTracker());
+        var entry = new UsageLogEntry
+        {
+            RequestId = Guid.NewGuid(),
+            TargetSiteId = Guid.NewGuid(),
+            Status = "success"
+        };
+
+        await writer.StartAsync(CancellationToken.None);
+        try
+        {
+            (await writer.EnqueueAsync(entry, CancellationToken.None)).Should().BeTrue();
+
+            var deadline = DateTime.UtcNow.AddSeconds(5);
+            while (DateTime.UtcNow < deadline)
+            {
+                if (await _dbContext.ProxyUsageLogs.CountAsync() == 1)
+                {
+                    break;
+                }
+
+                await Task.Delay(50);
+            }
+
+            (await _dbContext.ProxyUsageLogs.CountAsync()).Should().Be(1);
+        }
+        finally
+        {
+            await writer.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
     /// 释放数据库上下文和服务容器，避免内存数据库与作用域对象残留。
     /// </summary>
     public void Dispose()
@@ -273,5 +315,67 @@ public sealed class UsageLogServiceTests : IDisposable
         /// 使用空文件提供器，避免测试触发实际文件访问。
         /// </summary>
         public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
+    }
+
+    /// <summary>
+    /// 让第一次刷盘拿到作用域时失败，模拟短暂的数据库/依赖异常。
+    /// </summary>
+    private sealed class FailFirstScopeFactory : IServiceScopeFactory
+    {
+        private readonly IServiceProvider _innerProvider;
+        private int _remainingFailures = 1;
+
+        public FailFirstScopeFactory(IServiceProvider innerProvider)
+        {
+            _innerProvider = innerProvider;
+        }
+
+        public IServiceScope CreateScope()
+        {
+            var shouldFail = Interlocked.Exchange(ref _remainingFailures, 0) == 1;
+            return new DelegatingScope(new DelegatingServiceProvider(_innerProvider, shouldFail));
+        }
+    }
+
+    /// <summary>
+    /// 测试用作用域包装器。
+    /// </summary>
+    private sealed class DelegatingScope : IServiceScope
+    {
+        public DelegatingScope(IServiceProvider serviceProvider)
+        {
+            ServiceProvider = serviceProvider;
+        }
+
+        public IServiceProvider ServiceProvider { get; }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    /// <summary>
+    /// 测试用服务提供程序包装器，仅对首次 AppDbContext 解析注入失败。
+    /// </summary>
+    private sealed class DelegatingServiceProvider : IServiceProvider
+    {
+        private readonly IServiceProvider _innerProvider;
+        private readonly bool _shouldFail;
+
+        public DelegatingServiceProvider(IServiceProvider innerProvider, bool shouldFail)
+        {
+            _innerProvider = innerProvider;
+            _shouldFail = shouldFail;
+        }
+
+        public object? GetService(Type serviceType)
+        {
+            if (_shouldFail && serviceType == typeof(AppDbContext))
+            {
+                throw new InvalidOperationException("transient test failure");
+            }
+
+            return _innerProvider.GetService(serviceType);
+        }
     }
 }

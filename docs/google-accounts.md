@@ -63,7 +63,7 @@ ProxyProtocolBridge（Gemini 桥）──► cloudcode-pa / daily-cloudcode-pa v
 ## 数据与缓存
 
 - `GoogleAccounts` 表（`Domain/Google/GoogleAccount.cs`，CodeFirst 自动建表/补列）。账号去重键：(AccountKind, Email)。
-- `ProxyRequestMetadataCache`：`GetGoogleAccountsAsync`（5s 缓存 + Clone）、`InvalidateGoogleAccounts`（同时失效路由缓存，因路由目标携带 GoogleProjectId）。
+- `ProxyRequestMetadataCache`：`GetGoogleAccountsAsync`（30s 兜底缓存 + Clone，管理写入显式失效）、`InvalidateGoogleAccounts`（同时失效路由缓存，因路由目标携带 GoogleProjectId）。
 - 站点管理页对 `ManagedSource=Google` 的隐藏 Site 与 Codex 一致自动过滤（删除保护同样生效）。
 
 ## 前端
@@ -75,7 +75,7 @@ ProxyProtocolBridge（Gemini 桥）──► cloudcode-pa / daily-cloudcode-pa v
 
 ## 测试
 
-- `tests/AITool.IntegrationTests/Proxy/ProxyProtocolBridgeGeminiTests.cs`（24 个）：请求三方向转换、封套/CLI 封套、思考覆盖（含 gemini-3 等级表达）、响应块/usage/stop_reason 映射、SSE 状态机（签名切块/跨块工具索引/收尾幂等）、空内容兜底、schema $ref/allOf 清理、usage 提取口径。
+- `tests/AITool.IntegrationTests/Proxy/ProxyProtocolBridgeGeminiTests.cs`（25 个）：请求三方向转换、封套/CLI 封套、思考覆盖（含 gemini-3 等级表达）、响应块/usage/stop_reason 映射、SSE 状态机（签名切块/跨块工具索引/收尾幂等）、空内容兜底、schema $ref/allOf 清理、usage 提取口径。
 - `tests/AITool.ApplicationTests/Google/GoogleAccountBasicsTests.cs`（16 个）：kinds 常量、授权 URL 构造（offline/consent/state/scope）、额度解析（remainingFraction→窗口、无数据返回 null）、协议解析器 Gemini 分支与历史行为回归、静态模型清单与 Antigravity 友好名称解析。
 - `tests/AITool.ApplicationTests/Proxy/ProxyForwardServiceResponseTests.cs` 覆盖 Gemini `usage: null` 回退到 `response.usageMetadata`、字符串/null 数值容错；`tests/AITool.IntegrationTests/Chat/ChatApiTests.cs` 覆盖 Antigravity 最后一块 SSE 携带 usage 时聊天结果与 usage log 的 token 统计。
 

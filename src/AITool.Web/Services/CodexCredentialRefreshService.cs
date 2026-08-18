@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
 using AITool.Infrastructure.Persistence;
@@ -9,6 +10,11 @@ namespace AITool.Web.Services;
 /// </summary>
 public sealed class CodexCredentialRefreshService
 {
+    /// <summary>
+    /// 同一隐藏站点的 401 刷新采用 single-flight，避免并发请求重复轮换 refresh_token。
+    /// </summary>
+    private static readonly ConcurrentDictionary<Guid, SemaphoreSlim> RefreshLocks = new();
+
     private readonly AppDbContext _dbContext;
     private readonly ICodexOAuthClient _oauth;
     private readonly ProxyRequestMetadataCache _metadataCache;
@@ -31,6 +37,23 @@ public sealed class CodexCredentialRefreshService
         string staleAccessToken,
         CancellationToken cancellationToken)
     {
+        var refreshLock = RefreshLocks.GetOrAdd(linkedSiteId, static _ => new SemaphoreSlim(1, 1));
+        await refreshLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await RefreshCoreAsync(linkedSiteId, staleAccessToken, cancellationToken);
+        }
+        finally
+        {
+            refreshLock.Release();
+        }
+    }
+
+    private async Task<string?> RefreshCoreAsync(
+        Guid linkedSiteId,
+        string staleAccessToken,
+        CancellationToken cancellationToken)
+    {
         try
         {
             var account = (await _dbContext.CodexAccounts
@@ -42,7 +65,7 @@ public sealed class CodexCredentialRefreshService
                 return null;
             }
 
-            // 后台服务或其他并发请求已经完成刷新时直接复用新 token，避免重复轮换。
+            // 其他请求已经完成刷新时直接复用新 token，避免重复轮换。
             if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal))
             {
                 return account.AccessToken;

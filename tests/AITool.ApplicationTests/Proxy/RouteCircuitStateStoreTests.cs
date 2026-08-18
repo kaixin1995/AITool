@@ -127,4 +127,21 @@ public sealed class RouteCircuitStateStoreTests
 
         store.IsBlocked(siteId).Should().BeFalse();
     }
+
+    /// <summary>
+    /// 重置全部熔断状态时，也应清理用于面板展示的路由元数据。
+    /// </summary>
+    [Fact]
+    public void ResetAll_clears_route_metadata()
+    {
+        var store = new RouteCircuitStateStore(TimeSpan.FromMinutes(2), failThreshold: 1);
+        var routeId = Guid.NewGuid();
+
+        store.Block(routeId, new CircuitRouteMeta("site", "model"));
+        store.GetAllCircuitStates()[routeId].Meta.Should().NotBeNull();
+
+        store.ResetAll();
+
+        store.GetAllCircuitStates().Should().BeEmpty();
+    }
 }

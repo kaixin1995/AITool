@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -104,6 +105,10 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private readonly IServiceScopeFactory _scopeFactory;
     /// <summary>
+    /// 缓存键级别的加载锁，避免冷缓存并发 miss 重复执行全表查询。
+    /// </summary>
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _cacheLoadLocks = new(StringComparer.Ordinal);
+    /// <summary>
     /// 正在等待活跃调用结束的路由快照，确保调用中的模型不会被新顺序影响。
     /// </summary>
     private readonly Dictionary<string, DeferredRouteTargetsRefresh> _deferredRouteTargetsByModel = new(StringComparer.Ordinal);
@@ -133,6 +138,36 @@ public sealed class ProxyRequestMetadataCache
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         client.Ado.ExecuteCommand("PRAGMA cache_size=-65536;");
         return client;
+    }
+
+    /// <summary>
+    /// 读取或构建缓存项，并确保同一键在冷缓存期间只执行一次构建委托。
+    /// </summary>
+    private async Task<T?> GetOrCreateCachedAsync<T>(string key, Func<ICacheEntry, Task<T>> factory)
+    {
+        if (_memoryCache.TryGetValue(key, out T? cached))
+        {
+            return cached;
+        }
+
+        var gate = _cacheLoadLocks.GetOrAdd(key, static _ => new SemaphoreSlim(1, 1));
+        await gate.WaitAsync();
+        try
+        {
+            if (_memoryCache.TryGetValue(key, out cached))
+            {
+                return cached;
+            }
+
+            using var entry = _memoryCache.CreateEntry(key);
+            var value = await factory(entry);
+            entry.Value = value;
+            return value;
+        }
+        finally
+        {
+            gate.Release();
+        }
     }
 
     /// <summary>
@@ -191,7 +226,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<CachedProxyRuntimeSettings> GetRuntimeSettingsAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 RuntimeSettingsCacheKey,
                 async entry =>
                 {
@@ -298,7 +333,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<IReadOnlyList<CachedChatModel>> GetChatModelsAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 ChatModelsCacheKey,
                 async entry =>
                 {
@@ -334,7 +369,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<IReadOnlyList<CachedChatTarget>> GetChatTargetsAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 ChatTargetsCacheKey,
                 async entry =>
                 {
@@ -426,7 +461,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<IReadOnlyDictionary<string, int>> GetModelConcurrencyLimitsAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 ModelConcurrencyLimitsCacheKey,
                 async entry =>
                 {
@@ -481,7 +516,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<IReadOnlyDictionary<Guid, string>> GetEnabledSiteNamesAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 EnabledSiteNamesCacheKey,
                 async entry =>
                 {
@@ -509,7 +544,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<IReadOnlyList<RouteEntryListItem>> GetRouteEntriesAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 RouteEntriesCacheKey,
                 async entry =>
                 {
@@ -557,7 +592,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<IReadOnlyList<SiteInstanceItem>> GetRouteSiteInstancesAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 RouteSiteInstancesCacheKey,
                 async entry =>
                 {
@@ -595,7 +630,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<IReadOnlyList<RouteModelItem>> GetRouteModelsAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 RouteModelsCacheKey,
                 async entry =>
                 {
@@ -666,7 +701,7 @@ public sealed class ProxyRequestMetadataCache
             return [];
         }
 
-        var allDiscoveredSites = await _memoryCache.GetOrCreateAsync(
+        var allDiscoveredSites = await GetOrCreateCachedAsync(
                 RouteDiscoveredSitesCacheKey,
                 async entry =>
                 {
@@ -733,7 +768,7 @@ public sealed class ProxyRequestMetadataCache
             return [];
         }
 
-        var rulesByEntry = await _memoryCache.GetOrCreateAsync(
+        var rulesByEntry = await GetOrCreateCachedAsync(
                 RouteRulesByEntryCacheKey,
                 async entry =>
                 {
@@ -806,7 +841,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<string> GetDeveloperDefaultAccessKeyAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 DeveloperDefaultAccessKeyCacheKey,
                 async entry =>
                 {
@@ -829,7 +864,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     public async Task<IReadOnlyList<ClientSimulatorModelItemViewModel>> GetDeveloperDebugModelsAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 DeveloperDebugModelsCacheKey,
                 async entry =>
                 {
@@ -929,7 +964,7 @@ public sealed class ProxyRequestMetadataCache
     {
         // 返回浅拷贝：调用方（额度巡检/自动禁用等）会原地修改这些实体并回写，
         // 共享同一实例会污染缓存内容并与其他并发调用方互相踩踏。
-        var cached = await _memoryCache.GetOrCreateAsync(
+        var cached = await GetOrCreateCachedAsync(
                 CodexAccountsCacheKey,
                 async entry =>
                 {
@@ -955,7 +990,7 @@ public sealed class ProxyRequestMetadataCache
     {
         // 返回浅拷贝：调用方（额度巡检/后台刷新等）会原地修改这些实体并回写，
         // 共享同一实例会污染缓存内容并与其他并发调用方互相踩踏。
-        var cached = await _memoryCache.GetOrCreateAsync(
+        var cached = await GetOrCreateCachedAsync(
                 GoogleAccountsCacheKey,
                 async entry =>
                 {
@@ -1201,7 +1236,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private async Task<Dictionary<string, CachedProxyAccessKey>> GetAccessKeysAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 AccessKeyCacheKey,
                 async entry =>
                 {
@@ -1230,7 +1265,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private async Task<IReadOnlyList<CachedProxyRouteTarget>> GetRouteTargetsAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 RouteTargetsCacheKeyPrefix + "all",
                 async entry =>
                 {
@@ -1333,7 +1368,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private async Task<Dictionary<Guid, CachedEnabledModel>> GetEnabledModelsAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 EnabledModelsCacheKey,
                 async entry =>
                 {
@@ -1363,7 +1398,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private async Task<Dictionary<Guid, CachedFallbackTarget>> GetFallbackMappingsAsync(CancellationToken cancellationToken)
     {
-        return await _memoryCache.GetOrCreateAsync(
+        return await GetOrCreateCachedAsync(
                 FallbackMappingsCacheKey,
                 async entry =>
                 {

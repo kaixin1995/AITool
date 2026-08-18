@@ -338,17 +338,9 @@ public sealed class AccountQuotaInspectionService : BackgroundService
     {
         var candidates = windows
             .Where(window => window.UsedPercent.HasValue)
-            .OrderBy(window => GetWindowPriority(window))
+            .Select(window => window.UsedPercent!.Value)
             .ToList();
-        return candidates.FirstOrDefault()?.UsedPercent;
-    }
-
-    private static int GetWindowPriority(AccountQuotaWindow window)
-    {
-        var id = window.Id.ToLowerInvariant();
-        if (id.Contains("five-hour") || id.Contains("5-hour") || id.Contains("hour")) return 0;
-        if (id.Contains("weekly") || id.Contains("week")) return 1;
-        return 2;
+        return candidates.Count == 0 ? null : candidates.Max();
     }
 
     private static string AppendReason(string current, string addition)
