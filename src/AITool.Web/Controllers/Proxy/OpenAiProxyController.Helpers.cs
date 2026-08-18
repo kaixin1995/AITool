@@ -7,6 +7,7 @@ using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
+using AITool.Protocol;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using AITool.Web.Services;
@@ -89,7 +90,7 @@ public sealed partial class OpenAiProxyController
             var merged = MergeExtraHeaders(route.ExtraHeaders);
             if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
             {
-                ApplyGeminiForwardHeaders(merged, preparedRequestBody);
+                ApplyGeminiForwardHeaders(merged, route.SiteModelName, ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl));
             }
 
             return merged;
@@ -101,35 +102,10 @@ public sealed partial class OpenAiProxyController
     /// <summary>
     /// Gemini 上游（GeminiCLI / Antigravity）的客户端仿真头：
     /// GeminiCLI 需要带模型名的 GeminiCLI UA；Antigravity 需要 antigravity/cli UA + requestId/requestType。
-    /// 模型名从已封套的请求体（{model, project, request}）提取。调试聊天页复用。
+    /// 调用方直接提供模型名与上游类型，避免逐请求解析整个封套请求体。
     /// </summary>
-    public static void ApplyGeminiForwardHeaders(Dictionary<string, string> headers, string? preparedRequestBody)
+    public static void ApplyGeminiForwardHeaders(Dictionary<string, string> headers, string? model, bool isAntigravity)
     {
-        var isAntigravity = false;
-        string? model = null;
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(preparedRequestBody))
-            {
-                using var doc = JsonDocument.Parse(preparedRequestBody);
-                if (doc.RootElement.ValueKind == JsonValueKind.Object)
-                {
-                    if (doc.RootElement.TryGetProperty("model", out var modelElement)
-                        && modelElement.ValueKind == JsonValueKind.String)
-                    {
-                        model = modelElement.GetString();
-                    }
-
-                    // Antigravity 封套带 userAgent 字段（CLI 行为），借此区分两种上游。
-                    isAntigravity = doc.RootElement.TryGetProperty("userAgent", out var userAgentElement)
-                        && string.Equals(userAgentElement.GetString(), "antigravity", StringComparison.OrdinalIgnoreCase);
-                }
-            }
-        }
-        catch (JsonException)
-        {
-        }
-
         if (isAntigravity)
         {
             headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;

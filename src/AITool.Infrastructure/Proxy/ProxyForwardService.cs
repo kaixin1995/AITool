@@ -1021,6 +1021,21 @@ public sealed class ProxyForwardService : IProxyForwardService
                     && content.GetArrayLength() > 0;
             }
 
+            // Gemini 格式：v1internal 封套下（或顶层）的 candidates 数组非空即视为可用。
+            if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+            {
+                var geminiCandidates = root.TryGetProperty("response", out var geminiWrapper)
+                    && geminiWrapper.ValueKind == JsonValueKind.Object
+                    && geminiWrapper.TryGetProperty("candidates", out var wrappedCandidates)
+                    && wrappedCandidates.ValueKind == JsonValueKind.Array
+                        ? wrappedCandidates
+                        : root.TryGetProperty("candidates", out var directCandidates)
+                          && directCandidates.ValueKind == JsonValueKind.Array
+                            ? directCandidates
+                            : default;
+                return geminiCandidates.ValueKind == JsonValueKind.Array && geminiCandidates.GetArrayLength() > 0;
+            }
+
             // Chat Completions 格式：检查 choices 数组
             if (root.TryGetProperty("choices", out var choices)
                 && choices.ValueKind == JsonValueKind.Array
@@ -1074,7 +1089,9 @@ public sealed class ProxyForwardService : IProxyForwardService
 
         return protocolType == "Anthropic"
             ? "Upstream returned no usable content blocks."
-            : "Upstream returned no usable choices.";
+            : string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                ? "Upstream returned no usable candidates."
+                : "Upstream returned no usable choices.";
     }
 
     /// <summary>

@@ -27,6 +27,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
     private readonly GoogleAccountProvisioner _provisioner;
     private readonly IGoogleModelFetcher _modelFetcher;
     private readonly GoogleAccountQuotaService _quotaService;
+    private readonly GoogleCredentialRefreshService _credentialRefreshService;
     private readonly ILogger<GoogleAccountsApiController> _logger;
 
     public GoogleAccountsApiController(
@@ -35,6 +36,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
         GoogleAccountProvisioner provisioner,
         IGoogleModelFetcher modelFetcher,
         GoogleAccountQuotaService quotaService,
+        GoogleCredentialRefreshService credentialRefreshService,
         ILogger<GoogleAccountsApiController> logger)
     {
         _dbContext = dbContext;
@@ -42,6 +44,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
         _provisioner = provisioner;
         _modelFetcher = modelFetcher;
         _quotaService = quotaService;
+        _credentialRefreshService = credentialRefreshService;
         _logger = logger;
     }
 
@@ -253,21 +256,15 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var account = await GetAccountAsync(id, ct);
         if (account == null) return NotFound(new { message = "账号不存在" });
 
-        // token 过期或临期先刷新（拉取对 token 有效性敏感）。
+        // token 过期或临期先刷新（拉取对 token 有效性敏感）；经凭证刷新服务持久化并同步隐藏 Site，
+        // 避免下次代理请求再吃一次 401。
         var accessToken = account.AccessToken ?? string.Empty;
         if (account.TokenExpiresAt is null || account.TokenExpiresAt <= DateTimeOffset.UtcNow.AddMinutes(2))
         {
-            if (!string.IsNullOrWhiteSpace(account.RefreshToken))
+            var refreshed = await _credentialRefreshService.RefreshAsync(account.LinkedSiteId, accessToken, ct);
+            if (!string.IsNullOrWhiteSpace(refreshed))
             {
-                try
-                {
-                    var tokens = await _oauth.RefreshTokenAsync(account.AccountKind, account.RefreshToken, ct);
-                    accessToken = tokens.AccessToken;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogWarning(ex, "拉取模型前刷新 token 失败（账号 {Id}），沿用旧 token", account.Id);
-                }
+                accessToken = refreshed;
             }
         }
 

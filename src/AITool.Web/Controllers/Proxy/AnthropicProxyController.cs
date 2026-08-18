@@ -275,8 +275,12 @@ public sealed class AnthropicProxyController : ControllerBase
             var effectiveForwardHeaders = forwardHeaders;
             if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
             {
-                // Gemini 上游不认 Anthropic 头；改用 Gemini 客户端仿真头（模型名取自封套请求体）。
-                effectiveForwardHeaders = ApplyGeminiHeadersForAnthropicController(preparedRequestBody);
+                // Gemini 上游不认 Anthropic 头；改用 Gemini 客户端仿真头。
+                effectiveForwardHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
+                    effectiveForwardHeaders,
+                    route.SiteModelName,
+                    ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl));
             }
             var forwardRequest = new ProxyForwardRequest
             {
@@ -1497,51 +1501,6 @@ public sealed class AnthropicProxyController : ControllerBase
             }
         }
 
-        return headers;
-    }
-
-    /// <summary>
-    /// Gemini 上游（GeminiCLI / Antigravity）的客户端仿真头：模型名从封套请求体提取，
-    /// Antigravity 封套带 userAgent 字段据以区分两种上游。
-    /// </summary>
-    private static Dictionary<string, string> ApplyGeminiHeadersForAnthropicController(string? preparedRequestBody)
-    {
-        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var isAntigravity = false;
-        string? model = null;
-        try
-        {
-            if (!string.IsNullOrWhiteSpace(preparedRequestBody))
-            {
-                using var doc = JsonDocument.Parse(preparedRequestBody);
-                if (doc.RootElement.ValueKind == JsonValueKind.Object)
-                {
-                    if (doc.RootElement.TryGetProperty("model", out var modelElement)
-                        && modelElement.ValueKind == JsonValueKind.String)
-                    {
-                        model = modelElement.GetString();
-                    }
-
-                    isAntigravity = doc.RootElement.TryGetProperty("userAgent", out var userAgentElement)
-                        && string.Equals(userAgentElement.GetString(), "antigravity", StringComparison.OrdinalIgnoreCase);
-                }
-            }
-        }
-        catch (JsonException)
-        {
-        }
-
-        if (isAntigravity)
-        {
-            headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;
-            headers["requestId"] = $"req-{Guid.NewGuid():N}";
-            headers["requestType"] = model is not null && model.Contains("image", StringComparison.OrdinalIgnoreCase)
-                ? "image_gen"
-                : "agent";
-            return headers;
-        }
-
-        headers["User-Agent"] = GoogleAccountKinds.GeminiCliUserAgentTemplate.Replace("{MODEL}", string.IsNullOrEmpty(model) ? string.Empty : model, StringComparison.OrdinalIgnoreCase);
         return headers;
     }
 

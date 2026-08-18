@@ -479,7 +479,8 @@ public sealed class ChatApiController : ControllerBase
                 var chatForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(route.ExtraHeaders);
                 if (isGeminiRoute)
                 {
-                    Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(chatForwardHeaders, preparedRequestBody);
+                    Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
+                        chatForwardHeaders, route.SiteModelName, ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl));
                 }
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
@@ -879,7 +880,8 @@ public sealed class ChatApiController : ControllerBase
         var mappingForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(mapping.ExtraHeaders);
         if (isGeminiMapping)
         {
-            Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(mappingForwardHeaders, preparedRequestBody);
+            Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
+                mappingForwardHeaders, mapping.SiteModelName, ProxyProtocolBridge.IsAntigravityTarget(mapping.BaseUrl));
         }
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
@@ -1159,7 +1161,8 @@ public sealed class ChatApiController : ControllerBase
             if (isGeminiStream)
             {
                 var geminiHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(geminiHeaders, requestBody);
+                Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
+                    geminiHeaders, targetModelName, ProxyProtocolBridge.IsAntigravityTarget(baseUrl));
                 foreach (var header in geminiHeaders)
                 {
                     httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);

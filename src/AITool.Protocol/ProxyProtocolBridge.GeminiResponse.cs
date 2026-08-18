@@ -337,6 +337,8 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     public static string ConvertGeminiSseChunkToAnthropic(string dataPayload, string modelName, GeminiToAnthropicStreamState state)
     {
+        // builder 声明在 try 外：单块中途异常时已生成的事件仍可返回，避免客户端事件序列缺块。
+        var builder = new StringBuilder();
         try
         {
             var root = JsonNode.Parse(dataPayload) as JsonObject;
@@ -357,7 +359,6 @@ public static partial class ProxyProtocolBridge
                 state.OutputTokens = output;
             }
 
-            var builder = new StringBuilder();
             if (!state.MessageStartSent)
             {
                 state.MessageStartSent = true;
@@ -518,7 +519,8 @@ public static partial class ProxyProtocolBridge
         }
         catch
         {
-            return string.Empty;
+            // 单块部分事件已生成时照常返回，避免客户端事件序列缺块；完全失败才返回空。
+            return builder.ToString();
         }
     }
 
