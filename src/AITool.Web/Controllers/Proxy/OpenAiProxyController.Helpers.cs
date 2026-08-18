@@ -2,6 +2,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AITool.Application.Google;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
@@ -85,10 +86,92 @@ public sealed partial class OpenAiProxyController
         if (!string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
             || !string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
         {
-            return MergeExtraHeaders(route.ExtraHeaders);
+            var merged = MergeExtraHeaders(route.ExtraHeaders);
+            if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+            {
+                ApplyGeminiForwardHeaders(merged, preparedRequestBody);
+            }
+
+            return merged;
         }
 
         return MergeCodexResponsesHeaders(route.ExtraHeaders, Request.Headers, preparedRequestBody);
+    }
+
+    /// <summary>
+    /// Gemini 上游（GeminiCLI / Antigravity）的客户端仿真头：
+    /// GeminiCLI 需要带模型名的 GeminiCLI UA；Antigravity 需要 antigravity/cli UA + requestId/requestType。
+    /// 模型名从已封套的请求体（{model, project, request}）提取。调试聊天页复用。
+    /// </summary>
+    public static void ApplyGeminiForwardHeaders(Dictionary<string, string> headers, string? preparedRequestBody)
+    {
+        var isAntigravity = false;
+        string? model = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(preparedRequestBody))
+            {
+                using var doc = JsonDocument.Parse(preparedRequestBody);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    if (doc.RootElement.TryGetProperty("model", out var modelElement)
+                        && modelElement.ValueKind == JsonValueKind.String)
+                    {
+                        model = modelElement.GetString();
+                    }
+
+                    // Antigravity 封套带 userAgent 字段（CLI 行为），借此区分两种上游。
+                    isAntigravity = doc.RootElement.TryGetProperty("userAgent", out var userAgentElement)
+                        && string.Equals(userAgentElement.GetString(), "antigravity", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        if (isAntigravity)
+        {
+            headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;
+            headers["requestId"] = $"req-{Guid.NewGuid():N}";
+            headers["requestType"] = model is not null && model.Contains("image", StringComparison.OrdinalIgnoreCase)
+                ? "image_gen"
+                : "agent";
+            return;
+        }
+
+        headers["User-Agent"] = GoogleAccountKinds.GeminiCliUserAgentTemplate.Replace("{MODEL}", string.IsNullOrEmpty(model) ? string.Empty : model, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 解析 Gemini 上游的目标路径：流式走 streamGenerateContent?alt=sse，非流式走 generateContent（v1internal）。
+    /// </summary>
+    private static string ResolveGeminiTargetPath(bool enableStreaming)
+        => enableStreaming ? "/v1internal:streamGenerateContent?alt=sse" : "/v1internal:generateContent";
+
+    /// <summary>
+    /// 仅为托管隐藏站点绑定实时凭证刷新回调（Codex / Google），普通站点的 401 不触发 OAuth 刷新。
+    /// </summary>
+    private Func<string, CancellationToken, Task<string?>>? CreateCredentialRefreshCallback(
+        CachedProxyRouteTarget route)
+    {
+        if (string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _codexCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        if (string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _googleCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        return null;
     }
 
     private static string? TryExtractPromptCacheKey(string? preparedRequestBody)
@@ -114,20 +197,6 @@ public sealed partial class OpenAiProxyController
         }
 
         return null;
-    }
-
-    /// <summary>
-    /// 仅为 Codex 隐藏站点绑定实时凭证刷新回调，普通站点的 401 不触发 OAuth 刷新。
-    /// </summary>
-    private Func<string, CancellationToken, Task<string?>>? CreateCodexCredentialRefreshCallback(
-        CachedProxyRouteTarget route)
-    {
-        return string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
-            ? (staleToken, cancellationToken) => _codexCredentialRefreshService.RefreshAsync(
-                route.SiteId,
-                staleToken,
-                cancellationToken)
-            : null;
     }
     /// <summary>
     /// 接收一条完整的 WebSocket 文本消息。

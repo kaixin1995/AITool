@@ -519,6 +519,44 @@ public sealed class ProxyForwardService : IProxyForwardService
                         if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
                     }
 
+                    // Gemini 上游（v1internal 封套）：usage 用 usageMetadata 表达，且流没有
+                    // [DONE]/message_stop 标记——candidates[0].finishReason 出现即视为正常完成。
+                    if (string.Equals(request.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var geminiUsage = root.TryGetProperty("usageMetadata", out var topMeta) && topMeta.ValueKind == JsonValueKind.Object
+                            ? topMeta
+                            : root.TryGetProperty("response", out var geminiWrapper)
+                              && geminiWrapper.ValueKind == JsonValueKind.Object
+                              && geminiWrapper.TryGetProperty("usageMetadata", out var nestedMeta)
+                              && nestedMeta.ValueKind == JsonValueKind.Object
+                                ? nestedMeta
+                                : default;
+                        if (geminiUsage.ValueKind == JsonValueKind.Object)
+                        {
+                            var extracted = ExtractUsageFromElement(geminiUsage, request.ProtocolType);
+                            if (extracted.InputTokens > 0) inputTokens = extracted.InputTokens;
+                            if (extracted.CachedTokens > 0) cachedTokens = extracted.CachedTokens;
+                            if (extracted.OutputTokens > 0) outputTokens = extracted.OutputTokens;
+                        }
+
+                        var geminiCandidates = root.TryGetProperty("response", out var wrapperForCandidates)
+                            && wrapperForCandidates.ValueKind == JsonValueKind.Object
+                            && wrapperForCandidates.TryGetProperty("candidates", out var wrappedCandidates)
+                            && wrappedCandidates.ValueKind == JsonValueKind.Array
+                                ? wrappedCandidates
+                                : root.TryGetProperty("candidates", out var directCandidates)
+                                  && directCandidates.ValueKind == JsonValueKind.Array
+                                    ? directCandidates
+                                    : default;
+                        if (geminiCandidates.ValueKind == JsonValueKind.Array && geminiCandidates.GetArrayLength() > 0
+                            && geminiCandidates[0].ValueKind == JsonValueKind.Object
+                            && geminiCandidates[0].TryGetProperty("finishReason", out var geminiFinish)
+                            && geminiFinish.ValueKind == JsonValueKind.String)
+                        {
+                            receivedDoneEvent = true;
+                        }
+                    }
+
                     // Anthropic message_start 事件中的 usage 嵌套在 message 里
                     if (request.ProtocolType == "Anthropic"
                         && root.TryGetProperty("message", out var message)
@@ -1051,7 +1089,22 @@ public sealed class ProxyForwardService : IProxyForwardService
 
             if (!root.TryGetProperty("usage", out var usage))
             {
-                return (0, 0, 0);
+                // Gemini 上游（v1internal 封套）：用量在顶层或 response.usageMetadata。
+                var geminiUsage = root.TryGetProperty("usageMetadata", out var topLevelMetadata)
+                    && topLevelMetadata.ValueKind == JsonValueKind.Object
+                        ? topLevelMetadata
+                        : root.TryGetProperty("response", out var responseWrapper)
+                          && responseWrapper.ValueKind == JsonValueKind.Object
+                          && responseWrapper.TryGetProperty("usageMetadata", out var nestedMetadata)
+                          && nestedMetadata.ValueKind == JsonValueKind.Object
+                                ? nestedMetadata
+                                : default;
+                if (geminiUsage.ValueKind != JsonValueKind.Object)
+                {
+                    return (0, 0, 0);
+                }
+
+                return ExtractUsageFromElement(geminiUsage, protocolType);
             }
 
             return ExtractUsageFromElement(usage, protocolType);

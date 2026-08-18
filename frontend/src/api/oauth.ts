@@ -227,3 +227,84 @@ export async function getResetCredits(id: string): Promise<OAuthResetCreditsInfo
 export async function consumeResetCredit(id: string): Promise<void> {
   await httpPost(`/api/admin/oauth/accounts/${id}/consume-reset-credit`)
 }
+
+// —— Google 账号（GeminiCLI / Antigravity，gcli2api 移植）——
+
+export type GoogleAccountKind = 'GeminiCli' | 'Antigravity'
+
+export interface GoogleAccountSummary {
+  id: string
+  displayName: string
+  email: string | null
+  accountKind: string
+  projectId: string | null
+  subscriptionTier: string | null
+  creditAmount: number | null
+  isEnabled: boolean
+  isQuotaCooling: boolean
+  quotaCoolingUntil: string | null
+  windows?: OAuthQuotaWindow[] | null
+  lastQuotaCheckedAt: string | null
+  tokenExpiresAt: string | null
+  createdAt: string | null
+}
+
+export async function listGoogleAccounts(): Promise<GoogleAccountSummary[]> {
+  return httpGet<GoogleAccountSummary[]>('/api/admin/google-accounts/accounts')
+}
+export async function startGoogleOAuth(
+  kind: GoogleAccountKind
+): Promise<{ url: string; state: string }> {
+  return httpPost<{ url: string; state: string }>('/api/admin/google-accounts/start-oauth', { kind })
+}
+export async function completeGoogleOAuth(
+  kind: GoogleAccountKind,
+  callbackUrl: string,
+  displayName?: string
+): Promise<void> {
+  await httpPost('/api/admin/google-accounts/complete-oauth', {
+    kind,
+    callbackUrl,
+    displayName
+  })
+}
+export async function importGoogleCredential(
+  kind: GoogleAccountKind,
+  jsonText: string
+): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
+  const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
+    `/api/admin/google-accounts/import-credential?kind=${encodeURIComponent(kind)}&name=imported.json`,
+    JSON.parse(jsonText)
+  )
+  return {
+    successes: result.successes ?? [],
+    failures: result.failures ?? []
+  }
+}
+export async function refreshGoogleQuota(id: string): Promise<void> {
+  await httpPost(`/api/admin/google-accounts/accounts/${id}/refresh-quota`)
+}
+export async function toggleGoogleAccount(id: string, enabled: boolean): Promise<void> {
+  await httpPost(`/api/admin/google-accounts/accounts/${id}/toggle`, { enabled })
+}
+export async function deleteGoogleAccount(id: string): Promise<void> {
+  await httpDelete(`/api/admin/google-accounts/accounts/${id}`)
+}
+export async function updateGoogleAccount(
+  id: string,
+  displayName: string,
+  refreshToken?: string
+): Promise<void> {
+  const body: Record<string, string> = { displayName }
+  if (refreshToken && refreshToken.trim()) body.refreshToken = refreshToken.trim()
+  await httpPut(`/api/admin/google-accounts/accounts/${id}`, body)
+}
+export async function fetchGoogleModels(id: string): Promise<OAuthRemoteModelItem[]> {
+  return httpGet<OAuthRemoteModelItem[]>(`/api/admin/google-accounts/accounts/${id}/fetch-models`)
+}
+export async function importSelectedGoogleModels(
+  id: string,
+  models: { remoteModelName: string; displayName: string }[]
+): Promise<void> {
+  await httpPost(`/api/admin/google-accounts/accounts/${id}/import-selected-models`, { models })
+}

@@ -463,9 +463,23 @@ public sealed class ChatApiController : ControllerBase
                 // 但客户端是非流式调用。RequestBody 必须保留 Normalize 前的原始请求体（stream=false），
                 // 否则 ForwardAsync 的 IsStreamingRequest 会误判为流式，走流式路径导致非流式调用拿不到聚合结果。
                 string preparedRequestBody = requestBody;
+                var isGeminiRoute = string.Equals(route.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase);
                 if (string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
                 {
                     preparedRequestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(route.BaseUrl));
+                }
+                else if (isGeminiRoute)
+                {
+                    // Gemini 上游：OpenAI 形态请求体经协议桥转换为 v1internal 封套。
+                    preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+                        "OpenAI", "Gemini", requestBody, route.SiteModelName, false,
+                        null, route.BaseUrl, null, isPassthrough: false, isCompact: false,
+                        geminiProjectId: route.GoogleProjectId);
+                }
+                var chatForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(route.ExtraHeaders);
+                if (isGeminiRoute)
+                {
+                    Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(chatForwardHeaders, preparedRequestBody);
                 }
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
@@ -479,10 +493,12 @@ public sealed class ChatApiController : ControllerBase
                     EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                     RetryCount = runtimeSettings.ProxyRetryCount,
-                    ForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(route.ExtraHeaders),
-                    TargetPath = string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                        ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
-                        : null
+                    ForwardHeaders = chatForwardHeaders,
+                    TargetPath = isGeminiRoute
+                        ? "/v1internal:generateContent"
+                        : string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                            ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
+                            : null
                 }, cancellationToken);
 
                 attempts.Add(BuildAttemptResult(attemptIndex, route.SiteName, route.UpstreamModelName, route.SiteModelName, forwardResult, forwardResult.Success, requestBody, forwardResult.ResponseBody ?? ""));
@@ -641,7 +657,8 @@ public sealed class ChatApiController : ControllerBase
                 async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
                 runtimeSettings.ProxyRequestTimeoutSeconds,
                 route.ExtraHeaders,
-                cancellationToken);
+                cancellationToken,
+                googleProjectId: route.GoogleProjectId);
 
             var attemptResult = BuildAttemptResult(
                 attemptIndex,
@@ -847,9 +864,22 @@ public sealed class ChatApiController : ControllerBase
         // 否则会返回 {"detail":"Unsupported parameter: xxx"}（400）。
         // RequestBody 保留 Normalize 前的原始请求体（stream=false），避免 ForwardAsync 误判为流式。
         string preparedRequestBody = requestBody;
+        var isGeminiMapping = string.Equals(mapping.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase);
         if (string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
         {
             preparedRequestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(mapping.BaseUrl));
+        }
+        else if (isGeminiMapping)
+        {
+            preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+                "OpenAI", "Gemini", requestBody, mapping.SiteModelName, false,
+                null, mapping.BaseUrl, null, isPassthrough: false, isCompact: false,
+                geminiProjectId: mapping.GoogleProjectId);
+        }
+        var mappingForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(mapping.ExtraHeaders);
+        if (isGeminiMapping)
+        {
+            Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(mappingForwardHeaders, preparedRequestBody);
         }
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
@@ -863,10 +893,12 @@ public sealed class ChatApiController : ControllerBase
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount,
-            ForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(mapping.ExtraHeaders),
-            TargetPath = string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                ? SiteEndpointPathResolver.ResolvePath(mapping.EndpointPathMode, "responses")
-                : null
+            ForwardHeaders = mappingForwardHeaders,
+            TargetPath = isGeminiMapping
+                ? "/v1internal:generateContent"
+                : string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                    ? SiteEndpointPathResolver.ResolvePath(mapping.EndpointPathMode, "responses")
+                    : null
         }, cancellationToken);
 
         sw.Stop();
@@ -964,7 +996,8 @@ public sealed class ChatApiController : ControllerBase
             async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
             runtimeSettings.ProxyRequestTimeoutSeconds,
             mapping.ExtraHeaders,
-            cancellationToken);
+            cancellationToken,
+            googleProjectId: mapping.GoogleProjectId);
 
         var attemptResult = BuildAttemptResult(
             1,
@@ -1060,17 +1093,27 @@ public sealed class ChatApiController : ControllerBase
         Func<string, Task> onReasoningChunk,
         int requestTimeoutSeconds,
         Dictionary<string, string>? extraHeaders,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? googleProjectId = null)
     {
         // 提前构建请求体，供调用方记录到尝试详情
         // BuildChatRequestBody 内部已按协议类型完成转换（Responses 会调用 ConvertChatRequestToResponses），
         // 这里不能再二次转换——否则传入的已是 Responses 体（无 messages 字段），二次转换会得到空 input 数组，
         // 导致上游返回 "One of input or previous_response_id ... must be provided."。
         var requestBody = BuildChatRequestBody(protocolType, targetModelName, message, enableReasoning, true, reasoningEffort);
-        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数（max_output_tokens / metadata 等）。
+        // Responses 协议（如 Codex）需按目标 URL 剔除上游不接受的参数。
+        var isGeminiStream = string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase);
         if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
         {
             requestBody = ProxyProtocolBridge.NormalizeResponsesBody(requestBody, ProxyProtocolBridge.IsCodexTarget(baseUrl));
+        }
+        else if (isGeminiStream)
+        {
+            // Gemini 上游：OpenAI 形态请求体经协议桥转换为 v1internal 封套（流式端点）。
+            requestBody = ProxyProtocolBridge.PrepareRequestBody(
+                "OpenAI", "Gemini", requestBody, targetModelName, true,
+                null, baseUrl, null, isPassthrough: false, isCompact: false,
+                geminiProjectId: googleProjectId);
         }
 
         var client = _httpClientFactory.CreateClient();
@@ -1082,11 +1125,13 @@ public sealed class ChatApiController : ControllerBase
 
         try
         {
-            var targetUrl = string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
-                ? SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "messages")
-                : string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                    ? SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "responses")
-                    : SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "chat/completions");
+            var targetUrl = isGeminiStream
+                ? $"{baseUrl.TrimEnd('/')}/v1internal:streamGenerateContent?alt=sse"
+                : string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
+                    ? SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "messages")
+                    : string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                        ? SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "responses")
+                        : SiteEndpointPathResolver.BuildUrl(baseUrl, endpointPathMode, "chat/completions");
             using var httpRequest = new HttpRequestMessage(HttpMethod.Post, targetUrl)
             {
                 Content = new StringContent(requestBody, Encoding.UTF8, "application/json")
@@ -1106,6 +1151,16 @@ public sealed class ChatApiController : ControllerBase
             if (extraHeaders != null && extraHeaders.Count > 0)
             {
                 foreach (var header in extraHeaders)
+                {
+                    httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+            }
+
+            if (isGeminiStream)
+            {
+                var geminiHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(geminiHeaders, requestBody);
+                foreach (var header in geminiHeaders)
                 {
                     httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
                 }
@@ -1413,6 +1468,10 @@ public sealed class ChatApiController : ControllerBase
         /// Responses 流式转换的跨事件状态。
         /// </summary>
         public ResponsesToChatStreamState? ResponsesState { get; set; }
+        /// <summary>
+        /// Gemini 流式转换的跨事件状态（usage 与收尾判定）。
+        /// </summary>
+        public ProxyProtocolBridge.GeminiToOpenAiStreamState? GeminiState { get; set; }
     }
 
     /// <summary>
@@ -1439,6 +1498,37 @@ public sealed class ChatApiController : ControllerBase
         if (data == "[DONE]")
         {
             return true;
+        }
+
+        // Gemini 上游流块：先转为 OpenAI chunk 再复用 OpenAI 解析逻辑（收尾块带 usage/finish_reason）。
+        if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            state.GeminiState ??= new ProxyProtocolBridge.GeminiToOpenAiStreamState();
+            var geminiConverted = ProxyProtocolBridge.ConvertGeminiSseChunkToOpenAi(
+                data, string.Empty, "chatcmpl-debug", state.GeminiState);
+            if (string.IsNullOrEmpty(geminiConverted)
+                && state.GeminiState.FinishReason is not null
+                && !state.GeminiState.Completed)
+            {
+                // 无内容增量但已收到 finishReason 的收尾块：补发 finish_reason + usage 完成信号。
+                geminiConverted = ProxyProtocolBridge.CompleteGeminiToOpenAiStream(
+                    string.Empty, "chatcmpl-debug", state.GeminiState);
+            }
+
+            if (string.IsNullOrEmpty(geminiConverted))
+            {
+                return false;
+            }
+
+            var payload = geminiConverted.TrimEnd('\n');
+            var payloadStart = payload.StartsWith("data: ", StringComparison.Ordinal) ? payload[6..] : payload;
+            if (string.Equals(payloadStart, "[DONE]", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            data = payloadStart;
+            protocolType = "OpenAI";
         }
 
         // 部分上游会发送非 JSON 的保活帧（空 data、注释行、纯文本 ping 等），
@@ -1584,6 +1674,19 @@ public sealed class ChatApiController : ControllerBase
         if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
         {
             responseBody = ProxyProtocolBridge.ConvertResponsesResponseToChat(responseBody, string.Empty, 0, 0, 0);
+            protocolType = "OpenAI";
+        }
+
+        if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            // Gemini 响应先转为 OpenAI 形态，再复用 OpenAI 解析。
+            var converted = ProxyProtocolBridge.BuildOpenAiResponseFromGemini(responseBody, string.Empty);
+            if (string.IsNullOrEmpty(converted))
+            {
+                return (responseBody, string.Empty);
+            }
+
+            responseBody = converted;
             protocolType = "OpenAI";
         }
 

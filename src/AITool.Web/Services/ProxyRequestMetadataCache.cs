@@ -54,6 +54,7 @@ public sealed class ProxyRequestMetadataCache
     /// Codex 账号列表缓存键（账号少且低频变更，巡检高频读，适合缓存）。
     /// </summary>
     private const string CodexAccountsCacheKey = "codex-accounts";
+    private const string GoogleAccountsCacheKey = "google-accounts";
     /// <summary>
     /// 启用站点名称缓存键。
     /// </summary>
@@ -352,6 +353,13 @@ public sealed class ProxyRequestMetadataCache
                         .GroupBy(k => k.SiteId)
                         .ToDictionary(g => g.Key, g => g.ToList());
 
+                    // Google 账号（Gemini 上游）的项目 ID 按 LinkedSiteId 映射。
+                    var googleProjectsBySite = (await dbContext.GoogleAccounts
+                            .ToListAsync(cancellationToken))
+                        .Where(a => !string.IsNullOrWhiteSpace(a.ProjectId))
+                        .GroupBy(a => a.LinkedSiteId)
+                        .ToDictionary(g => g.Key, g => g.First().ProjectId!);
+
                     var baseChatTargets = (
                             from mapping in mappings
                             join site in sites on mapping.SiteId equals site.Id
@@ -388,7 +396,8 @@ public sealed class ProxyRequestMetadataCache
                                 EndpointPathMode = site.EndpointPathMode,
                                 ApiKey = candidate.ApiKey,
                                 SiteModelName = mapping.RemoteModelName,
-                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson)
+                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
+                                GoogleProjectId = googleProjectsBySite.TryGetValue(site.Id, out var chatGoogleProject) ? chatGoogleProject : string.Empty
                             });
                         }
                     }
@@ -895,6 +904,16 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 清除 Google 账号列表缓存（含路由目标里的 project 映射，一并失效路由缓存）。
+    /// 账号发生增删改（额度更新/启停/token刷新/管理后台操作）后调用。
+    /// </summary>
+    public void InvalidateGoogleAccounts()
+    {
+        _memoryCache.Remove(GoogleAccountsCacheKey);
+        InvalidateRouteTargets();
+    }
+
+    /// <summary>
     /// 兼容规则集发生增删改后调用。规则随路由目标一起缓存，故复用路由缓存失效。
     /// </summary>
     public void InvalidateCompatibilityProfiles()
@@ -919,6 +938,32 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     return await dbContext.CodexAccounts
+                        .Where(a => !a.DisabledByFeatureToggle)
+                        .OrderBy(a => a.LastQuotaCheckedAt)
+                        .ToListAsync(cancellationToken);
+                })
+            ?? [];
+
+        return cached.Select(static a => a.Clone()).ToList();
+    }
+
+    /// <summary>
+    /// 获取待巡检/刷新的 Google 账号列表（未被功能总开关禁用，按最近检查时间升序）。
+    /// 走缓存，账号变更后需调 <see cref="InvalidateGoogleAccounts"/> 失效。
+    /// </summary>
+    public async Task<List<Domain.Google.GoogleAccount>> GetGoogleAccountsAsync(CancellationToken cancellationToken)
+    {
+        // 返回浅拷贝：调用方（额度巡检/后台刷新等）会原地修改这些实体并回写，
+        // 共享同一实例会污染缓存内容并与其他并发调用方互相踩踏。
+        var cached = await _memoryCache.GetOrCreateAsync(
+                GoogleAccountsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    return await dbContext.GoogleAccounts
                         .Where(a => !a.DisabledByFeatureToggle)
                         .OrderBy(a => a.LastQuotaCheckedAt)
                         .ToListAsync(cancellationToken);
@@ -1204,6 +1249,12 @@ public sealed class ProxyRequestMetadataCache
                     var siteKeysBySite = siteKeys
                         .GroupBy(k => k.SiteId)
                         .ToDictionary(g => g.Key, g => g.ToList());
+                    // Google 账号（Gemini 上游）的项目 ID 按 LinkedSiteId 映射，注入路由目标供请求体封套使用。
+                    var googleProjectsBySite = (await dbContext.GoogleAccounts
+                            .ToListAsync(cancellationToken))
+                        .Where(a => !string.IsNullOrWhiteSpace(a.ProjectId))
+                        .GroupBy(a => a.LinkedSiteId)
+                        .ToDictionary(g => g.Key, g => g.First().ProjectId!);
                     // 一次性加载所有启用的兼容规则集，构建 Id→规则列表字典，供路由目标投影时查（避免 N+1）。
                     var profiles = await dbContext.CompatibilityProfiles
                         .Where(p => p.IsEnabled)
@@ -1260,6 +1311,7 @@ public sealed class ProxyRequestMetadataCache
                                 BaseUrl = site.BaseUrl,
                                 ApiKey = candidate.ApiKey,
                                 ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
+                                GoogleProjectId = googleProjectsBySite.TryGetValue(site.Id, out var googleProject) ? googleProject : string.Empty,
                                 ModelPriority = route.ModelPriority,
                                 InstancePriority = route.InstancePriority,
                                 Priority = route.Priority,
@@ -1329,6 +1381,12 @@ public sealed class ProxyRequestMetadataCache
                     var siteKeysBySite = siteKeysData
                         .GroupBy(k => k.SiteId)
                         .ToDictionary(g => g.Key, g => g.ToList());
+                    // Google 账号（Gemini 上游）的项目 ID 按 LinkedSiteId 映射，注入兜底目标供请求体封套使用。
+                    var googleProjectsBySite = (await dbContext.GoogleAccounts
+                            .ToListAsync(cancellationToken))
+                        .Where(a => !string.IsNullOrWhiteSpace(a.ProjectId))
+                        .GroupBy(a => a.LinkedSiteId)
+                        .ToDictionary(g => g.Key, g => g.First().ProjectId!);
 
                     var rawMappings = (
                             from mapping in mappingsData
@@ -1378,7 +1436,8 @@ public sealed class ProxyRequestMetadataCache
                                 EndpointPathMode = first.EndpointPathMode,
                                 ApiKey = candidate.ApiKey,
                                 SiteModelName = first.SiteModelName,
-                                ExtraHeaders = TryParseExtraHeaders(first.ExtraHeadersJson)
+                                ExtraHeaders = TryParseExtraHeaders(first.ExtraHeadersJson),
+                                GoogleProjectId = googleProjectsBySite.TryGetValue(first.SiteId, out var fallbackGoogleProject) ? fallbackGoogleProject : string.Empty
                             });
                         })
                         .ToList();
@@ -1840,6 +1899,11 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>
+    /// Google 账号（GeminiCLI / Antigravity 隐藏 Site）的项目 ID，作为 Gemini 上游请求体 project 字段。
+    /// 空表示非 Google 托管站点。
+    /// </summary>
+    public string GoogleProjectId { get; set; } = string.Empty;
+    /// <summary>
     /// 模型优先级。
     /// </summary>
     public int ModelPriority { get; set; }
@@ -2008,6 +2072,10 @@ public sealed class CachedChatTarget
     /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头。
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Google 账号（Gemini 上游隐藏 Site）的项目 ID，空表示非 Google 托管站点。
+    /// </summary>
+    public string GoogleProjectId { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -2082,5 +2150,9 @@ public sealed class CachedFallbackTarget
     /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头。
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// Google 账号（Gemini 上游隐藏 Site）的项目 ID，空表示非 Google 托管站点。
+    /// </summary>
+    public string GoogleProjectId { get; set; } = string.Empty;
 }
 

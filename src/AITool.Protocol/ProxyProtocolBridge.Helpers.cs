@@ -1411,6 +1411,17 @@ public static partial class ProxyProtocolBridge
             return (newInput, cached, output);
         }
 
+        if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            // Gemini usageMetadata：promptTokenCount 已含缓存命中（cachedContentTokenCount 是其子集），
+            // 输出 = candidatesTokenCount + thoughtsTokenCount（思考 token 同样计费）。
+            var geminiPrompt = usage.TryGetProperty("promptTokenCount", out var prompt) ? prompt.GetInt32() : 0;
+            var geminiCached = usage.TryGetProperty("cachedContentTokenCount", out var cachedContent) ? cachedContent.GetInt32() : 0;
+            var candidatesTokens = usage.TryGetProperty("candidatesTokenCount", out var candidates) ? candidates.GetInt32() : 0;
+            var thoughtsTokens = usage.TryGetProperty("thoughtsTokenCount", out var thoughts) ? thoughts.GetInt32() : 0;
+            return (Math.Max(0, geminiPrompt - geminiCached), geminiCached, candidatesTokens + thoughtsTokens);
+        }
+
         var openAiInputTokens = usage.TryGetProperty("input_tokens", out var inputTokens)
             ? inputTokens.GetInt32()
             : usage.TryGetProperty("prompt_tokens", out var promptTokens)

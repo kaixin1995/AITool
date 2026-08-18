@@ -193,7 +193,8 @@ public sealed partial class OpenAiProxyController
                 route.BaseUrl,
                 route.CompatibilityRules,
                 isPassthrough: isPassthrough,
-                isCompact: isCompact);
+                isCompact: isCompact,
+                geminiProjectId: route.GoogleProjectId);
 
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 
@@ -217,12 +218,14 @@ public sealed partial class OpenAiProxyController
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
-                RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
+                RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
                 // Codex 远程压缩走专用端点 responses/compact（对照 cc-switch endpoint_with_query("/responses/compact")）；
                 // 普通 Responses 请求端点不变，正常对话行为不受影响。
-                TargetPath = isPassthrough
-                    ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, isCompact ? "responses/compact" : "responses")
-                    : null
+                TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                    ? ResolveGeminiTargetPath(enableStreaming)
+                    : isPassthrough
+                        ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, isCompact ? "responses/compact" : "responses")
+                        : null
             };
 
             if (enableStreaming)
@@ -241,6 +244,11 @@ public sealed partial class OpenAiProxyController
                         forwardRequest,
                         cancellationToken,
                         chunk => ConvertOpenAiChatSseBlockToResponses(chunk, responsesState));
+                }
+                else if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+                {
+                    // Gemini 上游：Gemini SSE → Anthropic 事件 → Responses 事件（两级桥接）。
+                    streamOutcome = await ForwardGeminiStreamAsResponsesAsync(forwardRequest, modelName, cancellationToken);
                 }
                 else
                 {
@@ -525,7 +533,8 @@ public sealed partial class OpenAiProxyController
                 route.OverrideReasoningEffort,
                 route.BaseUrl,
                 route.CompatibilityRules,
-                isPassthrough: isPassthrough);
+                isPassthrough: isPassthrough,
+                geminiProjectId: route.GoogleProjectId);
 
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 
@@ -549,8 +558,10 @@ public sealed partial class OpenAiProxyController
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
-                RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
-                TargetPath = isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
+                RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
+                TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                    ? ResolveGeminiTargetPath(true)
+                    : isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
             };
 
             StreamForwardOutcome streamOutcome;
@@ -567,6 +578,11 @@ public sealed partial class OpenAiProxyController
                     forwardRequest,
                     cancellationToken,
                     payload => ProxyProtocolBridge.ConvertChatStreamChunkToResponses(payload, responsesState));
+            }
+            else if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+            {
+                // Gemini 上游：Gemini SSE → Anthropic 事件 → Responses WebSocket JSON。
+                streamOutcome = await ForwardGeminiResponsesAsWebSocketAsync(webSocket, forwardRequest, modelName, cancellationToken);
             }
             else
             {

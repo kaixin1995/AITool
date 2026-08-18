@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using AITool.Application.Google;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
@@ -61,6 +62,10 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly CodexCredentialRefreshService _codexCredentialRefreshService;
     /// <summary>
+    /// 负责在 Google 上游（GeminiCLI / Antigravity）凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
+    /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
     private readonly ILogger<AnthropicProxyController> _logger;
@@ -76,6 +81,7 @@ public sealed class AnthropicProxyController : ControllerBase
         DeveloperInvocationTraceStore traceStore,
         ModelConcurrencyLimiter concurrencyLimiter,
         CodexCredentialRefreshService codexCredentialRefreshService,
+        GoogleCredentialRefreshService googleCredentialRefreshService,
         ILogger<AnthropicProxyController> logger)
     {
         _forwardService = forwardService;
@@ -85,21 +91,33 @@ public sealed class AnthropicProxyController : ControllerBase
         _traceStore = traceStore;
         _concurrencyLimiter = concurrencyLimiter;
         _codexCredentialRefreshService = codexCredentialRefreshService;
+        _googleCredentialRefreshService = googleCredentialRefreshService;
         _logger = logger;
     }
 
     /// <summary>
-    /// 仅为 Codex 隐藏站点绑定实时凭证刷新回调，普通站点的 401 不触发 OAuth 刷新。
+    /// 仅为托管隐藏站点绑定实时凭证刷新回调（Codex / Google），普通站点的 401 不触发 OAuth 刷新。
     /// </summary>
-    private Func<string, CancellationToken, Task<string?>>? CreateCodexCredentialRefreshCallback(
+    private Func<string, CancellationToken, Task<string?>>? CreateCredentialRefreshCallback(
         CachedProxyRouteTarget route)
     {
-        return string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
-            ? (staleToken, cancellationToken) => _codexCredentialRefreshService.RefreshAsync(
+        if (string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _codexCredentialRefreshService.RefreshAsync(
                 route.SiteId,
                 staleToken,
-                cancellationToken)
-            : null;
+                cancellationToken);
+        }
+
+        if (string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _googleCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -238,7 +256,8 @@ public sealed class AnthropicProxyController : ControllerBase
                 route.OverrideReasoningEffort,
                 route.BaseUrl,
                 route.CompatibilityRules,
-                isPassthrough: string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase));
+                isPassthrough: string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase),
+                geminiProjectId: route.GoogleProjectId);
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
@@ -247,9 +266,18 @@ public sealed class AnthropicProxyController : ControllerBase
                 reasoningEffort = route.OverrideReasoningEffort;
             }
 
-            var effectiveProtocolType = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                ? "OpenAI"
-                : actualProtocolType;
+            var effectiveProtocolType = actualProtocolType switch
+            {
+                var protocol when string.Equals(protocol, "Responses", StringComparison.OrdinalIgnoreCase) => "OpenAI",
+                var protocol when string.Equals(protocol, "Gemini", StringComparison.OrdinalIgnoreCase) => "Gemini",
+                var protocol => protocol
+            };
+            var effectiveForwardHeaders = forwardHeaders;
+            if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+            {
+                // Gemini 上游不认 Anthropic 头；改用 Gemini 客户端仿真头（模型名取自封套请求体）。
+                effectiveForwardHeaders = ApplyGeminiHeadersForAnthropicController(preparedRequestBody);
+            }
             var forwardRequest = new ProxyForwardRequest
             {
                 TargetBaseUrl = route.BaseUrl,
@@ -263,11 +291,13 @@ public sealed class AnthropicProxyController : ControllerBase
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                ForwardHeaders = forwardHeaders,
-                RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
-                TargetPath = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                    ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
-                    : null
+                ForwardHeaders = effectiveForwardHeaders,
+                RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
+                TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                    ? (enableStreaming ? "/v1internal:streamGenerateContent?alt=sse" : "/v1internal:generateContent")
+                    : string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                        ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
+                        : null
             };
 
             if (enableStreaming)
@@ -279,11 +309,18 @@ public sealed class AnthropicProxyController : ControllerBase
                         traceId,
                         traceAttemptId,
                         cancellationToken)
-                    : await ForwardAnthropicStreamPassthroughAsync(
-                        forwardRequest,
-                        traceId,
-                        traceAttemptId,
-                        cancellationToken);
+                    : string.Equals(effectiveProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                        ? await ForwardGeminiStreamAsAnthropicAsync(
+                            forwardRequest,
+                            modelName,
+                            traceId,
+                            traceAttemptId,
+                            cancellationToken)
+                        : await ForwardAnthropicStreamPassthroughAsync(
+                            forwardRequest,
+                            traceId,
+                            traceAttemptId,
+                            cancellationToken);
                 var streamResult = streamOutcome.Result;
                 if (streamResult.IsCanceled)
                 {
@@ -1464,6 +1501,51 @@ public sealed class AnthropicProxyController : ControllerBase
     }
 
     /// <summary>
+    /// Gemini 上游（GeminiCLI / Antigravity）的客户端仿真头：模型名从封套请求体提取，
+    /// Antigravity 封套带 userAgent 字段据以区分两种上游。
+    /// </summary>
+    private static Dictionary<string, string> ApplyGeminiHeadersForAnthropicController(string? preparedRequestBody)
+    {
+        var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var isAntigravity = false;
+        string? model = null;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(preparedRequestBody))
+            {
+                using var doc = JsonDocument.Parse(preparedRequestBody);
+                if (doc.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    if (doc.RootElement.TryGetProperty("model", out var modelElement)
+                        && modelElement.ValueKind == JsonValueKind.String)
+                    {
+                        model = modelElement.GetString();
+                    }
+
+                    isAntigravity = doc.RootElement.TryGetProperty("userAgent", out var userAgentElement)
+                        && string.Equals(userAgentElement.GetString(), "antigravity", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        if (isAntigravity)
+        {
+            headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;
+            headers["requestId"] = $"req-{Guid.NewGuid():N}";
+            headers["requestType"] = model is not null && model.Contains("image", StringComparison.OrdinalIgnoreCase)
+                ? "image_gen"
+                : "agent";
+            return headers;
+        }
+
+        headers["User-Agent"] = GoogleAccountKinds.GeminiCliUserAgentTemplate.Replace("{MODEL}", string.IsNullOrEmpty(model) ? string.Empty : model, StringComparison.OrdinalIgnoreCase);
+        return headers;
+    }
+
+    /// <summary>
     /// 根据请求中的文本内容粗略估算输入 token 数量。
     /// </summary>
     private static int EstimateInputTokens(JsonElement root)
@@ -1526,5 +1608,141 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         return string.Join(" ", element.EnumerateObject().Select(x => FlattenText(x.Value)).Where(x => !string.IsNullOrWhiteSpace(x)));
+    }
+
+    /// <summary>
+    /// 把 Gemini 上游（GeminiCLI / Antigravity）流式响应转换为 Anthropic SSE 返回给客户端。
+    /// 转换核心在 AITool.Protocol 的 Gemini→Anthropic 状态机，本方法负责流读取、写入与结果判定。
+    /// </summary>
+    private async Task<StreamForwardOutcome> ForwardGeminiStreamAsAnthropicAsync(
+        ProxyForwardRequest forwardRequest,
+        string modelName,
+        Guid? traceId,
+        Guid traceAttemptId,
+        CancellationToken cancellationToken)
+    {
+        if (!Response.HasStarted)
+        {
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+
+        var state = new ProxyProtocolBridge.GeminiToAnthropicStreamState();
+        var responseBuilder = new StringBuilder();
+        var pendingSseLines = new List<string>();
+        var startedWriting = false;
+
+        async Task WriteChunkAsync(string chunk, CancellationToken token)
+        {
+            if (string.IsNullOrEmpty(chunk))
+            {
+                return;
+            }
+
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await Response.WriteAsync(chunk, token);
+            await Response.Body.FlushAsync(token);
+            startedWriting = true;
+        }
+
+        async Task FlushGeminiBlockAsync(CancellationToken token)
+        {
+            if (!TryExtractSseDataPayload(pendingSseLines, out var payload))
+            {
+                pendingSseLines.Clear();
+                return;
+            }
+
+            pendingSseLines.Clear();
+            if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var convertedChunk = ProxyProtocolBridge.ConvertGeminiSseChunkToAnthropic(payload, modelName, state);
+            await WriteChunkAsync(convertedChunk, token);
+        }
+
+        var result = await _forwardService.ForwardStreamingAsync(
+            forwardRequest,
+            async (line, token) =>
+            {
+                if (string.IsNullOrEmpty(line))
+                {
+                    await FlushGeminiBlockAsync(token);
+                    return;
+                }
+
+                pendingSseLines.Add(line);
+            },
+            cancellationToken);
+
+        if (pendingSseLines.Count > 0)
+        {
+            await FlushGeminiBlockAsync(cancellationToken);
+        }
+
+        result.ResponseBody = responseBuilder.ToString();
+        result.IsStreaming = true;
+        result.HasStartedStreaming = startedWriting;
+        result.InputTokens = state.InputTokens;
+        result.CachedTokens = state.CachedTokens;
+        result.OutputTokens = state.OutputTokens;
+
+        // Gemini 流没有 [DONE] 标记：finishReason 出现即视为正常完成，收尾事件由状态机统一补齐。
+        if (result.Success && state.FinishReason is null)
+        {
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage ??= startedWriting
+                ? "stream interrupted before finishReason"
+                : "stream ended before any gemini candidate";
+        }
+
+        if (result.Success)
+        {
+            await WriteChunkAsync(ProxyProtocolBridge.CompleteGeminiToAnthropicStream(state), cancellationToken);
+            result.ResponseBody = responseBuilder.ToString();
+            result.IsStreamInterrupted = false;
+            result.ErrorMessage = null;
+
+            if (startedWriting)
+            {
+                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                {
+                    Status = "success",
+                    StatusCode = result.StatusCode,
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
+                    ResponseContentType = "text/event-stream",
+                    IsStreaming = true,
+                    InputTokens = result.InputTokens,
+                    CachedTokens = result.CachedTokens,
+                    OutputTokens = result.OutputTokens,
+                    TotalDurationMs = result.TotalDurationMs
+                });
+            }
+
+            return new StreamForwardOutcome
+            {
+                Result = result,
+                CanFallback = false
+            };
+        }
+
+        if (startedWriting)
+        {
+            // 已写出部分内容：补发收尾事件，客户端不至于挂起；不能再 fallback。
+            await WriteChunkAsync(ProxyProtocolBridge.CompleteGeminiToAnthropicStream(state), CancellationToken.None);
+            result.ResponseBody = responseBuilder.ToString();
+            result.IsStreamInterrupted = true;
+        }
+
+        return new StreamForwardOutcome
+        {
+            Result = result,
+            CanFallback = !startedWriting
+        };
     }
 }

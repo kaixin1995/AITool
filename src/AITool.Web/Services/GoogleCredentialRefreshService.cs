@@ -1,0 +1,84 @@
+using AITool.Application.Google;
+using AITool.Domain.Google;
+using AITool.Infrastructure.Persistence;
+
+namespace AITool.Web.Services;
+
+/// <summary>
+/// 在实时代理请求命中 Google 上游（GeminiCLI / Antigravity）401 时，立即刷新账号凭证并同步隐藏站点。
+/// </summary>
+public sealed class GoogleCredentialRefreshService
+{
+    private readonly AppDbContext _dbContext;
+    private readonly IGoogleOAuthClient _oauth;
+    private readonly ProxyRequestMetadataCache _metadataCache;
+    private readonly ILogger<GoogleCredentialRefreshService> _logger;
+
+    public GoogleCredentialRefreshService(
+        AppDbContext dbContext,
+        IGoogleOAuthClient oauth,
+        ProxyRequestMetadataCache metadataCache,
+        ILogger<GoogleCredentialRefreshService> logger)
+    {
+        _dbContext = dbContext;
+        _oauth = oauth;
+        _metadataCache = metadataCache;
+        _logger = logger;
+    }
+
+    public async Task<string?> RefreshAsync(
+        Guid linkedSiteId,
+        string staleAccessToken,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var account = (await _dbContext.GoogleAccounts
+                .Where(item => item.LinkedSiteId == linkedSiteId)
+                .ToListAsync(cancellationToken))
+                .FirstOrDefault();
+            if (account is null || string.IsNullOrWhiteSpace(account.RefreshToken))
+            {
+                return null;
+            }
+
+            // 后台服务或其他并发请求已经完成刷新时直接复用新 token，避免重复轮换。
+            if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal))
+            {
+                return account.AccessToken;
+            }
+
+            var tokens = await _oauth.RefreshTokenAsync(account.AccountKind, account.RefreshToken, cancellationToken);
+            await _dbContext.SerialExecuteAsync(async () =>
+            {
+                account.AccessToken = tokens.AccessToken;
+                // Google 刷新响应通常不回传 refresh_token，保留旧值。
+                if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
+                {
+                    account.RefreshToken = tokens.RefreshToken;
+                }
+
+                account.TokenExpiresAt = tokens.ExpiresAt;
+                account.LastRefreshAt = DateTimeOffset.UtcNow;
+                await _dbContext.UpdateAsync(account, cancellationToken);
+
+                var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
+                if (site is not null)
+                {
+                    site.ApiKey = tokens.AccessToken;
+                    await _dbContext.UpdateAsync(site, cancellationToken);
+                }
+            }, cancellationToken);
+
+            _metadataCache.InvalidateRouteTargets();
+            _metadataCache.InvalidateGoogleAccounts();
+            _logger.LogInformation("Google account {Id} token refreshed after upstream unauthorized", account.Id);
+            return tokens.AccessToken;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(exception, "Unable to refresh Google token for linked site {SiteId}", linkedSiteId);
+            return null;
+        }
+    }
+}

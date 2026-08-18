@@ -119,10 +119,71 @@ public static partial class ProxyProtocolBridge
         string? targetBaseUrl = null,
         IReadOnlyList<CompatibilityRule>? compatibilityRules = null,
         bool isPassthrough = true,
-        bool isCompact = false)
+        bool isCompact = false,
+        string? geminiProjectId = null)
     {
         string result;
         JsonObject? rootNode = null;
+
+        if (string.Equals(targetProtocol, "Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            // —— Gemini 目标（GeminiCLI / Antigravity 上游）——
+            // Responses 客户端先经既有 Responses→Anthropic 直转桥，再统一走 Anthropic→Gemini；
+            // OpenAI 客户端直转；Anthropic 客户端直转。内层构建 → 规范化 → 思考覆盖 → CLI 封套。
+            rootNode = JsonNode.Parse(requestBody) as JsonObject;
+            if (rootNode is null)
+            {
+                return requestBody;
+            }
+
+            JsonObject inner;
+            if (string.Equals(clientProtocol, "Anthropic", StringComparison.OrdinalIgnoreCase))
+            {
+                inner = BuildGeminiInnerFromAnthropic(rootNode, targetModelName);
+            }
+            else if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                inner = BuildGeminiInnerFromOpenAi(rootNode, targetModelName);
+            }
+            else
+            {
+                var anthropicJson = BuildAnthropicRequestFromResponses(rootNode, targetModelName, enableStreaming);
+                var anthropicNode = JsonNode.Parse(anthropicJson) as JsonObject;
+                if (anthropicNode is null)
+                {
+                    return requestBody;
+                }
+
+                inner = BuildGeminiInnerFromAnthropic(anthropicNode, targetModelName);
+            }
+
+            NormalizeGeminiInner(inner, targetModelName);
+            if (inner["contents"] is not JsonArray { Count: > 0 })
+            {
+                // 极端输入（全空白消息/全部被 part 清理过滤）兜底一条默认用户消息，避免上游 400。
+                inner["contents"] = new JsonArray(new JsonObject
+                {
+                    ["role"] = "user",
+                    ["parts"] = new JsonArray(new JsonObject { ["text"] = "请根据系统指令回答。" })
+                });
+            }
+
+            if (!string.IsNullOrWhiteSpace(overrideReasoningEffort))
+            {
+                // 思考等级强覆盖（受保护功能）：在 Gemini 目标上以 thinkingConfig 表达。
+                ApplyGeminiThinkingEffort(inner, overrideReasoningEffort, targetModelName);
+            }
+
+            result = WrapGeminiUpstreamBody(inner, targetModelName, geminiProjectId, IsAntigravityTarget(targetBaseUrl));
+
+            // 兼容规则集照常作用于最终封套（generic strip/rename/default）。
+            if (compatibilityRules is { Count: > 0 })
+            {
+                result = ApplyCompatibilityProfile(result, compatibilityRules, isPassthrough: false);
+            }
+
+            return result;
+        }
 
         if (string.Equals(clientProtocol, targetProtocol, StringComparison.OrdinalIgnoreCase))
         {
@@ -568,6 +629,20 @@ public static partial class ProxyProtocolBridge
     };
 
     /// <summary>
+    /// 判断目标 URL 是否为 Antigravity 上游（daily-cloudcode-pa.googleapis.com）。
+    /// Antigravity 与 GeminiCLI 共用 v1internal GenerateContent 语义，但封套与请求头不同。
+    /// </summary>
+    public static bool IsAntigravityTarget(string? targetBaseUrl)
+    {
+        if (string.IsNullOrWhiteSpace(targetBaseUrl))
+        {
+            return false;
+        }
+
+        return targetBaseUrl.Contains("daily-cloudcode-pa", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// 按客户端协议将上游响应内容转换为可直接返回的格式。
     /// </summary>
     public static string AdaptResponseBodyForClient(
@@ -583,6 +658,37 @@ public static partial class ProxyProtocolBridge
         if (string.Equals(clientProtocol, upstreamProtocol, StringComparison.OrdinalIgnoreCase))
         {
             return responseBody;
+        }
+
+        if (string.Equals(upstreamProtocol, "Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            // —— Gemini 上游（GeminiCLI / Antigravity）——
+            // Anthropic/OpenAI 客户端直转；Responses 客户端经 Anthropic 桥链转（复用既有双向桥）。
+            if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
+            {
+                return isStreaming
+                    ? BuildOpenAiStreamingResponseFromGemini(responseBody, modelName) ?? string.Empty
+                    : BuildOpenAiResponseFromGemini(responseBody, modelName) ?? string.Empty;
+            }
+
+            if (string.Equals(clientProtocol, "Responses", StringComparison.OrdinalIgnoreCase))
+            {
+                var anthropicBody = isStreaming
+                    ? BuildAnthropicStreamingResponseFromGemini(responseBody, modelName)
+                    : BuildAnthropicResponseFromGemini(responseBody, modelName);
+                if (string.IsNullOrEmpty(anthropicBody))
+                {
+                    return string.Empty;
+                }
+
+                return isStreaming
+                    ? BuildResponsesStreamFromAnthropic(anthropicBody)
+                    : BuildResponsesResponseFromAnthropic(anthropicBody);
+            }
+
+            return isStreaming
+                ? BuildAnthropicStreamingResponseFromGemini(responseBody, modelName) ?? string.Empty
+                : BuildAnthropicResponseFromGemini(responseBody, modelName) ?? string.Empty;
         }
 
         if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase)

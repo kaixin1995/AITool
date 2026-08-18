@@ -137,6 +137,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// </summary>
     private readonly CodexCredentialRefreshService _codexCredentialRefreshService;
     /// <summary>
+    /// 负责在 Google 上游（GeminiCLI / Antigravity）凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
+    /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
     private readonly ILogger<OpenAiProxyController> _logger;
@@ -152,6 +156,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         DeveloperInvocationTraceStore traceStore,
         ModelConcurrencyLimiter concurrencyLimiter,
         CodexCredentialRefreshService codexCredentialRefreshService,
+        GoogleCredentialRefreshService googleCredentialRefreshService,
         ILogger<OpenAiProxyController> logger)
     {
         _forwardService = forwardService;
@@ -161,6 +166,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         _traceStore = traceStore;
         _concurrencyLimiter = concurrencyLimiter;
         _codexCredentialRefreshService = codexCredentialRefreshService;
+        _googleCredentialRefreshService = googleCredentialRefreshService;
         _logger = logger;
     }
 
@@ -424,7 +430,9 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     ? controller.ForwardAnthropicStreamAsOpenAiAsync(forwardRequest, modelName, cancellationToken)
                     : string.Equals(forwardRequest.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                         ? controller.ForwardResponsesStreamAsOpenAiAsync(forwardRequest, modelName, cancellationToken)
-                        : controller.ForwardOpenAiStreamPassthroughAsync(forwardRequest, cancellationToken),
+                        : string.Equals(forwardRequest.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                            ? controller.ForwardGeminiStreamAsOpenAiAsync(forwardRequest, modelName, cancellationToken)
+                            : controller.ForwardOpenAiStreamPassthroughAsync(forwardRequest, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -592,7 +600,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 route.OverrideReasoningEffort,
                 route.BaseUrl,
                 route.CompatibilityRules,
-                isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase));
+                isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase),
+                geminiProjectId: route.GoogleProjectId);
             var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
@@ -615,11 +624,13 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
-                RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
+                RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
                 TargetPath = defaultTargetPathFactory is null
-                    ? (string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                        ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
-                        : null)
+                    ? (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                        ? ResolveGeminiTargetPath(enableStreaming)
+                        : string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                            ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
+                            : null)
                     : defaultTargetPathFactory(route)
             };
 

@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { NAlert, NCard, NButton, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
+import GoogleAccountsPanel from '@/components/GoogleAccountsPanel.vue'
 import * as api from '@/api/oauth'
 import type {
   OAuthAccount,
@@ -23,7 +24,7 @@ import {
 const message = useMessage()
 const route = useRoute()
 const router = useRouter()
-const activeTab = ref(route.query.tab === 'inspection' ? 'inspection' : 'accounts')
+const activeTab = ref(route.query.tab === 'inspection' ? 'inspection' : route.query.tab === 'google' ? 'google' : 'accounts')
 const loading = ref(false)
 const accounts = ref<OAuthAccount[]>([])
 const inspection = ref<OAuthInspectionStatus | null>(null)
@@ -620,6 +621,9 @@ watch(activeTab, (tab) => {
     query.tab = 'inspection'
     if (exportMode.value) cancelExportCredentials()
     void loadInspection(true)
+  } else if (tab === 'google') {
+    query.tab = 'google'
+    if (exportMode.value) cancelExportCredentials()
   } else {
     delete query.tab
   }
@@ -627,7 +631,7 @@ watch(activeTab, (tab) => {
 })
 
 watch(() => route.query.tab, (tab) => {
-  activeTab.value = tab === 'inspection' ? 'inspection' : 'accounts'
+  activeTab.value = tab === 'inspection' ? 'inspection' : tab === 'google' ? 'google' : 'accounts'
 })
 
 onMounted(() => {
@@ -753,6 +757,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               </article>
             </div>
           </div>
+        </NTabPane>
+
+        <NTabPane name="google" tab="Google 账号">
+          <GoogleAccountsPanel />
         </NTabPane>
 
         <NTabPane name="inspection" tab="巡检">

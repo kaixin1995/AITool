@@ -21,6 +21,11 @@ public static class ProxyProtocolResolver
     public const string Responses = "Responses";
 
     /// <summary>
+    /// Google Gemini GenerateContent 协议名称（GeminiCLI / Antigravity 上游共用）。
+    /// </summary>
+    public const string Gemini = "Gemini";
+
+    /// <summary>
     /// 根据站点能力推导其原生上游协议。
     /// </summary>
     public static string ResolveSiteProtocolType(
@@ -29,6 +34,13 @@ public static class ProxyProtocolResolver
         bool supportsResponses = false,
         string? legacyProtocolType = null)
     {
+        // Gemini 站点（Google 账号隐藏 Site）：三个 Supports* 均为 false，靠 ProtocolType=Gemini 标识，
+        // 必须先于"全 false → Responses"的历史回退分支判断。
+        if (string.Equals(legacyProtocolType, Gemini, StringComparison.OrdinalIgnoreCase))
+        {
+            return Gemini;
+        }
+
         // 兼容旧数据：历史站点可能只保存 ProtocolType=Responses，尚未回填 SupportsResponses。
         if (supportsResponses
             || string.Equals(legacyProtocolType, Responses, StringComparison.OrdinalIgnoreCase)
@@ -69,6 +81,11 @@ public static class ProxyProtocolResolver
         bool supportsResponses,
         string? legacyProtocolType = null)
     {
+        if (string.Equals(protocolType, Gemini, StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Equals(legacyProtocolType, Gemini, StringComparison.OrdinalIgnoreCase);
+        }
+
         if (string.Equals(protocolType, Responses, StringComparison.OrdinalIgnoreCase))
         {
             return SupportsResponses(
@@ -106,6 +123,17 @@ public static class ProxyProtocolResolver
                 legacyProtocolType))
         {
             return NormalizeProtocol(clientProtocol);
+        }
+
+        // Gemini 站点对 OpenAI/Anthropic/Responses 客户端全部走协议桥接（无原生客户端入口）。
+        if (SupportsProtocol(
+                Gemini,
+                supportsOpenAi,
+                supportsAnthropic,
+                supportsResponses,
+                legacyProtocolType))
+        {
+            return Gemini;
         }
 
         if (string.Equals(clientProtocol, Responses, StringComparison.OrdinalIgnoreCase))
@@ -153,6 +181,11 @@ public static class ProxyProtocolResolver
         if (string.Equals(protocolType, Anthropic, StringComparison.OrdinalIgnoreCase))
         {
             return Anthropic;
+        }
+
+        if (string.Equals(protocolType, Gemini, StringComparison.OrdinalIgnoreCase))
+        {
+            return Gemini;
         }
 
         return OpenAi;

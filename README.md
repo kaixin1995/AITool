@@ -23,7 +23,7 @@ AI Tool 是一个 **AI API 网关 / 反向代理**，用于统一管理和转发
 - 模型价格（**本地 JSON 价格表**（`model-pricing.json`，不入数据库），内置主流模型 USD 单价 seed；模型页可编辑、保存即生效；支持 **DeepSeek 类峰谷分档计价**；匹配自动归一化 namespace/日期/effort 后缀）
 - 开发者调试（进程内环形调用追踪 + 客户端模拟器 + 并发/熔断监控 + **离线协议诊断台**（转换链路可视化/字段级对比/规则试运行/一键保存规则） + **SQL 迁移执行**（密码确认+事务+试运行+全量审计））
 - OpenAI Responses API 代理（HTTP、WebSocket、Compact 三种模式）
-- OAuth 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、通用账号额度巡检、手动重置 credits；当前内置 Codex 提供程序）
+- OAuth 账号托管（OAuth/PKCE 登录、token 自动刷新、额度查询与缓存、冷却恢复、通用账号额度巡检、手动重置 credits；内置 Codex 与 Google（GeminiCLI/Antigravity）提供程序）
 
 ---
 
@@ -40,6 +40,7 @@ README 是全貌入口；`docs/` 下按主题提供**函数级**细节文档：
 | [docs/frontend.md](docs/frontend.md) | 前端工程：路由、页面功能、api 层、stores、composables、UI 规范 |
 | [docs/debug-tools.md](docs/debug-tools.md) | 调试工具六页签：调用追踪 / 模拟器 / 并发 / 熔断 / 协议诊断 / SQL 迁移 |
 | [docs/codex.md](docs/codex.md) | OAuth 账号托管：当前 Codex 提供程序、额度、冷却、通用巡检、credits、禁用状态矩阵 |
+| [docs/google-accounts.md](docs/google-accounts.md) | Google 账号托管：GeminiCLI/Antigravity 登录、额度、Gemini 协议桥（移植自 gcli2api） |
 | [docs/testing.md](docs/testing.md) | 测试体系：策略、用例清单、usage 断言口径 |
 | [docs/tools.md](docs/tools.md) | build.ps1 / publish.ps1 / ProtocolSyncCheck、仓库目录速查 |
 
