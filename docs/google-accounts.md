@@ -68,7 +68,8 @@ ProxyProtocolBridge（Gemini 桥）──► cloudcode-pa / daily-cloudcode-pa v
 
 ## 前端
 
-- `frontend/src/views/OAuthView.vue` 第三个 tab「Google 账号」→ `components/GoogleAccountsPanel.vue`：双入口登录（GeminiCLI / Antigravity 粘贴回调 URL）、gcli2api 凭证导入、账号卡片（kind/tier/积分/项目/Token 到期/每模型额度进度条）、启停/编辑（可替换 refresh_token）/删除/拉取模型（勾选导入，已导入打标）。
+- `frontend/src/views/OAuthView.vue`「账号额度」tab 统一展示 Codex 与 Google 账号（卡片带厂商标签：Codex / GeminiCLI / Antigravity，Google 卡片额外显示订阅等级、积分与项目 ID）；所有卡片操作（刷新额度/启停/编辑/拉取模型/删除）按厂商分派对应 API。重置 credits 与凭证导出仅 Codex 可用。
+- 头部「＋ OAuth 登录」与「上传凭证」为厂商下拉：选择 Codex / GeminiCLI / Antigravity 后进入对应流程（OAuth 弹窗按厂商展示回调地址提示；Google 凭证导入仅支持粘贴含 refresh_token 的 gcli2api JSON）。
 - API 模块：`frontend/src/api/oauth.ts`（`listGoogleAccounts` / `startGoogleOAuth` / `completeGoogleOAuth` / `importGoogleCredential` / `refreshGoogleQuota` / `toggleGoogleAccount` / `deleteGoogleAccount` / `updateGoogleAccount` / `fetchGoogleModels` / `importSelectedGoogleModels`）。
 
 ## 测试

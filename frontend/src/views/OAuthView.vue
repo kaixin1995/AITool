@@ -1,9 +1,8 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NAlert, NCard, NButton, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, useMessage } from 'naive-ui'
+import { NAlert, NCard, NButton, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
-import GoogleAccountsPanel from '@/components/GoogleAccountsPanel.vue'
 import * as api from '@/api/oauth'
 import type {
   OAuthAccount,
@@ -14,19 +13,86 @@ import type {
   OAuthInspectionStatus,
   OAuthModelSelection,
   OAuthRemoteModelItem,
-  OAuthResetCreditsInfo
+  OAuthResetCreditsInfo,
+  GoogleAccountKind,
+  GoogleAccountSummary
 } from '@/api/oauth'
 import {
   inspectionActionLabel,
   isInspectionDisabledError
 } from './accountInspectionState'
 
+// 统一账号视图：Codex 与 Google（GeminiCLI/Antigravity）账号合入同一列表，用 provider 区分厂商。
+type ProviderKind = 'codex' | 'geminicli' | 'antigravity'
+type UnifiedAccount = OAuthAccount & {
+  provider: ProviderKind
+  accountKind?: string | null
+  projectId?: string | null
+  creditAmount?: number | null
+}
+
+const PROVIDER_LABELS: Record<ProviderKind, string> = {
+  codex: 'Codex',
+  geminicli: 'GeminiCLI',
+  antigravity: 'Antigravity'
+}
+
+const PROVIDER_LOGIN_OPTIONS = [
+  { key: 'codex', label: 'Codex' },
+  { key: 'geminicli', label: 'GeminiCLI' },
+  { key: 'antigravity', label: 'Antigravity' }
+] as const
+
+const PROVIDER_IMPORT_OPTIONS = PROVIDER_LOGIN_OPTIONS
+
+// Google 账号摘要映射为统一卡片结构（planType 复用订阅等级槽位）。
+function toUnifiedGoogleAccount(acc: GoogleAccountSummary): UnifiedAccount {
+  return {
+    ...acc,
+    provider: acc.accountKind === 'Antigravity' ? 'antigravity' : 'geminicli',
+    accountKind: acc.accountKind,
+    accountId: null,
+    planType: acc.subscriptionTier,
+    resetCreditsAvailableCount: null,
+    autoDisableThreshold: null,
+    fiveHourUsedPercent: null,
+    weeklyUsedPercent: null
+  }
+}
+
+function providerLabel(acc: UnifiedAccount): string {
+  return PROVIDER_LABELS[acc.provider] ?? acc.provider
+}
+
+function providerTagType(acc: UnifiedAccount): 'info' | 'success' | 'warning' {
+  if (acc.provider === 'codex') return 'info'
+  return acc.provider === 'antigravity' ? 'warning' : 'success'
+}
+
+// 导出凭证仅支持 Codex 账号。
+const codexAccountCount = computed(() => accounts.value.filter(acc => acc.provider === 'codex').length)
+
+const loginDropdownOptions = PROVIDER_LOGIN_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 登录` }))
+const importDropdownOptions = PROVIDER_IMPORT_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 凭证` }))
+
+function handleSelectLoginProvider(key: string | number): void {
+  openOAuthModal(key as ProviderKind)
+}
+
+function handleSelectImportProvider(key: string | number): void {
+  openImportCredential(key as ProviderKind)
+}
+
+const importPlaceholder = computed(() => importProvider.value === 'codex'
+  ? '{"access_token":"...","refresh_token":"...","id_token":"..."}'
+  : '{"refresh_token":"...","project_id":"..."}')
+
 const message = useMessage()
 const route = useRoute()
 const router = useRouter()
-const activeTab = ref(route.query.tab === 'inspection' ? 'inspection' : route.query.tab === 'google' ? 'google' : 'accounts')
+const activeTab = ref(route.query.tab === 'inspection' ? 'inspection' : 'accounts')
 const loading = ref(false)
-const accounts = ref<OAuthAccount[]>([])
+const accounts = ref<UnifiedAccount[]>([])
 const inspection = ref<OAuthInspectionStatus | null>(null)
 const inspectionLastRun = ref<OAuthInspectionRunResult | null>(null)
 const inspectionLogs = ref<OAuthInspectionLog[]>([])
@@ -45,6 +111,7 @@ const oauthCallbackInput = ref('')
 const oauthDisplayName = ref('')
 const oauthLoading = ref(false)
 const oauthStartLoading = ref(false)
+const oauthProvider = ref<ProviderKind>('codex')
 
 // 凭证导入弹窗
 const importModal = ref(false)
@@ -52,6 +119,7 @@ const importJsonText = ref('')
 const importFiles = ref<File[]>([])
 const importLoading = ref(false)
 const importFailures = ref<OAuthCredentialImportFailure[]>([])
+const importProvider = ref<ProviderKind>('codex')
 
 const exportMode = ref(false)
 const selectedExportAccountIds = ref<string[]>([])
@@ -59,7 +127,7 @@ const exportLoading = ref(false)
 
 // 编辑账号（重命名 + 修改凭证）弹窗
 const editModal = ref(false)
-const editAccount = ref<OAuthAccount | null>(null)
+const editAccount = ref<UnifiedAccount | null>(null)
 const editDisplayName = ref('')
 const editRefreshToken = ref('')
 const editLoading = ref(false)
@@ -67,14 +135,14 @@ const editTokenRefreshing = ref(false)
 
 // 重置额度信用弹窗
 const resetCreditModal = ref(false)
-const resetCreditAccount = ref<OAuthAccount | null>(null)
+const resetCreditAccount = ref<UnifiedAccount | null>(null)
 const resetCreditInfo = ref<OAuthResetCreditsInfo | null>(null)
 const resetCreditLoading = ref(false)
 const resetCreditSubmitting = ref(false)
 
 // 拉取/导入模型弹窗
 const modelModal = ref(false)
-const modelAccount = ref<OAuthAccount | null>(null)
+const modelAccount = ref<UnifiedAccount | null>(null)
 type EditableOAuthModel = OAuthRemoteModelItem & { alias: string }
 
 const modelList = ref<EditableOAuthModel[]>([])
@@ -117,21 +185,35 @@ function invalidatePendingRefreshes(): void {
 
 async function loadAccounts(showError: boolean): Promise<void> {
   const requestId = ++accountsRequestId
-  try {
-    const result = await api.listOAuthAccounts()
-    if (requestId === accountsRequestId) {
-      accounts.value = result
-      featureDisabled.value = false
-    }
-  } catch (e) {
-    if (requestId !== accountsRequestId) return
-    // OAuth 功能未开启时后端返回 404，显示提示而非空白。
-    if ((e as { status?: number }).status === 404) {
-      featureDisabled.value = true
-    } else if (showError) {
-      message.error((e as Error).message)
-    }
+  // Codex 与 Google 账号合并展示；Google 接口在功能开关关闭时同样 404。
+  const [codexResult, googleResult] = await Promise.allSettled([
+    api.listOAuthAccounts(),
+    api.listGoogleAccounts()
+  ])
+  if (requestId !== accountsRequestId) return
+
+  if (codexResult.status === 'rejected'
+    && (codexResult.reason as { status?: number }).status === 404) {
+    featureDisabled.value = true
+    return
   }
+  if (codexResult.status === 'rejected') {
+    if (showError) message.error((codexResult.reason as Error).message)
+    return
+  }
+
+  const codexAccounts: UnifiedAccount[] = codexResult.value.map(acc => ({ ...acc, provider: 'codex' as const }))
+  const googleAccounts: UnifiedAccount[] = googleResult.status === 'fulfilled'
+    ? googleResult.value.map(toUnifiedGoogleAccount)
+    : []
+  if (googleResult.status === 'rejected' && showError) {
+    message.error(`Google 账号加载失败：${(googleResult.reason as Error).message}`)
+  }
+
+  accounts.value = [...codexAccounts, ...googleAccounts].sort(
+    (a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()
+  )
+  featureDisabled.value = false
 }
 
 async function loadInspection(force = false): Promise<void> {
@@ -202,7 +284,12 @@ async function refreshSilently(force = false): Promise<void> {
   }
 }
 
-function openOAuthModal(): void {
+function googleKindOf(provider: ProviderKind): GoogleAccountKind {
+  return provider === 'antigravity' ? 'Antigravity' : 'GeminiCli'
+}
+
+function openOAuthModal(provider: ProviderKind = 'codex'): void {
+  oauthProvider.value = provider
   oauthUrl.value = ''
   oauthCallbackInput.value = ''
   oauthDisplayName.value = ''
@@ -212,7 +299,9 @@ function openOAuthModal(): void {
 async function handleStartOAuth(): Promise<void> {
   oauthStartLoading.value = true
   try {
-    const result = await api.startOAuth()
+    const result = oauthProvider.value === 'codex'
+      ? await api.startOAuth()
+      : await api.startGoogleOAuth(googleKindOf(oauthProvider.value))
     oauthUrl.value = result.url
     oauthCallbackInput.value = ''
   } catch (e) {
@@ -226,28 +315,48 @@ async function handleCompleteOAuth(): Promise<void> {
   if (!oauthCallbackInput.value.trim()) { message.warning('请粘贴回调 URL'); return }
   oauthLoading.value = true
   try {
-    await api.completeOAuth(oauthCallbackInput.value.trim(), oauthDisplayName.value.trim() || undefined)
+    if (oauthProvider.value === 'codex') {
+      await api.completeOAuth(oauthCallbackInput.value.trim(), oauthDisplayName.value.trim() || undefined)
+    } else {
+      await api.completeGoogleOAuth(
+        googleKindOf(oauthProvider.value),
+        oauthCallbackInput.value.trim(),
+        oauthDisplayName.value.trim() || undefined
+      )
+    }
     message.success('OAuth 登录成功')
     oauthModal.value = false
     await load()
   } catch (e) { message.error((e as Error).message) } finally { oauthLoading.value = false }
 }
 
-async function handleToggle(acc: OAuthAccount): Promise<void> {
+async function handleToggle(acc: UnifiedAccount): Promise<void> {
   try {
-    await api.toggleOAuthAccount(acc.id)
+    if (acc.provider === 'codex') {
+      await api.toggleOAuthAccount(acc.id)
+    } else {
+      await api.toggleGoogleAccount(acc.id, !acc.isEnabled)
+    }
     acc.isEnabled = !acc.isEnabled
   } catch (e) { message.error((e as Error).message) }
 }
-async function handleRefreshQuota(acc: OAuthAccount): Promise<void> {
+async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
   try {
-    await api.refreshOAuthQuota(acc.id)
+    if (acc.provider === 'codex') {
+      await api.refreshOAuthQuota(acc.id)
+    } else {
+      await api.refreshGoogleQuota(acc.id)
+    }
     message.success('已刷新额度')
     await load()
   } catch (e) { message.error((e as Error).message) }
 }
-async function handleDelete(acc: OAuthAccount): Promise<void> {
-  await api.deleteOAuthAccount(acc.id)
+async function handleDelete(acc: UnifiedAccount): Promise<void> {
+  if (acc.provider === 'codex') {
+    await api.deleteOAuthAccount(acc.id)
+  } else {
+    await api.deleteGoogleAccount(acc.id)
+  }
   message.success('已删除账号')
   await load()
 }
@@ -271,7 +380,7 @@ async function handleRunInspection(force: boolean): Promise<void> {
 }
 
 // 编辑（重命名 + 修改凭证）
-function openEdit(acc: OAuthAccount): void {
+function openEdit(acc: UnifiedAccount): void {
   editAccount.value = acc
   editDisplayName.value = acc.displayName
   editRefreshToken.value = ''
@@ -281,26 +390,35 @@ async function handleSaveEdit(): Promise<void> {
   if (!editAccount.value || !editDisplayName.value.trim()) { message.warning('名称不能为空'); return }
   editLoading.value = true
   try {
-    const result = await api.updateOAuthAccount(
-      editAccount.value.id,
-      editDisplayName.value.trim(),
-      editRefreshToken.value || undefined
-    )
-    if (result.message) {
-      message.warning(result.message)
-    } else if (editRefreshToken.value) {
-      message.success('凭证已更新并刷新')
+    if (editAccount.value.provider === 'codex') {
+      const result = await api.updateOAuthAccount(
+        editAccount.value.id,
+        editDisplayName.value.trim(),
+        editRefreshToken.value || undefined
+      )
+      if (result.message) {
+        message.warning(result.message)
+      } else if (editRefreshToken.value) {
+        message.success('凭证已更新并刷新')
+      } else {
+        message.success('已更新')
+      }
     } else {
-      message.success('已更新')
+      await api.updateGoogleAccount(
+        editAccount.value.id,
+        editDisplayName.value.trim(),
+        editRefreshToken.value || undefined
+      )
+      message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
     }
     editModal.value = false
     await load()
   } catch (e) { message.error((e as Error).message) } finally { editLoading.value = false }
 }
 
-// 手动刷新 access_token（兜底手段：自动刷新未生效时用此恢复）
+// 手动刷新 access_token（兜底手段：自动刷新未生效时用此恢复；仅 Codex 提供专用端点）
 async function handleManualRefreshToken(): Promise<void> {
-  if (!editAccount.value) return
+  if (!editAccount.value || editAccount.value.provider !== 'codex') return
   editTokenRefreshing.value = true
   try {
     await api.refreshOAuthToken(editAccount.value.id)
@@ -318,8 +436,9 @@ async function handleManualRefreshToken(): Promise<void> {
   }
 }
 
-// 重置额度信用
-async function openResetCredit(acc: OAuthAccount): Promise<void> {
+// 重置额度信用（仅 Codex）
+async function openResetCredit(acc: UnifiedAccount): Promise<void> {
+  if (acc.provider !== 'codex') return
   resetCreditAccount.value = acc
   resetCreditInfo.value = null
   resetCreditModal.value = true
@@ -348,7 +467,7 @@ async function handleConsumeResetCredit(): Promise<void> {
 }
 
 // 拉取/导入模型
-async function openFetchModels(acc: OAuthAccount): Promise<void> {
+async function openFetchModels(acc: UnifiedAccount): Promise<void> {
   modelAccount.value = acc
   modelList.value = []
   checkedModels.value = []
@@ -356,7 +475,9 @@ async function openFetchModels(acc: OAuthAccount): Promise<void> {
   modelLoading.value = true
   try {
     modelSearch.value = ''
-    const models = await api.fetchOAuthModels(acc.id)
+    const models = acc.provider === 'codex'
+      ? await api.fetchOAuthModels(acc.id)
+      : await api.fetchGoogleModels(acc.id)
     modelList.value = models.map(model => ({
       ...model,
       alias: model.existingDisplayName
@@ -392,19 +513,31 @@ async function handleImportModels(): Promise<void> {
   if (!modelAccount.value || checkedModels.value.length === 0) { message.warning('请选择要导入的模型'); return }
   modelLoading.value = true
   try {
-    const selections: OAuthModelSelection[] = modelList.value.map(model => ({
-      remoteModelName: model.remoteModelName,
-      displayName: model.alias.trim() || model.remoteModelName,
-      selected: checkedModels.value.includes(model.remoteModelName)
-    }))
-    await api.importSelectedOAuthModels(modelAccount.value.id, selections)
+    if (modelAccount.value.provider === 'codex') {
+      const selections: OAuthModelSelection[] = modelList.value.map(model => ({
+        remoteModelName: model.remoteModelName,
+        displayName: model.alias.trim() || model.remoteModelName,
+        selected: checkedModels.value.includes(model.remoteModelName)
+      }))
+      await api.importSelectedOAuthModels(modelAccount.value.id, selections)
+    } else {
+      // Google 账号导入接口只接收勾选列表。
+      const models = modelList.value
+        .filter(model => checkedModels.value.includes(model.remoteModelName))
+        .map(model => ({
+          remoteModelName: model.remoteModelName,
+          displayName: model.alias.trim() || model.remoteModelName
+        }))
+      await api.importSelectedGoogleModels(modelAccount.value.id, models)
+    }
     message.success(`已导入 ${checkedModels.value.length} 个模型`)
     modelModal.value = false
     await load()
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
 }
 
-function openImportCredential(): void {
+function openImportCredential(provider: ProviderKind = 'codex'): void {
+  importProvider.value = provider
   importJsonText.value = ''
   importFiles.value = []
   importFailures.value = []
@@ -431,9 +564,20 @@ async function handleImportCredential(): Promise<void> {
   importLoading.value = true
   importFailures.value = []
   try {
-    const result = importFiles.value.length > 0
-      ? await api.importCredentialFiles(importFiles.value)
-      : await api.importCredential(importJsonText.value.trim())
+    let result: { successes: unknown[]; failures: OAuthCredentialImportFailure[] }
+    if (importProvider.value === 'codex') {
+      const codexResult = importFiles.value.length > 0
+        ? await api.importCredentialFiles(importFiles.value)
+        : await api.importCredential(importJsonText.value.trim())
+      result = codexResult
+    } else {
+      // Google 凭证：仅支持粘贴 JSON（需含 refresh_token），文件导入走 Codex。
+      if (!importJsonText.value.trim()) {
+        message.warning('请粘贴 gcli2api 凭证 JSON（需包含 refresh_token 字段）')
+        return
+      }
+      result = await api.importGoogleCredential(googleKindOf(importProvider.value), importJsonText.value.trim())
+    }
     importJsonText.value = ''
     importFiles.value = []
     importFailures.value = result.failures
@@ -621,9 +765,6 @@ watch(activeTab, (tab) => {
     query.tab = 'inspection'
     if (exportMode.value) cancelExportCredentials()
     void loadInspection(true)
-  } else if (tab === 'google') {
-    query.tab = 'google'
-    if (exportMode.value) cancelExportCredentials()
   } else {
     delete query.tab
   }
@@ -631,7 +772,7 @@ watch(activeTab, (tab) => {
 })
 
 watch(() => route.query.tab, (tab) => {
-  activeTab.value = tab === 'inspection' ? 'inspection' : tab === 'google' ? 'google' : 'accounts'
+  activeTab.value = tab === 'inspection' ? 'inspection' : 'accounts'
 })
 
 onMounted(() => {
@@ -650,9 +791,13 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
     <PageHeader title="OAuth 管理" subtitle="管理 OAuth 登录账号、凭证导入、额度、巡检与自动禁用">
       <template #actions>
         <template v-if="!exportMode">
-          <NButton secondary :disabled="accounts.length === 0" @click="beginExportCredentials">导出凭证</NButton>
-          <NButton type="primary" @click="openOAuthModal">＋ OAuth 登录</NButton>
-          <NButton secondary type="primary" @click="openImportCredential">上传凭证</NButton>
+          <NButton secondary :disabled="codexAccountCount === 0" @click="beginExportCredentials">导出凭证</NButton>
+          <NDropdown trigger="click" :options="loginDropdownOptions" @select="handleSelectLoginProvider">
+            <NButton type="primary">＋ OAuth 登录</NButton>
+          </NDropdown>
+          <NDropdown trigger="click" :options="importDropdownOptions" @select="handleSelectImportProvider">
+            <NButton secondary type="primary">上传凭证</NButton>
+          </NDropdown>
         </template>
       </template>
     </PageHeader>
@@ -674,10 +819,10 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                 :key="acc.id"
                 class="oauth-card"
                 :class="{ disabled: !acc.isEnabled, selected: selectedExportAccountIds.includes(acc.id) }"
-                @click="exportMode && toggleExportAccount(acc.id, !selectedExportAccountIds.includes(acc.id))"
+                @click="exportMode && acc.provider === 'codex' && toggleExportAccount(acc.id, !selectedExportAccountIds.includes(acc.id))"
               >
                 <NCheckbox
-                  v-if="exportMode"
+                  v-if="exportMode && acc.provider === 'codex'"
                   class="oauth-export-checkbox"
                   :checked="selectedExportAccountIds.includes(acc.id)"
                   @click.stop
@@ -689,7 +834,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                     <div class="oauth-account-email">
                       {{ acc.email || '' }}
                       <button
-                        v-if="(acc.resetCreditsAvailableCount ?? 0) > 0"
+                        v-if="acc.provider === 'codex' && (acc.resetCreditsAvailableCount ?? 0) > 0"
                         type="button"
                         class="oauth-reset-credits-hint"
                         title="点击查看详情"
@@ -699,12 +844,15 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                       </button>
                     </div>
                     <div class="oauth-badges">
+                      <NTag size="small" :type="providerTagType(acc)" :bordered="false">{{ providerLabel(acc) }}</NTag>
                       <NTag size="small" :type="accountStatusType(acc)" :bordered="false">{{ accountStatusLabel(acc) }}</NTag>
                       <span v-if="acc.planType" class="oauth-plan">{{ acc.planType }}</span>
+                      <span v-if="acc.creditAmount != null" class="oauth-plan">积分 {{ acc.creditAmount }}</span>
                       <span v-if="acc.tokenExpiresAt" class="oauth-token-expiry" :class="{ 'oauth-token-expired': isTokenExpired(acc.tokenExpiresAt), 'oauth-token-warning': isTokenExpiringSoon(acc.tokenExpiresAt) }">
                         Token：{{ formatDateTime(acc.tokenExpiresAt) }}
                       </span>
                     </div>
+                    <div v-if="acc.projectId" class="oauth-project-id">项目：{{ acc.projectId }}</div>
                   </div>
                 </div>
 
@@ -723,7 +871,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
                   </div>
                 </div>
                 <div v-else class="oauth-window-placeholder">
-                  {{ acc.lastQuotaCheckedAt ? '暂无额度窗口数据' : '未刷新额度，点击下方「刷新额度」获取' }}
+                  {{ acc.provider === 'geminicli' ? '该接入方式上游无额度接口，仅展示订阅等级' : acc.lastQuotaCheckedAt ? '暂无额度窗口数据' : '未刷新额度，点击下方「刷新额度」获取' }}
                 </div>
 
                 <div v-if="!exportMode" class="oauth-card-meta">
@@ -757,10 +905,6 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
               </article>
             </div>
           </div>
-        </NTabPane>
-
-        <NTabPane name="google" tab="Google 账号">
-          <GoogleAccountsPanel />
         </NTabPane>
 
         <NTabPane name="inspection" tab="巡检">
@@ -846,8 +990,8 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       </NTabs>
     </NSpin>
 
-    <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序。 -->
-    <NModal v-model:show="oauthModal" title="OAuth 登录" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false">
+    <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序；按厂商展示对应流程。 -->
+    <NModal v-model:show="oauthModal" :title="`OAuth 登录 - ${PROVIDER_LABELS[oauthProvider]}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false">
       <div class="oauth-form-group">
         <p class="oauth-form-label">账号显示名称（可选）</p>
         <NInput v-model:value="oauthDisplayName" placeholder="留空则用邮箱" />
@@ -858,7 +1002,8 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
         <NAlert type="info" :show-icon="false">
           <strong>操作步骤：</strong>
           <ol class="oauth-steps">
-            <li>点击下方链接，在新标签页中登录 OpenAI 账号。</li>
+            <li v-if="oauthProvider === 'codex'">点击下方链接，在新标签页中登录 OpenAI 账号。</li>
+            <li v-else>点击下方链接，在新标签页中登录 Google 账号并完成授权。</li>
             <li>登录后浏览器跳转到 localhost 并显示无法访问是正常现象。</li>
             <li>复制浏览器地址栏中的完整 URL，粘贴到下方输入框。</li>
             <li>点击“完成登录”。</li>
@@ -871,7 +1016,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
           <NButton tag="a" :href="oauthUrl" target="_blank" secondary type="primary">打开</NButton>
         </div>
         <p class="oauth-form-label">粘贴登录后跳转的完整 URL</p>
-        <NInput v-model:value="oauthCallbackInput" placeholder="http://localhost:1455/auth/callback?code=...&state=..." type="textarea" :autosize="{ minRows: 3 }" />
+        <NInput v-model:value="oauthCallbackInput" :placeholder="oauthProvider === 'codex' ? 'http://localhost:1455/auth/callback?code=...&state=...' : 'http://localhost:17891/?code=...&state=...'" type="textarea" :autosize="{ minRows: 3 }" />
       </div>
       <template #footer>
         <NSpace justify="end">
@@ -881,18 +1026,23 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
       </template>
     </NModal>
 
-    <!-- 导入凭证弹窗 -->
-    <NModal v-model:show="importModal" title="导入 OAuth 凭证" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
-      <p class="credential-import-label">选择一个或多个 CPA 凭证 JSON 文件：</p>
-      <input class="credential-file-input" type="file" accept=".json,application/json" multiple @change="handleCredentialFiles">
-      <div v-if="importFiles.length" class="credential-file-summary">已选择 {{ importFiles.length }} 个文件，将优先导入所选文件。</div>
-      <div class="credential-import-divider"><span>或粘贴 JSON</span></div>
-      <p class="credential-import-label">粘贴 CPA 格式的凭证 JSON（含 access_token / refresh_token / id_token）：</p>
+    <!-- 导入凭证弹窗：Codex 支持文件+JSON；Google 仅支持粘贴 gcli2api 凭证 JSON -->
+    <NModal v-model:show="importModal" :title="`导入 ${PROVIDER_LABELS[importProvider]} 凭证`" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
+      <template v-if="importProvider === 'codex'">
+        <p class="credential-import-label">选择一个或多个 CPA 凭证 JSON 文件：</p>
+        <input class="credential-file-input" type="file" accept=".json,application/json" multiple @change="handleCredentialFiles">
+        <div v-if="importFiles.length" class="credential-file-summary">已选择 {{ importFiles.length }} 个文件，将优先导入所选文件。</div>
+        <div class="credential-import-divider"><span>或粘贴 JSON</span></div>
+        <p class="credential-import-label">粘贴 CPA 格式的凭证 JSON（含 access_token / refresh_token / id_token）：</p>
+      </template>
+      <template v-else>
+        <p class="credential-import-label">粘贴 gcli2api 凭证 JSON（需包含 refresh_token 字段，可选 project_id）：</p>
+      </template>
       <NInput
         v-model:value="importJsonText"
         type="textarea"
         :autosize="{ minRows: 8, maxRows: 20 }"
-        placeholder='{"access_token":"...","refresh_token":"...","id_token":"..."}'
+        :placeholder="importPlaceholder"
         style="font-family: monospace"
       />
       <div v-if="importFailures.length" class="credential-import-failures">
@@ -926,7 +1076,7 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
           />
           <p class="edit-hint">填入后会立即用新凭证刷新 access_token。token 过期或失效时可用此功能恢复。</p>
         </div>
-        <div>
+        <div v-if="editAccount?.provider === 'codex'">
           <p class="edit-label">手动刷新 Token</p>
           <NSpace align="center" :size="8">
             <NButton :loading="editTokenRefreshing" @click="handleManualRefreshToken">立即刷新 access_token</NButton>
@@ -1492,6 +1642,14 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
   color: var(--status-warning-text);
   font-size: 11px;
   font-weight: 500;
+}
+
+.oauth-project-id {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-color-secondary);
+  font-family: monospace;
+  word-break: break-all;
 }
 
 .oauth-token-expiry {

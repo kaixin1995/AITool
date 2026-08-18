@@ -85,14 +85,60 @@ public sealed class GeminiProxyEndToEndTests
         root.GetProperty("usage").GetProperty("completion_tokens").GetInt32().Should().Be(8);
     }
 
+    [Fact]
+    public async Task Refresh_quota_for_antigravity_account_returns_model_windows()
+    {
+        // Antigravity 额度链路：refresh-quota → fetchAvailableModels → 每模型剩余比例窗口持久化并在账号列表回显。
+        const string quotaJson =
+            "{\"models\":{\"gemini-3-pro-preview\":{\"quotaInfo\":{\"remainingFraction\":0.85,\"resetTime\":\"2026-08-20T02:30:00Z\"}},\"claude-sonnet-4-6\":{\"quotaInfo\":{\"remainingFraction\":0.05,\"resetTime\":\"2026-08-19T10:00:00Z\"}}}}";
+        await using var factory = new GeminiProxyWebApplicationFactory(
+            request => request.RequestUri!.AbsolutePath.Contains("fetchAvailableModels")
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(quotaJson, Encoding.UTF8, "application/json")
+                }
+                : new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(GeminiUpstreamJson, Encoding.UTF8, "application/json")
+                },
+            accountKind: "Antigravity",
+            baseUrl: "https://daily-cloudcode-pa.googleapis.com");
+        using var client = factory.CreateClient();
+
+        using var refreshResponse = await client.PostAsync(
+            $"/api/admin/google-accounts/accounts/{GoogleAccountId}/refresh-quota",
+            content: null);
+        var refreshBody = await refreshResponse.Content.ReadAsStringAsync();
+        refreshResponse.StatusCode.Should().Be(HttpStatusCode.OK, refreshBody);
+        refreshBody.Should().Contain("gemini-3-pro-preview", "额度响应应包含模型窗口");
+
+        using var listResponse = await client.GetAsync("/api/admin/google-accounts/accounts");
+        var listBody = await listResponse.Content.ReadAsStringAsync();
+        listResponse.StatusCode.Should().Be(HttpStatusCode.OK, listBody);
+        using var listDoc = System.Text.Json.JsonDocument.Parse(listBody);
+        var account = listDoc.RootElement.EnumerateArray()
+            .Single(item => item.GetProperty("id").GetString() == GoogleAccountId.ToString());
+        var windows = account.GetProperty("windows");
+        windows.GetArrayLength().Should().Be(2, "额度结果应持久化并在账号列表解析为窗口");
+        windows[0].GetProperty("usedPercent").GetDouble().Should().BeApproximately(15d, 0.01);
+        account.GetProperty("lastQuotaCheckedAt").GetString().Should().NotBeNullOrEmpty();
+    }
+
     private sealed class GeminiProxyWebApplicationFactory : WebApplicationFactory<Program>
     {
         private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
+        private readonly string _accountKind;
+        private readonly string _baseUrl;
         private readonly string _databasePath = Path.Combine(Path.GetTempPath(), $"aitool-gemini-e2e-{Guid.NewGuid():N}.db");
 
-        public GeminiProxyWebApplicationFactory(Func<HttpRequestMessage, HttpResponseMessage> responder)
+        public GeminiProxyWebApplicationFactory(
+            Func<HttpRequestMessage, HttpResponseMessage> responder,
+            string accountKind = "GeminiCli",
+            string baseUrl = "https://cloudcode-pa.googleapis.com")
         {
             _responder = responder;
+            _accountKind = accountKind;
+            _baseUrl = baseUrl;
         }
 
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -127,7 +173,7 @@ public sealed class GeminiProxyEndToEndTests
             {
                 Id = SiteId,
                 Name = "Gemini Site",
-                BaseUrl = "https://cloudcode-pa.googleapis.com",
+                BaseUrl = _baseUrl,
                 ApiKey = "ya29-upstream-token",
                 ProtocolType = "Gemini",
                 SupportsOpenAi = false,
@@ -142,7 +188,7 @@ public sealed class GeminiProxyEndToEndTests
                 Id = GoogleAccountId,
                 DisplayName = "Gemini E2E",
                 Email = "e2e@example.com",
-                AccountKind = "GeminiCli",
+                AccountKind = _accountKind,
                 ProjectId = "e2e-project-123",
                 AccessToken = "ya29-upstream-token",
                 RefreshToken = "rt",
@@ -197,6 +243,7 @@ public sealed class GeminiProxyEndToEndTests
             db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
             {
                 Id = 1,
+                OAuthFeaturesEnabled = true,
                 ProxyRequestTimeoutSeconds = 30,
                 ProxyRetryCount = 0,
                 DetectionRequestTimeoutSeconds = 60,
