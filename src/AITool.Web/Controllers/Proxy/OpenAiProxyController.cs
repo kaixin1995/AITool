@@ -614,7 +614,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
+                ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
                 RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
                 TargetPath = defaultTargetPathFactory is null
                     ? (string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)

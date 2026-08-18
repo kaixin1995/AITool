@@ -216,7 +216,7 @@ public sealed partial class OpenAiProxyController
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
+                ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
                 RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
                 // Codex 远程压缩走专用端点 responses/compact（对照 cc-switch endpoint_with_query("/responses/compact")）；
                 // 普通 Responses 请求端点不变，正常对话行为不受影响。
@@ -548,7 +548,7 @@ public sealed partial class OpenAiProxyController
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
+                ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
                 RefreshTargetApiKeyAsync = CreateCodexCredentialRefreshCallback(route),
                 TargetPath = isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null
             };

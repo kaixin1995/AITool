@@ -52,6 +52,87 @@ public sealed class ResponsesProxyTests
     }
 
     /// <summary>
+    /// Codex Responses 透传应携带客户端会话标识，并用请求体中的缓存键补齐 Session-Id。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_codex_forwards_dynamic_cache_headers()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService
+        {
+            ManagedSource = "Codex"
+        };
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"prompt_cache_key\":\"cache-key-from-body\",\"input\":\"hello\"}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        request.Headers.TryAddWithoutValidation("Version", "0.133.0");
+        request.Headers.TryAddWithoutValidation("X-Codex-Beta-Features", "responses_websockets");
+        request.Headers.TryAddWithoutValidation("X-Codex-Turn-Metadata", "{\"turn_id\":\"turn-1\"}");
+        request.Headers.TryAddWithoutValidation("X-Client-Request-Id", "request-id-1");
+        request.Headers.TryAddWithoutValidation("X-Codex-Window-Id", "window-1");
+        request.Headers.TryAddWithoutValidation("Thread-Id", "thread-1");
+        request.Headers.TryAddWithoutValidation("Session-Id", "session-header-1");
+        request.Headers.TryAddWithoutValidation("Conversation_id", "conversation-1");
+        request.Headers.TryAddWithoutValidation("X-Openai-Internal-Codex-Responses-Lite", "1");
+        request.Headers.TryAddWithoutValidation("Originator", "client-originator");
+        request.Headers.TryAddWithoutValidation("X-Not-A-Codex-Header", "should-not-forward");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        var forwarded = fakeForwardService.Requests[0].ForwardHeaders;
+        forwarded["Version"].Should().Be("0.133.0");
+        forwarded["X-Codex-Beta-Features"].Should().Be("responses_websockets");
+        forwarded["X-Codex-Turn-Metadata"].Should().Be("{\"turn_id\":\"turn-1\"}");
+        forwarded["X-Client-Request-Id"].Should().Be("request-id-1");
+        forwarded["X-Codex-Window-Id"].Should().Be("window-1");
+        forwarded["Thread-Id"].Should().Be("thread-1");
+        forwarded["Session-Id"].Should().Be("cache-key-from-body");
+        forwarded["Conversation_id"].Should().Be("conversation-1");
+        forwarded["X-Openai-Internal-Codex-Responses-Lite"].Should().Be("1");
+        forwarded.Should().NotContainKey("Authorization");
+        forwarded.Should().NotContainKey("Originator");
+        forwarded.Should().NotContainKey("X-Not-A-Codex-Header");
+    }
+
+    /// <summary>
+    /// 普通 Responses 站点不应因为客户端恰好携带 Codex 头而改变原有转发行为。
+    /// </summary>
+    [Fact]
+    public async Task Post_responses_regular_site_does_not_forward_codex_headers()
+    {
+        var fakeForwardService = new ResponsesFakeProxyForwardService();
+        await using var factory = new ResponsesWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/responses")
+        {
+            Content = new StringContent(
+                "{\"model\":\"auto\",\"prompt_cache_key\":\"cache-key-from-body\",\"input\":\"hello\"}",
+                Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "responses-test-key");
+        request.Headers.TryAddWithoutValidation("X-Codex-Beta-Features", "responses_websockets");
+        request.Headers.TryAddWithoutValidation("Session-Id", "session-header-1");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+        fakeForwardService.Requests.Should().ContainSingle();
+        fakeForwardService.Requests[0].ForwardHeaders.Should().NotContainKey("X-Codex-Beta-Features");
+        fakeForwardService.Requests[0].ForwardHeaders.Should().NotContainKey("Session-Id");
+    }
+
+    /// <summary>
     /// Codex 远程压缩：/v1/responses/compact 应转发到上游专用 responses/compact 端点（对照 cc-switch），
     /// 普通对话的 /v1/responses 端点行为不受影响。
     /// </summary>
@@ -1284,6 +1365,7 @@ internal sealed class ResponsesWebApplicationFactory : WebApplicationFactory<Pro
                 SupportsOpenAi = _fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses,
                 SupportsAnthropic = false,
                 SupportsResponses = !_fakeForwardService.IsOpenAiChatOnly || _fakeForwardService.SupportsOpenAiAndResponses,
+                ManagedSource = _fakeForwardService.ManagedSource,
                 IsEnabled = true
             });
 
@@ -1371,6 +1453,7 @@ internal sealed class ResponsesFakeProxyForwardService : IProxyForwardService
     public bool IsAnthropicOnly { get; set; }
     public bool IsOpenAiChatOnly { get; set; }
     public bool SupportsOpenAiAndResponses { get; set; }
+    public string? ManagedSource { get; set; }
 
     public Task<ProxyForwardResult> ForwardAsync(ProxyForwardRequest request, CancellationToken cancellationToken = default)
     {

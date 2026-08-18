@@ -6,6 +6,7 @@ using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using AITool.Web.Services;
 
@@ -16,6 +17,19 @@ namespace AITool.Web.Controllers.Proxy;
 /// </summary>
 public sealed partial class OpenAiProxyController
 {
+    private static readonly string[] CodexResponsesForwardHeaderNames =
+    [
+        "Version",
+        "X-Codex-Beta-Features",
+        "X-Codex-Turn-Metadata",
+        "X-Client-Request-Id",
+        "X-Codex-Window-Id",
+        "Thread-Id",
+        "Session-Id",
+        "Conversation_id",
+        "X-Openai-Internal-Codex-Responses-Lite"
+    ];
+
     /// <summary>
     /// 把缓存路由目标携带的自定义请求头（来自 Site.ExtraHeadersJson）转换为转发请求头字典。
     /// 空或空字典返回新的空字典（大小写不敏感），避免共享缓存实例被修改。
@@ -28,6 +42,78 @@ public sealed partial class OpenAiProxyController
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
         return new Dictionary<string, string>(extra, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 合并 Codex Responses 请求的动态会话头。只接受 Codex 协议需要的白名单头，避免把客户端鉴权、主机和代理身份头带到上游。
+    /// </summary>
+    public static Dictionary<string, string> MergeCodexResponsesHeaders(
+        Dictionary<string, string>? extra,
+        IHeaderDictionary? clientHeaders,
+        string? preparedRequestBody)
+    {
+        var merged = MergeExtraHeaders(extra);
+        if (clientHeaders is not null)
+        {
+            foreach (var headerName in CodexResponsesForwardHeaderNames)
+            {
+                if (clientHeaders.TryGetValue(headerName, out var values))
+                {
+                    var value = values.ToString().Trim();
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        merged[headerName] = value;
+                    }
+                }
+            }
+        }
+
+        var promptCacheKey = TryExtractPromptCacheKey(preparedRequestBody);
+        if (!string.IsNullOrWhiteSpace(promptCacheKey))
+        {
+            merged["Session-Id"] = promptCacheKey;
+        }
+
+        return merged;
+    }
+
+    private Dictionary<string, string> BuildForwardHeaders(
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string? preparedRequestBody)
+    {
+        if (!string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return MergeExtraHeaders(route.ExtraHeaders);
+        }
+
+        return MergeCodexResponsesHeaders(route.ExtraHeaders, Request.Headers, preparedRequestBody);
+    }
+
+    private static string? TryExtractPromptCacheKey(string? preparedRequestBody)
+    {
+        if (string.IsNullOrWhiteSpace(preparedRequestBody))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(preparedRequestBody);
+            if (document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("prompt_cache_key", out var promptCacheKey)
+                && promptCacheKey.ValueKind == JsonValueKind.String)
+            {
+                var value = promptCacheKey.GetString()?.Trim();
+                return string.IsNullOrWhiteSpace(value) ? null : value;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return null;
     }
 
     /// <summary>
