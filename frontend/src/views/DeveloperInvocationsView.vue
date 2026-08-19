@@ -19,6 +19,7 @@ import {
 } from 'naive-ui'
 import * as api from '@/api/developer'
 import type { DeveloperInvocationSummary, DeveloperConcurrencyItem } from '@/api/developer'
+import { isRequestCanceled } from '@/api/http'
 import PageHeader from '@/components/PageHeader.vue'
 import ClientSimulator from './ClientSimulator.vue'
 import CircuitBreakerTab from './CircuitBreakerTab.vue'
@@ -103,6 +104,7 @@ const details = ref<Record<string, DeveloperInvocationDetail>>({})
 const detailLoading = ref<Record<string, boolean>>({})
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let invocationRequestRunning = false
+const detailAbortControllers = new Map<string, AbortController>()
 
 function isPending(status: string): boolean {
   return status?.toLowerCase() === 'pending'
@@ -128,6 +130,29 @@ function statusClass(status: string): string {
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '-'
   return new Date(value).toLocaleString('zh-CN')
+}
+
+function pruneInvocationDetails(nextEntries: DeveloperInvocationSummary[]): void {
+  const validTraceIds = new Set(nextEntries.map((entry) => entry.traceId))
+  for (const [traceId, controller] of detailAbortControllers) {
+    if (!validTraceIds.has(traceId)) {
+      controller.abort()
+      detailAbortControllers.delete(traceId)
+    }
+  }
+
+  const nextDetails: Record<string, DeveloperInvocationDetail> = {}
+  for (const [traceId, detail] of Object.entries(details.value)) {
+    if (validTraceIds.has(traceId)) nextDetails[traceId] = detail
+  }
+  details.value = nextDetails
+
+  const nextLoading: Record<string, boolean> = {}
+  for (const [traceId, isLoading] of Object.entries(detailLoading.value)) {
+    if (validTraceIds.has(traceId)) nextLoading[traceId] = isLoading
+  }
+  detailLoading.value = nextLoading
+  expandedTraceIds.value = new Set([...expandedTraceIds.value].filter((traceId) => validTraceIds.has(traceId)))
 }
 
 function formatDuration(value: number | null | undefined): string {
@@ -282,6 +307,7 @@ async function loadInvocations(showSpinner = true, targetPage = page.value): Pro
   try {
     const listResp = await api.getDeveloperList(targetPage, pageSize)
     entries.value = listResp.entries ?? []
+    pruneInvocationDetails(entries.value)
     page.value = listResp.page
     totalPages.value = listResp.totalPages || 1
     totalCount.value = listResp.totalCount
@@ -335,14 +361,22 @@ function handleSummarizeChange(): void {
 }
 
 async function loadDetail(traceId: string): Promise<void> {
+  detailAbortControllers.get(traceId)?.abort()
+  const controller = new AbortController()
+  detailAbortControllers.set(traceId, controller)
   detailLoading.value = { ...detailLoading.value, [traceId]: true }
   try {
-    const detail = await api.getDeveloperDetail(traceId, summarizeDetail.value) as DeveloperInvocationDetail
-    details.value = { ...details.value, [traceId]: detail }
+    const detail = await api.getDeveloperDetail(traceId, summarizeDetail.value, controller.signal) as DeveloperInvocationDetail
+    if (!controller.signal.aborted && expandedTraceIds.value.has(traceId)) {
+      details.value = { ...details.value, [traceId]: detail }
+    }
   } catch (e) {
-    message.error((e as Error).message)
+    if (!isRequestCanceled(e)) message.error((e as Error).message)
   } finally {
-    detailLoading.value = { ...detailLoading.value, [traceId]: false }
+    if (detailAbortControllers.get(traceId) === controller) {
+      detailAbortControllers.delete(traceId)
+      detailLoading.value = { ...detailLoading.value, [traceId]: false }
+    }
   }
 }
 
@@ -351,6 +385,11 @@ async function toggleDetail(traceId: string): Promise<void> {
   if (next.has(traceId)) {
     next.delete(traceId)
     expandedTraceIds.value = next
+    detailAbortControllers.get(traceId)?.abort()
+    const nextDetails = { ...details.value }
+    delete nextDetails[traceId]
+    details.value = nextDetails
+    detailLoading.value = { ...detailLoading.value, [traceId]: false }
     return
   }
   next.add(traceId)
@@ -434,6 +473,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
+  for (const controller of detailAbortControllers.values()) controller.abort()
+  detailAbortControllers.clear()
 })
 </script>
 

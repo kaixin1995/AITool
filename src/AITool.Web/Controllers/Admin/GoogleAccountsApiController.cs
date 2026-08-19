@@ -174,7 +174,29 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var accounts = await _dbContext.GoogleAccounts
             .OrderByDescending(a => a.CreatedAt)
             .ToListAsync(ct);
-        return Ok(accounts.Select(a => ToSummary(a)).ToList());
+        var siteIds = accounts.Select(a => a.LinkedSiteId).Distinct().ToList();
+        var selectedMappings = siteIds.Count == 0
+            ? []
+            : await _dbContext.SiteModelMappings
+                .Where(mapping => siteIds.Contains(mapping.SiteId) && mapping.IsEnabled)
+                .Select(mapping => new { mapping.SiteId, mapping.RemoteModelName })
+                .ToListAsync(ct);
+        var selectedModelsBySite = selectedMappings
+            .GroupBy(mapping => mapping.SiteId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyCollection<string>)group
+                    .Select(mapping => mapping.RemoteModelName)
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+                    .ToArray());
+
+        return Ok(accounts.Select(account =>
+        {
+            selectedModelsBySite.TryGetValue(account.LinkedSiteId, out var selectedModels);
+            return ToSummary(account, selectedModels: selectedModels ?? Array.Empty<string>());
+        }).ToList());
     }
 
     /// <summary>查询指定账号额度（forceRefresh 穿透 30s 缓存）。</summary>
@@ -204,8 +226,12 @@ public sealed class GoogleAccountsApiController : ControllerBase
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         account.IsEnabled = enabled;
         account.ManuallyDisabled = !enabled;
+        if (enabled)
+        {
+            account.DisabledByUpstream = false;
+        }
         await client.Updateable(account)
-            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled })
+            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled, x.DisabledByUpstream })
             .ExecuteCommandAsync(ct);
 
         var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
@@ -268,7 +294,26 @@ public sealed class GoogleAccountsApiController : ControllerBase
             }
         }
 
-        var models = await _modelFetcher.FetchAsync(account.AccountKind, accessToken, ct);
+        if (string.Equals(account.AccountKind, GoogleAccountKinds.GeminiCli, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(account.ProjectId))
+        {
+            var ready = await _oauth.EnsureGeminiCliApisAsync(accessToken, account.ProjectId, ct);
+            if (!ready)
+            {
+                _logger.LogWarning("GeminiCLI project API preparation was not fully successful for account {AccountId}", account.Id);
+            }
+        }
+
+        IReadOnlyList<(string Slug, string DisplayName)> models;
+        try
+        {
+            models = await _modelFetcher.FetchAsync(account.AccountKind, accessToken, ct);
+        }
+        catch (Exception ex) when (GoogleCredentialRefreshService.IsForbiddenResponse(ex))
+        {
+            await _credentialRefreshService.DisableAsync(account.LinkedSiteId, "model-fetch-403", ct);
+            return StatusCode(StatusCodes.Status403Forbidden, new { message = "Google 上游返回 403，已自动禁用该账号，请完成验证或确认账号权限后再手动启用" });
+        }
 
         // 附带现有映射，前端区分"已导入/未导入"。
         var existing = await _dbContext.SiteModelMappings
@@ -384,6 +429,16 @@ public sealed class GoogleAccountsApiController : ControllerBase
             }
         }
 
+        if (string.Equals(kind, GoogleAccountKinds.GeminiCli, StringComparison.OrdinalIgnoreCase)
+            && !string.IsNullOrWhiteSpace(projectId))
+        {
+            var ready = await _oauth.EnsureGeminiCliApisAsync(tokens.AccessToken, projectId, ct);
+            if (!ready)
+            {
+                _logger.LogWarning("GeminiCLI project API preparation was not fully successful for project {ProjectId}", projectId);
+            }
+        }
+
         email = await _oauth.GetUserEmailAsync(tokens.AccessToken, ct);
 
         return new GoogleProvisionInput
@@ -424,15 +479,27 @@ public sealed class GoogleAccountsApiController : ControllerBase
         return null;
     }
 
-    private static object ToSummary(GoogleAccount a, string? message = null)
+    private static object ToSummary(
+        GoogleAccount a,
+        string? message = null,
+        IReadOnlyCollection<string>? selectedModels = null)
     {
         List<object>? windows = null;
+        var selectedModelNames = selectedModels?
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
+            .ToArray() ?? Array.Empty<string>();
         if (!string.IsNullOrEmpty(a.LastQuotaRawJson))
         {
             var parsed = GoogleQuotaParser.Parse(a.LastQuotaRawJson);
             if (parsed is not null)
             {
-                windows = parsed.Select(w => (object)new
+                var visibleWindows = selectedModels is not null
+                    && string.Equals(a.AccountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase)
+                    ? parsed.Where(window => selectedModelNames.Contains(window.Id, StringComparer.OrdinalIgnoreCase))
+                    : parsed;
+                windows = visibleWindows.Select(w => (object)new
                 {
                     id = w.Id,
                     label = w.Label,
@@ -452,8 +519,10 @@ public sealed class GoogleAccountsApiController : ControllerBase
             subscriptionTier = a.SubscriptionTier,
             creditAmount = a.CreditAmount,
             isEnabled = a.IsEnabled,
+            disabledByUpstream = a.DisabledByUpstream,
             isQuotaCooling = a.IsQuotaCooling,
             quotaCoolingUntil = a.QuotaCoolingUntil,
+            selectedModels = selectedModelNames,
             windows,
             lastQuotaCheckedAt = a.LastQuotaCheckedAt,
             tokenExpiresAt = a.TokenExpiresAt,

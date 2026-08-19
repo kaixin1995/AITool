@@ -309,6 +309,35 @@ public sealed class GeminiProxyEndToEndTests
                 MaxConcurrency = 0
             });
 
+            if (string.Equals(_accountKind, "Antigravity", StringComparison.OrdinalIgnoreCase))
+            {
+                var quotaModelDefinitions = new[]
+                {
+                    (Id: Guid.Parse("c3c3c3c3-c3c3-c3c3-c3c3-c3c3c3c3c3c3"), Name: "gemini-3-pro-preview"),
+                    (Id: Guid.Parse("d4d4d4d4-d4d4-d4d4-d4d4-d4d4d4d4d4d4"), Name: "claude-sonnet-4-6")
+                };
+
+                foreach (var (id, name) in quotaModelDefinitions)
+                {
+                    db.ModelLibraryItems.Add(new ModelLibraryItem
+                    {
+                        Id = id,
+                        ModelName = name,
+                        DisplayName = name,
+                        IsEnabled = true
+                    });
+                    db.SiteModelMappings.Add(new SiteModelMapping
+                    {
+                        Id = Guid.NewGuid(),
+                        SiteId = SiteId,
+                        ModelLibraryItemId = id,
+                        RemoteModelName = name,
+                        IsEnabled = true,
+                        MaxConcurrency = 0
+                    });
+                }
+            }
+
             var accessKeyRaw = "gemini-e2e-key";
             db.ProxyAccessKeys.Add(new ProxyAccessKey
             {

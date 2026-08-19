@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Infrastructure.Common;
 
 namespace AITool.Infrastructure.Google;
 
@@ -48,14 +49,14 @@ public static class GoogleQuotaParser
                 }
                 var usedPercent = Math.Clamp((1d - remaining) * 100d, 0d, 100d);
 
-                string resetLabel = "N/A";
+                string resetLabel = string.Empty;
                 DateTimeOffset? resetAt = null;
                 if (quota.TryGetProperty("resetTime", out var resetTime)
                     && resetTime.ValueKind == JsonValueKind.String
                     && DateTimeOffset.TryParse(resetTime.GetString(), out var parsed))
                 {
                     resetAt = parsed.ToUniversalTime();
-                    resetLabel = parsed.ToLocalTime().ToString("MM-dd HH:mm");
+                    resetLabel = QuotaResetLabelFormatter.Format(parsed.ToUniversalTime() - DateTimeOffset.UtcNow);
                 }
 
                 windows.Add(new Window(property.Name, property.Name, usedPercent, resetLabel, resetAt));

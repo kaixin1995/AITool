@@ -4,7 +4,7 @@ import { NCard, NSelect, NInput, NButton, NSwitch, useMessage, type SelectOption
 import * as chatApi from '@/api/chat'
 import type { ChatModelTarget, ChatAttemptResult, ChatSendResult } from '@/api/chat'
 
-interface Message { role: 'user' | 'assistant'; content: string; reasoning?: string; meta?: ChatSendResult; error?: boolean; createdAt: number; streaming?: boolean; reasoningEnabled?: boolean; durationMs?: number }
+interface Message { role: 'user' | 'assistant'; content: string; reasoning?: string; error?: boolean; createdAt: number; streaming?: boolean; reasoningEnabled?: boolean; durationMs?: number }
 
 const message = useMessage()
 const selectedModelId = ref<string | null>(null)
@@ -30,6 +30,7 @@ const lastAttempts = ref<ChatAttemptResult[] | null>(null)
 const expandedAttemptIndexes = ref<Set<number>>(new Set())
 const messagesContainer = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
+const maxMessageHistory = 200
 
 async function loadModels(): Promise<void> {
   await loadTargets()
@@ -53,11 +54,8 @@ function formatTargetLabel(target: ChatModelTarget): string {
   const siteName = target.siteName?.trim() || '未命名站点'
   const remoteModelName = target.siteModelName?.trim()
   const displayName = target.modelDisplayName?.trim()
-  const modelLabel = remoteModelName || displayName || '未知模型'
-  const aliasLabel = remoteModelName && displayName && remoteModelName !== displayName
-    ? `（${displayName}）`
-    : ''
-  return `${siteName} / ${modelLabel}${aliasLabel}`
+  const modelLabel = displayName || remoteModelName || '未知模型'
+  return `${siteName} / ${modelLabel}`
 }
 
 const targetOptionsComputed = computed<SelectOption[]>(() => {
@@ -73,7 +71,18 @@ const targetOptionsComputed = computed<SelectOption[]>(() => {
     .map((target) => ({ label: formatTargetLabel(target), value: target.mappingId }))
 })
 
-const currentReasoning = computed(() => streamingReasoning.value || [...messages.value].reverse().find((m) => m.reasoning)?.reasoning || '')
+const currentReasoning = computed(() => {
+  if (streamingReasoning.value) return streamingReasoning.value
+  for (let index = messages.value.length - 1; index >= 0; index--) {
+    if (messages.value[index].reasoning) return messages.value[index].reasoning || ''
+  }
+  return ''
+})
+
+function trimMessageHistory(): void {
+  const overflow = messages.value.length - maxMessageHistory
+  if (overflow > 0) messages.value.splice(0, overflow)
+}
 
 async function scrollToBottom(): Promise<void> {
   await nextTick()
@@ -91,6 +100,7 @@ async function handleSend(): Promise<void> {
   const startedAt = Date.now()
   messages.value.push({ role: 'user', content: text, createdAt: startedAt })
   messages.value.push({ role: 'assistant', content: '', createdAt: startedAt, streaming: enableStreaming.value, reasoningEnabled: enableReasoning.value })
+  trimMessageHistory()
   const assistantIdx = messages.value.length - 1
   streamingContent.value = ''
   streamingReasoning.value = ''
@@ -127,7 +137,6 @@ async function handleSend(): Promise<void> {
           const m = meta as ChatSendResult
           if (m?.attempts) {
             lastAttempts.value = m.attempts
-            messages.value[assistantIdx].meta = m
           }
         },
         onDone: () => {
@@ -140,7 +149,6 @@ async function handleSend(): Promise<void> {
           const streamError = err as Error & { attempts?: ChatAttemptResult[] }
           if (streamError.attempts) {
             lastAttempts.value = streamError.attempts
-            messages.value[assistantIdx].meta = { success: false, content: '', attempts: streamError.attempts }
           }
           messages.value[assistantIdx].error = true
           messages.value[assistantIdx].content = `(错误：${err.message})`
@@ -152,7 +160,6 @@ async function handleSend(): Promise<void> {
       }
     } else {
       const result = await chatApi.sendChat(commonOpts)
-      messages.value[assistantIdx].meta = result
       lastAttempts.value = result.attempts ?? []
       messages.value[assistantIdx].durationMs = result.totalDurationMs || result.durationMs || (Date.now() - startedAt)
       if (result.success) {

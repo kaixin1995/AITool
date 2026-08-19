@@ -58,6 +58,7 @@ public sealed class GoogleAccountProvisioner
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly IGoogleModelFetcher _modelFetcher;
+    private readonly GoogleCredentialRefreshService _credentialRefreshService;
     private readonly SiteCascadeDeleter _cascadeDeleter;
     private readonly ILogger<GoogleAccountProvisioner> _logger;
 
@@ -65,12 +66,14 @@ public sealed class GoogleAccountProvisioner
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
         IGoogleModelFetcher modelFetcher,
+        GoogleCredentialRefreshService credentialRefreshService,
         SiteCascadeDeleter cascadeDeleter,
         ILogger<GoogleAccountProvisioner> logger)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _modelFetcher = modelFetcher;
+        _credentialRefreshService = credentialRefreshService;
         _cascadeDeleter = cascadeDeleter;
         _logger = logger;
     }
@@ -102,6 +105,7 @@ public sealed class GoogleAccountProvisioner
             if (!string.IsNullOrEmpty(input.ProjectId)) account.ProjectId = input.ProjectId;
             if (!string.IsNullOrEmpty(input.SubscriptionTier)) account.SubscriptionTier = input.SubscriptionTier;
             if (input.CreditAmount.HasValue) account.CreditAmount = input.CreditAmount;
+            account.DisabledByUpstream = false;
 
             site.ApiKey = input.AccessToken;
             if (!string.IsNullOrWhiteSpace(input.DisplayName)) site.Name = input.DisplayName;
@@ -162,6 +166,15 @@ public sealed class GoogleAccountProvisioner
             }
             catch (Exception ex)
             {
+                if (GoogleCredentialRefreshService.IsForbiddenResponse(ex))
+                {
+                    if (await _credentialRefreshService.DisableAsync(account.LinkedSiteId, "model-fetch-403", ct))
+                    {
+                        account.IsEnabled = false;
+                        account.DisabledByUpstream = true;
+                        site.IsEnabled = false;
+                    }
+                }
                 _logger.LogWarning(ex, "Antigravity 模型拉取失败（账号供给继续）: {AccountId}", account.Id);
             }
         }

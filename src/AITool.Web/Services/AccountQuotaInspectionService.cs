@@ -390,6 +390,7 @@ public sealed class AccountQuotaInspectionService : BackgroundService
                  && !account.IsQuotaCooling
                  && !account.DisabledByFeatureToggle
                  && !account.ManuallyDisabled
+                 && !account.DisabledByUpstream
                  && usedPercent.Value < threshold)
         {
             await provider.SetEnabledAsync(account, true, "quota-recovered", cancellationToken);

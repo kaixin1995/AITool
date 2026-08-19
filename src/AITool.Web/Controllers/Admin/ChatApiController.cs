@@ -328,6 +328,7 @@ public sealed class ChatApiController : ControllerBase
     /// 模型并发限制器。
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
+    private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
 
     /// <summary>
     /// 创建调试对话控制器。
@@ -339,7 +340,8 @@ public sealed class ChatApiController : ControllerBase
         IUsageLogService usageLogService,
         ProxyRequestMetadataCache metadataCache,
         IHttpClientFactory httpClientFactory,
-        ModelConcurrencyLimiter concurrencyLimiter)
+        ModelConcurrencyLimiter concurrencyLimiter,
+        GoogleCredentialRefreshService googleCredentialRefreshService)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
@@ -348,6 +350,58 @@ public sealed class ChatApiController : ControllerBase
         _metadataCache = metadataCache;
         _httpClientFactory = httpClientFactory;
         _concurrencyLimiter = concurrencyLimiter;
+        _googleCredentialRefreshService = googleCredentialRefreshService;
+    }
+
+    private Func<CancellationToken, Task>? CreateCredentialDisableCallback(
+        string managedSource,
+        Guid siteId)
+    {
+        if (string.Equals(managedSource, "Google", StringComparison.OrdinalIgnoreCase))
+        {
+            return cancellationToken => _googleCredentialRefreshService.DisableAsync(
+                siteId,
+                "chat-403",
+                cancellationToken);
+        }
+
+        return null;
+    }
+
+    private Func<string, CancellationToken, Task>? CreateCredentialPreparationCallback(
+        CachedProxyRouteTarget route)
+    {
+        if (!string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(route.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+            || ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)
+            || string.IsNullOrWhiteSpace(route.GoogleProjectId)
+            || string.IsNullOrWhiteSpace(route.ApiKey))
+        {
+            return null;
+        }
+
+        return (accessToken, cancellationToken) => _googleCredentialRefreshService.EnsureGeminiCliApisAsync(
+            route.GoogleProjectId,
+            accessToken,
+            cancellationToken);
+    }
+
+    private Func<string, CancellationToken, Task>? CreateCredentialPreparationCallback(
+        CachedFallbackTarget route)
+    {
+        if (!string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(route.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+            || ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)
+            || string.IsNullOrWhiteSpace(route.GoogleProjectId)
+            || string.IsNullOrWhiteSpace(route.ApiKey))
+        {
+            return null;
+        }
+
+        return (accessToken, cancellationToken) => _googleCredentialRefreshService.EnsureGeminiCliApisAsync(
+            route.GoogleProjectId,
+            accessToken,
+            cancellationToken);
     }
 
     /// <summary>
@@ -493,9 +547,11 @@ public sealed class ChatApiController : ControllerBase
                     PreparedRequestBody = preparedRequestBody,
                     EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
-                    RetryCount = runtimeSettings.ProxyRetryCount,
-                    ForwardHeaders = chatForwardHeaders,
-                    TargetPath = isGeminiRoute
+                     RetryCount = runtimeSettings.ProxyRetryCount,
+                     ForwardHeaders = chatForwardHeaders,
+                     PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
+                     DisableTargetCredentialAsync = CreateCredentialDisableCallback(route.ManagedSource, route.SiteId),
+                     TargetPath = isGeminiRoute
                         ? "/v1internal:generateContent"
                         : string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                             ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
@@ -896,6 +952,8 @@ public sealed class ChatApiController : ControllerBase
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount,
             ForwardHeaders = mappingForwardHeaders,
+            PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(mapping),
+            DisableTargetCredentialAsync = CreateCredentialDisableCallback(mapping.ManagedSource, mapping.SiteId),
             TargetPath = isGeminiMapping
                 ? "/v1internal:generateContent"
                 : string.Equals(mapping.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)

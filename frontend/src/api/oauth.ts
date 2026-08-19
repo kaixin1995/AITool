@@ -26,6 +26,8 @@ export interface OAuthAccount {
   weeklyUsedPercent?: number | null
   resetCreditsAvailableCount?: number | null
   autoDisableThreshold?: number | null
+  selectedModels?: string[]
+  disabledByUpstream?: boolean
 }
 export interface OAuthInspectionStatus {
   isRunning: boolean
@@ -244,6 +246,8 @@ export interface GoogleAccountSummary {
   isQuotaCooling: boolean
   quotaCoolingUntil: string | null
   windows?: OAuthQuotaWindow[] | null
+  selectedModels: string[]
+  disabledByUpstream: boolean
   lastQuotaCheckedAt: string | null
   tokenExpiresAt: string | null
   createdAt: string | null

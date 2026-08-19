@@ -69,7 +69,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         }
     }
 
-    private async Task RefreshDueAccountsAsync(CancellationToken ct)
+    internal async Task RefreshDueAccountsAsync(CancellationToken ct)
     {
         using var scope = _services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -86,8 +86,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         var now = DateTimeOffset.UtcNow;
         var refreshLeadTime = now + RefreshLead;
         var due = await dbContext.GoogleAccounts
-            .Where(a => a.IsEnabled
-                        && !string.IsNullOrEmpty(a.RefreshToken)
+            .Where(a => !string.IsNullOrEmpty(a.RefreshToken)
                         && (a.TokenExpiresAt == null
                             || a.TokenExpiresAt <= refreshLeadTime))
             .OrderBy(a => a.TokenExpiresAt)

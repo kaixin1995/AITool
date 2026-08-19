@@ -120,6 +120,38 @@ public sealed class AnthropicProxyController : ControllerBase
         return null;
     }
 
+    private Func<CancellationToken, Task>? CreateCredentialDisableCallback(
+        CachedProxyRouteTarget route)
+    {
+        if (string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
+        {
+            return cancellationToken => _googleCredentialRefreshService.DisableAsync(
+                route.SiteId,
+                "proxy-403",
+                cancellationToken);
+        }
+
+        return null;
+    }
+
+    private Func<string, CancellationToken, Task>? CreateCredentialPreparationCallback(
+        CachedProxyRouteTarget route)
+    {
+        if (!string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(route.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+            || ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)
+            || string.IsNullOrWhiteSpace(route.GoogleProjectId)
+            || string.IsNullOrWhiteSpace(route.ApiKey))
+        {
+            return null;
+        }
+
+        return (accessToken, cancellationToken) => _googleCredentialRefreshService.EnsureGeminiCliApisAsync(
+            route.GoogleProjectId,
+            accessToken,
+            cancellationToken);
+    }
+
     /// <summary>
     /// 估算 Anthropic 请求中的输入 token 数量。
     /// </summary>
@@ -297,6 +329,8 @@ public sealed class AnthropicProxyController : ControllerBase
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = effectiveForwardHeaders,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
+                PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
+                DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
                     ? (enableStreaming ? "/v1internal:streamGenerateContent?alt=sse" : "/v1internal:generateContent")
                     : string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)

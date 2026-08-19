@@ -117,6 +117,13 @@ public sealed class GoogleAccount
     public bool ManuallyDisabled { get; set; }
 
     /// <summary>
+    /// 标记账号是否因 Google 上游返回 403 权限/策略错误而被自动禁用。
+    /// 该状态需要人工重新启用，避免额度巡检在短时间内自动恢复受限凭证。
+    /// </summary>
+    [SugarColumn(IsNullable = false)]
+    public bool DisabledByUpstream { get; set; }
+
+    /// <summary>
     /// 是否处于被动冷却（转发命中上游 429/RESOURCE_EXHAUSTED 时标记为 true）。
     /// </summary>
     [SugarColumn(IsNullable = false)]

@@ -37,7 +37,7 @@ public sealed class HttpExceptionLoggingFilter : IAsyncExceptionFilter
 
         // 发生异常时记录当前请求对象，便于还原请求现场。
         var request = context.HttpContext.Request;
-        var requestBody = await TryReadRequestBodyAsync(request, context.HttpContext.RequestAborted);
+        var requestBody = await HttpLogFormatter.ReadRequestBodyPreviewAsync(request, context.HttpContext.RequestAborted);
 
         _logger.LogError(context.Exception,
             "请求处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
@@ -58,27 +58,4 @@ public sealed class HttpExceptionLoggingFilter : IAsyncExceptionFilter
         }
     }
 
-    /// <summary>
-    /// 在不影响后续请求处理的前提下，尽量读取原始请求正文。
-    /// </summary>
-    private static async Task<string> TryReadRequestBodyAsync(HttpRequest request, CancellationToken cancellationToken)
-    {
-        try
-        {
-            request.EnableBuffering();
-            using var reader = new StreamReader(request.Body, leaveOpen: true);
-            request.Body.Position = 0;
-            var requestBody = await reader.ReadToEndAsync(cancellationToken);
-            request.Body.Position = 0;
-            return requestBody;
-        }
-        catch (OperationCanceledException)
-        {
-            return "<canceled>";
-        }
-        catch
-        {
-            return "<unavailable>";
-        }
-    }
 }

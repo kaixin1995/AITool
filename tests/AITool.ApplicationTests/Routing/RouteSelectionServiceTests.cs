@@ -50,6 +50,40 @@ public sealed class ProxyForwardServiceTests
         result.OutputTokens.Should().Be(2);
     }
 
+    [Fact]
+    public async Task ForwardStreamingAsync_runs_request_preparation_before_sending_upstream_request()
+    {
+        var handler = new SequenceHandler(
+            new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n")
+            });
+        var preparationCalls = 0;
+        var service = new ProxyForwardService(new HttpClient(handler), NullLogger<ProxyForwardService>.Instance);
+
+        var result = await service.ForwardStreamingAsync(
+            new ProxyForwardRequest
+            {
+                TargetBaseUrl = "https://unit.test",
+                TargetApiKey = "token",
+                ProtocolType = "OpenAI",
+                TargetModelName = "gpt-5.5-a",
+                RequestBody = "{\"model\":\"chat-prod\",\"stream\":true}",
+                EnableStreaming = true,
+                RequestTimeoutSeconds = 5,
+                PrepareTargetCredentialAsync = (_, _) =>
+                {
+                    preparationCalls++;
+                    return Task.CompletedTask;
+                }
+            },
+            (_, _) => Task.CompletedTask);
+
+        result.Success.Should().BeTrue();
+        preparationCalls.Should().Be(1);
+        handler.CallCount.Should().Be(1);
+    }
+
     /// <summary>
     /// 上游返回 200 但响应体为空时，应把这次调用视为失败并继续下一次重试。
     /// </summary>

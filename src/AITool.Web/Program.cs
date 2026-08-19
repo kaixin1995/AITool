@@ -398,7 +398,7 @@ if (!app.Environment.IsEnvironment("Testing"))
 
             if (feature?.Error is not null)
             {
-                var requestBody = await TryReadRequestBodySafelyAsync(context.Request, context.RequestAborted);
+                var requestBody = await HttpLogFormatter.ReadRequestBodyPreviewAsync(context.Request, context.RequestAborted);
 
                 logger.LogError(feature.Error,
                     "未处理异常\nPath={Path}\nMethod={Method}\nTraceId={TraceId}\nQueryString={QueryString}\nRequestBody={RequestBody}",
@@ -549,28 +549,6 @@ static string GetLocalIpAddress()
     catch
     {
         return "127.0.0.1";
-    }
-}
-
-// 安全读取请求体。
-static async Task<string> TryReadRequestBodySafelyAsync(HttpRequest request, CancellationToken cancellationToken)
-{
-    try
-    {
-        request.EnableBuffering();
-        using var reader = new StreamReader(request.Body, leaveOpen: true);
-        request.Body.Position = 0;
-        var requestBody = await reader.ReadToEndAsync(cancellationToken);
-        request.Body.Position = 0;
-        return requestBody;
-    }
-    catch (OperationCanceledException)
-    {
-        return "<canceled>";
-    }
-    catch
-    {
-        return "<unavailable>";
     }
 }
 

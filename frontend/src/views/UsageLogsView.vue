@@ -48,6 +48,8 @@ const requestDetail = ref<UsageLogRequestDetail | null>(null)
 let refreshTimer: number | undefined
 let searchTimer: number | undefined
 let incrementalRefreshInFlight = false
+let loadAbortController: AbortController | undefined
+let incrementalAbortController: AbortController | undefined
 // load() 的请求序号：仅最后一次触发的加载允许写回状态。
 let loadRequestSeq = 0
 // 明细请求可被后续点击取消，且序号校验避免慢请求覆盖当前选中的链路。
@@ -183,13 +185,17 @@ async function load(page = query.page): Promise<void> {
   // 请求序号守卫：快速切换筛选/翻页时并发多个 load，慢的旧响应后返回
   // 会把表格覆盖成过期筛选条件的结果（与 refreshIncrementally 的 requestKey 守卫同思路）。
   const requestSeq = ++loadRequestSeq
+  loadAbortController?.abort()
+  incrementalAbortController?.abort()
+  const abortController = new AbortController()
+  loadAbortController = abortController
   loading.value = true
   try {
     query.page = page
     const params = buildParams(page)
     const [listResp, summaryResp] = await Promise.all([
-      api.listUsageLogs(params),
-      api.getUsageLogSummary(params)
+      api.listUsageLogs(params, abortController.signal),
+      api.getUsageLogSummary(params, abortController.signal)
     ])
     if (requestSeq !== loadRequestSeq) return
     items.value = listResp.items ?? []
@@ -199,12 +205,13 @@ async function load(page = query.page): Promise<void> {
     totalPages.value = listResp.totalPages
     summary.value = summaryResp
   } catch (e) {
-    if (requestSeq === loadRequestSeq) {
+    if (requestSeq === loadRequestSeq && !isRequestCanceled(e)) {
       message.error((e as Error).message)
     }
   } finally {
     if (requestSeq === loadRequestSeq) {
       loading.value = false
+      if (loadAbortController === abortController) loadAbortController = undefined
     }
   }
 }
@@ -219,15 +226,18 @@ function usageLogSummarySignature(value: UsageLogSummary): string {
 
 // 自动刷新只更新发生变化的记录，避免无变化时触发表格整体重绘。
 async function refreshIncrementally(): Promise<void> {
-  if (incrementalRefreshInFlight) return
+  if (incrementalRefreshInFlight || loading.value) return
   incrementalRefreshInFlight = true
+  const abortController = new AbortController()
+  incrementalAbortController = abortController
   const page = query.page
-  const requestKey = JSON.stringify(buildParams(page))
+  const params = buildParams(page)
+  const requestKey = JSON.stringify(params)
 
   try {
     const [listResp, summaryResp] = await Promise.all([
-      api.listUsageLogs(buildParams(page)),
-      api.getUsageLogSummary(buildParams(page))
+      api.listUsageLogs(params, abortController.signal),
+      api.getUsageLogSummary(params, abortController.signal)
     ])
 
     // 筛选或分页在请求期间发生变化时，丢弃过期的自动刷新结果。
@@ -256,9 +266,10 @@ async function refreshIncrementally(): Promise<void> {
       summary.value = summaryResp
     }
   } catch (e) {
-    message.error((e as Error).message)
+    if (!isRequestCanceled(e)) message.error((e as Error).message)
   } finally {
     incrementalRefreshInFlight = false
+    if (incrementalAbortController === abortController) incrementalAbortController = undefined
   }
 }
 
@@ -384,6 +395,9 @@ onUnmounted(() => {
   clearSearchTimer()
   detailRequestSeq++
   detailAbortController?.abort()
+  loadRequestSeq++
+  loadAbortController?.abort()
+  incrementalAbortController?.abort()
 })
 </script>
 

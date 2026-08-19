@@ -66,6 +66,39 @@ public sealed class AccountQuotaInspectionTests : IDisposable
         _serviceProvider.GetRequiredService<FakeQuotaProvider>().EnabledChanges.Should().BeEmpty();
     }
 
+    [Fact]
+    public async Task Inspection_does_not_reenable_upstream_disabled_account()
+    {
+        await using (var scope = _serviceProvider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.SystemRuntimeSettings.Add(new SystemRuntimeSettings
+            {
+                Id = 1,
+                OAuthFeaturesEnabled = true,
+                OAuthInspectionEnabled = true,
+                OAuthAutoDisableThresholdPercent = 95,
+                OAuthQuotaMaxCacheHours = 6,
+                OAuthInspectionCacheEnabled = false
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var provider = _serviceProvider.GetRequiredService<FakeQuotaProvider>();
+        provider.DisabledByUpstream = true;
+        var inspection = new AccountQuotaInspectionService(
+            _serviceProvider,
+            NullLogger<AccountQuotaInspectionService>.Instance,
+            new TestingHostEnvironment(),
+            _serviceProvider.GetRequiredService<SiteUsageTracker>());
+
+        var result = await inspection.RunManualAsync(forceRefresh: true, CancellationToken.None);
+
+        result.Accounts.Should().ContainSingle();
+        result.Accounts[0].Action.Should().Be("keep");
+        provider.EnabledChanges.Should().BeEmpty();
+    }
+
     public void Dispose()
     {
         _serviceProvider.Dispose();
@@ -92,6 +125,7 @@ public sealed class AccountQuotaInspectionTests : IDisposable
         private readonly Guid _accountId = Guid.NewGuid();
         public string ProviderKey => "fake";
         public List<bool> EnabledChanges { get; } = [];
+        public bool DisabledByUpstream { get; set; }
 
         public Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken)
         {
@@ -105,7 +139,8 @@ public sealed class AccountQuotaInspectionTests : IDisposable
                     IsEnabled = false,
                     ManuallyDisabled = false,
                     IsQuotaCooling = false,
-                    DisabledByFeatureToggle = false
+                    DisabledByFeatureToggle = false,
+                    DisabledByUpstream = DisabledByUpstream
                 }
             ]);
         }

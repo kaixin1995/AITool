@@ -50,6 +50,8 @@ public sealed class ProxyForwardService : IProxyForwardService
             : request.PreparedRequestBody;
         var isStreaming = request.EnableStreaming || IsStreamingRequest(request.RequestBody);
 
+        await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: false);
+
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -79,9 +81,25 @@ public sealed class ProxyForwardService : IProxyForwardService
                         if (!string.IsNullOrWhiteSpace(refreshedApiKey))
                         {
                             request.TargetApiKey = refreshedApiKey;
+                            await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: false);
                             attempt--;
                             continue;
                         }
+                    }
+
+                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden
+                        && request.DisableTargetCredentialAsync is not null)
+                    {
+                        await TryDisableTargetCredentialAsync(request, cancellationToken);
+                        return new ProxyForwardResult
+                        {
+                            Success = false,
+                            StatusCode = (int)response.StatusCode,
+                            ResponseBody = errorBody,
+                            TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                            IsStreaming = isStreaming,
+                            ErrorMessage = errorBody
+                        };
                     }
 
                     if (attempt >= attempts - 1)
@@ -260,6 +278,8 @@ public sealed class ProxyForwardService : IProxyForwardService
             ? ModifyRequestBody(request.RequestBody, request.TargetModelName)
             : request.PreparedRequestBody;
 
+        await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: true);
+
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -289,9 +309,25 @@ public sealed class ProxyForwardService : IProxyForwardService
                         if (!string.IsNullOrWhiteSpace(refreshedApiKey))
                         {
                             request.TargetApiKey = refreshedApiKey;
+                            await TryPrepareTargetCredentialAsync(request, cancellationToken, isStreaming: true);
                             attempt--;
                             continue;
                         }
+                    }
+
+                    if (response.StatusCode == System.Net.HttpStatusCode.Forbidden
+                        && request.DisableTargetCredentialAsync is not null)
+                    {
+                        await TryDisableTargetCredentialAsync(request, cancellationToken);
+                        return new ProxyForwardResult
+                        {
+                            Success = false,
+                            StatusCode = (int)response.StatusCode,
+                            ResponseBody = errorBody,
+                            TotalDurationMs = (int)Math.Max(0, stopwatch.ElapsedMilliseconds),
+                            IsStreaming = true,
+                            ErrorMessage = errorBody
+                        };
                     }
 
                     if (attempt >= attempts - 1)
@@ -400,6 +436,49 @@ public sealed class ProxyForwardService : IProxyForwardService
             IsStreaming = true,
             ErrorMessage = "Unknown proxy forwarding error"
         };
+    }
+
+    private async Task TryDisableTargetCredentialAsync(
+        ProxyForwardRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await request.DisableTargetCredentialAsync!(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            _logger.LogWarning(exception, "Unable to auto-disable target credential after upstream 403");
+        }
+    }
+
+    private async Task TryPrepareTargetCredentialAsync(
+        ProxyForwardRequest request,
+        CancellationToken cancellationToken,
+        bool isStreaming)
+    {
+        if (request.PrepareTargetCredentialAsync is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await request.PrepareTargetCredentialAsync(request.TargetApiKey, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(
+                exception,
+                isStreaming
+                    ? "托管凭证流式请求前准备失败，继续尝试上游请求。Target={Target}"
+                    : "托管凭证请求前准备失败，继续尝试上游请求。Target={Target}",
+                request.TargetBaseUrl);
+        }
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using AITool.Application.Google;
 using AITool.Application.Proxy;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Google;
 using FluentAssertions;
 
@@ -89,6 +90,27 @@ public sealed class GoogleQuotaParserTests
         GoogleQuotaParser.Parse("""{ "models": { "a": { "quotaInfo": {} } } }""").Should().BeNull();
         GoogleQuotaParser.Parse("not json").Should().BeNull();
         GoogleQuotaParser.Parse("").Should().BeNull();
+    }
+}
+
+public sealed class QuotaResetLabelFormatterTests
+{
+    [Fact]
+    public void Format_uses_hours_and_minutes()
+    {
+        QuotaResetLabelFormatter.Format(TimeSpan.FromHours(20) + TimeSpan.FromMinutes(40))
+            .Should().Be("20小时40分后重置");
+    }
+
+    [Fact]
+    public void Format_carries_days_weeks_and_months()
+    {
+        QuotaResetLabelFormatter.Format(TimeSpan.FromDays(1) + TimeSpan.FromHours(2))
+            .Should().Be("1天2小时后重置");
+        QuotaResetLabelFormatter.Format(TimeSpan.FromDays(14))
+            .Should().Be("2周后重置");
+        QuotaResetLabelFormatter.Format(TimeSpan.FromDays(60))
+            .Should().Be("2个月后重置");
     }
 }
 
@@ -183,6 +205,66 @@ public sealed class GoogleOAuthClientUrlTests
         first.State.Should().NotBe(second.State);
         first.State.Should().NotContainAny("+", "/", "=");
         first.IsExpired.Should().BeFalse();
+    }
+}
+
+public sealed class GoogleOAuthClientApiEnableTests
+{
+    [Fact]
+    public async Task EnsureGeminiCliApis_checks_and_enables_required_services_once()
+    {
+        var projectId = $"aitool-test-{Guid.NewGuid():N}";
+        var requests = new List<HttpRequestMessage>();
+        var handler = new StubHandler(request =>
+        {
+            requests.Add(request);
+            if (request.Method == HttpMethod.Get
+                && request.RequestUri!.AbsolutePath.EndsWith("/geminicloudassist.googleapis.com", StringComparison.Ordinal))
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"state\": \"ENABLED\"}")
+                };
+            }
+
+            if (request.Method == HttpMethod.Get)
+            {
+                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+                {
+                    Content = new StringContent("{\"state\": \"DISABLED\"}")
+                };
+            }
+
+            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent("{}")
+            };
+        });
+        var client = new GoogleOAuthClient(new HttpClient(handler));
+
+        (await client.EnsureGeminiCliApisAsync("access-token", projectId, CancellationToken.None)).Should().BeTrue();
+        (await client.EnsureGeminiCliApisAsync("access-token", projectId, CancellationToken.None)).Should().BeTrue();
+
+        requests.Should().HaveCount(3);
+        requests.Count(request => request.Method == HttpMethod.Get).Should().Be(2);
+        requests.Count(request => request.Method == HttpMethod.Post).Should().Be(1);
+        requests.Should().OnlyContain(request => request.Headers.Authorization != null
+            && request.Headers.Authorization.Scheme == "Bearer");
+    }
+
+    private sealed class StubHandler : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
+
+        public StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder)
+        {
+            _responder = responder;
+        }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request,
+            CancellationToken cancellationToken)
+            => Task.FromResult(_responder(request));
     }
 }
 

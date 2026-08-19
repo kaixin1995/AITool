@@ -625,6 +625,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
+                PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
+                DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = defaultTargetPathFactory is null
                     ? (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
                         ? ResolveGeminiTargetPath(enableStreaming)

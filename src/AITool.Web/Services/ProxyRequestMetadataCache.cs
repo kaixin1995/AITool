@@ -1026,7 +1026,7 @@ public sealed class ProxyRequestMetadataCache
                     using var scope = _scopeFactory.CreateScope();
                     var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
                     return await dbContext.GoogleAccounts
-                        .Where(a => !a.DisabledByFeatureToggle)
+                        .Where(a => !a.DisabledByFeatureToggle && !a.DisabledByUpstream)
                         .OrderBy(a => a.LastQuotaCheckedAt)
                         .ToListAsync(cancellationToken);
                 }, cancellationToken)
@@ -1463,6 +1463,7 @@ public sealed class ProxyRequestMetadataCache
                                 model.ModelName,
                                 SiteId = site.Id,
                                 SiteName = site.Name,
+                                site.ManagedSource,
                                 site.SupportsOpenAi,
                                 site.SupportsAnthropic,
                                 site.SupportsResponses,
@@ -1495,6 +1496,7 @@ public sealed class ProxyRequestMetadataCache
                                 SiteKeyId = candidate.SiteKeyId,
                                 CircuitKey = BuildCircuitKey(first.SiteId, candidate.SiteKeyId, first.SiteModelName),
                                 SiteName = first.SiteName,
+                                ManagedSource = first.ManagedSource ?? string.Empty,
                                 ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(first.SupportsOpenAi, first.SupportsAnthropic, first.SupportsResponses, first.ProtocolType),
                                 BaseUrl = first.BaseUrl,
                                 EndpointPathMode = first.EndpointPathMode,
@@ -2190,6 +2192,10 @@ public sealed class CachedFallbackTarget
     /// 站点名称。
     /// </summary>
     public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点托管来源，用于识别需要特殊凭证维护的 Google 隐藏站点。
+    /// </summary>
+    public string ManagedSource { get; set; } = string.Empty;
     /// <summary>
     /// 协议类型。
     /// </summary>

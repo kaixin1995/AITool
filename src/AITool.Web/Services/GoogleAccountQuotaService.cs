@@ -74,7 +74,7 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
     public async Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken)
     {
         var accounts = await _dbContext.GoogleAccounts
-            .Where(a => !a.DisabledByFeatureToggle)
+            .Where(a => !a.DisabledByFeatureToggle && !a.DisabledByUpstream)
             .OrderBy(a => a.LastQuotaCheckedAt)
             .ToListAsync(cancellationToken);
 
@@ -195,7 +195,7 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
                     .ExecuteCommandAsync(cancellationToken);
                 await SetLinkedSiteEnabledAsync(client, account.LinkedSiteId, false, cancellationToken);
             }
-            else if (account.DisabledByFeatureToggle)
+            else if (account.DisabledByFeatureToggle && !account.DisabledByUpstream)
             {
                 account.IsEnabled = true;
                 account.DisabledByFeatureToggle = false;
@@ -299,6 +299,11 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
 
             if (!response.IsSuccessStatusCode)
             {
+                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    await _credentialRefreshService.DisableAsync(account.LinkedSiteId, "quota-403", ct);
+                }
+
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh)
                 {
                     var refreshed = await _credentialRefreshService.RefreshAsync(account.LinkedSiteId, account.AccessToken, ct);
@@ -348,6 +353,7 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
         IsQuotaCooling = account.IsQuotaCooling,
         DisabledByFeatureToggle = account.DisabledByFeatureToggle,
         ManuallyDisabled = account.ManuallyDisabled,
+        DisabledByUpstream = account.DisabledByUpstream,
         TokenExpiresAt = account.TokenExpiresAt,
         LastQuotaCheckedAt = account.LastQuotaCheckedAt,
         LastQuotaRawJson = account.LastQuotaRawJson,

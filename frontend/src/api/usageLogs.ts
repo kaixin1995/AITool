@@ -69,12 +69,12 @@ function buildQuery(params: Record<string, unknown>): string {
   return query.toString()
 }
 
-export async function listUsageLogs(params: Record<string, unknown>): Promise<{ items: UsageLogItem[]; page: number; pageSize: number; totalCount: number; totalPages: number }> {
-  return httpGet(`/api/admin/usage-logs/list?${buildQuery(params)}`)
+export async function listUsageLogs(params: Record<string, unknown>, signal?: AbortSignal): Promise<{ items: UsageLogItem[]; page: number; pageSize: number; totalCount: number; totalPages: number }> {
+  return httpGet(`/api/admin/usage-logs/list?${buildQuery(params)}`, { signal })
 }
 
-export async function getUsageLogSummary(params: Record<string, unknown>): Promise<UsageLogSummary> {
-  return httpGet(`/api/admin/usage-logs/summary?${buildQuery(params)}`)
+export async function getUsageLogSummary(params: Record<string, unknown>, signal?: AbortSignal): Promise<UsageLogSummary> {
+  return httpGet(`/api/admin/usage-logs/summary?${buildQuery(params)}`, { signal })
 }
 
 export async function getUsageLogRequestDetail(requestId: string, signal?: AbortSignal): Promise<UsageLogRequestDetail> {

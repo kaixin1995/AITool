@@ -44,8 +44,8 @@ export async function getDeveloperInit(): Promise<DeveloperInit> {
 export async function getDeveloperList(page = 1, pageSize = 20): Promise<{ page: number; pageSize: number; totalPages: number; totalCount: number; failedCount: number; pendingCount: number; entries: DeveloperInvocationSummary[] }> {
   return httpGet(`/api/admin/developer/invocations/list?page=${page}&pageSize=${pageSize}`)
 }
-export async function getDeveloperDetail(traceId: string, summarize = false): Promise<unknown> {
-  return httpGet(`/api/admin/developer/invocations/${traceId}?summarize=${summarize}`)
+export async function getDeveloperDetail(traceId: string, summarize = false, signal?: AbortSignal): Promise<unknown> {
+  return httpGet(`/api/admin/developer/invocations/${traceId}?summarize=${summarize}`, { signal })
 }
 export async function getDeveloperConcurrency(): Promise<{ refreshedAt: string; items: DeveloperConcurrencyItem[] }> {
   return httpGet('/api/admin/developer/invocations/concurrency')

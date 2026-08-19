@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NAlert, NCard, NButton, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, useMessage } from 'naive-ui'
+import { NAlert, NCard, NButton, NDropdown, NSpace, NTag, NEmpty, NSpin, NModal, NInput, NPopconfirm, NProgress, NCheckbox, NTabs, NTabPane, NSelect, useMessage } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as api from '@/api/oauth'
 import type {
@@ -25,6 +25,7 @@ import {
 // 统一账号视图：Codex 与 Google（GeminiCLI/Antigravity）账号合入同一列表，用 provider 区分厂商。
 type ProviderKind = 'codex' | 'geminicli' | 'antigravity'
 type ProviderFilter = 'all' | ProviderKind
+type AccountStatusFilter = 'enabled' | 'disabled' | 'all'
 type UnifiedAccount = OAuthAccount & {
   provider: ProviderKind
   accountKind?: string | null
@@ -79,16 +80,27 @@ function providerTagType(acc: UnifiedAccount): 'info' | 'success' | 'warning' {
 
 // 导出凭证仅支持 Codex 账号。
 const codexAccountCount = computed(() => accounts.value.filter(acc => acc.provider === 'codex').length)
+const accountStatusFilter = ref<AccountStatusFilter>('enabled')
+const accountStatusFilterOptions: Array<{ label: string; value: AccountStatusFilter }> = [
+  { label: '已启用', value: 'enabled' },
+  { label: '已禁用', value: 'disabled' },
+  { label: '全部', value: 'all' }
+]
 const providerFilter = ref<ProviderFilter>('all')
+const statusFilteredAccounts = computed(() => {
+  if (accountStatusFilter.value === 'all') return accounts.value
+  const enabled = accountStatusFilter.value === 'enabled'
+  return accounts.value.filter(acc => acc.isEnabled === enabled)
+})
 const providerFilterOptions = computed(() => PROVIDER_FILTER_OPTIONS.map(option => ({
   ...option,
   count: option.key === 'all'
-    ? accounts.value.length
-    : accounts.value.filter(acc => acc.provider === option.key).length
+    ? statusFilteredAccounts.value.length
+    : statusFilteredAccounts.value.filter(acc => acc.provider === option.key).length
 })))
 const filteredAccounts = computed(() => providerFilter.value === 'all'
-  ? accounts.value
-  : accounts.value.filter(acc => acc.provider === providerFilter.value))
+  ? statusFilteredAccounts.value
+  : statusFilteredAccounts.value.filter(acc => acc.provider === providerFilter.value))
 
 const loginDropdownOptions = PROVIDER_LOGIN_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 登录` }))
 const importDropdownOptions = PROVIDER_IMPORT_OPTIONS.map(option => ({ key: option.key, label: `${option.label} 凭证` }))
@@ -771,6 +783,29 @@ function formatInspectionWindows(item: OAuthInspectionAccountResult): string {
   return fallback.length > 0 ? fallback.join(' · ') : '-'
 }
 
+interface InspectionDisplayRow {
+  model: string
+  quota: string
+}
+
+function inspectionRows(item: OAuthInspectionAccountResult): InspectionDisplayRow[] {
+  if (item.providerKey === 'google') {
+    const account = accounts.value.find(acc => acc.id === item.accountId)
+    const selectedModels = new Set((account?.selectedModels ?? []).map(model => model.toLowerCase()))
+    if (selectedModels.size === 0) return []
+
+    return (item.windows ?? [])
+      .filter(window => selectedModels.has(window.id.toLowerCase()) || selectedModels.has(window.label.toLowerCase()))
+      .map(window => ({
+        model: window.label,
+        quota: `${formatInspectionPercent(window.usedPercent)}${window.resetLabel ? ` · 于 ${window.resetLabel}` : ''}`
+      }))
+  }
+
+  const quota = formatInspectionWindows(item)
+  return quota === '-' ? [] : [{ model: '账号额度', quota }]
+}
+
 function accountQuotaPercent(acc: OAuthAccount): number | null {
   if (acc.windows && acc.windows.length > 0) {
     return Math.min(...acc.windows.map((w) => Math.max(0, 100 - Number(w.usedPercent || 0))))
@@ -781,11 +816,13 @@ function accountQuotaPercent(acc: OAuthAccount): number | null {
 }
 
 function accountStatusLabel(acc: OAuthAccount): string {
+  if (acc.disabledByUpstream) return '上游403禁用'
   if (acc.isQuotaCooling) return '冷却中'
   return acc.isEnabled ? '正常' : '已禁用'
 }
 
 function accountStatusType(acc: OAuthAccount): 'success' | 'warning' | 'default' {
+  if (acc.disabledByUpstream) return 'warning'
   if (acc.isQuotaCooling) return 'warning'
   return acc.isEnabled ? 'success' : 'default'
 }
@@ -833,6 +870,12 @@ onUnmounted(() => {
     <PageHeader title="OAuth 管理" subtitle="管理 OAuth 登录账号、凭证导入、额度、巡检与自动禁用">
       <template #actions>
         <template v-if="!exportMode">
+          <NSelect
+            v-model:value="accountStatusFilter"
+            :options="accountStatusFilterOptions"
+            size="small"
+            style="width: 110px"
+          />
           <NButton secondary :disabled="codexAccountCount === 0" @click="beginExportCredentials">导出凭证</NButton>
           <NDropdown trigger="click" :options="loginDropdownOptions" @select="handleSelectLoginProvider">
             <NButton type="primary">＋ OAuth 登录</NButton>
@@ -873,7 +916,7 @@ onUnmounted(() => {
                 </button>
               </div>
 
-              <NEmpty v-if="filteredAccounts.length === 0" description="当前厂商暂无账号" />
+              <NEmpty v-if="filteredAccounts.length === 0" description="当前筛选条件暂无账号" />
               <div v-else class="oauth-grid" :class="{ 'export-mode': exportMode }">
               <article
                 v-for="acc in filteredAccounts"
@@ -928,11 +971,15 @@ onUnmounted(() => {
                       :border-radius="3"
                     />
                     <span class="oauth-window-percent">{{ Math.max(0, 100 - Math.round(Number(w.usedPercent ?? 0))) }}%</span>
-                    <div v-if="w.resetLabel" class="oauth-window-reset">重置于 {{ w.resetLabel }}</div>
+                    <div v-if="w.resetLabel" class="oauth-window-reset">于 {{ w.resetLabel }}</div>
                   </div>
                 </div>
                 <div v-else class="oauth-window-placeholder">
-                  {{ acc.provider === 'geminicli' ? '该接入方式上游无额度接口，仅展示订阅等级' : acc.lastQuotaCheckedAt ? '暂无额度窗口数据' : '未刷新额度，点击下方「刷新额度」获取' }}
+                  {{ acc.provider === 'geminicli'
+                    ? '该接入方式上游无额度接口，仅展示订阅等级'
+                    : acc.provider === 'antigravity' && (acc.selectedModels?.length ?? 0) === 0
+                      ? '尚未拉取模型，不显示无关额度'
+                      : acc.lastQuotaCheckedAt ? '暂无已拉取模型额度' : '未刷新额度，点击下方「刷新额度」获取' }}
                 </div>
 
                 <div v-if="!exportMode" class="oauth-card-meta">
@@ -1021,14 +1068,20 @@ onUnmounted(() => {
               <div class="inspection-table-scroll">
                 <div class="inspection-table">
                   <div class="inspection-table-head">
-                    <span>账号</span><span>额度窗口</span><span>来源</span><span>动作</span><span>原因</span>
+                    <span>账号</span><span>模型</span><span>额度</span><span>来源</span><span>动作</span><span>原因</span>
                   </div>
-                  <div v-for="item in inspectionLastRun.accounts" :key="`${item.providerKey ?? 'account'}-${item.accountId}`" class="inspection-table-row">
-                    <strong>{{ item.displayName }}</strong>
-                    <span>{{ formatInspectionWindows(item) }}</span>
-                    <NTag size="tiny" :bordered="false">{{ item.fromCache ? '缓存' : '实时' }}</NTag>
-                    <NTag size="tiny" :type="item.action === 'disable' ? 'error' : item.action === 'enable' ? 'success' : 'default'" :bordered="false">{{ inspectionActionLabel(item.action) }}</NTag>
-                    <span class="inspection-reason">{{ item.reason }}</span>
+                  <template v-for="item in inspectionLastRun.accounts" :key="`${item.providerKey ?? 'account'}-${item.accountId}`">
+                    <div v-for="row in inspectionRows(item)" :key="`${item.accountId}-${row.model}`" class="inspection-table-row">
+                      <strong>{{ item.displayName }}</strong>
+                      <span class="inspection-model-name">{{ row.model }}</span>
+                      <span>{{ row.quota }}</span>
+                      <NTag size="tiny" :bordered="false">{{ item.fromCache ? '缓存' : '实时' }}</NTag>
+                      <NTag size="tiny" :type="item.action === 'disable' ? 'error' : item.action === 'enable' ? 'success' : 'default'" :bordered="false">{{ inspectionActionLabel(item.action) }}</NTag>
+                      <span class="inspection-reason">{{ item.reason }}</span>
+                    </div>
+                  </template>
+                  <div v-if="inspectionLastRun.accounts.every(item => inspectionRows(item).length === 0)" class="inspection-empty-row">
+                    暂无已拉取模型的额度
                   </div>
                 </div>
               </div>
@@ -1554,13 +1607,13 @@ onUnmounted(() => {
 }
 
 .inspection-table {
-  min-width: 820px;
+  min-width: 1080px;
 }
 
 .inspection-table-head,
 .inspection-table-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1fr) minmax(220px, 1.2fr) 72px 72px minmax(220px, 1.4fr);
+  grid-template-columns: minmax(130px, 0.9fr) minmax(190px, 1.3fr) minmax(180px, 1.2fr) 60px 72px minmax(220px, 1.5fr);
   gap: 12px;
   align-items: center;
   padding: 11px 12px;
@@ -1596,6 +1649,19 @@ onUnmounted(() => {
 .quota-empty {
   color: var(--text-color-secondary);
   font-size: 12px;
+}
+
+.inspection-model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inspection-empty-row {
+  padding: 24px 12px;
+  color: var(--text-color-secondary);
+  text-align: center;
 }
 
 .oauth-provider-filters {
@@ -1662,7 +1728,7 @@ onUnmounted(() => {
 
 .oauth-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
   align-items: start;
   gap: 18px;
   margin-top: 16px;
@@ -1818,7 +1884,7 @@ onUnmounted(() => {
 
 .oauth-window {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) 56px;
+  grid-template-columns: minmax(180px, 1.35fr) minmax(120px, 1fr) 56px;
   align-items: center;
   column-gap: 12px;
   row-gap: 6px;
@@ -1832,11 +1898,11 @@ onUnmounted(() => {
 
 .oauth-window-label {
   min-width: 0;
-  overflow: hidden;
+  overflow: visible;
   color: var(--text-color-secondary);
   font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .oauth-window-percent {

@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
 using AITool.Application.Google;
@@ -13,6 +14,16 @@ namespace AITool.Infrastructure.Google;
 /// </summary>
 public sealed class GoogleOAuthClient : IGoogleOAuthClient
 {
+    private static readonly KeyedAsyncLock ApiEnableLocks = new();
+    private static readonly ConcurrentDictionary<string, DateTimeOffset> EnabledGeminiCliProjects = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan ApiEnableCacheDuration = TimeSpan.FromHours(6);
+    private const string ServiceUsageBaseUrl = "https://serviceusage.googleapis.com";
+    private static readonly string[] GeminiCliRequiredServices =
+    [
+        "geminicloudassist.googleapis.com",
+        "cloudaicompanion.googleapis.com"
+    ];
+
     /// <summary>
     /// 同一账号类型与 refresh_token 跨 transient 客户端实例共享刷新锁。
     /// </summary>
@@ -188,6 +199,77 @@ public sealed class GoogleOAuthClient : IGoogleOAuthClient
         };
     }
 
+    /// <inheritdoc />
+    public async Task<bool> EnsureGeminiCliApisAsync(string accessToken, string projectId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(accessToken) || string.IsNullOrWhiteSpace(projectId))
+        {
+            return false;
+        }
+
+        projectId = projectId.Trim();
+        if (EnabledGeminiCliProjects.TryGetValue(projectId, out var cachedUntil)
+            && cachedUntil > DateTimeOffset.UtcNow)
+        {
+            return true;
+        }
+
+        using (await ApiEnableLocks.WaitAsync(projectId, ct))
+        {
+            if (EnabledGeminiCliProjects.TryGetValue(projectId, out cachedUntil)
+                && cachedUntil > DateTimeOffset.UtcNow)
+            {
+                return true;
+            }
+
+            var allEnabled = true;
+            foreach (var service in GeminiCliRequiredServices)
+            {
+                var serviceUrl = $"{ServiceUsageBaseUrl}/v1/projects/{Uri.EscapeDataString(projectId)}/services/{service}";
+                try
+                {
+                    using var statusRequest = new HttpRequestMessage(HttpMethod.Get, serviceUrl);
+                    statusRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                    statusRequest.Headers.TryAddWithoutValidation("User-Agent", "geminicli-oauth/1.0");
+                    using var statusResponse = await _httpClient.SendAsync(statusRequest, ct);
+                    var statusBody = await statusResponse.Content.ReadAsStringAsync(ct);
+                    if (statusResponse.IsSuccessStatusCode && IsServiceEnabledResponse(statusBody))
+                    {
+                        continue;
+                    }
+
+                    using var enableRequest = new HttpRequestMessage(HttpMethod.Post, serviceUrl + ":enable")
+                    {
+                        Content = new StringContent("{}", System.Text.Encoding.UTF8, "application/json")
+                    };
+                    enableRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken);
+                    enableRequest.Headers.TryAddWithoutValidation("User-Agent", "geminicli-oauth/1.0");
+                    using var enableResponse = await _httpClient.SendAsync(enableRequest, ct);
+                    var enableBody = await enableResponse.Content.ReadAsStringAsync(ct);
+                    if (enableResponse.IsSuccessStatusCode
+                        || (enableResponse.StatusCode == System.Net.HttpStatusCode.BadRequest
+                            && enableBody.Contains("already enabled", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        continue;
+                    }
+
+                    allEnabled = false;
+                }
+                catch (Exception) when (!ct.IsCancellationRequested)
+                {
+                    allEnabled = false;
+                }
+            }
+
+            if (allEnabled)
+            {
+                EnabledGeminiCliProjects[projectId] = DateTimeOffset.UtcNow.Add(ApiEnableCacheDuration);
+            }
+
+            return allEnabled;
+        }
+    }
+
     private async Task<GoogleCodeAssistProfile?> TryLoadCodeAssistAsync(string baseUrl, string accessToken, CancellationToken ct)
     {
         try
@@ -262,6 +344,21 @@ public sealed class GoogleOAuthClient : IGoogleOAuthClient
         catch
         {
             return null;
+        }
+    }
+
+    private static bool IsServiceEnabledResponse(string body)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(body);
+            return document.RootElement.TryGetProperty("state", out var state)
+                && state.ValueKind == JsonValueKind.String
+                && string.Equals(state.GetString(), "ENABLED", StringComparison.OrdinalIgnoreCase);
+        }
+        catch (JsonException)
+        {
+            return false;
         }
     }
 

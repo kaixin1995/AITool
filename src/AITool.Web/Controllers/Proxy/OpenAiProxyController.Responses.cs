@@ -219,6 +219,8 @@ public sealed partial class OpenAiProxyController
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
+                PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
+                DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 // Codex 远程压缩走专用端点 responses/compact（对照 cc-switch endpoint_with_query("/responses/compact")）；
                 // 普通 Responses 请求端点不变，正常对话行为不受影响。
                 TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
@@ -559,6 +561,8 @@ public sealed partial class OpenAiProxyController
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
+                PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
+                DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
                     ? ResolveGeminiTargetPath(true)
                     : isPassthrough ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses") : null

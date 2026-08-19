@@ -78,6 +78,16 @@ public sealed class ProxyForwardRequest
     /// 上游返回 401 时刷新特定凭证并返回新 API Key；普通站点不设置此回调。
     /// </summary>
     public Func<string, CancellationToken, Task<string?>>? RefreshTargetApiKeyAsync { get; set; }
+
+    /// <summary>
+    /// 上游返回 403 时禁用特定托管凭证；普通站点不设置此回调。
+    /// </summary>
+    public Func<CancellationToken, Task>? DisableTargetCredentialAsync { get; set; }
+
+    /// <summary>
+    /// 发起上游请求前准备托管凭证或项目配置；参数为当前请求使用的 API Key，普通站点不设置此回调。
+    /// </summary>
+    public Func<string, CancellationToken, Task>? PrepareTargetCredentialAsync { get; set; }
 }
 
 /// <summary>

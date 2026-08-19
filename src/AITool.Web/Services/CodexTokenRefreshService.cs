@@ -69,7 +69,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
         }
     }
 
-    private async Task RefreshDueAccountsAsync(CancellationToken ct)
+    internal async Task RefreshDueAccountsAsync(CancellationToken ct)
     {
         // BackgroundService 是 singleton，需建 scope 取 scoped AppDbContext
         using var scope = _services.CreateScope();
@@ -88,8 +88,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
         var now = DateTimeOffset.UtcNow;
         var refreshLeadTime = now + RefreshLead;
         var due = await dbContext.CodexAccounts
-            .Where(a => a.IsEnabled
-                        && !string.IsNullOrEmpty(a.RefreshToken)
+            .Where(a => !string.IsNullOrEmpty(a.RefreshToken)
                         && (a.TokenExpiresAt == null
                             || a.TokenExpiresAt <= refreshLeadTime))
             .OrderBy(a => a.TokenExpiresAt)

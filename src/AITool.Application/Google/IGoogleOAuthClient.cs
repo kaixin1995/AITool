@@ -80,4 +80,7 @@ public interface IGoogleOAuthClient
 
     /// <summary>调用 loadCodeAssist 获取 Antigravity 账号的 project/tier/积分（对齐 gcli2api fetch_project_id_and_tier，含 onboardUser 轮询回退）。</summary>
     Task<GoogleCodeAssistProfile> LoadCodeAssistProfileAsync(string accountKind, string accessToken, CancellationToken ct);
+
+    /// <summary>为 GeminiCLI 项目检查并启用 gcli2api 所需的 Google Cloud API。</summary>
+    Task<bool> EnsureGeminiCliApisAsync(string accessToken, string projectId, CancellationToken ct);
 }

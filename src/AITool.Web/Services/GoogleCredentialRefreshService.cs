@@ -2,6 +2,7 @@ using AITool.Application.Google;
 using AITool.Domain.Google;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
+using System.Net;
 
 namespace AITool.Web.Services;
 
@@ -42,6 +43,104 @@ public sealed class GoogleCredentialRefreshService
         {
             return await RefreshCoreAsync(linkedSiteId, staleAccessToken, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// 发起 GeminiCLI 请求前检查并启用项目所需的 Google Cloud API。
+    /// 该操作由 OAuth 客户端按项目缓存，旧账号无需重新登录即可完成修复。
+    /// </summary>
+    public async Task EnsureGeminiCliApisAsync(
+        string projectId,
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(projectId) || string.IsNullOrWhiteSpace(accessToken))
+        {
+            return;
+        }
+
+        try
+        {
+            var ready = await _oauth.EnsureGeminiCliApisAsync(accessToken, projectId, cancellationToken);
+            if (!ready)
+            {
+                _logger.LogWarning("GeminiCLI project API preparation was not fully successful for project {ProjectId}", projectId);
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            _logger.LogWarning(exception, "Unable to prepare GeminiCLI project APIs for project {ProjectId}", projectId);
+        }
+    }
+
+    public async Task<bool> DisableAsync(
+        Guid linkedSiteId,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
+        {
+            try
+            {
+                using var client = _dbContext.Client.CopyNew();
+                client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+                var account = (await client.Queryable<GoogleAccount>()
+                    .Where(item => item.LinkedSiteId == linkedSiteId)
+                    .ToListAsync(cancellationToken))
+                    .FirstOrDefault();
+                if (account is null)
+                {
+                    return false;
+                }
+
+                account.IsEnabled = false;
+                account.DisabledByUpstream = true;
+                await client.Updateable(account)
+                    .UpdateColumns(item => new { item.IsEnabled, item.DisabledByUpstream })
+                    .ExecuteCommandAsync(cancellationToken);
+
+                var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
+                if (site is not null && site.IsEnabled)
+                {
+                    site.IsEnabled = false;
+                    await client.Updateable(site)
+                        .UpdateColumns(item => new { item.IsEnabled })
+                        .ExecuteCommandAsync(cancellationToken);
+                }
+
+                _metadataCache.InvalidateRouteTargets();
+                _metadataCache.InvalidateGoogleAccounts();
+                _logger.LogWarning(
+                    "Google account {Id} auto-disabled after upstream 403: {Reason}",
+                    account.Id,
+                    reason);
+                return true;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                _logger.LogWarning(exception, "Unable to auto-disable Google account for linked site {SiteId}", linkedSiteId);
+                return false;
+            }
+        }
+    }
+
+    internal static bool IsForbiddenResponse(Exception exception)
+    {
+        if (exception is HttpRequestException { StatusCode: HttpStatusCode.Forbidden })
+        {
+            return true;
+        }
+
+        var message = exception.Message;
+        return message.Contains("403", StringComparison.OrdinalIgnoreCase)
+            && (message.Contains("forbidden", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("permission_denied", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("permission denied", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("returned 403", StringComparison.OrdinalIgnoreCase));
     }
 
     private async Task<string?> RefreshCoreAsync(

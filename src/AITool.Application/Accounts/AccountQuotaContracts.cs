@@ -14,6 +14,7 @@ public sealed class AccountQuotaTarget
     public bool IsQuotaCooling { get; init; }
     public bool DisabledByFeatureToggle { get; init; }
     public bool ManuallyDisabled { get; init; }
+    public bool DisabledByUpstream { get; init; }
     public DateTimeOffset? TokenExpiresAt { get; init; }
     public DateTimeOffset? LastQuotaCheckedAt { get; init; }
     public string? LastQuotaRawJson { get; init; }

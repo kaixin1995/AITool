@@ -150,6 +150,38 @@ public sealed partial class OpenAiProxyController
         return null;
     }
 
+    private Func<string, CancellationToken, Task>? CreateCredentialPreparationCallback(
+        CachedProxyRouteTarget route)
+    {
+        if (!string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase)
+            || !string.Equals(route.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+            || ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)
+            || string.IsNullOrWhiteSpace(route.GoogleProjectId)
+            || string.IsNullOrWhiteSpace(route.ApiKey))
+        {
+            return null;
+        }
+
+        return (accessToken, cancellationToken) => _googleCredentialRefreshService.EnsureGeminiCliApisAsync(
+            route.GoogleProjectId,
+            accessToken,
+            cancellationToken);
+    }
+
+    private Func<CancellationToken, Task>? CreateCredentialDisableCallback(
+        CachedProxyRouteTarget route)
+    {
+        if (string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
+        {
+            return cancellationToken => _googleCredentialRefreshService.DisableAsync(
+                route.SiteId,
+                "proxy-403",
+                cancellationToken);
+        }
+
+        return null;
+    }
+
     private static string? TryExtractPromptCacheKey(string? preparedRequestBody)
     {
         if (string.IsNullOrWhiteSpace(preparedRequestBody))

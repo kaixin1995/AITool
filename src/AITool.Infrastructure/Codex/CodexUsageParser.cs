@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Infrastructure.Common;
 
 namespace AITool.Infrastructure.Codex;
 
@@ -154,14 +155,7 @@ public static class CodexUsageParser
     }
 
     private static string FormatRemaining(TimeSpan span)
-    {
-        if (span.TotalSeconds <= 0) return "已重置";
-        var parts = new List<string>();
-        if (span.Days > 0) parts.Add($"{span.Days}天");
-        if (span.Hours > 0) parts.Add($"{span.Hours}小时");
-        if (span.Minutes > 0) parts.Add($"{span.Minutes}分");
-        return parts.Count > 0 ? string.Join("", parts) + "后重置" : "<1分钟后重置";
-    }
+        => QuotaResetLabelFormatter.Format(span);
 
     private static string NormalizePlanType(string? raw)
     {
