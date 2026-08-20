@@ -873,15 +873,16 @@ onUnmounted(() => {
           <NSelect
             v-model:value="accountStatusFilter"
             :options="accountStatusFilterOptions"
+            class="oauth-status-filter"
             size="small"
             style="width: 110px"
           />
-          <NButton secondary :disabled="codexAccountCount === 0" @click="beginExportCredentials">导出凭证</NButton>
+          <NButton size="small" secondary :disabled="codexAccountCount === 0" @click="beginExportCredentials">导出凭证</NButton>
           <NDropdown trigger="click" :options="loginDropdownOptions" @select="handleSelectLoginProvider">
-            <NButton type="primary">＋ OAuth 登录</NButton>
+            <NButton size="small" type="primary">＋ OAuth 登录</NButton>
           </NDropdown>
           <NDropdown trigger="click" :options="importDropdownOptions" @select="handleSelectImportProvider">
-            <NButton secondary type="primary">上传凭证</NButton>
+            <NButton size="small" secondary type="primary">上传凭证</NButton>
           </NDropdown>
         </template>
       </template>
@@ -1672,6 +1673,14 @@ onUnmounted(() => {
   padding-bottom: 2px;
 }
 
+.oauth-status-filter {
+  flex-shrink: 0;
+}
+
+.oauth-status-filter :deep(.n-base-selection) {
+  min-height: 28px;
+}
+
 .oauth-provider-filter {
   display: inline-flex;
   align-items: center;
@@ -1729,7 +1738,7 @@ onUnmounted(() => {
 .oauth-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
-  align-items: start;
+  align-items: stretch;
   gap: 18px;
   margin-top: 16px;
 }
@@ -1739,7 +1748,8 @@ onUnmounted(() => {
   position: relative;
   flex-direction: column;
   min-width: 0;
-  align-self: start;
+  align-self: stretch;
+  box-sizing: border-box;
   padding: 20px;
   border: 1px solid var(--border-color-global);
   border-radius: 12px;
@@ -1779,6 +1789,8 @@ onUnmounted(() => {
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
+  min-height: 112px;
+  box-sizing: border-box;
   margin-bottom: 16px;
   padding-bottom: 12px;
   border-bottom: 1px solid var(--border-color-global);
@@ -1873,6 +1885,7 @@ onUnmounted(() => {
 :global([data-theme='dark']) .oauth-token-expiry { color: rgba(255, 255, 255, 0.5); }
 
 .oauth-windows-container {
+  flex: 1 1 auto;
   max-height: 320px;
   min-height: 60px;
   margin: 16px 0;
@@ -1925,6 +1938,12 @@ onUnmounted(() => {
 }
 
 .oauth-window-placeholder {
+  display: flex;
+  min-height: 60px;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  margin: 16px 0;
   padding: 20px;
   border: 1px dashed var(--border-color-global);
   border-radius: 8px;
@@ -1935,7 +1954,7 @@ onUnmounted(() => {
 }
 
 .oauth-card-meta {
-  margin-top: 12px;
+  margin-top: auto;
   padding-top: 16px;
   border-top: 1px solid var(--border-color-global);
 }
