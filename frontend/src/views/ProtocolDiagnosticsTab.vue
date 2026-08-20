@@ -190,6 +190,14 @@ async function diagnose(): Promise<void> {
   }
 }
 
+// 故障现场上下文展示
+const faultContext = ref<{
+  targetSiteName?: string
+  attemptedModel?: string
+  statusCode?: number
+  errorMessage?: string
+} | null>(null)
+
 function applyPrefill(): void {
   const prefill = takeProtocolDiagnosticsPrefill()
   if (!prefill) return
@@ -203,10 +211,29 @@ function applyPrefill(): void {
   inputTokens.value = String(prefill.inputTokens ?? 0)
   cachedTokens.value = String(prefill.cachedTokens ?? 0)
   outputTokens.value = String(prefill.outputTokens ?? 0)
-  // 预填来自调用记录，从干净的规则状态开始，避免带上上次的试运行规则集误导结果。
-  selectedProfileId.value = null
-  selectedProfileName.value = ''
-  trialRules.value = []
+  
+  if (prefill.errorMessage || prefill.statusCode || prefill.targetSiteName) {
+    faultContext.value = {
+      targetSiteName: prefill.targetSiteName,
+      attemptedModel: prefill.attemptedModel,
+      statusCode: prefill.statusCode,
+      errorMessage: prefill.errorMessage
+    }
+  } else {
+    faultContext.value = null
+  }
+
+  // 如果携带了试运行规则，直接预填
+  if (prefill.trialRules && prefill.trialRules.length > 0) {
+    trialRules.value = [...prefill.trialRules]
+    selectedProfileName.value = '现场推荐规则'
+    selectedProfileId.value = null
+  } else {
+    selectedProfileId.value = null
+    selectedProfileName.value = ''
+    trialRules.value = []
+  }
+
   void diagnose()
 }
 
@@ -249,6 +276,20 @@ const convertedJson = computed(() => {
     <NAlert type="warning" :show-icon="false" class="diagnostics-warning">
       这是 payload 转换检查工具，不是客户端模拟器；输入内容不会进入真实代理转发链路。转换失败/缺字段时对照下方的“字段对应关系”定位原因。
     </NAlert>
+
+    <!-- 如果是从错误现场跳转过来，醒目展示故障现场 -->
+    <div v-if="faultContext" class="mb-3 p-3 bg-red-50 dark:bg-red-950/30 border border-red-200 dark:border-red-800/40 rounded-lg">
+      <div class="flex items-center justify-between mb-1">
+        <span class="text-xs font-bold text-red-600 dark:text-red-400">🚨 正在排查故障现场</span>
+        <NTag v-if="faultContext.statusCode" size="tiny" type="error">HTTP {{ faultContext.statusCode }}</NTag>
+      </div>
+      <div class="text-xs text-slate-700 dark:text-slate-300 mb-1">
+        站点/模型: <strong>{{ faultContext.targetSiteName || '-' }} / {{ faultContext.attemptedModel || '-' }}</strong>
+      </div>
+      <div v-if="faultContext.errorMessage" class="text-xs text-red-500 font-mono bg-red-100/50 dark:bg-red-900/40 p-1.5 rounded">
+        {{ faultContext.errorMessage }}
+      </div>
+    </div>
 
     <NCard class="diagnostics-form-card" :content-style="{ padding: '16px' }">
       <div class="diagnostics-form-grid">

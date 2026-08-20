@@ -1,4 +1,6 @@
-export type DeveloperToolTab = 'invocations' | 'simulator' | 'concurrency' | 'circuit-breaker' | 'protocol-diagnostics'
+import type { CompatibilityRuleForm } from './compatibilityState'
+
+export type DeveloperToolTab = 'invocations' | 'simulator' | 'concurrency' | 'circuit-breaker' | 'protocol-diagnostics' | 'sql-migrations'
 
 // ────────────────────────────────────────────────
 // 调用记录 → 协议诊断台 联动：详情面板把某条请求/响应体一键载入诊断表单。
@@ -15,6 +17,12 @@ export interface ProtocolDiagnosticsPrefill {
   inputTokens?: number
   cachedTokens?: number
   outputTokens?: number
+  // 故障现场扩展信息与推荐规则
+  targetSiteName?: string
+  attemptedModel?: string
+  statusCode?: number
+  errorMessage?: string
+  trialRules?: CompatibilityRuleForm[]
 }
 
 let pendingProtocolDiagnosticsPrefill: ProtocolDiagnosticsPrefill | null = null
@@ -35,7 +43,9 @@ const hashToTab: Record<string, DeveloperToolTab> = {
   '#developerConcurrencyPane': 'concurrency',
   '#developerCircuitBreakerPane': 'circuit-breaker',
   '#developerProtocolDiagnosticsPane': 'protocol-diagnostics',
+  '#developerSqlMigrationsPane': 'sql-migrations',
   '#protocol-diagnostics': 'protocol-diagnostics',
+  '#sql-migrations': 'sql-migrations',
   '#invocations': 'invocations',
   '#simulator': 'simulator',
   '#concurrency': 'concurrency',
@@ -47,7 +57,8 @@ const tabToHash: Record<DeveloperToolTab, string> = {
   simulator: '#developerSimulatorPane',
   concurrency: '#developerConcurrencyPane',
   'circuit-breaker': '#developerCircuitBreakerPane',
-  'protocol-diagnostics': '#developerProtocolDiagnosticsPane'
+  'protocol-diagnostics': '#developerProtocolDiagnosticsPane',
+  'sql-migrations': '#developerSqlMigrationsPane'
 }
 
 export function developerTabFromHash(hash: string): DeveloperToolTab {

@@ -25,6 +25,9 @@ import ClientSimulator from './ClientSimulator.vue'
 import CircuitBreakerTab from './CircuitBreakerTab.vue'
 import ProtocolDiagnosticsTab from './ProtocolDiagnosticsTab.vue'
 import SqlMigrationsTab from './SqlMigrationsTab.vue'
+import DeveloperAiDiagnosisDrawer from './DeveloperAiDiagnosisDrawer.vue'
+import JsonDiffView from '@/components/JsonDiffView.vue'
+import { analyzeProtocolError } from '@/utils/protocolErrorAnalyzer'
 import {
   developerHashForTab,
   developerTabFromHash,
@@ -256,14 +259,51 @@ function diagnoseEntryResponse(entry: DeveloperInvocationDetail): void {
   })
 }
 
-function diagnoseAttemptRequest(entry: DeveloperInvocationDetail, attempt: DeveloperInvocationAttempt): void {
+// ── AI 智能诊断抽屉与对比状态 ──
+const showAiDrawer = ref(false)
+const aiDrawerContext = ref<api.DeveloperAiDiagnosePayload | null>(null)
+const expandedDiffAttemptIds = ref<Set<string>>(new Set())
+
+function toggleAttemptDiff(attemptId: string): void {
+  if (expandedDiffAttemptIds.value.has(attemptId)) {
+    expandedDiffAttemptIds.value.delete(attemptId)
+  } else {
+    expandedDiffAttemptIds.value.add(attemptId)
+  }
+}
+
+function openAiDiagnose(entry: DeveloperInvocationDetail, attempt: DeveloperInvocationAttempt): void {
+  aiDrawerContext.value = {
+    modelId: '',
+    clientProtocol: clientProtocolFromPath(entry.requestPath),
+    requestPath: entry.requestPath,
+    requestModel: entry.requestModel,
+    attemptedModel: attempt.attemptedModel,
+    targetSiteName: attempt.targetSiteName,
+    upstreamProtocolType: attempt.upstreamProtocolType,
+    forwardingMode: attempt.forwardingMode,
+    statusCode: attempt.statusCode,
+    errorMessage: attempt.errorMessage || details.value[entry.traceId]?.errorMessage || '',
+    originalRequestBody: entry.requestBody,
+    preparedRequestBody: attempt.preparedRequestBody
+  }
+  showAiDrawer.value = true
+}
+
+function openProtocolDiagnosticsWithAttempt(entry: DeveloperInvocationDetail, attempt: DeveloperInvocationAttempt): void {
+  const diag = analyzeProtocolError(attempt.errorMessage, attempt.statusCode)
   openProtocolDiagnostics({
     direction: 'request',
     sourceProtocol: clientProtocolFromPath(entry.requestPath),
     targetProtocol: attempt.upstreamProtocolType || 'OpenAI',
     streaming: false,
     modelName: entry.requestModel,
-    payload: attempt.preparedRequestBody
+    payload: entry.requestBody,
+    targetSiteName: attempt.targetSiteName,
+    attemptedModel: attempt.attemptedModel,
+    statusCode: attempt.statusCode,
+    errorMessage: attempt.errorMessage,
+    trialRules: diag?.recommendedRule ? [diag.recommendedRule] : []
   })
 }
 
@@ -616,16 +656,61 @@ onUnmounted(() => {
                         <div class="trace-section-title trace-section-title-danger">错误信息</div>
                         <pre class="trace-pre">{{ attempt.errorMessage }}</pre>
                       </div>
+
+                      <!-- 智能错误归因与修复建议条 -->
+                      <div v-if="analyzeProtocolError(attempt.errorMessage, attempt.statusCode)" class="trace-smart-diagnosis-card">
+                        <div class="smart-diag-header">
+                          <span class="smart-diag-title">💡 智能诊断与归因</span>
+                          <span class="smart-diag-badge">{{ analyzeProtocolError(attempt.errorMessage, attempt.statusCode)?.title }}</span>
+                        </div>
+                        <p class="smart-diag-detail">{{ analyzeProtocolError(attempt.errorMessage, attempt.statusCode)?.detail }}</p>
+                        <p class="smart-diag-action">{{ analyzeProtocolError(attempt.errorMessage, attempt.statusCode)?.suggestedAction }}</p>
+                        <div class="smart-diag-actions">
+                          <NButton
+                            size="tiny"
+                            type="primary"
+                            @click="openProtocolDiagnosticsWithAttempt(details[entry.traceId], attempt)"
+                          >
+                            ⚡ 载入规则并测试
+                          </NButton>
+                          <NButton
+                            size="tiny"
+                            type="warning"
+                            ghost
+                            @click="openAiDiagnose(details[entry.traceId], attempt)"
+                          >
+                            🤖 AI 深度诊断
+                          </NButton>
+                        </div>
+                      </div>
+
                       <div class="trace-attempt-body-grid">
                         <div v-if="canShowDetailBody(attempt.preparedRequestBody)" class="trace-code-panel">
                           <div class="trace-panel-header">
                             <div class="trace-section-title">转换后请求体（发往上游）</div>
                             <div class="trace-panel-actions">
-                              <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="diagnoseAttemptRequest(details[entry.traceId], attempt)">诊断</NButton>
+                              <NButton
+                                size="tiny"
+                                :type="expandedDiffAttemptIds.has(attempt.attemptId || String(index)) ? 'primary' : 'default'"
+                                secondary
+                                class="trace-copy-btn"
+                                @click="toggleAttemptDiff(attempt.attemptId || String(index))"
+                              >
+                                {{ expandedDiffAttemptIds.has(attempt.attemptId || String(index)) ? '收起 Diff' : '对比原始请求' }}
+                              </NButton>
+                              <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="openProtocolDiagnosticsWithAttempt(details[entry.traceId], attempt)">诊断</NButton>
                               <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.preparedRequestBody))">复制</NButton>
                             </div>
                           </div>
-                          <pre class="trace-pre">{{ bodyText(attempt.preparedRequestBody) }}</pre>
+                          <!-- 就地 Diff 对比视图 -->
+                          <div v-if="expandedDiffAttemptIds.has(attempt.attemptId || String(index))" class="attempt-diff-container mb-2">
+                            <div class="text-xs font-bold text-slate-500 mb-1">原始请求 (before) ➔ 发往上游 (after) 差异对比：</div>
+                            <JsonDiffView
+                              :before="bodyText(details[entry.traceId].requestBody)"
+                              :after="bodyText(attempt.preparedRequestBody)"
+                            />
+                          </div>
+                          <pre v-else class="trace-pre">{{ bodyText(attempt.preparedRequestBody) }}</pre>
                         </div>
                         <div v-if="canShowDetailBody(attempt.responseBody)" class="trace-code-panel">
                           <div class="trace-panel-header">
@@ -716,6 +801,13 @@ onUnmounted(() => {
         </NTabPane>
       </NTabs>
     </NCard>
+
+    <!-- AI 智能故障诊断抽屉 -->
+    <DeveloperAiDiagnosisDrawer
+      v-model:show="showAiDrawer"
+      :context="aiDrawerContext"
+      @open-diagnostics="activeTab = 'protocol-diagnostics'"
+    />
   </div>
 </template>
 
@@ -1012,6 +1104,65 @@ onUnmounted(() => {
 
 .trace-final-error {
   margin: 12px 0;
+}
+
+.trace-smart-diagnosis-card {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.smart-diag-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.smart-diag-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #d97706;
+}
+
+.smart-diag-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #b45309;
+  font-weight: 600;
+}
+
+.smart-diag-detail {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.smart-diag-action {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0284c7;
+}
+
+.smart-diag-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.attempt-diff-container {
+  padding: 8px;
+  background: var(--bg-surface-soft);
+  border: 1px solid var(--border-color-soft);
+  border-radius: 8px;
 }
 
 .trace-basic-grid {

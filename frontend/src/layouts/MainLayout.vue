@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
+import { useRoute, useRouter, RouterLink, RouterView } from 'vue-router'
 import { NLayoutContent, NButton, NTooltip } from 'naive-ui'
 import { useTheme } from '@/composables/useTheme'
 import { useAuthStore } from '@/stores/auth'
@@ -110,21 +110,21 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- 导航：纯 HTML，完全复刻原 _Layout.cshtml 的 sidebar-link 结构 -->
+      <!-- 导航：使用真实 href 和 RouterLink 语义，支持 Ctrl+点击 / 中键新窗口打开 -->
       <nav class="sidebar-nav">
         <div v-for="group in navGroups" :key="group.title" class="sidebar-section">
           <div class="sidebar-section-title">{{ group.title }}</div>
-          <a
+          <RouterLink
             v-for="item in group.items"
             :key="item.key"
             class="sidebar-link"
             :class="{ active: activeKey === item.key }"
             :title="collapsed ? item.label : undefined"
-            href="javascript:void(0)"
-            @click="handleNavigate(item.key)"
+            :to="{ name: item.key }"
+            @click="mobileSidebarOpen = false"
           >
             <span class="sidebar-link-icon">{{ item.icon }}</span>{{ item.label }}
-          </a>
+          </RouterLink>
         </div>
       </nav>
 

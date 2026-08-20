@@ -1,4 +1,5 @@
-import { httpGet } from './http'
+import { httpGet, httpPost } from './http'
+import type { CompatibilityRuleForm } from '@/views/compatibilityState'
 
 export interface DeveloperInit {
   totalCount: number
@@ -38,6 +39,36 @@ export interface DeveloperConcurrencyItem {
   lastSeenAt: string
 }
 
+export interface DeveloperAiDiagnosePayload {
+  modelId: string
+  mappingId?: string
+  enableReasoning?: boolean
+  reasoningEffort?: string
+
+  clientProtocol: string
+  requestPath: string
+  requestModel: string
+  attemptedModel: string
+  targetSiteName: string
+  upstreamProtocolType: string
+  forwardingMode: string
+  statusCode: number
+  errorMessage: string
+  originalRequestBody: string
+  preparedRequestBody: string
+}
+
+export interface DeveloperAiDiagnoseResult {
+  success: boolean
+  error?: string | null
+  content?: string
+  reasoning?: string | null
+  summary?: string
+  rootCause?: string
+  suggestedAction?: string
+  rules?: CompatibilityRuleForm[]
+}
+
 export async function getDeveloperInit(): Promise<DeveloperInit> {
   return httpGet<DeveloperInit>('/api/admin/developer/invocations/init')
 }
@@ -49,4 +80,7 @@ export async function getDeveloperDetail(traceId: string, summarize = false, sig
 }
 export async function getDeveloperConcurrency(): Promise<{ refreshedAt: string; items: DeveloperConcurrencyItem[] }> {
   return httpGet('/api/admin/developer/invocations/concurrency')
+}
+export async function runAiDiagnose(payload: DeveloperAiDiagnosePayload): Promise<DeveloperAiDiagnoseResult> {
+  return httpPost<DeveloperAiDiagnoseResult>('/api/admin/developer/invocations/ai-diagnose', payload)
 }

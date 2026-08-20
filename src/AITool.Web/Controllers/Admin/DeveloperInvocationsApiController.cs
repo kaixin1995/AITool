@@ -1,6 +1,9 @@
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AITool.Application.Operations;
+using AITool.Application.Proxy;
+using AITool.Application.Sites;
 using AITool.Infrastructure.Persistence;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Proxy;
@@ -24,6 +27,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly RouteCircuitStateStore _circuitStore;
     private readonly AppDbContext _dbContext;
+    private readonly IProxyForwardService _forwardService;
 
     public DeveloperInvocationsApiController(
         ISystemRuntimeSettingsService runtimeSettingsService,
@@ -31,7 +35,8 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         ModelConcurrencyLimiter concurrencyLimiter,
         ProxyRequestMetadataCache metadataCache,
         RouteCircuitStateStore circuitStore,
-        AppDbContext dbContext)
+        AppDbContext dbContext,
+        IProxyForwardService forwardService)
     {
         _runtimeSettingsService = runtimeSettingsService;
         _traceStore = traceStore;
@@ -39,6 +44,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         _metadataCache = metadataCache;
         _circuitStore = circuitStore;
         _dbContext = dbContext;
+        _forwardService = forwardService;
     }
 
     /// <summary>
@@ -139,6 +145,473 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         {
             return BadRequest(ApiResponse.Fail($"协议转换失败：{ex.Message}", "conversion_failed"));
         }
+    }
+
+    /// <summary>
+    /// 使用指定的站点模型对调用失败现场进行 AI 智能诊断。
+    /// </summary>
+    [HttpPost("ai-diagnose")]
+    public async Task<IActionResult> RunAiDiagnosis(
+        [FromBody] DeveloperAiDiagnoseRequest request,
+        CancellationToken cancellationToken)
+    {
+        var settings = await _dbContext.SystemRuntimeSettings
+            .FirstAsync(x => x.Id == 1, cancellationToken);
+        if (settings is null || !settings.DeveloperFeaturesEnabled)
+        {
+            return NotFound();
+        }
+
+        if (request.ModelId == Guid.Empty)
+        {
+            return BadRequest(ApiResponse.Fail("请选择用于诊断的 AI 模型", "invalid_model"));
+        }
+
+        var model = await _metadataCache.GetEnabledModelAsync(request.ModelId, cancellationToken);
+        if (model is null)
+        {
+            return Ok(ApiResponse.Ok(new DeveloperAiDiagnoseResponse
+            {
+                Success = false,
+                Error = "所选诊断模型不存在或已禁用"
+            }));
+        }
+
+        // 构造诊断提示词
+        var prompt = BuildAiDiagnosisPrompt(request);
+
+        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+        var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
+        var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
+
+        CachedFallbackTarget? target = null;
+        if (request.MappingId != Guid.Empty)
+        {
+            var targets = await _metadataCache.GetChatTargetsAsync(request.ModelId, cancellationToken);
+            var selectedTarget = targets.FirstOrDefault(x => x.MappingId == request.MappingId);
+            if (selectedTarget != null)
+            {
+                target = new CachedFallbackTarget
+                {
+                    ModelId = request.ModelId,
+                    SiteId = selectedTarget.SiteId,
+                    SiteKeyId = selectedTarget.SiteKeyId,
+                    CircuitKey = selectedTarget.CircuitKey,
+                    SiteName = selectedTarget.SiteName,
+                    ProtocolType = selectedTarget.ProtocolType,
+                    BaseUrl = selectedTarget.BaseUrl,
+                    EndpointPathMode = selectedTarget.EndpointPathMode,
+                    ApiKey = selectedTarget.ApiKey,
+                    SiteModelName = selectedTarget.SiteModelName,
+                    ExtraHeaders = selectedTarget.ExtraHeaders
+                };
+            }
+        }
+
+        if (target == null)
+        {
+            var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(model.ModelName, cancellationToken);
+            var availableRoute = allRoutes.FirstOrDefault(r => !_circuitStore.IsBlocked(r.CircuitKey));
+            if (availableRoute != null)
+            {
+                target = new CachedFallbackTarget
+                {
+                    ModelId = request.ModelId,
+                    SiteId = availableRoute.SiteId,
+                    SiteKeyId = availableRoute.SiteKeyId,
+                    CircuitKey = availableRoute.CircuitKey,
+                    SiteName = availableRoute.SiteName,
+                    ProtocolType = availableRoute.ProtocolType,
+                    BaseUrl = availableRoute.BaseUrl,
+                    EndpointPathMode = availableRoute.EndpointPathMode,
+                    ApiKey = availableRoute.ApiKey,
+                    SiteModelName = availableRoute.SiteModelName,
+                    ExtraHeaders = availableRoute.ExtraHeaders
+                };
+            }
+        }
+
+        if (target == null)
+        {
+            return Ok(ApiResponse.Ok(new DeveloperAiDiagnoseResponse
+            {
+                Success = false,
+                Error = "没有可用的模型路由目标"
+            }));
+        }
+
+        using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
+            HttpContext.RequestServices,
+            target.SiteKeyId ?? target.SiteId,
+            target.SiteModelName,
+            concurrencyMode,
+            concurrencyQueueTimeout,
+            cancellationToken,
+            displaySiteId: target.SiteId);
+
+        if (!concurrencyHandle.Acquired)
+        {
+            return Ok(ApiResponse.Ok(new DeveloperAiDiagnoseResponse
+            {
+                Success = false,
+                Error = "当前诊断模型无可用并发槽位"
+            }));
+        }
+
+        var chatRequestBody = BuildAiDiagnosisChatRequestBody(
+            target.ProtocolType,
+            target.SiteModelName,
+            prompt,
+            request.EnableReasoning,
+            request.ReasoningEffort);
+
+        string preparedRequestBody = chatRequestBody;
+        var isGeminiRoute = string.Equals(target.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase);
+        if (string.Equals(target.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            preparedRequestBody = ProxyProtocolBridge.NormalizeResponsesBody(chatRequestBody, ProxyProtocolBridge.IsCodexTarget(target.BaseUrl));
+        }
+        else if (isGeminiRoute)
+        {
+            preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+                "OpenAI", "Gemini", chatRequestBody, target.SiteModelName, false,
+                null, target.BaseUrl, null, isPassthrough: false, isCompact: false,
+                geminiProjectId: target.GoogleProjectId);
+        }
+
+        var forwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(target.ExtraHeaders);
+        if (isGeminiRoute)
+        {
+            Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
+                forwardHeaders, target.SiteModelName, ProxyProtocolBridge.IsAntigravityTarget(target.BaseUrl));
+        }
+
+        var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
+        {
+            TargetBaseUrl = target.BaseUrl,
+            TargetEndpointPathMode = target.EndpointPathMode,
+            TargetApiKey = target.ApiKey,
+            ProtocolType = target.ProtocolType,
+            TargetModelName = target.SiteModelName,
+            RequestBody = chatRequestBody,
+            PreparedRequestBody = preparedRequestBody,
+            EnableStreaming = false,
+            RequestTimeoutSeconds = Math.Max(60, runtimeSettings.ProxyRequestTimeoutSeconds),
+            RetryCount = 0,
+            ForwardHeaders = forwardHeaders,
+            TargetPath = isGeminiRoute
+                ? "/v1internal:generateContent"
+                : string.Equals(target.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                    ? SiteEndpointPathResolver.ResolvePath(target.EndpointPathMode, "responses")
+                    : null
+        }, cancellationToken);
+
+        if (!forwardResult.Success)
+        {
+            return Ok(ApiResponse.Ok(new DeveloperAiDiagnoseResponse
+            {
+                Success = false,
+                Error = $"诊断模型调用失败 (HTTP {forwardResult.StatusCode}): {forwardResult.ErrorMessage}"
+            }));
+        }
+
+        var (rawContent, reasoning) = ExtractChatCompletionContent(forwardResult.ResponseBody, target.ProtocolType);
+        var parsed = ParseAiDiagnosisOutput(rawContent);
+
+        return Ok(ApiResponse.Ok(new DeveloperAiDiagnoseResponse
+        {
+            Success = true,
+            Content = rawContent,
+            Reasoning = reasoning,
+            Summary = parsed.Summary,
+            RootCause = parsed.RootCause,
+            SuggestedAction = parsed.SuggestedAction,
+            Rules = parsed.Rules
+        }));
+    }
+
+    private static string BuildAiDiagnosisPrompt(DeveloperAiDiagnoseRequest req)
+    {
+        return $@"你是一个顶级 AI 网关与协议转换专家。现在有一个发往上游 AI 站点的请求失败了，请仔细阅读以下现场信息，进行深度故障诊断并给出最精确的修复建议与兼容规则。
+
+### 【调用现场信息】
+- 客户端请求协议: {req.ClientProtocol}
+- 客户端请求路径: {req.RequestPath}
+- 目标对外模型: {req.RequestModel}
+- 上游实际模型: {req.AttemptedModel}
+- 上游目标站点: {req.TargetSiteName}
+- 上游协议类型: {req.UpstreamProtocolType}
+- 转发模式: {req.ForwardingMode}
+- 上游响应 HTTP 状态码: {req.StatusCode}
+
+### 【上游返回的错误信息 / 响应体】
+```
+{req.ErrorMessage}
+```
+
+### 【客户端原始请求体 (Original Request)】
+```json
+{req.OriginalRequestBody}
+```
+
+### 【网关转换后发往上游的请求体 (Prepared Request)】
+```json
+{req.PreparedRequestBody}
+```
+
+---
+
+### 【AI Tool 网关兼容规则引擎能力介绍】
+AI Tool 支持为模型绑定【兼容规则集】(CompatibilityProfile)，每条规则包含:
+1. `op`: 
+   - `strip`: 剔除不支持的字段。`target` 填字段路径，如 `reasoning_effort`、`metadata`、`messages[].content.cache_control` 等。
+   - `rename`: 重命名顶层字段。`from` 为原字段名，`to` 为新字段名。
+   - `default`: 为缺失字段补默认值。`key` 为字段名，`value` 为字段值（如 `max_tokens` 设为 `4096`）。
+   - `keep_reasoning`: 在 Anthropic ↔ OpenAI 转换时保留思维链 reasoning_content（如 DeepSeek 在工具调用时强制要求）。
+2. `scope`: `bridge` (仅跨协议中转时生效，推荐) 或 `passthrough` 或 `all`。
+
+---
+
+### 【你的输出要求】
+请先进行分析，并在输出的最后严格按照以下 JSON 格式输出规则建议代码块（放在 ```json ... ``` 块中）：
+```json
+{{
+  ""summary"": ""一句话总结核心问题"",
+  ""rootCause"": ""详细的故障根因分析"",
+  ""suggestedAction"": ""具体的修复建议"",
+  ""rules"": [
+    {{
+      ""op"": ""strip"",
+      ""target"": ""reasoning_effort"",
+      ""scope"": ""bridge""
+    }}
+  ]
+}}
+```
+如果没有规则可以修复（比如纯粹是 API Key 欠费 402 或 Token 长度超出上限），`rules` 可以为空数组 `[]`。";
+    }
+
+    private static string BuildAiDiagnosisChatRequestBody(string protocolType, string modelName, string message, bool enableReasoning, string reasoningEffort)
+    {
+        var effort = ChatSendRequest.ValidReasoningEfforts.Contains(reasoningEffort) ? reasoningEffort : "high";
+
+        if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
+        {
+            var anthropicPayload = new Dictionary<string, object?>
+            {
+                ["model"] = modelName,
+                ["messages"] = new[]
+                {
+                    new Dictionary<string, object?>
+                    {
+                        ["role"] = "user",
+                        ["content"] = message
+                    }
+                },
+                ["stream"] = false,
+                ["max_tokens"] = 4096
+            };
+
+            if (enableReasoning)
+            {
+                var budgetTokens = effort switch
+                {
+                    "low" => 1024,
+                    "medium" => 4096,
+                    _ => 8192
+                };
+                anthropicPayload["thinking"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "enabled",
+                    ["budget_tokens"] = budgetTokens
+                };
+            }
+
+            return JsonSerializer.Serialize(anthropicPayload);
+        }
+
+        var openAiPayload = new Dictionary<string, object?>
+        {
+            ["model"] = modelName,
+            ["messages"] = new[]
+            {
+                new Dictionary<string, object?>
+                {
+                    ["role"] = "user",
+                    ["content"] = message
+                }
+            },
+            ["stream"] = false,
+            ["max_tokens"] = 4096
+        };
+
+        if (enableReasoning)
+        {
+            openAiPayload["reasoning_effort"] = effort;
+        }
+
+        var openAiBody = JsonSerializer.Serialize(openAiPayload);
+        if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return ProxyProtocolBridge.ConvertChatRequestToResponses(openAiBody, modelName, false);
+        }
+
+        return openAiBody;
+    }
+
+    private static (string Content, string? Reasoning) ExtractChatCompletionContent(string responseBody, string protocolType)
+    {
+        if (string.IsNullOrWhiteSpace(responseBody)) return (string.Empty, null);
+
+        try
+        {
+            using var doc = JsonDocument.Parse(responseBody);
+            var root = doc.RootElement;
+
+            if (string.Equals(protocolType, "Anthropic", StringComparison.OrdinalIgnoreCase))
+            {
+                var sb = new StringBuilder();
+                string? reasoning = null;
+                if (root.TryGetProperty("content", out var contentArray) && contentArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in contentArray.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("type", out var typeProp))
+                        {
+                            var type = typeProp.GetString();
+                            if (type == "text" && item.TryGetProperty("text", out var textProp))
+                            {
+                                sb.Append(textProp.GetString());
+                            }
+                            else if (type == "thinking" && item.TryGetProperty("thinking", out var thinkingProp))
+                            {
+                                reasoning = thinkingProp.GetString();
+                            }
+                        }
+                    }
+                }
+                return (sb.ToString(), reasoning);
+            }
+            else if (string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+            {
+                if (root.TryGetProperty("output_text", out var outText))
+                {
+                    return (outText.GetString() ?? string.Empty, null);
+                }
+                if (root.TryGetProperty("output", out var outputArray) && outputArray.ValueKind == JsonValueKind.Array)
+                {
+                    var sb = new StringBuilder();
+                    string? reasoning = null;
+                    foreach (var item in outputArray.EnumerateArray())
+                    {
+                        if (item.TryGetProperty("type", out var typeProp) && typeProp.GetString() == "message" &&
+                            item.TryGetProperty("content", out var contentList) && contentList.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var c in contentList.EnumerateArray())
+                            {
+                                if (c.TryGetProperty("type", out var ct) && ct.GetString() == "output_text" &&
+                                    c.TryGetProperty("text", out var tp))
+                                {
+                                    sb.Append(tp.GetString());
+                                }
+                            }
+                        }
+                    }
+                    return (sb.ToString(), reasoning);
+                }
+            }
+            else if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+            {
+                var sb = new StringBuilder();
+                string? reasoning = null;
+                if (root.TryGetProperty("candidates", out var candidates) && candidates.ValueKind == JsonValueKind.Array)
+                {
+                    var first = candidates.EnumerateArray().FirstOrDefault();
+                    if (first.ValueKind == JsonValueKind.Object && first.TryGetProperty("content", out var content) &&
+                        content.TryGetProperty("parts", out var parts) && parts.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var p in parts.EnumerateArray())
+                        {
+                            if (p.TryGetProperty("text", out var tp))
+                            {
+                                sb.Append(tp.GetString());
+                            }
+                            else if (p.TryGetProperty("thought", out var thProp))
+                            {
+                                reasoning = thProp.GetString();
+                            }
+                        }
+                    }
+                }
+                return (sb.ToString(), reasoning);
+            }
+
+            // Standard OpenAI format
+            if (root.TryGetProperty("choices", out var choices) && choices.ValueKind == JsonValueKind.Array)
+            {
+                var first = choices.EnumerateArray().FirstOrDefault();
+                if (first.ValueKind == JsonValueKind.Object && first.TryGetProperty("message", out var msg))
+                {
+                    var text = msg.TryGetProperty("content", out var c) ? c.GetString() ?? string.Empty : string.Empty;
+                    string? reasoning = null;
+                    if (msg.TryGetProperty("reasoning_content", out var rc))
+                    {
+                        reasoning = rc.GetString();
+                    }
+                    return (text, reasoning);
+                }
+            }
+        }
+        catch
+        {
+            // Ignore parse errors
+        }
+
+        return (responseBody, null);
+    }
+
+    private static (string Summary, string RootCause, string SuggestedAction, List<CompatibilityRule> Rules) ParseAiDiagnosisOutput(string rawContent)
+    {
+        if (string.IsNullOrWhiteSpace(rawContent))
+        {
+            return (string.Empty, string.Empty, string.Empty, []);
+        }
+
+        try
+        {
+            // 尝试在 Markdown 中定位 JSON 块
+            var startIndex = rawContent.LastIndexOf("```json", StringComparison.OrdinalIgnoreCase);
+            if (startIndex >= 0)
+            {
+                startIndex += 7;
+                var endIndex = rawContent.IndexOf("```", startIndex, StringComparison.Ordinal);
+                var jsonStr = (endIndex > startIndex ? rawContent[startIndex..endIndex] : rawContent[startIndex..]).Trim();
+                using var doc = JsonDocument.Parse(jsonStr);
+                var root = doc.RootElement;
+                var summary = root.TryGetProperty("summary", out var s) ? s.GetString() ?? "" : "";
+                var rootCause = root.TryGetProperty("rootCause", out var rc) ? rc.GetString() ?? "" : "";
+                var suggestedAction = root.TryGetProperty("suggestedAction", out var sa) ? sa.GetString() ?? "" : "";
+                var rules = new List<CompatibilityRule>();
+                if (root.TryGetProperty("rules", out var rArray) && rArray.ValueKind == JsonValueKind.Array)
+                {
+                    foreach (var item in rArray.EnumerateArray())
+                    {
+                        var rule = JsonSerializer.Deserialize<CompatibilityRule>(item.GetRawText());
+                        if (rule != null)
+                        {
+                            rules.Add(rule);
+                        }
+                    }
+                }
+                return (summary, rootCause, suggestedAction, rules);
+            }
+        }
+        catch
+        {
+            // fallback
+        }
+
+        return (string.Empty, string.Empty, string.Empty, []);
     }
 
     /// <summary>
@@ -1506,3 +1979,41 @@ internal sealed record ProtocolChainStage(
 /// 流式响应转换中的事件级对应关系（源事件 → 目标事件）。
 /// </summary>
 internal sealed record ProtocolEventMapping(string SourceEvent, string TargetEvent, string? Note);
+
+/// <summary>
+/// AI 智能诊断请求。
+/// </summary>
+public sealed class DeveloperAiDiagnoseRequest
+{
+    public Guid ModelId { get; set; }
+    public Guid MappingId { get; set; }
+    public bool EnableReasoning { get; set; }
+    public string ReasoningEffort { get; set; } = "high";
+
+    public string ClientProtocol { get; set; } = string.Empty;
+    public string RequestPath { get; set; } = string.Empty;
+    public string RequestModel { get; set; } = string.Empty;
+    public string AttemptedModel { get; set; } = string.Empty;
+    public string TargetSiteName { get; set; } = string.Empty;
+    public string UpstreamProtocolType { get; set; } = string.Empty;
+    public string ForwardingMode { get; set; } = string.Empty;
+    public int StatusCode { get; set; }
+    public string ErrorMessage { get; set; } = string.Empty;
+    public string OriginalRequestBody { get; set; } = string.Empty;
+    public string PreparedRequestBody { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// AI 智能诊断响应。
+/// </summary>
+public sealed class DeveloperAiDiagnoseResponse
+{
+    public bool Success { get; set; }
+    public string? Error { get; set; }
+    public string Content { get; set; } = string.Empty;
+    public string? Reasoning { get; set; }
+    public string Summary { get; set; } = string.Empty;
+    public string RootCause { get; set; } = string.Empty;
+    public string SuggestedAction { get; set; } = string.Empty;
+    public List<CompatibilityRule> Rules { get; set; } = [];
+}
