@@ -138,7 +138,8 @@ const prefillSignal = inject<Ref<number>>('protocol-diagnostics-prefill')
 const protocolOptions = [
   { label: 'OpenAI Chat', value: 'OpenAI' },
   { label: 'Anthropic Messages', value: 'Anthropic' },
-  { label: 'OpenAI Responses', value: 'Responses' }
+  { label: 'OpenAI Responses', value: 'Responses' },
+  { label: 'Google Gemini', value: 'Gemini' }
 ]
 const directionOptions = [
   { label: '请求转换（客户端 → 上游）', value: 'request' },

@@ -18,7 +18,23 @@ export function analyzeProtocolError(
   if (!errorMessage && !statusCode) return null
   const err = (errorMessage || '').trim()
 
-  // 1. 思维链 / Reasoning 签名或内容丢失 (DeepSeek / Anthropic 等，先于常规 missing_field 匹配)
+  // 1. Google Gemini / Antigravity 参数 schema 校验失败
+  // 例: schema at properties.meta.properties.phases.items requires unspecified property 'title'
+  // 例: Invalid value at 'contents[0].parts[0]'
+  const geminiSchemaMatch = err.match(/schema at ([a-zA-Z0-9_.]+) requires unspecified property ['"`]?([a-zA-Z0-9_.]+)['"`]?/i)
+    || err.match(/requires unspecified property ['"`]?([a-zA-Z0-9_.]+)['"`]?/i)
+
+  if (geminiSchemaMatch) {
+    const missingProp = geminiSchemaMatch[2] || geminiSchemaMatch[1]
+    return {
+      category: 'missing_field',
+      title: `Gemini Schema 校验失败: 缺少 ${missingProp}`,
+      detail: `Google Antigravity/Gemini 上游在解析 tools 参数定义时，Schema 声明了 required 但属性列表中缺少 \`${missingProp}\` 的定义。`,
+      suggestedAction: `建议检查客户端传入的 tools parameters JSON Schema，或使用【🤖 AI 深度诊断】分析该参数结构。`
+    }
+  }
+
+  // 2. 思维链 / Reasoning 签名或内容丢失 (DeepSeek / Anthropic 等，先于常规 missing_field 匹配)
   // 例: 'reasoning_content' is required when tool calls are present
   // 例: missing reasoning_content
   if (/reasoning_content.*required|missing.*reasoning_content|thought.*signature/i.test(err)) {

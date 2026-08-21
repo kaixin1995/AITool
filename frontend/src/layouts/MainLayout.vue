@@ -1,15 +1,26 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter, RouterLink, RouterView } from 'vue-router'
-import { NLayoutContent, NButton, NTooltip } from 'naive-ui'
-import { useTheme } from '@/composables/useTheme'
+import { NLayoutContent, NButton, NTooltip, NDropdown } from 'naive-ui'
+import { useTheme, type SkinMode } from '@/composables/useTheme'
 import { useAuthStore } from '@/stores/auth'
 import { version, buildTimeDisplay } from '@/composables/useVersion'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
-const { isDark, toggleTheme } = useTheme()
+const { isDark, skin, toggleTheme, setSkin } = useTheme()
+
+const skinOptions = [
+  { label: '✨ 现代科技 (Modern)', key: 'modern' },
+  { label: '⚡ 赛博极客 (Cyberpunk)', key: 'cyberpunk' },
+  { label: '🌿 极简北欧 (Nordic)', key: 'nordic' },
+  { label: '🏛️ 经典简约 (Classic)', key: 'classic' }
+]
+
+function handleSelectSkin(key: string): void {
+  setSkin(key as SkinMode)
+}
 
 const collapsed = ref(localStorage.getItem('aitool.sidebarCollapsed') === 'true')
 const mobileSidebarOpen = ref(false)
@@ -143,11 +154,18 @@ onBeforeUnmount(() => {
           <h1 class="app-topbar-title">{{ (route.meta.title as string) ?? 'AI Tool' }}</h1>
         </div>
         <div class="app-topbar-right">
+          <!-- 皮肤切换下拉 -->
+          <NDropdown trigger="click" :options="skinOptions" @select="handleSelectSkin">
+            <button class="theme-icon-toggle" type="button" :title="`当前皮肤: ${skin === 'modern' ? '现代科技' : '经典简约'}`">
+              🎨
+            </button>
+          </NDropdown>
+
           <NTooltip trigger="hover">
             <template #trigger>
               <button class="theme-icon-toggle" type="button" @click="toggleTheme">{{ isDark ? '☀️' : '🌙' }}</button>
             </template>
-            {{ isDark ? '切换到经典模式' : '切换到暗夜模式' }}
+            {{ isDark ? '切换到亮色模式' : '切换到暗夜模式' }}
           </NTooltip>
           <NButton size="small" quaternary @click="handleLogout">退出</NButton>
         </div>

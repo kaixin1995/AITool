@@ -26,7 +26,21 @@
   --status-danger-text: #B91C1C;
   --layout-gutter-x: 32px;
   --layout-gutter-y: 28px;
+  --card-shadow: 0 1px 3px rgba(0, 0, 0, 0.05), 0 1px 2px rgba(0, 0, 0, 0.03);
 }
+
+/* 现代化科技感皮肤 (Modern Skin) 变量注入 */
+[data-skin='modern'] {
+  --primary-gradient: linear-gradient(135deg, #6366F1 0%, #A855F7 100%);
+  --bg-page: #F4F6F9;
+  --bg-card: #FFFFFF;
+  --bg-surface-soft: #EEF2F6;
+  --border-color-global: #E2E8F0;
+  --card-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.05), 0 8px 10px -6px rgba(15, 23, 42, 0.02);
+  --text-primary: #0F172A;
+  --text-color-secondary: #64748B;
+}
+
 [data-theme='dark'] {
   --text-color-secondary: rgba(255, 255, 255, 0.62);
   --bg-page: #101014;
@@ -45,6 +59,86 @@
   --status-warning-text: #FCD34D;
   --status-danger-bg: rgba(248, 113, 113, 0.15);
   --status-danger-text: #FCA5A5;
+  --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+}
+
+[data-theme='dark'][data-skin='modern'] {
+  --primary-gradient: linear-gradient(135deg, #6366F1 0%, #EC4899 100%);
+  --bg-page: #0B0F19;
+  --bg-card: #111827;
+  --bg-input: #1F2937;
+  --bg-surface-soft: #1E293B;
+  --border-color-global: #1F2937;
+  --border-color-soft: rgba(255, 255, 255, 0.08);
+  --text-primary: #F8FAFC;
+  --text-color-secondary: #94A3B8;
+  --card-shadow: 0 10px 30px -5px rgba(0, 0, 0, 0.5), 0 0 1px 1px rgba(255, 255, 255, 0.05);
+}
+
+/* 赛博朋克 (Cyberpunk) 专属变量 */
+[data-skin='cyberpunk'] {
+  --primary-gradient: linear-gradient(135deg, #00F0FF 0%, #FF0055 100%);
+  --bg-page: #090B14;
+  --bg-card: #0F1222;
+  --bg-surface-soft: #181C30;
+  --border-color-global: rgba(0, 240, 255, 0.35);
+  --border-color-soft: rgba(0, 240, 255, 0.2);
+  --text-primary: #E2E8F0;
+  --text-color-secondary: #94A3B8;
+  --card-shadow: 0 0 20px rgba(0, 240, 255, 0.15);
+}
+
+[data-skin='cyberpunk'] .brand-icon {
+  background: #00F0FF !important;
+  color: #05070D !important;
+  border-radius: 4px !important;
+  font-family: ui-monospace, monospace;
+  box-shadow: 0 0 15px rgba(0, 240, 255, 0.6) !important;
+}
+
+[data-skin='cyberpunk'] .sidebar-link.active {
+  background: rgba(0, 240, 255, 0.15) !important;
+  color: #00F0FF !important;
+  border-left: 3px solid #00F0FF;
+  border-radius: 2px !important;
+  text-shadow: 0 0 8px rgba(0, 240, 255, 0.5);
+}
+
+/* 北欧极简 (Nordic) 专属变量 */
+[data-skin='nordic'] {
+  --primary-gradient: linear-gradient(135deg, #2B4C6F 0%, #5C7C9E 100%);
+  --bg-page: #F6F9FA;
+  --bg-card: #FFFFFF;
+  --bg-surface-soft: #EDF3F6;
+  --border-color-global: #E2EBF0;
+  --border-color-soft: #EBF1F5;
+  --text-primary: #1D2A3A;
+  --text-color-secondary: #687A8F;
+  --card-shadow: 0 20px 40px -15px rgba(43, 76, 111, 0.06);
+}
+
+[data-theme='dark'][data-skin='nordic'] {
+  --bg-page: #13181F;
+  --bg-card: #1C232D;
+  --bg-surface-soft: #232D3A;
+  --border-color-global: #283442;
+  --border-color-soft: #2D3A49;
+  --text-primary: #FFFFFF;
+  --text-color-secondary: #8E9FAA;
+}
+
+[data-skin='nordic'] .brand-icon {
+  background: #2B4C6F !important;
+  border-radius: 14px !important;
+}
+
+[data-skin='nordic'] .sidebar-link {
+  border-radius: 14px !important;
+}
+
+[data-skin='nordic'] .sidebar-link.active {
+  background: #2B4C6F !important;
+  color: #FFFFFF !important;
 }
 
 *,
@@ -129,6 +223,49 @@ textarea {
 /* 表格行 hover 高亮（复刻原 primary-50） */
 .n-data-table .n-data-table-tr:hover .n-data-table-td {
   background: rgba(108, 158, 255, 0.04) !important;
+}
+
+/* 现代化皮肤下的精致卡片与动效 */
+[data-skin='modern'] .n-card {
+  box-shadow: var(--card-shadow);
+  border: 1px solid var(--border-color-soft);
+  transition: all 0.2s ease;
+}
+
+[data-skin='modern'] .stat-card,
+[data-skin='modern'] .quick-action-link {
+  box-shadow: 0 4px 15px -2px rgba(15, 23, 42, 0.04);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+[data-skin='modern'] .stat-card:hover,
+[data-skin='modern'] .quick-action-link:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 12px 25px -4px rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.4);
+}
+
+[data-skin='modern'] .welcome-banner {
+  background: var(--primary-gradient) !important;
+  box-shadow: 0 10px 25px -5px rgba(99, 102, 241, 0.35);
+}
+
+[data-skin='modern'] .brand-icon {
+  background: var(--primary-gradient) !important;
+  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.35);
+}
+
+[data-skin='modern'] .sidebar-link.active {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.15) 0%, rgba(168, 85, 247, 0.08) 100%) !important;
+  color: #6366F1 !important;
+  font-weight: 600;
+  border-left: 3px solid #6366F1;
+}
+
+[data-theme='dark'][data-skin='modern'] .sidebar-link.active {
+  background: linear-gradient(90deg, rgba(99, 102, 241, 0.25) 0%, rgba(236, 72, 153, 0.12) 100%) !important;
+  color: #818CF8 !important;
+  border-left: 3px solid #818CF8;
 }
 /* 斑马纹颜色 */
 .n-data-table .n-data-table-tr.n-data-table-tr--striped .n-data-table-td {

@@ -1823,7 +1823,8 @@ AI Tool 支持为模型绑定【兼容规则集】(CompatibilityProfile)，每�
     private static bool IsSupportedProtocol(string protocol)
         => protocol.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
             || protocol.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
-            || protocol.Equals("Responses", StringComparison.OrdinalIgnoreCase);
+            || protocol.Equals("Responses", StringComparison.OrdinalIgnoreCase)
+            || protocol.Equals("Gemini", StringComparison.OrdinalIgnoreCase);
 
     private static bool IsSupportedStreamingDirection(string direction, string source, string target)
         // 同协议：流式事件原样透传。
