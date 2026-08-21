@@ -356,7 +356,8 @@ async function handleConfirmApply(): Promise<void> {
             </div>
 
             <!-- 完整回答展开 -->
-            <div v-if="result.content && !result.summary" class="raw-content-box">
+            <div v-if="result.content" class="raw-content-box mt-2">
+              <div class="text-xs font-bold text-slate-500 mb-1">📋 AI 诊断报告完整详情</div>
               <pre class="raw-pre">{{ result.content }}</pre>
             </div>
 

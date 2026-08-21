@@ -348,6 +348,23 @@ public static partial class ProxyProtocolBridge
             config.Remove("stopSequences");
             config.Remove("presencePenalty");
             config.Remove("frequencyPenalty");
+
+            // 关键兼容（对齐 gcli2api antigravity_fix._normalize_antigravity_request）：
+            // Antigravity 对 Gemini 3/3.5/3.7 系列通过模型名本身决定思考深度，
+            // 不接受 thinkingConfig 中的 thinkingLevel/thinkingBudget，否则会报参数冲突类 400。
+            // 2.5 系列保留 thinkingBudget，但同样剔除 thinkingLevel。
+            var modelLower = model.ToLowerInvariant();
+            if (modelLower.Contains("gemini-3", StringComparison.OrdinalIgnoreCase))
+            {
+                config.Remove("thinkingConfig");
+            }
+            else
+            {
+                if (config["thinkingConfig"] is JsonObject thinking)
+                {
+                    thinking.Remove("thinkingLevel");
+                }
+            }
         }
 
         // sessionId：复用已有值，否则用首条用户文本哈希生成（对齐 gcli2api）。
@@ -883,7 +900,8 @@ public static partial class ProxyProtocolBridge
 
             if (tool["input_schema"] is JsonObject schema)
             {
-                declaration["parametersJsonSchema"] = CleanJsonSchemaForGemini(schema.DeepClone(), schema);
+                var cleanedSchema = CleanJsonSchemaForGemini(schema.DeepClone(), schema);
+                declaration["parameters"] = cleanedSchema;
             }
 
             geminiTools.Add(new JsonObject { ["functionDeclarations"] = new JsonArray(declaration) });
@@ -1302,7 +1320,8 @@ public static partial class ProxyProtocolBridge
 
             if (function["parameters"] is JsonObject schema)
             {
-                declaration["parametersJsonSchema"] = CleanJsonSchemaForGemini(schema.DeepClone(), schema);
+                var cleanedSchema = CleanJsonSchemaForGemini(schema.DeepClone(), schema);
+                declaration["parameters"] = cleanedSchema;
             }
 
             geminiTools.Add(new JsonObject { ["functionDeclarations"] = new JsonArray(declaration) });

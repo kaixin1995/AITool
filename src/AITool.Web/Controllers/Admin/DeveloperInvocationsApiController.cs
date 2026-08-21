@@ -332,9 +332,9 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
 
     private static string BuildAiDiagnosisPrompt(DeveloperAiDiagnoseRequest req)
     {
-        return $@"你是一个顶级 AI 网关与协议转换专家。现在有一个发往上游 AI 站点的请求失败了，请仔细阅读以下现场信息，进行深度故障诊断并给出最精确的修复建议与兼容规则。
+        return $@"你是一个顶级 AI API 网关与跨协议转换专家。现在有一个发往上游 AI 站点的请求失败了（HTTP {req.StatusCode}），请深度诊断失败根因并给出具体的排查结论和修复方案。
 
-### 【调用现场信息】
+### 【调用现场上下文】
 - 客户端请求协议: {req.ClientProtocol}
 - 客户端请求路径: {req.RequestPath}
 - 目标对外模型: {req.RequestModel}
@@ -344,41 +344,44 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
 - 转发模式: {req.ForwardingMode}
 - 上游响应 HTTP 状态码: {req.StatusCode}
 
-### 【上游返回的错误信息 / 响应体】
+### 【上游返回的真实错误原文】
 ```
 {req.ErrorMessage}
 ```
 
-### 【客户端原始请求体 (Original Request)】
+### 【客户端原始请求体 (Client Body)】
 ```json
 {req.OriginalRequestBody}
 ```
 
-### 【网关转换后发往上游的请求体 (Prepared Request)】
+### 【网关转换后发往上游的实际请求体 (Upstream Prepared Body)】
 ```json
 {req.PreparedRequestBody}
 ```
 
 ---
 
-### 【AI Tool 网关兼容规则引擎能力介绍】
-AI Tool 支持为模型绑定【兼容规则集】(CompatibilityProfile)，每条规则包含:
-1. `op`: 
-   - `strip`: 剔除不支持的字段。`target` 填字段路径，如 `reasoning_effort`、`metadata`、`messages[].content.cache_control` 等。
-   - `rename`: 重命名顶层字段。`from` 为原字段名，`to` 为新字段名。
-   - `default`: 为缺失字段补默认值。`key` 为字段名，`value` 为字段值（如 `max_tokens` 设为 `4096`）。
-   - `keep_reasoning`: 在 Anthropic ↔ OpenAI 转换时保留思维链 reasoning_content（如 DeepSeek 在工具调用时强制要求）。
-2. `scope`: `bridge` (仅跨协议中转时生效，推荐) 或 `passthrough` 或 `all`。
+### 【诊断重点提示】
+1. **上游参数或模型名校验 (INVALID_ARGUMENT / 400)**: 
+   - 检查上游真实模型名与映射是否匹配。
+   - 检查 tools 中的 parameters JSON Schema 是否缺少必要字段或 required/properties 不匹配。
+   - 检查是否有不支持的参数（如 `temperature`、`reasoning_effort`、`max_tokens` 等）。
+2. **思维链 / Reasoning 签名**: 检查 DeepSeek 等模型是否缺少 `reasoning_content`，或 Claude thinking block 签名是否断裂。
+3. **网关兼容规则引擎能力**:
+   - `strip`: 剔除不支持的字段（target: 字段路径，如 `reasoning_effort`）。
+   - `rename`: 重命名顶层字段（from: 原名, to: 新名）。
+   - `default`: 补充缺失默认值（key: 字段名, value: 默认值）。
+   - `keep_reasoning`: 在 Anthropic ↔ OpenAI 转换时保留思维链。
 
 ---
 
-### 【你的输出要求】
-请先进行分析，并在输出的最后严格按照以下 JSON 格式输出规则建议代码块（放在 ```json ... ``` 块中）：
+### 【你的输出格式要求】
+请先用中文给出详尽的分析（包含 **故障现象**、**根本原因** 和 **排查建议**），并在回答的最后，必须包含以下严格的 JSON 块：
 ```json
 {{
-  ""summary"": ""一句话总结核心问题"",
-  ""rootCause"": ""详细的故障根因分析"",
-  ""suggestedAction"": ""具体的修复建议"",
+  ""summary"": ""一句话总结核心问题（例如：上游 Antigravity 无法识别带 -high 后缀的模型名）"",
+  ""rootCause"": ""详细的根本原因分析"",
+  ""suggestedAction"": ""具体的修复或操作建议"",
   ""rules"": [
     {{
       ""op"": ""strip"",
@@ -388,7 +391,7 @@ AI Tool 支持为模型绑定【兼容规则集】(CompatibilityProfile)，每�
   ]
 }}
 ```
-如果没有规则可以修复（比如纯粹是 API Key 欠费 402 或 Token 长度超出上限），`rules` 可以为空数组 `[]`。";
+如果该问题不是通过网关兼容规则修复的（例如模型名不正确、API Key 无效等），`rules` 数组应设为 `[]`。";
     }
 
     private static string BuildAiDiagnosisChatRequestBody(string protocolType, string modelName, string message, bool enableReasoning, string reasoningEffort)

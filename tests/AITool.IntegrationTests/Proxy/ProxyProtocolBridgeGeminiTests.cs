@@ -96,7 +96,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
         var tools = request["tools"]!.AsArray();
         var declaration = tools[0]!["functionDeclarations"]!.AsArray()[0]!.AsObject();
         declaration["name"]!.GetValue<string>().Should().Be("write");
-        var schema = declaration["parametersJsonSchema"]!.AsObject();
+        var schema = declaration["parameters"]!.AsObject();
         schema["type"]!.GetValue<string>().Should().Be("object");
         schema["required"]!.AsArray().Should().HaveCount(1);
 
@@ -700,7 +700,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
             "Anthropic", "Gemini", anthropicBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: GeminiCliBaseUrl);
 
         var declaration = ParseEnvelope(result)["request"]!["tools"]!.AsArray()[0]!["functionDeclarations"]!.AsArray()[0]!.AsObject();
-        var schemaText = declaration["parametersJsonSchema"]!.ToJsonString();
+        var schemaText = declaration["parameters"]!.ToJsonString();
         schemaText.Should().NotContain("$ref", "$ref 需解析后内联");
         schemaText.Should().NotContain("allOf", "allOf 需拍平");
         schemaText.Should().Contain("\"path\"");
@@ -754,7 +754,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
             "OpenAI", "Gemini", openAiBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: AntigravityBaseUrl);
 
         var declaration = ParseEnvelope(result)["request"]!["tools"]!.AsArray()[0]!["functionDeclarations"]!.AsArray()[0]!.AsObject();
-        var schemaText = declaration["parametersJsonSchema"]!.ToJsonString();
+        var schemaText = declaration["parameters"]!.ToJsonString();
         
         // 校验：不存在的 "title" 已经被从 required 数组中清洗掉，只保留了 "description"
         schemaText.Should().NotContain("\"title\"", "未在 properties 中定义的 required 项必须被剔除以防 Google 报 400");
