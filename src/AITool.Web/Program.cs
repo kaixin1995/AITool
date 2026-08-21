@@ -38,7 +38,7 @@ builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
 
-var applicationVersion = "1.0.1.8";
+var applicationVersion = "1.0.1.9";
 // 编译时间从程序集元数据（AssemblyMetadata）读取，构建时由 csproj 注入。
 // 相比读取 dll 文件时间戳，这种方式在单文件/独立发布（Assembly.Location 为空）下依然可用。
 var buildTime = ReadBuildTimestamp() ?? DateTimeOffset.UtcNow;

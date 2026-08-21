@@ -1529,6 +1529,28 @@ public static partial class ProxyProtocolBridge
             result["type"] = "object";
         }
 
+        // Google Antigravity / Gemini 严格校验防御：
+        // 如果 schema 中声明了 required 数组，但 required 包含的字段在 properties 中未定义，
+        // Google 上游会直接拒绝并报：requires unspecified property 'xxx'。
+        // 网关在此处自动对齐：剔除 properties 中不存在的 required 项，彻底避免上游 400。
+        if (result.TryGetPropertyValue("required", out var reqNode) && reqNode is JsonArray reqArr)
+        {
+            var propObj = result["properties"] as JsonObject;
+            for (var i = reqArr.Count - 1; i >= 0; i--)
+            {
+                var reqPropName = reqArr[i]?.GetValue<string>();
+                if (string.IsNullOrEmpty(reqPropName) || propObj == null || !propObj.ContainsKey(reqPropName))
+                {
+                    reqArr.RemoveAt(i);
+                }
+            }
+
+            if (reqArr.Count == 0)
+            {
+                result.Remove("required");
+            }
+        }
+
         return result;
     }
 

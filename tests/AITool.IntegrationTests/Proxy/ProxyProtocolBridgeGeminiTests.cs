@@ -706,4 +706,58 @@ public sealed class ProxyProtocolBridgeGeminiTests
         schemaText.Should().Contain("\"path\"");
         schemaText.Should().Contain("\"n\"");
     }
+
+    [Fact]
+    public void CleanJsonSchemaForGemini_strips_required_properties_that_are_unspecified_to_prevent_400()
+    {
+        // 覆盖上游报 requires unspecified property 'title' 场景：
+        // 客户端声明了 required: ["title", "validProp"]，但 properties 字典中只有 "validProp"。
+        // 桥接层必须自动将不存在的 "title" 从 required 数组中剥离，避免 Google 报 400 INVALID_ARGUMENT。
+        var openAiBody = """
+        {
+          "model": "1M",
+          "messages": [ { "role": "user", "content": "hi" } ],
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "deepseek_tool",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "meta": {
+                      "type": "object",
+                      "properties": {
+                        "phases": {
+                          "type": "object",
+                          "properties": {
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "description": { "type": "string" }
+                              },
+                              "required": [ "title", "description" ]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+        """;
+
+        var result = ProxyProtocolBridge.PrepareRequestBody(
+            "OpenAI", "Gemini", openAiBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: AntigravityBaseUrl);
+
+        var declaration = ParseEnvelope(result)["request"]!["tools"]!.AsArray()[0]!["functionDeclarations"]!.AsArray()[0]!.AsObject();
+        var schemaText = declaration["parametersJsonSchema"]!.ToJsonString();
+        
+        // 校验：不存在的 "title" 已经被从 required 数组中清洗掉，只保留了 "description"
+        schemaText.Should().NotContain("\"title\"", "未在 properties 中定义的 required 项必须被剔除以防 Google 报 400");
+        schemaText.Should().Contain("\"description\"");
+    }
 }

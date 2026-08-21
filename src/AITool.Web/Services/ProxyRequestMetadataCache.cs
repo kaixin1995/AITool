@@ -1146,20 +1146,23 @@ public sealed class ProxyRequestMetadataCache
             return;
         }
 
-        var completedTarget = new RouteTargetIdentity(siteId, siteModelName);
         var shouldInvalidateRuntimeRoutes = false;
         lock (_deferredRouteTargetsLock)
         {
             foreach (var item in _deferredRouteTargetsByModel.ToList())
             {
-                if (!item.Value.PendingActiveSlots.TryGetValue(completedTarget, out var pendingSlots) || !pendingSlots.Remove(activeSlotId))
+                // 找到包含该 slotId 的任何 target 并移除（兼容 siteId 传入 SiteKeyId 或 SiteId 的情况）
+                foreach (var pendingTarget in item.Value.PendingActiveSlots.Keys.ToList())
                 {
-                    continue;
-                }
-
-                if (pendingSlots.Count == 0)
-                {
-                    item.Value.PendingActiveSlots.Remove(completedTarget);
+                    if (string.Equals(pendingTarget.SiteModelName, siteModelName, StringComparison.Ordinal)
+                        && item.Value.PendingActiveSlots.TryGetValue(pendingTarget, out var pendingSlots)
+                        && pendingSlots.Remove(activeSlotId))
+                    {
+                        if (pendingSlots.Count == 0)
+                        {
+                            item.Value.PendingActiveSlots.Remove(pendingTarget);
+                        }
+                    }
                 }
 
                 if (item.Value.PendingActiveSlots.Count == 0)

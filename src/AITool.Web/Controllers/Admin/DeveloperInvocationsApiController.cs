@@ -1275,6 +1275,13 @@ AI Tool 支持为模型绑定【兼容规则集】(CompatibilityProfile)，每�
                 : "ReplaceModelName";
         }
 
+        if (upstream.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            return client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+                ? "BuildGeminiInnerFromAnthropic + WrapGeminiUpstreamBody"
+                : "BuildGeminiInnerFromOpenAi + WrapGeminiUpstreamBody";
+        }
+
         if (client.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
             && upstream.Equals("Responses", StringComparison.OrdinalIgnoreCase))
         {
@@ -1312,6 +1319,15 @@ AI Tool 支持为模型绑定【兼容规则集】(CompatibilityProfile)，每�
         if (string.Equals(client, upstream, StringComparison.OrdinalIgnoreCase))
         {
             return "直接透传";
+        }
+
+        if (upstream.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase))
+            {
+                return streaming ? "ConvertGeminiSseChunkToAnthropic" : "ConvertGeminiResponseToAnthropic";
+            }
+            return streaming ? "ConvertGeminiSseChunkToOpenAi" : "ConvertGeminiResponseToOpenAi";
         }
 
         if (client.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
