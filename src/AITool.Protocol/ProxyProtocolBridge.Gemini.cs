@@ -509,7 +509,10 @@ public static partial class ProxyProtocolBridge
         inner["toolConfig"] = toolConfig;
         var functionConfig = toolConfig["functionCallingConfig"] as JsonObject ?? new JsonObject();
         toolConfig["functionCallingConfig"] = functionConfig;
-        functionConfig["mode"] = "VALIDATED";
+        if (!functionConfig.ContainsKey("mode"))
+        {
+            functionConfig["mode"] = "VALIDATED";
+        }
 
         // 不支持预填充的模型：循环移除末尾 model 消息，保证以用户消息结尾。
         var lower = model.ToLowerInvariant();
@@ -992,7 +995,7 @@ public static partial class ProxyProtocolBridge
             return null;
         }
 
-        var geminiTools = new JsonArray();
+        var declarations = new JsonArray();
         foreach (var toolNode in tools)
         {
             if (toolNode is not JsonObject tool)
@@ -1013,10 +1016,15 @@ public static partial class ProxyProtocolBridge
                 declaration["parameters"] = cleanedSchema;
             }
 
-            geminiTools.Add(new JsonObject { ["functionDeclarations"] = new JsonArray(declaration) });
+            declarations.Add(declaration);
         }
 
-        return geminiTools.Count > 0 ? geminiTools : null;
+        if (declarations.Count == 0)
+        {
+            return null;
+        }
+
+        return new JsonArray(new JsonObject { ["functionDeclarations"] = declarations });
     }
 
     private static JsonObject? ConvertAnthropicToolChoiceToGemini(JsonNode? toolChoice)
@@ -1410,7 +1418,7 @@ public static partial class ProxyProtocolBridge
             return null;
         }
 
-        var geminiTools = new JsonArray();
+        var declarations = new JsonArray();
         foreach (var toolNode in tools)
         {
             if (toolNode is not JsonObject tool
@@ -1433,10 +1441,15 @@ public static partial class ProxyProtocolBridge
                 declaration["parameters"] = cleanedSchema;
             }
 
-            geminiTools.Add(new JsonObject { ["functionDeclarations"] = new JsonArray(declaration) });
+            declarations.Add(declaration);
         }
 
-        return geminiTools.Count > 0 ? geminiTools : null;
+        if (declarations.Count == 0)
+        {
+            return null;
+        }
+
+        return new JsonArray(new JsonObject { ["functionDeclarations"] = declarations });
     }
 
     private static JsonObject? ConvertOpenAiToolChoiceToGemini(JsonNode? toolChoice)

@@ -806,5 +806,31 @@ public sealed class ProxyProtocolBridgeGeminiTests
         contents[2]!["parts"]!.AsArray()[1]!["text"]!.GetValue<string>().Should().Be("first user follow up");
         contents[2]!["parts"]!.AsArray()[2]!["text"]!.GetValue<string>().Should().Be("second user follow up");
     }
+
+    [Fact]
+    public void PrepareRequestBody_diagnose_updated_error_file()
+    {
+        var errFile = @"d:\Code\AI-Tool\err\Gemini-请求失败.txt";
+        if (!File.Exists(errFile)) return;
+
+        var content = File.ReadAllText(errFile);
+        var jsonStart = content.IndexOf("{\r\n  \"model\"");
+        if (jsonStart < 0) jsonStart = content.IndexOf("{\n  \"model\"");
+        if (jsonStart < 0) jsonStart = content.IndexOf("{\r\n \"model\"");
+        if (jsonStart < 0) jsonStart = content.IndexOf("{\n \"model\"");
+        if (jsonStart < 0)
+        {
+            var idx = content.IndexOf("{\n");
+            if (idx < 0) idx = content.IndexOf("{\r\n");
+            jsonStart = idx;
+        }
+
+        var json = content[jsonStart..];
+        var result = ProxyProtocolBridge.PrepareRequestBody(
+            "OpenAI", "Gemini", json, "gemini-3.7-flash-high", enableStreaming: true,
+            targetBaseUrl: AntigravityBaseUrl, geminiProjectId: "test-proj");
+
+        File.WriteAllText(@"d:\Code\AI-Tool\err\converted_output_v2.json", result);
+    }
 }
 
