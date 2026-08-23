@@ -34,8 +34,6 @@ const message = useMessage()
 const targets = ref<ChatModelTarget[]>([])
 const selectedMappingId = ref<string | null>(null)
 const selectedModelId = ref<string | null>(null)
-const enableReasoning = ref(false)
-const reasoningEffort = ref('high')
 const diagnosing = ref(false)
 const result = ref<DeveloperAiDiagnoseResult | null>(null)
 const showApplyModal = ref(false)
@@ -44,14 +42,6 @@ const newProfileName = ref('')
 const selectedProfileId = ref<string | null>(null)
 const availableProfiles = ref<Array<{ label: string; value: string }>>([])
 const applying = ref(false)
-
-const reasoningOptions: SelectOption[] = [
-  { label: '低 (Low)', value: 'low' },
-  { label: '中 (Medium)', value: 'medium' },
-  { label: '高 (High)', value: 'high' },
-  { label: '超高 (XHigh)', value: 'xhigh' },
-  { label: '最大 (Max)', value: 'max' }
-]
 
 function formatTargetLabel(target: ChatModelTarget): string {
   const siteName = target.siteName?.trim() || '未命名站点'
@@ -110,9 +100,7 @@ async function handleStartDiagnose(): Promise<void> {
     const res = await runAiDiagnose({
       ...props.context,
       modelId: selectedModelId.value,
-      mappingId: selectedMappingId.value || undefined,
-      enableReasoning: enableReasoning.value,
-      reasoningEffort: reasoningEffort.value
+      mappingId: selectedMappingId.value || undefined
     })
     result.value = res
     if (!res.success) {
@@ -251,21 +239,6 @@ async function handleConfirmApply(): Promise<void> {
                 placeholder="请选择站点模型"
                 size="small"
               />
-            </div>
-            <div class="selector-item w-32">
-              <span class="selector-label">思考等级</span>
-              <NSelect
-                v-model:value="reasoningEffort"
-                :options="reasoningOptions"
-                :disabled="!enableReasoning"
-                size="small"
-              />
-            </div>
-            <div class="selector-item w-20 pt-5">
-              <NSwitch v-model:value="enableReasoning" size="small">
-                <template #checked>深度思考</template>
-                <template #unchecked>常规</template>
-              </NSwitch>
             </div>
             <div class="pt-5">
               <NButton

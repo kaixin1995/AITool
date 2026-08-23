@@ -1,7 +1,7 @@
 import { httpPost } from './http'
 
 export type ProtocolDiagnosticsDirection = 'request' | 'response'
-export type ProtocolName = 'OpenAI' | 'Anthropic' | 'Responses'
+export type ProtocolName = 'OpenAI' | 'Anthropic' | 'Responses' | 'Gemini'
 
 export interface ProtocolDiagnosticsTrialRule {
   op: 'strip' | 'rename' | 'default' | 'keep_reasoning'

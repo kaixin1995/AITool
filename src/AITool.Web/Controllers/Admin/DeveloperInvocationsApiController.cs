@@ -905,7 +905,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
 
         if (!IsSupportedProtocol(sourceProtocol) || !IsSupportedProtocol(targetProtocol))
         {
-            error = "协议只支持 OpenAI、Anthropic 和 Responses";
+            error = "协议只支持 OpenAI、Anthropic、Responses 和 Gemini";
             errorCode = "invalid_protocol";
             return false;
         }
@@ -1445,6 +1445,32 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             ];
         }
 
+        if (client.Equals("OpenAI", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                new("generateContent (parts.text)", "chat.completion.chunk", "delta.content"),
+                new("generateContent (parts.thought)", "chat.completion.chunk", "delta.reasoning_content (深度思考)"),
+                new("generateContent (parts.functionCall)", "chat.completion.chunk", "delta.tool_calls"),
+                new("generateContent (usageMetadata)", "chat.completion.chunk", "usage (promptTokenCount / candidatesTokenCount)"),
+                new("generateContent (finishReason)", "chat.completion.chunk + [DONE]", "finish_reason (STOP / MAX_TOKENS / TOOL_CALLS)")
+            ];
+        }
+
+        if (client.Equals("Anthropic", StringComparison.OrdinalIgnoreCase)
+            && upstream.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            return
+            [
+                new("generateContent (parts.text)", "content_block_delta", "delta.type=text_delta"),
+                new("generateContent (parts.thought)", "content_block_delta", "delta.type=thinking_delta"),
+                new("generateContent (parts.functionCall)", "content_block_start + content_block_delta", "tool_use + input_json_delta"),
+                new("generateContent (usageMetadata)", "message_delta", "usage (input_tokens / output_tokens)"),
+                new("generateContent (finishReason)", "message_delta + message_stop", "stop_reason + 结束")
+            ];
+        }
+
         return [];
     }
 
@@ -1700,6 +1726,21 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                     mappings.Add(new("tools", "tools", "结构转换"));
                     mappings.Add(new("thinking", "reasoning", "结构转换"));
                     break;
+                case "OpenAI->Gemini":
+                    mappings.Add(new("model", "model", "模型名映射"));
+                    mappings.Add(new("messages", "contents", "角色映射与轮次归一（user/assistant/tool → user/model）"));
+                    mappings.Add(new("messages[role=system]", "systemInstruction", "提取为系统指令"));
+                    mappings.Add(new("tools", "tools.functionDeclarations", "函数声明结构转换（清洗不支持的 Schema 字段）"));
+                    mappings.Add(new("temperature / max_tokens", "generationConfig", "生成参数映射"));
+                    mappings.Add(new("reasoning_effort", "generationConfig.thinkingConfig", "思考预算映射"));
+                    break;
+                case "Anthropic->Gemini":
+                    mappings.Add(new("model", "model", "模型名映射"));
+                    mappings.Add(new("messages", "contents", "多 part 展开与重排"));
+                    mappings.Add(new("system", "systemInstruction", "系统指令提取"));
+                    mappings.Add(new("tools", "tools.functionDeclarations", "工具声明转换"));
+                    mappings.Add(new("thinking", "generationConfig.thinkingConfig", "思考预算映射"));
+                    break;
                 default:
                     mappings.Add(new(source + " 请求体", target + " 请求体", "逐字段转换，无对应字段时忽略"));
                     break;
@@ -1740,6 +1781,20 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                     mappings.Add(new("usage.input_tokens", "usage.input_tokens", "含缓存口径还原"));
                     mappings.Add(new("usage.output_tokens", "usage.output_tokens", "透传"));
                     mappings.Add(new("usage.input_tokens_details.cached_tokens", "usage.cache_read_input_tokens", "缓存命中映射"));
+                    break;
+                case "Gemini->OpenAI":
+                    mappings.Add(new("candidates[].content.parts[].text", "choices[].message.content", "输出文本转换"));
+                    mappings.Add(new("candidates[].content.parts[].thought", "choices[].message.reasoning_content", "深度思考提取"));
+                    mappings.Add(new("candidates[].content.parts[].functionCall", "choices[].message.tool_calls", "工具调用转换"));
+                    mappings.Add(new("candidates[].finishReason", "choices[].finish_reason", "STOP → stop、MAX_TOKENS → length 等"));
+                    mappings.Add(new("usageMetadata", "usage", "promptTokenCount / candidatesTokenCount 映射"));
+                    break;
+                case "Gemini->Anthropic":
+                    mappings.Add(new("candidates[].content.parts[].text", "content[].text", "输出文本转换"));
+                    mappings.Add(new("candidates[].content.parts[].thought", "content[].type=thinking", "深度思考转换"));
+                    mappings.Add(new("candidates[].content.parts[].functionCall", "content[].type=tool_use", "工具调用转换"));
+                    mappings.Add(new("candidates[].finishReason", "stop_reason", "STOP → end_turn 等"));
+                    mappings.Add(new("usageMetadata", "usage", "token 统计映射"));
                     break;
                 default:
                     mappings.Add(new(source + " 响应体", target + " 响应体", "逐字段转换，无对应字段时忽略"));
