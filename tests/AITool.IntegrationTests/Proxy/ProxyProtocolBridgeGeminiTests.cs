@@ -808,29 +808,33 @@ public sealed class ProxyProtocolBridgeGeminiTests
     }
 
     [Fact]
-    public void PrepareRequestBody_diagnose_updated_error_file()
+    public void PrepareRequestBody_openai_to_gemini_synchronizes_mismatched_tool_response_names()
     {
-        var errFile = @"d:\Code\AI-Tool\err\Gemini-请求失败.txt";
-        if (!File.Exists(errFile)) return;
-
-        var content = File.ReadAllText(errFile);
-        var jsonStart = content.IndexOf("{\r\n  \"model\"");
-        if (jsonStart < 0) jsonStart = content.IndexOf("{\n  \"model\"");
-        if (jsonStart < 0) jsonStart = content.IndexOf("{\r\n \"model\"");
-        if (jsonStart < 0) jsonStart = content.IndexOf("{\n \"model\"");
-        if (jsonStart < 0)
+        // 客户端在 tool 消息中传错了 name（如 name=read 但对应的 call 为 pwsh），
+        // 协议桥自动按 tool_call_id 同步修正 functionResponse.name 为 pwsh。
+        var openAiBody = """
         {
-            var idx = content.IndexOf("{\n");
-            if (idx < 0) idx = content.IndexOf("{\r\n");
-            jsonStart = idx;
+          "model": "1M",
+          "messages": [
+            { "role": "user", "content": "hello" },
+            { "role": "assistant", "content": null, "tool_calls": [
+              { "id": "call_123", "type": "function", "function": { "name": "pwsh", "arguments": "{}" } }
+            ] },
+            { "role": "tool", "tool_call_id": "call_123", "name": "read", "content": "executed" },
+            { "role": "user", "content": "continue" }
+          ]
         }
+        """;
 
-        var json = content[jsonStart..];
         var result = ProxyProtocolBridge.PrepareRequestBody(
-            "OpenAI", "Gemini", json, "gemini-3.7-flash-high", enableStreaming: true,
+            "OpenAI", "Gemini", openAiBody, "gemini-3.7-flash-high", enableStreaming: true,
             targetBaseUrl: AntigravityBaseUrl, geminiProjectId: "test-proj");
 
-        File.WriteAllText(@"d:\Code\AI-Tool\err\converted_output_v2.json", result);
+        var envelope = ParseEnvelope(result);
+        envelope["model"]!.GetValue<string>().Should().Be("gemini-3.7-flash-tiered");
+        var contents = envelope["request"]!["contents"]!.AsArray();
+        var resp = contents[2]!["parts"]!.AsArray()[0]!["functionResponse"]!.AsObject();
+        resp["name"]!.GetValue<string>().Should().Be("pwsh");
     }
 }
 

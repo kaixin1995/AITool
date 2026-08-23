@@ -257,7 +257,7 @@ public static partial class ProxyProtocolBridge
                     continue;
                 }
 
-                var precedingCallIds = new HashSet<string>(StringComparer.Ordinal);
+                var precedingCallsById = new Dictionary<string, string>(StringComparer.Ordinal);
                 var precedingCallNames = new HashSet<string>(StringComparer.Ordinal);
                 if (i > 0
                     && mergedContents[i - 1] is JsonObject preceding
@@ -268,13 +268,14 @@ public static partial class ProxyProtocolBridge
                     {
                         if (pNode is JsonObject p && p["functionCall"] is JsonObject fc)
                         {
-                            if (fc["id"]?.GetValue<string>() is { Length: > 0 } id)
-                            {
-                                precedingCallIds.Add(id);
-                            }
-                            if (fc["name"]?.GetValue<string>() is { Length: > 0 } name)
+                            var name = fc["name"]?.GetValue<string>();
+                            if (!string.IsNullOrEmpty(name))
                             {
                                 precedingCallNames.Add(name);
+                                if (fc["id"]?.GetValue<string>() is { Length: > 0 } id)
+                                {
+                                    precedingCallsById[id] = name;
+                                }
                             }
                         }
                     }
@@ -287,8 +288,17 @@ public static partial class ProxyProtocolBridge
                         var respId = fr["id"]?.GetValue<string>();
                         var respName = fr["name"]?.GetValue<string>() ?? "tool";
 
-                        var isMatched = (!string.IsNullOrEmpty(respId) && precedingCallIds.Contains(respId))
-                            || (string.IsNullOrEmpty(respId) && precedingCallNames.Contains(respName));
+                        bool isMatched;
+                        if (!string.IsNullOrEmpty(respId) && precedingCallsById.TryGetValue(respId, out var actualCallName))
+                        {
+                            // 修正名称与前一轮 functionCall 完全一致，避免上游 400（name mismatch）。
+                            fr["name"] = actualCallName;
+                            isMatched = true;
+                        }
+                        else
+                        {
+                            isMatched = precedingCallNames.Contains(respName);
+                        }
 
                         if (!isMatched)
                         {
@@ -318,14 +328,26 @@ public static partial class ProxyProtocolBridge
     /// </summary>
     public static string WrapGeminiUpstreamBody(JsonObject inner, string model, string? projectId, bool isAntigravity)
     {
+        var upstreamModel = model;
         if (isAntigravity)
         {
-            ApplyAntigravityCliWrap(inner, model);
+            // Antigravity 模型别名与废弃对齐（对齐 Google fetchAvailableModels / deprecatedModelIds）
+            if (string.Equals(upstreamModel, "gemini-3.7-flash-high", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(upstreamModel, "gemini-3.7-flash", StringComparison.OrdinalIgnoreCase))
+            {
+                upstreamModel = "gemini-3.7-flash-tiered";
+            }
+            else if (string.Equals(upstreamModel, "gemini-3.1-pro-high", StringComparison.OrdinalIgnoreCase))
+            {
+                upstreamModel = "gemini-pro-agent";
+            }
+
+            ApplyAntigravityCliWrap(inner, upstreamModel);
         }
 
         var payload = new JsonObject
         {
-            ["model"] = model,
+            ["model"] = upstreamModel,
             ["request"] = inner,
         };
         if (!string.IsNullOrWhiteSpace(projectId))
@@ -339,7 +361,7 @@ public static partial class ProxyProtocolBridge
             // userAgent 字段同时被转发层用于识别 Antigravity 上游并设置对应的请求头。
             payload["requestId"] = $"agent/{Guid.NewGuid():N}/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}/{Guid.NewGuid():N}/1";
             payload["userAgent"] = "antigravity";
-            payload["requestType"] = model.Contains("image", StringComparison.OrdinalIgnoreCase) ? "image_gen" : "agent";
+            payload["requestType"] = upstreamModel.Contains("image", StringComparison.OrdinalIgnoreCase) ? "image_gen" : "agent";
         }
 
         return payload.ToJsonString();
@@ -1133,13 +1155,12 @@ public static partial class ProxyProtocolBridge
             if (string.Equals(role, "tool", StringComparison.OrdinalIgnoreCase))
             {
                 var toolCallId = message["tool_call_id"]?.GetValue<string>() ?? string.Empty;
-                var functionName = message["name"]?.GetValue<string>();
+                string? functionName = null;
                 if (toolCallsById.TryGetValue(toolCallId, out var mapped))
                 {
-                    functionName ??= mapped.Name;
+                    functionName = mapped.Name;
                 }
-
-                functionName ??= "unknown_function";
+                functionName ??= message["name"]?.GetValue<string>() ?? "unknown_function";
 
                 JsonObject responseData;
                 var content = message["content"];
