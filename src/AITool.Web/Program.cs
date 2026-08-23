@@ -38,7 +38,8 @@ builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
 
-var applicationVersion = "1.0.1.9";
+// 版本号优先从程序集元数据（AssemblyInformationalVersion / AssemblyFileVersion / AssemblyVersion）读取（由 csproj 配置）
+var applicationVersion = ReadApplicationVersion();
 // 编译时间从程序集元数据（AssemblyMetadata）读取，构建时由 csproj 注入。
 // 相比读取 dll 文件时间戳，这种方式在单文件/独立发布（Assembly.Location 为空）下依然可用。
 var buildTime = ReadBuildTimestamp() ?? DateTimeOffset.UtcNow;
@@ -506,6 +507,40 @@ if (!app.Environment.IsEnvironment("Testing"))
 }
 
 app.Run();
+
+// 从主程序集读取版本号（csproj 中定义的 Version / InformationalVersion / FileVersion / AssemblyVersion）。
+// 优先 InformationalVersion（去掉 commit hash 附加信息），次选 FileVersion，再选 AssemblyName.Version，兜底 1.0.0.0。
+static string ReadApplicationVersion()
+{
+    var assembly = typeof(Program).Assembly;
+    var infoVersionAttr = assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+        .FirstOrDefault();
+
+    if (!string.IsNullOrWhiteSpace(infoVersionAttr?.InformationalVersion))
+    {
+        // 去除可能的 git commit hash 后缀 (例如 1.0.1.10+abc1234)
+        var cleanVersion = infoVersionAttr.InformationalVersion.Split('+')[0].Trim();
+        if (!string.IsNullOrWhiteSpace(cleanVersion))
+        {
+            return cleanVersion;
+        }
+    }
+
+    var fileVersionAttr = assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyFileVersionAttribute), false)
+        .OfType<System.Reflection.AssemblyFileVersionAttribute>()
+        .FirstOrDefault();
+
+    if (!string.IsNullOrWhiteSpace(fileVersionAttr?.Version))
+    {
+        return fileVersionAttr.Version.Trim();
+    }
+
+    var asmVersion = assembly.GetName().Version;
+    return asmVersion is not null ? asmVersion.ToString() : "1.0.0.0";
+}
 
 // 从主程序集元数据读取编译时间戳（csproj 构建时注入的 AssemblyMetadata "BuildTimestamp"）。
 // 单文件/独立发布下程序集无独立 dll 文件，读取文件时间戳会失效，故用元数据方案。

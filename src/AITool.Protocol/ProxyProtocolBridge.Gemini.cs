@@ -199,6 +199,115 @@ public static partial class ProxyProtocolBridge
                     contents.RemoveAt(i);
                 }
             }
+
+            // —— 轮次归一：合并连续相同 role 的轮次，保证严格交替（user → model → user ...） ——
+            var mergedContents = new JsonArray();
+            foreach (var contentNode in contents)
+            {
+                if (contentNode is not JsonObject content || content["parts"] is not JsonArray parts || parts.Count == 0)
+                {
+                    continue;
+                }
+
+                var role = string.Equals(content["role"]?.GetValue<string>(), "model", StringComparison.OrdinalIgnoreCase)
+                    ? "model"
+                    : "user";
+
+                if (mergedContents.Count > 0
+                    && string.Equals(mergedContents[^1]?["role"]?.GetValue<string>(), role, StringComparison.OrdinalIgnoreCase)
+                    && mergedContents[^1]?["parts"] is JsonArray prevParts)
+                {
+                    foreach (var part in parts)
+                    {
+                        if (part is not null)
+                        {
+                            prevParts.Add(part.DeepClone());
+                        }
+                    }
+                }
+                else
+                {
+                    mergedContents.Add(new JsonObject
+                    {
+                        ["role"] = role,
+                        ["parts"] = (JsonArray)parts.DeepClone()
+                    });
+                }
+            }
+
+            // 确保首轮必须为 user 角色（Google Gemini API 规范）
+            if (mergedContents.Count > 0 && string.Equals(mergedContents[0]?["role"]?.GetValue<string>(), "model", StringComparison.OrdinalIgnoreCase))
+            {
+                mergedContents.Insert(0, new JsonObject
+                {
+                    ["role"] = "user",
+                    ["parts"] = new JsonArray(new JsonObject { ["text"] = "请根据系统指令回答。" })
+                });
+            }
+
+            // —— 孤儿 functionResponse 校验与修复 ——
+            // 在 Gemini 协议中，user 轮次中的每个 functionResponse 必须在紧邻的前一 model 轮次中有对应的 functionCall；
+            // 若前一轮次非 model 或无匹配的 functionCall，Gemini 会报 400 INVALID_ARGUMENT。
+            for (var i = 0; i < mergedContents.Count; i++)
+            {
+                if (mergedContents[i] is not JsonObject current
+                    || !string.Equals(current["role"]?.GetValue<string>(), "user", StringComparison.OrdinalIgnoreCase)
+                    || current["parts"] is not JsonArray currentParts)
+                {
+                    continue;
+                }
+
+                var precedingCallIds = new HashSet<string>(StringComparer.Ordinal);
+                var precedingCallNames = new HashSet<string>(StringComparer.Ordinal);
+                if (i > 0
+                    && mergedContents[i - 1] is JsonObject preceding
+                    && string.Equals(preceding["role"]?.GetValue<string>(), "model", StringComparison.OrdinalIgnoreCase)
+                    && preceding["parts"] is JsonArray precedingParts)
+                {
+                    foreach (var pNode in precedingParts)
+                    {
+                        if (pNode is JsonObject p && p["functionCall"] is JsonObject fc)
+                        {
+                            if (fc["id"]?.GetValue<string>() is { Length: > 0 } id)
+                            {
+                                precedingCallIds.Add(id);
+                            }
+                            if (fc["name"]?.GetValue<string>() is { Length: > 0 } name)
+                            {
+                                precedingCallNames.Add(name);
+                            }
+                        }
+                    }
+                }
+
+                for (var p = 0; p < currentParts.Count; p++)
+                {
+                    if (currentParts[p] is JsonObject part && part["functionResponse"] is JsonObject fr)
+                    {
+                        var respId = fr["id"]?.GetValue<string>();
+                        var respName = fr["name"]?.GetValue<string>() ?? "tool";
+
+                        var isMatched = (!string.IsNullOrEmpty(respId) && precedingCallIds.Contains(respId))
+                            || (string.IsNullOrEmpty(respId) && precedingCallNames.Contains(respName));
+
+                        if (!isMatched)
+                        {
+                            // 孤儿 functionResponse 降级为普通 text part，保留上下文内容同时避免 400。
+                            var respContent = fr["response"]?["result"]?.GetValue<string>()
+                                ?? fr["response"]?["output"]?.GetValue<string>()
+                                ?? fr["response"]?.ToJsonString()
+                                ?? string.Empty;
+
+                            currentParts[p] = new JsonObject
+                            {
+                                ["text"] = $"[工具结果: {respName}]\n{respContent}"
+                            };
+                        }
+                    }
+                }
+            }
+
+            inner["contents"] = mergedContents;
         }
     }
 
@@ -1097,8 +1206,8 @@ public static partial class ProxyProtocolBridge
                         }
                         catch
                         {
-                            // 参数 JSON 非法时丢弃该工具调用（对齐 gcli2api 容错）。
-                            continue;
+                            // 参数 JSON 非法时（例如历史消息被客户端截断），兜底为空对象，绝不能丢弃工具调用以防破坏对话轮次配对。
+                            args = new JsonObject();
                         }
                     }
                     else if (function["arguments"] is JsonObject argsObject)

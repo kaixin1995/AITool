@@ -5,6 +5,7 @@
 
 # 临时验证项目（SqlSugar 迁移可行性验证等）
 /tmp-sqlsugar-verify/
+/err/
 
 # User-specific files
 *.rsuser

@@ -4,6 +4,9 @@
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <Version>1.0.1.10</Version>
+    <AssemblyVersion>1.0.1.10</AssemblyVersion>
+    <FileVersion>1.0.1.10</FileVersion>
 	<!-- 只生成 zh-Hans 的语言资源 -->
 	<SatelliteResourceLanguages>zh</SatelliteResourceLanguages>
 	<!-- 生成 XML 文档，供 Swagger UI 展示接口注释 -->

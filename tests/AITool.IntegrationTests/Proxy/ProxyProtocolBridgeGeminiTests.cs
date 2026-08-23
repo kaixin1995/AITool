@@ -64,27 +64,25 @@ public sealed class ProxyProtocolBridgeGeminiTests
         request["systemInstruction"]!["parts"]!.AsArray()[0]!["text"]!.GetValue<string>().Should().Be("you are helpful");
 
         var contents = request["contents"]!.AsArray();
-        // tool 重排后（对齐 gcli2api reorganize：每个 part 独立成条目）：
-        // user(hi) → model(calling tool) → model(functionCall) → user(functionResponse) → user(continue)
-        contents.Should().HaveCount(5);
+        // 轮次归一合并后（保证严格 user ↔ model 交替，对齐 Google Gemini 规范）：
+        // user(hi) → model(calling tool + functionCall) → user(functionResponse + continue)
+        contents.Should().HaveCount(3);
         contents[0]!["role"]!.GetValue<string>().Should().Be("user");
         contents[0]!["parts"]!.AsArray()[0]!["text"]!.GetValue<string>().Should().Be("hi");
+        
         contents[1]!["role"]!.GetValue<string>().Should().Be("model");
         contents[1]!["parts"]!.AsArray()[0]!["text"]!.GetValue<string>().Should().Be("calling tool");
-
-        var functionCallContent = contents[2]!.AsObject();
-        functionCallContent["role"]!.GetValue<string>().Should().Be("model");
-        var functionCallPart = functionCallContent["parts"]!.AsArray()[0]!.AsObject();
+        var functionCallPart = contents[1]!["parts"]!.AsArray()[1]!.AsObject();
         functionCallPart["functionCall"]!["name"]!.GetValue<string>().Should().Be("write");
         functionCallPart["functionCall"]!["id"]!.GetValue<string>().Should().Be("toolu_1");
         functionCallPart["functionCall"]!["args"]!["path"]!.GetValue<string>().Should().Be("a.txt");
         // functionCall 部件必须带官方跳过校验占位符（中转场景真实签名不可信）。
         functionCallPart["thoughtSignature"]!.GetValue<string>().Should().Be(ProxyProtocolBridge.SkipThoughtSignatureValidator);
 
-        var functionResponseContent = contents[3]!.AsObject();
-        functionResponseContent["role"]!.GetValue<string>().Should().Be("user");
-        functionResponseContent["parts"]!.AsArray()[0]!["functionResponse"]!["name"]!.GetValue<string>().Should().Be("write");
-        functionResponseContent["parts"]!.AsArray()[0]!["functionResponse"]!["id"]!.GetValue<string>().Should().Be("toolu_1");
+        contents[2]!["role"]!.GetValue<string>().Should().Be("user");
+        contents[2]!["parts"]!.AsArray()[0]!["functionResponse"]!["name"]!.GetValue<string>().Should().Be("write");
+        contents[2]!["parts"]!.AsArray()[0]!["functionResponse"]!["id"]!.GetValue<string>().Should().Be("toolu_1");
+        contents[2]!["parts"]!.AsArray()[1]!["text"]!.GetValue<string>().Should().Be("continue");
 
         // generationConfig：强制 maxOutputTokens=64000 / topK=64（gcli2api 同款）
         var config = request["generationConfig"]!.AsObject();
@@ -170,12 +168,12 @@ public sealed class ProxyProtocolBridgeGeminiTests
         var result = ProxyProtocolBridge.PrepareRequestBody(
             "Anthropic", "Gemini", anthropicBody, "gemini-2.5-flash", enableStreaming: false, targetBaseUrl: GeminiCliBaseUrl);
 
-        // 重排后每个 part 独立成条目：user(inlineData) → user(text)。
+        // 单条 user 消息内的多个 part（图片+文本）保持在同一个 user 轮次中。
         var contents = ParseEnvelope(result)["request"]!["contents"]!.AsArray();
-        contents.Should().HaveCount(2);
+        contents.Should().HaveCount(1);
         contents[0]!["parts"]!.AsArray()[0]!["inlineData"]!["mimeType"]!.GetValue<string>().Should().Be("image/png");
         contents[0]!["parts"]!.AsArray()[0]!["inlineData"]!["data"]!.GetValue<string>().Should().Be("aGVsbG8=");
-        contents[1]!["parts"]!.AsArray()[0]!["text"]!.GetValue<string>().Should().Be("what is this");
+        contents[0]!["parts"]!.AsArray()[1]!["text"]!.GetValue<string>().Should().Be("what is this");
     }
 
     // ============ 请求方向：OpenAI → Gemini ============
@@ -210,15 +208,16 @@ public sealed class ProxyProtocolBridgeGeminiTests
         request["systemInstruction"]!["parts"]!.AsArray()[0]!["text"]!.GetValue<string>().Should().Be("be brief");
 
         var contents = request["contents"]!.AsArray();
-        // user(text) → model(functionCall) → user(functionResponse) → user(text)
-        contents.Should().HaveCount(4);
+        // 轮次归一后连续 user 轮合并：user(text) → model(functionCall) → user(functionResponse + text)
+        contents.Should().HaveCount(3);
         var callPart = contents[1]!["parts"]!.AsArray()[0]!.AsObject();
         callPart["functionCall"]!["name"]!.GetValue<string>().Should().Be("read");
         callPart["functionCall"]!["args"]!["path"]!.GetValue<string>().Should().Be("a.txt");
-        var responsePart = contents[2]!["parts"]!.AsArray()[0]!["functionResponse"]!.AsObject();
-        responsePart["name"]!.GetValue<string>().Should().Be("read");
-        responsePart["id"]!.GetValue<string>().Should().Be("call_1");
-        responsePart["response"]!["result"]!.GetValue<string>().Should().Be("file body");
+        var responsePart = contents[2]!["parts"]!.AsArray()[0]!.AsObject();
+        responsePart["functionResponse"]!["name"]!.GetValue<string>().Should().Be("read");
+        responsePart["functionResponse"]!["id"]!.GetValue<string>().Should().Be("call_1");
+        responsePart["functionResponse"]!["response"]!["result"]!.GetValue<string>().Should().Be("file body");
+        contents[2]!["parts"]!.AsArray()[1]!["text"]!.GetValue<string>().Should().Be("summarize");
 
         // reasoning_effort=medium → thinkingBudget 8192
         var thinking = request["generationConfig"]!["thinkingConfig"]!.AsObject();
@@ -760,4 +759,52 @@ public sealed class ProxyProtocolBridgeGeminiTests
         schemaText.Should().NotContain("\"title\"", "未在 properties 中定义的 required 项必须被剔除以防 Google 报 400");
         schemaText.Should().Contain("\"description\"");
     }
+
+    [Fact]
+    public void PrepareRequestBody_openai_to_gemini_handles_malformed_arguments_and_merges_consecutive_roles()
+    {
+        // 模拟客户端历史记录中包含被截断/非法的参数 JSON，以及连续的 user 消息
+        var openAiBody = """
+        {
+          "model": "1M",
+          "messages": [
+            { "role": "user", "content": "hello" },
+            { "role": "assistant", "content": null, "tool_calls": [
+              { "id": "call_1", "type": "function", "function": { "name": "edit", "arguments": "{\"truncated\": \"..." } }
+            ] },
+            { "role": "tool", "tool_call_id": "call_1", "content": "file updated" },
+            { "role": "user", "content": "first user follow up" },
+            { "role": "user", "content": "second user follow up" }
+          ]
+        }
+        """;
+
+        var result = ProxyProtocolBridge.PrepareRequestBody(
+            "OpenAI", "Gemini", openAiBody, "gemini-3.7-flash-high", enableStreaming: true,
+            targetBaseUrl: AntigravityBaseUrl, geminiProjectId: "test-proj");
+
+        var envelope = ParseEnvelope(result);
+        var contents = envelope["request"]!["contents"]!.AsArray();
+
+        // 验证：
+        // 1. 即使 arguments 损坏，tool_call 也不会被丢弃（兜底为 {}），从而保留了与 tool 响应的配对关系
+        // 2. 连续的 user 消息被合并，保证全链路严格交替（user → model → user）
+        contents.Should().HaveCount(3);
+        contents[0]!["role"]!.GetValue<string>().Should().Be("user");
+        contents[0]!["parts"]!.AsArray()[0]!["text"]!.GetValue<string>().Should().Be("hello");
+
+        contents[1]!["role"]!.GetValue<string>().Should().Be("model");
+        var call = contents[1]!["parts"]!.AsArray()[0]!["functionCall"]!.AsObject();
+        call["name"]!.GetValue<string>().Should().Be("edit");
+        call["id"]!.GetValue<string>().Should().Be("call_1");
+        call["args"]!.AsObject().Should().NotBeNull();
+
+        contents[2]!["role"]!.GetValue<string>().Should().Be("user");
+        var resp = contents[2]!["parts"]!.AsArray()[0]!["functionResponse"]!.AsObject();
+        resp["name"]!.GetValue<string>().Should().Be("edit");
+        resp["id"]!.GetValue<string>().Should().Be("call_1");
+        contents[2]!["parts"]!.AsArray()[1]!["text"]!.GetValue<string>().Should().Be("first user follow up");
+        contents[2]!["parts"]!.AsArray()[2]!["text"]!.GetValue<string>().Should().Be("second user follow up");
+    }
 }
+
