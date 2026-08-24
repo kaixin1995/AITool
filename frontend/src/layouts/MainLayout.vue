@@ -13,8 +13,6 @@ const { isDark, skin, toggleTheme, setSkin } = useTheme()
 
 const skinOptions = [
   { label: '✨ 现代科技 (Modern)', key: 'modern' },
-  { label: '⚡ 赛博极客 (Cyberpunk)', key: 'cyberpunk' },
-  { label: '🌿 极简北欧 (Nordic)', key: 'nordic' },
   { label: '🏛️ 经典简约 (Classic)', key: 'classic' }
 ]
 
@@ -63,7 +61,6 @@ const navGroups = computed<NavGroup[]>(() => {
       title: '监控运维',
       items: [
         { label: '模型检测', key: 'detection', icon: '🔍' },
-        { label: '检测任务', key: 'detection-tasks', icon: '⏰' },
         { label: '模型健康', key: 'model-health', icon: '💊' },
         ...(features?.developerEnabled ? [{ label: '调试工具', key: 'developer-invocations', icon: '🛠️' }] : []),
         { label: '使用日志', key: 'usage-logs', icon: '📋' },
@@ -74,7 +71,11 @@ const navGroups = computed<NavGroup[]>(() => {
   return groups
 })
 
-const activeKey = computed(() => (route.name as string) ?? '')
+const activeKey = computed(() => {
+  const name = (route.name as string) ?? ''
+  if (name === 'detection-tasks') return 'detection'
+  return name
+})
 
 function handleNavigate(key: string): void {
   mobileSidebarOpen.value = false

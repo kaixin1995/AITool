@@ -170,19 +170,34 @@ public sealed class CodexTokenRefreshService : BackgroundService
         }
         catch (Exception ex)
         {
-            if (IsForbiddenRefreshFailure(ex))
+            var accountName = !string.IsNullOrWhiteSpace(account.DisplayName)
+                ? account.DisplayName
+                : account.Email ?? account.Id.ToString();
+
+            if (IsInvalidRefreshTokenFailure(ex, out var reason))
             {
                 var retryAt = DateTimeOffset.UtcNow.Add(RefreshFailureBackoff);
                 _refreshRetryAt[account.Id] = retryAt;
-                // 403 属于账号当前凭证/区域不可刷新，不让异常堆栈污染启动日志；到期后自动重试。
                 _logger.LogWarning(
-                    "Codex account {Id} token refresh was rejected (403); temporarily skipped until {RetryAt}",
+                    "Codex 账号 [{Name}] (Id: {Id}) Token 刷新失败：{Reason}，已暂停重试至 {RetryAt}。若需使用请在账号管理中重新授权登录。",
+                    accountName,
+                    account.Id,
+                    reason,
+                    retryAt);
+            }
+            else if (IsForbiddenRefreshFailure(ex))
+            {
+                var retryAt = DateTimeOffset.UtcNow.Add(RefreshFailureBackoff);
+                _refreshRetryAt[account.Id] = retryAt;
+                _logger.LogWarning(
+                    "Codex 账号 [{Name}] (Id: {Id}) Token 刷新被上游拒绝 (403 Forbidden)，已暂时跳过重试至 {RetryAt}",
+                    accountName,
                     account.Id,
                     retryAt);
             }
             else
             {
-                _logger.LogWarning(ex, "Refresh failed for Codex account {Id}", account.Id);
+                _logger.LogWarning(ex, "Codex 账号 [{Name}] (Id: {Id}) Token 刷新异常", accountName, account.Id);
             }
 
             return false;
@@ -194,6 +209,33 @@ public sealed class CodexTokenRefreshService : BackgroundService
         if (!_refreshRetryAt.TryGetValue(accountId, out var retryAt)) return false;
         if (retryAt > now) return true;
         _refreshRetryAt.TryRemove(accountId, out _);
+        return false;
+    }
+
+    private static bool IsInvalidRefreshTokenFailure(Exception exception, out string reason)
+    {
+        reason = string.Empty;
+        if (exception is not InvalidOperationException)
+        {
+            return false;
+        }
+
+        var message = exception.Message;
+        if (message.Contains("401", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("invalid_refresh_token", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("revoked", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "Refresh Token 已失效或被上游撤销 (401 Invalid refresh token)";
+            return true;
+        }
+
+        if (message.Contains("400 Bad Request", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "请求参数或凭证无效 (400 Bad Request)";
+            return true;
+        }
+
         return false;
     }
 

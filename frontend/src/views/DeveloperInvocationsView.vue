@@ -18,12 +18,12 @@ import {
   type DataTableColumns
 } from 'naive-ui'
 import * as api from '@/api/developer'
-import type { DeveloperInvocationSummary, DeveloperConcurrencyItem } from '@/api/developer'
+import type { DeveloperInvocationSummary } from '@/api/developer'
 import { isRequestCanceled } from '@/api/http'
 import PageHeader from '@/components/PageHeader.vue'
 import ClientSimulator from './ClientSimulator.vue'
-import CircuitBreakerTab from './CircuitBreakerTab.vue'
 import ProtocolDiagnosticsTab from './ProtocolDiagnosticsTab.vue'
+import DiagnosticDumpsTab from './DiagnosticDumpsTab.vue'
 import SqlMigrationsTab from './SqlMigrationsTab.vue'
 import DeveloperAiDiagnosisDrawer from './DeveloperAiDiagnosisDrawer.vue'
 import JsonDiffView from '@/components/JsonDiffView.vue'
@@ -90,15 +90,12 @@ const activeTab = ref<DeveloperToolTab>(developerTabFromHash(route.hash))
 const prefillSignal = ref(0)
 provide('protocol-diagnostics-prefill', prefillSignal)
 const loading = ref(false)
-const concurrencyLoading = ref(false)
-const concurrencyError = ref('')
 const autoRefresh = ref(false)
 const summarizeDetail = ref(true)
 const entries = ref<DeveloperInvocationSummary[]>([])
 const totalCount = ref(0)
 const failedCount = ref(0)
 const pendingCount = ref(0)
-const concurrency = ref<DeveloperConcurrencyItem[]>([])
 const page = ref(1)
 const pageSize = 40
 const totalPages = ref(1)
@@ -328,15 +325,11 @@ function configureAutoRefresh(): void {
     clearInterval(pollTimer)
     pollTimer = null
   }
-  if (
-    activeTab.value !== 'concurrency'
-    && !(activeTab.value === 'invocations' && autoRefresh.value)
-  ) return
+  if (!(activeTab.value === 'invocations' && autoRefresh.value)) return
 
   pollTimer = setInterval(() => {
     if (document.visibilityState !== 'visible') return
-    if (activeTab.value === 'concurrency') void loadConcurrency(false)
-    else if (activeTab.value === 'invocations' && autoRefresh.value) void loadInvocations(false)
+    if (activeTab.value === 'invocations' && autoRefresh.value) void loadInvocations(false)
   }, 5000)
 }
 
@@ -363,26 +356,8 @@ async function loadInvocations(showSpinner = true, targetPage = page.value): Pro
   }
 }
 
-async function loadConcurrency(showError = true): Promise<void> {
-  if (concurrencyLoading.value) return
-  concurrencyLoading.value = true
-  if (showError) concurrencyError.value = ''
-  try {
-    const response = await api.getDeveloperConcurrency()
-    concurrency.value = response.items ?? []
-    concurrencyError.value = ''
-  } catch (error) {
-    if ((error as { status?: number }).status !== 404) {
-      concurrencyError.value = '并发数据加载失败，当前保留上次成功结果。'
-    }
-  } finally {
-    concurrencyLoading.value = false
-  }
-}
-
 function refreshActiveTab(): void {
   if (activeTab.value === 'invocations') void loadInvocations(false)
-  else if (activeTab.value === 'concurrency') void loadConcurrency(false)
 }
 
 function handleVisibilityChange(): void {
@@ -470,31 +445,10 @@ const paginationSummary = computed(() => {
   return `显示第 ${formatNumber(start)}-${formatNumber(end)} 条，共 ${formatNumber(totalCount.value)} 条，一页最多 40 条`
 })
 
-const concColumns = computed<DataTableColumns<DeveloperConcurrencyItem>>(() => [
-  { title: '模型名', key: 'modelName', minWidth: 180, ellipsis: { tooltip: true } },
-  { title: '站点', key: 'siteName', minWidth: 160, ellipsis: { tooltip: true } },
-  {
-    title: '并发数',
-    key: 'activeCount',
-    width: 100,
-    align: 'right',
-    render: (r) => h('span', { class: ['concurrency-count-badge', r.activeCount > 0 ? 'is-active' : ''] }, r.activeCount)
-  },
-  { title: '最大并发', key: 'maxConcurrency', width: 110, align: 'right', render: (r) => r.maxConcurrency ?? '不限' },
-  {
-    title: '排队数',
-    key: 'queueCount',
-    width: 100,
-    align: 'right',
-    render: (r) => h('span', { class: ['concurrency-count-badge', r.queueCount > 0 ? 'is-queued' : ''] }, r.queueCount)
-  }
-])
-
 watch(activeTab, (tab) => {
   const hash = developerHashForTab(tab)
   if (route.hash !== hash) void router.replace({ hash })
   if (tab === 'invocations') void loadInvocations()
-  else if (tab === 'concurrency') void loadConcurrency()
   configureAutoRefresh()
 })
 
@@ -505,7 +459,6 @@ watch(() => route.hash, (hash) => {
 
 onMounted(() => {
   if (activeTab.value === 'invocations') void loadInvocations()
-  else if (activeTab.value === 'concurrency') void loadConcurrency()
   configureAutoRefresh()
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
@@ -760,42 +713,18 @@ onUnmounted(() => {
           </div>
         </NTabPane>
 
+        <NTabPane name="diagnostic-dumps" tab="诊断抓包与样本">
+          <DiagnosticDumpsTab />
+        </NTabPane>
+
+        <NTabPane name="protocol-diagnostics" tab="协议自愈">
+          <ProtocolDiagnosticsTab />
+        </NTabPane>
+
         <NTabPane name="simulator" tab="客户端模拟">
           <ClientSimulator />
         </NTabPane>
 
-        <NTabPane name="concurrency" tab="当前模型并发数检测">
-          <div class="concurrency-header">
-            <h2 class="pane-title concurrency-title">
-              <span>当前模型并发数检测</span>
-              <NTooltip trigger="hover">
-                <template #trigger><span class="concurrency-help-trigger">?</span></template>
-                仅展示最近 6 小时内出现过的站点模型，并同步显示当前并发数、最大并发和排队数。
-              </NTooltip>
-            </h2>
-            <div class="concurrency-refresh-tip">进入此页后自动刷新</div>
-          </div>
-          <NAlert v-if="concurrencyError" type="error" :show-icon="false" class="concurrency-error">
-            {{ concurrencyError }}
-          </NAlert>
-          <NCard class="concurrency-table-card" :content-style="{ padding: 0 }">
-            <NDataTable
-              :columns="concColumns"
-              :data="concurrency"
-              :loading="concurrencyLoading"
-              :row-key="(r: DeveloperConcurrencyItem) => r.concurrencyKey || `${r.siteId}:${r.modelName}`"
-              :pagination="{ pageSize: 20 }"
-              :scroll-x="760"
-              size="small"
-            />
-          </NCard>
-        </NTabPane>
-        <NTabPane name="circuit-breaker" tab="熔断监控">
-          <CircuitBreakerTab />
-        </NTabPane>
-        <NTabPane name="protocol-diagnostics" tab="协议诊断">
-          <ProtocolDiagnosticsTab />
-        </NTabPane>
         <NTabPane name="sql-migrations" tab="SQL 迁移">
           <SqlMigrationsTab />
         </NTabPane>
@@ -1262,55 +1191,6 @@ onUnmounted(() => {
 .trace-pagination-actions {
   display: flex;
   gap: 8px;
-}
-
-.concurrency-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.concurrency-help-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--bg-surface-soft);
-  color: var(--text-color-secondary);
-  font-size: 12px;
-  font-weight: 800;
-  cursor: help;
-}
-
-.concurrency-table-card,
-.concurrency-table-card :deep(.n-data-table) {
-  max-width: 100%;
-}
-
-.concurrency-count-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 54px;
-  min-height: 30px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: var(--status-info-bg);
-  color: var(--status-info-text);
-  font-weight: 700;
-}
-
-.concurrency-count-badge.is-active {
-  background: var(--status-success-bg);
-  color: var(--status-success-text);
-}
-
-.concurrency-count-badge.is-queued {
-  background: var(--status-warning-bg);
-  color: var(--status-warning-text);
 }
 
 [data-theme='dark'] .trace-overview-card-primary,

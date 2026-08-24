@@ -264,7 +264,7 @@ public sealed partial class OpenAiProxyController
                     return new EmptyResult();
                 }
 
-                SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
+                SafeRecordProxyDiagnostic("Responses", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, streamResult, requestId, traceId);
                 var streamCanFallback = !streamResult.Success
                     && streamOutcome.CanFallback
                     && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
@@ -328,7 +328,6 @@ public sealed partial class OpenAiProxyController
                     OutputTokens = streamResult.OutputTokens,
                     TotalDurationMs = streamResult.TotalDurationMs
                 });
-                SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
                 SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
@@ -346,7 +345,7 @@ public sealed partial class OpenAiProxyController
                 return new EmptyResult();
             }
 
-            SafeWriteConsoleProxyLog("Responses", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
+            SafeRecordProxyDiagnostic("Responses", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
             var canFallback = allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
 
             // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账，
@@ -445,7 +444,6 @@ public sealed partial class OpenAiProxyController
                 OutputTokens = result.OutputTokens,
                 TotalDurationMs = result.TotalDurationMs
             });
-            SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
             SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             lastResult = result;
         }
@@ -599,7 +597,7 @@ public sealed partial class OpenAiProxyController
                 return false;
             }
 
-            SafeWriteConsoleProxyLog("ResponsesWebSocket", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, rawRequestBody.Length);
+            SafeRecordProxyDiagnostic("ResponsesWebSocket", requestSource, modelName, route, actualProtocolType, rawRequestBody, preparedRequestBody, streamResult, requestId, traceId);
             var canFallback = !streamResult.Success
                 && streamOutcome.CanFallback
                 && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
@@ -667,7 +665,6 @@ public sealed partial class OpenAiProxyController
                 OutputTokens = streamResult.OutputTokens,
                 TotalDurationMs = streamResult.TotalDurationMs
             });
-            SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
             SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             lastResult = streamResult;
             if (!streamOutcome.CanFallback)

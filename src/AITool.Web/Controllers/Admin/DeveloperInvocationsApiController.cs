@@ -11,6 +11,8 @@ using AITool.Web.Contracts;
 using AITool.Protocol;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
+using AITool.Domain.Operations;
+using AITool.Domain.Sites;
 
 namespace AITool.Web.Controllers.Admin;
 
@@ -28,6 +30,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
     private readonly RouteCircuitStateStore _circuitStore;
     private readonly AppDbContext _dbContext;
     private readonly IProxyForwardService _forwardService;
+    private readonly IProxyDiagnosticService _diagnosticService;
 
     public DeveloperInvocationsApiController(
         ISystemRuntimeSettingsService runtimeSettingsService,
@@ -36,7 +39,8 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         ProxyRequestMetadataCache metadataCache,
         RouteCircuitStateStore circuitStore,
         AppDbContext dbContext,
-        IProxyForwardService forwardService)
+        IProxyForwardService forwardService,
+        IProxyDiagnosticService diagnosticService)
     {
         _runtimeSettingsService = runtimeSettingsService;
         _traceStore = traceStore;
@@ -45,6 +49,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         _circuitStore = circuitStore;
         _dbContext = dbContext;
         _forwardService = forwardService;
+        _diagnosticService = diagnosticService;
     }
 
     /// <summary>
@@ -328,6 +333,569 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             SuggestedAction = parsed.SuggestedAction,
             Rules = parsed.Rules
         }));
+    }
+
+    /// <summary>
+    /// 执行 AI 驱动的多轮自动试错与自愈调试：
+    /// AI 分析报错 -> 微调 Payload -> 向上游真实发送试探请求 -> 若失败反馈给 AI 迭代 -> 成功后输出根因报告与兼容规则。
+    /// </summary>
+    [HttpPost("auto-diagnose-loop")]
+    public async Task<IActionResult> RunAutoDiagnoseLoop(
+        [FromBody] DeveloperAutoDiagnoseLoopRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        if (request.DiagnosticModelId == Guid.Empty)
+        {
+            return BadRequest(ApiResponse.Fail("请选择用于诊断的 AI 模型", "invalid_diagnostic_model"));
+        }
+
+        var diagnosticModel = await _metadataCache.GetEnabledModelAsync(request.DiagnosticModelId, cancellationToken);
+        if (diagnosticModel is null)
+        {
+            return Ok(ApiResponse.Ok(new DeveloperAutoDiagnoseLoopResponse
+            {
+                Success = false,
+                Error = "所选诊断模型不存在或已禁用"
+            }));
+        }
+
+        // 1. 解析诊断模型的目标路由
+        var diagnosticTarget = await ResolveDiagnosticTargetAsync(request.DiagnosticModelId, request.DiagnosticMappingId, diagnosticModel.ModelName, cancellationToken);
+        if (diagnosticTarget == null)
+        {
+            return Ok(ApiResponse.Ok(new DeveloperAutoDiagnoseLoopResponse
+            {
+                Success = false,
+                Error = "诊断模型无可用路由目标"
+            }));
+        }
+
+        // 2. 解析被测试的上游站点凭据与配置
+        var (testSiteName, testBaseUrl, testApiKey, testEndpointPathMode, testProtocol) =
+            await ResolveTestSiteInfoAsync(request, cancellationToken);
+
+        if (string.IsNullOrWhiteSpace(testBaseUrl))
+        {
+            return Ok(ApiResponse.Ok(new DeveloperAutoDiagnoseLoopResponse
+            {
+                Success = false,
+                Error = "未找到目标测试站点或目标 BaseUrl 为空，无法发起实机试探"
+            }));
+        }
+
+        var runtimeSettings = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+        var maxRounds = Math.Clamp(request.MaxRounds, 1, 5);
+
+        var rounds = new List<DeveloperAutoDiagnoseRoundItem>();
+        var currentPayload = !string.IsNullOrWhiteSpace(request.InitialPreparedRequestBody)
+            ? request.InitialPreparedRequestBody
+            : request.OriginalRequestBody;
+        var currentError = request.InitialErrorResponse;
+        var currentStatusCode = request.InitialStatusCode;
+        var isSuccess = false;
+        var workingPayload = string.Empty;
+
+        // 3. 执行多轮试探循环
+        for (int round = 1; round <= maxRounds; round++)
+        {
+            var roundPrompt = BuildAutoDiagnoseRoundPrompt(
+                request.SourceProtocol,
+                testProtocol,
+                request.TargetModelName,
+                testSiteName,
+                testBaseUrl,
+                currentPayload,
+                currentStatusCode,
+                currentError,
+                round,
+                maxRounds,
+                rounds);
+
+            var (aiOutput, _) = await CallDiagnosticModelInternalAsync(
+                diagnosticTarget,
+                roundPrompt,
+                request.EnableReasoning,
+                request.ReasoningEffort,
+                runtimeSettings,
+                cancellationToken);
+
+            var (hypothesis, explanation, adjustedPayload) = ParseRoundAiOutput(aiOutput, currentPayload);
+
+            // 发起真实上游试探调用
+            var isGeminiRoute = string.Equals(testProtocol, "Gemini", StringComparison.OrdinalIgnoreCase);
+            var isResponsesRoute = string.Equals(testProtocol, "Responses", StringComparison.OrdinalIgnoreCase);
+
+            var forwardHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            if (isGeminiRoute)
+            {
+                Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
+                    forwardHeaders, request.TargetModelName, ProxyProtocolBridge.IsAntigravityTarget(testBaseUrl));
+            }
+
+            var targetPath = isGeminiRoute
+                ? "/v1internal:generateContent"
+                : isResponsesRoute
+                    ? SiteEndpointPathResolver.ResolvePath(testEndpointPathMode, "responses")
+                    : null;
+
+            var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
+            {
+                TargetBaseUrl = testBaseUrl,
+                TargetEndpointPathMode = testEndpointPathMode,
+                TargetApiKey = testApiKey,
+                ProtocolType = testProtocol,
+                TargetModelName = request.TargetModelName,
+                RequestBody = adjustedPayload,
+                PreparedRequestBody = adjustedPayload,
+                EnableStreaming = false,
+                RequestTimeoutSeconds = Math.Min(30, Math.Max(10, runtimeSettings.ProxyRequestTimeoutSeconds)),
+                RetryCount = 0,
+                ForwardHeaders = forwardHeaders,
+                TargetPath = targetPath
+            }, cancellationToken);
+
+            var isRoundSuccess = forwardResult.Success && forwardResult.StatusCode is >= 200 and < 300;
+            var maxRoundBytes = _diagnosticService.MaxRoundResponseBytes;
+            var roundResponseBody = forwardResult.ResponseBody ?? string.Empty;
+            if (roundResponseBody.Length > maxRoundBytes)
+            {
+                roundResponseBody = roundResponseBody[..maxRoundBytes] + $"\n... [TRUNCATED DUE TO SIZE: Exceeded {maxRoundBytes / (1024 * 1024)}MB limit]";
+            }
+
+            var roundItem = new DeveloperAutoDiagnoseRoundItem
+            {
+                RoundNumber = round,
+                Hypothesis = hypothesis,
+                Explanation = explanation,
+                AdjustedRequestBody = adjustedPayload,
+                StatusCode = forwardResult.StatusCode,
+                Success = isRoundSuccess,
+                ResponseBody = roundResponseBody,
+                DurationMs = forwardResult.TotalDurationMs,
+                ErrorMessage = forwardResult.ErrorMessage ?? string.Empty
+            };
+            rounds.Add(roundItem);
+
+            if (isRoundSuccess)
+            {
+                isSuccess = true;
+                workingPayload = adjustedPayload;
+                break;
+            }
+
+            currentPayload = adjustedPayload;
+            currentError = string.IsNullOrWhiteSpace(forwardResult.ResponseBody)
+                ? forwardResult.ErrorMessage ?? "未知错误"
+                : forwardResult.ResponseBody;
+            currentStatusCode = forwardResult.StatusCode;
+        }
+
+        // 4. 最终归因总结与兼容规则提炼
+        var summaryPrompt = BuildAutoDiagnoseSummaryPrompt(
+            request.SourceProtocol,
+            testProtocol,
+            request.TargetModelName,
+            testSiteName,
+            request.InitialPreparedRequestBody,
+            request.InitialStatusCode,
+            request.InitialErrorResponse,
+            isSuccess,
+            workingPayload,
+            rounds);
+
+        var (summaryOutput, _) = await CallDiagnosticModelInternalAsync(
+            diagnosticTarget,
+            summaryPrompt,
+            request.EnableReasoning,
+            request.ReasoningEffort,
+            runtimeSettings,
+            cancellationToken);
+
+        var parsed = ParseAiDiagnosisOutput(summaryOutput);
+
+        return Ok(ApiResponse.Ok(new DeveloperAutoDiagnoseLoopResponse
+        {
+            Success = isSuccess,
+            TotalRounds = rounds.Count,
+            Rounds = rounds,
+            RootCause = !string.IsNullOrWhiteSpace(parsed.RootCause) ? parsed.RootCause : (isSuccess ? "经过参数微调，上游已正常受理请求。" : "多轮试探未能让上游受理请求。"),
+            Summary = !string.IsNullOrWhiteSpace(parsed.Summary) ? parsed.Summary : (isSuccess ? $"第 {rounds.Count} 轮自动微调成功！" : "自动试探已达最大轮数上限。"),
+            SuggestedAction = !string.IsNullOrWhiteSpace(parsed.SuggestedAction) ? parsed.SuggestedAction : summaryOutput,
+            WorkingPayload = workingPayload,
+            Rules = parsed.Rules
+        }));
+    }
+
+    private async Task<CachedFallbackTarget?> ResolveDiagnosticTargetAsync(
+        Guid modelId,
+        Guid? mappingId,
+        string modelName,
+        CancellationToken cancellationToken)
+    {
+        if (mappingId.HasValue && mappingId.Value != Guid.Empty)
+        {
+            var targets = await _metadataCache.GetChatTargetsAsync(modelId, cancellationToken);
+            var selectedTarget = targets.FirstOrDefault(x => x.MappingId == mappingId.Value);
+            if (selectedTarget != null)
+            {
+                return new CachedFallbackTarget
+                {
+                    ModelId = modelId,
+                    SiteId = selectedTarget.SiteId,
+                    SiteKeyId = selectedTarget.SiteKeyId,
+                    CircuitKey = selectedTarget.CircuitKey,
+                    SiteName = selectedTarget.SiteName,
+                    ProtocolType = selectedTarget.ProtocolType,
+                    BaseUrl = selectedTarget.BaseUrl,
+                    EndpointPathMode = selectedTarget.EndpointPathMode,
+                    ApiKey = selectedTarget.ApiKey,
+                    SiteModelName = selectedTarget.SiteModelName,
+                    ExtraHeaders = selectedTarget.ExtraHeaders
+                };
+            }
+        }
+
+        var allRoutes = await _metadataCache.GetRouteTargetsForModelAsync(modelName, cancellationToken);
+        var availableRoute = allRoutes.FirstOrDefault(r => !_circuitStore.IsBlocked(r.CircuitKey));
+        if (availableRoute != null)
+        {
+            return new CachedFallbackTarget
+            {
+                ModelId = modelId,
+                SiteId = availableRoute.SiteId,
+                SiteKeyId = availableRoute.SiteKeyId,
+                CircuitKey = availableRoute.CircuitKey,
+                SiteName = availableRoute.SiteName,
+                ProtocolType = availableRoute.ProtocolType,
+                BaseUrl = availableRoute.BaseUrl,
+                EndpointPathMode = availableRoute.EndpointPathMode,
+                ApiKey = availableRoute.ApiKey,
+                SiteModelName = availableRoute.SiteModelName,
+                ExtraHeaders = availableRoute.ExtraHeaders
+            };
+        }
+
+        return null;
+    }
+
+    private async Task<(string SiteName, string BaseUrl, string ApiKey, string EndpointPathMode, string ProtocolType)> ResolveTestSiteInfoAsync(
+        DeveloperAutoDiagnoseLoopRequest request,
+        CancellationToken cancellationToken)
+    {
+        Site? site = null;
+        if (request.TargetSiteId.HasValue && request.TargetSiteId.Value != Guid.Empty)
+        {
+            site = await _dbContext.Sites.InSingleAsync(request.TargetSiteId.Value);
+        }
+
+        if (site == null && !string.IsNullOrWhiteSpace(request.TargetSiteName))
+        {
+            site = await _dbContext.Sites.Where(s => s.Name == request.TargetSiteName).FirstAsync(cancellationToken);
+        }
+
+        if (site != null)
+        {
+            var apiKey = site.ApiKey;
+            if (string.IsNullOrWhiteSpace(apiKey))
+            {
+                var firstKey = await _dbContext.SiteKeys.Where(k => k.SiteId == site.Id && k.IsEnabled).FirstAsync(cancellationToken);
+                apiKey = firstKey?.KeyValue ?? string.Empty;
+            }
+
+            return (
+                site.Name,
+                site.BaseUrl,
+                apiKey,
+                site.EndpointPathMode,
+                !string.IsNullOrWhiteSpace(request.TargetProtocol) ? request.TargetProtocol : site.ProtocolType
+            );
+        }
+
+        return (
+            request.TargetSiteName ?? "Custom Target",
+            request.TargetBaseUrl ?? string.Empty,
+            request.TargetApiKey ?? string.Empty,
+            request.TargetEndpointPathMode ?? "standard-root",
+            request.TargetProtocol ?? "OpenAI"
+        );
+    }
+
+    private async Task<(string Content, string? Reasoning)> CallDiagnosticModelInternalAsync(
+        CachedFallbackTarget target,
+        string prompt,
+        bool enableReasoning,
+        string? reasoningEffort,
+        CachedProxyRuntimeSettings runtimeSettings,
+        CancellationToken cancellationToken)
+    {
+        var concurrencyMode = (ConcurrencyAcquireMode)runtimeSettings.ConcurrencyMode;
+        var concurrencyQueueTimeout = TimeSpan.FromSeconds(runtimeSettings.ConcurrencyQueueTimeoutSeconds);
+
+        using var concurrencyHandle = await _concurrencyLimiter.AcquireAsync(
+            HttpContext.RequestServices,
+            target.SiteKeyId ?? target.SiteId,
+            target.SiteModelName,
+            concurrencyMode,
+            concurrencyQueueTimeout,
+            cancellationToken,
+            displaySiteId: target.SiteId);
+
+        if (!concurrencyHandle.Acquired)
+        {
+            return ("诊断模型并发槽位已满，无法发起调用", null);
+        }
+
+        var chatRequestBody = BuildAiDiagnosisChatRequestBody(
+            target.ProtocolType,
+            target.SiteModelName,
+            prompt,
+            enableReasoning,
+            reasoningEffort ?? "high");
+
+        string preparedRequestBody = chatRequestBody;
+        var isGeminiRoute = string.Equals(target.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase);
+        if (string.Equals(target.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            preparedRequestBody = ProxyProtocolBridge.NormalizeResponsesBody(chatRequestBody, ProxyProtocolBridge.IsCodexTarget(target.BaseUrl));
+        }
+        else if (isGeminiRoute)
+        {
+            preparedRequestBody = ProxyProtocolBridge.PrepareRequestBody(
+                "OpenAI", "Gemini", chatRequestBody, target.SiteModelName, false,
+                null, target.BaseUrl, null, isPassthrough: false, isCompact: false,
+                geminiProjectId: target.GoogleProjectId);
+        }
+
+        var forwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(target.ExtraHeaders);
+        if (isGeminiRoute)
+        {
+            Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
+                forwardHeaders, target.SiteModelName, ProxyProtocolBridge.IsAntigravityTarget(target.BaseUrl));
+        }
+
+        var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
+        {
+            TargetBaseUrl = target.BaseUrl,
+            TargetEndpointPathMode = target.EndpointPathMode,
+            TargetApiKey = target.ApiKey,
+            ProtocolType = target.ProtocolType,
+            TargetModelName = target.SiteModelName,
+            RequestBody = chatRequestBody,
+            PreparedRequestBody = preparedRequestBody,
+            EnableStreaming = false,
+            RequestTimeoutSeconds = Math.Max(60, runtimeSettings.ProxyRequestTimeoutSeconds),
+            RetryCount = 0,
+            ForwardHeaders = forwardHeaders,
+            TargetPath = isGeminiRoute
+                ? "/v1internal:generateContent"
+                : string.Equals(target.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                    ? SiteEndpointPathResolver.ResolvePath(target.EndpointPathMode, "responses")
+                    : null
+        }, cancellationToken);
+
+        if (!forwardResult.Success)
+        {
+            return ($"诊断模型调用失败 (HTTP {forwardResult.StatusCode}): {forwardResult.ErrorMessage}", null);
+        }
+
+        return ExtractChatCompletionContent(forwardResult.ResponseBody, target.ProtocolType);
+    }
+
+    private static (string Hypothesis, string Explanation, string AdjustedPayload) ParseRoundAiOutput(string aiOutput, string fallbackPayload)
+    {
+        if (string.IsNullOrWhiteSpace(aiOutput))
+        {
+            return ("AI 未返回分析内容", "保持原请求尝试", fallbackPayload);
+        }
+
+        try
+        {
+            var jsonStr = ExtractJsonBlock(aiOutput);
+            if (!string.IsNullOrWhiteSpace(jsonStr))
+            {
+                using var doc = JsonDocument.Parse(jsonStr);
+                var root = doc.RootElement;
+                var hypothesis = root.TryGetProperty("hypothesis", out var h) ? h.GetString() ?? "" : "";
+                var explanation = root.TryGetProperty("explanation", out var e) ? e.GetString() ?? "" : "";
+
+                string adjustedPayload = fallbackPayload;
+                if (root.TryGetProperty("adjustedPayload", out var ap))
+                {
+                    adjustedPayload = ap.ValueKind == JsonValueKind.String
+                        ? ap.GetString() ?? fallbackPayload
+                        : ap.GetRawText();
+                }
+
+                return (
+                    string.IsNullOrWhiteSpace(hypothesis) ? "AI 提出参数微调假设" : hypothesis,
+                    string.IsNullOrWhiteSpace(explanation) ? "已针对上游报错微调请求体" : explanation,
+                    adjustedPayload
+                );
+            }
+        }
+        catch
+        {
+        }
+
+        return ("AI 提供了诊断建议", "已应用优化", fallbackPayload);
+    }
+
+    private static string ExtractJsonBlock(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+        var startIndex = text.IndexOf("```json", StringComparison.OrdinalIgnoreCase);
+        if (startIndex >= 0)
+        {
+            startIndex += 7;
+            var endIndex = text.IndexOf("```", startIndex, StringComparison.Ordinal);
+            return (endIndex > startIndex ? text[startIndex..endIndex] : text[startIndex..]).Trim();
+        }
+
+        var firstBrace = text.IndexOf('{');
+        var lastBrace = text.LastIndexOf('}');
+        if (firstBrace >= 0 && lastBrace > firstBrace)
+        {
+            return text[firstBrace..(lastBrace + 1)].Trim();
+        }
+
+        return string.Empty;
+    }
+
+    private static string BuildAutoDiagnoseRoundPrompt(
+        string sourceProtocol,
+        string targetProtocol,
+        string targetModelName,
+        string targetSiteName,
+        string targetBaseUrl,
+        string currentPayload,
+        int currentStatusCode,
+        string currentError,
+        int round,
+        int maxRounds,
+        List<DeveloperAutoDiagnoseRoundItem> previousRounds)
+    {
+        var historySb = new StringBuilder();
+        if (previousRounds.Count > 0)
+        {
+            historySb.AppendLine("### 【历史已尝试轮次与结果】");
+            foreach (var r in previousRounds)
+            {
+                historySb.AppendLine($"- 第 {r.RoundNumber} 轮假设: {r.Hypothesis}");
+                historySb.AppendLine($"  修改要点: {r.Explanation}");
+                historySb.AppendLine($"  上游测试结果: HTTP {r.StatusCode}, 错误: {r.ErrorMessage}");
+            }
+            historySb.AppendLine();
+        }
+
+        return $@"你是一个顶级 AI API 网关协议自愈与故障排查专家。
+当前正在针对发往上游 AI 站点的一次失败请求进行【第 {round} / {maxRounds} 轮自动试错与自愈微调】。
+
+### 【目标站点与协议上下文】
+- 源协议: {sourceProtocol}
+- 目标上游协议: {targetProtocol}
+- 上游模型名称: {targetModelName}
+- 目标站点名称: {targetSiteName}
+- 目标 Base URL: {targetBaseUrl}
+
+### 【当前发往上游失败的请求正文 (Current Payload)】
+```json
+{currentPayload}
+```
+
+### 【上游返回的真实错误信息 (HTTP {currentStatusCode})】
+```
+{currentError}
+```
+
+{historySb}
+
+### 【排查与自愈指导】
+1. 深入分析上游真实报错（如 400 Bad Request / 422 Unprocessable Entity / 404 Not Found）：
+   - 是否包含不支持的模型参数（例如 `temperature`, `reasoning_effort`, `thinking`, `max_tokens` 层级或命名不符）？
+   - tools / function calling 的 JSON Schema 是否缺少必要 properties 或包含非法工具名（如带冒号、特殊字符）？
+   - Gemini / Anthropic / OpenAI 各自独特的 payload 格式与约束是否满足？
+2. 给出你关于导致该报错的**核心假设 (Hypothesis)**。
+3. 对当前 Payload 进行针对性修改与修复，输出一份**完整且合法的最新请求体 JSON**，准备直接发给上游进行实机测试！
+
+### 【输出格式要求】
+必须在回答最后输出严格符合以下格式的 JSON 代码块：
+```json
+{{
+  ""hypothesis"": ""导致上游报错的核心原因假设（如：Gemini 要求 tools 的 function_declarations 中的 parameters 必须是 object 类型）"",
+  ""explanation"": ""本轮所做的具体修复操作（如：移除了非法的 top_p 并修复了 tools 参数类型）"",
+  ""adjustedPayload"": {{ ... 修正后可直接发给上游的完整 JSON 请求体 ... }}
+}}
+```";
+    }
+
+    private static string BuildAutoDiagnoseSummaryPrompt(
+        string sourceProtocol,
+        string targetProtocol,
+        string targetModelName,
+        string targetSiteName,
+        string initialPayload,
+        int initialStatusCode,
+        string initialError,
+        bool isSuccess,
+        string workingPayload,
+        List<DeveloperAutoDiagnoseRoundItem> rounds)
+    {
+        var historySb = new StringBuilder();
+        foreach (var r in rounds)
+        {
+            var statusStr = r.Success ? "✅ 成功 (200 OK)" : $"❌ 失败 (HTTP {r.StatusCode})";
+            historySb.AppendLine($"#### 第 {r.RoundNumber} 轮尝试 [{statusStr}]");
+            historySb.AppendLine($"- **假设**: {r.Hypothesis}");
+            historySb.AppendLine($"- **调整**: {r.Explanation}");
+            if (!r.Success)
+            {
+                historySb.AppendLine($"- **上游响应**: {r.ErrorMessage}");
+            }
+            historySb.AppendLine();
+        }
+
+        var resultTitle = isSuccess ? "【自愈测试成功】" : "【自愈测试未完全收敛】";
+
+        return $@"你是一个顶级 AI API 网关协议自愈与故障排查专家。
+我们刚刚针对一次协议转换故障完成了一组自动化多轮实机测试。现在请对整个测试过程进行最终的归因总结与方案提炼。
+
+### {resultTitle}
+- 源协议: {sourceProtocol} ➔ 目标协议: {targetProtocol}
+- 上游模型: {targetModelName} (站点: {targetSiteName})
+- 初始报错: HTTP {initialStatusCode}
+- 初始报错信息: {initialError}
+
+### 【各轮次测试执行记录】
+{historySb}
+
+{(isSuccess ? $@"### 【最终验证成功的有效请求正文 (Working Payload)】
+```json
+{workingPayload}
+```" : "")}
+
+### 【你的总结任务】
+1. 用清晰专业的中文输出深度根因分析报告（包含 **故障根本原因**、**修复要点总结**、**后续网关预防建议**）。
+2. 在回答最后，附带结构化的 JSON 总结与推荐兼容规则（若可提炼为网关规则）：
+```json
+{{
+  ""summary"": ""一句话总结本次自愈调试结果"",
+  ""rootCause"": ""详细的根本原因分析"",
+  ""suggestedAction"": ""具体的修复操作与建议"",
+  ""rules"": [
+    {{
+      ""op"": ""strip"" | ""rename"" | ""default"" | ""set"",
+      ""key"": ""字段名"",
+      ""value"": ""值 (若有)"",
+      ""scope"": ""bridge""
+    }}
+  ]
+}}
+```";
     }
 
     private static string BuildAiDiagnosisPrompt(DeveloperAiDiagnoseRequest req)
@@ -882,6 +1450,144 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
 
         var count = _circuitStore.ResetAll();
         return Ok(ApiResponse.Ok(new { resetCount = count }, $"已解除 {count} 条路由的熔断"));
+    }
+
+    /// <summary>
+    /// 获取当前成功请求采样状态（默认关闭，临时开启最多 10 分钟自动关闭）。
+    /// </summary>
+    [HttpGet("diagnostic-sampling")]
+    public async Task<IActionResult> GetDiagnosticSamplingStatus(CancellationToken cancellationToken = default)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var status = _diagnosticService.GetSuccessSamplingStatus();
+        return Ok(ApiResponse.Ok(status));
+    }
+
+    /// <summary>
+    /// 临时开启成功请求诊断采样（最长 10 分钟，到期自动关闭，防止硬盘爆满）。
+    /// </summary>
+    [HttpPost("diagnostic-sampling/enable")]
+    public async Task<IActionResult> EnableDiagnosticSampling(
+        [FromQuery] int durationMinutes = 10,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var status = _diagnosticService.EnableSuccessSampling(durationMinutes);
+        return Ok(ApiResponse.Ok(status, $"成功请求抓包采样已开启，将在 {durationMinutes} 分钟后自动关闭"));
+    }
+
+    /// <summary>
+    /// 关闭成功请求诊断采样。
+    /// </summary>
+    [HttpPost("diagnostic-sampling/disable")]
+    public async Task<IActionResult> DisableDiagnosticSampling(CancellationToken cancellationToken = default)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var status = _diagnosticService.DisableSuccessSampling();
+        return Ok(ApiResponse.Ok(status, "已关闭成功请求抓包采样"));
+    }
+
+    /// <summary>
+    /// 获取当前诊断抓包与自愈试探的动态限制参数。
+    /// </summary>
+    [HttpGet("diagnostic-config")]
+    public async Task<IActionResult> GetDiagnosticConfig(CancellationToken cancellationToken = default)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var config = _diagnosticService.GetConfig();
+        return Ok(ApiResponse.Ok(config));
+    }
+
+    /// <summary>
+    /// 动态修改诊断抓包与自愈试探的限制参数（即时生效，可随偶发大请求现场随时调整）。
+    /// </summary>
+    [HttpPost("diagnostic-config")]
+    public async Task<IActionResult> UpdateDiagnosticConfig(
+        [FromBody] DiagnosticConfigDto request,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var updated = _diagnosticService.UpdateConfig(request);
+        return Ok(ApiResponse.Ok(updated, "诊断限制参数已更新并即时生效"));
+    }
+
+    /// <summary>
+    /// 获取最近的失败诊断抓包文件与成功对比样本清单。
+    /// </summary>
+    [HttpGet("diagnostic-dumps")]
+    public async Task<IActionResult> GetDiagnosticDumps(
+        [FromQuery] int limit = 50,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var dumps = _diagnosticService.ListRecentDumps(limit);
+        return Ok(ApiResponse.Ok(dumps));
+    }
+
+    /// <summary>
+    /// 读取指定诊断转储文件的完整 JSON 内容。
+    /// </summary>
+    [HttpGet("diagnostic-dumps/{fileName}")]
+    public async Task<IActionResult> GetDiagnosticDumpContent(
+        string fileName,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var content = _diagnosticService.ReadDumpContent(fileName);
+        if (content is null)
+        {
+            return NotFound(ApiResponse.Fail("未找到该诊断转储文件或已被自动清理", "dump_not_found"));
+        }
+
+        return Content(content, "application/json", Encoding.UTF8);
+    }
+
+    /// <summary>
+    /// 清空或清理历史诊断转储文件。
+    /// </summary>
+    [HttpDelete("diagnostic-dumps")]
+    public async Task<IActionResult> ClearDiagnosticDumps(
+        [FromQuery] int? retentionDays = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (!await IsDeveloperEnabledAsync(cancellationToken))
+        {
+            return NotFound();
+        }
+
+        var count = retentionDays.HasValue
+            ? _diagnosticService.PruneOldDumps(retentionDays.Value)
+            : _diagnosticService.ClearAllDumps();
+
+        return Ok(ApiResponse.Ok(new { deletedCount = count }, $"已清理 {count} 个诊断转储文件"));
     }
 
     private static bool TryValidateProtocolDiagnosticsRequest(
@@ -2091,4 +2797,63 @@ public sealed class DeveloperAiDiagnoseResponse
     public string RootCause { get; set; } = string.Empty;
     public string SuggestedAction { get; set; } = string.Empty;
     public List<CompatibilityRule> Rules { get; set; } = [];
+}
+
+/// <summary>
+/// AI 协议自愈多轮调试请求。
+/// </summary>
+public sealed class DeveloperAutoDiagnoseLoopRequest
+{
+    public Guid DiagnosticModelId { get; set; }
+    public Guid? DiagnosticMappingId { get; set; }
+    public bool EnableReasoning { get; set; }
+    public string ReasoningEffort { get; set; } = "high";
+
+    public Guid? TargetSiteId { get; set; }
+    public string? TargetSiteName { get; set; }
+    public string? TargetBaseUrl { get; set; }
+    public string? TargetApiKey { get; set; }
+    public string? TargetEndpointPathMode { get; set; }
+    public string TargetModelName { get; set; } = string.Empty;
+    public string SourceProtocol { get; set; } = "OpenAI";
+    public string TargetProtocol { get; set; } = "Gemini";
+
+    public string OriginalRequestBody { get; set; } = string.Empty;
+    public string InitialPreparedRequestBody { get; set; } = string.Empty;
+    public string InitialErrorResponse { get; set; } = string.Empty;
+    public int InitialStatusCode { get; set; } = 400;
+
+    public int MaxRounds { get; set; } = 3;
+}
+
+/// <summary>
+/// 单轮试探记录项。
+/// </summary>
+public sealed class DeveloperAutoDiagnoseRoundItem
+{
+    public int RoundNumber { get; set; }
+    public string Hypothesis { get; set; } = string.Empty;
+    public string AdjustedRequestBody { get; set; } = string.Empty;
+    public string Explanation { get; set; } = string.Empty;
+    public int StatusCode { get; set; }
+    public bool Success { get; set; }
+    public string ResponseBody { get; set; } = string.Empty;
+    public int DurationMs { get; set; }
+    public string ErrorMessage { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// AI 协议自愈多轮调试响应。
+/// </summary>
+public sealed class DeveloperAutoDiagnoseLoopResponse
+{
+    public bool Success { get; set; }
+    public int TotalRounds { get; set; }
+    public List<DeveloperAutoDiagnoseRoundItem> Rounds { get; set; } = [];
+    public string RootCause { get; set; } = string.Empty;
+    public string Summary { get; set; } = string.Empty;
+    public string SuggestedAction { get; set; } = string.Empty;
+    public string WorkingPayload { get; set; } = string.Empty;
+    public List<CompatibilityRule> Rules { get; set; } = [];
+    public string? Error { get; set; }
 }

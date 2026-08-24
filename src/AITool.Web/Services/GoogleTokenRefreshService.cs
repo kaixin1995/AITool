@@ -159,18 +159,34 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         }
         catch (Exception ex)
         {
-            if (IsInvalidGrantFailure(ex))
+            var accountName = !string.IsNullOrWhiteSpace(account.DisplayName)
+                ? account.DisplayName
+                : account.Email ?? account.Id.ToString();
+
+            if (IsInvalidGrantFailure(ex, out var reason))
             {
                 var retryAt = DateTimeOffset.UtcNow.Add(RefreshFailureBackoff);
                 _refreshRetryAt[account.Id] = retryAt;
                 _logger.LogWarning(
-                    "Google account {Id} token refresh was rejected (invalid_grant); temporarily skipped until {RetryAt}",
+                    "Google 账号 [{Name}] (Id: {Id}) Token 刷新失败：{Reason}，已暂停重试至 {RetryAt}。若需使用请在账号管理中重新授权登录。",
+                    accountName,
+                    account.Id,
+                    reason,
+                    retryAt);
+            }
+            else if (IsForbiddenRefreshFailure(ex))
+            {
+                var retryAt = DateTimeOffset.UtcNow.Add(RefreshFailureBackoff);
+                _refreshRetryAt[account.Id] = retryAt;
+                _logger.LogWarning(
+                    "Google 账号 [{Name}] (Id: {Id}) Token 刷新被上游拒绝 (403 Forbidden)，已暂时跳过重试至 {RetryAt}",
+                    accountName,
                     account.Id,
                     retryAt);
             }
             else
             {
-                _logger.LogWarning(ex, "Refresh failed for Google account {Id}", account.Id);
+                _logger.LogWarning(ex, "Google 账号 [{Name}] (Id: {Id}) Token 刷新异常", accountName, account.Id);
             }
 
             return false;
@@ -185,10 +201,36 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         return false;
     }
 
-    private static bool IsInvalidGrantFailure(Exception exception)
+    private static bool IsInvalidGrantFailure(Exception exception, out string reason)
+    {
+        reason = string.Empty;
+        if (exception is not InvalidOperationException)
+        {
+            return false;
+        }
+
+        var message = exception.Message;
+        if (message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("expired or revoked", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("401", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "Refresh Token 已失效或被上游撤销 (invalid_grant)";
+            return true;
+        }
+
+        if (message.Contains("400", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "请求参数或凭证无效 (400 Bad Request)";
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsForbiddenRefreshFailure(Exception exception)
     {
         return exception is InvalidOperationException
-            && exception.Message.Contains("400", StringComparison.OrdinalIgnoreCase)
-            && exception.Message.Contains("invalid_grant", StringComparison.OrdinalIgnoreCase);
+            && (exception.Message.Contains("403", StringComparison.OrdinalIgnoreCase)
+                || exception.Message.Contains("Forbidden", StringComparison.OrdinalIgnoreCase));
     }
 }

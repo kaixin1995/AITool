@@ -56,19 +56,23 @@ const routes: RouteRecordRaw[] = [
       { path: 'oauth', name: 'oauth', component: () => import('@/views/OAuthView.vue'), meta: { title: 'OAuth 管理', requiresOAuth: true } },
       { path: 'models', name: 'models', component: () => import('@/views/ModelsView.vue'), meta: { title: '模型库' } },
       { path: 'routes', name: 'routes', component: () => import('@/views/RouteManagementView.vue'), meta: { title: '路由管理' } },
+      { path: 'access-keys', name: 'access-keys', component: () => import('@/views/AccessKeysView.vue'), meta: { title: '访问密钥' } },
       {
         path: 'route-fallback',
         name: 'route-fallback',
-        redirect: to => ({ name: 'model-health', query: { ...to.query, tab: 'fallback' } })
+        redirect: to => ({ name: 'model-health', query: to.query })
       },
       {
         path: 'compatibility',
         name: 'compatibility',
-        redirect: to => ({ name: 'routes', query: { ...to.query, tab: 'compatibility' } })
+        redirect: to => ({ name: 'routes', query: to.query, hash: '#compatibility' })
       },
-      { path: 'access-keys', name: 'access-keys', component: () => import('@/views/AccessKeysView.vue'), meta: { title: '访问密钥' } },
-      { path: 'detection', name: 'detection', component: () => import('@/views/DetectionView.vue'), meta: { title: '模型检测' } },
-      { path: 'detection-tasks', name: 'detection-tasks', component: () => import('@/views/DetectionTasksView.vue'), meta: { title: '检测任务' } },
+      { path: 'detection', name: 'detection', component: () => import('@/views/DetectionManagementView.vue'), meta: { title: '模型检测' } },
+      {
+        path: 'detection-tasks',
+        name: 'detection-tasks',
+        redirect: to => ({ name: 'detection', query: to.query, hash: '#tasks' })
+      },
       { path: 'model-health', name: 'model-health', component: () => import('@/views/ModelHealthManagementView.vue'), meta: { title: '模型健康' } },
       { path: 'developer/invocations', name: 'developer-invocations', component: () => import('@/views/DeveloperInvocationsView.vue'), meta: { title: '调试工具', requiresDeveloper: true } },
       { path: 'usage-logs', name: 'usage-logs', component: () => import('@/views/UsageLogsView.vue'), meta: { title: '使用日志' } },
@@ -117,8 +121,18 @@ router.beforeEach(async (to) => {
   if (to.meta.requiresOAuth && !oauthEnabled) {
     return { name: 'dashboard' }
   }
-  if (to.meta.requiresDeveloper && !features?.developerEnabled) {
+  const developerEnabled = features?.developerEnabled ?? false
+  if (to.meta.requiresDeveloper && !developerEnabled) {
     return { name: 'dashboard' }
+  }
+  // 旧 Hash 兼容重定向：并发检测与熔断监控已迁移至「模型健康」页面
+  if (to.path === '/developer/invocations' || to.path === '/Admin/Developer/Invocations') {
+    if (to.hash === '#developerConcurrencyPane' || to.hash === '#concurrency') {
+      return { path: '/model-health', query: to.query, hash: '#concurrency' }
+    }
+    if (to.hash === '#developerCircuitBreakerPane' || to.hash === '#circuit-breaker') {
+      return { path: '/model-health', query: to.query, hash: '#circuit-breaker' }
+    }
   }
 
   return true

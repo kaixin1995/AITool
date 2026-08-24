@@ -120,7 +120,15 @@ const importPlaceholder = computed(() => importProvider.value === 'codex'
 const message = useMessage()
 const route = useRoute()
 const router = useRouter()
-const activeTab = ref(route.query.tab === 'inspection' ? 'inspection' : 'accounts')
+function getOAuthTabFromHash(): 'accounts' | 'inspection' {
+  const hash = route.hash.replace(/^#/, '').toLowerCase()
+  if (hash === 'inspection' || route.query.tab === 'inspection') {
+    return 'inspection'
+  }
+  return 'accounts'
+}
+
+const activeTab = ref(getOAuthTabFromHash())
 const loading = ref(false)
 const accounts = ref<UnifiedAccount[]>([])
 const inspection = ref<OAuthInspectionStatus | null>(null)
@@ -836,19 +844,21 @@ function quotaColor(percent: number | null | undefined): 'success' | 'warning' |
 }
 
 watch(activeTab, (tab) => {
-  const query = { ...route.query }
+  const nextHash = tab === 'inspection' ? '#inspection' : '#accounts'
   if (tab === 'inspection') {
-    query.tab = 'inspection'
     if (exportMode.value) cancelExportCredentials()
     void loadInspection(true)
-  } else {
-    delete query.tab
   }
-  void router.replace({ query })
+  if (route.hash !== nextHash) {
+    void router.replace({ hash: nextHash })
+  }
 })
 
-watch(() => route.query.tab, (tab) => {
-  activeTab.value = tab === 'inspection' ? 'inspection' : 'accounts'
+watch(() => route.hash, () => {
+  activeTab.value = getOAuthTabFromHash()
+})
+watch(() => route.query.tab, () => {
+  activeTab.value = getOAuthTabFromHash()
 })
 
 onMounted(() => {

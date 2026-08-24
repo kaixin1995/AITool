@@ -11,14 +11,25 @@ const stats = ref<DashboardStats | null>(null)
 const loading = ref(true)
 const error = ref('')
 
-const statCards = computed(() => {
+interface StatCard {
+  label: string
+  desc: string
+  value: number
+  icon: string
+  tone: string
+  route: string
+  query?: Record<string, string>
+  hash?: string
+}
+
+const statCards = computed<StatCard[]>(() => {
   const s = stats.value
   return [
     { label: '启用站点', desc: '已接入 AI 服务商', value: s?.siteCount ?? 0, icon: '🌐', tone: 'primary', route: 'sites' },
     { label: '模型总数', desc: '已归一化模型库', value: s?.modelCount ?? 0, icon: '🧠', tone: 'success', route: 'models' },
     { label: '路由规则', desc: '多级故障转移调度', value: s?.routeCount ?? 0, icon: '🔀', tone: 'warning', route: 'routes' },
     { label: '启用密钥', desc: '对外 API Key 凭证', value: s?.accessKeyCount ?? 0, icon: '🔑', tone: 'danger', route: 'access-keys' },
-    { label: '检测任务', desc: '定时健康巡检监控', value: s?.detectionTaskCount ?? 0, icon: '⏰', tone: 'purple', route: 'detection-tasks' }
+    { label: '检测任务', desc: '定时健康巡检监控', value: s?.detectionTaskCount ?? 0, icon: '⏰', tone: 'purple', route: 'detection', hash: '#tasks' }
   ]
 })
 
@@ -29,6 +40,7 @@ interface QuickAction {
   tone: string
   route: string
   query?: Record<string, string>
+  hash?: string
 }
 
 const quickActions: QuickAction[] = [
@@ -50,8 +62,8 @@ async function loadStats(): Promise<void> {
   }
 }
 
-function go(routeName: string, query?: Record<string, string>): void {
-  void router.push({ name: routeName, query })
+function go(routeName: string, query?: Record<string, string>, hash?: string): void {
+  void router.push({ name: routeName, query, hash })
 }
 
 onMounted(loadStats)
@@ -71,7 +83,7 @@ onMounted(loadStats)
       <NSpin :show="loading">
         <template v-if="stats">
           <div class="dashboard-stat-grid">
-            <button v-for="card in statCards" :key="card.label" class="stat-card" type="button" @click="go(card.route)">
+            <button v-for="card in statCards" :key="card.label" class="stat-card" type="button" @click="go(card.route, card.query, card.hash)">
               <span class="stat-card-icon" :class="card.tone">{{ card.icon }}</span>
               <span class="stat-card-value">{{ card.value }}</span>
               <span class="stat-card-label">{{ card.label }}</span>
@@ -80,7 +92,7 @@ onMounted(loadStats)
 
           <NCard class="quick-actions" title="快捷操作">
             <div class="quick-action-grid">
-              <button v-for="action in quickActions" :key="action.label" class="quick-action-link" type="button" @click="go(action.route, action.query)">
+              <button v-for="action in quickActions" :key="action.label" class="quick-action-link" type="button" @click="go(action.route, action.query, action.hash)">
                 <span class="quick-action-icon" :class="action.tone">{{ action.icon }}</span>
                 <span>{{ action.label }}</span>
               </button>
@@ -91,107 +103,7 @@ onMounted(loadStats)
       </NSpin>
     </template>
 
-    <!-- 2. 赛博朋克 / 极客终端皮肤布局 (Cyberpunk / Terminal HUD) -->
-    <template v-else-if="skin === 'cyberpunk'">
-      <NSpin :show="loading">
-        <div v-if="stats" class="cyber-dashboard-layout">
-          <div class="cyber-terminal-header">
-            <div class="cyber-glitch-title">
-              <span class="cyber-prompt">> SYSTEM_STATUS:</span>
-              <span class="cyber-neon-text">NEURAL_ROUTING_ONLINE</span>
-            </div>
-            <div class="cyber-matrix-info">
-              <span class="cyber-tag">[LATENCY: 0.8ms]</span>
-              <span class="cyber-tag">[SECURITY: ENCRYPTED]</span>
-              <span class="cyber-tag">[PROTOCOL: V4.2]</span>
-            </div>
-          </div>
-
-          <div class="cyber-hud-grid">
-            <div
-              v-for="card in statCards"
-              :key="card.label"
-              class="cyber-hud-card"
-              @click="go(card.route)"
-            >
-              <div class="cyber-hud-border-corner top-left"></div>
-              <div class="cyber-hud-border-corner top-right"></div>
-              <div class="cyber-hud-border-corner btm-left"></div>
-              <div class="cyber-hud-border-corner btm-right"></div>
-              <div class="cyber-card-header">
-                <span class="cyber-card-icon">{{ card.icon }}</span>
-                <span class="cyber-card-id">NODE_{{ card.label }}</span>
-              </div>
-              <div class="cyber-card-value">{{ card.value }}</div>
-              <div class="cyber-card-label">{{ card.desc }}</div>
-            </div>
-          </div>
-
-          <div class="cyber-actions-panel">
-            <div class="cyber-panel-title">// COMMAND_SHORTCUTS</div>
-            <div class="cyber-action-row">
-              <button
-                v-for="action in quickActions"
-                :key="action.label"
-                class="cyber-action-btn"
-                type="button"
-                @click="go(action.route, action.query)"
-              >
-                <span class="cyber-btn-arrow">>_</span>
-                <span>{{ action.label }}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-        <NEmpty v-else-if="!loading" :description="error || '暂无数据'" />
-      </NSpin>
-    </template>
-
-    <!-- 3. 北欧极简极净皮肤布局 (Nordic Minimalist / Clean Soft) -->
-    <template v-else-if="skin === 'nordic'">
-      <NSpin :show="loading">
-        <div v-if="stats" class="nordic-dashboard-layout">
-          <div class="nordic-greeting">
-            <h1 class="nordic-title">概览</h1>
-            <p class="nordic-subtitle">当前网关运行平稳，所有托管服务连接正常。</p>
-          </div>
-
-          <div class="nordic-stat-strip">
-            <div
-              v-for="card in statCards"
-              :key="card.label"
-              class="nordic-pill-card"
-              @click="go(card.route)"
-            >
-              <div class="nordic-pill-icon">{{ card.icon }}</div>
-              <div class="nordic-pill-info">
-                <div class="nordic-pill-val">{{ card.value }}</div>
-                <div class="nordic-pill-lbl">{{ card.label }}</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="nordic-action-block">
-            <div class="nordic-block-title">快捷入口</div>
-            <div class="nordic-action-pills">
-              <button
-                v-for="action in quickActions"
-                :key="action.label"
-                class="nordic-action-pill"
-                type="button"
-                @click="go(action.route, action.query)"
-              >
-                <span class="nordic-action-icon">{{ action.icon }}</span>
-                <span class="nordic-action-name">{{ action.label }}</span>
-              </button>
-            </div>
-          </div>
-        </div>
-        <NEmpty v-else-if="!loading" :description="error || '暂无数据'" />
-      </NSpin>
-    </template>
-
-    <!-- 4. 现代科技皮肤专属布局 (Modern Bento Grid & Hero) -->
+    <!-- 2. 现代科技皮肤专属布局 (Modern Bento Grid & Hero) -->
     <template v-else>
       <NSpin :show="loading">
         <div v-if="stats" class="modern-dashboard-layout">
@@ -229,7 +141,7 @@ onMounted(loadStats)
               :key="card.label"
               class="bento-stat-card"
               :class="`bento-${card.tone}`"
-              @click="go(card.route)"
+              @click="go(card.route, card.query, card.hash)"
             >
               <div class="bento-card-top">
                 <span class="bento-icon-wrapper">{{ card.icon }}</span>
@@ -254,7 +166,7 @@ onMounted(loadStats)
                 v-for="action in quickActions"
                 :key="action.label"
                 class="modern-action-card"
-                @click="go(action.route, action.query)"
+                @click="go(action.route, action.query, action.hash)"
               >
                 <div class="action-card-icon" :class="action.tone">{{ action.icon }}</div>
                 <div class="action-card-text">
@@ -810,308 +722,4 @@ onMounted(loadStats)
   }
 }
 
-/* ===== 3. 赛博朋克专属样式 (Cyberpunk HUD Layout) ===== */
-.cyber-dashboard-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.cyber-terminal-header {
-  padding: 24px;
-  background: #0A0D18;
-  border: 1px solid #00F0FF;
-  box-shadow: 0 0 20px rgba(0, 240, 255, 0.2);
-  border-radius: 4px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 16px;
-}
-
-.cyber-glitch-title {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 18px;
-  font-weight: 800;
-  letter-spacing: 1px;
-}
-
-.cyber-prompt {
-  color: #FFE600;
-  margin-right: 8px;
-}
-
-.cyber-neon-text {
-  color: #00F0FF;
-  text-shadow: 0 0 10px rgba(0, 240, 255, 0.8);
-}
-
-.cyber-matrix-info {
-  display: flex;
-  gap: 10px;
-  font-family: ui-monospace, monospace;
-  font-size: 12px;
-  color: #00FF66;
-}
-
-.cyber-tag {
-  background: rgba(0, 255, 102, 0.1);
-  padding: 4px 8px;
-  border: 1px dashed rgba(0, 255, 102, 0.4);
-}
-
-.cyber-hud-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.cyber-hud-card {
-  position: relative;
-  padding: 20px;
-  background: #0F1222;
-  border: 1px solid rgba(0, 240, 255, 0.3);
-  cursor: pointer;
-  transition: all 0.2s ease;
-  font-family: ui-monospace, monospace;
-}
-
-.cyber-hud-card:hover {
-  border-color: #FF0055;
-  box-shadow: 0 0 25px rgba(255, 0, 85, 0.35);
-  transform: scale(1.02);
-}
-
-.cyber-hud-border-corner {
-  position: absolute;
-  width: 8px;
-  height: 8px;
-  border-color: #00F0FF;
-}
-
-.cyber-hud-card:hover .cyber-hud-border-corner {
-  border-color: #FF0055;
-}
-
-.cyber-hud-border-corner.top-left { top: -1px; left: -1px; border-top: 2px solid; border-left: 2px solid; }
-.cyber-hud-border-corner.top-right { top: -1px; right: -1px; border-top: 2px solid; border-right: 2px solid; }
-.cyber-hud-border-corner.btm-left { bottom: -1px; left: -1px; border-bottom: 2px solid; border-left: 2px solid; }
-.cyber-hud-border-corner.btm-right { bottom: -1px; right: -1px; border-bottom: 2px solid; border-right: 2px solid; }
-
-.cyber-card-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 12px;
-}
-
-.cyber-card-icon {
-  font-size: 20px;
-}
-
-.cyber-card-id {
-  font-size: 11px;
-  color: #94A3B8;
-}
-
-.cyber-card-value {
-  font-size: 32px;
-  font-weight: 900;
-  color: #00F0FF;
-  text-shadow: 0 0 8px rgba(0, 240, 255, 0.5);
-  margin-bottom: 6px;
-}
-
-.cyber-card-label {
-  font-size: 12px;
-  color: #E2E8F0;
-}
-
-.cyber-actions-panel {
-  padding: 20px;
-  background: #0F1222;
-  border: 1px solid rgba(0, 240, 255, 0.2);
-  border-radius: 4px;
-}
-
-.cyber-panel-title {
-  font-family: ui-monospace, monospace;
-  font-size: 13px;
-  font-weight: 700;
-  color: #FFE600;
-  margin-bottom: 14px;
-}
-
-.cyber-action-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.cyber-action-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 12px 16px;
-  background: rgba(0, 240, 255, 0.05);
-  border: 1px solid rgba(0, 240, 255, 0.4);
-  color: #00F0FF;
-  font-family: ui-monospace, monospace;
-  font-weight: 700;
-  font-size: 13px;
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.cyber-action-btn:hover {
-  background: #00F0FF;
-  color: #05070D;
-  box-shadow: 0 0 15px rgba(0, 240, 255, 0.6);
-}
-
-.cyber-btn-arrow {
-  color: #FF0055;
-}
-
-.cyber-action-btn:hover .cyber-btn-arrow {
-  color: #05070D;
-}
-
-/* ===== 4. 北欧极简极净样式 (Nordic Minimalist Layout) ===== */
-.nordic-dashboard-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 32px;
-  max-width: 1100px;
-  margin: 0 auto;
-}
-
-.nordic-greeting {
-  padding: 10px 0;
-}
-
-.nordic-title {
-  font-size: 32px;
-  font-weight: 800;
-  letter-spacing: -1px;
-  color: #1D2A3A;
-  margin: 0 0 8px;
-}
-
-[data-theme='dark'] .nordic-title {
-  color: #FFFFFF;
-}
-
-.nordic-subtitle {
-  font-size: 15px;
-  color: #687A8F;
-  margin: 0;
-}
-
-.nordic-stat-strip {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.nordic-pill-card {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-  padding: 24px 20px;
-  background: var(--bg-card);
-  border: 1px solid var(--border-color-global);
-  border-radius: 24px;
-  box-shadow: 0 10px 30px -10px rgba(43, 76, 111, 0.06);
-  cursor: pointer;
-  transition: all 0.25s ease;
-}
-
-.nordic-pill-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 15px 35px -5px rgba(43, 76, 111, 0.12);
-  border-color: #2B4C6F;
-}
-
-.nordic-pill-icon {
-  width: 46px;
-  height: 46px;
-  border-radius: 16px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  background: var(--bg-surface-soft);
-  flex-shrink: 0;
-}
-
-.nordic-pill-info {
-  min-width: 0;
-}
-
-.nordic-pill-val {
-  font-size: 24px;
-  font-weight: 800;
-  color: var(--text-primary);
-  line-height: 1.1;
-}
-
-.nordic-pill-lbl {
-  font-size: 13px;
-  color: var(--text-color-secondary);
-  margin-top: 4px;
-}
-
-.nordic-action-block {
-  padding: 24px;
-  background: var(--bg-card);
-  border-radius: 24px;
-  border: 1px solid var(--border-color-global);
-}
-
-.nordic-block-title {
-  font-size: 15px;
-  font-weight: 700;
-  color: var(--text-primary);
-  margin-bottom: 16px;
-}
-
-.nordic-action-pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-}
-
-.nordic-action-pill {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 20px;
-  border-radius: 30px;
-  background: var(--bg-surface-soft);
-  border: 1px solid var(--border-color-global);
-  color: var(--text-primary);
-  font-size: 14px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.nordic-action-pill:hover {
-  background: #2B4C6F;
-  color: #FFFFFF;
-  border-color: #2B4C6F;
-  transform: translateY(-2px);
-}
-
-@media (max-width: 991.98px) {
-  .cyber-hud-grid,
-  .nordic-stat-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-  .cyber-action-row {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
 </style>

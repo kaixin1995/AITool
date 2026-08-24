@@ -66,6 +66,10 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
     /// <summary>
+    /// 记录代理请求诊断转储与对比样本。
+    /// </summary>
+    private readonly IProxyDiagnosticService _diagnosticService;
+    /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
     private readonly ILogger<AnthropicProxyController> _logger;
@@ -82,6 +86,7 @@ public sealed class AnthropicProxyController : ControllerBase
         ModelConcurrencyLimiter concurrencyLimiter,
         CodexCredentialRefreshService codexCredentialRefreshService,
         GoogleCredentialRefreshService googleCredentialRefreshService,
+        IProxyDiagnosticService diagnosticService,
         ILogger<AnthropicProxyController> logger)
     {
         _forwardService = forwardService;
@@ -92,6 +97,7 @@ public sealed class AnthropicProxyController : ControllerBase
         _concurrencyLimiter = concurrencyLimiter;
         _codexCredentialRefreshService = codexCredentialRefreshService;
         _googleCredentialRefreshService = googleCredentialRefreshService;
+        _diagnosticService = diagnosticService;
         _logger = logger;
     }
 
@@ -365,7 +371,7 @@ public sealed class AnthropicProxyController : ControllerBase
                     return new EmptyResult();
                 }
 
-                SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
+                SafeRecordProxyDiagnostic("Anthropic", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, streamResult, requestId, traceId);
                 var streamCanFallback = !streamResult.Success
                     && streamOutcome.CanFallback
                     && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
@@ -418,7 +424,6 @@ public sealed class AnthropicProxyController : ControllerBase
                     OutputTokens = streamResult.OutputTokens,
                     TotalDurationMs = streamResult.TotalDurationMs
                 });
-                SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
 
                 SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
                 lastResult = streamResult;
@@ -437,7 +442,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 return new EmptyResult();
             }
 
-            SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
+            SafeRecordProxyDiagnostic("Anthropic", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
             var canFallback = allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
 
             // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账。
@@ -538,7 +543,6 @@ public sealed class AnthropicProxyController : ControllerBase
                 OutputTokens = result.OutputTokens,
                 TotalDurationMs = result.TotalDurationMs
             });
-            SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
 
             // 转发或转换失败，通知熔断器（达到阈值才会真正触发熔断）
             SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
@@ -1327,6 +1331,66 @@ public sealed class AnthropicProxyController : ControllerBase
     }
 
     /// <summary>
+    /// 统一记录代理请求诊断信息（失败自动落盘独立复现文件与 error.log，成功采样对比样本）。
+    /// </summary>
+    private void SafeRecordProxyDiagnostic(
+        string clientProtocol,
+        string requestSource,
+        string modelName,
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string rawRequestBody,
+        string preparedRequestBody,
+        ProxyForwardResult result,
+        Guid requestId,
+        Guid? traceId)
+    {
+        try
+        {
+            var forwardingMode = ResolveForwardingMode(clientProtocol, actualProtocolType);
+            var context = new ProxyDiagnosticContext
+            {
+                RequestId = requestId,
+                TraceId = traceId,
+                ClientProtocol = clientProtocol,
+                RequestSource = requestSource,
+                ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+                UserAgent = Request.Headers.UserAgent.ToString(),
+                RequestPath = Request.Path,
+                RouteName = modelName,
+                TargetSiteId = route.SiteId,
+                TargetSiteName = route.SiteName,
+                TargetBaseUrl = route.BaseUrl,
+                RequestModel = modelName,
+                AttemptedModel = route.UpstreamModelName,
+                UpstreamProtocol = actualProtocolType,
+                ForwardingMode = forwardingMode,
+                ClientHeaders = ProxyDiagnosticContext.SnapshotHeaders(Request.Headers),
+                RawClientRequestBody = rawRequestBody,
+                PreparedRequestBody = preparedRequestBody,
+                Result = result
+            };
+
+            _diagnosticService.RecordDiagnostic(context);
+
+            SafeWriteConsoleProxyLog(
+                clientProtocol,
+                requestSource,
+                modelName,
+                actualProtocolType,
+                preparedRequestBody,
+                result,
+                rawRequestBody.Length,
+                route.SiteName,
+                forwardingMode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "执行代理请求诊断记录异常: Route={Route}, Site={Site}", modelName, route.SiteName);
+        }
+    }
+
+    /// <summary>
     /// 安全地记录失败的代理请求明细。
     /// </summary>
     private void SafeLogFailedProxyAttempt(
@@ -1360,7 +1424,9 @@ public sealed class AnthropicProxyController : ControllerBase
         string actualProtocolType,
         string preparedRequestBody,
         ProxyForwardResult result,
-        int requestBodyLength)
+        int requestBodyLength,
+        string? siteName = null,
+        string? forwardingMode = null)
     {
         // 只有异常（失败/中断）才输出到控制台，正常请求不再刷屏
         if (result.Success && !result.IsStreamInterrupted) return;
@@ -1378,7 +1444,9 @@ public sealed class AnthropicProxyController : ControllerBase
                 result.IsStreamInterrupted,
                 result.TotalDurationMs,
                 requestBodyLength,
-                result.ResponseBody?.Length ?? 0));
+                result.ResponseBody?.Length ?? 0,
+                siteName,
+                forwardingMode));
         }
         catch
         {
@@ -1409,14 +1477,20 @@ public sealed class AnthropicProxyController : ControllerBase
         string preparedRequestBody,
         ProxyForwardResult result)
     {
+        var modeLabel = string.Equals(ResolveForwardingMode("Anthropic", actualProtocolType), "direct", StringComparison.OrdinalIgnoreCase)
+            ? "直接透传 (direct)"
+            : "兼容转换 (bridge)";
+
         _logger.LogError(
-            "代理请求失败\nSource={Source}\nClientProtocol={ClientProtocol}\nUpstreamProtocol={UpstreamProtocol}\nRequestModel={RequestModel}\nAttemptedModel={AttemptedModel}\nSiteName={SiteName}\nBaseUrl={BaseUrl}\nStatusCode={StatusCode}\nIsStreaming={IsStreaming}\nIsStreamInterrupted={IsStreamInterrupted}\nErrorMessage={ErrorMessage}\nRequestBody={RequestBody}\nResponseBody={ResponseBody}",
+            "代理请求失败\nSource={Source}\nClientProtocol={ClientProtocol}\nUpstreamProtocol={UpstreamProtocol}\nForwardingMode={ForwardingMode}\nRequestModel={RequestModel}\nAttemptedModel={AttemptedModel}\nSiteName={SiteName}\nSiteId={SiteId}\nBaseUrl={BaseUrl}\nStatusCode={StatusCode}\nIsStreaming={IsStreaming}\nIsStreamInterrupted={IsStreamInterrupted}\nErrorMessage={ErrorMessage}\nRequestBody={RequestBody}\nResponseBody={ResponseBody}",
             requestSource,
             "Anthropic",
             actualProtocolType,
+            modeLabel,
             modelName,
             route.UpstreamModelName,
             route.SiteName,
+            route.SiteId,
             route.BaseUrl,
             result.StatusCode,
             result.IsStreaming,

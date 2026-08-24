@@ -10,9 +10,8 @@ import {
 describe('Developer Invocations 页签深链接', () => {
   it('兼容旧页面 hash', () => {
     expect(developerTabFromHash('#developerInvocationsPane')).toBe('invocations')
+    expect(developerTabFromHash('#developerDiagnosticDumpsPane')).toBe('diagnostic-dumps')
     expect(developerTabFromHash('#developerSimulatorPane')).toBe('simulator')
-    expect(developerTabFromHash('#developerConcurrencyPane')).toBe('concurrency')
-    expect(developerTabFromHash('#developerCircuitBreakerPane')).toBe('circuit-breaker')
     expect(developerTabFromHash('#developerProtocolDiagnosticsPane')).toBe('protocol-diagnostics')
     expect(developerTabFromHash('#developerSqlMigrationsPane')).toBe('sql-migrations')
     expect(developerTabFromHash('#protocol-diagnostics')).toBe('protocol-diagnostics')
@@ -21,9 +20,8 @@ describe('Developer Invocations 页签深链接', () => {
 
   it('页签切换时生成旧入口兼容 hash', () => {
     expect(developerHashForTab('invocations')).toBe('#developerInvocationsPane')
+    expect(developerHashForTab('diagnostic-dumps')).toBe('#developerDiagnosticDumpsPane')
     expect(developerHashForTab('simulator')).toBe('#developerSimulatorPane')
-    expect(developerHashForTab('concurrency')).toBe('#developerConcurrencyPane')
-    expect(developerHashForTab('circuit-breaker')).toBe('#developerCircuitBreakerPane')
     expect(developerHashForTab('protocol-diagnostics')).toBe('#developerProtocolDiagnosticsPane')
     expect(developerHashForTab('sql-migrations')).toBe('#developerSqlMigrationsPane')
   })

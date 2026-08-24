@@ -11,6 +11,7 @@ interface DetectionProgressState extends ProbeProgress {
   failedCount: number
 }
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 const message = useMessage()
 const loading = ref(false)
 const groups = ref<DetectionModelGroup[]>([])
@@ -202,8 +203,8 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="page-container detection-page">
-    <PageHeader title="模型检测" subtitle="按模型分组查看各站点的可用性和响应状态">
+  <div :class="[embedded ? 'detection-embedded' : 'page-container detection-page']">
+    <PageHeader v-if="!embedded" title="模型检测" subtitle="按模型分组查看各站点的可用性和响应状态">
       <template #actions>
         <NTag v-if="groups.length" round :bordered="false" size="small">
           {{ filteredGroups.length }} / {{ groups.length }} 个模型
@@ -221,15 +222,33 @@ onBeforeUnmount(() => {
       </template>
     </PageHeader>
 
-    <NCard size="small" class="detection-search-card">
-      <label class="detection-search-field">
-        <span class="form-label">搜索模型</span>
-        <NInput
-          v-model:value="modelKeyword"
-          clearable
-          placeholder="输入模型名称过滤..."
-        />
-      </label>
+    <NCard size="small" class="detection-search-card mb-3">
+      <div class="flex items-center justify-between gap-3 flex-wrap">
+        <label class="detection-search-field flex-1">
+          <span class="form-label">搜索模型</span>
+          <NInput
+            v-model:value="modelKeyword"
+            clearable
+            placeholder="输入模型名称过滤..."
+          />
+        </label>
+
+        <div v-if="embedded" class="flex items-center gap-2 pt-4">
+          <NTag v-if="groups.length" round :bordered="false" size="small">
+            {{ filteredGroups.length }} / {{ groups.length }} 个模型
+          </NTag>
+          <NButton
+            size="small"
+            type="primary"
+            :loading="probingAll"
+            :disabled="groups.length === 0 || isBatchRunning || hasSingleProbe"
+            @click="handleProbeAll"
+          >
+            全部检测
+          </NButton>
+          <NButton size="small" :loading="loading" @click="load">刷新</NButton>
+        </div>
+      </div>
     </NCard>
 
     <NCard

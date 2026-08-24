@@ -1,7 +1,7 @@
 import { computed, ref, watch } from 'vue'
 import { darkTheme, type GlobalThemeOverrides } from 'naive-ui'
 
-export type SkinMode = 'classic' | 'modern' | 'cyberpunk' | 'nordic'
+export type SkinMode = 'classic' | 'modern'
 
 const THEME_KEY = 'aitool.theme'
 const SKIN_KEY = 'aitool.skin'
@@ -18,7 +18,7 @@ function loadInitialTheme(): boolean {
 
 function loadInitialSkin(): SkinMode {
   const stored = localStorage.getItem(SKIN_KEY)
-  if (stored === 'modern' || stored === 'classic' || stored === 'cyberpunk' || stored === 'nordic') {
+  if (stored === 'modern' || stored === 'classic') {
     return stored
   }
   return 'modern'
@@ -132,74 +132,6 @@ const modernThemeOverrides: GlobalThemeOverrides = {
   }
 }
 
-// 3. 赛博朋克 / 极客霓虹 (Cyberpunk / Terminal)
-const cyberpunkThemeOverrides: GlobalThemeOverrides = {
-  common: {
-    primaryColor: '#00F0FF', // 霓虹青
-    primaryColorHover: '#38F9D7',
-    primaryColorPressed: '#00B4D8',
-    primaryColorSuppl: '#00F0FF',
-    infoColor: '#00F0FF',
-    successColor: '#00FF66', // 荧光绿
-    warningColor: '#FFE600', // 警示黄
-    errorColor: '#FF0055',   // 霓虹品红
-    borderRadius: '4px',     // 锋利硬朗直角
-    borderRadiusSmall: '2px',
-    bodyColor: '#0D0E15',
-    cardColor: '#141622',
-    modalColor: '#1A1D2D',
-    popoverColor: '#1A1D2D',
-    textColorBase: '#00F0FF',
-    textColor1: '#E2E8F0',
-    textColor2: '#94A3B8',
-    textColor3: '#64748B',
-    borderColor: '#00F0FF40',
-    dividerColor: '#1F2438'
-  },
-  Card: {
-    borderRadius: '4px',
-    boxShadow: '0 0 15px rgba(0, 240, 255, 0.15), inset 0 0 1px rgba(0, 240, 255, 0.3)'
-  },
-  Button: {
-    borderRadiusMedium: '4px',
-    borderRadiusSmall: '2px'
-  }
-}
-
-// 4. 北欧极简极净 (Nordic Minimalist)
-const nordicThemeOverrides: GlobalThemeOverrides = {
-  common: {
-    primaryColor: '#2B4C6F', // 冰岛深海蓝灰
-    primaryColorHover: '#3A638F',
-    primaryColorPressed: '#1F3854',
-    primaryColorSuppl: '#2B4C6F',
-    infoColor: '#5C7C9E',
-    successColor: '#4A7C59', // 苔藓绿
-    warningColor: '#C48B47', // 暖木色
-    errorColor: '#B85450',   // 砖红
-    borderRadius: '20px',    // 极致圆润超大圆角
-    borderRadiusSmall: '12px',
-    bodyColor: '#F9FBFB',
-    cardColor: '#FFFFFF',
-    modalColor: '#FFFFFF',
-    popoverColor: '#FFFFFF',
-    textColorBase: '#1D2A3A',
-    textColor1: '#1D2A3A',
-    textColor2: '#687A8F',
-    textColor3: '#9EAEC0',
-    borderColor: '#E5ECF2',
-    dividerColor: '#F0F5F8'
-  },
-  Card: {
-    borderRadius: '20px',
-    boxShadow: '0 20px 40px -15px rgba(43, 76, 111, 0.07)'
-  },
-  Button: {
-    borderRadiusMedium: '14px',
-    borderRadiusSmall: '10px'
-  }
-}
-
 // 经典暗色
 const classicDarkOverrides: GlobalThemeOverrides = {
   common: {
@@ -263,40 +195,6 @@ const modernDarkOverrides: GlobalThemeOverrides = {
   }
 }
 
-// 赛博朋克暗色（原生即暗黑）
-const cyberpunkDarkOverrides: GlobalThemeOverrides = {
-  common: {
-    bodyColor: '#05070D',
-    cardColor: '#0C0F1D',
-    modalColor: '#14182E',
-    popoverColor: '#14182E',
-    borderColor: '#00F0FF50',
-    textColorBase: '#E2E8F0',
-    textColor1: '#FFFFFF'
-  },
-  Card: {
-    boxShadow: '0 0 20px rgba(0, 240, 255, 0.2), inset 0 0 2px rgba(255, 0, 85, 0.4)'
-  }
-}
-
-// 北欧极简暗色（极夜灰调）
-const nordicDarkOverrides: GlobalThemeOverrides = {
-  common: {
-    primaryColor: '#7A9CBF',
-    bodyColor: '#13181F',
-    cardColor: '#1C232D',
-    modalColor: '#232D3A',
-    popoverColor: '#232D3A',
-    borderColor: '#283442',
-    dividerColor: '#283442',
-    textColorBase: '#E5ECF2',
-    textColor1: '#FFFFFF'
-  },
-  Card: {
-    boxShadow: '0 20px 40px -15px rgba(0, 0, 0, 0.5)'
-  }
-}
-
 function applyAttributes(dark: boolean, sk: SkinMode): void {
   document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light')
   document.documentElement.setAttribute('data-skin', sk)
@@ -315,15 +213,11 @@ export function useTheme() {
   const naiveTheme = computed(() => (isDark.value ? darkTheme : null))
   const effectiveOverrides = computed(() => {
     switch (skin.value) {
-      case 'modern':
-        return isDark.value ? { ...modernThemeOverrides, ...modernDarkOverrides } : modernThemeOverrides
-      case 'cyberpunk':
-        return isDark.value ? { ...cyberpunkThemeOverrides, ...cyberpunkDarkOverrides } : cyberpunkThemeOverrides
-      case 'nordic':
-        return isDark.value ? { ...nordicThemeOverrides, ...nordicDarkOverrides } : nordicThemeOverrides
       case 'classic':
-      default:
         return isDark.value ? { ...classicThemeOverrides, ...classicDarkOverrides } : classicThemeOverrides
+      case 'modern':
+      default:
+        return isDark.value ? { ...modernThemeOverrides, ...modernDarkOverrides } : modernThemeOverrides
     }
   })
 
@@ -336,7 +230,7 @@ export function useTheme() {
   }
 
   function toggleSkin(): void {
-    const skins: SkinMode[] = ['modern', 'cyberpunk', 'nordic', 'classic']
+    const skins: SkinMode[] = ['modern', 'classic']
     const nextIdx = (skins.indexOf(skin.value) + 1) % skins.length
     skin.value = skins[nextIdx]
   }

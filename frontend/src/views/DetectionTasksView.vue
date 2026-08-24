@@ -7,6 +7,7 @@ import type { DetectionTaskItem } from '@/api/detectionTasks'
 import { formatDetectionDateTime } from './detectionState'
 import { ALL_MODELS_VALUE, normalizeDetectionTaskModelId } from './detectionTasksState'
 
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
 const message = useMessage()
 const loading = ref(false)
 const tasks = ref<DetectionTaskItem[]>([])
@@ -74,8 +75,8 @@ onMounted(load)
 </script>
 
 <template>
-  <div class="page-container detection-tasks-page">
-    <PageHeader title="检测任务管理" subtitle="配置定时检测任务，自动监控模型可用性" />
+  <div :class="[embedded ? 'detection-tasks-embedded' : 'page-container detection-tasks-page']">
+    <PageHeader v-if="!embedded" title="检测任务管理" subtitle="配置定时检测任务，自动监控模型可用性" />
 
     <NCard class="create-task-card">
       <NForm label-placement="top">

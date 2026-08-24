@@ -12,6 +12,7 @@ public static class HttpLogFormatter
 
     /// <summary>
     /// 规范化正文内容，并在超过长度上限时截断输出。
+    /// 先截断再做换行归一：对多 MB 的失败正文只复制截断后的片段，避免热路径整串复制。
     /// </summary>
     public static string FormatBody(string? body, int maxLength = DefaultMaxBodyLength)
     {
@@ -21,13 +22,16 @@ public static class HttpLogFormatter
         }
 
         // 异常排查时保留请求与返回主体，但限制体积避免日志文件无限膨胀。
-        var normalized = body.Replace("\r\n", "\n").Trim();
-        if (normalized.Length <= maxLength)
+        var isTruncated = body.Length > maxLength;
+        var slice = isTruncated ? body[..maxLength] : body;
+        var normalized = slice.Replace("\r\n", "\n").Trim();
+        if (!isTruncated)
         {
             return normalized;
         }
 
-        return $"{normalized[..maxLength]}\n...<truncated {normalized.Length - maxLength} chars>";
+        // 截断长度按原始正文计（归一化会吃掉 \r 字符，不适合再作为截断基准）。
+        return $"{normalized}\n...<truncated {body.Length - maxLength} chars>";
     }
 
     public static async Task<string> ReadRequestBodyPreviewAsync(

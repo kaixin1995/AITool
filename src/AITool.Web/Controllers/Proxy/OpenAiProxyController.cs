@@ -141,6 +141,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// </summary>
     private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
     /// <summary>
+    /// 记录代理请求诊断转储与对比样本。
+    /// </summary>
+    private readonly IProxyDiagnosticService _diagnosticService;
+    /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
     private readonly ILogger<OpenAiProxyController> _logger;
@@ -157,6 +161,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         ModelConcurrencyLimiter concurrencyLimiter,
         CodexCredentialRefreshService codexCredentialRefreshService,
         GoogleCredentialRefreshService googleCredentialRefreshService,
+        IProxyDiagnosticService diagnosticService,
         ILogger<OpenAiProxyController> logger)
     {
         _forwardService = forwardService;
@@ -167,6 +172,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         _concurrencyLimiter = concurrencyLimiter;
         _codexCredentialRefreshService = codexCredentialRefreshService;
         _googleCredentialRefreshService = googleCredentialRefreshService;
+        _diagnosticService = diagnosticService;
         _logger = logger;
     }
 
@@ -650,7 +656,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     return new EmptyResult();
                 }
 
-                SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
+                SafeRecordProxyDiagnostic(routeLabel, requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, streamResult, requestId, traceId);
                 var streamCanFallback = !streamResult.Success
                     && streamOutcome.CanFallback
                     && allRoutes.Skip(routeIndex + 1).Any(candidate =>
@@ -716,7 +722,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     OutputTokens = streamResult.OutputTokens,
                     TotalDurationMs = streamResult.TotalDurationMs
                 });
-                SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, streamResult);
                 SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
                 lastResult = streamResult;
                 if (!streamOutcome.CanFallback)
@@ -734,7 +739,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 return new EmptyResult();
             }
 
-            SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
+            SafeRecordProxyDiagnostic(routeLabel, requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
             var canFallback = allRoutes.Skip(routeIndex + 1).Any(candidate =>
                 !IsRouteBlockedSafely(candidate.CircuitKey)
                 && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
@@ -813,7 +818,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 OutputTokens = result.OutputTokens,
                 TotalDurationMs = result.TotalDurationMs
             });
-            SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
             SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             lastResult = result;
         }

@@ -1108,6 +1108,67 @@ public sealed partial class OpenAiProxyController
                 entry.AttemptedModel);
         }
     }
+
+    /// <summary>
+    /// 统一记录代理请求诊断信息（失败自动落盘独立复现文件与 error.log，成功采样对比样本）。
+    /// </summary>
+    private void SafeRecordProxyDiagnostic(
+        string clientProtocol,
+        string requestSource,
+        string modelName,
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string rawRequestBody,
+        string preparedRequestBody,
+        ProxyForwardResult result,
+        Guid requestId,
+        Guid? traceId)
+    {
+        try
+        {
+            var forwardingMode = ResolveForwardingMode(clientProtocol, actualProtocolType);
+            var context = new ProxyDiagnosticContext
+            {
+                RequestId = requestId,
+                TraceId = traceId,
+                ClientProtocol = clientProtocol,
+                RequestSource = requestSource,
+                ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+                UserAgent = Request.Headers.UserAgent.ToString(),
+                RequestPath = Request.Path,
+                RouteName = modelName,
+                TargetSiteId = route.SiteId,
+                TargetSiteName = route.SiteName,
+                TargetBaseUrl = route.BaseUrl,
+                RequestModel = modelName,
+                AttemptedModel = route.UpstreamModelName,
+                UpstreamProtocol = actualProtocolType,
+                ForwardingMode = forwardingMode,
+                ClientHeaders = ProxyDiagnosticContext.SnapshotHeaders(Request.Headers),
+                RawClientRequestBody = rawRequestBody,
+                PreparedRequestBody = preparedRequestBody,
+                Result = result
+            };
+
+            _diagnosticService.RecordDiagnostic(context);
+
+            SafeWriteConsoleProxyLog(
+                clientProtocol,
+                requestSource,
+                modelName,
+                actualProtocolType,
+                preparedRequestBody,
+                result,
+                rawRequestBody.Length,
+                route.SiteName,
+                forwardingMode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "执行代理请求诊断记录异常: Route={Route}, Site={Site}", modelName, route.SiteName);
+        }
+    }
+
     /// <summary>
     /// 安全地读取路由熔断状态。
     /// 参数为熔断身份键（多 Key 展开后用合成键，区分同一路由的不同 Key）。
@@ -1215,7 +1276,9 @@ public sealed partial class OpenAiProxyController
         string actualProtocolType,
         string preparedRequestBody,
         ProxyForwardResult result,
-        int requestBodyLength)
+        int requestBodyLength,
+        string? siteName = null,
+        string? forwardingMode = null)
     {
         // 只有异常（失败/中断）才输出到控制台，正常请求不再刷屏
         if (result.Success && !result.IsStreamInterrupted) return;
@@ -1233,7 +1296,9 @@ public sealed partial class OpenAiProxyController
                 result.IsStreamInterrupted,
                 result.TotalDurationMs,
                 requestBodyLength,
-                result.ResponseBody?.Length ?? 0));
+                result.ResponseBody?.Length ?? 0,
+                siteName,
+                forwardingMode));
         }
         catch
         {

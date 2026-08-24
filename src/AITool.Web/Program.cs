@@ -268,6 +268,7 @@ builder.Services.AddHostedService<GoogleTokenRefreshService>();
 // 周期恢复冷却到期的当前 OAuth 提供程序账号（清除冷却，恢复 Site，若未被手动禁用）。
 builder.Services.AddHostedService<CodexCooldownRecoveryService>();
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
+builder.Services.AddSingleton<IProxyDiagnosticService, ProxyDiagnosticService>();
 builder.Services.AddSingleton<ModelConcurrencyLimiter>();
 builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 

@@ -19,9 +19,15 @@ public static class ConsoleProxyLogFormatter
         bool isStreamInterrupted,
         int totalDurationMs,
         int requestBodyLength,
-        int responseBodyLength)
+        int responseBodyLength,
+        string? siteName = null,
+        string? forwardingMode = null,
+        string? dumpFileName = null)
     {
-        // 控制台只保留单行摘要，把详细内容留给本地日志文件，尽量降低运行期开销。
-        return $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] proxy client={clientProtocol} source={requestSource} model={modelName} upstream={actualProtocolType} status={responseStatusCode} success={success} streaming={isStreaming} interrupted={isStreamInterrupted} duration_ms={totalDurationMs} request_chars={requestBodyLength} response_chars={responseBodyLength}";
+        var sitePart = string.IsNullOrWhiteSpace(siteName) ? string.Empty : $" site={siteName}";
+        var modePart = string.IsNullOrWhiteSpace(forwardingMode) ? string.Empty : $" mode={forwardingMode}";
+        var dumpPart = string.IsNullOrWhiteSpace(dumpFileName) ? string.Empty : $" dump={dumpFileName}";
+
+        return $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] proxy client={clientProtocol} source={requestSource} model={modelName} upstream={actualProtocolType}{sitePart}{modePart} status={responseStatusCode} success={success} streaming={isStreaming} interrupted={isStreamInterrupted} duration_ms={totalDurationMs} request_chars={requestBodyLength} response_chars={responseBodyLength}{dumpPart}";
     }
 }

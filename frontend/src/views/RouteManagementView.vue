@@ -10,27 +10,31 @@ type RouteManagementTab = 'routes' | 'compatibility'
 
 const route = useRoute()
 const router = useRouter()
-const activeTab = ref<RouteManagementTab>(getTabFromQuery())
+const activeTab = ref<RouteManagementTab>(getTabFromHash())
 
-function getTabFromQuery(): RouteManagementTab {
-  return route.query.tab === 'compatibility' ? 'compatibility' : 'routes'
+function getTabFromHash(): RouteManagementTab {
+  const hash = route.hash.replace(/^#/, '').toLowerCase()
+  if (hash === 'compatibility' || route.query.tab === 'compatibility') {
+    return 'compatibility'
+  }
+  return 'routes'
 }
 
 function handleTabChange(value: string): void {
   const nextTab: RouteManagementTab = value === 'compatibility' ? 'compatibility' : 'routes'
   activeTab.value = nextTab
-  const query = { ...route.query }
-  if (nextTab === 'compatibility') {
-    query.tab = 'compatibility'
-  } else {
-    delete query.tab
+  const nextHash = nextTab === 'compatibility' ? '#compatibility' : '#routes'
+  if (route.hash !== nextHash) {
+    void router.replace({ hash: nextHash })
   }
-  void router.replace({ query })
 }
 
 // 支持浏览器前进/后退，以及从旧兼容规则集地址进入时同步当前页签。
+watch(() => route.hash, () => {
+  activeTab.value = getTabFromHash()
+})
 watch(() => route.query.tab, () => {
-  activeTab.value = getTabFromQuery()
+  activeTab.value = getTabFromHash()
 })
 </script>
 
