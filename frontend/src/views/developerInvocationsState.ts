@@ -22,6 +22,8 @@ export interface ProtocolDiagnosticsPrefill {
   attemptedModel?: string
   statusCode?: number
   errorMessage?: string
+  // 转换后（发往上游）的请求体：AI 自愈试探以它为起点，跨页签载入时避免丢失
+  preparedPayload?: string
   trialRules?: CompatibilityRuleForm[]
 }
 

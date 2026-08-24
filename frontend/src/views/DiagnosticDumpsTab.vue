@@ -35,6 +35,8 @@ import {
   type DiagnosticDumpItem,
   type DiagnosticConfig
 } from '@/api/developer'
+import { useRouter } from 'vue-router'
+import { setProtocolDiagnosticsPrefill } from './developerInvocationsState'
 
 const message = useMessage()
 
@@ -187,6 +189,40 @@ function copyText(text: string, tip = '已复制到剪贴板'): void {
     () => message.success(tip),
     () => message.error('复制失败，请手动选择复制')
   )
+}
+
+const router = useRouter()
+
+function stringifyDumpField(value: unknown): string {
+  if (!value) return ''
+  return typeof value === 'string' ? value : JSON.stringify(value, null, 2)
+}
+
+function loadIntoProtocolDiagnostics(item: DiagnosticDumpItem, content: any): void {
+  const reqBody = stringifyDumpField(content?.clientRequestBody)
+  const preparedBody = stringifyDumpField(content?.preparedRequestBody)
+  const errBody = stringifyDumpField(content?.upstreamResponseBody)
+    || content?.diagnostic?.errorMessage
+    || item.errorSummary
+    || ''
+
+  setProtocolDiagnosticsPrefill({
+    direction: 'request',
+    sourceProtocol: item.clientProtocol || content?.diagnostic?.clientProtocol || 'OpenAI',
+    targetProtocol: item.upstreamProtocol || content?.diagnostic?.upstreamProtocol || 'Gemini',
+    streaming: content?.diagnostic?.isStreaming || false,
+    modelName: item.requestModel || content?.diagnostic?.requestModel || '',
+    payload: reqBody,
+    preparedPayload: preparedBody,
+    targetSiteName: item.siteName || content?.diagnostic?.siteName || '',
+    attemptedModel: item.attemptedModel || content?.diagnostic?.attemptedModel || '',
+    statusCode: item.statusCode || content?.diagnostic?.httpStatusCode || 400,
+    errorMessage: errBody
+  })
+
+  showDetailDrawer.value = false
+  void router.replace({ hash: '#developerProtocolDiagnosticsPane' })
+  message.success(`已载入抓包现场至 AI 协议自愈调试工作台`)
 }
 
 function generateCurlCommand(item: DiagnosticDumpItem, dumpData: any): string {
@@ -431,12 +467,17 @@ onUnmounted(() => {
             </div>
           </div>
 
-          <!-- 一键复制复现 curl -->
+          <!-- 一键复制复现 curl 与载入协议自愈 -->
           <div class="flex items-center justify-between p-2.5 bg-blue-50/70 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-900 rounded-lg">
-            <span class="text-blue-700 dark:text-blue-300">💡 可直接复制此请求向上游进行二次复现排查：</span>
-            <NButton size="tiny" type="primary" @click="copyText(generateCurlCommand(currentDumpItem!, currentDumpContent), '已生成并复制复现 curl 命令')">
-              复制 cURL 复现命令
-            </NButton>
+            <span class="text-blue-700 dark:text-blue-300">💡 快捷排障操作：</span>
+            <div class="flex items-center gap-2">
+              <NButton size="tiny" type="warning" secondary @click="loadIntoProtocolDiagnostics(currentDumpItem!, currentDumpContent)">
+                🤖 载入至 AI 协议自愈调试
+              </NButton>
+              <NButton size="tiny" type="primary" @click="copyText(generateCurlCommand(currentDumpItem!, currentDumpContent), '已生成并复制复现 curl 命令')">
+                复制 cURL 复现命令
+              </NButton>
+            </div>
           </div>
 
           <!-- 发往上游的实际请求体 (preparedRequestBody) -->

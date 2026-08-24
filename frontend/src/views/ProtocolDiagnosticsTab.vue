@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, watch, type Ref } from 'vue'
+import { computed, inject, nextTick, onMounted, ref, watch, type Ref } from 'vue'
 import {
   NAlert,
   NButton,
@@ -35,6 +35,7 @@ import { listSites, type SiteListItem } from '@/api/sites'
 import {
   runAutoDiagnoseLoop,
   getDiagnosticDumps,
+  getDiagnosticDumpContent,
   getDiagnosticConfig,
   updateDiagnosticConfig,
   type AutoDiagnoseLoopPayload,
@@ -87,6 +88,7 @@ const initialStatusCode = ref(400)
 // 调试执行状态与结果
 const loopLoading = ref(false)
 const loopResult = ref<AutoDiagnoseLoopResult | null>(null)
+const resultSectionRef = ref<HTMLElement | null>(null)
 
 // 抓包载入弹窗
 const showLoadDumpModal = ref(false)
@@ -181,21 +183,52 @@ async function openLoadDumpModal(): Promise<void> {
   }
 }
 
-function applyDumpToDiagnostic(dump: DiagnosticDumpItem): void {
-  sourceProtocol.value = dump.clientProtocol || 'OpenAI'
-  targetProtocol.value = dump.upstreamProtocol || 'Gemini'
-  targetModelName.value = dump.attemptedModel || dump.requestModel || ''
+async function applyDumpToDiagnostic(dump: DiagnosticDumpItem): Promise<void> {
+  try {
+    const dumpContent = await getDiagnosticDumpContent(dump.fileName)
 
-  const matchedSite = availableSites.value.find((s) => s.name === dump.siteName)
-  if (matchedSite) {
-    selectedTargetSiteId.value = matchedSite.id
+    sourceProtocol.value = dump.clientProtocol || dumpContent?.diagnostic?.clientProtocol || 'OpenAI'
+    targetProtocol.value = dump.upstreamProtocol || dumpContent?.diagnostic?.upstreamProtocol || 'Gemini'
+    targetModelName.value = dump.attemptedModel || dump.requestModel || dumpContent?.diagnostic?.attemptedModel || ''
+
+    const siteName = dump.siteName || dumpContent?.diagnostic?.siteName
+    const matchedSite = availableSites.value.find((s) => s.name === siteName || (dumpContent?.diagnostic?.siteId && s.id === dumpContent.diagnostic.siteId))
+    if (matchedSite) {
+      selectedTargetSiteId.value = matchedSite.id
+    }
+
+    initialStatusCode.value = dump.statusCode || dumpContent?.diagnostic?.httpStatusCode || 400
+
+    // 载入原始请求体
+    if (dumpContent?.clientRequestBody) {
+      originalRequestBody.value = typeof dumpContent.clientRequestBody === 'string'
+        ? dumpContent.clientRequestBody
+        : JSON.stringify(dumpContent.clientRequestBody, null, 2)
+    }
+
+    // 载入准备/转换后的请求体
+    if (dumpContent?.preparedRequestBody) {
+      initialPreparedRequestBody.value = typeof dumpContent.preparedRequestBody === 'string'
+        ? dumpContent.preparedRequestBody
+        : JSON.stringify(dumpContent.preparedRequestBody, null, 2)
+    } else {
+      initialPreparedRequestBody.value = ''
+    }
+
+    // 载入上游错误响应正文
+    if (dumpContent?.upstreamResponseBody) {
+      initialErrorResponse.value = typeof dumpContent.upstreamResponseBody === 'string'
+        ? dumpContent.upstreamResponseBody
+        : JSON.stringify(dumpContent.upstreamResponseBody, null, 2)
+    } else if (dumpContent?.diagnostic?.errorMessage || dump.errorSummary) {
+      initialErrorResponse.value = dumpContent?.diagnostic?.errorMessage || dump.errorSummary
+    }
+
+    showLoadDumpModal.value = false
+    message.success(`已完整载入抓包现场：${dump.routeName || dump.requestModel}`)
+  } catch (err: any) {
+    message.error(`载入抓包现场详情失败: ${err.message || '未知错误'}`)
   }
-
-  initialStatusCode.value = dump.statusCode || 400
-  initialErrorResponse.value = dump.errorSummary || `HTTP ${dump.statusCode || 400} 失败现场`
-
-  showLoadDumpModal.value = false
-  message.success(`已载入抓包现场：${dump.routeName || dump.requestModel}`)
 }
 
 async function handleStartAutoDiagnoseLoop(): Promise<void> {
@@ -230,11 +263,16 @@ async function handleStartAutoDiagnoseLoop(): Promise<void> {
   try {
     const res = await runAutoDiagnoseLoop(payload)
     loopResult.value = res
-    if (res.success) {
+    if (res.error) {
+      message.error(`自愈调试执行失败: ${res.error}`)
+    } else if (res.success) {
       message.success(`自愈调试成功！共尝试 ${res.totalRounds} 轮，上游已正常响应 200 OK`)
     } else {
-      message.warning(`自愈调试已尝试 ${res.totalRounds} 轮，上游仍返回异常，请查看 AI 分析报告`)
+      message.warning(`自愈调试已尝试 ${res.totalRounds} 轮，未能成功收敛：${res.summary || '请查看下方分析报告'}`)
     }
+
+    await nextTick()
+    resultSectionRef.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   } catch (err: any) {
     message.error(err?.message || '执行自愈调试发生异常')
   } finally {
@@ -290,31 +328,36 @@ function copyText(text: string, tip = '已复制到剪贴板'): void {
   )
 }
 
-// 接收外部 prefill 信号
+// 接收外部 prefill：优先在挂载后消费（页签 display-directive='if'，跨页签激活时组件全新挂载，
+// prefillSignal 信号在挂载前 bump 不会触发 watcher——挂载消费覆盖 hash 跳转/父组件切页签所有路径）。
+function applyPendingPrefill(): void {
+  const prefill = takeProtocolDiagnosticsPrefill()
+  if (!prefill) return
+
+  sourceProtocol.value = prefill.sourceProtocol || 'OpenAI'
+  targetProtocol.value = prefill.targetProtocol || 'Gemini'
+  targetModelName.value = prefill.attemptedModel || prefill.modelName || ''
+  originalRequestBody.value = prefill.payload || ''
+  if (prefill.preparedPayload) {
+    initialPreparedRequestBody.value = prefill.preparedPayload
+  }
+  if (prefill.errorMessage) {
+    initialErrorResponse.value = prefill.errorMessage
+  }
+  if (prefill.statusCode) {
+    initialStatusCode.value = prefill.statusCode
+  }
+
+  const matchedSite = availableSites.value.find((s) => s.name === prefill.targetSiteName)
+  if (matchedSite) {
+    selectedTargetSiteId.value = matchedSite.id
+  }
+}
+
+// 兜底：组件已挂载时（同页签内）信号变化仍可触发消费；take-once 语义保证不重复应用。
 watch(
   () => prefillSignal?.value,
-  () => {
-    const prefill = takeProtocolDiagnosticsPrefill()
-    if (!prefill) return
-
-    sourceProtocol.value = prefill.sourceProtocol || 'OpenAI'
-    targetProtocol.value = prefill.targetProtocol || 'Gemini'
-    targetModelName.value = prefill.attemptedModel || prefill.modelName || ''
-    originalRequestBody.value = prefill.payload || ''
-    if (prefill.errorMessage) {
-      initialErrorResponse.value = prefill.errorMessage
-    }
-    if (prefill.statusCode) {
-      initialStatusCode.value = prefill.statusCode
-    }
-
-    const matchedSite = availableSites.value.find((s) => s.name === prefill.targetSiteName)
-    if (matchedSite) {
-      selectedTargetSiteId.value = matchedSite.id
-    }
-
-    message.info('已自动载入调用详情至 AI 协议自愈调试工作台')
-  }
+  () => applyPendingPrefill()
 )
 
 const showConfigModal = ref(false)
@@ -353,9 +396,11 @@ async function handleSaveConfig(): Promise<void> {
   }
 }
 
-onMounted(() => {
-  void loadInitData()
+onMounted(async () => {
+  // 先等基础数据（站点列表）就绪再消费 prefill，保证站点名匹配能命中。
+  await loadInitData()
   void loadConfig()
+  applyPendingPrefill()
 })
 </script>
 
@@ -516,11 +561,23 @@ onMounted(() => {
         </span>
       </div>
 
-      <div v-else-if="loopResult" class="flex flex-col gap-4">
+      <div v-else-if="loopResult" ref="resultSectionRef" class="flex flex-col gap-4">
+        <!-- 启动或致命错误卡片 -->
+        <NAlert
+          v-if="loopResult.error"
+          type="error"
+          title="❌ AI 诊断执行失败"
+          :bordered="false"
+          class="rounded-xl shadow-sm"
+        >
+          <div class="text-xs font-semibold leading-relaxed">{{ loopResult.error }}</div>
+        </NAlert>
+
         <!-- 结果大状态卡片 -->
         <div
+          v-if="!loopResult.error || loopResult.summary"
           :class="[
-            'p-4 rounded-xl border flex flex-col gap-2',
+            'p-4 rounded-xl border flex flex-col gap-2 shadow-sm',
             loopResult.success
               ? 'border-emerald-300 bg-emerald-50/70 dark:bg-emerald-950/30 dark:border-emerald-800'
               : 'border-amber-300 bg-amber-50/70 dark:bg-amber-950/30 dark:border-amber-800'
@@ -532,7 +589,7 @@ onMounted(() => {
                 {{ loopResult.success ? '✅ 自愈成功 (200 OK)' : '⚠️ 多轮测试未完全收敛' }}
               </NTag>
               <span class="font-bold text-base text-slate-800 dark:text-slate-100">
-                {{ loopResult.summary }}
+                {{ loopResult.summary || (loopResult.success ? '实机测试通过' : '自愈试探未通过') }}
               </span>
             </div>
             <NButton
@@ -547,6 +604,10 @@ onMounted(() => {
 
           <div v-if="loopResult.rootCause" class="text-xs text-slate-700 dark:text-slate-300 leading-relaxed bg-white/80 dark:bg-slate-900/80 p-3 rounded-lg border border-slate-200/80 dark:border-slate-800">
             <strong>根因归因：</strong>{{ loopResult.rootCause }}
+          </div>
+
+          <div v-if="loopResult.suggestedAction" class="text-xs text-blue-800 dark:text-blue-200 leading-relaxed bg-blue-50/80 dark:bg-blue-950/40 p-3 rounded-lg border border-blue-200/80 dark:border-blue-900">
+            <strong>💡 AI 建议措施：</strong>{{ loopResult.suggestedAction }}
           </div>
         </div>
 

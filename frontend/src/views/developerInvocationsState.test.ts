@@ -55,4 +55,25 @@ describe('Developer Invocations → 协议诊断台 联动', () => {
     expect(prefill?.eventName).toBe('content_block_delta')
     expect(takeProtocolDiagnosticsPrefill()).toBeNull()
   })
+
+  it('故障现场扩展字段（preparedPayload/错误正文/站点）完整往返', () => {
+    setProtocolDiagnosticsPrefill({
+      direction: 'request',
+      sourceProtocol: 'OpenAI',
+      targetProtocol: 'Gemini',
+      streaming: false,
+      modelName: '1M',
+      payload: '{"model":"1M","messages":[]}',
+      preparedPayload: '{"contents":[]}',
+      targetSiteName: 'GeminiPro1',
+      attemptedModel: 'gemini-3.7-flash',
+      statusCode: 400,
+      errorMessage: 'Invalid argument'
+    })
+    const prefill = takeProtocolDiagnosticsPrefill()
+    expect(prefill?.preparedPayload).toBe('{"contents":[]}')
+    expect(prefill?.targetSiteName).toBe('GeminiPro1')
+    expect(prefill?.statusCode).toBe(400)
+    expect(prefill?.errorMessage).toBe('Invalid argument')
+  })
 })
