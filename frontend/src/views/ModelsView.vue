@@ -102,7 +102,6 @@ const clientEmulationOptions = computed(() => {
       { label: '⚡ Google Gemini CLI', value: 'GeminiCli' }
     )
   }
-  options.push({ label: '自定义特征 (Custom)', value: 'Custom' })
   return options
 })
 
@@ -638,7 +637,7 @@ onMounted(() => {
       v-model:show="showModal"
       :title="isEditMode ? '编辑模型' : '新建模型'"
       preset="card"
-      style="width: min(1080px, 94vw); max-width: 1080px"
+      style="width: min(1320px, 96vw); max-width: 1320px"
       :mask-closable="false"
     >
       <div class="model-editor-modal">
@@ -1596,8 +1595,8 @@ onMounted(() => {
 
 .mapping-fields-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1.3fr) 115px minmax(170px, 1.2fr) minmax(180px, 1.3fr);
-  gap: 10px;
+  grid-template-columns: minmax(220px, 1.4fr) 125px minmax(220px, 1.3fr) minmax(240px, 1.5fr);
+  gap: 12px;
   align-items: start;
 }
 
@@ -1609,7 +1608,7 @@ onMounted(() => {
 }
 
 .mapping-field-col-num {
-  min-width: 110px;
+  min-width: 120px;
 }
 
 .mapping-field-label {
@@ -1626,8 +1625,8 @@ onMounted(() => {
 
 .mapping-add-grid-primary {
   display: grid;
-  grid-template-columns: minmax(130px, 1.1fr) minmax(130px, 1.1fr) 100px minmax(130px, 1.1fr) minmax(140px, 1.2fr) 90px 100px;
-  gap: 10px;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(180px, 1.3fr) 115px minmax(180px, 1.3fr) minmax(200px, 1.5fr) auto auto;
+  gap: 12px;
   align-items: end;
 }
 

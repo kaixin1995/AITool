@@ -168,7 +168,11 @@ public sealed class GoogleCredentialRefreshService
             var tokens = await _oauth.RefreshTokenAsync(account.AccountKind, account.RefreshToken, cancellationToken);
             await _dbContext.SerialExecuteAsync(async () =>
             {
-                account.AccessToken = tokens.AccessToken;
+                if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
+                {
+                    account.AccessToken = tokens.AccessToken;
+                }
+
                 // Google 刷新响应通常不回传 refresh_token，保留旧值。
                 if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
                 {
@@ -180,7 +184,7 @@ public sealed class GoogleCredentialRefreshService
                 await _dbContext.UpdateAsync(account, cancellationToken);
 
                 var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                if (site is not null)
+                if (site is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
                 {
                     site.ApiKey = tokens.AccessToken;
                     await _dbContext.UpdateAsync(site, cancellationToken);

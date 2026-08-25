@@ -1,38 +1,33 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project Sdk="Microsoft.NET.Sdk.Web">
-
   <PropertyGroup>
     <TargetFramework>net8.0</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>1.0.1.13</Version>
-    <AssemblyVersion>1.0.1.13</AssemblyVersion>
-    <FileVersion>1.0.1.13</FileVersion>
-	<!-- 只生成 zh-Hans 的语言资源 -->
-	<SatelliteResourceLanguages>zh</SatelliteResourceLanguages>
-	<!-- 生成 XML 文档，供 Swagger UI 展示接口注释 -->
-	<GenerateDocumentationFile>true</GenerateDocumentationFile>
-	<!-- 项目中控制器/类型已全部标注注释，关闭公共 API 缺失告警 -->
-	<NoWarn>$(NoWarn);1591</NoWarn>
-	<!-- 编译时间戳注入到程序集元数据（AssemblyMetadata），供运行时读取展示，
+    <Version>1.0.1.14</Version>
+    <AssemblyVersion>1.0.1.14</AssemblyVersion>
+    <FileVersion>1.0.1.14</FileVersion>
+    <!-- 只生成 zh-Hans 的语言资源 -->
+    <SatelliteResourceLanguages>zh</SatelliteResourceLanguages>
+    <!-- 生成 XML 文档，供 Swagger UI 展示接口注释 -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <!-- 项目中控制器/类型已全部标注注释，关闭公共 API 缺失告警 -->
+    <NoWarn>$(NoWarn);1591</NoWarn>
+    <!-- 编译时间戳注入到程序集元数据（AssemblyMetadata），供运行时读取展示，
 	     避免单文件/独立发布下读取 dll 文件时间戳失效 -->
-	<BuildTimestamp>$([System.DateTime]::UtcNow.ToString("O"))</BuildTimestamp>
+    <BuildTimestamp>$([System.DateTime]::UtcNow.ToString("O"))</BuildTimestamp>
   </PropertyGroup>
-
   <ItemGroup>
     <AssemblyMetadata Include="BuildTimestamp" Value="$(BuildTimestamp)" />
   </ItemGroup>
-
   <ItemGroup>
     <ProjectReference Include="..\AITool.Application\AITool.Application.csproj" />
     <ProjectReference Include="..\AITool.Infrastructure\AITool.Infrastructure.csproj" />
     <ProjectReference Include="..\AITool.Protocol\AITool.Protocol.csproj" />
   </ItemGroup>
-
   <ItemGroup>
     <InternalsVisibleTo Include="AITool.IntegrationTests" />
   </ItemGroup>
-
   <ItemGroup>
     <PackageReference Include="Hangfire.AspNetCore" Version="1.8.23" />
     <PackageReference Include="Hangfire.InMemory" Version="1.0.0" />
@@ -40,19 +35,16 @@
     <PackageReference Include="NLog.Web.AspNetCore" Version="6.0.5" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.9.0" />
   </ItemGroup>
-
   <ItemGroup>
     <Content Update="model-pricing.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
-
   <ItemGroup>
     <Content Update="model-vendor-catalog.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
   </ItemGroup>
-
 </Project>

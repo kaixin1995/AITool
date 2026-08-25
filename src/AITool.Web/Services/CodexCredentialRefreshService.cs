@@ -68,8 +68,17 @@ public sealed class CodexCredentialRefreshService
             var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, cancellationToken);
             await _dbContext.SerialExecuteAsync(async () =>
             {
-                account.AccessToken = tokens.AccessToken;
-                account.RefreshToken = tokens.RefreshToken;
+                if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
+                {
+                    account.AccessToken = tokens.AccessToken;
+                }
+
+                // OpenAI 会轮换 refresh_token，但某些响应可能不返回新 refresh_token，保留旧值避免被清空导致永久无法刷新。
+                if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
+                {
+                    account.RefreshToken = tokens.RefreshToken;
+                }
+
                 if (!string.IsNullOrWhiteSpace(tokens.IdToken))
                 {
                     account.IdToken = tokens.IdToken;
@@ -81,7 +90,7 @@ public sealed class CodexCredentialRefreshService
                 await _dbContext.UpdateAsync(account, cancellationToken);
 
                 var site = await _dbContext.Sites.InSingleAsync(account.LinkedSiteId);
-                if (site is not null)
+                if (site is not null && !string.IsNullOrWhiteSpace(tokens.AccessToken))
                 {
                     site.ApiKey = tokens.AccessToken;
                     await _dbContext.UpdateAsync(site, cancellationToken);
