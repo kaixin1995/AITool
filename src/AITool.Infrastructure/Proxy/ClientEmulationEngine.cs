@@ -145,13 +145,8 @@ public static partial class ClientEmulationEngine
                 break;
 
             case ClientEmulationConstants.Antigravity:
-                // Google Antigravity 官方 CLI 特征（UA 与 GoogleAccountKinds 同源，保证与额度/模型拉取一致）
+                // Google Antigravity 官方 CLI 真实特征（对齐 agy 1.1.20 抓包，HTTP 请求头仅设置官方 User-Agent）
                 headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;
-                headers["requestId"] = "req-${guid:N}";
-                headers["requestType"] = modelName is not null && modelName.Contains("image", StringComparison.OrdinalIgnoreCase)
-                    ? "image_gen"
-                    : "agent";
-                headers["x-goog-api-client"] = "gl-node/20.18.0 antigravity-cli/1.10.4";
                 break;
 
             case ClientEmulationConstants.GeminiCli:
@@ -159,10 +154,6 @@ public static partial class ClientEmulationEngine
                 if (isAntigravity)
                 {
                     headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;
-                    headers["requestId"] = "req-${guid:N}";
-                    headers["requestType"] = modelName is not null && modelName.Contains("image", StringComparison.OrdinalIgnoreCase)
-                        ? "image_gen"
-                        : "agent";
                 }
                 else
                 {
@@ -219,12 +210,13 @@ public static partial class ClientEmulationEngine
 
             if (string.Equals(key, "model", StringComparison.OrdinalIgnoreCase))
             {
-                return modelName ?? string.Empty;
+                return !string.IsNullOrWhiteSpace(modelName) ? modelName : $"model-{GenerateNanoId(8)}";
             }
 
-            if (string.Equals(key, "project_id", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(key, "project_id", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(key, "projectId", StringComparison.OrdinalIgnoreCase))
             {
-                return projectId ?? string.Empty;
+                return !string.IsNullOrWhiteSpace(projectId) ? projectId : $"proj-{GenerateNanoId(10)}";
             }
 
             if (key.StartsWith("nanoid", StringComparison.OrdinalIgnoreCase))
@@ -238,7 +230,7 @@ public static partial class ClientEmulationEngine
                 return GenerateNanoId(length);
             }
 
-            if (key.StartsWith("random_hex", StringComparison.OrdinalIgnoreCase))
+            if (key.StartsWith("random_hex", StringComparison.OrdinalIgnoreCase) || key.StartsWith("hex", StringComparison.OrdinalIgnoreCase))
             {
                 var length = 16;
                 var parts = key.Split(':');
@@ -249,8 +241,26 @@ public static partial class ClientEmulationEngine
                 return GenerateRandomHex(length);
             }
 
-            // 未知占位符保留原样
-            return match.Value;
+            // 智能随机兜底：未预置的自定义占位符（如 ${session_id}, ${account_id}, ${user_id} 等）每次自动生成全新随机值，杜绝固定字符串特征
+            var lowerKey = key.ToLowerInvariant();
+            if (lowerKey.Contains("guid:n") || lowerKey.Contains("uuid:n"))
+            {
+                return Guid.NewGuid().ToString("N");
+            }
+            if (lowerKey.Contains("guid") || lowerKey.Contains("uuid") || lowerKey.EndsWith("id"))
+            {
+                return Guid.NewGuid().ToString("D");
+            }
+            if (lowerKey.Contains("time") || lowerKey.Contains("date"))
+            {
+                return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
+            }
+            if (lowerKey.Contains("hex"))
+            {
+                return GenerateRandomHex(16);
+            }
+
+            return GenerateNanoId(16);
         });
     }
 

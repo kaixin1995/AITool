@@ -45,10 +45,12 @@ public sealed class HeaderProfilesApiTests
         await using var factory = new HeaderProfilesWebApplicationFactory();
         using var client = factory.CreateClient();
 
+        var testKey = $"custom-cursor-test-{Guid.NewGuid():N}";
+
         // 1. Create
         var createPayload = new
         {
-            key = "custom-cursor-test",
+            key = testKey,
             name = "Cursor IDE Test",
             description = "Cursor testing emulation",
             headersJson = "{\"User-Agent\": \"cursor/0.40.0\", \"x-cursor-session\": \"${guid}\"}",
@@ -75,7 +77,7 @@ public sealed class HeaderProfilesApiTests
         // 4. Update
         var updatePayload = new
         {
-            key = "custom-cursor-test",
+            key = testKey,
             name = "Cursor IDE Test Renamed",
             description = "Updated description",
             headersJson = "{\"User-Agent\": \"cursor/0.41.0\"}",
@@ -168,6 +170,8 @@ internal sealed class HeaderProfilesWebApplicationFactory : WebApplicationFactor
         using var scope = Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         SqlSugarSetup.InitializeDatabase(db.Client);
+        var catalog = scope.ServiceProvider.GetRequiredService<AITool.Application.Proxy.IHeaderProfileCatalogService>();
+        catalog.ResetBuiltInsAsync().GetAwaiter().GetResult();
     }
 
     protected override void Dispose(bool disposing)

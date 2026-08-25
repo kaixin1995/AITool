@@ -357,9 +357,9 @@ public static partial class ProxyProtocolBridge
 
         if (isAntigravity)
         {
-            // CLI 封套字段：requestId 对齐 agent/{uuid}/{ms}/{trajectory}/{step} 格式；
+            // CLI 封套字段：requestId 对齐官方真实抓包格式 agent/{uuid}/{unix_ms}/{trajectory}/{step}（标准 GUID）
             // userAgent 字段同时被转发层用于识别 Antigravity 上游并设置对应的请求头。
-            payload["requestId"] = $"agent/{Guid.NewGuid():N}/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}/{Guid.NewGuid():N}/1";
+            payload["requestId"] = $"agent/{Guid.NewGuid():D}/{DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}/{Guid.NewGuid():D}/2";
             payload["userAgent"] = "antigravity";
             payload["requestType"] = upstreamModel.Contains("image", StringComparison.OrdinalIgnoreCase) ? "image_gen" : "agent";
         }
@@ -480,14 +480,30 @@ public static partial class ProxyProtocolBridge
             config.Remove("presencePenalty");
             config.Remove("frequencyPenalty");
 
-            // 关键兼容（对齐 gcli2api antigravity_fix._normalize_antigravity_request）：
-            // Antigravity 对 Gemini 3/3.5/3.7 系列通过模型名本身决定思考深度，
-            // 不接受 thinkingConfig 中的 thinkingLevel/thinkingBudget，否则会报参数冲突类 400。
-            // 2.5 系列保留 thinkingBudget，但同样剔除 thinkingLevel。
+            // 对齐官方 1.1.20 真实抓包：gemini-3 系列使用 thinkingBudget: -1 与 includeThoughts: true
             var modelLower = model.ToLowerInvariant();
             if (modelLower.Contains("gemini-3", StringComparison.OrdinalIgnoreCase))
             {
-                config.Remove("thinkingConfig");
+                if (config["thinkingConfig"] is JsonObject thinking)
+                {
+                    thinking.Remove("thinkingLevel");
+                    if (!thinking.ContainsKey("thinkingBudget"))
+                    {
+                        thinking["thinkingBudget"] = -1;
+                    }
+                    if (!thinking.ContainsKey("includeThoughts"))
+                    {
+                        thinking["includeThoughts"] = true;
+                    }
+                }
+                else
+                {
+                    config["thinkingConfig"] = new JsonObject
+                    {
+                        ["includeThoughts"] = true,
+                        ["thinkingBudget"] = -1
+                    };
+                }
             }
             else
             {

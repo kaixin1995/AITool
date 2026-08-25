@@ -52,7 +52,9 @@ public sealed partial class OpenAiProxyController
     public static Dictionary<string, string> MergeCodexResponsesHeaders(
         Dictionary<string, string>? extra,
         IHeaderDictionary? clientHeaders,
-        string? preparedRequestBody)
+        string? preparedRequestBody,
+        string? modelName = null,
+        string? projectId = null)
     {
         var merged = MergeExtraHeaders(extra);
         if (clientHeaders is not null)
@@ -76,7 +78,13 @@ public sealed partial class OpenAiProxyController
             merged["Session-Id"] = promptCacheKey;
         }
 
-        return merged;
+        var evaluated = new Dictionary<string, string>(merged.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var (k, v) in merged)
+        {
+            evaluated[k] = ClientEmulationEngine.EvaluatePlaceholders(v, modelName, projectId);
+        }
+
+        return evaluated;
     }
 
     private Dictionary<string, string> BuildForwardHeaders(
@@ -87,7 +95,7 @@ public sealed partial class OpenAiProxyController
         if (string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
             && string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
         {
-            return MergeCodexResponsesHeaders(route.ExtraHeaders, Request.Headers, preparedRequestBody);
+            return MergeCodexResponsesHeaders(route.ExtraHeaders, Request.Headers, preparedRequestBody, route.SiteModelName, route.GoogleProjectId);
         }
 
         var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl);

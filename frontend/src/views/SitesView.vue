@@ -754,7 +754,7 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
   {
     title: '协议',
     key: 'protocol',
-    width: 116,
+    minWidth: 180,
     render: (row) => {
       const items = []
       if (row.supportsOpenAi) {
@@ -763,7 +763,10 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
             NTooltip,
             null,
             {
-              trigger: () => h('span', { class: 'protocol-icon-badge protocol-openai', innerHTML: OPENAI_SVG }),
+              trigger: () => h('span', { class: 'protocol-tag protocol-tag-openai' }, [
+                h('span', { class: 'protocol-tag-icon', innerHTML: OPENAI_SVG }),
+                h('span', { class: 'protocol-tag-text' }, 'OpenAI')
+              ]),
               default: () => 'OpenAI Chat Completions 协议 (/v1/chat/completions)'
             }
           )
@@ -775,7 +778,10 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
             NTooltip,
             null,
             {
-              trigger: () => h('span', { class: 'protocol-icon-badge protocol-anthropic', innerHTML: ANTHROPIC_SVG }),
+              trigger: () => h('span', { class: 'protocol-tag protocol-tag-anthropic' }, [
+                h('span', { class: 'protocol-tag-icon', innerHTML: ANTHROPIC_SVG }),
+                h('span', { class: 'protocol-tag-text' }, 'Anthropic')
+              ]),
               default: () => 'Anthropic Messages 协议 (/v1/messages)'
             }
           )
@@ -787,7 +793,10 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
             NTooltip,
             null,
             {
-              trigger: () => h('span', { class: 'protocol-icon-badge protocol-responses', innerHTML: RESPONSES_SVG }),
+              trigger: () => h('span', { class: 'protocol-tag protocol-tag-responses' }, [
+                h('span', { class: 'protocol-tag-icon', innerHTML: RESPONSES_SVG }),
+                h('span', { class: 'protocol-tag-text' }, 'Responses')
+              ]),
               default: () => 'OpenAI Responses API 协议 (/v1/responses)'
             }
           )
@@ -796,7 +805,7 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
       if (items.length === 0) {
         return h('span', { style: 'color: var(--text-tertiary)' }, '-')
       }
-      return h('div', { class: 'site-protocol-icons-group' }, items)
+      return h('div', { class: 'site-protocol-tags-group' }, items)
     }
   },
   {
@@ -1497,44 +1506,66 @@ onBeforeUnmount(handleCatalogClosed)
   font-size: 12px;
 }
 
-.site-protocol-icons-group {
+.site-protocol-tags-group {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 5px;
 }
 
-.protocol-icon-badge {
+.protocol-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.3;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+  user-select: none;
+}
+
+.protocol-tag:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
+}
+
+.protocol-tag-icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 26px;
-  height: 26px;
-  border-radius: 6px;
-  cursor: pointer;
-  transition: transform 0.15s, box-shadow 0.15s;
+  width: 13px;
+  height: 13px;
 }
 
-.protocol-icon-badge:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+.protocol-tag-icon svg {
+  width: 13px;
+  height: 13px;
 }
 
-.protocol-icon-badge.protocol-openai {
-  background: color-mix(in srgb, #10a37f 14%, var(--bg-surface-soft, rgba(16, 163, 127, 0.08)));
+.protocol-tag-text {
+  font-size: 11px;
+  line-height: 1;
+}
+
+.protocol-tag.protocol-tag-openai {
+  background: color-mix(in srgb, #10a37f 12%, var(--bg-surface-soft, rgba(16, 163, 127, 0.08)));
   color: #10a37f;
-  border: 1px solid color-mix(in srgb, #10a37f 30%, transparent);
+  border: 1px solid color-mix(in srgb, #10a37f 25%, transparent);
 }
 
-.protocol-icon-badge.protocol-anthropic {
-  background: color-mix(in srgb, #d97706 14%, var(--bg-surface-soft, rgba(217, 119, 6, 0.08)));
+.protocol-tag.protocol-tag-anthropic {
+  background: color-mix(in srgb, #d97706 12%, var(--bg-surface-soft, rgba(217, 119, 6, 0.08)));
   color: #d97706;
-  border: 1px solid color-mix(in srgb, #d97706 30%, transparent);
+  border: 1px solid color-mix(in srgb, #d97706 25%, transparent);
 }
 
-.protocol-icon-badge.protocol-responses {
-  background: color-mix(in srgb, #8b5cf6 14%, var(--bg-surface-soft, rgba(139, 92, 246, 0.08)));
+.protocol-tag.protocol-tag-responses {
+  background: color-mix(in srgb, #8b5cf6 12%, var(--bg-surface-soft, rgba(139, 92, 246, 0.08)));
   color: #8b5cf6;
-  border: 1px solid color-mix(in srgb, #8b5cf6 30%, transparent);
+  border: 1px solid color-mix(in srgb, #8b5cf6 25%, transparent);
 }
 
 .site-protocols-row {

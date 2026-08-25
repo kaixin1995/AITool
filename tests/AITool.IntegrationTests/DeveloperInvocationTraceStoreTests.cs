@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AITool.Application.Google;
 using AITool.Web.Services;
 using FluentAssertions;
 
@@ -59,7 +60,7 @@ public sealed class DeveloperInvocationTraceStoreTests
             PreparedRequestBody = "{}",
             PreparedRequestHeaders = new Dictionary<string, string>
             {
-                { "User-Agent", "antigravity/1.10.4 linux/x86_64" },
+                { "User-Agent", GoogleAccountKinds.AntigravityUserAgent },
                 { "requestId", "req-123" }
             }
         });
@@ -67,10 +68,10 @@ public sealed class DeveloperInvocationTraceStoreTests
         var detail = store.Get(traceId);
         detail.Should().NotBeNull();
         detail!.PreparedRequestHeaders.Should().ContainKey("User-Agent");
-        detail.PreparedRequestHeaders["User-Agent"].Should().Be("antigravity/1.10.4 linux/x86_64");
+        detail.PreparedRequestHeaders["User-Agent"].Should().Be(GoogleAccountKinds.AntigravityUserAgent);
         detail.Attempts.Should().HaveCount(1);
         detail.Attempts[0].PreparedRequestHeaders.Should().ContainKey("User-Agent");
-        detail.Attempts[0].PreparedRequestHeaders["User-Agent"].Should().Be("antigravity/1.10.4 linux/x86_64");
+        detail.Attempts[0].PreparedRequestHeaders["User-Agent"].Should().Be(GoogleAccountKinds.AntigravityUserAgent);
 
         var list = store.List();
         list.Should().ContainSingle();

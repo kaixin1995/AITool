@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using AITool.Application.Google;
 using AITool.Application.Proxy;
 using AITool.Domain.Sites;
 using Microsoft.Extensions.Hosting;
@@ -243,7 +244,17 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
             }
 
             var json = JsonSerializer.Serialize(profiles, JsonOptions);
-            await File.WriteAllTextAsync(_catalogPath, json, cancellationToken);
+            var tempPath = _catalogPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            await File.WriteAllTextAsync(tempPath, json, cancellationToken);
+            try
+            {
+                File.Move(tempPath, _catalogPath, overwrite: true);
+            }
+            catch
+            {
+                await File.WriteAllTextAsync(_catalogPath, json, cancellationToken);
+                try { File.Delete(tempPath); } catch { }
+            }
         }
         catch (Exception ex)
         {
@@ -269,7 +280,7 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                 existing.Description = def.Description;
                 existing.SortOrder = def.SortOrder;
                 // 若内置请求头发生升级且用户未修改过，同步最新请求头
-                if (string.IsNullOrWhiteSpace(existing.HeadersJson) || existing.HeadersJson.Contains("codex_cli_rs") || existing.HeadersJson.Contains("opencode/1.15.0"))
+                if (string.IsNullOrWhiteSpace(existing.HeadersJson) || existing.HeadersJson.Contains("codex_cli_rs") || existing.HeadersJson.Contains("opencode/1.15.0") || existing.HeadersJson.Contains("antigravity/1.10.4") || existing.HeadersJson.Contains("x-goog-api-client"))
                 {
                     existing.HeadersJson = def.HeadersJson;
                 }
@@ -409,13 +420,10 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                 Id = Guid.Parse("10000000-0000-0000-0000-000000000006"),
                 Key = ClientEmulationConstants.Antigravity,
                 Name = "Google Antigravity CLI",
-                Description = "Google Cloud Antigravity CLI 官方特征指纹",
+                Description = "Google Cloud Antigravity CLI 官方真实特征指纹",
                 HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
                 {
-                    ["User-Agent"] = "antigravity/1.10.4 linux/x86_64",
-                    ["x-goog-api-client"] = "gl-node/20.18.0 antigravity-cli/1.10.4",
-                    ["requestId"] = "req-${guid:N}",
-                    ["requestType"] = "agent"
+                    ["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent
                 }, JsonOptions),
                 IsBuiltIn = true,
                 IsEnabled = true,

@@ -147,9 +147,10 @@ public sealed class ClientEmulationEngineTests
             "gcp-proj-1",
             true);
 
-        Assert.StartsWith("antigravity/1.10.4", headers["User-Agent"]);
-        Assert.Equal("gl-node/20.18.0 antigravity-cli/1.10.4", headers["x-goog-api-client"]);
-        Assert.True(headers.ContainsKey("requestId"));
+        Assert.StartsWith("antigravity/cli/1.1.20", headers["User-Agent"]);
+        Assert.False(headers.ContainsKey("x-goog-api-client"));
+        Assert.False(headers.ContainsKey("requestId"));
+        Assert.False(headers.ContainsKey("requestType"));
     }
 
     [Fact]
@@ -226,5 +227,20 @@ public sealed class ClientEmulationEngineTests
         }
 
         Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public void EvaluatePlaceholders_HandlesUnknownAndUnpassedPlaceholdersWithSmartDefaults()
+    {
+        var complexJsonTemplate = "{\"installation_id\":\"${guid}\",\"session_id\":\"${session_id}\",\"thread_id\":\"${thread_id}\",\"time\":${timestamp_ms},\"custom\":\"${my_custom_tag}\"}";
+        var result = ClientEmulationEngine.EvaluatePlaceholders(complexJsonTemplate, null, null);
+
+        Assert.DoesNotContain("${", result);
+        Assert.DoesNotContain("}", result[..^1]); // except final closing brace
+        Assert.DoesNotContain("${guid}", result);
+        Assert.DoesNotContain("${session_id}", result);
+        Assert.DoesNotContain("${thread_id}", result);
+        Assert.DoesNotContain("${timestamp_ms}", result);
+        Assert.DoesNotContain("${my_custom_tag}", result);
     }
 }

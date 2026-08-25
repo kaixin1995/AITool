@@ -24,7 +24,7 @@ ProxyProtocolBridge（Gemini 桥）──► cloudcode-pa / daily-cloudcode-pa v
 | | GeminiCli | Antigravity |
 |---|---|---|
 | 上游端点 | `https://cloudcode-pa.googleapis.com` | `https://daily-cloudcode-pa.googleapis.com` |
-| 客户端身份 | Gemini CLI（UA `GeminiCLI/0.35.2/{model} (win32; x64; cloud-shell)`） | Antigravity CLI（UA `antigravity/cli/1.1.12 windows/amd64`） |
+| 客户端身份 | Gemini CLI（UA `GeminiCLI/0.35.2/{model} (win32; x64; cloud-shell)`） | Antigravity CLI（UA `antigravity/cli/1.1.20 (aidev_client; os_type=windows; arch=amd64; cl=970154694; auth_method=consumer)`） |
 | OAuth scope | cloud-platform + userinfo（3 个） | 额外 cclog + experimentsandconfigs（5 个） |
 | project 来源 | cloudresourcemanager 项目列表（唯一自动选 / 多个取含 default 的或第一个，兜底共享项目） | loadCodeAssist → cloudaicompanionProject（含 onboardUser 轮询回退） |
 | 模型清单 | 静态（`GoogleAccountKinds.GeminiCliModels`，对齐 gcli2api BASE_MODELS） | 动态 `v1internal:fetchAvailableModels`（含 claude-sonnet-4-6-thinking 补齐） |
