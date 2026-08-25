@@ -229,6 +229,27 @@
                             <NumericUpDown Grid.Column="1" Minimum="0" Maximum="100000" Value="{Binding MaxConcurrency, Mode=TwoWay}" IsEnabled="{Binding DataContext.CanEditMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="5,2" />
                             <Button Grid.Column="2" Classes="secondary-button" Command="{Binding DataContext.UpdateMappingConcurrencyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="保存" IsEnabled="{Binding DataContext.CanSaveMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="9,5" />
                           </Grid>
+                          <!-- 映射级客户端特征模拟（预设 / 自定义头 / 出口代理），与网页端映射编辑对齐 -->
+                          <Border Grid.Row="2" Grid.ColumnSpan="2" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,10,0,0">
+                            <StackPanel Spacing="8">
+                              <Grid ColumnDefinitions="Auto,220" ColumnSpacing="8">
+                                <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="特征仿真" VerticalAlignment="Center" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding DataContext.ClientEmulationOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedValue="{Binding ClientEmulation, Mode=TwoWay}" SelectedValueBinding="{Binding Value}" IsEnabled="{Binding DataContext.CanEditMapping, RelativeSource={RelativeSource AncestorType=UserControl}}">
+                                  <ComboBox.ItemTemplate>
+                                    <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+                                  </ComboBox.ItemTemplate>
+                                </ComboBox>
+                              </Grid>
+                              <Grid ColumnDefinitions="Auto,220" ColumnSpacing="8">
+                                <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="出口代理" VerticalAlignment="Center" />
+                                <TextBox Grid.Column="1" Classes="form-input" Text="{Binding EgressProxyUrl, Mode=TwoWay}" Watermark="留空继承站点配置" IsEnabled="{Binding DataContext.CanEditMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                              </Grid>
+                              <StackPanel Spacing="3">
+                                <TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="自定义请求头 JSON（支持 ${guid}/${nanoid:12}/${model} 占位符，留空继承站点配置）" TextWrapping="Wrap" />
+                                <TextBox Classes="form-input" AcceptsReturn="True" MinHeight="48" Text="{Binding ExtraHeadersJson, Mode=TwoWay}" TextWrapping="Wrap" Watermark='例如 {"User-Agent": "my-app/1.0"}' IsEnabled="{Binding DataContext.CanEditMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                              </StackPanel>
+                            </StackPanel>
+                          </Border>
                         </Grid>
                       </Border>
                     </DataTemplate>

@@ -12,6 +12,13 @@
         <TextBlock Classes="page-subtitle" Text="管理 OAuth 账号、额度窗口、凭证和自动巡检" />
       </StackPanel>
       <WrapPanel Grid.Column="1" HorizontalAlignment="Right" Orientation="Horizontal" ItemSpacing="10" LineSpacing="8">
+        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center" ToolTip.Tip="选择 OAuth 登录与凭证导入的厂商（Codex / GeminiCLI / Antigravity）">
+          <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="厂商" />
+          <ComboBox
+              MinWidth="130"
+              ItemsSource="{Binding ProviderOptions}"
+              SelectedItem="{Binding LoginProvider, Mode=TwoWay}" />
+        </StackPanel>
         <Button
             Classes="secondary-button"
             Command="{Binding OpenCredentialImportCommand}"
@@ -21,6 +28,8 @@
             Classes="secondary-button"
             Click="ImportCredentialFiles"
             Content="导入凭证文件"
+            IsVisible="{Binding IsCodexProvider}"
+            ToolTip.Tip="文件导入仅支持 Codex 凭证；Google 凭证请使用粘贴 JSON"
             Padding="14,9" />
         <Button
             Classes="secondary-button"
@@ -35,7 +44,7 @@
         <Button
             Classes="primary-button"
             Command="{Binding StartOAuthCommand}"
-            Content="＋ OAuth 登录"
+            Content="{Binding OAuthStartButtonText}"
             Padding="16,9" />
       </WrapPanel>
     </Grid>
@@ -82,7 +91,7 @@
                   </Grid>
                   <TextBox Classes="form-input" IsReadOnly="True" Text="{Binding OAuthUrl}" Watermark="授权地址" />
                   <Grid ColumnDefinitions="1.5*,1*,Auto" ColumnSpacing="10">
-                    <TextBox Classes="form-input" Text="{Binding OAuthCallbackUrl}" Watermark="回调 URL" />
+                    <TextBox Classes="form-input" Text="{Binding OAuthCallbackUrl}" Watermark="{Binding OAuthCallbackHint}" />
                     <TextBox Grid.Column="1" Classes="form-input" Text="{Binding OAuthDisplayName}" Watermark="账号名称（可选）" />
                     <Button Grid.Column="2" Classes="primary-button" Command="{Binding CompleteOAuthCommand}" Content="完成登录" IsEnabled="{Binding CanCompleteOAuth}" Padding="14,8" />
                   </Grid>
@@ -102,11 +111,15 @@
                       <StackPanel Spacing="15">
                         <!-- 卡片头部按网页端分成账号信息、状态和套餐三层，避免内容互相挤压。 -->
                         <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10" VerticalAlignment="Top">
-                          <CheckBox VerticalAlignment="Top" IsChecked="{Binding IsExportSelected, Mode=TwoWay}" ToolTip.Tip="选择该账号用于导出或复制凭证" />
+                          <CheckBox VerticalAlignment="Top" IsChecked="{Binding IsExportSelected, Mode=TwoWay}" IsEnabled="{Binding IsCodex}" ToolTip.Tip="选择该账号用于导出或复制凭证（仅 Codex 支持导出）" />
                           <StackPanel Grid.Column="1" Spacing="5" MinWidth="0">
                             <TextBlock FontSize="16" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" />
                             <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Email}" TextTrimming="CharacterEllipsis" />
+                            <TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding IsGoogle}" Text="{Binding ProjectText}" TextTrimming="CharacterEllipsis" ToolTip.Tip="{Binding ProjectId}" />
                             <StackPanel Orientation="Horizontal" Spacing="7" Margin="0,3,0,0">
+                              <Border Background="{Binding ProviderBadgeBrush}" CornerRadius="12" Padding="9,4">
+                                <TextBlock FontSize="11" Foreground="White" Text="{Binding ProviderBadge}" />
+                              </Border>
                               <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsEnabled}">
                                 <TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="正常" />
                               </Border>
@@ -124,9 +137,14 @@
                               </Border>
                             </StackPanel>
                           </StackPanel>
-                          <Border Grid.Column="2" Background="{DynamicResource AppResponseBackgroundBrush}" CornerRadius="12" Padding="10,5" VerticalAlignment="Top">
-                            <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding PlanType}" />
-                          </Border>
+                          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6" VerticalAlignment="Top">
+                            <Border Background="{DynamicResource AppResponseBackgroundBrush}" CornerRadius="12" Padding="10,5" IsVisible="{Binding IsGoogle}">
+                              <TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding CreditText}" />
+                            </Border>
+                            <Border Background="{DynamicResource AppResponseBackgroundBrush}" CornerRadius="12" Padding="10,5">
+                              <TextBlock FontSize="11" Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding PlanType}" />
+                            </Border>
+                          </StackPanel>
                         </Grid>
 
                         <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,14,0,0">
@@ -144,7 +162,7 @@
                               </ItemsControl.ItemTemplate>
                             </ItemsControl>
                             <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12" IsVisible="{Binding HasNoWindows}">
-                              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="暂无额度数据，请点击下方刷新额度" />
+                              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding EmptyWindowsHint}" TextWrapping="Wrap" />
                             </Border>
                           </StackPanel>
                         </Border>
@@ -166,9 +184,12 @@
                         <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,12,0,0">
                           <UniformGrid Columns="4" Rows="2" HorizontalAlignment="Stretch" VerticalAlignment="Top">
                             <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="重置额度信用" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Click="ConfirmResetQuota" IsVisible="{Binding IsCodex}" Content="重置额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Border IsVisible="{Binding IsGoogle}" Margin="0,0,8,8" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" IsVisible="{Binding IsCodex}" Content="重置额度信用" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Border IsVisible="{Binding IsGoogle}" Margin="0,0,8,8" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" IsVisible="{Binding IsCodex}" Content="刷新凭证" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Border IsVisible="{Binding IsGoogle}" Margin="0,0,8,8" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
@@ -306,25 +327,30 @@
     </Border>
 
     <Border Grid.RowSpan="3" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsCredentialImportOpen}" Padding="24" Margin="12" MaxWidth="720" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="11">
-      <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="14">
+      <Grid RowDefinitions="Auto,Auto,Auto,*,Auto" RowSpacing="14">
         <Grid ColumnDefinitions="*,Auto">
           <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="导入 OAuth 凭证 JSON" />
           <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseCredentialImportCommand}" Content="关闭" Padding="10,6" />
         </Grid>
-        <StackPanel Grid.Row="1" Spacing="5">
+        <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="6">
+          <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="导入厂商（与顶部登录厂商选择一致）：" />
+          <ComboBox MinWidth="130" ItemsSource="{Binding ProviderOptions}" SelectedItem="{Binding LoginProvider, Mode=TwoWay}" />
+        </StackPanel>
+        <StackPanel Grid.Row="2" Spacing="5">
           <TextBlock Foreground="{DynamicResource AppCodeForegroundBrush}" Text="粘贴凭证 JSON" />
+          <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding CredentialImportHint}" TextWrapping="Wrap" />
           <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="凭证只用于本次导入请求，不会写入桌面端配置文件或源码。" TextWrapping="Wrap" />
         </StackPanel>
         <TextBox
-            Grid.Row="2"
+            Grid.Row="3"
             Classes="form-input"
             AcceptsReturn="True"
-            MinHeight="260"
+            MinHeight="240"
             Text="{Binding CredentialJson, Mode=TwoWay}"
             TextWrapping="Wrap"
             VerticalContentAlignment="Top"
             Watermark="请粘贴完整的凭证 JSON" />
-        <StackPanel Grid.Row="3" Spacing="10">
+        <StackPanel Grid.Row="4" Spacing="10">
           <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" Padding="12" IsVisible="{Binding HasCredentialImportResult}">
             <TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding CredentialImportResultText}" TextWrapping="Wrap" />
           </Border>

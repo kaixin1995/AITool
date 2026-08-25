@@ -202,6 +202,12 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 await page.LoadAsync();
                 return page;
             }
+            case "profiles":
+            {
+                var page = new ProfilesViewModel(_apiService);
+                await page.LoadAsync();
+                return page;
+            }
             case "oauth":
             {
                 var page = new CodexViewModel(_apiService);
@@ -249,6 +255,9 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 break;
             case ModelsViewModel models:
                 await models.LoadAsync();
+                break;
+            case ProfilesViewModel profiles:
+                await profiles.LoadAsync();
                 break;
             case AccessKeysViewModel accessKeys:
                 await accessKeys.LoadAsync();
@@ -369,7 +378,8 @@ public partial class MainShellViewModel : ViewModelBase, IDisposable
                 new[]
                 {
                     new NavigationItemViewModel("sites", "站点管理", "🌐"),
-                    new NavigationItemViewModel("models", "模型库", "🧠")
+                    new NavigationItemViewModel("models", "模型库", "🧠"),
+                    new NavigationItemViewModel("profiles", "配置方案", "🎭")
                 }),
             new(
                 "代理配置",

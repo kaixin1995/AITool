@@ -1,0 +1,192 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.ProfilesView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:ProfilesViewModel"
+    x:CompileBindings="False">
+  <Grid MinWidth="0" RowDefinitions="Auto,Auto,*,Auto,Auto" RowSpacing="12">
+
+    <Grid ColumnDefinitions="*,Auto" VerticalAlignment="Center">
+      <StackPanel Spacing="4">
+        <TextBlock Classes="page-title" Text="配置方案管理" />
+        <TextBlock Classes="page-subtitle" Text="请求头模板（客户端特征仿真）与网络出口代理池，供站点与模型映射快捷引用" />
+      </StackPanel>
+      <WrapPanel Grid.Column="1" Orientation="Horizontal" ItemSpacing="10" VerticalAlignment="Center">
+        <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="14,9" />
+        <Button
+            Classes="primary-button"
+            Command="{Binding OpenHeaderEditorCommand}"
+            CommandParameter="{x:Null}"
+            Content="＋ 新建请求头模板"
+            IsVisible="{Binding IsHeadersTab}"
+            Padding="14,9" />
+        <Button
+            Classes="primary-button"
+            Command="{Binding OpenProxyEditorCommand}"
+            CommandParameter="{x:Null}"
+            Content="＋ 新建代理方案"
+            IsVisible="{Binding IsProxiesTab}"
+            Padding="14,9" />
+      </WrapPanel>
+    </Grid>
+
+    <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
+      <ToggleButton
+          Classes="simulator-tab"
+          Command="{Binding SelectTabCommand}"
+          CommandParameter="headers"
+          Content="请求头模板库"
+          IsChecked="{Binding IsHeadersTab, Mode=OneWay}"
+          Padding="14,7" />
+      <ToggleButton
+          Classes="simulator-tab"
+          Command="{Binding SelectTabCommand}"
+          CommandParameter="proxies"
+          Content="网络代理池"
+          IsChecked="{Binding IsProxiesTab, Mode=OneWay}"
+          Padding="14,7" />
+    </StackPanel>
+
+    <Border Grid.Row="2" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasMessage}">
+      <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding Message}" TextWrapping="Wrap" />
+    </Border>
+    <Border Grid.Row="3" Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="14" IsVisible="{Binding HasError}">
+      <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+    </Border>
+
+    <!-- 请求头模板列表 -->
+    <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsHeadersTab}">
+      <StackPanel Spacing="12">
+        <ProgressBar Height="5" IsIndeterminate="True" IsVisible="{Binding IsLoading}" />
+        <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" Margin="0,30" IsVisible="{Binding HasHeaderProfiles, Converter={x:Static BoolConverters.Not}}" Text="暂无请求头模板，点击右上角新建" />
+        <ItemsControl ItemsSource="{Binding HeaderProfiles}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Classes="content-card" Margin="0,0,0,12" Padding="16">
+                <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto" RowSpacing="8">
+                  <StackPanel Spacing="4" Grid.ColumnSpan="2">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Border Background="{Binding BadgeBrush}" CornerRadius="12" Padding="9,4" VerticalAlignment="Center">
+                        <TextBlock FontSize="11" Foreground="White" Text="{Binding TypeBadge}" />
+                      </Border>
+                      <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Name}" VerticalAlignment="Center" />
+                      <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="9,4" VerticalAlignment="Center">
+                        <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" />
+                      </Border>
+                    </StackPanel>
+                    <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding KeyText}" />
+                    <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding DescriptionText}" TextWrapping="Wrap" IsVisible="{Binding DescriptionText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                  </StackPanel>
+                  <Border Grid.Row="1" Grid.ColumnSpan="2" Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12" Margin="0,2,0,0">
+                    <TextBlock FontFamily="Consolas,Monospace" FontSize="12" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="{Binding HeadersJson, FallbackValue={x:Null}}" TextWrapping="Wrap" MaxHeight="120" />
+                  </Border>
+                  <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" Margin="0,4,0,0">
+                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).OpenHeaderEditorCommand}" CommandParameter="{Binding}" Content="编辑" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).ToggleHeaderCommand}" CommandParameter="{Binding}" Content="{Binding StatusText}" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).DeleteHeaderCommand}" CommandParameter="{Binding}" Content="删除" IsEnabled="{Binding IsDeletable}" ToolTip.Tip="{Binding DeleteToolTip}" Padding="10,5" />
+                  </StackPanel>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </ScrollViewer>
+
+    <!-- 代理池列表 -->
+    <ScrollViewer Grid.Row="4" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsProxiesTab}">
+      <StackPanel Spacing="12">
+        <ProgressBar Height="5" IsIndeterminate="True" IsVisible="{Binding IsLoading}" />
+        <ItemsControl ItemsSource="{Binding ProxyProfiles}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Classes="content-card" Margin="0,0,0,12" Padding="16">
+                <Grid ColumnDefinitions="*,Auto" RowSpacing="8">
+                  <StackPanel Spacing="4">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Name}" VerticalAlignment="Center" />
+                      <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="9,4" VerticalAlignment="Center">
+                        <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" />
+                      </Border>
+                    </StackPanel>
+                    <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding KeyText}" />
+                    <TextBlock FontFamily="Consolas,Monospace" FontSize="12" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding ProxyUrl}" />
+                    <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding DescriptionText}" TextWrapping="Wrap" />
+                  </StackPanel>
+                  <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
+                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).OpenProxyEditorCommand}" CommandParameter="{Binding}" Content="编辑" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).ToggleProxyCommand}" CommandParameter="{Binding}" Content="{Binding StatusText}" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).DeleteProxyCommand}" CommandParameter="{Binding}" Content="删除" Padding="10,5" />
+                  </StackPanel>
+                </Grid>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </ScrollViewer>
+
+    <!-- Header 编辑弹窗 -->
+    <Border Grid.RowSpan="5" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsHeaderEditorOpen}" Padding="24" Margin="12" MaxWidth="640" MaxHeight="700" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="31">
+      <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="12">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding HeaderEditorTitle}" />
+          <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseHeaderEditorCommand}" Content="关闭" Padding="10,6" />
+        </Grid>
+        <StackPanel Grid.Row="1" Spacing="10">
+          <StackPanel Spacing="5">
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="方案标识 Key（创建后不可修改；供站点/映射引用）" />
+            <TextBox Classes="form-input" Text="{Binding HeaderKey, Mode=TwoWay}" Watermark="例如 my-custom-1" IsEnabled="{Binding IsNewHeader}" />
+          </StackPanel>
+          <StackPanel Spacing="5">
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="显示名称" />
+            <TextBox Classes="form-input" Text="{Binding HeaderName, Mode=TwoWay}" Watermark="例如 我的自定义仿真" />
+          </StackPanel>
+          <StackPanel Spacing="5">
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="描述说明（可选）" />
+            <TextBox Classes="form-input" Text="{Binding HeaderDescription, Mode=TwoWay}" Watermark="用途说明" />
+          </StackPanel>
+          <StackPanel Spacing="5">
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="请求头模板 JSON（支持 ${guid}、${nanoid:12}、${timestamp}、${model} 占位符）" />
+            <TextBox Classes="form-input" AcceptsReturn="True" MinHeight="140" Text="{Binding HeaderHeadersJson, Mode=TwoWay}" TextWrapping="Wrap" Watermark='例如 {"User-Agent": "my-app/1.0", "X-Request-Id": "${guid}"}' />
+          </StackPanel>
+          <CheckBox Content="启用该方案" IsChecked="{Binding HeaderEnabled, Mode=TwoWay}" />
+        </StackPanel>
+        <Border Grid.Row="2" />
+        <Button Grid.Row="3" Classes="primary-button" Command="{Binding SaveHeaderCommand}" Content="保存模板" IsEnabled="{Binding CanSaveHeader}" HorizontalContentAlignment="Center" Padding="12,9" />
+      </Grid>
+    </Border>
+
+    <!-- Proxy 编辑弹窗 -->
+    <Border Grid.RowSpan="5" Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsProxyEditorOpen}" Padding="24" Margin="12" MaxWidth="640" MaxHeight="640" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="32">
+      <Grid RowDefinitions="Auto,Auto,*,Auto" RowSpacing="12">
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding ProxyEditorTitle}" />
+          <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseProxyEditorCommand}" Content="关闭" Padding="10,6" />
+        </Grid>
+        <StackPanel Grid.Row="1" Spacing="10">
+          <StackPanel Spacing="5">
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="方案标识 Key（创建后不可修改；供站点/映射出口代理下拉引用）" />
+            <TextBox Classes="form-input" Text="{Binding ProxyKey, Mode=TwoWay}" Watermark="例如 clash-main" IsEnabled="{Binding IsNewProxy}" />
+          </StackPanel>
+          <StackPanel Spacing="5">
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="显示名称" />
+            <TextBox Classes="form-input" Text="{Binding ProxyName, Mode=TwoWay}" Watermark="例如 本地 Clash (7890)" />
+          </StackPanel>
+          <StackPanel Spacing="5">
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="代理完整 URL（http/https/socks5/socks4）" />
+            <TextBox Classes="form-input" Text="{Binding ProxyUrl, Mode=TwoWay}" Watermark="http://127.0.0.1:7890" />
+          </StackPanel>
+          <StackPanel Spacing="5">
+            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="描述说明（可选）" />
+            <TextBox Classes="form-input" Text="{Binding ProxyDescription, Mode=TwoWay}" Watermark="线路说明" />
+          </StackPanel>
+          <CheckBox Content="启用该方案" IsChecked="{Binding ProxyEnabled, Mode=TwoWay}" />
+        </StackPanel>
+        <Border Grid.Row="2" />
+        <Button Grid.Row="3" Classes="primary-button" Command="{Binding SaveProxyCommand}" Content="保存方案" IsEnabled="{Binding CanSaveProxy}" HorizontalContentAlignment="Center" Padding="12,9" />
+      </Grid>
+    </Border>
+  </Grid>
+</UserControl>

@@ -123,6 +123,9 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
         new("versioned-base", "已含版本路径（直接追加）")
     ];
 
+    /// <summary>客户端特征模拟预设选项（与网页端 clientEmulationOptions 对齐）。</summary>
+    public IReadOnlyList<ClientEmulationOption> ClientEmulationOptions { get; } = ClientEmulationOption.Defaults();
+
     public bool IsEditMode => EditingSite is not null;
     public bool HasError => !string.IsNullOrWhiteSpace(ErrorMessage);
     public bool HasEditorError => !string.IsNullOrWhiteSpace(EditorErrorMessage);
@@ -259,7 +262,10 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
                 SupportsOpenAi = detail.SupportsOpenAi,
                 SupportsAnthropic = detail.SupportsAnthropic,
                 SupportsResponses = detail.SupportsResponses,
-                IsEnabled = detail.IsEnabled
+                IsEnabled = detail.IsEnabled,
+                ClientEmulation = string.IsNullOrWhiteSpace(detail.ClientEmulation) ? "None" : detail.ClientEmulation,
+                ExtraHeadersJson = detail.ExtraHeadersJson ?? string.Empty,
+                EgressProxyUrl = detail.EgressProxyUrl ?? string.Empty
             };
             IsEditorOpen = true;
         }
@@ -298,6 +304,40 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
             return;
         }
 
+        // 自定义请求头必须是合法 JSON 对象（与网页端校验一致）。
+        var extraHeadersJson = Form.ExtraHeadersJson?.Trim();
+        if (!string.IsNullOrWhiteSpace(extraHeadersJson))
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(extraHeadersJson);
+                if (document.RootElement.ValueKind != JsonValueKind.Object)
+                {
+                    EditorErrorMessage = "自定义请求头必须是 JSON 对象，例如 {\"User-Agent\": \"...\"}";
+                    return;
+                }
+            }
+            catch (JsonException)
+            {
+                EditorErrorMessage = "自定义请求头 JSON 格式无效，请检查";
+                return;
+            }
+        }
+
+        // 出口代理地址格式校验（http/https/socks，与网页端提示一致）。
+        var egressProxyUrl = Form.EgressProxyUrl?.Trim();
+        if (!string.IsNullOrWhiteSpace(egressProxyUrl))
+        {
+            if (!egressProxyUrl.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                && !egressProxyUrl.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                && !egressProxyUrl.StartsWith("socks5://", StringComparison.OrdinalIgnoreCase)
+                && !egressProxyUrl.StartsWith("socks4://", StringComparison.OrdinalIgnoreCase))
+            {
+                EditorErrorMessage = "出口网络代理地址建议以 http://、https:// 或 socks5:// 开头（例如 http://127.0.0.1:7890）";
+                return;
+            }
+        }
+
         IsSaving = true;
         try
         {
@@ -310,7 +350,10 @@ public partial class SitesViewModel : ViewModelBase, IDisposable
                 SupportsOpenAi = Form.SupportsOpenAi,
                 SupportsAnthropic = Form.SupportsAnthropic,
                 SupportsResponses = Form.SupportsResponses,
-                IsEnabled = Form.IsEnabled
+                IsEnabled = Form.IsEnabled,
+                ClientEmulation = string.IsNullOrWhiteSpace(Form.ClientEmulation) ? "None" : Form.ClientEmulation,
+                ExtraHeadersJson = string.IsNullOrWhiteSpace(extraHeadersJson) ? null : extraHeadersJson,
+                EgressProxyUrl = string.IsNullOrWhiteSpace(egressProxyUrl) ? null : egressProxyUrl
             };
             if (EditingSite is null)
             {

@@ -156,6 +156,9 @@ public partial class ModelsViewModel : ViewModelBase
     public bool HasNoEditingVendorRules => !EditingVendorRules.Any();
     public IReadOnlyList<string> MatchTypeOptions { get; } = ["exact", "wildcard", "regex"];
 
+    /// <summary>映射级客户端特征模拟预设选项（与站点编辑器一致）。</summary>
+    public IReadOnlyList<ClientEmulationOption> ClientEmulationOptions { get; } = ClientEmulationOption.Defaults();
+
     public async Task LoadAsync()
     {
         IsLoading = true;
@@ -440,17 +443,47 @@ public partial class ModelsViewModel : ViewModelBase
     private async Task UpdateMappingConcurrencyAsync(ModelSiteMapping? mapping)
     {
         if (mapping is null || !CanSaveMapping) return;
+
+        // 自定义请求头 JSON 校验（与网页端一致，仅非空时检查）。
+        var extraHeadersJson = mapping.ExtraHeadersJson?.Trim();
+        if (!string.IsNullOrWhiteSpace(extraHeadersJson))
+        {
+            try
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(extraHeadersJson);
+                if (document.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
+                {
+                    MappingErrorMessage = "自定义请求头必须是 JSON 对象，例如 {\"User-Agent\": \"...\"}";
+                    return;
+                }
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                MappingErrorMessage = "自定义请求头 JSON 格式无效，请检查";
+                return;
+            }
+        }
+
         IsMappingSaving = true;
         MappingErrorMessage = string.Empty;
         MappingMessage = string.Empty;
         try
         {
-            var result = await _apiService.SendAsync<ConcurrencyResult>(
+            // 完整映射编辑端点（PUT /mappings/{id}）：并发数 + 客户端仿真 + 自定义头 + 出口代理。
+            var result = await _apiService.SendAsync<ModelSiteMapping>(
                 HttpMethod.Put,
-                $"/api/admin/models/mappings/{mapping.MappingId}/concurrency",
-                new { maxConcurrency = Math.Max(0, mapping.MaxConcurrency) });
+                $"/api/admin/models/mappings/{mapping.MappingId}",
+                new UpdateMappingPayload
+                {
+                    RemoteModelName = mapping.RemoteModelName,
+                    IsEnabled = mapping.IsEnabled,
+                    MaxConcurrency = Math.Max(0, mapping.MaxConcurrency),
+                    ClientEmulation = string.IsNullOrWhiteSpace(mapping.ClientEmulation) ? "None" : mapping.ClientEmulation,
+                    ExtraHeadersJson = string.IsNullOrWhiteSpace(extraHeadersJson) ? null : extraHeadersJson,
+                    EgressProxyUrl = string.IsNullOrWhiteSpace(mapping.EgressProxyUrl) ? null : mapping.EgressProxyUrl.Trim()
+                });
             mapping.MaxConcurrency = result.MaxConcurrency;
-            MappingMessage = "最大并发已更新";
+            MappingMessage = "映射配置已保存（并发 / 客户端仿真 / 出口代理）";
         }
         catch (Exception exception)
         {

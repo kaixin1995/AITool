@@ -65,6 +65,9 @@ public sealed class SiteDetail
     public bool SupportsResponses { get; set; }
     public string ProtocolType { get; set; } = string.Empty;
     public bool IsEnabled { get; set; }
+    public string ClientEmulation { get; set; } = "None";
+    public string? ExtraHeadersJson { get; set; }
+    public string? EgressProxyUrl { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 }
 
@@ -78,6 +81,9 @@ public partial class SitePayload : ObservableObject
     public bool SupportsAnthropic { get; set; }
     public bool SupportsResponses { get; set; }
     public bool IsEnabled { get; set; } = true;
+    public string ClientEmulation { get; set; } = "None";
+    public string? ExtraHeadersJson { get; set; }
+    public string? EgressProxyUrl { get; set; }
 }
 
 public sealed partial class SiteExportItem : SitePayload
@@ -114,6 +120,9 @@ public sealed class SiteEditForm : ObservableObject
     private bool _supportsAnthropic;
     private bool _supportsResponses;
     private bool _isEnabled = true;
+    private string _clientEmulation = "None";
+    private string _extraHeadersJson = string.Empty;
+    private string _egressProxyUrl = string.Empty;
 
     public string Name { get => _name; set => SetProperty(ref _name, value); }
     public string BaseUrl { get => _baseUrl; set => SetProperty(ref _baseUrl, value); }
@@ -123,6 +132,9 @@ public sealed class SiteEditForm : ObservableObject
     public bool SupportsAnthropic { get => _supportsAnthropic; set => SetProperty(ref _supportsAnthropic, value); }
     public bool SupportsResponses { get => _supportsResponses; set => SetProperty(ref _supportsResponses, value); }
     public bool IsEnabled { get => _isEnabled; set => SetProperty(ref _isEnabled, value); }
+    public string ClientEmulation { get => _clientEmulation; set => SetProperty(ref _clientEmulation, value); }
+    public string ExtraHeadersJson { get => _extraHeadersJson; set => SetProperty(ref _extraHeadersJson, value); }
+    public string EgressProxyUrl { get => _egressProxyUrl; set => SetProperty(ref _egressProxyUrl, value); }
 
     public void Reset()
     {
@@ -134,6 +146,9 @@ public sealed class SiteEditForm : ObservableObject
         SupportsAnthropic = false;
         SupportsResponses = false;
         IsEnabled = true;
+        ClientEmulation = "None";
+        ExtraHeadersJson = string.Empty;
+        EgressProxyUrl = string.Empty;
     }
 }
 

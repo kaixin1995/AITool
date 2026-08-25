@@ -1,4 +1,5 @@
 using System.Globalization;
+using Avalonia.Media;
 using CommunityToolkit.Mvvm.ComponentModel;
 
 namespace AITool.Desktop.Models;
@@ -16,6 +17,39 @@ public partial class CodexAccount : ObservableObject
     public DateTimeOffset? QuotaCoolingUntil { get; set; }
     public int? ResetCreditsAvailableCount { get; set; }
     public List<CodexQuotaWindow>? Windows { get; set; }
+
+    // —— Google 账号（GeminiCLI / Antigravity）扩展字段；Codex 账号为空 ——
+    public string? AccountKind { get; set; }
+    public string? ProjectId { get; set; }
+    public string? SubscriptionTier { get; set; }
+    public int? CreditAmount { get; set; }
+
+    /// <summary>厂商标识：Codex / GeminiCli / Antigravity（Google 账号按 AccountKind 推导，默认 Codex）。</summary>
+    public string Provider
+    {
+        get
+        {
+            if (string.IsNullOrEmpty(AccountKind)) return "Codex";
+            return string.Equals(AccountKind, "Antigravity", StringComparison.OrdinalIgnoreCase) ? "Antigravity" : "GeminiCli";
+        }
+    }
+
+    public bool IsCodex => string.IsNullOrEmpty(AccountKind);
+    public bool IsGoogle => !IsCodex;
+    public string ProviderBadge => Provider;
+    /// <summary>卡片徽标底色（与网页端 NTag 配色对齐：Codex 蓝 / GeminiCLI 绿 / Antigravity 橙）。</summary>
+    public IBrush ProviderBadgeBrush => Provider switch
+    {
+        "GeminiCli" => new SolidColorBrush(Color.Parse("#18A058")),
+        "Antigravity" => new SolidColorBrush(Color.Parse("#F0A016")),
+        _ => new SolidColorBrush(Color.Parse("#2080F0"))
+    };
+    public string ProjectText => string.IsNullOrWhiteSpace(ProjectId) ? "" : $"项目：{ProjectId}";
+    public string CreditText => CreditAmount.HasValue ? $"积分 {CreditAmount}" : "";
+    /// <summary>GeminiCLI 接入方式上游无额度接口，占位文案与网页一致。</summary>
+    public string EmptyWindowsHint => Provider == "GeminiCli"
+        ? "该接入方式上游无额度接口，仅展示订阅等级"
+        : "暂无额度窗口数据";
 
     [ObservableProperty]
     private bool _isEnabled;
@@ -218,4 +252,50 @@ internal static class CodexDateText
             ? date.ToLocalTime().ToString("yyyy/M/d HH:mm:ss", CultureInfo.InvariantCulture)
             : value;
     }
+}
+
+// —— Google 账号（GeminiCLI / Antigravity）OAuth 支撑模型 ——
+
+public sealed class GoogleOAuthResult
+{
+    public string Url { get; set; } = string.Empty;
+    public string State { get; set; } = string.Empty;
+    public string Kind { get; set; } = "GeminiCli";
+}
+
+public sealed class GoogleCredentialImportResult
+{
+    public List<object> Successes { get; set; } = new();
+    public List<CodexCredentialImportFailure> Failures { get; set; } = new();
+}
+
+/// <summary>客户端特征模拟预设选项（站点/映射编辑下拉与网页端 clientEmulationOptions 对齐）。</summary>
+public sealed class ClientEmulationOption
+{
+    public string Value { get; set; } = "None";
+    public string Label { get; set; } = "无 (None - 标准API直连)";
+
+    public static List<ClientEmulationOption> Defaults() =>
+    [
+        new() { Value = "None", Label = "无 (None - 标准API直连)" },
+        new() { Value = "OpenCode", Label = "OpenCode CLI 终端" },
+        new() { Value = "ClaudeCode", Label = "Claude Code 官方命令行" },
+        new() { Value = "CodexCli", Label = "GitHub Copilot / Codex" },
+        new() { Value = "Antigravity", Label = "Google Antigravity CLI" },
+        new() { Value = "GeminiCli", Label = "Google Gemini CLI" },
+        new() { Value = "Custom", Label = "自定义特征 (Custom)" }
+    ];
+}
+
+/// <summary>网络代理池方案（ProxyProfile，站点/映射出口代理下拉数据源）。</summary>
+public sealed class ProxyProfileItem
+{
+    public string Id { get; set; } = string.Empty;
+    public string Key { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string ProxyUrl { get; set; } = string.Empty;
+    public string? Description { get; set; }
+    public bool IsEnabled { get; set; } = true;
+    public int SortOrder { get; set; }
+    public string DisplayLabel => $"{Name} ({ProxyUrl})";
 }

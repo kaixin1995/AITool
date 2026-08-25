@@ -53,6 +53,32 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private bool _isResetCreditSubmitting;
     [ObservableProperty] private CodexAccount? _resetCreditAccount;
     [ObservableProperty] private CodexResetCreditsInfo? _resetCreditInfo;
+    [ObservableProperty] private string _loginProvider = "Codex";
+
+    /// <summary>登录/导入凭证的厂商选项（Codex / GeminiCLI / Antigravity，与网页端下拉一致）。</summary>
+    public IReadOnlyList<string> ProviderOptions { get; } = ["Codex", "GeminiCli", "Antigravity"];
+
+    public bool IsCodexProvider => LoginProvider == "Codex";
+    public bool IsGoogleProvider => !IsCodexProvider;
+    /// <summary>回调地址提示（Codex 走 localhost:1455，Google 走 localhost:17891）。</summary>
+    public string OAuthCallbackHint => IsCodexProvider
+        ? "http://localhost:1455/auth/callback?code=...&state=..."
+        : "http://localhost:17891/?code=...&state=...";
+    public string OAuthStartButtonText => IsOAuthBusy ? "创建中..." : $"开始 {LoginProvider} 登录";
+    public string CredentialImportHint => IsCodexProvider
+        ? "粘贴 CPA 格式的凭证 JSON（含 access_token / refresh_token / id_token），或使用\"选择文件\"批量导入"
+        : "粘贴 gcli2api 凭证 JSON（需包含 refresh_token 字段，可选 project_id）；Google 凭证仅支持粘贴文本导入";
+
+    partial void OnLoginProviderChanged(string value)
+    {
+        OnPropertyChanged(nameof(IsCodexProvider));
+        OnPropertyChanged(nameof(IsGoogleProvider));
+        OnPropertyChanged(nameof(OAuthCallbackHint));
+        OnPropertyChanged(nameof(OAuthStartButtonText));
+        OnPropertyChanged(nameof(CredentialImportHint));
+    }
+
+    private static string GoogleApiPath(string suffix) => $"/api/admin/google-accounts{suffix}";
 
     public CodexViewModel(ApiService apiService)
     {
@@ -127,15 +153,12 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             try
             {
-                var accounts = await _apiService.SendAsync<List<CodexAccount>>(
-                    HttpMethod.Get,
-                    "/api/admin/oauth/accounts",
-                    null);
+                var accounts = await LoadUnifiedAccountsAsync();
 
                 FeatureDisabled = false;
                 foreach (var account in accounts)
                 {
-                    account.IsExportSelected = true;
+                    account.IsExportSelected = account.IsCodex;
                     AttachAccount(account);
                 }
 
@@ -200,10 +223,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
 
         try
         {
-            var accounts = await _apiService.SendAsync<List<CodexAccount>>(
-                HttpMethod.Get,
-                "/api/admin/oauth/accounts",
-                null);
+            var accounts = await LoadUnifiedAccountsAsync();
             if (_disposed) return;
 
             await Dispatcher.UIThread.InvokeAsync(() =>
@@ -211,7 +231,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                 var exportSelections = Accounts.ToDictionary(account => account.Id, account => account.IsExportSelected);
                 foreach (var account in accounts)
                 {
-                    account.IsExportSelected = exportSelections.GetValueOrDefault(account.Id, true);
+                    account.IsExportSelected = exportSelections.GetValueOrDefault(account.Id, account.IsCodex);
                     AttachAccount(account);
                 }
 
@@ -264,7 +284,8 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             var expirationThreshold = DateTimeOffset.UtcNow.AddMinutes(10);
             // Timer 回调运行在线程池，读取绑定集合前切回 UI 线程，避免跨线程访问 ObservableCollection。
             var expiringAccounts = await Dispatcher.UIThread.InvokeAsync(() => Accounts
-                .Where(account => account.IsEnabled
+                .Where(account => account.IsCodex   // 自动 token 刷新端点仅 Codex 提供；Google 由后端定时刷新
+                    && account.IsEnabled
                     && !string.IsNullOrWhiteSpace(account.TokenExpiresAt)
                     && DateTimeOffset.TryParse(account.TokenExpiresAt, out var expiresAt)
                     && expiresAt <= expirationThreshold)
@@ -356,6 +377,38 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             null);
     }
 
+    /// <summary>
+    /// 统一账号加载：Codex（/oauth/accounts）+ Google（/google-accounts/accounts）按创建时间倒序合并，
+    /// Google 的订阅等级映射到 PlanType 槽位（与网页 UnifiedAccount 口径一致）。
+    /// </summary>
+    private async Task<List<CodexAccount>> LoadUnifiedAccountsAsync()
+    {
+        var codexTask = _apiService.SendAsync<List<CodexAccount>>(HttpMethod.Get, "/api/admin/oauth/accounts", null);
+        var googleTask = _apiService.SendAsync<List<CodexAccount>>(HttpMethod.Get, GoogleApiPath("/accounts"), null);
+
+        await Task.WhenAll(codexTask, googleTask);
+
+        var codexAccounts = codexTask.Result ?? [];
+        foreach (var account in codexAccounts)
+        {
+            account.AccountKind = null;
+        }
+
+        var googleAccounts = googleTask.Result ?? [];
+        foreach (var account in googleAccounts)
+        {
+            // Google 账号缺省 AccountKind 字段兜底，订阅等级复用 PlanType 展示槽位。
+            if (string.IsNullOrWhiteSpace(account.AccountKind)) account.AccountKind = "GeminiCli";
+            if (!string.IsNullOrWhiteSpace(account.SubscriptionTier)) account.PlanType = account.SubscriptionTier;
+        }
+
+        return codexAccounts
+            .Concat(googleAccounts)
+            .OrderBy(account => account.IsCodex ? 0 : 1)
+            .ThenBy(account => account.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
     private void ReplaceAccount(CodexAccount account)
     {
         var index = Accounts.ToList().FindIndex(item => item.Id == account.Id);
@@ -407,10 +460,22 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         ErrorMessage = string.Empty;
         try
         {
-            var result = await _apiService.SendAsync<CodexOAuthResult>(
-                HttpMethod.Post,
-                "/api/admin/oauth/start-oauth",
-                new { });
+            CodexOAuthResult result;
+            if (IsCodexProvider)
+            {
+                result = await _apiService.SendAsync<CodexOAuthResult>(
+                    HttpMethod.Post,
+                    "/api/admin/oauth/start-oauth",
+                    new { });
+            }
+            else
+            {
+                result = await _apiService.SendAsync<CodexOAuthResult>(
+                    HttpMethod.Post,
+                    GoogleApiPath("/start-oauth"),
+                    new { kind = LoginProvider });
+            }
+
             OAuthUrl = result.Url;
             Message = "请在浏览器完成授权后，将回调 URL 粘贴到下方。";
         }
@@ -438,14 +503,30 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         IsOAuthBusy = true;
         try
         {
-            await _apiService.SendAsync<object>(
-                HttpMethod.Post,
-                "/api/admin/oauth/complete-oauth",
-                new
-                {
-                    callbackUrl = OAuthCallbackUrl.Trim(),
-                    displayName = OAuthDisplayName.Trim()
-                });
+            if (IsCodexProvider)
+            {
+                await _apiService.SendAsync<object>(
+                    HttpMethod.Post,
+                    "/api/admin/oauth/complete-oauth",
+                    new
+                    {
+                        callbackUrl = OAuthCallbackUrl.Trim(),
+                        displayName = OAuthDisplayName.Trim()
+                    });
+            }
+            else
+            {
+                await _apiService.SendAsync<object>(
+                    HttpMethod.Post,
+                    GoogleApiPath("/complete-oauth"),
+                    new
+                    {
+                        kind = LoginProvider,
+                        callbackUrl = OAuthCallbackUrl.Trim(),
+                        displayName = OAuthDisplayName.Trim()
+                    });
+            }
+
             Message = "OAuth 账号已添加";
             OAuthUrl = string.Empty;
             OAuthCallbackUrl = string.Empty;
@@ -490,12 +571,12 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     public async Task<string?> ExportCredentialsJsonAsync()
     {
         var selectedAccountIds = Accounts
-            .Where(account => account.IsExportSelected)
+            .Where(account => account.IsExportSelected && account.IsCodex)  // 凭证导出仅支持 Codex 账号
             .Select(account => account.Id)
             .ToList();
         if (selectedAccountIds.Count == 0)
         {
-            Message = "请至少选择一个 OAuth 账号后再导出";
+            Message = "请至少选择一个 Codex 账号后再导出（Google 账号暂不支持导出）";
             return null;
         }
 
@@ -522,7 +603,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     {
         foreach (var account in Accounts)
         {
-            account.IsExportSelected = true;
+            account.IsExportSelected = account.IsCodex;
         }
 
         NotifyExportSelectionProperties();
@@ -554,7 +635,9 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             var models = await _apiService.SendAsync<List<CodexRemoteModelItem>>(
                 HttpMethod.Get,
-                $"/api/admin/oauth/accounts/{account.Id}/fetch-models",
+                account.IsCodex
+                    ? $"/api/admin/oauth/accounts/{account.Id}/fetch-models"
+                    : GoogleApiPath($"/accounts/{account.Id}/fetch-models"),
                 null);
             foreach (var model in models)
             {
@@ -596,16 +679,35 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         ErrorMessage = string.Empty;
         try
         {
-            var selections = RemoteModels.Select(model => new
+            if (ModelAccount.IsCodex)
             {
-                remoteModelName = model.RemoteModelName,
-                displayName = model.EffectiveDisplayName,
-                selected = model.IsSelected
-            }).ToList();
-            await _apiService.SendAsync<object>(
-                HttpMethod.Post,
-                $"/api/admin/oauth/accounts/{ModelAccount.Id}/import-selected-models",
-                new { selections });
+                var selections = RemoteModels.Select(model => new
+                {
+                    remoteModelName = model.RemoteModelName,
+                    displayName = model.EffectiveDisplayName,
+                    selected = model.IsSelected
+                }).ToList();
+                await _apiService.SendAsync<object>(
+                    HttpMethod.Post,
+                    $"/api/admin/oauth/accounts/{ModelAccount.Id}/import-selected-models",
+                    new { selections });
+            }
+            else
+            {
+                // Google 账号导入接口只接收勾选列表（无 selected 字段）。
+                var models = RemoteModels
+                    .Where(model => model.IsSelected)
+                    .Select(model => new
+                    {
+                        remoteModelName = model.RemoteModelName,
+                        displayName = model.EffectiveDisplayName
+                    }).ToList();
+                await _apiService.SendAsync<object>(
+                    HttpMethod.Post,
+                    GoogleApiPath($"/accounts/{ModelAccount.Id}/import-selected-models"),
+                    new { models });
+            }
+
             Message = $"已导入 {SelectedModelCount} 个 OAuth 账号模型";
             CloseModelEditor();
             await LoadAsync();
@@ -761,12 +863,25 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                 try
                 {
                     using var document = JsonDocument.Parse(jsonText);
-                    var result = await _apiService.SendAsync<CodexCredentialImportResult>(
-                        HttpMethod.Post,
-                        $"/api/admin/oauth/import-credential?name={Uri.EscapeDataString(fileName)}",
-                        document.RootElement);
-                    successes.AddRange(result.Successes);
-                    failures.AddRange(result.Failures);
+                    if (IsCodexProvider)
+                    {
+                        var result = await _apiService.SendAsync<CodexCredentialImportResult>(
+                            HttpMethod.Post,
+                            $"/api/admin/oauth/import-credential?name={Uri.EscapeDataString(fileName)}",
+                            document.RootElement);
+                        successes.AddRange(result.Successes);
+                        failures.AddRange(result.Failures);
+                    }
+                    else
+                    {
+                        // Google（GeminiCLI / Antigravity）：gcli2api 凭证 JSON，仅需 refresh_token 字段。
+                        var googleResult = await _apiService.SendAsync<GoogleCredentialImportResult>(
+                            HttpMethod.Post,
+                            $"{GoogleApiPath($"/import-credential?kind={LoginProvider}")}&name={Uri.EscapeDataString(fileName)}",
+                            document.RootElement);
+                        successes.AddRange(googleResult.Successes.Select(_ => new CodexAccount { DisplayName = LoginProvider }));
+                        failures.AddRange(googleResult.Failures);
+                    }
                 }
                 catch (JsonException)
                 {
@@ -838,15 +953,30 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         ErrorMessage = string.Empty;
         try
         {
-            var account = await _apiService.SendAsync<CodexAccount>(
-                HttpMethod.Put,
-                $"/api/admin/oauth/accounts/{EditingAccount.Id}",
-                new
-                {
-                    displayName = AccountDisplayName.Trim(),
-                    refreshToken = string.IsNullOrWhiteSpace(AccountRefreshToken) ? null : AccountRefreshToken.Trim()
-                });
-            ReplaceAccount(account);
+            var body = new
+            {
+                displayName = AccountDisplayName.Trim(),
+                refreshToken = string.IsNullOrWhiteSpace(AccountRefreshToken) ? null : AccountRefreshToken.Trim()
+            };
+
+            if (EditingAccount.IsCodex)
+            {
+                var account = await _apiService.SendAsync<CodexAccount>(
+                    HttpMethod.Put,
+                    $"/api/admin/oauth/accounts/{EditingAccount.Id}",
+                    body);
+                ReplaceAccount(account);
+            }
+            else
+            {
+                await _apiService.SendAsync<object>(
+                    HttpMethod.Put,
+                    GoogleApiPath($"/accounts/{EditingAccount.Id}"),
+                    body);
+                EditingAccount.DisplayName = AccountDisplayName.Trim();
+                ReplaceAccount(EditingAccount);
+            }
+
             Message = "OAuth 账号已更新";
             CloseAccountEditor();
         }
@@ -864,7 +994,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private async Task ResetQuotaAsync(CodexAccount? account)
     {
-        if (account is null) return;
+        if (account is null || account.IsGoogle) return;
         try
         {
             await _apiService.SendAsync<object>(
@@ -883,7 +1013,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     [RelayCommand]
     private async Task RefreshTokenAsync(CodexAccount? account)
     {
-        if (account is null) return;
+        if (account is null || account.IsGoogle) return;
         try
         {
             ReplaceAccount(await RefreshTokenCoreAsync(account));
@@ -901,10 +1031,21 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         if (account is null) return;
         try
         {
-            await _apiService.SendAsync<object>(
-                HttpMethod.Post,
-                $"/api/admin/oauth/accounts/{account.Id}/toggle",
-                null);
+            if (account.IsCodex)
+            {
+                await _apiService.SendAsync<object>(
+                    HttpMethod.Post,
+                    $"/api/admin/oauth/accounts/{account.Id}/toggle",
+                    null);
+            }
+            else
+            {
+                await _apiService.SendAsync<object>(
+                    HttpMethod.Post,
+                    GoogleApiPath($"/accounts/{account.Id}/toggle"),
+                    new { enabled = !account.IsEnabled });
+            }
+
             account.IsEnabled = !account.IsEnabled;
         }
         catch (Exception exception)
@@ -919,15 +1060,26 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         if (account is null) return;
         try
         {
-            if (IsTokenExpiring(account))
+            if (account.IsCodex)
             {
-                ReplaceAccount(await RefreshTokenCoreAsync(account));
+                if (IsTokenExpiring(account))
+                {
+                    ReplaceAccount(await RefreshTokenCoreAsync(account));
+                }
+
+                await _apiService.SendAsync<object>(
+                    HttpMethod.Post,
+                    $"/api/admin/oauth/accounts/{account.Id}/refresh-quota",
+                    null);
+            }
+            else
+            {
+                await _apiService.SendAsync<object>(
+                    HttpMethod.Post,
+                    GoogleApiPath($"/accounts/{account.Id}/refresh-quota"),
+                    null);
             }
 
-            await _apiService.SendAsync<object>(
-                HttpMethod.Post,
-                $"/api/admin/oauth/accounts/{account.Id}/refresh-quota",
-                null);
             Message = "额度已刷新";
             await LoadAsync();
         }
@@ -951,7 +1103,9 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
         {
             await _apiService.SendAsync<object>(
                 HttpMethod.Delete,
-                $"/api/admin/oauth/accounts/{account.Id}",
+                account.IsCodex
+                    ? $"/api/admin/oauth/accounts/{account.Id}"
+                    : GoogleApiPath($"/accounts/{account.Id}"),
                 null);
             await LoadAsync();
         }

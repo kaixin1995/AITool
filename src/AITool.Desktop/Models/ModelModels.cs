@@ -115,6 +115,9 @@ public sealed partial class ModelSiteMapping : CommunityToolkit.Mvvm.ComponentMo
     public bool IsEnabled { get; set; }
     public bool IsDisabled => !IsEnabled;
     public string StatusText => IsEnabled ? "已启用" : "已停用";
+    public string ClientEmulation { get; set; } = "None";
+    public string? ExtraHeadersJson { get; set; }
+    public string? EgressProxyUrl { get; set; }
 
     [CommunityToolkit.Mvvm.ComponentModel.ObservableProperty]
     private int _maxConcurrency;
@@ -122,6 +125,17 @@ public sealed partial class ModelSiteMapping : CommunityToolkit.Mvvm.ComponentMo
     public string ConcurrencyText => MaxConcurrency == 0 ? "不限制" : MaxConcurrency.ToString();
 
     partial void OnMaxConcurrencyChanged(int value) => OnPropertyChanged(nameof(ConcurrencyText));
+}
+
+/// <summary>映射编辑请求体（并发数 + 客户端仿真 + 自定义头 + 出口代理），对应 PUT /api/admin/models/mappings/{id}。</summary>
+public sealed class UpdateMappingPayload
+{
+    public string RemoteModelName { get; set; } = string.Empty;
+    public bool IsEnabled { get; set; } = true;
+    public int MaxConcurrency { get; set; }
+    public string ClientEmulation { get; set; } = "None";
+    public string? ExtraHeadersJson { get; set; }
+    public string? EgressProxyUrl { get; set; }
 }
 
 /// <summary>

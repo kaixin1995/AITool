@@ -145,6 +145,29 @@
                 <CheckBox Content="启用" IsChecked="{Binding Form.IsEnabled, Mode=TwoWay}" />
               </StackPanel>
               <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" FontSize="12" Text="Responses 是独立能力；未勾选时会按 OpenAI 或 Anthropic 能力自动转换。三个协议均未勾选时，后端兼容为仅支持 Responses。" TextWrapping="Wrap" />
+
+              <!-- 客户端特征模拟：与网页端对齐（预设下拉 + 自定义请求头 + 出口代理） -->
+              <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,10,0,0">
+                <StackPanel Spacing="10">
+                  <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="客户端特征模拟" />
+                  <StackPanel Spacing="5">
+                    <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="仿真预设（伪装官方 CLI / IDE 特征，接入免密或特权通道）" />
+                    <ComboBox MinWidth="300" HorizontalAlignment="Left" ItemsSource="{Binding ClientEmulationOptions}" SelectedValue="{Binding Form.ClientEmulation, Mode=TwoWay}" SelectedValueBinding="{Binding Value}">
+                      <ComboBox.ItemTemplate>
+                        <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+                      </ComboBox.ItemTemplate>
+                    </ComboBox>
+                  </StackPanel>
+                  <StackPanel Spacing="5">
+                    <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="自定义请求头 JSON（支持 ${guid}、${nanoid:12}、${timestamp}、${model} 动态占位符，优先级高于预设）" />
+                    <TextBox Classes="form-input" AcceptsReturn="True" MinHeight="64" Text="{Binding Form.ExtraHeadersJson, Mode=TwoWay}" TextWrapping="Wrap" Watermark='例如 {"User-Agent": "my-app/1.0", "X-Trace-Id": "${guid}"}' />
+                  </StackPanel>
+                  <StackPanel Spacing="5">
+                    <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="出口网络代理（如 http://127.0.0.1:7890 或 socks5://127.0.0.1:10808，留空走服务器默认网络）" />
+                    <TextBox Classes="form-input" MinWidth="300" HorizontalAlignment="Left" Text="{Binding Form.EgressProxyUrl, Mode=TwoWay}" Watermark="http://127.0.0.1:7890" />
+                  </StackPanel>
+                </StackPanel>
+              </Border>
               <Button Classes="primary-button" Command="{Binding SaveCommand}" Content="保存站点" IsEnabled="{Binding CanSave}" HorizontalContentAlignment="Center" Padding="12,9" />
             </StackPanel>
           </ScrollViewer>
