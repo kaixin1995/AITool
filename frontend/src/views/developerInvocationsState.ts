@@ -129,3 +129,56 @@ export function getCurrentDisplayHeaders(
   }
   return detail.requestHeaders || {}
 }
+
+export function hasConvertedRequestBody(
+  detail?: { requestBody?: string },
+  attempt?: { preparedRequestBody?: string; forwardingMode?: string }
+): boolean {
+  if (!attempt || !attempt.preparedRequestBody || !attempt.preparedRequestBody.trim()) return false
+  const original = (detail?.requestBody ?? '').trim()
+  const prepared = attempt.preparedRequestBody.trim()
+  if (!original || !prepared) return false
+  return original !== prepared
+}
+
+export function getCurrentDisplayRequestBody(
+  detail?: { requestBody?: string },
+  attempt?: { preparedRequestBody?: string; forwardingMode?: string },
+  mode?: 'original' | 'prepared'
+): string {
+  const converted = hasConvertedRequestBody(detail, attempt)
+  if (!converted) {
+    return detail?.requestBody || attempt?.preparedRequestBody || ''
+  }
+  const effectiveMode = mode || 'original'
+  return effectiveMode === 'prepared'
+    ? (attempt?.preparedRequestBody || detail?.requestBody || '')
+    : (detail?.requestBody || attempt?.preparedRequestBody || '')
+}
+
+export function hasConvertedResponseBody(
+  detail?: { responseBody?: string },
+  attempt?: { responseBody?: string; forwardingMode?: string }
+): boolean {
+  if (!attempt || !attempt.responseBody || !attempt.responseBody.trim()) return false
+  const finalResp = (detail?.responseBody ?? '').trim()
+  const attemptResp = attempt.responseBody.trim()
+  if (!finalResp || !attemptResp) return false
+  return finalResp !== attemptResp
+}
+
+export function getCurrentDisplayResponseBody(
+  detail?: { responseBody?: string },
+  attempt?: { responseBody?: string; forwardingMode?: string },
+  mode?: 'final' | 'upstream'
+): string {
+  const converted = hasConvertedResponseBody(detail, attempt)
+  if (!converted) {
+    return detail?.responseBody || attempt?.responseBody || ''
+  }
+  const effectiveMode = mode || 'final'
+  return effectiveMode === 'upstream'
+    ? (attempt?.responseBody || detail?.responseBody || '')
+    : (detail?.responseBody || attempt?.responseBody || '')
+}
+

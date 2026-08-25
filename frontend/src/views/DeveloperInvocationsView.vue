@@ -37,6 +37,10 @@ import {
   hasRewrittenHeaders,
   getRewrittenHeaders,
   getCurrentDisplayHeaders,
+  hasConvertedRequestBody,
+  getCurrentDisplayRequestBody,
+  hasConvertedResponseBody,
+  getCurrentDisplayResponseBody,
   type DeveloperToolTab,
   type ProtocolDiagnosticsPrefill
 } from './developerInvocationsState'
@@ -196,6 +200,32 @@ function headersText(headers: Record<string, string> | null | undefined): string
 }
 
 const headersTab = ref<Record<string, 'original' | 'rewritten'>>({})
+const requestBodyTabs = ref<Record<string, 'original' | 'prepared'>>({})
+const responseBodyTabs = ref<Record<string, 'final' | 'upstream'>>({})
+
+function getAttemptKey(traceId: string, attempt: DeveloperInvocationAttempt, index: number): string {
+  return `${traceId}-${attempt.attemptId || index}`
+}
+
+function getActiveRequestBodyMode(traceId: string, attempt: DeveloperInvocationAttempt, index: number): 'original' | 'prepared' {
+  const key = getAttemptKey(traceId, attempt, index)
+  return requestBodyTabs.value[key] || 'original'
+}
+
+function setRequestBodyMode(traceId: string, attempt: DeveloperInvocationAttempt, index: number, mode: 'original' | 'prepared'): void {
+  const key = getAttemptKey(traceId, attempt, index)
+  requestBodyTabs.value[key] = mode
+}
+
+function getActiveResponseBodyMode(traceId: string, attempt: DeveloperInvocationAttempt, index: number): 'final' | 'upstream' {
+  const key = getAttemptKey(traceId, attempt, index)
+  return responseBodyTabs.value[key] || 'final'
+}
+
+function setResponseBodyMode(traceId: string, attempt: DeveloperInvocationAttempt, index: number, mode: 'final' | 'upstream'): void {
+  const key = getAttemptKey(traceId, attempt, index)
+  responseBodyTabs.value[key] = mode
+}
 
 function getActiveHeadersMode(traceId: string, detail: DeveloperInvocationDetail): 'original' | 'rewritten' {
   if (headersTab.value[traceId]) {
@@ -681,59 +711,126 @@ onUnmounted(() => {
                         </div>
                       </div>
 
-                      <!-- 尝试的重写请求头 -->
-                      <div v-if="attempt.preparedRequestHeaders && Object.keys(attempt.preparedRequestHeaders).length > 0" class="trace-code-panel trace-attempt-headers-panel">
-                        <div class="trace-panel-header">
-                          <div class="trace-section-title">⚡ 重写后请求头（发往上游）</div>
-                          <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(headersText(attempt.preparedRequestHeaders))">复制</NButton>
-                        </div>
-                        <pre class="trace-pre trace-pre-compact">{{ headersText(attempt.preparedRequestHeaders) }}</pre>
-                      </div>
-
                       <div class="trace-attempt-body-grid">
-                        <div v-if="canShowDetailBody(attempt.preparedRequestBody)" class="trace-code-panel">
+                        <!-- 请求体面板 -->
+                        <div
+                          v-if="canShowDetailBody(details[entry.traceId].requestBody) || canShowDetailBody(attempt.preparedRequestBody)"
+                          class="trace-code-panel"
+                        >
                           <div class="trace-panel-header">
-                            <div class="trace-section-title">转换后请求体（发往上游）</div>
+                            <!-- 若有协议转换：显示原始 ↔ 转换后请求体切换 Tab；若透传/无改写：仅显示标题 -->
+                            <div v-if="hasConvertedRequestBody(details[entry.traceId], attempt)" class="trace-header-toggle-wrap">
+                              <button
+                                type="button"
+                                class="trace-header-toggle-btn"
+                                :class="{ active: getActiveRequestBodyMode(entry.traceId, attempt, index) === 'original' }"
+                                @click="setRequestBodyMode(entry.traceId, attempt, index, 'original')"
+                              >
+                                原始请求体
+                              </button>
+                              <button
+                                type="button"
+                                class="trace-header-toggle-btn"
+                                :class="{ active: getActiveRequestBodyMode(entry.traceId, attempt, index) === 'prepared' }"
+                                @click="setRequestBodyMode(entry.traceId, attempt, index, 'prepared')"
+                              >
+                                ⚡ 转换后请求体
+                                <span class="trace-header-badge-tag">发往上游</span>
+                              </button>
+                            </div>
+                            <div v-else class="trace-section-title">
+                              请求体
+                              <span class="trace-header-badge-tag-muted">透传</span>
+                            </div>
+
                             <div class="trace-panel-actions">
                               <NButton
+                                v-if="hasConvertedRequestBody(details[entry.traceId], attempt)"
                                 size="tiny"
                                 :type="expandedDiffAttemptIds.has(attempt.attemptId || String(index)) ? 'primary' : 'default'"
                                 secondary
                                 class="trace-copy-btn"
                                 @click="toggleAttemptDiff(attempt.attemptId || String(index))"
                               >
-                                {{ expandedDiffAttemptIds.has(attempt.attemptId || String(index)) ? '收起 Diff' : '对比原始请求' }}
+                                {{ expandedDiffAttemptIds.has(attempt.attemptId || String(index)) ? '收起 Diff' : '对比 Diff' }}
                               </NButton>
                               <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="openProtocolDiagnosticsWithAttempt(details[entry.traceId], attempt)">诊断</NButton>
-                              <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.preparedRequestBody))">复制</NButton>
+                              <NButton
+                                size="tiny"
+                                secondary
+                                class="trace-copy-btn"
+                                @click="copyText(bodyText(getCurrentDisplayRequestBody(details[entry.traceId], attempt, getActiveRequestBodyMode(entry.traceId, attempt, index))))"
+                              >
+                                复制
+                              </NButton>
                             </div>
                           </div>
+
                           <!-- 就地 Diff 对比视图 -->
-                          <div v-if="expandedDiffAttemptIds.has(attempt.attemptId || String(index))" class="attempt-diff-container mb-2">
+                          <div
+                            v-if="expandedDiffAttemptIds.has(attempt.attemptId || String(index)) && hasConvertedRequestBody(details[entry.traceId], attempt)"
+                            class="attempt-diff-container mb-2"
+                          >
                             <div class="text-xs font-bold text-slate-500 mb-1">原始请求 (before) ➔ 发往上游 (after) 差异对比：</div>
                             <JsonDiffView
                               :before="bodyText(details[entry.traceId].requestBody)"
                               :after="bodyText(attempt.preparedRequestBody)"
                             />
                           </div>
-                          <pre v-else class="trace-pre">{{ bodyText(attempt.preparedRequestBody) }}</pre>
+                          <pre v-else class="trace-pre">{{ bodyText(getCurrentDisplayRequestBody(details[entry.traceId], attempt, getActiveRequestBodyMode(entry.traceId, attempt, index))) }}</pre>
                         </div>
-                        <div v-if="canShowDetailBody(attempt.responseBody)" class="trace-code-panel">
+
+                        <!-- 响应体面板 -->
+                        <div
+                          v-if="canShowDetailBody(details[entry.traceId].responseBody) || canShowDetailBody(attempt.responseBody)"
+                          class="trace-code-panel"
+                        >
                           <div class="trace-panel-header">
-                            <div class="trace-section-title">尝试返回体</div>
+                            <!-- 若响应发生格式转换：显示客户端响应体 ↔ 上游返回体切换 Tab；若透传/无转换：仅显示标题 -->
+                            <div v-if="hasConvertedResponseBody(details[entry.traceId], attempt)" class="trace-header-toggle-wrap">
+                              <button
+                                type="button"
+                                class="trace-header-toggle-btn"
+                                :class="{ active: getActiveResponseBodyMode(entry.traceId, attempt, index) === 'final' }"
+                                @click="setResponseBodyMode(entry.traceId, attempt, index, 'final')"
+                              >
+                                客户端响应体
+                              </button>
+                              <button
+                                type="button"
+                                class="trace-header-toggle-btn"
+                                :class="{ active: getActiveResponseBodyMode(entry.traceId, attempt, index) === 'upstream' }"
+                                @click="setResponseBodyMode(entry.traceId, attempt, index, 'upstream')"
+                              >
+                                ⚡ 上游返回体
+                                <span class="trace-header-badge-tag">原始</span>
+                              </button>
+                            </div>
+                            <div v-else class="trace-section-title">
+                              响应体
+                            </div>
+
                             <div class="trace-panel-actions">
                               <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="diagnoseAttemptResponse(details[entry.traceId], attempt)">诊断</NButton>
-                              <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.responseBody))">复制</NButton>
+                              <NButton
+                                size="tiny"
+                                secondary
+                                class="trace-copy-btn"
+                                @click="copyText(bodyText(getCurrentDisplayResponseBody(details[entry.traceId], attempt, getActiveResponseBodyMode(entry.traceId, attempt, index))))"
+                              >
+                                复制
+                              </NButton>
                             </div>
                           </div>
-                          <pre class="trace-pre">{{ bodyText(attempt.responseBody) }}</pre>
+                          <pre class="trace-pre">{{ bodyText(getCurrentDisplayResponseBody(details[entry.traceId], attempt, getActiveResponseBodyMode(entry.traceId, attempt, index))) }}</pre>
                         </div>
                       </div>
                     </article>
                   </div>
 
-                  <div class="trace-error-stack">
-                    <div class="trace-code-panel">
+                  <!-- 无尝试时的兜底请求/响应展示 -->
+                  <div v-if="!details[entry.traceId].attempts || details[entry.traceId].attempts.length === 0" class="trace-attempt-body-grid">
+                    <div v-if="canShowDetailBody(details[entry.traceId].requestBody)" class="trace-code-panel">
                       <div class="trace-panel-header">
                         <div class="trace-section-title">请求体</div>
                         <div class="trace-panel-actions">
@@ -743,7 +840,7 @@ onUnmounted(() => {
                       </div>
                       <pre class="trace-pre">{{ bodyText(details[entry.traceId].requestBody) }}</pre>
                     </div>
-                    <div class="trace-code-panel">
+                    <div v-if="canShowDetailBody(details[entry.traceId].responseBody)" class="trace-code-panel">
                       <div class="trace-panel-header">
                         <div class="trace-section-title">响应体</div>
                         <div class="trace-panel-actions">
@@ -1046,10 +1143,6 @@ onUnmounted(() => {
   color: rgba(255, 255, 255, 0.85);
 }
 
-.trace-attempt-headers-panel {
-  margin-top: 12px;
-}
-
 .trace-title-group,
 .trace-model-pair {
   display: flex;
@@ -1147,16 +1240,11 @@ onUnmounted(() => {
 }
 
 .trace-detail-grid,
-.trace-error-stack,
 .trace-attempt-body-grid {
   display: grid;
   gap: 12px;
   min-width: 0;
   margin-top: 12px;
-}
-
-.trace-detail-grid,
-.trace-attempt-body-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 

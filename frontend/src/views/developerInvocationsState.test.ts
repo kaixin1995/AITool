@@ -5,6 +5,10 @@ import {
   getCurrentDisplayHeaders,
   getRewrittenHeaders,
   hasRewrittenHeaders,
+  hasConvertedRequestBody,
+  getCurrentDisplayRequestBody,
+  hasConvertedResponseBody,
+  getCurrentDisplayResponseBody,
   setProtocolDiagnosticsPrefill,
   supportsResponsesNatively,
   takeProtocolDiagnosticsPrefill
@@ -121,3 +125,42 @@ describe('Developer Invocations 请求头重写切换与提取', () => {
     expect(getCurrentDisplayHeaders(detail, 'rewritten')).toHaveProperty('提示')
   })
 })
+
+describe('Developer Invocations 请求体与响应体转换切换与提取', () => {
+  it('当请求体发生协议转换时识别并正确切换', () => {
+    const detail = { requestBody: '{"model":"gpt-4","messages":[{"role":"user","content":"hi"}]}' }
+    const attempt = { preparedRequestBody: '{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}' }
+
+    expect(hasConvertedRequestBody(detail, attempt)).toBe(true)
+    expect(getCurrentDisplayRequestBody(detail, attempt, 'original')).toBe(detail.requestBody)
+    expect(getCurrentDisplayRequestBody(detail, attempt, 'prepared')).toBe(attempt.preparedRequestBody)
+    expect(getCurrentDisplayRequestBody(detail, attempt)).toBe(detail.requestBody) // 默认原始
+  })
+
+  it('当请求体为透传时判定为无转换', () => {
+    const detail = { requestBody: '{"model":"gpt-4"}' }
+    const attempt = { preparedRequestBody: '{"model":"gpt-4"}' }
+
+    expect(hasConvertedRequestBody(detail, attempt)).toBe(false)
+    expect(getCurrentDisplayRequestBody(detail, attempt, 'prepared')).toBe(detail.requestBody)
+  })
+
+  it('当响应体发生协议转换时识别并正确切换', () => {
+    const detail = { responseBody: '{"id":"chatcmpl-1","choices":[{"message":{"content":"hello"}}]}' }
+    const attempt = { responseBody: '{"response":{"candidates":[{"content":{"parts":[{"text":"hello"}]}}]}}' }
+
+    expect(hasConvertedResponseBody(detail, attempt)).toBe(true)
+    expect(getCurrentDisplayResponseBody(detail, attempt, 'final')).toBe(detail.responseBody)
+    expect(getCurrentDisplayResponseBody(detail, attempt, 'upstream')).toBe(attempt.responseBody)
+    expect(getCurrentDisplayResponseBody(detail, attempt)).toBe(detail.responseBody) // 默认客户端响应
+  })
+
+  it('当响应体一致或透传时判定为无转换', () => {
+    const detail = { responseBody: '{"text":"ok"}' }
+    const attempt = { responseBody: '{"text":"ok"}' }
+
+    expect(hasConvertedResponseBody(detail, attempt)).toBe(false)
+    expect(getCurrentDisplayResponseBody(detail, attempt, 'upstream')).toBe(detail.responseBody)
+  })
+})
+
