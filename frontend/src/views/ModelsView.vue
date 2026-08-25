@@ -1450,20 +1450,59 @@ onMounted(() => {
 
 .editor-section-heading {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
 }
 
 .editor-section-heading h4 {
+  display: inline-flex;
+  align-items: center;
   margin: 0;
   color: var(--text-primary);
-  font-size: 15px;
+  font-size: 14px;
+  font-weight: 600;
 }
 
-.editor-section-heading p {
-  max-width: 680px;
+.editor-tab-title,
+.editor-status-title {
+  display: inline-flex;
+  align-items: center;
+}
+
+.tip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 15px;
+  height: 15px;
+  margin-left: 6px;
+  border: 1.5px solid var(--text-color-secondary, #94a3b8);
+  border-radius: 50%;
+  color: var(--text-color-secondary, #94a3b8);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+  flex-shrink: 0;
+  transition: all 0.2s ease;
+}
+
+.tip-icon:hover {
+  color: var(--primary-color, #6366f1);
+  border-color: var(--primary-color, #6366f1);
+}
+
+[data-theme='dark'] .tip-icon {
+  color: rgba(255, 255, 255, 0.55);
+  border-color: rgba(255, 255, 255, 0.55);
+}
+
+[data-theme='dark'] .tip-icon:hover {
+  color: var(--primary-color, #818cf8);
+  border-color: var(--primary-color, #818cf8);
 }
 
 .model-form-grid {
@@ -1509,14 +1548,14 @@ onMounted(() => {
 .mapping-cards-list {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   max-height: min(48vh, 520px);
   padding-right: 4px;
   overflow-y: auto;
 }
 
 .mapping-card-item {
-  padding: 14px 16px;
+  padding: 12px 14px;
   border: 1px solid var(--border-color-global);
   border-radius: 10px;
   background: var(--bg-card-secondary, var(--bg-card));
@@ -1528,7 +1567,7 @@ onMounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding-bottom: 12px;
+  padding-bottom: 10px;
   border-bottom: 1px solid var(--border-color-global);
 }
 
@@ -1552,13 +1591,14 @@ onMounted(() => {
 }
 
 .mapping-card-body {
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
 .mapping-fields-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: minmax(180px, 1.3fr) 115px minmax(170px, 1.2fr) minmax(180px, 1.3fr);
+  gap: 10px;
+  align-items: start;
 }
 
 .mapping-field-col {
@@ -1568,8 +1608,8 @@ onMounted(() => {
   min-width: 0;
 }
 
-.mapping-field-full {
-  grid-column: 1 / -1;
+.mapping-field-col-num {
+  min-width: 110px;
 }
 
 .mapping-field-label {
@@ -1577,7 +1617,6 @@ onMounted(() => {
   font-size: 12px;
   font-weight: 500;
 }
-
 
 .mapping-add-form-new {
   display: flex;
@@ -1587,19 +1626,12 @@ onMounted(() => {
 
 .mapping-add-grid-primary {
   display: grid;
-  grid-template-columns: minmax(160px, 1.2fr) minmax(160px, 1.2fr) 130px minmax(160px, 1.2fr);
-  gap: 12px;
-}
-
-.mapping-add-grid-secondary {
-  display: grid;
-  grid-template-columns: 1.2fr 1.5fr 120px 120px;
-  gap: 12px;
+  grid-template-columns: minmax(130px, 1.1fr) minmax(130px, 1.1fr) 100px minmax(130px, 1.1fr) minmax(140px, 1.2fr) 90px 100px;
+  gap: 10px;
   align-items: end;
 }
 
-.mapping-add-grid-primary :deep(.n-form-item),
-.mapping-add-grid-secondary :deep(.n-form-item) {
+.mapping-add-grid-primary :deep(.n-form-item) {
   min-width: 0;
   margin-bottom: 0;
 }
@@ -1622,7 +1654,22 @@ onMounted(() => {
   min-height: 34px;
 }
 
+@media (max-width: 960px) {
+  .mapping-fields-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mapping-add-grid-primary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 768px) {
+  .mapping-fields-row,
+  .mapping-add-grid-primary {
+    grid-template-columns: 1fr;
+  }
+
   .model-toolbar,
   .vendor-group-header {
     align-items: stretch;
