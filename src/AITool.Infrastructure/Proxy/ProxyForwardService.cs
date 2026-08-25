@@ -1,4 +1,6 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -17,13 +19,17 @@ namespace AITool.Infrastructure.Proxy;
 public sealed class ProxyForwardService : IProxyForwardService
 {
     /// <summary>
-    /// 用于发送代理请求的 HTTP 客户端
+    /// 用于发送直连代理请求的默认 HTTP 客户端
     /// </summary>
     private readonly HttpClient _httpClient;
     /// <summary>
     /// 日志记录器，用于记录转发超时和异常
     /// </summary>
     private readonly ILogger<ProxyForwardService> _logger;
+    /// <summary>
+    /// 站点专属出口网络代理客户端缓存（Key: 代理 URL，如 http://127.0.0.1:7890）
+    /// </summary>
+    private readonly ConcurrentDictionary<string, HttpClient> _proxyClients = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
     /// 注入 HTTP 客户端和日志记录器
@@ -34,6 +40,49 @@ public sealed class ProxyForwardService : IProxyForwardService
         httpClient.Timeout = global::System.Threading.Timeout.InfiniteTimeSpan;
         _httpClient = httpClient;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// 根据请求中的 EgressProxyUrl 获取对应的 HttpClient（配置了代理则走代理池，否则走默认直连）。
+    /// </summary>
+    private HttpClient GetClientForRequest(ProxyForwardRequest request)
+    {
+        if (string.IsNullOrWhiteSpace(request.EgressProxyUrl))
+        {
+            return _httpClient;
+        }
+
+        var proxyUrl = request.EgressProxyUrl.Trim();
+        if (!EgressProxyValidator.TryValidate(proxyUrl, out var validateError))
+        {
+            _logger.LogWarning("无效的出口网络代理格式 '{ProxyUrl}' ({Error})，将回退默认直连", proxyUrl, validateError);
+            return _httpClient;
+        }
+
+        try
+        {
+            return _proxyClients.GetOrAdd(proxyUrl, url =>
+            {
+                var handler = new SocketsHttpHandler
+                {
+                    Proxy = new WebProxy(new Uri(url)),
+                    UseProxy = true,
+                    PooledConnectionLifetime = TimeSpan.FromMinutes(15),
+                    PooledConnectionIdleTimeout = TimeSpan.FromMinutes(2),
+                    KeepAlivePingDelay = TimeSpan.FromSeconds(30),
+                    KeepAlivePingTimeout = TimeSpan.FromSeconds(5)
+                };
+                return new HttpClient(handler, disposeHandler: true)
+                {
+                    Timeout = global::System.Threading.Timeout.InfiniteTimeSpan
+                };
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "初始化站点专属出口代理客户端失败，ProxyUrl: {ProxyUrl}，将回退默认直连", proxyUrl);
+            return _httpClient;
+        }
     }
 
     /// <summary>
@@ -61,7 +110,8 @@ public sealed class ProxyForwardService : IProxyForwardService
             try
             {
                 using var httpRequest = BuildRequestMessage(request, requestBody);
-                using var response = await _httpClient.SendAsync(
+                var client = GetClientForRequest(request);
+                using var response = await client.SendAsync(
                     httpRequest,
                     HttpCompletionOption.ResponseHeadersRead,
                     timeoutCts.Token);
@@ -289,7 +339,8 @@ public sealed class ProxyForwardService : IProxyForwardService
             try
             {
                 using var httpRequest = BuildRequestMessage(request, requestBody);
-                using var response = await _httpClient.SendAsync(
+                var client = GetClientForRequest(request);
+                using var response = await client.SendAsync(
                     httpRequest,
                     HttpCompletionOption.ResponseHeadersRead,
                     timeoutCts.Token);
@@ -819,7 +870,10 @@ public sealed class ProxyForwardService : IProxyForwardService
         // 根据协议类型设置认证头
         if (request.ProtocolType == "Anthropic")
         {
-            httpRequest.Headers.Add("x-api-key", request.TargetApiKey);
+            if (!string.IsNullOrEmpty(request.TargetApiKey))
+            {
+                httpRequest.Headers.Add("x-api-key", request.TargetApiKey);
+            }
             httpRequest.Headers.Add(
                 "anthropic-version",
                 request.ForwardHeaders.TryGetValue("anthropic-version", out var anthropicVersion) && !string.IsNullOrWhiteSpace(anthropicVersion)
@@ -828,7 +882,10 @@ public sealed class ProxyForwardService : IProxyForwardService
         }
         else
         {
-            httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.TargetApiKey);
+            if (!string.IsNullOrEmpty(request.TargetApiKey))
+            {
+                httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", request.TargetApiKey);
+            }
         }
 
         foreach (var header in request.ForwardHeaders)
@@ -836,6 +893,10 @@ public sealed class ProxyForwardService : IProxyForwardService
             if (string.Equals(header.Key, "anthropic-version", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
+            }
+            if (string.Equals(header.Key, "authorization", StringComparison.OrdinalIgnoreCase))
+            {
+                httpRequest.Headers.Remove("Authorization");
             }
 
             httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);

@@ -4,6 +4,7 @@ using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
 using AITool.Protocol;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Sites;
 
 namespace AITool.Infrastructure.Health;
@@ -95,20 +96,42 @@ public sealed class ModelHealthRequestService
             requestBody = StripCodexUnsupportedFields(requestBody);
         }
 
-        // 解析 Site 的自定义请求头（Codex 的 Originator / Chatgpt-Account-Id / User-Agent 等）
+        // 级联解析自定义请求头与客户端仿真特征（Mapping > Model > Site）
         Dictionary<string, string> extraHeaders = new(StringComparer.OrdinalIgnoreCase);
-        if (!string.IsNullOrWhiteSpace(site.ExtraHeadersJson))
+        var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(site.BaseUrl);
+        var effectiveEmulation = ResolveClientEmulation(mapping.ClientEmulation, model.ClientEmulation, site.ClientEmulation, protocolType, isAntigravity);
+
+        // 命中请求头模板方案（内置预设被编辑 / 自定义 Key）时作为最底层注入，显式 Site/Model/Mapping 头仍可覆盖。
+        if (!string.IsNullOrWhiteSpace(effectiveEmulation))
         {
-            try
+            var headerProfile = await _dbContext.HeaderProfiles
+                .FirstAsync(p => p.Key == effectiveEmulation && p.IsEnabled, cancellationToken);
+            if (headerProfile?.HeadersJson is not null)
             {
-                var parsed = JsonSerializer.Deserialize<Dictionary<string, string>>(site.ExtraHeadersJson);
-                if (parsed != null)
-                {
-                    extraHeaders = new Dictionary<string, string>(parsed, StringComparer.OrdinalIgnoreCase);
-                }
+                MergeHeadersJson(extraHeaders, headerProfile.HeadersJson);
             }
-            catch { }
         }
+
+        MergeHeadersJson(extraHeaders, site.ExtraHeadersJson);
+        MergeHeadersJson(extraHeaders, model.ExtraHeadersJson);
+        MergeHeadersJson(extraHeaders, mapping.ExtraHeadersJson);
+
+        var effectiveProxyRaw = !string.IsNullOrWhiteSpace(mapping.EgressProxyUrl) ? mapping.EgressProxyUrl.Trim() : site.EgressProxyUrl;
+        string? effectiveProxyUrl = null;
+        if (!string.IsNullOrWhiteSpace(effectiveProxyRaw) &&
+            !string.Equals(effectiveProxyRaw, "None", StringComparison.OrdinalIgnoreCase) &&
+            !string.Equals(effectiveProxyRaw, "direct", StringComparison.OrdinalIgnoreCase))
+        {
+            var profile = await _dbContext.ProxyProfiles.FirstAsync(p => p.Key == effectiveProxyRaw && p.IsEnabled, cancellationToken);
+            effectiveProxyUrl = profile != null ? profile.ProxyUrl : effectiveProxyRaw;
+        }
+
+        var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
+            effectiveEmulation,
+            extraHeaders,
+            mapping.RemoteModelName,
+            null,
+            isAntigravity);
 
         // 取站点活动密钥：多 Key 站点用优先级最高的启用项，没有 SiteKey 时回退 site.ApiKey（兼容 Codex/未迁移）。
         var activeApiKey = await _siteKeySelector.GetActiveKeyAsync(site.Id, cancellationToken);
@@ -129,7 +152,8 @@ public sealed class ModelHealthRequestService
             EnableStreaming = false,
             RequestTimeoutSeconds = runtimeSettings.DetectionRequestTimeoutSeconds,
             RetryCount = runtimeSettings.DetectionRetryCount,
-            ForwardHeaders = extraHeaders,
+            ForwardHeaders = forwardHeaders,
+            EgressProxyUrl = effectiveProxyUrl,
             TargetPath = string.Equals(protocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                 ? SiteEndpointPathResolver.ResolvePath(site.EndpointPathMode, "responses")
                 : null
@@ -295,6 +319,53 @@ public sealed class ModelHealthRequestService
         {
             return requestBody;
         }
+    }
+
+    private static void MergeHeadersJson(Dictionary<string, string> target, string? headersJson)
+    {
+        if (string.IsNullOrWhiteSpace(headersJson)) return;
+        try
+        {
+            var dict = JsonSerializer.Deserialize<Dictionary<string, string>>(headersJson);
+            if (dict == null) return;
+            foreach (var (k, v) in dict)
+            {
+                if (!string.IsNullOrWhiteSpace(k))
+                {
+                    target[k] = v ?? string.Empty;
+                }
+            }
+        }
+        catch { }
+    }
+
+    private static string ResolveClientEmulation(string? mappingEmulation, string? modelEmulation, string? siteEmulation, string protocolType, bool isAntigravity)
+    {
+        // 与 ProxyRequestMetadataCache.ResolveClientEmulation 口径一致：
+        // 内置预设归一化返回；未知值视为自定义 HeaderProfile Key 原样透传（无匹配档案时引擎不注入任何头，无副作用）。
+        foreach (var candidate in new[] { mappingEmulation, modelEmulation, siteEmulation })
+        {
+            var trimmed = candidate?.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                continue;
+            }
+
+            var normalized = Domain.Sites.ClientEmulationConstants.Normalize(trimmed);
+            if (!string.Equals(normalized, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase))
+            {
+                return normalized;
+            }
+
+            return trimmed;
+        }
+
+        if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+        {
+            return isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli;
+        }
+
+        return Domain.Sites.ClientEmulationConstants.None;
     }
 }
 

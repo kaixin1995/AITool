@@ -6,6 +6,7 @@ using AITool.Application.Proxy;
 using AITool.Domain.Codex;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
+using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
@@ -423,6 +424,13 @@ public sealed class ProxyRequestMetadataCache
                         .GroupBy(a => a.LinkedSiteId)
                         .ToDictionary(g => g.Key, g => g.First().ProjectId!);
 
+                    var proxyProfiles = await dbContext.ProxyProfiles
+                        .Where(p => p.IsEnabled)
+                        .ToListAsync(cancellationToken);
+                    var proxyMap = proxyProfiles
+                        .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                    var headerProfileMap = await LoadHeaderProfileMapAsync(dbContext, cancellationToken);
+
                     var baseChatTargets = (
                             from mapping in mappings
                             join site in sites on mapping.SiteId equals site.Id
@@ -442,6 +450,7 @@ public sealed class ProxyRequestMetadataCache
                         var site = item.site;
                         var model = item.model;
                         var candidates = ResolveSiteKeyCandidates(site.Id, site.ApiKey, siteKeysBySite);
+                        var chatEmulation = ResolveClientEmulation(mapping.ClientEmulation, model.ClientEmulation, site.ClientEmulation);
 
                         foreach (var candidate in candidates)
                         {
@@ -459,7 +468,9 @@ public sealed class ProxyRequestMetadataCache
                                 EndpointPathMode = site.EndpointPathMode,
                                 ApiKey = candidate.ApiKey,
                                 SiteModelName = mapping.RemoteModelName,
-                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
+                                ExtraHeaders = BuildEffectiveExtraHeaders(chatEmulation, headerProfileMap, site.ExtraHeadersJson, model.ExtraHeadersJson, mapping.ExtraHeadersJson),
+                                ClientEmulation = chatEmulation,
+                                EgressProxyUrl = ResolveEgressProxyUrl(mapping.EgressProxyUrl, site.EgressProxyUrl, proxyMap),
                                 GoogleProjectId = googleProjectsBySite.TryGetValue(site.Id, out var chatGoogleProject) ? chatGoogleProject : string.Empty
                             });
                         }
@@ -1309,6 +1320,10 @@ public sealed class ProxyRequestMetadataCache
                     var routes = await dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
                     var sites = await dbContext.Sites.ToListAsync(cancellationToken);
                     var models = await dbContext.ModelLibraryItems.ToListAsync(cancellationToken);
+                    var mappings = await dbContext.SiteModelMappings.ToListAsync(cancellationToken);
+                    var mappingsBySiteAndRemote = mappings.GroupBy(m => (m.SiteId, m.RemoteModelName)).ToDictionary(g => g.Key, g => g.First());
+                    var mappingsBySiteAndModelId = mappings.GroupBy(m => (m.SiteId, m.ModelLibraryItemId)).ToDictionary(g => g.Key, g => g.First());
+
                     // 一次性加载所有启用的站点密钥，按 SiteId 分组，供路由目标按 Key 展开为多条候选。
                     var siteKeys = await dbContext.SiteKeys
                         .Where(k => k.IsEnabled)
@@ -1329,6 +1344,13 @@ public sealed class ProxyRequestMetadataCache
                     var profileRules = profiles.ToDictionary(
                         p => p.Id,
                         p => ParseCompatibilityRules(p.RulesJson));
+
+                    var proxyProfiles = await dbContext.ProxyProfiles
+                        .Where(p => p.IsEnabled)
+                        .ToListAsync(cancellationToken);
+                    var proxyMap = proxyProfiles
+                        .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                    var headerProfileMap = await LoadHeaderProfileMapAsync(dbContext, cancellationToken);
 
                     // 基础路由投影（每条 route × site × model 一条），不含 Key 维度。
                     var baseRoutes = (
@@ -1352,6 +1374,20 @@ public sealed class ProxyRequestMetadataCache
                         var site = item.site;
                         var model = item.model;
                         var candidates = ResolveSiteKeyCandidates(site.Id, site.ApiKey, siteKeysBySite);
+
+                        SiteModelMapping? mapping = null;
+                        if (mappingsBySiteAndRemote.TryGetValue((site.Id, route.SiteModelName), out var m1))
+                        {
+                            mapping = m1;
+                        }
+                        else if (model != null && mappingsBySiteAndModelId.TryGetValue((site.Id, model.Id), out var m2))
+                        {
+                            mapping = m2;
+                        }
+
+                        var clientEmulation = ResolveClientEmulation(mapping?.ClientEmulation, model?.ClientEmulation, site.ClientEmulation);
+                        var extraHeaders = BuildEffectiveExtraHeaders(clientEmulation, headerProfileMap, site.ExtraHeadersJson, model?.ExtraHeadersJson, mapping?.ExtraHeadersJson);
+                        var egressProxyUrl = ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap);
 
                         foreach (var candidate in candidates)
                         {
@@ -1377,7 +1413,9 @@ public sealed class ProxyRequestMetadataCache
                                 SiteModelName = route.SiteModelName,
                                 BaseUrl = site.BaseUrl,
                                 ApiKey = candidate.ApiKey,
-                                ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
+                                ExtraHeaders = extraHeaders,
+                                ClientEmulation = clientEmulation,
+                                EgressProxyUrl = egressProxyUrl,
                                 GoogleProjectId = googleProjectsBySite.TryGetValue(site.Id, out var googleProject) ? googleProject : string.Empty,
                                 ModelPriority = route.ModelPriority,
                                 InstancePriority = route.InstancePriority,
@@ -1455,6 +1493,13 @@ public sealed class ProxyRequestMetadataCache
                         .GroupBy(a => a.LinkedSiteId)
                         .ToDictionary(g => g.Key, g => g.First().ProjectId!);
 
+                    var proxyProfiles = await dbContext.ProxyProfiles
+                        .Where(p => p.IsEnabled)
+                        .ToListAsync(cancellationToken);
+                    var proxyMap = proxyProfiles
+                        .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                    var fallbackHeaderProfileMap = await LoadHeaderProfileMapAsync(dbContext, cancellationToken);
+
                     var rawMappings = (
                             from mapping in mappingsData
                             join site in sitesData on mapping.SiteId equals site.Id
@@ -1464,6 +1509,8 @@ public sealed class ProxyRequestMetadataCache
                             {
                                 ModelId = model.Id,
                                 model.ModelName,
+                                ModelClientEmulation = model.ClientEmulation,
+                                ModelExtraHeadersJson = model.ExtraHeadersJson,
                                 SiteId = site.Id,
                                 SiteName = site.Name,
                                 site.ManagedSource,
@@ -1476,7 +1523,12 @@ public sealed class ProxyRequestMetadataCache
                                 site.ApiKey,
                                 MappingId = mapping.Id,
                                 SiteModelName = mapping.RemoteModelName,
-                                site.ExtraHeadersJson
+                                SiteExtraHeadersJson = site.ExtraHeadersJson,
+                                SiteClientEmulation = site.ClientEmulation,
+                                SiteEgressProxyUrl = site.EgressProxyUrl,
+                                MappingClientEmulation = mapping.ClientEmulation,
+                                MappingExtraHeadersJson = mapping.ExtraHeadersJson,
+                                MappingEgressProxyUrl = mapping.EgressProxyUrl
                             })
                         .ToList();
 
@@ -1491,6 +1543,7 @@ public sealed class ProxyRequestMetadataCache
                                 .First();
 
                             var candidates = ResolveSiteKeyCandidates(first.SiteId, first.ApiKey, siteKeysBySite);
+                            var fallbackEmulation = ResolveClientEmulation(first.MappingClientEmulation, first.ModelClientEmulation, first.SiteClientEmulation);
                             return candidates.Select(candidate => new CachedFallbackTarget
                             {
                                 ModelId = grouped.Key,
@@ -1505,7 +1558,9 @@ public sealed class ProxyRequestMetadataCache
                                 EndpointPathMode = first.EndpointPathMode,
                                 ApiKey = candidate.ApiKey,
                                 SiteModelName = first.SiteModelName,
-                                ExtraHeaders = TryParseExtraHeaders(first.ExtraHeadersJson),
+                                ExtraHeaders = BuildEffectiveExtraHeaders(fallbackEmulation, fallbackHeaderProfileMap, first.SiteExtraHeadersJson, first.ModelExtraHeadersJson, first.MappingExtraHeadersJson),
+                                ClientEmulation = fallbackEmulation,
+                                EgressProxyUrl = ResolveEgressProxyUrl(first.MappingEgressProxyUrl, first.SiteEgressProxyUrl, proxyMap),
                                 GoogleProjectId = googleProjectsBySite.TryGetValue(first.SiteId, out var fallbackGoogleProject) ? fallbackGoogleProject : string.Empty
                             });
                         })
@@ -1582,6 +1637,37 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 加载启用的请求头模板方案（Key → 解析后的请求头字典，占位符原样保留、请求时由引擎求值）。
+    /// 仅在缓存构建期调用；模板增删改由 HeaderProfilesApiController 失效路由缓存触发重建。
+    /// </summary>
+    private static async Task<Dictionary<string, Dictionary<string, string>>> LoadHeaderProfileMapAsync(
+        AppDbContext dbContext,
+        CancellationToken cancellationToken)
+    {
+        var profiles = await dbContext.HeaderProfiles
+            .Where(p => p.IsEnabled && p.HeadersJson != null)
+            .ToListAsync(cancellationToken);
+
+        var map = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var profile in profiles)
+        {
+            if (string.IsNullOrWhiteSpace(profile.Key) || string.IsNullOrWhiteSpace(profile.HeadersJson))
+            {
+                continue;
+            }
+
+            var headers = TryParseExtraHeaders(profile.HeadersJson);
+            if (headers.Count > 0)
+            {
+                // 同 Key 多条取先注册的一条（Key 有唯一索引，正常不会重复）。
+                map.TryAdd(profile.Key.Trim(), headers);
+            }
+        }
+
+        return map;
+    }
+
+    /// <summary>
     /// 反序列化 Site.ExtraHeadersJson 为大小写不敏感的请求头字典。
     /// 空或非法 JSON 返回空字典（容错：坏数据不阻断转发，仅该 Site 不带额外头）。
     /// 仅在缓存构建期调用（5s 一次），不在每请求路径。
@@ -1603,6 +1689,113 @@ public sealed class ProxyRequestMetadataCache
         {
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
+    }
+
+    /// <summary>
+    /// 解析客户端特征模拟预设类型（优先级：SiteModelMapping > ModelLibraryItem > Site）。
+    /// 内置预设返回归一化名称；非预设的自定义值按"请求头模板方案 Key"原样透传（运行时经 HeaderProfiles 解析）。
+    /// </summary>
+    internal static string ResolveClientEmulation(string? mappingEmulation, string? modelEmulation, string? siteEmulation)
+    {
+        foreach (var candidate in new[] { mappingEmulation, modelEmulation, siteEmulation })
+        {
+            var trimmed = candidate?.Trim();
+            if (string.IsNullOrWhiteSpace(trimmed))
+            {
+                continue;
+            }
+
+            var normalized = ClientEmulationConstants.Normalize(trimmed);
+            if (!string.Equals(normalized, ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase))
+            {
+                return normalized;
+            }
+
+            // 未知值视为自定义 HeaderProfile Key 透传；若确属垃圾值，引擎解析不到预设也不会产生任何头，无副作用。
+            return trimmed;
+        }
+
+        return ClientEmulationConstants.None;
+    }
+
+    /// <summary>
+    /// 构建最终转发的自定义请求头：HeaderProfile 模板（最底层，可覆盖引擎内置预设硬编码）
+    /// → Site → Model → SiteModelMapping（显式配置逐层覆盖）。占位符由引擎在请求时求值。
+    /// </summary>
+    internal static Dictionary<string, string> BuildEffectiveExtraHeaders(
+        string clientEmulation,
+        IReadOnlyDictionary<string, Dictionary<string, string>>? headerProfileMap,
+        string? siteJson,
+        string? modelJson,
+        string? mappingJson)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (headerProfileMap != null
+            && !string.IsNullOrWhiteSpace(clientEmulation)
+            && headerProfileMap.TryGetValue(clientEmulation.Trim(), out var profileHeaders))
+        {
+            foreach (var (key, value) in profileHeaders)
+            {
+                result[key] = value;
+            }
+        }
+
+        foreach (var json in new[] { siteJson, modelJson, mappingJson })
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                continue;
+            }
+
+            foreach (var (key, value) in TryParseExtraHeaders(json))
+            {
+                result[key] = value;
+            }
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// 解析站点专属出口网络代理（优先级：SiteModelMapping > Site > Direct 直连）。
+    /// </summary>
+    internal static string? ResolveEgressProxyUrl(string? mappingProxy, string? siteProxy, IReadOnlyDictionary<string, string>? proxyMap = null)
+    {
+        var raw = !string.IsNullOrWhiteSpace(mappingProxy)
+            ? mappingProxy.Trim()
+            : (!string.IsNullOrWhiteSpace(siteProxy) ? siteProxy.Trim() : null);
+
+        if (string.IsNullOrWhiteSpace(raw) ||
+            string.Equals(raw, "None", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(raw, "direct", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        if (proxyMap != null && proxyMap.TryGetValue(raw, out var mappedUrl))
+        {
+            return mappedUrl;
+        }
+
+        return raw;
+    }
+
+    /// <summary>
+    /// 合并多个层级的自定义请求头 JSON（后面的覆盖前面的：Site -> Model -> SiteModelMapping）。
+    /// </summary>
+    internal static Dictionary<string, string> MergeExtraHeaders(params string?[] extraHeadersJsons)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var json in extraHeadersJsons)
+        {
+            if (string.IsNullOrWhiteSpace(json)) continue;
+            var parsed = TryParseExtraHeaders(json);
+            foreach (var kvp in parsed)
+            {
+                result[kvp.Key] = kvp.Value;
+            }
+        }
+        return result;
     }
 
     /// <summary>
@@ -1968,6 +2161,14 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>
+    /// 客户端特征模拟预设类型（None | OpenCode | ClaudeCode | CodexCli | Antigravity | GeminiCli | Custom）。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+    /// <summary>
+    /// 站点专用出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
+    /// <summary>
     /// Google 账号（GeminiCLI / Antigravity 隐藏 Site）的项目 ID，作为 Gemini 上游请求体 project 字段。
     /// 空表示非 Google 托管站点。
     /// </summary>
@@ -2142,6 +2343,14 @@ public sealed class CachedChatTarget
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>
+    /// 客户端特征模拟预设类型。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+    /// <summary>
+    /// 站点专用出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
+    /// <summary>
     /// Google 账号（Gemini 上游隐藏 Site）的项目 ID，空表示非 Google 托管站点。
     /// </summary>
     public string GoogleProjectId { get; set; } = string.Empty;
@@ -2223,6 +2432,14 @@ public sealed class CachedFallbackTarget
     /// 从 Site.ExtraHeadersJson 反序列化的自定义转发请求头。
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>
+    /// 客户端特征模拟预设类型。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+    /// <summary>
+    /// 站点专用出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
     /// <summary>
     /// Google 账号（Gemini 上游隐藏 Site）的项目 ID，空表示非 Google 托管站点。
     /// </summary>

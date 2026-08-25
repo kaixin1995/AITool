@@ -56,6 +56,9 @@ function normalizeJsonItem(item: Partial<SitePayload> & { protocolType?: string 
     supportsOpenAi: item.supportsOpenAi ?? capabilities.supportsOpenAi,
     supportsAnthropic: item.supportsAnthropic ?? capabilities.supportsAnthropic,
     supportsResponses: item.supportsResponses ?? capabilities.supportsResponses,
+    clientEmulation: item.clientEmulation || 'None',
+    extraHeadersJson: item.extraHeadersJson || '',
+    egressProxyUrl: item.egressProxyUrl || '',
     isEnabled: item.isEnabled ?? true,
     protocolType,
     selected: true

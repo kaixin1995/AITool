@@ -101,8 +101,8 @@ public static class GoogleAccountKinds
     /// <summary>GeminiCLI 客户端 User-Agent（含模型名占位，发送前替换）。</summary>
     public const string GeminiCliUserAgentTemplate = "GeminiCLI/0.35.2/{MODEL} (win32; x64; cloud-shell)";
 
-    /// <summary>Antigravity CLI 客户端 User-Agent。</summary>
-    public const string AntigravityUserAgent = "antigravity/cli/1.1.12 windows/amd64";
+    /// <summary>Antigravity CLI 客户端 User-Agent（对齐 ClientEmulationEngine 最新官方特征）。</summary>
+    public const string AntigravityUserAgent = "antigravity/1.10.4 linux/x86_64";
 
     /// <summary>
     /// GeminiCLI 静态模型清单（对齐 gcli2api src/utils.py BASE_MODELS，去掉假流式/抗截断前缀变体）。

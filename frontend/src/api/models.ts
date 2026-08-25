@@ -24,6 +24,8 @@ export interface ModelPayload {
   isEnabled?: boolean
   overrideReasoningEffort?: string
   compatibilityProfileId?: string | null
+  clientEmulation?: string
+  extraHeadersJson?: string
 }
 export interface ModelVendorDefinition {
   vendorName: string
@@ -112,6 +114,17 @@ export interface ModelSiteMapping {
   remoteModelName: string
   isEnabled: boolean
   maxConcurrency: number
+  clientEmulation?: string
+  extraHeadersJson?: string
+  egressProxyUrl?: string
+}
+export interface UpdateMappingPayload {
+  remoteModelName?: string
+  isEnabled?: boolean
+  maxConcurrency?: number
+  clientEmulation?: string
+  extraHeadersJson?: string
+  egressProxyUrl?: string
 }
 export interface ModelDetail {
   id: string
@@ -120,14 +133,36 @@ export interface ModelDetail {
   isEnabled: boolean
   overrideReasoningEffort: string
   compatibilityProfileId: string | null
+  clientEmulation?: string
+  extraHeadersJson?: string
   siteMappings: ModelSiteMapping[]
   availableSites: { id: string; name: string }[]
 }
 export async function getModelDetail(id: string): Promise<ModelDetail> {
   return httpGet<ModelDetail>(`/api/admin/models/${id}`)
 }
-export async function addModelMapping(id: string, siteId: string, remoteModelName: string, isEnabled = true): Promise<void> {
-  await httpPost(`/api/admin/models/${id}/mappings`, { siteId, remoteModelName, isEnabled })
+export async function addModelMapping(
+  id: string,
+  siteId: string,
+  remoteModelName: string,
+  maxConcurrency = 0,
+  clientEmulation = 'None',
+  extraHeadersJson?: string,
+  egressProxyUrl?: string,
+  isEnabled = true
+): Promise<void> {
+  await httpPost(`/api/admin/models/${id}/mappings`, {
+    siteId,
+    remoteModelName,
+    maxConcurrency,
+    clientEmulation,
+    extraHeadersJson,
+    egressProxyUrl,
+    isEnabled
+  })
+}
+export async function updateModelMapping(mappingId: string, payload: UpdateMappingPayload): Promise<ModelSiteMapping> {
+  return httpPut<ModelSiteMapping>(`/api/admin/models/mappings/${mappingId}`, payload)
 }
 export async function updateMappingConcurrency(mappingId: string, maxConcurrency: number): Promise<{ maxConcurrency: number }> {
   return httpPut<{ maxConcurrency: number }>(`/api/admin/models/mappings/${mappingId}/concurrency`, { maxConcurrency })

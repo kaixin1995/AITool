@@ -49,6 +49,24 @@ public sealed class SiteModelMapping
     public bool IsEnabled { get; set; } = true;
 
     /// <summary>
+    /// 客户端特征模拟预设类型（None | OpenCode | ClaudeCode | CodexCli | Antigravity | GeminiCli | Custom）。
+    /// </summary>
+    [SugarColumn(Length = 50, IsNullable = false)]
+    public string ClientEmulation { get; set; } = "None";
+
+    /// <summary>
+    /// 自定义转发请求头（JSON 对象字符串，支持 ${guid}, ${nanoid:12}, ${timestamp}, ${model} 等动态变量）。
+    /// </summary>
+    [SugarColumn(IsNullable = true, ColumnDataType = "text")]
+    public string? ExtraHeadersJson { get; set; }
+
+    /// <summary>
+    /// 专属出口网络代理地址（支持 http:// / socks5://，留空表示继承站点默认或直连）。
+    /// </summary>
+    [SugarColumn(Length = 500, IsNullable = true)]
+    public string? EgressProxyUrl { get; set; }
+
+    /// <summary>
     /// 最近一次健康检查的时间，用于记录该映射对应模型的上次检测时刻。
     /// </summary>
     [SugarColumn(IsNullable = true)]

@@ -84,39 +84,25 @@ public sealed partial class OpenAiProxyController
         string actualProtocolType,
         string? preparedRequestBody)
     {
-        if (!string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
         {
-            var merged = MergeExtraHeaders(route.ExtraHeaders);
-            if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
-            {
-                ApplyGeminiForwardHeaders(merged, route.SiteModelName, ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl));
-            }
-
-            return merged;
+            return MergeCodexResponsesHeaders(route.ExtraHeaders, Request.Headers, preparedRequestBody);
         }
 
-        return MergeCodexResponsesHeaders(route.ExtraHeaders, Request.Headers, preparedRequestBody);
-    }
+        var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl);
+        var effectiveEmulation = !string.IsNullOrWhiteSpace(route.ClientEmulation) && !string.Equals(route.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
+            ? route.ClientEmulation
+            : (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                ? (isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli)
+                : Domain.Sites.ClientEmulationConstants.None);
 
-    /// <summary>
-    /// Gemini 上游（GeminiCLI / Antigravity）的客户端仿真头：
-    /// GeminiCLI 需要带模型名的 GeminiCLI UA；Antigravity 需要 antigravity/cli UA + requestId/requestType。
-    /// 调用方直接提供模型名与上游类型，避免逐请求解析整个封套请求体。
-    /// </summary>
-    public static void ApplyGeminiForwardHeaders(Dictionary<string, string> headers, string? model, bool isAntigravity)
-    {
-        if (isAntigravity)
-        {
-            headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;
-            headers["requestId"] = $"req-{Guid.NewGuid():N}";
-            headers["requestType"] = model is not null && model.Contains("image", StringComparison.OrdinalIgnoreCase)
-                ? "image_gen"
-                : "agent";
-            return;
-        }
-
-        headers["User-Agent"] = GoogleAccountKinds.GeminiCliUserAgentTemplate.Replace("{MODEL}", string.IsNullOrEmpty(model) ? string.Empty : model, StringComparison.OrdinalIgnoreCase);
+        return ClientEmulationEngine.ResolveHeaders(
+            effectiveEmulation,
+            route.ExtraHeaders,
+            route.SiteModelName,
+            route.GoogleProjectId,
+            isAntigravity);
     }
 
     /// <summary>

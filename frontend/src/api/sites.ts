@@ -12,6 +12,9 @@ export interface SiteListItem {
   supportsAnthropic: boolean
   supportsResponses: boolean
   protocolType: string
+  clientEmulation?: string
+  extraHeadersJson?: string
+  egressProxyUrl?: string
   isEnabled: boolean
   createdAt: string
 }
@@ -35,6 +38,9 @@ export interface SiteDetail {
   supportsAnthropic: boolean
   supportsResponses: boolean
   protocolType: string
+  clientEmulation?: string
+  extraHeadersJson?: string
+  egressProxyUrl?: string
   isEnabled: boolean
   createdAt: string
   keys: SiteKeyItem[]
@@ -48,6 +54,9 @@ export interface SitePayload {
   supportsOpenAi?: boolean
   supportsAnthropic?: boolean
   supportsResponses?: boolean
+  clientEmulation?: string
+  extraHeadersJson?: string
+  egressProxyUrl?: string
   isEnabled?: boolean
 }
 

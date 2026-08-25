@@ -161,7 +161,7 @@ public sealed class GoogleAccountProvisioner
                 var models = await _modelFetcher.FetchAsync(account.AccountKind, input.AccessToken, ct);
                 if (models.Count > 0)
                 {
-                    await UpsertModelMappingsCoreAsync(site.Id, models, ct);
+                    await UpsertModelMappingsCoreAsync(site.Id, models, account.AccountKind, ct);
                 }
             }
             catch (Exception ex)
@@ -181,7 +181,7 @@ public sealed class GoogleAccountProvisioner
         else
         {
             var staticModels = GeminiCliModels.Select(n => (Slug: n, DisplayName: n));
-            await UpsertModelMappingsCoreAsync(site.Id, staticModels, ct);
+            await UpsertModelMappingsCoreAsync(site.Id, staticModels, account.AccountKind, ct);
         }
 
         _metadataCache.InvalidateRouteTargets();
@@ -248,7 +248,8 @@ public sealed class GoogleAccountProvisioner
     /// </summary>
     public async Task UpsertRemoteModelsAsync(Guid linkedSiteId, IEnumerable<(string Slug, string DisplayName)> models, CancellationToken ct)
     {
-        await UpsertModelMappingsCoreAsync(linkedSiteId, models, ct);
+        var account = (await _dbContext.GoogleAccounts.Where(a => a.LinkedSiteId == linkedSiteId).ToListAsync(ct)).FirstOrDefault();
+        await UpsertModelMappingsCoreAsync(linkedSiteId, models, account?.AccountKind, ct);
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
         _metadataCache.InvalidateGoogleAccounts();
@@ -263,7 +264,8 @@ public sealed class GoogleAccountProvisioner
         IEnumerable<(string Slug, string DisplayName, bool Selected)> models,
         CancellationToken ct)
     {
-        await SyncModelMappingsCoreAsync(linkedSiteId, models, ct);
+        var account = (await _dbContext.GoogleAccounts.Where(a => a.LinkedSiteId == linkedSiteId).ToListAsync(ct)).FirstOrDefault();
+        await SyncModelMappingsCoreAsync(linkedSiteId, models, account?.AccountKind, ct);
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
         _metadataCache.InvalidateGoogleAccounts();
@@ -288,10 +290,14 @@ public sealed class GoogleAccountProvisioner
     /// <summary>
     /// 批量 upsert 模型库 + 映射（与 CodexAccountProvisioner 相同的两步策略）。
     /// </summary>
-    private async Task UpsertModelMappingsCoreAsync(Guid siteId, IEnumerable<(string Slug, string DisplayName)> models, CancellationToken ct)
+    private async Task UpsertModelMappingsCoreAsync(Guid siteId, IEnumerable<(string Slug, string DisplayName)> models, string? accountKind, CancellationToken ct)
     {
         var modelList = models.ToList();
         if (modelList.Count == 0) return;
+
+        var emulation = string.Equals(accountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase)
+            ? ClientEmulationConstants.Antigravity
+            : ClientEmulationConstants.GeminiCli;
 
         var remoteNames = modelList.Select(m => m.Slug).Distinct().ToList();
 
@@ -341,6 +347,7 @@ public sealed class GoogleAccountProvisioner
                 RemoteModelName = slug,
                 LastStatus = "imported",
                 IsEnabled = true,
+                ClientEmulation = emulation,
             });
         }
     }
@@ -348,6 +355,7 @@ public sealed class GoogleAccountProvisioner
     private async Task SyncModelMappingsCoreAsync(
         Guid siteId,
         IEnumerable<(string Slug, string DisplayName, bool Selected)> models,
+        string? accountKind,
         CancellationToken ct)
     {
         var modelList = models
@@ -360,6 +368,10 @@ public sealed class GoogleAccountProvisioner
             })
             .ToList();
         if (modelList.Count == 0) return;
+
+        var emulation = string.Equals(accountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase)
+            ? ClientEmulationConstants.Antigravity
+            : ClientEmulationConstants.GeminiCli;
 
         var remoteNames = modelList.Select(model => model.Slug).ToList();
         var selectionByRemote = modelList.ToDictionary(model => model.Slug, StringComparer.OrdinalIgnoreCase);
@@ -423,6 +435,7 @@ public sealed class GoogleAccountProvisioner
                 RemoteModelName = slug,
                 LastStatus = "imported",
                 IsEnabled = true,
+                ClientEmulation = emulation,
             });
         }
     }

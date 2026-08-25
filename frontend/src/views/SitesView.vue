@@ -10,6 +10,7 @@ import {
 import PageHeader from '@/components/PageHeader.vue'
 import * as sitesApi from '@/api/sites'
 import type { ModelSelectionItem, SiteFetchResult, SiteListItem, SitePayload } from '@/api/sites'
+import { getProxyProfiles, type ProxyProfile } from '@/api/proxyProfiles'
 import {
   buildSelectedSitesExportJson,
   parseSitesImportText,
@@ -24,6 +25,28 @@ const route = useRoute()
 const loading = ref(false)
 const sites = ref<SiteListItem[]>([])
 const checkedRowKeys = ref<Array<string | number>>([])
+const proxyProfiles = ref<ProxyProfile[]>([])
+
+async function loadProxyProfiles(): Promise<void> {
+  try {
+    proxyProfiles.value = await getProxyProfiles()
+  } catch {}
+}
+
+const proxyProfileOptions = computed(() => {
+  const options = [{ label: '直连 (默认不使用代理)', value: '' }]
+  if (proxyProfiles.value && proxyProfiles.value.length > 0) {
+    for (const p of proxyProfiles.value) {
+      if (p.isEnabled) {
+        options.push({
+          label: `🌐 ${p.name} (${p.proxyUrl})`,
+          value: p.proxyUrl
+        })
+      }
+    }
+  }
+  return options
+})
 
 // 创建/编辑模态框
 const showModal = ref(false)
@@ -36,6 +59,9 @@ const form = reactive<SitePayload>({
   supportsOpenAi: true,
   supportsAnthropic: false,
   supportsResponses: false,
+  clientEmulation: 'None',
+  extraHeadersJson: '',
+  egressProxyUrl: '',
   isEnabled: true
 })
 const saving = ref(false)
@@ -61,8 +87,10 @@ function openCreate(): void {
   editingId.value = null
   Object.assign(form, {
     name: '', baseUrl: '', endpointPathMode: 'standard-root', apiKey: '',
-    supportsOpenAi: true, supportsAnthropic: false, supportsResponses: false, isEnabled: true
+    supportsOpenAi: true, supportsAnthropic: false, supportsResponses: false,
+    clientEmulation: 'None', extraHeadersJson: '', egressProxyUrl: '', isEnabled: true
   })
+  loadProxyProfiles()
   showModal.value = true
 }
 
@@ -76,6 +104,7 @@ watch(
 
 async function openEdit(row: SiteListItem): Promise<void> {
   editingId.value = row.id
+  loadProxyProfiles()
   const detail = await sitesApi.getSite(row.id)
   Object.assign(form, {
     name: detail.name,
@@ -85,6 +114,9 @@ async function openEdit(row: SiteListItem): Promise<void> {
     supportsOpenAi: detail.supportsOpenAi,
     supportsAnthropic: detail.supportsAnthropic,
     supportsResponses: detail.supportsResponses,
+    clientEmulation: detail.clientEmulation || 'None',
+    extraHeadersJson: detail.extraHeadersJson || '',
+    egressProxyUrl: detail.egressProxyUrl || '',
     isEnabled: detail.isEnabled
   })
   showModal.value = true
@@ -99,6 +131,29 @@ async function handleSave(): Promise<void> {
     message.warning('密钥不能为空')
     return
   }
+
+  // 校验自定义 Header JSON 合法性
+  if (form.extraHeadersJson && form.extraHeadersJson.trim()) {
+    try {
+      const parsed = JSON.parse(form.extraHeadersJson.trim())
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        message.error('自定义请求头必须是一个合法的 JSON 键值对对象 (如: {"Header-Name": "Header-Value"})')
+        return
+      }
+    } catch (e) {
+      message.error(`自定义请求头 JSON 格式无效: ${(e as Error).message}`)
+      return
+    }
+  }
+
+  // 出口网络代理格式友好提示
+  if (form.egressProxyUrl && form.egressProxyUrl.trim()) {
+    const proxy = form.egressProxyUrl.trim().toLowerCase()
+    if (!proxy.startsWith('http://') && !proxy.startsWith('https://') && !proxy.startsWith('socks5://') && !proxy.startsWith('socks4://')) {
+      message.warning('出口网络代理地址建议以 http://, https:// 或 socks5:// 开头 (例如: http://127.0.0.1:7890)')
+    }
+  }
+
   saving.value = true
   try {
     if (editingId.value) {
@@ -703,6 +758,24 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
     }
   },
   {
+    title: '出口代理',
+    key: 'egressProxyUrl',
+    width: 120,
+    render: (row) => {
+      if (row.egressProxyUrl) {
+        return h(
+          NTooltip,
+          null,
+          {
+            trigger: () => h(NTag, { size: 'small', type: 'info', bordered: false }, () => '🛡️ 代理'),
+            default: () => `出口代理: ${row.egressProxyUrl}`
+          }
+        )
+      }
+      return h('span', { style: 'color: var(--text-tertiary)' }, '-')
+    }
+  },
+  {
     title: '状态',
     key: 'isEnabled',
     width: 80,
@@ -754,7 +827,10 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
   }
 ])
 
-onMounted(loadSites)
+onMounted(() => {
+  loadSites()
+  loadProxyProfiles()
+})
 onBeforeUnmount(handleCatalogClosed)
 </script>
 
@@ -785,7 +861,7 @@ onBeforeUnmount(handleCatalogClosed)
         :loading="loading"
         :row-key="(row: SiteListItem) => row.id"
         :pagination="{ pageSize: 20 }"
-        :scroll-x="1240"
+        :scroll-x="1420"
         size="small"
         striped
       />
@@ -831,6 +907,28 @@ onBeforeUnmount(handleCatalogClosed)
             </NSpace>
           </NSpace>
         </NFormItem>
+
+
+
+        <NFormItem>
+          <template #label>
+            <NSpace align="center" :size="4">
+              <span>站点出口网络代理 (Egress Proxy)</span>
+              <NTooltip trigger="hover">
+                <template #trigger><span class="site-protocol-help-trigger">?</span></template>
+                为该站点指定专属网络出口代理（支持 HTTP / SOCKS5）。用于规避机房 IP 限制或配合住宅代理池防封。默认无代理直连。
+              </NTooltip>
+            </NSpace>
+          </template>
+          <NSelect
+            v-model:value="form.egressProxyUrl"
+            :options="proxyProfileOptions"
+            filterable
+            tag
+            placeholder="选择代理节点（留空或直连则不使用代理）"
+          />
+        </NFormItem>
+
         <NFormItem label="启用">
           <NSwitch v-model:value="form.isEnabled" />
         </NFormItem>
@@ -1318,5 +1416,28 @@ onBeforeUnmount(handleCatalogClosed)
   .catalog-model-row {
     grid-template-columns: 1fr;
   }
+}
+
+.emulation-hint-box {
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border-color-global, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-color-secondary);
+}
+
+.placeholder-chips-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.chips-label {
+  color: var(--text-color-secondary);
+  font-size: 12px;
 }
 </style>

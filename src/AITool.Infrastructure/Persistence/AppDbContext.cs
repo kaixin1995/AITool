@@ -101,6 +101,8 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<SystemRuntimeSettings> SystemRuntimeSettings => _client.Queryable<SystemRuntimeSettings>();
     public ISugarQueryable<CompatibilityProfile> CompatibilityProfiles => _client.Queryable<CompatibilityProfile>();
     public ISugarQueryable<SqlMigrationExecution> SqlMigrationExecutions => _client.Queryable<SqlMigrationExecution>();
+    public ISugarQueryable<HeaderProfile> HeaderProfiles => _client.Queryable<HeaderProfile>();
+    public ISugarQueryable<ProxyProfile> ProxyProfiles => _client.Queryable<ProxyProfile>();
 
     /// <summary>
     /// 由 DI 注入的 SqlSugar 客户端构造。
@@ -269,31 +271,26 @@ public static class SqlSugarSetup
             typeof(SystemRuntimeSettings),
             typeof(CompatibilityProfile),
             typeof(SqlMigrationExecution),
+            typeof(HeaderProfile),
+            typeof(ProxyProfile),
             typeof(AITool.Domain.Auth.RefreshTokenRecord));
 
         // 一次性数据迁移：把老站点的 Site.ApiKey 复制成一条默认 SiteKey，保证老站点立即具备多 Key 能力。
         // 仅迁移用户自建站点（ManagedSource 为空且 ApiKey 非空）；Codex 托管站点不迁移，仍直接用 Site.ApiKey。
         // 迁移幂等：已存在 SiteKey 记录的站点跳过，可重复执行。
         MigrateLegacySiteKeys(db);
+
+        // 幂等回填存量 Codex 和 Google 托管站点的 ClientEmulation
+        MigrateLegacyClientEmulation(db);
     }
 
     /// <summary>
     /// 把老站点的 <see cref="Site.ApiKey"/> 迁移为一条默认 <see cref="SiteKey"/>。
-    /// <para>
-    /// 仅处理用户自建站点（<see cref="Site.ManagedSource"/> 为空且 ApiKey 非空）。
-    /// Codex 托管站点不迁移——它们恰好一个 token，仍直接使用 Site.ApiKey，
-    /// 缓存层对没有 SiteKey 的站点会回退用 Site.ApiKey 产出单条候选，行为不变。
-    /// </para>
-    /// <para>
-    /// 幂等：通过检查"目标站点是否已有任意 SiteKey"避免重复迁移，可安全多次执行。
-    /// 迁移失败不影响启动（异常被吞掉并记录到控制台），下次启动会重试。
-    /// </para>
     /// </summary>
     private static void MigrateLegacySiteKeys(ISqlSugarClient db)
     {
         try
         {
-            // 仅查自建站点且 ApiKey 非空
             var legacySites = db.Queryable<Site>()
                 .Where(x => SqlFunc.IsNullOrEmpty(x.ManagedSource) && !SqlFunc.IsNullOrEmpty(x.ApiKey))
                 .Select(x => new { x.Id, x.ApiKey })
@@ -303,7 +300,6 @@ public static class SqlSugarSetup
                 return;
             }
 
-            // 已有 SiteKey 记录的站点集合，避免重复迁移
             var migratedSiteIds = db.Queryable<SiteKey>()
                 .Select(x => x.SiteId)
                 .ToList()
@@ -336,8 +332,52 @@ public static class SqlSugarSetup
         }
         catch (Exception ex)
         {
-            // 迁移失败不阻断启动，下次启动会重试（幂等）
             Console.WriteLine($"[Migration] 老站点 SiteKey 迁移失败，将在下次启动重试：{ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 幂等回填存量 Codex / Google 托管站点的映射 ClientEmulation（Issue 4 修复）。
+    /// </summary>
+    private static void MigrateLegacyClientEmulation(ISqlSugarClient db)
+    {
+        try
+        {
+            // 回填 Codex 映射
+            var codexSites = db.Queryable<Site>()
+                .Where(s => s.ManagedSource == "Codex")
+                .Select(s => s.Id)
+                .ToList();
+            if (codexSites.Count > 0)
+            {
+                var updatedCodex = db.Updateable<SiteModelMapping>()
+                    .SetColumns(m => m.ClientEmulation == ClientEmulationConstants.CodexCli)
+                    .Where(m => codexSites.Contains(m.SiteId) && (m.ClientEmulation == null || m.ClientEmulation == "" || m.ClientEmulation == ClientEmulationConstants.None))
+                    .ExecuteCommand();
+                if (updatedCodex > 0)
+                {
+                    Console.WriteLine($"[Migration] 已为 {updatedCodex} 条存量 Codex 映射回填 ClientEmulation={ClientEmulationConstants.CodexCli}。");
+                }
+            }
+
+            // 回填 Google 映射
+            var googleSites = db.Queryable<Site>()
+                .Where(s => s.ManagedSource == "Google")
+                .Select(s => new { s.Id, s.BaseUrl, s.Name })
+                .ToList();
+            foreach (var gSite in googleSites)
+            {
+                var isAntigravity = AITool.Protocol.ProxyProtocolBridge.IsAntigravityTarget(gSite.BaseUrl);
+                var targetEmulation = isAntigravity ? ClientEmulationConstants.Antigravity : ClientEmulationConstants.GeminiCli;
+                db.Updateable<SiteModelMapping>()
+                    .SetColumns(m => m.ClientEmulation == targetEmulation)
+                    .Where(m => m.SiteId == gSite.Id && (m.ClientEmulation == null || m.ClientEmulation == "" || m.ClientEmulation == ClientEmulationConstants.None))
+                    .ExecuteCommand();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Migration] 存量客户端仿真回填失败，将在下次启动重试：{ex.Message}");
         }
     }
 }

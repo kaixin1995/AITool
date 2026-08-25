@@ -3,11 +3,13 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   NCard, NButton, NSpace, NTag, NModal, NForm, NFormItem, NInput, NInputNumber,
-  NSwitch, NSelect, NPopconfirm, NEmpty, NSpin, NTabs, NTabPane, useMessage
+  NSwitch, NSelect, NPopconfirm, NEmpty, NSpin, NTabs, NTabPane, NTooltip, useMessage
 } from 'naive-ui'
 import * as modelsApi from '@/api/models'
 import * as compatApi from '@/api/compatibility'
 import type { ModelListItem, ModelPayload } from '@/api/models'
+import { getHeaderProfiles, type HeaderProfile } from '@/api/headerProfiles'
+import { getProxyProfiles, type ProxyProfile } from '@/api/proxyProfiles'
 import PageHeader from '@/components/PageHeader.vue'
 import ModelPricingPanel from '@/components/ModelPricingPanel.vue'
 import {
@@ -45,16 +47,76 @@ const form = reactive<ModelPayload>({
   displayName: '',
   isEnabled: true,
   overrideReasoningEffort: '',
-  compatibilityProfileId: null
+  compatibilityProfileId: null,
+  clientEmulation: 'None',
+  extraHeadersJson: ''
 })
 const saving = ref(false)
+const headerProfiles = ref<HeaderProfile[]>([])
+const proxyProfiles = ref<ProxyProfile[]>([])
+
+async function loadHeaderProfiles() {
+  try {
+    headerProfiles.value = await getHeaderProfiles()
+  } catch {}
+}
+
+async function loadProxyProfiles() {
+  try {
+    proxyProfiles.value = await getProxyProfiles()
+  } catch {}
+}
+
+const proxyProfileOptions = computed(() => {
+  const options = [{ label: '直连 (默认不使用代理)', value: '' }]
+  if (proxyProfiles.value && proxyProfiles.value.length > 0) {
+    for (const p of proxyProfiles.value) {
+      if (p.isEnabled) {
+        options.push({
+          label: `🌐 ${p.name} (${p.proxyUrl})`,
+          value: p.proxyUrl
+        })
+      }
+    }
+  }
+  return options
+})
+
+const clientEmulationOptions = computed(() => {
+  const options = [{ label: '无 (None - 标准API直连)', value: 'None' }]
+  if (headerProfiles.value && headerProfiles.value.length > 0) {
+    for (const p of headerProfiles.value) {
+      if (p.isEnabled) {
+        options.push({
+          label: p.isBuiltIn ? `⚡ [系统] ${p.name}` : `💡 [自定义] ${p.name}`,
+          value: p.key
+        })
+      }
+    }
+  } else {
+    options.push(
+      { label: '⚡ OpenCode CLI (opencode/1.15.0)', value: 'OpenCode' },
+      { label: '⚡ Claude Code CLI (claude-code/0.2.29)', value: 'ClaudeCode' },
+      { label: '⚡ GitHub Copilot / Codex (0.133.0)', value: 'CodexCli' },
+      { label: '⚡ Google Antigravity CLI', value: 'Antigravity' },
+      { label: '⚡ Google Gemini CLI', value: 'GeminiCli' }
+    )
+  }
+  options.push({ label: '自定义特征 (Custom)', value: 'Custom' })
+  return options
+})
 
 // 映射管理（嵌入编辑弹窗，仅编辑模式可见）
 const modelDetail = ref<modelsApi.ModelDetail | null>(null)
 const newMappingSiteId = ref<string | null>(null)
 const newMappingRemoteName = ref('')
+const newMappingMaxConcurrency = ref(0)
+const newMappingClientEmulation = ref('None')
+const newMappingExtraHeadersJson = ref('')
+const newMappingEgressProxyUrl = ref('')
 const newMappingEnabled = ref(true)
 const mappingLoading = ref(false)
+const mappingUpdating = ref<Record<string, boolean>>({})
 // 详情请求序号，避免快速切换模型时旧响应覆盖当前弹窗。
 let modelDetailRequestId = 0
 
@@ -114,13 +176,27 @@ function openCreate(): void {
   editingId.value = null
   activeEditorTab.value = 'basic'
   modelDetailRequestId++
-  Object.assign(form, { modelName: '', displayName: '', isEnabled: true, overrideReasoningEffort: '', compatibilityProfileId: null })
+  Object.assign(form, {
+    modelName: '',
+    displayName: '',
+    isEnabled: true,
+    overrideReasoningEffort: '',
+    compatibilityProfileId: null,
+    clientEmulation: 'None',
+    extraHeadersJson: ''
+  })
   // 新建模式不展示映射区块，清理可能残留的上一次编辑数据
   modelDetail.value = null
   newMappingSiteId.value = null
   newMappingRemoteName.value = ''
+  newMappingMaxConcurrency.value = 0
+  newMappingClientEmulation.value = 'None'
+  newMappingExtraHeadersJson.value = ''
+  newMappingEgressProxyUrl.value = ''
   newMappingEnabled.value = true
   mappingLoading.value = false
+  loadHeaderProfiles()
+  loadProxyProfiles()
   showModal.value = true
 }
 
@@ -142,8 +218,12 @@ async function openEdit(model: ModelListItem): Promise<void> {
     displayName: model.displayName,
     isEnabled: model.isEnabled,
     overrideReasoningEffort: model.overrideReasoningEffort,
-    compatibilityProfileId: model.compatibilityProfileId
+    compatibilityProfileId: model.compatibilityProfileId,
+    clientEmulation: 'None',
+    extraHeadersJson: ''
   })
+  loadHeaderProfiles()
+  loadProxyProfiles()
   showModal.value = true
   // 同时加载映射数据，供弹窗内映射区块展示与编辑
   await loadModelDetail(model)
@@ -152,6 +232,10 @@ async function openEdit(model: ModelListItem): Promise<void> {
 async function loadModelDetail(model: ModelListItem): Promise<void> {
   newMappingSiteId.value = null
   newMappingRemoteName.value = model.modelName
+  newMappingMaxConcurrency.value = 0
+  newMappingClientEmulation.value = 'None'
+  newMappingExtraHeadersJson.value = ''
+  newMappingEgressProxyUrl.value = ''
   newMappingEnabled.value = true
   await refreshModelDetail(model.id)
 }
@@ -163,6 +247,8 @@ async function refreshModelDetail(modelId: string): Promise<void> {
     const detail = await modelsApi.getModelDetail(modelId)
     if (requestId === modelDetailRequestId && editingId.value === modelId) {
       modelDetail.value = detail
+      form.clientEmulation = detail.clientEmulation || 'None'
+      form.extraHeadersJson = detail.extraHeadersJson || ''
     }
   } finally {
     if (requestId === modelDetailRequestId) {
@@ -175,6 +261,18 @@ async function handleSave(): Promise<void> {
   if (!form.modelName.trim()) {
     message.warning('模型名称不能为空')
     return
+  }
+  if (form.extraHeadersJson && form.extraHeadersJson.trim()) {
+    try {
+      const parsed = JSON.parse(form.extraHeadersJson.trim())
+      if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
+        message.warning('默认自定义请求头必须是合法的 JSON 对象，例如 {"User-Agent": "..."}')
+        return
+      }
+    } catch {
+      message.warning('默认自定义请求头 JSON 格式无效，请检查')
+      return
+    }
   }
   // 空字符串（选"无"）转 null，与后端 Guid? 一致。
   const payload = { ...form, compatibilityProfileId: form.compatibilityProfileId || null }
@@ -292,19 +390,79 @@ async function handleSaveVendorCatalog(): Promise<void> {
 
 async function handleAddMapping(): Promise<void> {
   if (!editingId.value || !newMappingSiteId.value || !newMappingRemoteName.value.trim()) {
-    message.warning('请选择站点并填写模型名'); return
+    message.warning('请选择站点并填写模型名')
+    return
+  }
+  if (newMappingExtraHeadersJson.value && newMappingExtraHeadersJson.value.trim()) {
+    try {
+      const parsed = JSON.parse(newMappingExtraHeadersJson.value.trim())
+      if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
+        message.warning('自定义请求头必须是合法的 JSON 对象，例如 {"User-Agent": "..."}')
+        return
+      }
+    } catch {
+      message.warning('自定义请求头 JSON 格式无效，请检查')
+      return
+    }
   }
   const modelId = editingId.value
   try {
-    await modelsApi.addModelMapping(modelId, newMappingSiteId.value, newMappingRemoteName.value.trim(), newMappingEnabled.value)
-    message.success('关联已添加')
+    await modelsApi.addModelMapping(
+      modelId,
+      newMappingSiteId.value,
+      newMappingRemoteName.value.trim(),
+      newMappingMaxConcurrency.value,
+      newMappingClientEmulation.value,
+      newMappingExtraHeadersJson.value.trim() || undefined,
+      newMappingEgressProxyUrl.value.trim() || undefined,
+      newMappingEnabled.value
+    )
+    message.success('站点关联已添加')
     if (editingId.value === modelId) {
       await refreshModelDetail(modelId)
       newMappingSiteId.value = null
+      newMappingRemoteName.value = form.modelName
+      newMappingMaxConcurrency.value = 0
+      newMappingClientEmulation.value = 'None'
+      newMappingExtraHeadersJson.value = ''
+      newMappingEgressProxyUrl.value = ''
       newMappingEnabled.value = true
     }
     await loadModels()
-  } catch (e) { message.error((e as Error).message) }
+  } catch (e) {
+    message.error((e as Error).message)
+  }
+}
+
+async function handleSaveMapping(mapping: modelsApi.ModelSiteMapping): Promise<void> {
+  if (mapping.extraHeadersJson && mapping.extraHeadersJson.trim()) {
+    try {
+      const parsed = JSON.parse(mapping.extraHeadersJson.trim())
+      if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
+        message.warning('自定义请求头必须是合法的 JSON 对象，例如 {"User-Agent": "..."}')
+        return
+      }
+    } catch {
+      message.warning('自定义请求头 JSON 格式无效，请检查')
+      return
+    }
+  }
+  mappingUpdating.value[mapping.mappingId] = true
+  try {
+    await modelsApi.updateModelMapping(mapping.mappingId, {
+      remoteModelName: mapping.remoteModelName,
+      isEnabled: mapping.isEnabled,
+      maxConcurrency: mapping.maxConcurrency,
+      clientEmulation: mapping.clientEmulation || 'None',
+      extraHeadersJson: mapping.extraHeadersJson?.trim() || undefined,
+      egressProxyUrl: mapping.egressProxyUrl?.trim() || undefined
+    })
+    message.success(`站点【${mapping.siteName}】映射配置已保存`)
+  } catch (e) {
+    message.error((e as Error).message)
+  } finally {
+    mappingUpdating.value[mapping.mappingId] = false
+  }
 }
 
 async function handleUpdateMappingConcurrency(mapping: modelsApi.ModelSiteMapping, value: number | null): Promise<void> {
@@ -328,7 +486,11 @@ function modelStatusType(model: ModelListItem): 'success' | 'default' {
   return model.isEnabled ? 'success' : 'default'
 }
 
-onMounted(loadModels)
+onMounted(() => {
+  loadModels()
+  loadHeaderProfiles()
+  loadProxyProfiles()
+})
 </script>
 
 <template>
@@ -483,9 +645,12 @@ onMounted(loadModels)
         <NTabs v-model:value="activeEditorTab" type="line" animated class="model-editor-tabs">
           <NTabPane name="basic" tab="基础设置">
             <div class="editor-tab-intro">
-              <div>
-                <div class="editor-tab-title">模型定义</div>
-                <div class="editor-tab-description">维护模型在管理后台中的统一名称、展示方式和请求行为。</div>
+              <div class="editor-tab-title">
+                模型定义
+                <NTooltip trigger="hover">
+                  <template #trigger><span class="tip-icon">?</span></template>
+                  维护模型在管理后台中的统一名称、展示方式和请求行为。
+                </NTooltip>
               </div>
               <NTag :type="form.isEnabled ? 'success' : 'default'" :bordered="false" round>
                 {{ form.isEnabled ? '当前启用' : '当前禁用' }}
@@ -495,10 +660,13 @@ onMounted(loadModels)
             <NForm label-placement="top" class="model-editor-form">
               <section class="editor-section">
                 <div class="editor-section-heading">
-                  <div>
-                    <h4>基本信息</h4>
-                    <p>模型名称用于路由匹配，显示名称用于页面展示。</p>
-                  </div>
+                  <h4>
+                    基本信息
+                    <NTooltip trigger="hover">
+                      <template #trigger><span class="tip-icon">?</span></template>
+                      模型名称用于路由匹配，显示名称用于页面展示。
+                    </NTooltip>
+                  </h4>
                 </div>
                 <div class="model-form-grid model-form-grid-primary">
                   <NFormItem label="模型名称（唯一）" required>
@@ -512,10 +680,13 @@ onMounted(loadModels)
 
               <section class="editor-section">
                 <div class="editor-section-heading">
-                  <div>
-                    <h4>请求策略</h4>
-                    <p>可选择统一覆盖思考等级，或为该模型指定兼容规则集。</p>
-                  </div>
+                  <h4>
+                    请求策略
+                    <NTooltip trigger="hover">
+                      <template #trigger><span class="tip-icon">?</span></template>
+                      可选择统一覆盖思考等级，或为该模型指定兼容规则集。
+                    </NTooltip>
+                  </h4>
                 </div>
                 <div class="model-form-grid model-form-grid-secondary">
                   <NFormItem label="强制思考等级（留空=透传）">
@@ -531,10 +702,34 @@ onMounted(loadModels)
                 </div>
               </section>
 
+              <section class="editor-section">
+                <div class="editor-section-heading">
+                  <h4>
+                    客户端特征模拟 / 请求头方案（模型默认）
+                    <NTooltip trigger="hover">
+                      <template #trigger><span class="tip-icon">?</span></template>
+                      为该模型配置全局默认客户端身份伪装与请求头模板。可在调试工具「请求头模板库」中自由添加或修改方案。
+                    </NTooltip>
+                  </h4>
+                </div>
+                <div class="model-form-grid model-form-grid-secondary">
+                  <NFormItem label="默认请求头方案">
+                    <NSelect
+                      v-model:value="form.clientEmulation"
+                      :options="clientEmulationOptions"
+                      placeholder="选择特征模拟与请求头方案（默认无）"
+                    />
+                  </NFormItem>
+                </div>
+              </section>
+
               <section class="editor-status-card">
-                <div>
-                  <div class="editor-status-title">启用模型</div>
-                  <div class="editor-status-description">禁用后模型不会出现在可用模型和路由候选中。</div>
+                <div class="editor-status-title">
+                  启用模型
+                  <NTooltip trigger="hover">
+                    <template #trigger><span class="tip-icon">?</span></template>
+                    禁用后模型不会出现在可用模型和路由候选中。
+                  </NTooltip>
                 </div>
                 <NSwitch v-model:value="form.isEnabled" />
               </section>
@@ -543,9 +738,12 @@ onMounted(loadModels)
 
           <NTabPane name="mappings" tab="站点映射" :disabled="!isEditMode">
             <div class="editor-tab-intro">
-              <div>
-                <div class="editor-tab-title">站点映射</div>
-                <div class="editor-tab-description">为当前模型配置不同站点上的远端模型名和独立并发上限。</div>
+              <div class="editor-tab-title">
+                站点映射
+                <NTooltip trigger="hover">
+                  <template #trigger><span class="tip-icon">?</span></template>
+                  为当前模型配置不同站点（含普通站点与 Google / Codex 等 OAuth 托管站点）的远端模型名、最大并发与专属模拟特征。
+                </NTooltip>
               </div>
               <NTag v-if="modelDetail" type="info" :bordered="false" round>
                 {{ modelDetail.siteMappings.length }} 个关联
@@ -556,61 +754,115 @@ onMounted(loadModels)
               <div class="mapping-editor-stack">
                 <section class="mapping-list-panel editor-section">
                   <div class="editor-section-heading">
-                    <div>
-                      <h4>已关联站点</h4>
-                      <p>每个站点可以使用不同的远端模型名，并单独设置最大并发。</p>
-                    </div>
+                    <h4>
+                      已关联站点
+                      <NTooltip trigger="hover">
+                        <template #trigger><span class="tip-icon">?</span></template>
+                        每个站点映射可独立配置最大并发、客户端特征伪装与专属出口代理，修改后点击「保存配置」生效。
+                      </NTooltip>
+                    </h4>
                   </div>
                   <NEmpty v-if="!modelDetail || modelDetail.siteMappings.length === 0" description="暂无关联站点" size="small" />
-                  <div v-else class="mapping-list">
-                    <div v-for="m in modelDetail.siteMappings" :key="m.mappingId" class="mapping-row">
-                      <div class="mapping-row-main">
-                        <div class="mapping-site-line">
+                  <div v-else class="mapping-cards-list">
+                    <div v-for="m in modelDetail.siteMappings" :key="m.mappingId" class="mapping-card-item">
+                      <div class="mapping-card-header">
+                        <div class="mapping-card-title-group">
                           <strong class="mapping-site-name">{{ m.siteName }}</strong>
                           <NTag size="small" type="info" :bordered="false">{{ m.remoteModelName }}</NTag>
-                          <NTag v-if="!m.isEnabled" size="tiny" :bordered="false">禁用</NTag>
+                          <NTag v-if="!m.isEnabled" size="tiny" type="warning" :bordered="false">已禁用</NTag>
+                          <NTag v-else-if="m.clientEmulation && m.clientEmulation !== 'None'" size="tiny" type="success" :bordered="false">
+                            模拟: {{ m.clientEmulation }}
+                          </NTag>
                         </div>
-                        <div class="mapping-concurrency-line">
-                          <span class="mapping-field-label">最大并发</span>
-                          <NInputNumber v-model:value="m.maxConcurrency" size="small" :min="0" :precision="0" placeholder="0=不限" class="mapping-concurrency-input" />
-                          <NButton size="small" secondary @click="handleUpdateMappingConcurrency(m, m.maxConcurrency)">保存</NButton>
+                        <div class="mapping-card-header-actions">
+                          <NSwitch v-model:value="m.isEnabled" size="small" />
+                          <NButton size="small" type="primary" secondary :loading="mappingUpdating[m.mappingId]" @click="handleSaveMapping(m)">
+                            保存配置
+                          </NButton>
+                          <NPopconfirm @positive-click="handleDeleteMapping(m.mappingId)">
+                            <template #trigger><NButton size="small" quaternary type="error">删除</NButton></template>
+                            删除该站点关联映射？
+                          </NPopconfirm>
                         </div>
                       </div>
-                      <NPopconfirm @positive-click="handleDeleteMapping(m.mappingId)">
-                        <template #trigger><NButton size="small" quaternary type="error">删除</NButton></template>
-                        删除该关联？
-                      </NPopconfirm>
+                      <div class="mapping-card-body">
+                        <div class="mapping-fields-row">
+                          <div class="mapping-field-col">
+                            <span class="mapping-field-label">远端模型名</span>
+                            <NInput v-model:value="m.remoteModelName" size="small" placeholder="站点接受的模型名" />
+                          </div>
+                          <div class="mapping-field-col mapping-field-col-num">
+                            <span class="mapping-field-label">最大并发 (0=不限)</span>
+                            <NInputNumber v-model:value="m.maxConcurrency" size="small" :min="0" :precision="0" placeholder="0=不限" />
+                          </div>
+                          <div class="mapping-field-col">
+                            <span class="mapping-field-label">客户端特征模拟</span>
+                            <NSelect v-model:value="m.clientEmulation" :options="clientEmulationOptions" size="small" />
+                          </div>
+                          <div class="mapping-field-col">
+                            <span class="mapping-field-label">专属出口网络代理 (默认直连)</span>
+                            <NSelect
+                              v-model:value="m.egressProxyUrl"
+                              :options="proxyProfileOptions"
+                              filterable
+                              tag
+                              size="small"
+                              placeholder="选择代理节点（留空或直连则不使用代理）"
+                            />
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   </div>
                 </section>
 
                 <section class="mapping-add-panel editor-section">
                   <div class="editor-section-heading">
-                    <div>
-                      <h4>添加关联</h4>
-                      <p>选择一个可用站点，并填写该站点实际接受的模型名。</p>
-                    </div>
+                    <h4>
+                      添加关联站点
+                      <NTooltip trigger="hover">
+                        <template #trigger><span class="tip-icon">?</span></template>
+                        选择一个可用站点，并配置该模型在站点上的映射参数与特征模拟。
+                      </NTooltip>
+                    </h4>
                   </div>
-                  <NForm label-placement="top" class="mapping-add-form">
-                    <NFormItem label="站点" required>
-                      <NSelect
-                        v-model:value="newMappingSiteId"
-                        :options="modelDetail?.availableSites.map(s => ({ label: s.name, value: s.id })) ?? []"
-                        placeholder="选择站点"
-                      />
-                    </NFormItem>
-                    <NFormItem label="站点上的模型名" required>
-                      <NInput v-model:value="newMappingRemoteName" placeholder="如 gpt-4o-mini" />
-                    </NFormItem>
-                    <NFormItem label="状态" class="mapping-enabled-item">
-                      <div class="mapping-enabled-line">
-                        <NSwitch v-model:value="newMappingEnabled" />
-                        <span>启用映射</span>
-                      </div>
-                    </NFormItem>
-                    <NFormItem label=" " class="mapping-add-action">
-                      <NButton type="primary" class="mapping-add-button" @click="handleAddMapping">添加关联</NButton>
-                    </NFormItem>
+                  <NForm label-placement="top" class="mapping-add-form-new">
+                    <div class="mapping-add-grid-primary">
+                      <NFormItem label="站点" required>
+                        <NSelect
+                          v-model:value="newMappingSiteId"
+                          :options="modelDetail?.availableSites.map(s => ({ label: s.name, value: s.id })) ?? []"
+                          placeholder="选择站点"
+                        />
+                      </NFormItem>
+                      <NFormItem label="站点上的模型名" required>
+                        <NInput v-model:value="newMappingRemoteName" placeholder="如 gpt-4o-mini" />
+                      </NFormItem>
+                      <NFormItem label="最大并发">
+                        <NInputNumber v-model:value="newMappingMaxConcurrency" :min="0" :precision="0" placeholder="0=不限" />
+                      </NFormItem>
+                      <NFormItem label="客户端特征模拟">
+                        <NSelect v-model:value="newMappingClientEmulation" :options="clientEmulationOptions" />
+                      </NFormItem>
+                      <NFormItem label="专属出口代理 (默认直连)">
+                        <NSelect
+                          v-model:value="newMappingEgressProxyUrl"
+                          :options="proxyProfileOptions"
+                          filterable
+                          tag
+                          placeholder="选择代理节点（留空或直连则不使用代理）"
+                        />
+                      </NFormItem>
+                      <NFormItem label="启用状态" class="mapping-enabled-item">
+                        <div class="mapping-enabled-line">
+                          <NSwitch v-model:value="newMappingEnabled" />
+                          <span>启用映射</span>
+                        </div>
+                      </NFormItem>
+                      <NFormItem label=" " class="mapping-add-action">
+                        <NButton type="primary" class="mapping-add-button" @click="handleAddMapping">＋ 添加关联</NButton>
+                      </NFormItem>
+                    </div>
                   </NForm>
                 </section>
               </div>
@@ -1254,28 +1506,102 @@ onMounted(loadModels)
   min-width: 0;
 }
 
-.mapping-list {
-  max-height: min(42vh, 420px);
+.mapping-cards-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-height: min(48vh, 520px);
   padding-right: 4px;
   overflow-y: auto;
 }
 
-.mapping-add-form {
-  display: grid;
-  grid-template-columns: minmax(180px, 240px) minmax(200px, 300px) 130px 120px;
-  gap: 14px 16px;
-  align-items: start;
-  justify-content: start;
+.mapping-card-item {
+  padding: 14px 16px;
+  border: 1px solid var(--border-color-global);
+  border-radius: 10px;
+  background: var(--bg-card-secondary, var(--bg-card));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
 }
 
-.mapping-add-form :deep(.n-form-item) {
+.mapping-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-color-global);
+}
+
+.mapping-card-title-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.mapping-site-name {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mapping-card-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mapping-card-body {
+  padding-top: 12px;
+}
+
+.mapping-fields-row {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.mapping-field-col {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mapping-field-full {
+  grid-column: 1 / -1;
+}
+
+.mapping-field-label {
+  color: var(--text-color-secondary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+
+.mapping-add-form-new {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.mapping-add-grid-primary {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(160px, 1.2fr) 130px minmax(160px, 1.2fr);
+  gap: 12px;
+}
+
+.mapping-add-grid-secondary {
+  display: grid;
+  grid-template-columns: 1.2fr 1.5fr 120px 120px;
+  gap: 12px;
+  align-items: end;
+}
+
+.mapping-add-grid-primary :deep(.n-form-item),
+.mapping-add-grid-secondary :deep(.n-form-item) {
   min-width: 0;
   margin-bottom: 0;
-}
-
-/* 统一复用 NFormItem 的标签和控件间距，避免自定义标签与 Naive UI 表单项错位。 */
-.mapping-add-form :deep(.n-form-item-label) {
-  white-space: nowrap;
 }
 
 .mapping-enabled-line {
@@ -1294,58 +1620,6 @@ onMounted(loadModels)
 .mapping-add-button {
   width: 100%;
   min-height: 34px;
-}
-
-.mapping-row {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px 0;
-  border-bottom: 1px solid var(--border-color-global);
-}
-
-.mapping-row:first-child {
-  padding-top: 0;
-}
-
-.mapping-row:last-child {
-  padding-bottom: 0;
-  border-bottom: 0;
-}
-
-.mapping-row-main {
-  flex: 1;
-  min-width: 0;
-}
-
-.mapping-site-line,
-.mapping-concurrency-line,
-.mapping-enabled-line {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.mapping-site-line {
-  flex-wrap: wrap;
-  margin-bottom: 10px;
-}
-
-.mapping-site-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.mapping-field-label,
-.mapping-enabled-line {
-  color: var(--text-color-secondary);
-  font-size: 12px;
-}
-
-.mapping-concurrency-input {
-  width: 132px;
 }
 
 @media (max-width: 768px) {
@@ -1395,34 +1669,25 @@ onMounted(loadModels)
 
   .model-form-grid-primary,
   .model-form-grid-secondary,
-  .mapping-add-form {
+  .mapping-fields-row,
+  .mapping-add-grid-primary,
+  .mapping-add-grid-secondary {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 560px) {
   .editor-tab-intro,
-  .editor-status-card {
+  .editor-status-card,
+  .mapping-card-header {
     align-items: stretch;
     flex-direction: column;
   }
 
   .editor-section,
-  .editor-status-card {
+  .editor-status-card,
+  .mapping-card-item {
     padding: 14px;
-  }
-
-  .mapping-concurrency-line {
-    align-items: stretch;
-    flex-wrap: wrap;
-  }
-
-  .mapping-concurrency-input {
-    flex: 1 1 120px;
-  }
-
-  .mapping-row {
-    gap: 8px;
   }
 }
 </style>

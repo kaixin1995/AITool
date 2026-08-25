@@ -49,6 +49,18 @@ public sealed class ModelLibraryItem
     public Guid? CompatibilityProfileId { get; set; }
 
     /// <summary>
+    /// 模型维度的默认客户端特征模拟预设（None | OpenCode | ClaudeCode | CodexCli | Antigravity | GeminiCli | Custom）。
+    /// </summary>
+    [SugarColumn(Length = 50, IsNullable = false)]
+    public string ClientEmulation { get; set; } = "None";
+
+    /// <summary>
+    /// 模型维度的默认自定义转发请求头（JSON 格式）。
+    /// </summary>
+    [SugarColumn(IsNullable = true, ColumnDataType = "text")]
+    public string? ExtraHeadersJson { get; set; }
+
+    /// <summary>
     /// 标记该模型当前是否启用，禁用后不再参与代理路由和检测任务。
     /// </summary>
     [SugarColumn(IsNullable = false)]

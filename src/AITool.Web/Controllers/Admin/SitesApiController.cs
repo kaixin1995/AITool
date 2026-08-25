@@ -4,6 +4,7 @@ using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using AITool.Web.Contracts;
 using AITool.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -106,6 +107,9 @@ public sealed class SitesApiController : ControllerBase
                 site.SupportsResponses,
                 site.ProtocolType),
             protocolType = site.ProtocolType,
+            clientEmulation = site.ClientEmulation,
+            extraHeadersJson = site.ExtraHeadersJson ?? string.Empty,
+            egressProxyUrl = site.EgressProxyUrl ?? string.Empty,
             isEnabled = site.IsEnabled,
             createdAt = site.CreatedAt,
             keys = siteKeys.Select(k => new
@@ -134,6 +138,10 @@ public sealed class SitesApiController : ControllerBase
         {
             return BadRequest(ApiResponse.Fail("站点密钥不能为空", "invalid_input"));
         }
+        if (!EgressProxyValidator.TryValidate(payload.EgressProxyUrl, out var createProxyError))
+        {
+            return BadRequest(ApiResponse.Fail(createProxyError, "invalid_egress_proxy"));
+        }
 
         var site = new Site
         {
@@ -148,6 +156,9 @@ public sealed class SitesApiController : ControllerBase
                 payload.SupportsOpenAi,
                 payload.SupportsAnthropic,
                 payload.SupportsResponses),
+            ClientEmulation = ClientEmulationConstants.Normalize(payload.ClientEmulation),
+            ExtraHeadersJson = string.IsNullOrWhiteSpace(payload.ExtraHeadersJson) ? null : payload.ExtraHeadersJson.Trim(),
+            EgressProxyUrl = string.IsNullOrWhiteSpace(payload.EgressProxyUrl) ? null : payload.EgressProxyUrl.Trim(),
             IsEnabled = payload.IsEnabled
         };
         _dbContext.Sites.Add(site);
@@ -177,6 +188,10 @@ public sealed class SitesApiController : ControllerBase
         {
             return BadRequest(ApiResponse.Fail("站点名称和基础地址不能为空", "invalid_input"));
         }
+        if (!EgressProxyValidator.TryValidate(payload.EgressProxyUrl, out var updateProxyError))
+        {
+            return BadRequest(ApiResponse.Fail(updateProxyError, "invalid_egress_proxy"));
+        }
 
         var site = await _dbContext.Sites.InSingleAsync(id);
         if (site is null || !string.IsNullOrEmpty(site.ManagedSource))
@@ -202,6 +217,9 @@ public sealed class SitesApiController : ControllerBase
             payload.SupportsAnthropic,
             payload.SupportsResponses);
         site.ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic, site.SupportsResponses);
+        site.ClientEmulation = ClientEmulationConstants.Normalize(payload.ClientEmulation);
+        site.ExtraHeadersJson = string.IsNullOrWhiteSpace(payload.ExtraHeadersJson) ? null : payload.ExtraHeadersJson.Trim();
+        site.EgressProxyUrl = string.IsNullOrWhiteSpace(payload.EgressProxyUrl) ? null : payload.EgressProxyUrl.Trim();
         site.IsEnabled = payload.IsEnabled;
 
         await _dbContext.UpdateAsync(site, cancellationToken);
@@ -509,6 +527,9 @@ public sealed class SitesApiController : ControllerBase
                     s.SupportsAnthropic,
                     s.SupportsResponses,
                     s.ProtocolType),
+                clientEmulation = s.ClientEmulation,
+                extraHeadersJson = s.ExtraHeadersJson,
+                egressProxyUrl = s.EgressProxyUrl,
                 keys = keysExport
             };
         });
@@ -548,6 +569,9 @@ public sealed class SitesApiController : ControllerBase
                     item.SupportsOpenAi,
                     item.SupportsAnthropic,
                     item.SupportsResponses),
+                ClientEmulation = ClientEmulationConstants.Normalize(item.ClientEmulation),
+                ExtraHeadersJson = string.IsNullOrWhiteSpace(item.ExtraHeadersJson) ? null : item.ExtraHeadersJson.Trim(),
+                EgressProxyUrl = string.IsNullOrWhiteSpace(item.EgressProxyUrl) ? null : item.EgressProxyUrl.Trim(),
                 IsEnabled = true
             };
             _dbContext.Sites.Add(site);
@@ -623,6 +647,9 @@ public sealed class SitesApiController : ControllerBase
                 site.SupportsResponses,
                 site.ProtocolType),
             protocolType = site.ProtocolType,
+            clientEmulation = site.ClientEmulation,
+            extraHeadersJson = site.ExtraHeadersJson,
+            egressProxyUrl = site.EgressProxyUrl,
             isEnabled = site.IsEnabled,
             createdAt = site.CreatedAt
         };
@@ -678,6 +705,18 @@ public sealed class SitePayload
     /// 是否支持 OpenAI Responses 原生接口。
     /// </summary>
     public bool SupportsResponses { get; set; }
+    /// <summary>
+    /// 客户端特征模拟预设类型（None | OpenCode | ClaudeCode | CodexCli | Antigravity | GeminiCli | Custom）。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+    /// <summary>
+    /// 自定义请求头 JSON 字符串。
+    /// </summary>
+    public string? ExtraHeadersJson { get; set; }
+    /// <summary>
+    /// 站点专用出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
     /// <summary>
     /// 是否启用（仅创建时生效）。
     /// </summary>

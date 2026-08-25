@@ -268,6 +268,7 @@ public sealed class CodexAccountProvisioner
                 RemoteModelName = slug,
                 LastStatus = "imported",
                 IsEnabled = true,
+                ClientEmulation = ClientEmulationConstants.CodexCli,
             });
         }
     }

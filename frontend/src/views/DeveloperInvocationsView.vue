@@ -24,6 +24,8 @@ import PageHeader from '@/components/PageHeader.vue'
 import ClientSimulator from './ClientSimulator.vue'
 import ProtocolDiagnosticsTab from './ProtocolDiagnosticsTab.vue'
 import DiagnosticDumpsTab from './DiagnosticDumpsTab.vue'
+import HeaderProfilesTab from './HeaderProfilesTab.vue'
+import ProxyProfilesTab from './ProxyProfilesTab.vue'
 import SqlMigrationsTab from './SqlMigrationsTab.vue'
 import DeveloperAiDiagnosisDrawer from './DeveloperAiDiagnosisDrawer.vue'
 import JsonDiffView from '@/components/JsonDiffView.vue'
@@ -723,6 +725,14 @@ onUnmounted(() => {
 
         <NTabPane name="simulator" tab="客户端模拟">
           <ClientSimulator />
+        </NTabPane>
+
+        <NTabPane name="header-presets" tab="请求头模板库">
+          <HeaderProfilesTab />
+        </NTabPane>
+
+        <NTabPane name="proxy-profiles" tab="网络代理池">
+          <ProxyProfilesTab />
         </NTabPane>
 
         <NTabPane name="sql-migrations" tab="SQL 迁移">

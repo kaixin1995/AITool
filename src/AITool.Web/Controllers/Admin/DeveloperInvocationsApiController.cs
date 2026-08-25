@@ -284,12 +284,17 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                 geminiProjectId: target.GoogleProjectId);
         }
 
-        var forwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(target.ExtraHeaders);
-        if (isGeminiRoute)
-        {
-            Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
-                forwardHeaders, target.SiteModelName, ProxyProtocolBridge.IsAntigravityTarget(target.BaseUrl));
-        }
+        var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(target.BaseUrl);
+        var effectiveEmulation = !string.IsNullOrWhiteSpace(target.ClientEmulation) && !string.Equals(target.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
+            ? target.ClientEmulation
+            : (isGeminiRoute ? (isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli) : Domain.Sites.ClientEmulationConstants.None);
+
+        var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
+            effectiveEmulation,
+            target.ExtraHeaders,
+            target.SiteModelName,
+            target.GoogleProjectId,
+            isAntigravity);
 
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
@@ -304,6 +309,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             RequestTimeoutSeconds = Math.Max(60, runtimeSettings.ProxyRequestTimeoutSeconds),
             RetryCount = 0,
             ForwardHeaders = forwardHeaders,
+            EgressProxyUrl = target.EgressProxyUrl,
             TargetPath = isGeminiRoute
                 ? "/v1internal:generateContent"
                 : string.Equals(target.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
@@ -426,16 +432,19 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
 
             var (hypothesis, explanation, adjustedPayload) = ParseRoundAiOutput(aiOutput, currentPayload);
 
-            // 发起真实上游试探调用
+            // 发起真实上游试探调用（Gemini 目标经引擎注入与主链路一致的客户端仿真头）
             var isGeminiRoute = string.Equals(testProtocol, "Gemini", StringComparison.OrdinalIgnoreCase);
             var isResponsesRoute = string.Equals(testProtocol, "Responses", StringComparison.OrdinalIgnoreCase);
+            var isTestAntigravity = ProxyProtocolBridge.IsAntigravityTarget(testBaseUrl);
 
-            var forwardHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            if (isGeminiRoute)
-            {
-                Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
-                    forwardHeaders, request.TargetModelName, ProxyProtocolBridge.IsAntigravityTarget(testBaseUrl));
-            }
+            var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
+                isGeminiRoute
+                    ? (isTestAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli)
+                    : Domain.Sites.ClientEmulationConstants.None,
+                extraHeaders: null,
+                request.TargetModelName,
+                projectId: null,
+                isTestAntigravity);
 
             var targetPath = isGeminiRoute
                 ? "/v1internal:generateContent"
@@ -671,12 +680,17 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                 geminiProjectId: target.GoogleProjectId);
         }
 
-        var forwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(target.ExtraHeaders);
-        if (isGeminiRoute)
-        {
-            Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
-                forwardHeaders, target.SiteModelName, ProxyProtocolBridge.IsAntigravityTarget(target.BaseUrl));
-        }
+        var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(target.BaseUrl);
+        var effectiveEmulation = !string.IsNullOrWhiteSpace(target.ClientEmulation) && !string.Equals(target.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
+            ? target.ClientEmulation
+            : (isGeminiRoute ? (isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli) : Domain.Sites.ClientEmulationConstants.None);
+
+        var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
+            effectiveEmulation,
+            target.ExtraHeaders,
+            target.SiteModelName,
+            target.GoogleProjectId,
+            isAntigravity);
 
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
@@ -691,6 +705,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             RequestTimeoutSeconds = Math.Max(60, runtimeSettings.ProxyRequestTimeoutSeconds),
             RetryCount = 0,
             ForwardHeaders = forwardHeaders,
+            EgressProxyUrl = target.EgressProxyUrl,
             TargetPath = isGeminiRoute
                 ? "/v1internal:generateContent"
                 : string.Equals(target.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)

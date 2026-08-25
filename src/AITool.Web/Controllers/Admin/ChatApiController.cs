@@ -530,12 +530,18 @@ public sealed class ChatApiController : ControllerBase
                         null, route.BaseUrl, null, isPassthrough: false, isCompact: false,
                         geminiProjectId: route.GoogleProjectId);
                 }
-                var chatForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(route.ExtraHeaders);
-                if (isGeminiRoute)
-                {
-                    Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
-                        chatForwardHeaders, route.SiteModelName, ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl));
-                }
+                var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl);
+                var effectiveEmulation = !string.IsNullOrWhiteSpace(route.ClientEmulation) && !string.Equals(route.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
+                    ? route.ClientEmulation
+                    : (isGeminiRoute ? (isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli) : Domain.Sites.ClientEmulationConstants.None);
+
+                var chatForwardHeaders = ClientEmulationEngine.ResolveHeaders(
+                    effectiveEmulation,
+                    route.ExtraHeaders,
+                    route.SiteModelName,
+                    route.GoogleProjectId,
+                    isAntigravity);
+
                 var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
                 {
                     TargetBaseUrl = route.BaseUrl,
@@ -547,11 +553,12 @@ public sealed class ChatApiController : ControllerBase
                     PreparedRequestBody = preparedRequestBody,
                     EnableStreaming = false,
                     RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
-                     RetryCount = runtimeSettings.ProxyRetryCount,
-                     ForwardHeaders = chatForwardHeaders,
-                     PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
-                     DisableTargetCredentialAsync = CreateCredentialDisableCallback(route.ManagedSource, route.SiteId),
-                     TargetPath = isGeminiRoute
+                    RetryCount = runtimeSettings.ProxyRetryCount,
+                    ForwardHeaders = chatForwardHeaders,
+                    EgressProxyUrl = route.EgressProxyUrl,
+                    PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
+                    DisableTargetCredentialAsync = CreateCredentialDisableCallback(route.ManagedSource, route.SiteId),
+                    TargetPath = isGeminiRoute
                         ? "/v1internal:generateContent"
                         : string.Equals(route.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
                             ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
@@ -713,7 +720,12 @@ public sealed class ChatApiController : ControllerBase
                 async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
                 async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
                 runtimeSettings.ProxyRequestTimeoutSeconds,
-                route.ExtraHeaders,
+                ClientEmulationEngine.ResolveHeaders(
+                    route.ClientEmulation,
+                    route.ExtraHeaders,
+                    route.SiteModelName,
+                    route.GoogleProjectId,
+                    ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)),
                 cancellationToken,
                 googleProjectId: route.GoogleProjectId);
 
@@ -933,12 +945,18 @@ public sealed class ChatApiController : ControllerBase
                 null, mapping.BaseUrl, null, isPassthrough: false, isCompact: false,
                 geminiProjectId: mapping.GoogleProjectId);
         }
-        var mappingForwardHeaders = Controllers.Proxy.OpenAiProxyController.MergeExtraHeaders(mapping.ExtraHeaders);
-        if (isGeminiMapping)
-        {
-            Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
-                mappingForwardHeaders, mapping.SiteModelName, ProxyProtocolBridge.IsAntigravityTarget(mapping.BaseUrl));
-        }
+        var isMappingAntigravity = ProxyProtocolBridge.IsAntigravityTarget(mapping.BaseUrl);
+        var effectiveMappingEmulation = !string.IsNullOrWhiteSpace(mapping.ClientEmulation) && !string.Equals(mapping.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
+            ? mapping.ClientEmulation
+            : (isGeminiMapping ? (isMappingAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli) : Domain.Sites.ClientEmulationConstants.None);
+
+        var mappingForwardHeaders = ClientEmulationEngine.ResolveHeaders(
+            effectiveMappingEmulation,
+            mapping.ExtraHeaders,
+            mapping.SiteModelName,
+            mapping.GoogleProjectId,
+            isMappingAntigravity);
+
         var forwardResult = await _forwardService.ForwardAsync(new ProxyForwardRequest
         {
             TargetBaseUrl = mapping.BaseUrl,
@@ -952,6 +970,7 @@ public sealed class ChatApiController : ControllerBase
             RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
             RetryCount = runtimeSettings.ProxyRetryCount,
             ForwardHeaders = mappingForwardHeaders,
+            EgressProxyUrl = mapping.EgressProxyUrl,
             PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(mapping),
             DisableTargetCredentialAsync = CreateCredentialDisableCallback(mapping.ManagedSource, mapping.SiteId),
             TargetPath = isGeminiMapping
@@ -1055,7 +1074,12 @@ public sealed class ChatApiController : ControllerBase
             async chunk => await WriteSseEventAsync("token", new { content = chunk }, cancellationToken),
             async chunk => await WriteSseEventAsync("reasoning", new { content = chunk }, cancellationToken),
             runtimeSettings.ProxyRequestTimeoutSeconds,
-            mapping.ExtraHeaders,
+            ClientEmulationEngine.ResolveHeaders(
+                mapping.ClientEmulation,
+                mapping.ExtraHeaders,
+                mapping.SiteModelName,
+                mapping.GoogleProjectId,
+                ProxyProtocolBridge.IsAntigravityTarget(mapping.BaseUrl)),
             cancellationToken,
             googleProjectId: mapping.GoogleProjectId);
 
@@ -1207,21 +1231,11 @@ public sealed class ChatApiController : ControllerBase
                 httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             }
 
-            // 注入 Site.ExtraHeadersJson 中的自定义请求头（Codex 的 Originator / Chatgpt-Account-Id / User-Agent 等）
+            // 注入引擎已解析的转发头（含客户端仿真特征/模板方案/Gemini 预设），
+            // 调用方经 ClientEmulationEngine.ResolveHeaders 生成，此处无需再叠加 Gemini 专用头。
             if (extraHeaders != null && extraHeaders.Count > 0)
             {
                 foreach (var header in extraHeaders)
-                {
-                    httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
-                }
-            }
-
-            if (isGeminiStream)
-            {
-                var geminiHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
-                    geminiHeaders, targetModelName, ProxyProtocolBridge.IsAntigravityTarget(baseUrl));
-                foreach (var header in geminiHeaders)
                 {
                     httpRequest.Headers.TryAddWithoutValidation(header.Key, header.Value);
                 }

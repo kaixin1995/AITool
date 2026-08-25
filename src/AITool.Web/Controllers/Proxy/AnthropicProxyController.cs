@@ -311,15 +311,38 @@ public sealed class AnthropicProxyController : ControllerBase
                 var protocol => protocol
             };
             var effectiveForwardHeaders = forwardHeaders;
-            if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+            var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl);
+            var effectiveEmulation = !string.IsNullOrWhiteSpace(route.ClientEmulation) && !string.Equals(route.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
+                ? route.ClientEmulation
+                : (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                    ? (isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli)
+                    : Domain.Sites.ClientEmulationConstants.None);
+
+            if (!string.Equals(effectiveEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase) ||
+                (route.ExtraHeaders != null && route.ExtraHeaders.Count > 0) ||
+                string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
             {
-                // Gemini 上游不认 Anthropic 头；改用 Gemini 客户端仿真头。
-                effectiveForwardHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                Controllers.Proxy.OpenAiProxyController.ApplyGeminiForwardHeaders(
-                    effectiveForwardHeaders,
+                var resolvedHeaders = ClientEmulationEngine.ResolveHeaders(
+                    effectiveEmulation,
+                    route.ExtraHeaders,
                     route.SiteModelName,
-                    ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl));
+                    route.GoogleProjectId,
+                    isAntigravity);
+
+                if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+                {
+                    effectiveForwardHeaders = resolvedHeaders;
+                }
+                else
+                {
+                    effectiveForwardHeaders = new Dictionary<string, string>(forwardHeaders, StringComparer.OrdinalIgnoreCase);
+                    foreach (var (k, v) in resolvedHeaders)
+                    {
+                        effectiveForwardHeaders[k] = v;
+                    }
+                }
             }
+
             var forwardRequest = new ProxyForwardRequest
             {
                 TargetBaseUrl = route.BaseUrl,
@@ -334,6 +357,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
                 ForwardHeaders = effectiveForwardHeaders,
+                EgressProxyUrl = route.EgressProxyUrl,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
                 PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
                 DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),

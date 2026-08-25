@@ -75,6 +75,11 @@ public sealed class ProxyForwardRequest
     public Dictionary<string, string> ForwardHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
+    /// 站点专用出口网络代理地址（如 http://127.0.0.1:7890 或 socks5://127.0.0.1:10808），为空则走服务器默认网络。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
+
+    /// <summary>
     /// 上游返回 401 时刷新特定凭证并返回新 API Key；普通站点不设置此回调。
     /// </summary>
     public Func<string, CancellationToken, Task<string?>>? RefreshTargetApiKeyAsync { get; set; }

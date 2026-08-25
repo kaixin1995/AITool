@@ -86,4 +86,16 @@ public sealed class Site
     /// </summary>
     [SugarColumn(Length = 2000, IsNullable = true)]
     public string? ExtraHeadersJson { get; set; }
+
+    /// <summary>
+    /// 客户端特征模拟预设类型：None | OpenCode | ClaudeCode | CodexCli | Antigravity | GeminiCli | Custom
+    /// </summary>
+    [SugarColumn(Length = 50, IsNullable = false)]
+    public string ClientEmulation { get; set; } = "None";
+
+    /// <summary>
+    /// 站点专用出口网络代理地址（如 http://127.0.0.1:7890 或 socks5://127.0.0.1:10808），为空则走服务器默认网络。
+    /// </summary>
+    [SugarColumn(Length = 300, IsNullable = true)]
+    public string? EgressProxyUrl { get; set; }
 }
