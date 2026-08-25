@@ -733,6 +733,12 @@ function handleCatalogClosed(): void {
   catalogTaskId.value = ''
 }
 
+const OPENAI_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>`
+
+const ANTHROPIC_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>`
+
+const RESPONSES_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 7l-4 5h3.5l-1 5 4.5-6h-3.5z"/></svg>`
+
 function formatDateTime(value: string): string {
   if (!value) return '-'
   return new Date(value).toLocaleString('zh-CN', {
@@ -748,13 +754,49 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
   {
     title: '协议',
     key: 'protocol',
-    width: 230,
+    width: 116,
     render: (row) => {
-      return h(NSpace, { size: 4, wrap: false }, () => [
-        row.supportsOpenAi ? h(NTag, { size: 'small', type: 'success', bordered: false }, () => 'OpenAI') : null,
-        row.supportsAnthropic ? h(NTag, { size: 'small', type: 'info', bordered: false }, () => 'Anthropic') : null,
-        row.supportsResponses ? h(NTag, { size: 'small', type: 'warning', bordered: false }, () => 'Responses') : null
-      ])
+      const items = []
+      if (row.supportsOpenAi) {
+        items.push(
+          h(
+            NTooltip,
+            null,
+            {
+              trigger: () => h('span', { class: 'protocol-icon-badge protocol-openai', innerHTML: OPENAI_SVG }),
+              default: () => 'OpenAI Chat Completions 协议 (/v1/chat/completions)'
+            }
+          )
+        )
+      }
+      if (row.supportsAnthropic) {
+        items.push(
+          h(
+            NTooltip,
+            null,
+            {
+              trigger: () => h('span', { class: 'protocol-icon-badge protocol-anthropic', innerHTML: ANTHROPIC_SVG }),
+              default: () => 'Anthropic Messages 协议 (/v1/messages)'
+            }
+          )
+        )
+      }
+      if (row.supportsResponses) {
+        items.push(
+          h(
+            NTooltip,
+            null,
+            {
+              trigger: () => h('span', { class: 'protocol-icon-badge protocol-responses', innerHTML: RESPONSES_SVG }),
+              default: () => 'OpenAI Responses API 协议 (/v1/responses)'
+            }
+          )
+        )
+      }
+      if (items.length === 0) {
+        return h('span', { style: 'color: var(--text-tertiary)' }, '-')
+      }
+      return h('div', { class: 'site-protocol-icons-group' }, items)
     }
   },
   {
@@ -892,20 +934,34 @@ onBeforeUnmount(handleCatalogClosed)
             placeholder="sk-...（作为首个默认密钥，更多密钥创建后用「密钥管理」添加）"
           />
         </NFormItem>
-        <NFormItem label="协议支持">
-          <NSpace vertical :size="8">
-            <NSpace :size="[18, 8]" :wrap="true">
-              <NSwitch v-model:value="form.supportsOpenAi" /> OpenAI Chat Completions
-              <NSwitch v-model:value="form.supportsAnthropic" /> Anthropic Messages
-            </NSpace>
-            <NSpace align="center" :size="18">
-              <NSwitch v-model:value="form.supportsResponses" /> OpenAI Responses
+        <NFormItem>
+          <template #label>
+            <NSpace align="center" :size="4">
+              <span>协议支持</span>
               <NTooltip trigger="hover">
                 <template #trigger><span class="site-protocol-help-trigger">?</span></template>
-                Responses 为独立能力：勾选后直接透传；未勾选时会按 OpenAI 或 Anthropic 能力自动转换。为兼容旧配置，三个协议都不勾选仍按仅支持 Responses 处理。
+                配置站点支持的上游协议：OpenAI Chat（/v1/chat/completions）、Anthropic（/v1/messages）、Responses（/v1/responses）。未勾选协议时系统会自动按可用协议转换转发。
               </NTooltip>
             </NSpace>
-          </NSpace>
+          </template>
+          <div class="site-protocols-row">
+            <label class="site-protocol-switch-item">
+              <NSwitch v-model:value="form.supportsOpenAi" size="small" />
+              <span>OpenAI Chat</span>
+            </label>
+            <label class="site-protocol-switch-item">
+              <NSwitch v-model:value="form.supportsAnthropic" size="small" />
+              <span>Anthropic</span>
+            </label>
+            <label class="site-protocol-switch-item">
+              <NSwitch v-model:value="form.supportsResponses" size="small" />
+              <span>Responses</span>
+              <NTooltip trigger="hover">
+                <template #trigger><span class="site-protocol-help-trigger">?</span></template>
+                Responses 协议（/v1/responses）：勾选后直接透传；未勾选时会按 OpenAI/Anthropic 能力自动转换。
+              </NTooltip>
+            </label>
+          </div>
         </NFormItem>
 
 
@@ -1439,5 +1495,63 @@ onBeforeUnmount(handleCatalogClosed)
 .chips-label {
   color: var(--text-color-secondary);
   font-size: 12px;
+}
+
+.site-protocol-icons-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.protocol-icon-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.protocol-icon-badge:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+}
+
+.protocol-icon-badge.protocol-openai {
+  background: color-mix(in srgb, #10a37f 14%, var(--bg-surface-soft, rgba(16, 163, 127, 0.08)));
+  color: #10a37f;
+  border: 1px solid color-mix(in srgb, #10a37f 30%, transparent);
+}
+
+.protocol-icon-badge.protocol-anthropic {
+  background: color-mix(in srgb, #d97706 14%, var(--bg-surface-soft, rgba(217, 119, 6, 0.08)));
+  color: #d97706;
+  border: 1px solid color-mix(in srgb, #d97706 30%, transparent);
+}
+
+.protocol-icon-badge.protocol-responses {
+  background: color-mix(in srgb, #8b5cf6 14%, var(--bg-surface-soft, rgba(139, 92, 246, 0.08)));
+  color: #8b5cf6;
+  border: 1px solid color-mix(in srgb, #8b5cf6 30%, transparent);
+}
+
+.site-protocols-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 34px;
+}
+
+.site-protocol-switch-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--text-color-primary);
+  white-space: nowrap;
 }
 </style>

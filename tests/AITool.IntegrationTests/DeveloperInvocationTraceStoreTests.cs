@@ -35,4 +35,45 @@ public sealed class DeveloperInvocationTraceStoreTests
 
         DeveloperInvocationTraceStore.SummarizeBody(body).Should().Be(body);
     }
+
+    [Fact]
+    public void Get_and_List_preserve_PreparedRequestHeaders_on_entry_and_attempts()
+    {
+        var store = new DeveloperInvocationTraceStore();
+        var traceId = store.AddRequest(new DeveloperInvocationTraceRequest
+        {
+            RequestId = Guid.NewGuid(),
+            Source = "open-code",
+            RequestPath = "/v1/chat/completions",
+            RequestModel = "1M",
+            RequestBody = "{\"prompt\":\"hi\"}",
+            RequestHeaders = new Dictionary<string, string> { { "User-Agent", "curl/7.0" } }
+        });
+
+        var attemptId = store.AddAttempt(traceId, new DeveloperInvocationAttempt
+        {
+            AttemptedModel = "gemini-3.7-flash-high",
+            UpstreamProtocolType = "Gemini",
+            ForwardingMode = "bridge",
+            TargetSiteName = "GeminiPro1",
+            PreparedRequestBody = "{}",
+            PreparedRequestHeaders = new Dictionary<string, string>
+            {
+                { "User-Agent", "antigravity/1.10.4 linux/x86_64" },
+                { "requestId", "req-123" }
+            }
+        });
+
+        var detail = store.Get(traceId);
+        detail.Should().NotBeNull();
+        detail!.PreparedRequestHeaders.Should().ContainKey("User-Agent");
+        detail.PreparedRequestHeaders["User-Agent"].Should().Be("antigravity/1.10.4 linux/x86_64");
+        detail.Attempts.Should().HaveCount(1);
+        detail.Attempts[0].PreparedRequestHeaders.Should().ContainKey("User-Agent");
+        detail.Attempts[0].PreparedRequestHeaders["User-Agent"].Should().Be("antigravity/1.10.4 linux/x86_64");
+
+        var list = store.List();
+        list.Should().ContainSingle();
+        list[0].PreparedRequestHeaders.Should().ContainKey("User-Agent");
+    }
 }

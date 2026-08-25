@@ -22,7 +22,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 {
     // wham/usage 端点（codex-patrol 同款）
     private const string UsageUrl = "https://chatgpt.com/backend-api/wham/usage";
-    private const string UserAgent = "codex_cli_rs/0.133.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
+    private const string UserAgent = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
 
     /// <summary>结果缓存 TTL（防抖）。</summary>
     private static readonly TimeSpan ResultCacheTtl = TimeSpan.FromSeconds(30);

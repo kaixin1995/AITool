@@ -196,7 +196,8 @@ public sealed partial class OpenAiProxyController
                 isCompact: isCompact,
                 geminiProjectId: route.GoogleProjectId);
 
-            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
+            var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
+            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody, forwardHeaders);
 
             // PrepareRequestBody 已内联覆盖思考等级，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
@@ -217,7 +218,7 @@ public sealed partial class OpenAiProxyController
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
+                ForwardHeaders = forwardHeaders,
                 EgressProxyUrl = route.EgressProxyUrl,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
                 PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
@@ -537,7 +538,8 @@ public sealed partial class OpenAiProxyController
                 isPassthrough: isPassthrough,
                 geminiProjectId: route.GoogleProjectId);
 
-            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
+            var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
+            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody, forwardHeaders);
 
             // PrepareRequestBody 已内联覆盖思考等级，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
@@ -558,7 +560,7 @@ public sealed partial class OpenAiProxyController
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
+                ForwardHeaders = forwardHeaders,
                 EgressProxyUrl = route.EgressProxyUrl,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
                 PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),

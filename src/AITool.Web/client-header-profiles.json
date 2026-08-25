@@ -1,0 +1,86 @@
+[
+  {
+    "Id": "10000000-0000-0000-0000-000000000001",
+    "Key": "OpenCode",
+    "Name": "OpenCode CLI 终端",
+    "Description": "OpenCode CLI 终端工具官方特征指纹",
+    "HeadersJson": "{\n  \"User-Agent\": \"opencode/1.18.18 ai-sdk/provider-utils/4.0.23 runtime/node.js/24\",\n  \"x-session-affinity\": \"ses_${nanoid:20}\",\n  \"x-session-id\": \"ses_${nanoid:20}\",\n  \"x-opencode-client\": \"cli\",\n  \"x-opencode-project\": \"global\",\n  \"x-opencode-request\": \"msg_${nanoid:12}\"\n}",
+    "IsBuiltIn": true,
+    "IsEnabled": true,
+    "SortOrder": 1,
+    "CreatedAt": "2026-08-25T00:00:00Z",
+    "UpdatedAt": null
+  },
+  {
+    "Id": "10000000-0000-0000-0000-000000000002",
+    "Key": "ClaudeCode",
+    "Name": "Claude Code 官方命令行",
+    "Description": "Anthropic Claude Code CLI 官方特征指纹",
+    "HeadersJson": "{\n  \"User-Agent\": \"claude-cli/2.1.241 (external, claude-vscode, agent-sdk/0.3.241)\",\n  \"X-Claude-Code-Session-Id\": \"${guid}\",\n  \"X-Stainless-Arch\": \"x64\",\n  \"X-Stainless-Lang\": \"js\",\n  \"X-Stainless-OS\": \"Windows\",\n  \"X-Stainless-Package-Version\": \"0.112.1\",\n  \"X-Stainless-Retry-Count\": \"0\",\n  \"X-Stainless-Runtime\": \"node\",\n  \"X-Stainless-Runtime-Version\": \"v26.3.0\",\n  \"X-Stainless-Timeout\": \"600\",\n  \"anthropic-beta\": \"claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24\",\n  \"anthropic-dangerous-direct-browser-access\": \"true\",\n  \"anthropic-version\": \"2023-06-01\",\n  \"x-app\": \"cli\"\n}",
+    "IsBuiltIn": true,
+    "IsEnabled": true,
+    "SortOrder": 2,
+    "CreatedAt": "2026-08-25T00:00:00Z",
+    "UpdatedAt": null
+  },
+  {
+    "Id": "10000000-0000-0000-0000-000000000003",
+    "Key": "CodexCli",
+    "Name": "Codex Desktop 官方客户端 (默认)",
+    "Description": "OpenAI Codex Desktop 客户端真实特征指纹",
+    "HeadersJson": "{\n  \"User-Agent\": \"Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)\",\n  \"Originator\": \"Codex Desktop\",\n  \"Session-Id\": \"${guid}\",\n  \"Thread-Id\": \"${guid}\",\n  \"X-Client-Request-Id\": \"${guid}\",\n  \"X-Codex-Beta-Features\": \"remote_compaction_v2\",\n  \"X-Codex-Turn-Metadata\": \"{\\\"installation_id\\\":\\\"${guid}\\\",\\\"session_id\\\":\\\"${guid}\\\",\\\"thread_id\\\":\\\"${guid}\\\",\\\"agent_name\\\":\\\"/root\\\",\\\"turn_id\\\":\\\"${guid}\\\",\\\"window_id\\\":\\\"${guid}:0\\\",\\\"request_kind\\\":\\\"turn\\\",\\\"root_turn_id\\\":\\\"${guid}\\\",\\\"thread_source\\\":\\\"user\\\",\\\"sandbox\\\":\\\"none\\\",\\\"sandbox_mode\\\":\\\"danger-full-access\\\",\\\"auto_review_enabled\\\":false,\\\"node_repl_auto_review_required\\\":false,\\\"node_repl_disabled\\\":false,\\\"turn_started_at_unix_ms\\\":${timestamp_ms},\\\"workspace_kind\\\":\\\"project\\\"}\",\n  \"X-Codex-Window-Id\": \"${guid}:0\",\n  \"X-Oai-Attestation\": \"{\\\"v\\\":1,\\\"s\\\":0,\\\"t\\\":\\\"v1.o2plcnJvcl9jb2RlAWlidW5kbGVfaWRwY29tLm9wZW5haS5jb2RleGFmWE6nAAEBgWV6aC1DTgJlemgtQ04DbUFzaWEvU2hhbmdoYWkEGQu4BQEGeCRmYTYxN2M0Yi0wMzhiLTQwYmMtOTk0OC0xNTE5ZWY2ODQ0NmE\\\"}\"\n}",
+    "IsBuiltIn": true,
+    "IsEnabled": true,
+    "SortOrder": 3,
+    "CreatedAt": "2026-08-25T00:00:00Z",
+    "UpdatedAt": null
+  },
+  {
+    "Id": "10000000-0000-0000-0000-000000000004",
+    "Key": "CodexVsCode",
+    "Name": "Codex VS Code 插件",
+    "Description": "OpenAI Codex in VS Code 插件真实特征指纹",
+    "HeadersJson": "{\n  \"User-Agent\": \"codex_vscode/0.149.0-alpha.4.1 (Windows 10.0.19045; x86_64) unknown (VS Code; 26.818.41705)\",\n  \"Originator\": \"codex_vscode\",\n  \"Session-Id\": \"${guid}\",\n  \"Thread-Id\": \"${guid}\",\n  \"X-Client-Request-Id\": \"${guid}\",\n  \"X-Codex-Beta-Features\": \"remote_compaction_v2\",\n  \"X-Codex-Turn-Metadata\": \"{\\\"installation_id\\\":\\\"${guid}\\\",\\\"session_id\\\":\\\"${guid}\\\",\\\"thread_id\\\":\\\"${guid}\\\",\\\"agent_name\\\":\\\"/root\\\",\\\"turn_id\\\":\\\"${guid}\\\",\\\"window_id\\\":\\\"${guid}:0\\\",\\\"request_kind\\\":\\\"turn\\\",\\\"thread_source\\\":\\\"system\\\",\\\"sandbox\\\":\\\"windows_elevated\\\",\\\"sandbox_mode\\\":\\\"read-only\\\",\\\"auto_review_enabled\\\":false,\\\"node_repl_auto_review_required\\\":false,\\\"node_repl_disabled\\\":false,\\\"turn_started_at_unix_ms\\\":${timestamp_ms}}\",\n  \"X-Codex-Window-Id\": \"${guid}:0\"\n}",
+    "IsBuiltIn": true,
+    "IsEnabled": true,
+    "SortOrder": 4,
+    "CreatedAt": "2026-08-25T00:00:00Z",
+    "UpdatedAt": null
+  },
+  {
+    "Id": "10000000-0000-0000-0000-000000000005",
+    "Key": "ZCode",
+    "Name": "ZCode / GLM 客户端",
+    "Description": "智谱 GLM / ZCode Electron 客户端真实特征指纹",
+    "HeadersJson": "{\n  \"User-Agent\": \"ZCode/3.9.1 ai-sdk/provider-utils/4.0.27 runtime/node.js/24\",\n  \"http-referer\": \"https://zcode.z.ai\",\n  \"x-client-language\": \"zh-CN\",\n  \"x-client-timezone\": \"Asia/Shanghai\",\n  \"x-os-category\": \"windows\",\n  \"x-os-version\": \"10.0.17763\",\n  \"x-platform\": \"win32-x64\",\n  \"x-query-id\": \"${guid}\",\n  \"x-release-channel\": \"production\",\n  \"x-request-id\": \"${guid}\",\n  \"x-session-id\": \"${guid}\",\n  \"x-title\": \"Z Code@electron\",\n  \"x-zcode-agent\": \"glm\",\n  \"x-zcode-app-version\": \"3.9.1\",\n  \"x-zcode-session-type\": \"main\",\n  \"x-zcode-trace-id\": \"${guid}\"\n}",
+    "IsBuiltIn": true,
+    "IsEnabled": true,
+    "SortOrder": 5,
+    "CreatedAt": "2026-08-25T00:00:00Z",
+    "UpdatedAt": null
+  },
+  {
+    "Id": "10000000-0000-0000-0000-000000000006",
+    "Key": "Antigravity",
+    "Name": "Google Antigravity CLI",
+    "Description": "Google Cloud Antigravity CLI 官方特征指纹",
+    "HeadersJson": "{\n  \"User-Agent\": \"antigravity/1.10.4 linux/x86_64\",\n  \"x-goog-api-client\": \"gl-node/20.18.0 antigravity-cli/1.10.4\",\n  \"requestId\": \"req-${guid:N}\",\n  \"requestType\": \"agent\"\n}",
+    "IsBuiltIn": true,
+    "IsEnabled": true,
+    "SortOrder": 6,
+    "CreatedAt": "2026-08-25T00:00:00Z",
+    "UpdatedAt": null
+  },
+  {
+    "Id": "10000000-0000-0000-0000-000000000007",
+    "Key": "GeminiCli",
+    "Name": "Google Gemini CLI",
+    "Description": "Google Gemini CLI 官方特征指纹",
+    "HeadersJson": "{\n  \"User-Agent\": \"GeminiCLI/0.35.2/${model} (win32; x64; cloud-shell)\"\n}",
+    "IsBuiltIn": true,
+    "IsEnabled": true,
+    "SortOrder": 7,
+    "CreatedAt": "2026-08-25T00:00:00Z",
+    "UpdatedAt": null
+  }
+]

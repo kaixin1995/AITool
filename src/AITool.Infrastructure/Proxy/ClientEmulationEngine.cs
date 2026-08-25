@@ -72,30 +72,76 @@ public static partial class ClientEmulationEngine
         switch (preset)
         {
             case ClientEmulationConstants.OpenCode:
-                // OpenCode CLI 官方特征 (支持免密访问 OpenCode Zen 免费模型)
-                headers["User-Agent"] = "opencode/1.15.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13";
+                // OpenCode 真实官方客户端特征 (Node 24 环境与动态 Session Affinity)
+                headers["User-Agent"] = "opencode/1.18.18 ai-sdk/provider-utils/4.0.23 runtime/node.js/24";
+                headers["x-session-affinity"] = "ses_${nanoid:20}";
+                headers["x-session-id"] = "ses_${nanoid:20}";
                 headers["x-opencode-client"] = "cli";
                 headers["x-opencode-project"] = "global";
                 headers["x-opencode-request"] = "msg_${nanoid:12}";
-                headers["x-opencode-session"] = "ses_${nanoid:12}";
                 break;
 
             case ClientEmulationConstants.ClaudeCode:
-                // Anthropic Claude Code 官方终端工具特征 (防封与环境仿真)
-                headers["User-Agent"] = "claude-code/0.2.29 (external; x86_64-pc-windows-msvc)";
-                headers["anthropic-client-name"] = "claude-code";
-                headers["anthropic-client-version"] = "0.2.29";
-                headers["anthropic-beta"] = "prompt-caching-2024-07-31,computer-use-2024-10-22";
+                // Anthropic Claude Code 官方终端工具特征 (全套 Stainless 与官方 Beta Header)
+                headers["User-Agent"] = "claude-cli/2.1.241 (external, claude-vscode, agent-sdk/0.3.241)";
+                headers["X-Claude-Code-Session-Id"] = "${guid}";
+                headers["X-Stainless-Arch"] = "x64";
+                headers["X-Stainless-Lang"] = "js";
+                headers["X-Stainless-OS"] = "Windows";
+                headers["X-Stainless-Package-Version"] = "0.112.1";
+                headers["X-Stainless-Retry-Count"] = "0";
+                headers["X-Stainless-Runtime"] = "node";
+                headers["X-Stainless-Runtime-Version"] = "v26.3.0";
+                headers["X-Stainless-Timeout"] = "600";
+                headers["anthropic-beta"] = "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,mid-conversation-system-2026-04-07,advanced-tool-use-2025-11-20,effort-2025-11-24";
+                headers["anthropic-dangerous-direct-browser-access"] = "true";
+                headers["anthropic-version"] = "2023-06-01";
+                headers["x-app"] = "cli";
                 break;
 
             case ClientEmulationConstants.CodexCli:
-                // VS Code GitHub Copilot & Codex 客户端特征
-                headers["User-Agent"] = "GitHubCopilotChat/0.24.1 VSCode/1.96.2";
-                headers["Editor-Version"] = "vscode/1.96.2";
-                headers["Editor-Plugin-Version"] = "copilot-chat/0.24.1";
-                headers["Openai-Organization"] = "github-copilot";
-                headers["X-Request-Id"] = "${guid}";
+                // OpenAI Codex Desktop 官方客户端特征 (默认 Codex 方案)
+                headers["User-Agent"] = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
+                headers["Originator"] = "Codex Desktop";
                 headers["Session-Id"] = "${guid}";
+                headers["Thread-Id"] = "${guid}";
+                headers["X-Client-Request-Id"] = "${guid}";
+                headers["X-Codex-Beta-Features"] = "remote_compaction_v2";
+                headers["X-Codex-Turn-Metadata"] = "{\"installation_id\":\"${guid}\",\"session_id\":\"${guid}\",\"thread_id\":\"${guid}\",\"agent_name\":\"/root\",\"turn_id\":\"${guid}\",\"window_id\":\"${guid}:0\",\"request_kind\":\"turn\",\"root_turn_id\":\"${guid}\",\"thread_source\":\"user\",\"sandbox\":\"none\",\"sandbox_mode\":\"danger-full-access\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":${timestamp_ms},\"workspace_kind\":\"project\"}";
+                headers["X-Codex-Window-Id"] = "${guid}:0";
+                headers["X-Oai-Attestation"] = "{\"v\":1,\"s\":0,\"t\":\"v1.o2plcnJvcl9jb2RlAWlidW5kbGVfaWRwY29tLm9wZW5haS5jb2RleGFmWE6nAAEBgWV6aC1DTgJlemgtQ04DbUFzaWEvU2hhbmdoYWkEGQu4BQEGeCRmYTYxN2M0Yi0wMzhiLTQwYmMtOTk0OC0xNTE5ZWY2ODQ0NmE\"}";
+                break;
+
+            case ClientEmulationConstants.CodexVsCode:
+                // VS Code Codex 插件官方特征
+                headers["User-Agent"] = "codex_vscode/0.149.0-alpha.4.1 (Windows 10.0.19045; x86_64) unknown (VS Code; 26.818.41705)";
+                headers["Originator"] = "codex_vscode";
+                headers["Session-Id"] = "${guid}";
+                headers["Thread-Id"] = "${guid}";
+                headers["X-Client-Request-Id"] = "${guid}";
+                headers["X-Codex-Beta-Features"] = "remote_compaction_v2";
+                headers["X-Codex-Turn-Metadata"] = "{\"installation_id\":\"${guid}\",\"session_id\":\"${guid}\",\"thread_id\":\"${guid}\",\"agent_name\":\"/root\",\"turn_id\":\"${guid}\",\"window_id\":\"${guid}:0\",\"request_kind\":\"turn\",\"thread_source\":\"system\",\"sandbox\":\"windows_elevated\",\"sandbox_mode\":\"read-only\",\"auto_review_enabled\":false,\"node_repl_auto_review_required\":false,\"node_repl_disabled\":false,\"turn_started_at_unix_ms\":${timestamp_ms}}";
+                headers["X-Codex-Window-Id"] = "${guid}:0";
+                break;
+
+            case ClientEmulationConstants.ZCode:
+                // ZCode / GLM 客户端官方特征
+                headers["User-Agent"] = "ZCode/3.9.1 ai-sdk/provider-utils/4.0.27 runtime/node.js/24";
+                headers["http-referer"] = "https://zcode.z.ai";
+                headers["x-client-language"] = "zh-CN";
+                headers["x-client-timezone"] = "Asia/Shanghai";
+                headers["x-os-category"] = "windows";
+                headers["x-os-version"] = "10.0.17763";
+                headers["x-platform"] = "win32-x64";
+                headers["x-query-id"] = "${guid}";
+                headers["x-release-channel"] = "production";
+                headers["x-request-id"] = "${guid}";
+                headers["x-session-id"] = "${guid}";
+                headers["x-title"] = "Z Code@electron";
+                headers["x-zcode-agent"] = "glm";
+                headers["x-zcode-app-version"] = "3.9.1";
+                headers["x-zcode-session-type"] = "main";
+                headers["x-zcode-trace-id"] = "${guid}";
                 break;
 
             case ClientEmulationConstants.Antigravity:

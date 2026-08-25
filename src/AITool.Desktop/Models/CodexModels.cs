@@ -278,9 +278,11 @@ public sealed class ClientEmulationOption
     public static List<ClientEmulationOption> Defaults() =>
     [
         new() { Value = "None", Label = "无 (None - 标准API直连)" },
+        new() { Value = "CodexCli", Label = "Codex Desktop 官方客户端 (默认)" },
+        new() { Value = "CodexVsCode", Label = "Codex VS Code 插件" },
         new() { Value = "OpenCode", Label = "OpenCode CLI 终端" },
         new() { Value = "ClaudeCode", Label = "Claude Code 官方命令行" },
-        new() { Value = "CodexCli", Label = "GitHub Copilot / Codex" },
+        new() { Value = "ZCode", Label = "ZCode / GLM 客户端" },
         new() { Value = "Antigravity", Label = "Google Antigravity CLI" },
         new() { Value = "GeminiCli", Label = "Google Gemini CLI" },
         new() { Value = "Custom", Label = "自定义特征 (Custom)" }

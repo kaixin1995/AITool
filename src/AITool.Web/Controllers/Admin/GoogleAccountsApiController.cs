@@ -244,7 +244,8 @@ public sealed class GoogleAccountsApiController : ControllerBase
         var cache = HttpContext.RequestServices.GetRequiredService<ProxyRequestMetadataCache>();
         cache.InvalidateRouteTargets();
         cache.InvalidateGoogleAccounts();
-        return Ok(ToSummary(account));
+        var selectedModels = await GetSelectedModelsForSiteAsync(account.LinkedSiteId, ct);
+        return Ok(ToSummary(account, selectedModels: selectedModels));
     }
 
     /// <summary>删除账号（级联删除隐藏 Site 与模型映射）。</summary>
@@ -267,12 +268,14 @@ public sealed class GoogleAccountsApiController : ControllerBase
             var tokens = await _oauth.RefreshTokenAsync(account.AccountKind, req.RefreshToken, ct);
             var input = await BuildProvisionInputAsync(account.AccountKind, tokens, req.DisplayName, account.ProjectId, ct);
             account = await _provisioner.ProvisionFromTokensAsync(input, ct);
-            return Ok(ToSummary(account, "凭证已更新"));
+            var updatedSelectedModels = await GetSelectedModelsForSiteAsync(account.LinkedSiteId, ct);
+            return Ok(ToSummary(account, "凭证已更新", selectedModels: updatedSelectedModels));
         }
 
         await _provisioner.UpdateAsync(id, req.DisplayName, ct);
         account = await GetAccountAsync(id, ct) ?? account;
-        return Ok(ToSummary(account));
+        var currentSelectedModels = await GetSelectedModelsForSiteAsync(account.LinkedSiteId, ct);
+        return Ok(ToSummary(account, selectedModels: currentSelectedModels));
     }
 
     /// <summary>拉取账号可用模型（Antigravity 动态 / GeminiCli 静态清单，附现有映射状态）。</summary>
@@ -479,6 +482,16 @@ public sealed class GoogleAccountsApiController : ControllerBase
         return null;
     }
 
+    private async Task<IReadOnlyCollection<string>> GetSelectedModelsForSiteAsync(Guid siteId, CancellationToken ct)
+    {
+        return await _dbContext.SiteModelMappings
+            .Where(mapping => mapping.SiteId == siteId && mapping.IsEnabled)
+            .Select(mapping => mapping.RemoteModelName)
+            .Where(name => !string.IsNullOrWhiteSpace(name))
+            .Distinct()
+            .ToListAsync(ct);
+    }
+
     private static object ToSummary(
         GoogleAccount a,
         string? message = null,
@@ -495,16 +508,22 @@ public sealed class GoogleAccountsApiController : ControllerBase
             var parsed = GoogleQuotaParser.Parse(a.LastQuotaRawJson);
             if (parsed is not null)
             {
-                var visibleWindows = selectedModels is not null
-                    && string.Equals(a.AccountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase)
-                    ? parsed.Where(window => selectedModelNames.Contains(window.Id, StringComparer.OrdinalIgnoreCase))
+                var visibleWindows = string.Equals(a.AccountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase)
+                    ? (selectedModelNames.Length > 0
+                        ? parsed.Where(window => selectedModelNames.Any(modelName => IsModelMatchingQuotaWindow(window.Id, modelName)))
+                        : Array.Empty<GoogleQuotaParser.Window>())
                     : parsed;
-                windows = visibleWindows.Select(w => (object)new
+                windows = visibleWindows.Select(w =>
                 {
-                    id = w.Id,
-                    label = w.Label,
-                    usedPercent = w.UsedPercent,
-                    resetLabel = w.ResetLabel,
+                    var matchingSelected = selectedModelNames.FirstOrDefault(m => IsModelMatchingQuotaWindow(w.Id, m));
+                    var effectiveName = !string.IsNullOrWhiteSpace(matchingSelected) ? matchingSelected : w.Label;
+                    return (object)new
+                    {
+                        id = effectiveName,
+                        label = effectiveName,
+                        usedPercent = w.UsedPercent,
+                        resetLabel = w.ResetLabel,
+                    };
                 }).ToList();
             }
         }
@@ -529,6 +548,51 @@ public sealed class GoogleAccountsApiController : ControllerBase
             createdAt = a.CreatedAt,
             message,
         };
+    }
+
+    /// <summary>
+    /// 判断模型名称与额度窗口标识是否匹配（支持前缀、后缀变体与分层模型池匹配，如 gemini-3.7-flash-high 匹配 gemini-3.7-flash-tiered）。
+    /// </summary>
+    public static bool IsModelMatchingQuotaWindow(string windowId, string modelName)
+    {
+        if (string.IsNullOrWhiteSpace(windowId) || string.IsNullOrWhiteSpace(modelName))
+        {
+            return false;
+        }
+
+        if (string.Equals(windowId, modelName, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var cleanWindow = NormalizeQuotaModelName(windowId);
+        var cleanModel = NormalizeQuotaModelName(modelName);
+
+        if (string.Equals(cleanWindow, cleanModel, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (cleanModel.StartsWith(cleanWindow, StringComparison.OrdinalIgnoreCase) ||
+            cleanWindow.StartsWith(cleanModel, StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string NormalizeQuotaModelName(string name)
+    {
+        var trimmed = name.Trim();
+        foreach (var suffix in new[] { "-tiered", "-thinking", "-high", "-medium", "-low", "-extra-low", "-preview", "-agent" })
+        {
+            if (trimmed.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+            {
+                trimmed = trimmed[..^suffix.Length];
+            }
+        }
+        return trimmed;
     }
 
     private static void CleanupExpiredSessions()

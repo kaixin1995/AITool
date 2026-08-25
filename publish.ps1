@@ -1,4 +1,4 @@
-﻿# AI-Tool 发布脚本（Windows PowerShell）
+# AI-Tool 发布脚本（Windows PowerShell）
 # 用法：.\publish.ps1
 # 效果：构建前端 -> 构建后端 -> 停旧进程 -> 部署 -> 启动新进程 -> 脚本退出后程序保持运行
 # 默认发布路径 D:\Tool\AiTool，可通过参数覆盖：.\publish.ps1 -TargetDir "D:\Other\Path"
@@ -108,6 +108,7 @@ if (-not (Test-Path $TargetDir)) {
 # 备份配置文件（发布后恢复，避免覆盖用户的端口、密码和数据库配置）
 $appsettingsPath = Join-Path $TargetDir "appsettings.json"
 $appsettingsDevPath = Join-Path $TargetDir "appsettings.Development.json"
+$headerProfilesPath = Join-Path $TargetDir "client-header-profiles.json"
 $backupDir = Join-Path $env:TEMP "aitool-config-backup"
 New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
 
@@ -119,6 +120,9 @@ if (Test-Path $appsettingsPath) {
 if (Test-Path $appsettingsDevPath) {
     Copy-Item $appsettingsDevPath (Join-Path $backupDir "appsettings.Development.json") -Force
 }
+if (Test-Path $headerProfilesPath) {
+    Copy-Item $headerProfilesPath (Join-Path $backupDir "client-header-profiles.json") -Force
+}
 
 # 复制程序文件
 Write-Host "复制程序文件..."
@@ -126,6 +130,7 @@ Copy-Item (Join-Path $TempPubDir "*.dll") $TargetDir -Force
 Copy-Item (Join-Path $TempPubDir "*.exe") $TargetDir -Force
 Copy-Item (Join-Path $TempPubDir "*.pdb") $TargetDir -Force
 Copy-Item (Join-Path $TempPubDir "model-vendor-catalog.json") $TargetDir -Force -ErrorAction SilentlyContinue
+Copy-Item (Join-Path $TempPubDir "client-header-profiles.json") $TargetDir -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $TempPubDir "*.json") $TargetDir -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $TempPubDir "*.config") $TargetDir -Force -ErrorAction SilentlyContinue
 
@@ -139,11 +144,25 @@ Remove-Item (Join-Path $wwwrootPath "assets") -Recurse -Force -ErrorAction Silen
 Remove-Item (Join-Path $wwwrootPath "index.html") -Force -ErrorAction SilentlyContinue
 Copy-Item (Join-Path $TempPubDir "wwwroot\*") $wwwrootPath -Recurse -Force
 
+# 同步 SQL 迁移脚本（供 developer/invocations#developerSqlMigrationsPane 执行）
+$sqlMigrationsSrc = Join-Path $ScriptDir "sql-migrations"
+$sqlMigrationsDst = Join-Path $TargetDir "sql-migrations"
+if (Test-Path $sqlMigrationsSrc) {
+    if (-not (Test-Path $sqlMigrationsDst)) {
+        New-Item -ItemType Directory -Path $sqlMigrationsDst -Force | Out-Null
+    }
+    Copy-Item (Join-Path $sqlMigrationsSrc "*.sql") $sqlMigrationsDst -Force
+    Write-Host "[OK] 同步 SQL 迁移脚本（sql-migrations）" -ForegroundColor Green
+}
+
 # 恢复配置文件
 if ($configBackedUp) {
     Copy-Item (Join-Path $backupDir "appsettings.json") $appsettingsPath -Force
     if (Test-Path (Join-Path $backupDir "appsettings.Development.json")) {
         Copy-Item (Join-Path $backupDir "appsettings.Development.json") $appsettingsDevPath -Force
+    }
+    if (Test-Path (Join-Path $backupDir "client-header-profiles.json")) {
+        Copy-Item (Join-Path $backupDir "client-header-profiles.json") $headerProfilesPath -Force
     }
     Write-Host "[OK] 已恢复 appsettings.json 及环境配置（保留端口、密码和数据库配置）" -ForegroundColor Green
 }

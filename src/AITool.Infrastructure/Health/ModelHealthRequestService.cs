@@ -30,20 +30,23 @@ public sealed class ModelHealthRequestService
     /// 站点密钥选择器，取站点活动密钥（多 Key 站点用优先级最高的启用项）。
     /// </summary>
     private readonly SiteKeySelector _siteKeySelector;
+    private readonly IHeaderProfileCatalogService? _headerProfileCatalogService;
 
     /// <summary>
-    /// 注入数据库上下文、代理转发服务、日志服务和站点密钥选择器
+    /// 注入数据库上下文、代理转发服务、日志服务、站点密钥选择器与请求头目录服务
     /// </summary>
     public ModelHealthRequestService(
         AppDbContext dbContext,
         IProxyForwardService forwardService,
         IUsageLogService usageLogService,
-        SiteKeySelector siteKeySelector)
+        SiteKeySelector siteKeySelector,
+        IHeaderProfileCatalogService? headerProfileCatalogService = null)
     {
         _dbContext = dbContext;
         _forwardService = forwardService;
         _usageLogService = usageLogService;
         _siteKeySelector = siteKeySelector;
+        _headerProfileCatalogService = headerProfileCatalogService;
     }
 
     /// <summary>
@@ -102,11 +105,10 @@ public sealed class ModelHealthRequestService
         var effectiveEmulation = ResolveClientEmulation(mapping.ClientEmulation, model.ClientEmulation, site.ClientEmulation, protocolType, isAntigravity);
 
         // 命中请求头模板方案（内置预设被编辑 / 自定义 Key）时作为最底层注入，显式 Site/Model/Mapping 头仍可覆盖。
-        if (!string.IsNullOrWhiteSpace(effectiveEmulation))
+        if (!string.IsNullOrWhiteSpace(effectiveEmulation) && _headerProfileCatalogService != null)
         {
-            var headerProfile = await _dbContext.HeaderProfiles
-                .FirstAsync(p => p.Key == effectiveEmulation && p.IsEnabled, cancellationToken);
-            if (headerProfile?.HeadersJson is not null)
+            var headerProfile = await _headerProfileCatalogService.GetByKeyAsync(effectiveEmulation, cancellationToken);
+            if (headerProfile?.IsEnabled == true && !string.IsNullOrWhiteSpace(headerProfile.HeadersJson))
             {
                 MergeHeadersJson(extraHeaders, headerProfile.HeadersJson);
             }
@@ -352,12 +354,12 @@ public sealed class ModelHealthRequestService
             }
 
             var normalized = Domain.Sites.ClientEmulationConstants.Normalize(trimmed);
-            if (!string.Equals(normalized, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(normalized, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase))
             {
-                return normalized;
+                continue;
             }
 
-            return trimmed;
+            return normalized;
         }
 
         if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))

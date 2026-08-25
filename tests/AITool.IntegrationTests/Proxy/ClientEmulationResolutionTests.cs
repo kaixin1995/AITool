@@ -37,6 +37,19 @@ public sealed class ClientEmulationResolutionTests
     {
         ProxyRequestMetadataCache.ResolveClientEmulation(null, "  ", "")
             .Should().Be(ClientEmulationConstants.None);
+        ProxyRequestMetadataCache.ResolveClientEmulation("None", "none", "None")
+            .Should().Be(ClientEmulationConstants.None);
+    }
+
+    [Fact]
+    public void ResolveClientEmulation_falls_back_when_higher_levels_are_none()
+    {
+        ProxyRequestMetadataCache.ResolveClientEmulation("None", "OpenCode", null)
+            .Should().Be("OpenCode", "映射层为 None 时应回退至模型层");
+        ProxyRequestMetadataCache.ResolveClientEmulation("None", "None", "antigravity")
+            .Should().Be("Antigravity", "映射层与模型层均为 None 时应回退至站点层");
+        ProxyRequestMetadataCache.ResolveClientEmulation("None", "None", "my-custom-profile")
+            .Should().Be("my-custom-profile", "映射层与模型层均为 None 时应回退至站点层自定义 Key");
     }
 
     // ============ BuildEffectiveExtraHeaders：模板最底层 + 显式配置覆盖 ============

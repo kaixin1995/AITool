@@ -608,7 +608,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 route.CompatibilityRules,
                 isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase),
                 geminiProjectId: route.GoogleProjectId);
-            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody);
+            var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
+            var traceAttemptId = AddDeveloperTraceAttemptSafely(traceId, route, actualProtocolType, preparedRequestBody, forwardHeaders);
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
@@ -629,7 +630,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
                 StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                ForwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody),
+                ForwardHeaders = forwardHeaders,
                 EgressProxyUrl = route.EgressProxyUrl,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
                 PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),

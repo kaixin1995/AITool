@@ -101,7 +101,6 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<SystemRuntimeSettings> SystemRuntimeSettings => _client.Queryable<SystemRuntimeSettings>();
     public ISugarQueryable<CompatibilityProfile> CompatibilityProfiles => _client.Queryable<CompatibilityProfile>();
     public ISugarQueryable<SqlMigrationExecution> SqlMigrationExecutions => _client.Queryable<SqlMigrationExecution>();
-    public ISugarQueryable<HeaderProfile> HeaderProfiles => _client.Queryable<HeaderProfile>();
     public ISugarQueryable<ProxyProfile> ProxyProfiles => _client.Queryable<ProxyProfile>();
 
     /// <summary>
@@ -134,6 +133,12 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public Task<int> UpdateAsync<T>(T entity, CancellationToken cancellationToken = default) where T : class, new()
     {
         return _client.Updateable(entity).ExecuteCommandAsync(cancellationToken);
+    }
+
+    /// <summary>批量更新实体。</summary>
+    public Task<int> UpdateRangeAsync<T>(IEnumerable<T> entities, CancellationToken cancellationToken = default) where T : class, new()
+    {
+        return _client.Updateable(entities.ToList()).ExecuteCommandAsync(cancellationToken);
     }
 
     /// <summary>按主键删除单条实体。</summary>
@@ -271,113 +276,7 @@ public static class SqlSugarSetup
             typeof(SystemRuntimeSettings),
             typeof(CompatibilityProfile),
             typeof(SqlMigrationExecution),
-            typeof(HeaderProfile),
             typeof(ProxyProfile),
             typeof(AITool.Domain.Auth.RefreshTokenRecord));
-
-        // 一次性数据迁移：把老站点的 Site.ApiKey 复制成一条默认 SiteKey，保证老站点立即具备多 Key 能力。
-        // 仅迁移用户自建站点（ManagedSource 为空且 ApiKey 非空）；Codex 托管站点不迁移，仍直接用 Site.ApiKey。
-        // 迁移幂等：已存在 SiteKey 记录的站点跳过，可重复执行。
-        MigrateLegacySiteKeys(db);
-
-        // 幂等回填存量 Codex 和 Google 托管站点的 ClientEmulation
-        MigrateLegacyClientEmulation(db);
-    }
-
-    /// <summary>
-    /// 把老站点的 <see cref="Site.ApiKey"/> 迁移为一条默认 <see cref="SiteKey"/>。
-    /// </summary>
-    private static void MigrateLegacySiteKeys(ISqlSugarClient db)
-    {
-        try
-        {
-            var legacySites = db.Queryable<Site>()
-                .Where(x => SqlFunc.IsNullOrEmpty(x.ManagedSource) && !SqlFunc.IsNullOrEmpty(x.ApiKey))
-                .Select(x => new { x.Id, x.ApiKey })
-                .ToList();
-            if (legacySites.Count == 0)
-            {
-                return;
-            }
-
-            var migratedSiteIds = db.Queryable<SiteKey>()
-                .Select(x => x.SiteId)
-                .ToList()
-                .ToHashSet();
-
-            var toInsert = new List<SiteKey>();
-            foreach (var site in legacySites)
-            {
-                if (migratedSiteIds.Contains(site.Id))
-                {
-                    continue;
-                }
-
-                toInsert.Add(new SiteKey
-                {
-                    SiteId = site.Id,
-                    KeyValue = site.ApiKey,
-                    Remark = "默认",
-                    Priority = 0,
-                    IsEnabled = true,
-                    CreatedAt = DateTimeOffset.UtcNow
-                });
-            }
-
-            if (toInsert.Count > 0)
-            {
-                db.Insertable(toInsert).ExecuteCommand();
-                Console.WriteLine($"[Migration] 已为 {toInsert.Count} 个老站点创建默认 SiteKey（迁移自 Site.ApiKey）。");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Migration] 老站点 SiteKey 迁移失败，将在下次启动重试：{ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// 幂等回填存量 Codex / Google 托管站点的映射 ClientEmulation（Issue 4 修复）。
-    /// </summary>
-    private static void MigrateLegacyClientEmulation(ISqlSugarClient db)
-    {
-        try
-        {
-            // 回填 Codex 映射
-            var codexSites = db.Queryable<Site>()
-                .Where(s => s.ManagedSource == "Codex")
-                .Select(s => s.Id)
-                .ToList();
-            if (codexSites.Count > 0)
-            {
-                var updatedCodex = db.Updateable<SiteModelMapping>()
-                    .SetColumns(m => m.ClientEmulation == ClientEmulationConstants.CodexCli)
-                    .Where(m => codexSites.Contains(m.SiteId) && (m.ClientEmulation == null || m.ClientEmulation == "" || m.ClientEmulation == ClientEmulationConstants.None))
-                    .ExecuteCommand();
-                if (updatedCodex > 0)
-                {
-                    Console.WriteLine($"[Migration] 已为 {updatedCodex} 条存量 Codex 映射回填 ClientEmulation={ClientEmulationConstants.CodexCli}。");
-                }
-            }
-
-            // 回填 Google 映射
-            var googleSites = db.Queryable<Site>()
-                .Where(s => s.ManagedSource == "Google")
-                .Select(s => new { s.Id, s.BaseUrl, s.Name })
-                .ToList();
-            foreach (var gSite in googleSites)
-            {
-                var isAntigravity = AITool.Protocol.ProxyProtocolBridge.IsAntigravityTarget(gSite.BaseUrl);
-                var targetEmulation = isAntigravity ? ClientEmulationConstants.Antigravity : ClientEmulationConstants.GeminiCli;
-                db.Updateable<SiteModelMapping>()
-                    .SetColumns(m => m.ClientEmulation == targetEmulation)
-                    .Where(m => m.SiteId == gSite.Id && (m.ClientEmulation == null || m.ClientEmulation == "" || m.ClientEmulation == ClientEmulationConstants.None))
-                    .ExecuteCommand();
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[Migration] 存量客户端仿真回填失败，将在下次启动重试：{ex.Message}");
-        }
     }
 }

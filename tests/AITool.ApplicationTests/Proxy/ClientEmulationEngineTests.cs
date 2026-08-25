@@ -57,10 +57,11 @@ public sealed class ClientEmulationEngineTests
             null,
             false);
 
-        Assert.StartsWith("opencode/1.15.0", headers["User-Agent"]);
+        Assert.StartsWith("opencode/1.18.18", headers["User-Agent"]);
         Assert.Equal("cli", headers["x-opencode-client"]);
+        Assert.StartsWith("ses_", headers["x-session-affinity"]);
+        Assert.StartsWith("ses_", headers["x-session-id"]);
         Assert.StartsWith("msg_", headers["x-opencode-request"]);
-        Assert.StartsWith("ses_", headers["x-opencode-session"]);
     }
 
     [Fact]
@@ -73,13 +74,16 @@ public sealed class ClientEmulationEngineTests
             null,
             false);
 
-        Assert.Equal("claude-code", headers["anthropic-client-name"]);
-        Assert.Equal("0.2.29", headers["anthropic-client-version"]);
-        Assert.StartsWith("claude-code/0.2.29", headers["User-Agent"]);
+        Assert.StartsWith("claude-cli/2.1.241", headers["User-Agent"]);
+        Assert.Equal("cli", headers["x-app"]);
+        Assert.Equal("2023-06-01", headers["anthropic-version"]);
+        Assert.True(headers.ContainsKey("anthropic-beta"));
+        Assert.True(headers.ContainsKey("X-Claude-Code-Session-Id"));
+        Assert.Equal("Windows", headers["X-Stainless-OS"]);
     }
 
     [Fact]
-    public void ResolveHeaders_CodexCli_GeneratesCopilotHeaders()
+    public void ResolveHeaders_CodexCli_GeneratesCodexDesktopHeaders()
     {
         var headers = ClientEmulationEngine.ResolveHeaders(
             ClientEmulationConstants.CodexCli,
@@ -88,11 +92,49 @@ public sealed class ClientEmulationEngineTests
             null,
             false);
 
-        Assert.StartsWith("GitHubCopilotChat/0.24.1", headers["User-Agent"]);
-        Assert.Equal("vscode/1.96.2", headers["Editor-Version"]);
-        Assert.Equal("github-copilot", headers["Openai-Organization"]);
+        Assert.StartsWith("Codex Desktop/0.149.0", headers["User-Agent"]);
+        Assert.Equal("Codex Desktop", headers["Originator"]);
         Assert.True(headers.ContainsKey("Session-Id"));
-        Assert.True(headers.ContainsKey("X-Request-Id"));
+        Assert.True(headers.ContainsKey("Thread-Id"));
+        Assert.True(headers.ContainsKey("X-Client-Request-Id"));
+        Assert.True(headers.ContainsKey("X-Codex-Turn-Metadata"));
+        Assert.True(headers.ContainsKey("X-Oai-Attestation"));
+    }
+
+    [Fact]
+    public void ResolveHeaders_CodexVsCode_GeneratesCodexVsCodeHeaders()
+    {
+        var headers = ClientEmulationEngine.ResolveHeaders(
+            ClientEmulationConstants.CodexVsCode,
+            null,
+            "gpt-4o",
+            null,
+            false);
+
+        Assert.StartsWith("codex_vscode/0.149.0", headers["User-Agent"]);
+        Assert.Equal("codex_vscode", headers["Originator"]);
+        Assert.True(headers.ContainsKey("Session-Id"));
+        Assert.True(headers.ContainsKey("Thread-Id"));
+        Assert.True(headers.ContainsKey("X-Client-Request-Id"));
+        Assert.True(headers.ContainsKey("X-Codex-Turn-Metadata"));
+    }
+
+    [Fact]
+    public void ResolveHeaders_ZCode_GeneratesZCodeHeaders()
+    {
+        var headers = ClientEmulationEngine.ResolveHeaders(
+            ClientEmulationConstants.ZCode,
+            null,
+            "glm-4-plus",
+            null,
+            false);
+
+        Assert.StartsWith("ZCode/3.9.1", headers["User-Agent"]);
+        Assert.Equal("https://zcode.z.ai", headers["http-referer"]);
+        Assert.Equal("glm", headers["x-zcode-agent"]);
+        Assert.Equal("3.9.1", headers["x-zcode-app-version"]);
+        Assert.True(headers.ContainsKey("x-query-id"));
+        Assert.True(headers.ContainsKey("x-session-id"));
     }
 
     [Fact]
@@ -138,12 +180,17 @@ public sealed class ClientEmulationEngineTests
         Assert.Equal(ClientEmulationConstants.OpenCode, ClientEmulationConstants.Normalize("opencode"));
         Assert.Equal(ClientEmulationConstants.ClaudeCode, ClientEmulationConstants.Normalize("Claude_Code"));
         Assert.Equal(ClientEmulationConstants.CodexCli, ClientEmulationConstants.Normalize("codex"));
+        Assert.Equal(ClientEmulationConstants.CodexCli, ClientEmulationConstants.Normalize("codexdesktop"));
+        Assert.Equal(ClientEmulationConstants.CodexVsCode, ClientEmulationConstants.Normalize("codex_vscode"));
+        Assert.Equal(ClientEmulationConstants.ZCode, ClientEmulationConstants.Normalize("zcode"));
         Assert.Equal(ClientEmulationConstants.Antigravity, ClientEmulationConstants.Normalize("ANTIGRAVITY"));
         Assert.Equal(ClientEmulationConstants.GeminiCli, ClientEmulationConstants.Normalize("gemini"));
         Assert.Equal(ClientEmulationConstants.Custom, ClientEmulationConstants.Normalize("custom"));
         Assert.Equal(ClientEmulationConstants.None, ClientEmulationConstants.Normalize(null));
         Assert.Equal(ClientEmulationConstants.None, ClientEmulationConstants.Normalize(""));
-        Assert.Equal(ClientEmulationConstants.None, ClientEmulationConstants.Normalize("unknown-value"));
+        Assert.Equal(ClientEmulationConstants.None, ClientEmulationConstants.Normalize("None"));
+        Assert.Equal(ClientEmulationConstants.None, ClientEmulationConstants.Normalize("none"));
+        Assert.Equal("my-custom-profile", ClientEmulationConstants.Normalize("my-custom-profile"));
     }
 
     [Theory]

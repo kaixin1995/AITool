@@ -88,6 +88,9 @@ public sealed class DeveloperInvocationTraceStore
                 TargetSiteName = attempt.TargetSiteName,
                 // 格式化转换后请求体，便于在调用追踪页与原始请求体并排对比，定位上游参数错误。
                 PreparedRequestBody = FormatBody(attempt.PreparedRequestBody),
+                PreparedRequestHeaders = attempt.PreparedRequestHeaders != null
+                    ? new Dictionary<string, string>(attempt.PreparedRequestHeaders, StringComparer.OrdinalIgnoreCase)
+                    : [],
                 Status = "pending"
             };
             node.Value.Attempts.Add(traceAttempt);
@@ -95,6 +98,7 @@ public sealed class DeveloperInvocationTraceStore
             node.Value.UpstreamProtocolType = traceAttempt.UpstreamProtocolType;
             node.Value.TargetSiteId = traceAttempt.TargetSiteId;
             node.Value.TargetSiteName = traceAttempt.TargetSiteName;
+            node.Value.PreparedRequestHeaders = traceAttempt.PreparedRequestHeaders;
             node.Value.UpdatedAt = DateTimeOffset.UtcNow;
             return traceAttempt.AttemptId;
         }
@@ -227,6 +231,9 @@ public sealed class DeveloperInvocationTraceStore
             TargetSiteName = entry.TargetSiteName,
             RequestBody = entry.RequestBody,
             RequestHeaders = entry.RequestHeaders.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase),
+            PreparedRequestHeaders = entry.PreparedRequestHeaders != null
+                ? new Dictionary<string, string>(entry.PreparedRequestHeaders, StringComparer.OrdinalIgnoreCase)
+                : [],
             Status = entry.Status,
             StatusCode = entry.StatusCode,
             ErrorMessage = entry.ErrorMessage,
@@ -257,6 +264,9 @@ public sealed class DeveloperInvocationTraceStore
             TargetSiteId = attempt.TargetSiteId,
             TargetSiteName = attempt.TargetSiteName,
             PreparedRequestBody = attempt.PreparedRequestBody,
+            PreparedRequestHeaders = attempt.PreparedRequestHeaders != null
+                ? new Dictionary<string, string>(attempt.PreparedRequestHeaders, StringComparer.OrdinalIgnoreCase)
+                : [],
             Status = attempt.Status,
             StatusCode = attempt.StatusCode,
             ErrorMessage = attempt.ErrorMessage,
@@ -444,6 +454,10 @@ public sealed class DeveloperInvocationAttempt
     /// 透传场景下与原始请求体基本一致；转换场景下是协议转换后的结果，排查上游参数错误（如 1210）的关键。
     /// </summary>
     public string PreparedRequestBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 重写/模拟后实际发往上游站点的请求头。
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? PreparedRequestHeaders { get; set; }
 }
 
 /// <summary>
@@ -494,7 +508,7 @@ public sealed class DeveloperInvocationResult
 }
 
 /// <summary>
-/// 开发者调用跟踪记录。
+/// 开发者调用跟踪条目。
 /// </summary>
 public sealed class DeveloperInvocationTraceEntry
 {
@@ -562,6 +576,10 @@ public sealed class DeveloperInvocationTraceEntry
     /// 请求头。
     /// </summary>
     public Dictionary<string, string> RequestHeaders { get; set; } = [];
+    /// <summary>
+    /// 重写/模拟后发往上游的请求头（取自最新尝试）。
+    /// </summary>
+    public Dictionary<string, string> PreparedRequestHeaders { get; set; } = [];
     /// <summary>
     /// 状态。
     /// </summary>
@@ -650,6 +668,10 @@ public sealed class DeveloperInvocationTraceAttempt
     /// 透传场景下与原始请求体基本一致；转换场景下是协议转换后的结果，排查上游参数错误（如 1210）的关键。
     /// </summary>
     public string PreparedRequestBody { get; set; } = string.Empty;
+    /// <summary>
+    /// 重写/模拟后实际发往上游站点的请求头。
+    /// </summary>
+    public Dictionary<string, string> PreparedRequestHeaders { get; set; } = [];
     /// <summary>
     /// 状态。
     /// </summary>

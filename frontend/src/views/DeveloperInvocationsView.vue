@@ -34,6 +34,9 @@ import {
   developerHashForTab,
   developerTabFromHash,
   setProtocolDiagnosticsPrefill,
+  hasRewrittenHeaders,
+  getRewrittenHeaders,
+  getCurrentDisplayHeaders,
   type DeveloperToolTab,
   type ProtocolDiagnosticsPrefill
 } from './developerInvocationsState'
@@ -48,6 +51,7 @@ interface DeveloperInvocationAttempt {
   statusCode: number
   errorMessage: string
   preparedRequestBody: string
+  preparedRequestHeaders?: Record<string, string>
   responseBody: string
   responseContentType: string
   isStreaming: boolean
@@ -69,6 +73,7 @@ interface DeveloperInvocationDetail {
   requestPath: string
   requestModel: string
   requestHeaders: Record<string, string>
+  preparedRequestHeaders?: Record<string, string>
   requestBody: string
   targetSiteName: string
   attemptedModel: string
@@ -188,6 +193,15 @@ function bodyText(value: unknown): string {
 function headersText(headers: Record<string, string> | null | undefined): string {
   if (!headers || Object.keys(headers).length === 0) return '无'
   return Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join('\n')
+}
+
+const headersTab = ref<Record<string, 'original' | 'rewritten'>>({})
+
+function getActiveHeadersMode(traceId: string, detail: DeveloperInvocationDetail): 'original' | 'rewritten' {
+  if (headersTab.value[traceId]) {
+    return headersTab.value[traceId]
+  }
+  return hasRewrittenHeaders(detail) ? 'rewritten' : 'original'
 }
 
 function attemptStats(entry: DeveloperInvocationSummary): string {
@@ -363,7 +377,9 @@ function refreshActiveTab(): void {
 }
 
 function handleVisibilityChange(): void {
-  if (document.visibilityState === 'visible') refreshActiveTab()
+  if (document.visibilityState === 'visible' && autoRefresh.value) {
+    refreshActiveTab()
+  }
 }
 
 function handleSummarizeChange(): void {
@@ -575,10 +591,36 @@ onUnmounted(() => {
                     </div>
                     <div class="trace-code-panel">
                       <div class="trace-panel-header">
-                        <div class="trace-section-title">请求头</div>
-                        <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(headersText(details[entry.traceId].requestHeaders))">复制</NButton>
+                        <div class="trace-header-toggle-wrap">
+                          <button
+                            type="button"
+                            class="trace-header-toggle-btn"
+                            :class="{ active: getActiveHeadersMode(entry.traceId, details[entry.traceId]) === 'original' }"
+                            @click="headersTab[entry.traceId] = 'original'"
+                          >
+                            原始请求头
+                          </button>
+                          <button
+                            type="button"
+                            class="trace-header-toggle-btn"
+                            :class="{ active: getActiveHeadersMode(entry.traceId, details[entry.traceId]) === 'rewritten' }"
+                            @click="headersTab[entry.traceId] = 'rewritten'"
+                          >
+                            ⚡ 重写后请求头
+                            <span v-if="hasRewrittenHeaders(details[entry.traceId])" class="trace-header-badge-tag">已改写</span>
+                            <span v-else class="trace-header-badge-tag-muted">无改写</span>
+                          </button>
+                        </div>
+                        <NButton
+                          size="tiny"
+                          secondary
+                          class="trace-copy-btn"
+                          @click="copyText(headersText(getCurrentDisplayHeaders(details[entry.traceId], getActiveHeadersMode(entry.traceId, details[entry.traceId]))))"
+                        >
+                          复制
+                        </NButton>
                       </div>
-                      <pre class="trace-pre trace-pre-compact">{{ headersText(details[entry.traceId].requestHeaders) }}</pre>
+                      <pre class="trace-pre trace-pre-compact">{{ headersText(getCurrentDisplayHeaders(details[entry.traceId], getActiveHeadersMode(entry.traceId, details[entry.traceId]))) }}</pre>
                     </div>
                   </div>
                   <div v-if="details[entry.traceId].errorMessage" class="trace-code-panel trace-code-panel-danger trace-final-error">
@@ -637,6 +679,15 @@ onUnmounted(() => {
                             🤖 AI 深度诊断
                           </NButton>
                         </div>
+                      </div>
+
+                      <!-- 尝试的重写请求头 -->
+                      <div v-if="attempt.preparedRequestHeaders && Object.keys(attempt.preparedRequestHeaders).length > 0" class="trace-code-panel trace-attempt-headers-panel">
+                        <div class="trace-panel-header">
+                          <div class="trace-section-title">⚡ 重写后请求头（发往上游）</div>
+                          <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(headersText(attempt.preparedRequestHeaders))">复制</NButton>
+                        </div>
+                        <pre class="trace-pre trace-pre-compact">{{ headersText(attempt.preparedRequestHeaders) }}</pre>
                       </div>
 
                       <div class="trace-attempt-body-grid">
@@ -929,6 +980,74 @@ onUnmounted(() => {
   justify-content: space-between;
   gap: 12px;
   flex-wrap: wrap;
+}
+
+.trace-header-toggle-wrap {
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg-surface-soft);
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color-soft);
+  gap: 2px;
+}
+
+.trace-header-toggle-btn {
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-color-secondary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.trace-header-toggle-btn:hover {
+  color: var(--text-color-primary);
+}
+
+.trace-header-toggle-btn.active {
+  background: var(--primary-color, #10b981);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.trace-header-badge-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.2);
+  color: #10b981;
+  font-weight: 600;
+}
+
+.trace-header-toggle-btn.active .trace-header-badge-tag {
+  background: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+.trace-header-badge-tag-muted {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  border-radius: 4px;
+  background: var(--bg-surface-soft);
+  color: var(--text-color-tertiary, #94a3b8);
+  font-weight: 400;
+}
+
+.trace-header-toggle-btn.active .trace-header-badge-tag-muted {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.trace-attempt-headers-panel {
+  margin-top: 12px;
 }
 
 .trace-title-group,

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import {
   NCard, NButton, NSpace, NTag, NModal, NForm, NFormItem, NInput, NInputNumber,
   NSwitch, NSelect, NPopconfirm, NEmpty, NSpin, NTabs, NTabPane, NTooltip, useMessage
@@ -9,7 +9,6 @@ import * as modelsApi from '@/api/models'
 import * as compatApi from '@/api/compatibility'
 import type { ModelListItem, ModelPayload } from '@/api/models'
 import { getHeaderProfiles, type HeaderProfile } from '@/api/headerProfiles'
-import { getProxyProfiles, type ProxyProfile } from '@/api/proxyProfiles'
 import PageHeader from '@/components/PageHeader.vue'
 import ModelPricingPanel from '@/components/ModelPricingPanel.vue'
 import {
@@ -19,13 +18,61 @@ import {
   renameVendor,
 } from './models/vendorCatalogState'
 
+export type ModelsTab = 'gallery' | 'rules' | 'pricing'
+
 const message = useMessage()
 const route = useRoute()
+const router = useRouter()
 const loading = ref(false)
 const vendorGroups = ref<modelsApi.ModelVendorGroup[]>([])
 const profileOptions = ref<{ label: string; value: string }[]>([])
 const modelSearch = ref('')
-const activeTab = ref('gallery')
+
+function getModelsTabFromUrl(): ModelsTab {
+  const hash = route.hash.replace(/^#/, '').toLowerCase()
+  const queryTab = (typeof route.query.tab === 'string' ? route.query.tab : '').toLowerCase()
+  const target = hash || queryTab
+  if (target === 'rules' || target === 'vendor-rules') {
+    return 'rules'
+  }
+  if (target === 'pricing' || target === 'price' || target === 'prices') {
+    return 'pricing'
+  }
+  return 'gallery'
+}
+
+function getHashForTab(tab: ModelsTab): string {
+  if (tab === 'rules') return '#rules'
+  if (tab === 'pricing') return '#pricing'
+  return '#gallery'
+}
+
+const activeTab = ref<ModelsTab>(getModelsTabFromUrl())
+
+watch(activeTab, (tab) => {
+  const nextHash = getHashForTab(tab)
+  if (route.hash !== nextHash) {
+    void router.replace({
+      hash: nextHash,
+      query: { ...route.query, tab: undefined }
+    })
+  }
+})
+
+watch(() => route.hash, () => {
+  const tab = getModelsTabFromUrl()
+  if (activeTab.value !== tab) {
+    activeTab.value = tab
+  }
+})
+
+watch(() => route.query.tab, () => {
+  const tab = getModelsTabFromUrl()
+  if (activeTab.value !== tab) {
+    activeTab.value = tab
+  }
+})
+
 const vendorRuleSearch = ref('')
 const vendorCatalog = ref<modelsApi.ModelVendorCatalog>({ vendors: [], rules: [] })
 const loadedVendorCatalog = ref<modelsApi.ModelVendorCatalog>({ vendors: [], rules: [] })
@@ -53,34 +100,12 @@ const form = reactive<ModelPayload>({
 })
 const saving = ref(false)
 const headerProfiles = ref<HeaderProfile[]>([])
-const proxyProfiles = ref<ProxyProfile[]>([])
 
 async function loadHeaderProfiles() {
   try {
     headerProfiles.value = await getHeaderProfiles()
   } catch {}
 }
-
-async function loadProxyProfiles() {
-  try {
-    proxyProfiles.value = await getProxyProfiles()
-  } catch {}
-}
-
-const proxyProfileOptions = computed(() => {
-  const options = [{ label: '直连 (默认不使用代理)', value: '' }]
-  if (proxyProfiles.value && proxyProfiles.value.length > 0) {
-    for (const p of proxyProfiles.value) {
-      if (p.isEnabled) {
-        options.push({
-          label: `🌐 ${p.name} (${p.proxyUrl})`,
-          value: p.proxyUrl
-        })
-      }
-    }
-  }
-  return options
-})
 
 const clientEmulationOptions = computed(() => {
   const options = [{ label: '无 (None - 标准API直连)', value: 'None' }]
@@ -95,9 +120,11 @@ const clientEmulationOptions = computed(() => {
     }
   } else {
     options.push(
-      { label: '⚡ OpenCode CLI (opencode/1.15.0)', value: 'OpenCode' },
-      { label: '⚡ Claude Code CLI (claude-code/0.2.29)', value: 'ClaudeCode' },
-      { label: '⚡ GitHub Copilot / Codex (0.133.0)', value: 'CodexCli' },
+      { label: '⚡ Codex Desktop 官方客户端 (默认)', value: 'CodexCli' },
+      { label: '⚡ Codex VS Code 插件', value: 'CodexVsCode' },
+      { label: '⚡ OpenCode CLI 终端', value: 'OpenCode' },
+      { label: '⚡ Claude Code 官方命令行', value: 'ClaudeCode' },
+      { label: '⚡ ZCode / GLM 客户端', value: 'ZCode' },
       { label: '⚡ Google Antigravity CLI', value: 'Antigravity' },
       { label: '⚡ Google Gemini CLI', value: 'GeminiCli' }
     )
@@ -112,7 +139,6 @@ const newMappingRemoteName = ref('')
 const newMappingMaxConcurrency = ref(0)
 const newMappingClientEmulation = ref('None')
 const newMappingExtraHeadersJson = ref('')
-const newMappingEgressProxyUrl = ref('')
 const newMappingEnabled = ref(true)
 const mappingLoading = ref(false)
 const mappingUpdating = ref<Record<string, boolean>>({})
@@ -191,11 +217,9 @@ function openCreate(): void {
   newMappingMaxConcurrency.value = 0
   newMappingClientEmulation.value = 'None'
   newMappingExtraHeadersJson.value = ''
-  newMappingEgressProxyUrl.value = ''
   newMappingEnabled.value = true
   mappingLoading.value = false
   loadHeaderProfiles()
-  loadProxyProfiles()
   showModal.value = true
 }
 
@@ -222,7 +246,6 @@ async function openEdit(model: ModelListItem): Promise<void> {
     extraHeadersJson: ''
   })
   loadHeaderProfiles()
-  loadProxyProfiles()
   showModal.value = true
   // 同时加载映射数据，供弹窗内映射区块展示与编辑
   await loadModelDetail(model)
@@ -234,7 +257,6 @@ async function loadModelDetail(model: ModelListItem): Promise<void> {
   newMappingMaxConcurrency.value = 0
   newMappingClientEmulation.value = 'None'
   newMappingExtraHeadersJson.value = ''
-  newMappingEgressProxyUrl.value = ''
   newMappingEnabled.value = true
   await refreshModelDetail(model.id)
 }
@@ -413,7 +435,7 @@ async function handleAddMapping(): Promise<void> {
       newMappingMaxConcurrency.value,
       newMappingClientEmulation.value,
       newMappingExtraHeadersJson.value.trim() || undefined,
-      newMappingEgressProxyUrl.value.trim() || undefined,
+      undefined,
       newMappingEnabled.value
     )
     message.success('站点关联已添加')
@@ -424,7 +446,6 @@ async function handleAddMapping(): Promise<void> {
       newMappingMaxConcurrency.value = 0
       newMappingClientEmulation.value = 'None'
       newMappingExtraHeadersJson.value = ''
-      newMappingEgressProxyUrl.value = ''
       newMappingEnabled.value = true
     }
     await loadModels()
@@ -453,8 +474,7 @@ async function handleSaveMapping(mapping: modelsApi.ModelSiteMapping): Promise<v
       isEnabled: mapping.isEnabled,
       maxConcurrency: mapping.maxConcurrency,
       clientEmulation: mapping.clientEmulation || 'None',
-      extraHeadersJson: mapping.extraHeadersJson?.trim() || undefined,
-      egressProxyUrl: mapping.egressProxyUrl?.trim() || undefined
+      extraHeadersJson: mapping.extraHeadersJson?.trim() || undefined
     })
     message.success(`站点【${mapping.siteName}】映射配置已保存`)
   } catch (e) {
@@ -488,7 +508,6 @@ function modelStatusType(model: ModelListItem): 'success' | 'default' {
 onMounted(() => {
   loadModels()
   loadHeaderProfiles()
-  loadProxyProfiles()
 })
 </script>
 
@@ -757,7 +776,7 @@ onMounted(() => {
                       已关联站点
                       <NTooltip trigger="hover">
                         <template #trigger><span class="tip-icon">?</span></template>
-                        每个站点映射可独立配置最大并发、客户端特征伪装与专属出口代理，修改后点击「保存配置」生效。
+                        每个站点映射可独立配置最大并发与客户端特征伪装，修改后点击「保存配置」生效。
                       </NTooltip>
                     </h4>
                   </div>
@@ -798,17 +817,6 @@ onMounted(() => {
                             <span class="mapping-field-label">客户端特征模拟</span>
                             <NSelect v-model:value="m.clientEmulation" :options="clientEmulationOptions" size="small" />
                           </div>
-                          <div class="mapping-field-col">
-                            <span class="mapping-field-label">专属出口网络代理 (默认直连)</span>
-                            <NSelect
-                              v-model:value="m.egressProxyUrl"
-                              :options="proxyProfileOptions"
-                              filterable
-                              tag
-                              size="small"
-                              placeholder="选择代理节点（留空或直连则不使用代理）"
-                            />
-                          </div>
                         </div>
                       </div>
                     </div>
@@ -842,15 +850,6 @@ onMounted(() => {
                       </NFormItem>
                       <NFormItem label="客户端特征模拟">
                         <NSelect v-model:value="newMappingClientEmulation" :options="clientEmulationOptions" />
-                      </NFormItem>
-                      <NFormItem label="专属出口代理 (默认直连)">
-                        <NSelect
-                          v-model:value="newMappingEgressProxyUrl"
-                          :options="proxyProfileOptions"
-                          filterable
-                          tag
-                          placeholder="选择代理节点（留空或直连则不使用代理）"
-                        />
                       </NFormItem>
                       <NFormItem label="启用状态" class="mapping-enabled-item">
                         <div class="mapping-enabled-line">
@@ -1595,8 +1594,8 @@ onMounted(() => {
 
 .mapping-fields-row {
   display: grid;
-  grid-template-columns: minmax(220px, 1.4fr) 125px minmax(220px, 1.3fr) minmax(240px, 1.5fr);
-  gap: 12px;
+  grid-template-columns: minmax(260px, 1.6fr) 140px minmax(260px, 1.4fr);
+  gap: 14px;
   align-items: start;
 }
 
@@ -1625,8 +1624,8 @@ onMounted(() => {
 
 .mapping-add-grid-primary {
   display: grid;
-  grid-template-columns: minmax(160px, 1.2fr) minmax(180px, 1.3fr) 115px minmax(180px, 1.3fr) minmax(200px, 1.5fr) auto auto;
-  gap: 12px;
+  grid-template-columns: minmax(200px, 1.3fr) minmax(220px, 1.5fr) 130px minmax(240px, 1.5fr) auto auto;
+  gap: 14px;
   align-items: end;
 }
 

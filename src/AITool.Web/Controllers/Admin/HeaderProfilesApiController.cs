@@ -1,29 +1,29 @@
 using System.Text.Json;
 using AITool.Application.Common;
+using AITool.Application.Proxy;
 using AITool.Domain.Sites;
-using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Proxy;
 using AITool.Web.Contracts;
 using AITool.Web.Services;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using SqlSugar;
 
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// 请求头模板与客户端特征方案管理控制器（供调试工具及全局下拉选择使用）。
+/// 请求头模板与客户端特征方案管理控制器（保存在本地 client-header-profiles.json，脱离数据库存储）。
 /// </summary>
 [ApiController]
 [Route("api/admin/developer/header-profiles")]
 public class HeaderProfilesApiController : ControllerBase
 {
-    private readonly AppDbContext _dbContext;
+    private readonly IHeaderProfileCatalogService _catalogService;
     private readonly ProxyRequestMetadataCache? _metadataCache;
 
-    public HeaderProfilesApiController(AppDbContext dbContext, ProxyRequestMetadataCache? metadataCache = null)
+    public HeaderProfilesApiController(
+        IHeaderProfileCatalogService catalogService,
+        ProxyRequestMetadataCache? metadataCache = null)
     {
-        _dbContext = dbContext;
+        _catalogService = catalogService;
         _metadataCache = metadataCache;
     }
 
@@ -33,13 +33,7 @@ public class HeaderProfilesApiController : ControllerBase
     [HttpGet]
     public async Task<IActionResult> List(CancellationToken cancellationToken)
     {
-        await EnsureBuiltInProfilesAsync(cancellationToken);
-
-        var profiles = await _dbContext.HeaderProfiles
-            .OrderByDescending(x => x.IsBuiltIn)
-            .ThenBy(x => x.SortOrder)
-            .ThenBy(x => x.Key)
-            .ToListAsync(cancellationToken);
+        var profiles = await _catalogService.GetAllAsync(cancellationToken);
 
         return Ok(profiles.Select(p => new
         {
@@ -62,7 +56,7 @@ public class HeaderProfilesApiController : ControllerBase
     [HttpGet("{id:guid}")]
     public async Task<IActionResult> Get(Guid id, CancellationToken cancellationToken)
     {
-        var profile = await _dbContext.HeaderProfiles.InSingleAsync(id);
+        var profile = await _catalogService.GetByIdAsync(id, cancellationToken);
         if (profile is null)
         {
             return NotFound(ApiResponse.Fail("请求头方案不存在", "profile_not_found"));
@@ -95,9 +89,8 @@ public class HeaderProfilesApiController : ControllerBase
         }
 
         var key = payload.Key.Trim();
-        var exists = await _dbContext.HeaderProfiles
-            .AnyAsync(x => x.Key == key, cancellationToken);
-        if (exists)
+        var existing = await _catalogService.GetByKeyAsync(key, cancellationToken);
+        if (existing != null)
         {
             return Conflict(ApiResponse.Fail($"标识 Key '{key}' 已存在，请更换", "duplicate_key"));
         }
@@ -119,11 +112,18 @@ public class HeaderProfilesApiController : ControllerBase
             CreatedAt = DateTimeOffset.UtcNow
         };
 
-        await _dbContext.InsertAsync(profile, cancellationToken);
-        _metadataCache?.InvalidateRouteTargets();
-        _metadataCache?.InvalidateModelMetadata();
+        try
+        {
+            var created = await _catalogService.CreateAsync(profile, cancellationToken);
+            _metadataCache?.InvalidateRouteTargets();
+            _metadataCache?.InvalidateModelMetadata();
 
-        return Ok(ApiResponse.Ok(new { id = profile.Id, key = profile.Key }, "请求头方案已创建"));
+            return Ok(ApiResponse.Ok(new { id = created.Id, key = created.Key }, "请求头方案已创建"));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Conflict(ApiResponse.Fail(ex.Message, "duplicate_key"));
+        }
     }
 
     /// <summary>
@@ -137,7 +137,7 @@ public class HeaderProfilesApiController : ControllerBase
             return BadRequest(ApiResponse.Fail("方案名称不能为空", "invalid_input"));
         }
 
-        var profile = await _dbContext.HeaderProfiles.InSingleAsync(id);
+        var profile = await _catalogService.GetByIdAsync(id, cancellationToken);
         if (profile is null)
         {
             return NotFound(ApiResponse.Fail("请求头方案不存在", "profile_not_found"));
@@ -149,29 +149,31 @@ public class HeaderProfilesApiController : ControllerBase
         }
 
         // 内置方案不允许修改 Key，自定义方案允许修改 Key（需预检重名）
+        string? newKey = null;
         if (!profile.IsBuiltIn && !string.IsNullOrWhiteSpace(payload.Key))
         {
-            var newKey = payload.Key.Trim();
-            if (!string.Equals(newKey, profile.Key, StringComparison.OrdinalIgnoreCase))
+            var candidateKey = payload.Key.Trim();
+            if (!string.Equals(candidateKey, profile.Key, StringComparison.OrdinalIgnoreCase))
             {
-                var duplicate = await _dbContext.HeaderProfiles
-                    .AnyAsync(x => x.Key == newKey && x.Id != id, cancellationToken);
-                if (duplicate)
+                var duplicate = await _catalogService.GetByKeyAsync(candidateKey, cancellationToken);
+                if (duplicate != null && duplicate.Id != id)
                 {
-                    return Conflict(ApiResponse.Fail($"标识 Key '{newKey}' 已存在", "duplicate_key"));
+                    return Conflict(ApiResponse.Fail($"标识 Key '{candidateKey}' 已存在", "duplicate_key"));
                 }
-                profile.Key = newKey;
+                newKey = candidateKey;
             }
         }
 
-        profile.Name = payload.Name.Trim();
-        profile.Description = payload.Description?.Trim();
-        profile.HeadersJson = string.IsNullOrWhiteSpace(payload.HeadersJson) ? null : payload.HeadersJson.Trim();
-        profile.IsEnabled = payload.IsEnabled;
-        profile.SortOrder = payload.SortOrder;
-        profile.UpdatedAt = DateTimeOffset.UtcNow;
+        await _catalogService.UpdateAsync(id, target =>
+        {
+            if (newKey != null) target.Key = newKey;
+            target.Name = payload.Name.Trim();
+            target.Description = payload.Description?.Trim();
+            target.HeadersJson = string.IsNullOrWhiteSpace(payload.HeadersJson) ? null : payload.HeadersJson.Trim();
+            target.IsEnabled = payload.IsEnabled;
+            target.SortOrder = payload.SortOrder;
+        }, cancellationToken);
 
-        await _dbContext.UpdateAsync(profile, cancellationToken);
         _metadataCache?.InvalidateRouteTargets();
         _metadataCache?.InvalidateModelMetadata();
 
@@ -184,7 +186,7 @@ public class HeaderProfilesApiController : ControllerBase
     [HttpDelete("{id:guid}")]
     public async Task<IActionResult> Delete(Guid id, CancellationToken cancellationToken)
     {
-        var profile = await _dbContext.HeaderProfiles.InSingleAsync(id);
+        var profile = await _catalogService.GetByIdAsync(id, cancellationToken);
         if (profile is null)
         {
             return NotFound(ApiResponse.Fail("请求头方案不存在", "profile_not_found"));
@@ -195,10 +197,29 @@ public class HeaderProfilesApiController : ControllerBase
             return BadRequest(ApiResponse.Fail("系统内置预设方案禁止删除，您可以禁用或克隆它", "builtin_cannot_delete"));
         }
 
-        await _dbContext.DeleteAsync(profile, cancellationToken);
+        try
+        {
+            await _catalogService.DeleteAsync(id, cancellationToken);
+            _metadataCache?.InvalidateRouteTargets();
+            _metadataCache?.InvalidateModelMetadata();
+            return Ok(ApiResponse.Ok("请求头方案已删除"));
+        }
+        catch (InvalidOperationException ex)
+        {
+            return BadRequest(ApiResponse.Fail(ex.Message, "builtin_cannot_delete"));
+        }
+    }
+
+    /// <summary>
+    /// 重置系统内置预设方案为官方最新默认值。
+    /// </summary>
+    [HttpPost("reset-builtins")]
+    public async Task<IActionResult> ResetBuiltIns(CancellationToken cancellationToken)
+    {
+        var profiles = await _catalogService.ResetBuiltInsAsync(cancellationToken);
         _metadataCache?.InvalidateRouteTargets();
         _metadataCache?.InvalidateModelMetadata();
-        return Ok(ApiResponse.Ok("请求头方案已删除"));
+        return Ok(ApiResponse.Ok(profiles, "系统内置预设已重置为官方默认值"));
     }
 
     /// <summary>
@@ -262,108 +283,6 @@ public class HeaderProfilesApiController : ControllerBase
             errorMessage = ex.Message;
             return false;
         }
-    }
-
-    private async Task EnsureBuiltInProfilesAsync(CancellationToken ct)
-    {
-        var existingKeys = (await _dbContext.HeaderProfiles
-            .Select(x => x.Key)
-            .ToListAsync(ct))
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-
-        var builtIns = GetBuiltInProfiles();
-        var toInsert = builtIns.Where(p => !existingKeys.Contains(p.Key)).ToList();
-        if (toInsert.Count > 0)
-        {
-            await _dbContext.InsertRangeAsync(toInsert, ct);
-        }
-    }
-
-    public static List<HeaderProfile> GetBuiltInProfiles()
-    {
-        return
-        [
-            new HeaderProfile
-            {
-                Key = ClientEmulationConstants.OpenCode,
-                Name = "OpenCode CLI 终端",
-                Description = "模拟 OpenCode 官方命令行终端特征（支持免密访问 OpenCode Zen 免费模型等上游识别）",
-                HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
-                {
-                    ["User-Agent"] = "opencode/1.15.0 ai-sdk/provider-utils/4.0.23 runtime/bun/1.3.13",
-                    ["x-opencode-client"] = "cli",
-                    ["x-opencode-project"] = "global",
-                    ["x-opencode-request"] = "msg_${nanoid:12}",
-                    ["x-opencode-session"] = "ses_${nanoid:12}"
-                }, new JsonSerializerOptions { WriteIndented = true }),
-                IsBuiltIn = true,
-                IsEnabled = true,
-                SortOrder = 1
-            },
-            new HeaderProfile
-            {
-                Key = ClientEmulationConstants.ClaudeCode,
-                Name = "Claude Code 官方命令行",
-                Description = "模拟 Anthropic 官方 Claude Code 终端命令行特征（防封控与免审查优化）",
-                HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
-                {
-                    ["User-Agent"] = "claude-code/0.2.29 (external; x86_64-pc-windows-msvc)",
-                    ["anthropic-client-name"] = "claude-code",
-                    ["anthropic-client-version"] = "0.2.29",
-                    ["anthropic-beta"] = "prompt-caching-2024-07-31,computer-use-2024-10-22"
-                }, new JsonSerializerOptions { WriteIndented = true }),
-                IsBuiltIn = true,
-                IsEnabled = true,
-                SortOrder = 2
-            },
-            new HeaderProfile
-            {
-                Key = ClientEmulationConstants.CodexCli,
-                Name = "GitHub Copilot / Codex",
-                Description = "模拟 VS Code GitHub Copilot 与 OpenAI Codex 客户端特征",
-                HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
-                {
-                    ["User-Agent"] = "GitHubCopilotChat/0.24.1 VSCode/1.96.2",
-                    ["Editor-Version"] = "vscode/1.96.2",
-                    ["Editor-Plugin-Version"] = "copilot-chat/0.24.1",
-                    ["Openai-Organization"] = "github-copilot",
-                    ["X-Request-Id"] = "${guid}",
-                    ["Session-Id"] = "${guid}"
-                }, new JsonSerializerOptions { WriteIndented = true }),
-                IsBuiltIn = true,
-                IsEnabled = true,
-                SortOrder = 3
-            },
-            new HeaderProfile
-            {
-                Key = ClientEmulationConstants.Antigravity,
-                Name = "Google Antigravity CLI",
-                Description = "模拟 Google Antigravity 官方客户端特征（自动注入动态 requestId 与 gl-node 指纹）",
-                HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
-                {
-                    ["User-Agent"] = "antigravity/1.10.4 linux/x86_64",
-                    ["x-goog-api-client"] = "gl-node/20.18.0 antigravity-cli/1.10.4",
-                    ["requestId"] = "req-${guid:N}",
-                    ["requestType"] = "agent"
-                }, new JsonSerializerOptions { WriteIndented = true }),
-                IsBuiltIn = true,
-                IsEnabled = true,
-                SortOrder = 4
-            },
-            new HeaderProfile
-            {
-                Key = ClientEmulationConstants.GeminiCli,
-                Name = "Google Gemini CLI",
-                Description = "模拟 Google Gemini CLI 官方工具（支持自动注入动态模型名与 project-id）",
-                HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
-                {
-                    ["User-Agent"] = "GeminiCLI/0.35.2/${model} (win32; x64; cloud-shell)"
-                }, new JsonSerializerOptions { WriteIndented = true }),
-                IsBuiltIn = true,
-                IsEnabled = true,
-                SortOrder = 5
-            }
-        ];
     }
 }
 

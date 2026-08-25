@@ -21,8 +21,8 @@ public sealed class CodexModelFetcher : ICodexModelFetcher
     public CodexModelFetcher(HttpClient httpClient, IOptions<CodexUpstreamOptions> options)
     {
         _httpClient = httpClient;
-        _clientVersion = options?.Value?.ClientVersion ?? "0.133.0";
-        _userAgent = $"codex_cli_rs/{_clientVersion}{UserAgentSuffix}";
+        _clientVersion = options?.Value?.ClientVersion ?? "0.149.0-alpha.4.3";
+        _userAgent = $"Codex Desktop/{_clientVersion} (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
     }
 
     /// <inheritdoc />
@@ -31,7 +31,7 @@ public sealed class CodexModelFetcher : ICodexModelFetcher
         using var request = new HttpRequestMessage(HttpMethod.Get, $"{ModelsBaseUrl}?client_version={_clientVersion}");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        request.Headers.TryAddWithoutValidation("Originator", "codex_cli_rs");
+        request.Headers.TryAddWithoutValidation("Originator", "Codex Desktop");
         request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
         if (!string.IsNullOrEmpty(accountId))
         {

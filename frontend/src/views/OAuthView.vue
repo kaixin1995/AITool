@@ -535,13 +535,20 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
         ? model.existingDisplayName
         : model.displayName || model.remoteModelName
     }))
-    checkedModels.value = models
+    const previouslyEnabled = models
       .filter(model => (
         model.existingMappingId
           ? model.isEnabled
           : false
       ))
       .map(model => model.remoteModelName)
+
+    if (previouslyEnabled.length > 0) {
+      checkedModels.value = previouslyEnabled
+    } else {
+      // 若当前没有任何已启用的映射，默认勾选全部拉取到的可用模型
+      checkedModels.value = models.map(model => model.remoteModelName)
+    }
   } catch (e) { message.error((e as Error).message) } finally { modelLoading.value = false }
 }
 
@@ -562,8 +569,8 @@ function toggleVisibleModels(checked: boolean): void {
 }
 async function handleImportModels(): Promise<void> {
   if (!modelAccount.value || modelList.value.length === 0) { message.warning('暂无可同步的模型'); return }
-  if (modelAccount.value.provider === 'codex' && checkedModels.value.length === 0) {
-    message.warning('请选择要导入的模型')
+  if (checkedModels.value.length === 0) {
+    message.warning(modelAccount.value.provider === 'codex' ? '请选择要导入的模型' : '请至少选择一个要同步启用的模型')
     return
   }
   modelLoading.value = true

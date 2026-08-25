@@ -61,10 +61,30 @@ public sealed class GoogleModelFetcher : IGoogleModelFetcher
                 models.Add((property.Name, ExtractDisplayName(property.Value, property.Name)));
             }
 
-            // gcli2api 同款补齐：存在 claude-sonnet-4-6 时补充其 thinking 变体。
+            // Antigravity 常用别名与变体补齐（对齐 gcli2api 与 ProxyProtocolBridge）：
+            // 1. 存在 claude-sonnet-4-6 时补充其 thinking 变体
             if (modelsElement.TryGetProperty("claude-sonnet-4-6", out _) && !modelsElement.TryGetProperty("claude-sonnet-4-6-thinking", out _))
             {
-                models.Add(("claude-sonnet-4-6-thinking", "claude-sonnet-4-6-thinking"));
+                models.Add(("claude-sonnet-4-6-thinking", "Claude Sonnet 4.6 (Thinking)"));
+            }
+
+            // 2. 存在 gemini-3.7-flash-tiered 时补充常用的 high / medium / low / 基础别名
+            if (modelsElement.TryGetProperty("gemini-3.7-flash-tiered", out _))
+            {
+                if (!modelsElement.TryGetProperty("gemini-3.7-flash-high", out _))
+                    models.Add(("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"));
+                if (!modelsElement.TryGetProperty("gemini-3.7-flash-medium", out _))
+                    models.Add(("gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"));
+                if (!modelsElement.TryGetProperty("gemini-3.7-flash-low", out _))
+                    models.Add(("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"));
+                if (!modelsElement.TryGetProperty("gemini-3.7-flash", out _))
+                    models.Add(("gemini-3.7-flash", "Gemini 3.7 Flash"));
+            }
+
+            // 3. 存在 gemini-pro-agent 时补充 gemini-3.1-pro-high 别名
+            if (modelsElement.TryGetProperty("gemini-pro-agent", out _) && !modelsElement.TryGetProperty("gemini-3.1-pro-high", out _))
+            {
+                models.Add(("gemini-3.1-pro-high", "Gemini 3.1 Pro (High)"));
             }
         }
 

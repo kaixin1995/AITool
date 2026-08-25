@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   developerHashForTab,
   developerTabFromHash,
+  getCurrentDisplayHeaders,
+  getRewrittenHeaders,
+  hasRewrittenHeaders,
   setProtocolDiagnosticsPrefill,
   supportsResponsesNatively,
   takeProtocolDiagnosticsPrefill
@@ -75,5 +78,46 @@ describe('Developer Invocations → 协议诊断台 联动', () => {
     expect(prefill?.targetSiteName).toBe('GeminiPro1')
     expect(prefill?.statusCode).toBe(400)
     expect(prefill?.errorMessage).toBe('Invalid argument')
+  })
+})
+
+describe('Developer Invocations 请求头重写切换与提取', () => {
+  it('当存在重写请求头时正确识别与提取', () => {
+    const detail = {
+      requestHeaders: { 'User-Agent': 'curl/7.68.0', 'Authorization': 'Bearer sk-raw' },
+      preparedRequestHeaders: { 'User-Agent': 'claude-code/0.2.29', 'anthropic-version': '2023-06-01' },
+      attempts: []
+    }
+
+    expect(hasRewrittenHeaders(detail)).toBe(true)
+    expect(getRewrittenHeaders(detail)).toEqual({ 'User-Agent': 'claude-code/0.2.29', 'anthropic-version': '2023-06-01' })
+    expect(getCurrentDisplayHeaders(detail, 'original')).toEqual({ 'User-Agent': 'curl/7.68.0', 'Authorization': 'Bearer sk-raw' })
+    expect(getCurrentDisplayHeaders(detail, 'rewritten')).toEqual({ 'User-Agent': 'claude-code/0.2.29', 'anthropic-version': '2023-06-01' })
+    expect(getCurrentDisplayHeaders(detail)).toEqual({ 'User-Agent': 'claude-code/0.2.29', 'anthropic-version': '2023-06-01' })
+  })
+
+  it('当仅尝试列表内存在重写头时能够提取', () => {
+    const detail = {
+      requestHeaders: { 'User-Agent': 'python-requests/2.28.1' },
+      attempts: [
+        {
+          preparedRequestHeaders: { 'User-Agent': 'opencode/1.15.0', 'x-api-key': 'sk-ant-test' }
+        }
+      ]
+    }
+
+    expect(hasRewrittenHeaders(detail)).toBe(true)
+    expect(getRewrittenHeaders(detail)).toEqual({ 'User-Agent': 'opencode/1.15.0', 'x-api-key': 'sk-ant-test' })
+  })
+
+  it('当无重写头时返回原始请求头或友好提示', () => {
+    const detail = {
+      requestHeaders: { 'User-Agent': 'my-client/1.0' },
+      attempts: []
+    }
+
+    expect(hasRewrittenHeaders(detail)).toBe(false)
+    expect(getCurrentDisplayHeaders(detail, 'original')).toEqual({ 'User-Agent': 'my-client/1.0' })
+    expect(getCurrentDisplayHeaders(detail, 'rewritten')).toHaveProperty('提示')
   })
 })

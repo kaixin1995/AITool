@@ -24,7 +24,8 @@ import {
   createRuleKeyResolver,
   filterSiteInstances,
   getDeleteEntryConfirmation,
-  isLatestRouteLoad
+  isLatestRouteLoad,
+  moveCandidate
 } from './routes/routeEditorState'
 
 interface TimeRange {
@@ -51,6 +52,7 @@ const dirty = ref(false)
 const availabilityDraft = ref<{ key: string; mode: RouteAvailabilityMode; ranges: TimeRange[] } | null>(null)
 const openAvailabilityKey = ref<string | null>(null)
 const draggingRuleIndex = ref<number | null>(null)
+const dragOverRuleIndex = ref<number | null>(null)
 const resolveRuleKey = createRuleKeyResolver()
 let latestLoadToken = 0
 let pendingSaveAfterCurrent = false
@@ -304,24 +306,74 @@ function addSelectedCandidate(): void {
   selectedSiteInstanceKey.value = null
 }
 
-function handleRuleDragStart(index: number): void {
+function handleRuleDragStart(index: number, event: DragEvent): void {
+  if (!canEdit.value) {
+    event.preventDefault()
+    return
+  }
+
+  const target = event.target as HTMLElement | null
+  if (target?.closest('button, input, select, .n-button, .n-select, .n-time-picker, .availability-popover, .route-actions, .order-actions')) {
+    event.preventDefault()
+    return
+  }
+
   draggingRuleIndex.value = index
+  dragOverRuleIndex.value = index
+
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    // Firefox / Safari 强制要求在 dragstart 中调用 setData，否则判定为无效拖拽并直接取消
+    event.dataTransfer.setData('text/plain', String(index))
+    event.dataTransfer.setData('application/x-aitool-route-index', String(index))
+  }
 }
 
-function handleRuleDragOver(index: number): void {
-  const from = draggingRuleIndex.value
-  if (from === null || from === index) return
+function handleRuleDragOver(index: number, event: DragEvent): void {
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+  if (draggingRuleIndex.value === null) return
+  if (dragOverRuleIndex.value !== index) {
+    dragOverRuleIndex.value = index
+  }
+}
 
-  const nextRules = [...rules.value]
-  const [draggedRule] = nextRules.splice(from, 1)
-  nextRules.splice(index, 0, draggedRule)
-  rules.value = nextRules
-  draggingRuleIndex.value = index
+function handleRuleDragEnter(index: number, event: DragEvent): void {
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+  if (draggingRuleIndex.value !== null) {
+    dragOverRuleIndex.value = index
+  }
+}
+
+function handleRuleDrop(targetIndex: number, event: DragEvent): void {
+  event.preventDefault()
+  const from = draggingRuleIndex.value
+  if (from !== null && from !== targetIndex && from >= 0 && from < rules.value.length) {
+    const nextRules = [...rules.value]
+    const [draggedRule] = nextRules.splice(from, 1)
+    nextRules.splice(targetIndex, 0, draggedRule)
+    rules.value = nextRules
+    saveAfterChange()
+  }
+  draggingRuleIndex.value = null
+  dragOverRuleIndex.value = null
 }
 
 function handleRuleDragEnd(): void {
-  if (draggingRuleIndex.value !== null) {
-    draggingRuleIndex.value = null
+  draggingRuleIndex.value = null
+  dragOverRuleIndex.value = null
+}
+
+function handleMoveRule(index: number, direction: -1 | 1): void {
+  if (!canEdit.value) return
+  const next = moveCandidate(rules.value, index, direction)
+  if (next !== rules.value) {
+    rules.value = next
     saveAfterChange()
   }
 }
@@ -476,13 +528,18 @@ onMounted(() => {
                   v-for="(rule, index) in rules"
                   :key="resolveRuleKey(rule)"
                   class="route-item"
-                  :class="{ dragging: draggingRuleIndex === index }"
-                  draggable="true"
-                  @dragstart="handleRuleDragStart(index)"
-                  @dragover.prevent="handleRuleDragOver(index)"
+                  :class="{
+                    dragging: draggingRuleIndex === index,
+                    'drop-target-active': dragOverRuleIndex === index && draggingRuleIndex !== null && draggingRuleIndex !== index
+                  }"
+                  :draggable="canEdit"
+                  @dragstart="handleRuleDragStart(index, $event)"
+                  @dragover="handleRuleDragOver(index, $event)"
+                  @dragenter="handleRuleDragEnter(index, $event)"
+                  @drop="handleRuleDrop(index, $event)"
                   @dragend="handleRuleDragEnd"
                 >
-                  <span class="drag-handle" aria-hidden="true">⠿</span>
+                  <span class="drag-handle" title="按住拖拽调整顺序" aria-hidden="true">⠿</span>
                   <span class="priority-num">{{ index + 1 }}</span>
                   <div class="site-info">
                     <div class="site-name-row">
@@ -494,7 +551,27 @@ onMounted(() => {
                     <!-- 上游模型优先显示对外名（显示名称），未匹配模型库时回退站点名 -->
                     <div class="remote-name">上游模型：{{ rule.modelDisplayName || rule.upstreamModelName }} · 站点实例：{{ rule.siteModelName }}</div>
                   </div>
-                  <NButton size="small" secondary class="availability-trigger" :disabled="!canEdit" @click="toggleAvailabilityEditor(rule)">时间规则</NButton>
+                  <div class="order-actions">
+                    <NButton
+                      size="tiny"
+                      quaternary
+                      :disabled="!canEdit || index === 0"
+                      title="上移"
+                      @click.stop="handleMoveRule(index, -1)"
+                    >
+                      ▲
+                    </NButton>
+                    <NButton
+                      size="tiny"
+                      quaternary
+                      :disabled="!canEdit || index === rules.length - 1"
+                      title="下移"
+                      @click.stop="handleMoveRule(index, 1)"
+                    >
+                      ▼
+                    </NButton>
+                  </div>
+                  <NButton size="small" secondary class="availability-trigger" :disabled="!canEdit" @click.stop="toggleAvailabilityEditor(rule)">时间规则</NButton>
                   <div class="route-actions">
                     <NPopconfirm @positive-click="removeRule(index)">
                       <template #trigger>
@@ -695,14 +772,21 @@ onMounted(() => {
 
 .route-item {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 12px;
   padding: 14px 16px;
   border-bottom: 1px solid var(--border-color-global);
   cursor: grab;
   user-select: none;
-  transition: background 0.15s;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -webkit-user-drag: element;
+  transition: background 0.15s, outline 0.15s;
+}
+
+.route-item:active {
+  cursor: grabbing;
 }
 
 .route-item:hover {
@@ -710,8 +794,14 @@ onMounted(() => {
 }
 
 .route-item.dragging {
-  opacity: 0.58;
+  opacity: 0.45;
   background: var(--status-info-bg);
+}
+
+.route-item.drop-target-active {
+  background: color-mix(in srgb, var(--primary-color) 12%, var(--bg-card));
+  outline: 2px dashed var(--primary-color);
+  outline-offset: -2px;
 }
 
 .drag-handle {
@@ -719,6 +809,36 @@ onMounted(() => {
   color: var(--text-color-secondary);
   font-size: 18px;
   cursor: grab;
+  touch-action: none;
+  user-select: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.drag-handle:hover {
+  color: var(--primary-color);
+  background: var(--bg-page);
+}
+
+.order-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.order-actions :deep(.n-button) {
+  height: 18px;
+  width: 24px;
+  padding: 0;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-color-secondary);
+}
+
+.order-actions :deep(.n-button:hover:not(:disabled)) {
+  color: var(--primary-color);
 }
 
 .priority-num {

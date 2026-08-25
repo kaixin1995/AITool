@@ -21,7 +21,7 @@ public sealed class CodexAccountProvisioner
 {
     private const string CodexManagedSource = "Codex";
     private const string CodexBaseUrl = "https://chatgpt.com/backend-api/codex";
-    private const string CodexUserAgent = "codex_cli_rs/0.133.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
+    private const string CodexUserAgent = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
 
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
@@ -275,12 +275,13 @@ public sealed class CodexAccountProvisioner
 
     private static void UpdateSiteExtraHeaders(Site site, string? accountId)
     {
-        var headers = new Dictionary<string, string>
+        var headers = new Dictionary<string, string>();
+        if (!string.IsNullOrWhiteSpace(accountId))
         {
-            ["Originator"] = "codex_cli_rs",
-            ["Chatgpt-Account-Id"] = accountId ?? string.Empty,
-            ["User-Agent"] = CodexUserAgent,
-        };
-        site.ExtraHeadersJson = JsonSerializer.Serialize(headers, JsonSerializerPresets.Compact);
+            headers["Chatgpt-Account-Id"] = accountId.Trim();
+        }
+        site.ExtraHeadersJson = headers.Count > 0
+            ? JsonSerializer.Serialize(headers, JsonSerializerPresets.Compact)
+            : null;
     }
 }

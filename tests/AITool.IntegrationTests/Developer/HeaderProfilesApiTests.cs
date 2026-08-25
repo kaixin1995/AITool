@@ -28,11 +28,13 @@ public sealed class HeaderProfilesApiTests
         var jsonOptions = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
         var profiles = await response.Content.ReadFromJsonAsync<List<HeaderProfileDto>>(jsonOptions);
         profiles.Should().NotBeNull();
-        profiles!.Count.Should().BeGreaterThanOrEqualTo(5);
+        profiles!.Count.Should().BeGreaterThanOrEqualTo(7);
 
         profiles.Should().Contain(p => p.Key == "OpenCode" && p.IsBuiltIn);
         profiles.Should().Contain(p => p.Key == "ClaudeCode" && p.IsBuiltIn);
         profiles.Should().Contain(p => p.Key == "CodexCli" && p.IsBuiltIn);
+        profiles.Should().Contain(p => p.Key == "CodexVsCode" && p.IsBuiltIn);
+        profiles.Should().Contain(p => p.Key == "ZCode" && p.IsBuiltIn);
         profiles.Should().Contain(p => p.Key == "Antigravity" && p.IsBuiltIn);
         profiles.Should().Contain(p => p.Key == "GeminiCli" && p.IsBuiltIn);
     }

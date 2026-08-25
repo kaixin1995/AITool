@@ -429,7 +429,7 @@ public sealed class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
                     var proxyMap = proxyProfiles
                         .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
-                    var headerProfileMap = await LoadHeaderProfileMapAsync(dbContext, cancellationToken);
+                    var headerProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     var baseChatTargets = (
                             from mapping in mappings
@@ -1350,7 +1350,7 @@ public sealed class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
                     var proxyMap = proxyProfiles
                         .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
-                    var headerProfileMap = await LoadHeaderProfileMapAsync(dbContext, cancellationToken);
+                    var headerProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     // 基础路由投影（每条 route × site × model 一条），不含 Key 维度。
                     var baseRoutes = (
@@ -1434,7 +1434,7 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
-    /// 加载已启用模型缓存。
+    /// 加载启用的模型缓存。
     /// </summary>
     private async Task<Dictionary<Guid, CachedEnabledModel>> GetEnabledModelsAsync(CancellationToken cancellationToken)
     {
@@ -1498,7 +1498,7 @@ public sealed class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
                     var proxyMap = proxyProfiles
                         .ToDictionary(p => p.Key, p => p.ProxyUrl, StringComparer.OrdinalIgnoreCase);
-                    var fallbackHeaderProfileMap = await LoadHeaderProfileMapAsync(dbContext, cancellationToken);
+                    var fallbackHeaderProfileMap = await LoadHeaderProfileMapAsync(scope.ServiceProvider, cancellationToken);
 
                     var rawMappings = (
                             from mapping in mappingsData
@@ -1638,20 +1638,24 @@ public sealed class ProxyRequestMetadataCache
 
     /// <summary>
     /// 加载启用的请求头模板方案（Key → 解析后的请求头字典，占位符原样保留、请求时由引擎求值）。
+    /// 从 IHeaderProfileCatalogService 读取本地 client-header-profiles.json。
     /// 仅在缓存构建期调用；模板增删改由 HeaderProfilesApiController 失效路由缓存触发重建。
     /// </summary>
     private static async Task<Dictionary<string, Dictionary<string, string>>> LoadHeaderProfileMapAsync(
-        AppDbContext dbContext,
+        IServiceProvider serviceProvider,
         CancellationToken cancellationToken)
     {
-        var profiles = await dbContext.HeaderProfiles
-            .Where(p => p.IsEnabled && p.HeadersJson != null)
-            .ToListAsync(cancellationToken);
+        var catalogService = serviceProvider.GetService<IHeaderProfileCatalogService>();
+        if (catalogService == null)
+        {
+            return new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+        }
 
+        var profiles = await catalogService.GetAllAsync(cancellationToken);
         var map = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
         foreach (var profile in profiles)
         {
-            if (string.IsNullOrWhiteSpace(profile.Key) || string.IsNullOrWhiteSpace(profile.HeadersJson))
+            if (!profile.IsEnabled || string.IsNullOrWhiteSpace(profile.Key) || string.IsNullOrWhiteSpace(profile.HeadersJson))
             {
                 continue;
             }
@@ -1659,7 +1663,6 @@ public sealed class ProxyRequestMetadataCache
             var headers = TryParseExtraHeaders(profile.HeadersJson);
             if (headers.Count > 0)
             {
-                // 同 Key 多条取先注册的一条（Key 有唯一索引，正常不会重复）。
                 map.TryAdd(profile.Key.Trim(), headers);
             }
         }
@@ -1706,13 +1709,12 @@ public sealed class ProxyRequestMetadataCache
             }
 
             var normalized = ClientEmulationConstants.Normalize(trimmed);
-            if (!string.Equals(normalized, ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(normalized, ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase))
             {
-                return normalized;
+                continue;
             }
 
-            // 未知值视为自定义 HeaderProfile Key 透传；若确属垃圾值，引擎解析不到预设也不会产生任何头，无副作用。
-            return trimmed;
+            return normalized;
         }
 
         return ClientEmulationConstants.None;

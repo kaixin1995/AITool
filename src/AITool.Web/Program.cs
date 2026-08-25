@@ -276,6 +276,8 @@ builder.Services.AddSingleton<IUsageLogService, UsageLogService>();
 builder.Services.AddSingleton<RouteCircuitStateStore>();
 builder.Services.AddSingleton<ProxyRequestMetadataCache>();
 builder.Services.AddSingleton<ModelVendorCatalogService>();
+// 请求头模板方案（本地 JSON 文件 client-header-profiles.json，脱离数据库存储）。
+builder.Services.AddSingleton<IHeaderProfileCatalogService, HeaderProfileCatalogService>();
 // 模型价格表（本地 JSON，查询时动态计价，不落数据库）。
 builder.Services.AddSingleton<IModelPricingService, ModelPricingService>();
 

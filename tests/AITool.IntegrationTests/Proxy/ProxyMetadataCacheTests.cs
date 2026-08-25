@@ -1,9 +1,13 @@
 using System.Security.Cryptography;
 using System.Text;
+using AITool.Domain.Models;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
+using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
+using AITool.Protocol;
 using AITool.Web.Services;
 using FluentAssertions;
 using Microsoft.Extensions.Caching.Memory;
@@ -476,6 +480,87 @@ public sealed class ProxyMetadataCacheTests : IAsyncDisposable
         routes[0].ResolveProtocolForClient("Responses").Should().Be("Responses");
         // 旧数据同时声明了 OpenAI 能力时，OpenAI 客户端仍应保留原生 OpenAI 路径。
         routes[0].ResolveProtocolForClient("OpenAI").Should().Be("OpenAI");
+    }
+
+    [Fact]
+    public async Task GetRouteTargetsForModelAsync_Resolves_ClientEmulation_From_Mapping_And_Model()
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
+
+        SqlSugarSetup.InitializeDatabase(db.Client);
+
+        var siteId = Guid.NewGuid();
+        var modelId = Guid.NewGuid();
+
+        db.Sites.Add(new Site
+        {
+            Id = siteId,
+            Name = "GeminiPro1",
+            BaseUrl = "https://daily-cloudcode-pa.googleapis.com",
+            ApiKey = "g-key",
+            ProtocolType = "Gemini",
+            SupportsOpenAi = false,
+            SupportsAnthropic = false,
+            SupportsResponses = false,
+            ClientEmulation = "None",
+            IsEnabled = true
+        });
+
+        db.ModelLibraryItems.Add(new ModelLibraryItem
+        {
+            Id = modelId,
+            ModelName = "gemini-3.7-flash-high",
+            DisplayName = "Gemini 3.7 Flash High",
+            ClientEmulation = "Antigravity",
+            IsEnabled = true
+        });
+
+        db.SiteModelMappings.Add(new SiteModelMapping
+        {
+            Id = Guid.NewGuid(),
+            SiteId = siteId,
+            ModelLibraryItemId = modelId,
+            RemoteModelName = "gemini-3.7-flash-high",
+            ClientEmulation = "Antigravity",
+            IsEnabled = true
+        });
+
+        db.ProxyRouteRules.Add(new ProxyRouteRule
+        {
+            Id = Guid.NewGuid(),
+            ExternalModelName = "1M",
+            UpstreamModelName = "gemini-3.7-flash-high",
+            SiteId = siteId,
+            SiteModelName = "gemini-3.7-flash-high",
+            IsEnabled = true
+        });
+
+        await db.SaveChangesAsync();
+
+        var routes = await cache.GetRouteTargetsForModelAsync(
+            "OpenAI",
+            "1M",
+            CancellationToken.None);
+
+        routes.Should().ContainSingle();
+        var route = routes[0];
+        route.ClientEmulation.Should().Be("Antigravity");
+        route.ResolveProtocolForClient("OpenAI").Should().Be("Gemini");
+
+        var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl);
+        isAntigravity.Should().BeTrue();
+
+        var headers = ClientEmulationEngine.ResolveHeaders(
+            route.ClientEmulation,
+            route.ExtraHeaders,
+            route.SiteModelName,
+            route.GoogleProjectId,
+            isAntigravity);
+
+        headers.Should().ContainKey("User-Agent");
+        headers["User-Agent"].Should().Contain("antigravity");
     }
 
     /// <summary>

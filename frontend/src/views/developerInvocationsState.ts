@@ -85,3 +85,47 @@ export function supportsResponsesNatively(model: {
       && model.supportsAnthropic === false
     )
 }
+
+export function hasRewrittenHeaders(detail?: {
+  preparedRequestHeaders?: Record<string, string>
+  attempts?: Array<{ preparedRequestHeaders?: Record<string, string> }>
+}): boolean {
+  if (!detail) return false
+  if (detail.preparedRequestHeaders && Object.keys(detail.preparedRequestHeaders).length > 0) return true
+  return detail.attempts?.some(a => a.preparedRequestHeaders && Object.keys(a.preparedRequestHeaders).length > 0) ?? false
+}
+
+export function getRewrittenHeaders(detail?: {
+  preparedRequestHeaders?: Record<string, string>
+  attempts?: Array<{ preparedRequestHeaders?: Record<string, string> }>
+}): Record<string, string> {
+  if (!detail) return {}
+  if (detail.preparedRequestHeaders && Object.keys(detail.preparedRequestHeaders).length > 0) {
+    return detail.preparedRequestHeaders
+  }
+  for (const a of detail.attempts || []) {
+    if (a.preparedRequestHeaders && Object.keys(a.preparedRequestHeaders).length > 0) {
+      return a.preparedRequestHeaders
+    }
+  }
+  return {}
+}
+
+export function getCurrentDisplayHeaders(
+  detail?: {
+    requestHeaders?: Record<string, string>
+    preparedRequestHeaders?: Record<string, string>
+    attempts?: Array<{ preparedRequestHeaders?: Record<string, string> }>
+  },
+  mode?: 'original' | 'rewritten'
+): Record<string, string> {
+  if (!detail) return {}
+  const effectiveMode = mode || (hasRewrittenHeaders(detail) ? 'rewritten' : 'original')
+  if (effectiveMode === 'rewritten') {
+    if (hasRewrittenHeaders(detail)) {
+      return getRewrittenHeaders(detail)
+    }
+    return { '提示': '未配置客户端特征模拟或请求头方案（直接使用上游默认认证头与透传头，无改写）' }
+  }
+  return detail.requestHeaders || {}
+}
