@@ -82,9 +82,9 @@
                     <TextBlock FontFamily="Consolas,Monospace" FontSize="12" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="{Binding HeadersJson, FallbackValue={x:Null}}" TextWrapping="Wrap" MaxHeight="120" />
                   </Border>
                   <StackPanel Grid.Row="2" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" Margin="0,4,0,0">
-                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).OpenHeaderEditorCommand}" CommandParameter="{Binding}" Content="编辑" Padding="10,5" />
-                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).ToggleHeaderCommand}" CommandParameter="{Binding}" Content="{Binding StatusText}" Padding="10,5" />
-                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).DeleteHeaderCommand}" CommandParameter="{Binding}" Content="删除" IsEnabled="{Binding IsDeletable}" ToolTip.Tip="{Binding DeleteToolTip}" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding DataContext.OpenHeaderEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding DataContext.ToggleHeaderCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding StatusText}" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding DataContext.DeleteHeaderCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" IsEnabled="{Binding IsDeletable}" ToolTip.Tip="{Binding DeleteToolTip}" Padding="10,5" />
                   </StackPanel>
                 </Grid>
               </Border>
@@ -115,9 +115,9 @@
                     <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding DescriptionText}" TextWrapping="Wrap" />
                   </StackPanel>
                   <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Top">
-                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).OpenProxyEditorCommand}" CommandParameter="{Binding}" Content="编辑" Padding="10,5" />
-                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).ToggleProxyCommand}" CommandParameter="{Binding}" Content="{Binding StatusText}" Padding="10,5" />
-                    <Button Classes="secondary-button" Command="{Binding $parent[ItemsControl].((vm:ProfilesViewModel)DataContext).DeleteProxyCommand}" CommandParameter="{Binding}" Content="删除" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding DataContext.OpenProxyEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding DataContext.ToggleProxyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding StatusText}" Padding="10,5" />
+                    <Button Classes="secondary-button" Command="{Binding DataContext.DeleteProxyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,5" />
                   </StackPanel>
                 </Grid>
               </Border>

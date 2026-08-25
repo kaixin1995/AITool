@@ -182,19 +182,27 @@
                         </Grid>
 
                         <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,12,0,0">
-                          <UniformGrid Columns="4" Rows="2" HorizontalAlignment="Stretch" VerticalAlignment="Top">
+                          <!-- 按厂商分组操作区：Codex 8 项 / Google 5 项（后端无重置额度/信用与凭证刷新端点）。
+                               不能用同一 UniformGrid + 占位：显式 Rows 下子元素数决定列数，混排会重排列布局。 -->
+                          <StackPanel>
+                          <UniformGrid IsVisible="{Binding IsCodex}" Columns="4" Rows="2" HorizontalAlignment="Stretch" VerticalAlignment="Top">
                             <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Button Classes="secondary-button" Click="ConfirmResetQuota" IsVisible="{Binding IsCodex}" Content="重置额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Border IsVisible="{Binding IsGoogle}" Margin="0,0,8,8" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" IsVisible="{Binding IsCodex}" Content="重置额度信用" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Border IsVisible="{Binding IsGoogle}" Margin="0,0,8,8" />
-                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" IsVisible="{Binding IsCodex}" Content="刷新凭证" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
-                            <Border IsVisible="{Binding IsGoogle}" Margin="0,0,8,8" />
+                            <Button Classes="secondary-button" Click="ConfirmResetQuota" Content="重置额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenResetCreditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="重置额度信用" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshTokenCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新凭证" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                             <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                             <Button Classes="secondary-button" Click="ConfirmDeleteAccount" Content="删除" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
                           </UniformGrid>
+                          <UniformGrid IsVisible="{Binding IsGoogle}" Columns="4" Rows="2" HorizontalAlignment="Stretch" VerticalAlignment="Top">
+                            <Button Classes="secondary-button" Command="{Binding DataContext.RefreshQuotaCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="刷新额度" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenAccountEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.OpenModelEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="拉取模型" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Height="34" Margin="0,0,8,8" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                            <Button Classes="secondary-button" Click="ConfirmDeleteAccount" Content="删除" Height="34" Margin="0,0,8,0" Padding="6,4" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" />
+                          </UniformGrid>
+                          </StackPanel>
                         </Border>
                       </StackPanel>
                     </Border>

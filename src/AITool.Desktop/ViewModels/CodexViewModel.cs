@@ -378,28 +378,35 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     }
 
     /// <summary>
-    /// 统一账号加载：Codex（/oauth/accounts）+ Google（/google-accounts/accounts）按创建时间倒序合并，
-    /// Google 的订阅等级映射到 PlanType 槽位（与网页 UnifiedAccount 口径一致）。
+    /// 统一账号加载：Codex（/oauth/accounts）+ Google（/google-accounts/accounts）合并展示。
+    /// Codex 请求决定功能开关态（404 → 功能未启用）；Google 请求尽力而为——旧版后端无该端点时
+    /// 静默降级为仅 Codex，不能让整页误判为功能未启用。
     /// </summary>
     private async Task<List<CodexAccount>> LoadUnifiedAccountsAsync()
     {
         var codexTask = _apiService.SendAsync<List<CodexAccount>>(HttpMethod.Get, "/api/admin/oauth/accounts", null);
         var googleTask = _apiService.SendAsync<List<CodexAccount>>(HttpMethod.Get, GoogleApiPath("/accounts"), null);
 
-        await Task.WhenAll(codexTask, googleTask);
-
-        var codexAccounts = codexTask.Result ?? [];
+        var codexAccounts = await codexTask;
         foreach (var account in codexAccounts)
         {
             account.AccountKind = null;
         }
 
-        var googleAccounts = googleTask.Result ?? [];
-        foreach (var account in googleAccounts)
+        var googleAccounts = new List<CodexAccount>();
+        try
         {
-            // Google 账号缺省 AccountKind 字段兜底，订阅等级复用 PlanType 展示槽位。
-            if (string.IsNullOrWhiteSpace(account.AccountKind)) account.AccountKind = "GeminiCli";
-            if (!string.IsNullOrWhiteSpace(account.SubscriptionTier)) account.PlanType = account.SubscriptionTier;
+            googleAccounts = await googleTask;
+            foreach (var account in googleAccounts)
+            {
+                // Google 账号缺省 AccountKind 字段兜底，订阅等级复用 PlanType 展示槽位。
+                if (string.IsNullOrWhiteSpace(account.AccountKind)) account.AccountKind = "GeminiCli";
+                if (!string.IsNullOrWhiteSpace(account.SubscriptionTier)) account.PlanType = account.SubscriptionTier;
+            }
+        }
+        catch
+        {
+            // 旧版后端无 google-accounts 端点（404）或瞬时失败：跳过 Google 列表，Codex 正常展示。
         }
 
         return codexAccounts
