@@ -48,6 +48,10 @@ public sealed class UsageLogListQueryDto
     /// 模型搜索关键字。
     /// </summary>
     public string ModelKeyword { get; set; } = string.Empty;
+    /// <summary>
+    /// 流式筛选（null 为全部，true 为流式，false 为非流式）。
+    /// </summary>
+    public bool? IsStreaming { get; set; }
 }
 
 /// <summary>
@@ -411,7 +415,8 @@ public sealed class UsageLogsApiController : ControllerBase
             .WhereIF(query.SiteId.HasValue, x => x.TargetSiteId == query.SiteId!.Value)
             .WhereIF(query.AccessKeyId.HasValue, x => x.AccessKeyId == query.AccessKeyId!.Value)
             .WhereIF(!string.IsNullOrWhiteSpace(query.Source), x => x.Source == query.Source!)
-            .WhereIF(!string.IsNullOrWhiteSpace(query.Status), x => x.Status == query.Status!);
+            .WhereIF(!string.IsNullOrWhiteSpace(query.Status), x => x.Status == query.Status!)
+            .WhereIF(query.IsStreaming.HasValue, x => x.IsStreaming == query.IsStreaming!.Value);
 
         // ModelKeyword 是模糊匹配（Contains），SqlSugar 对此也能下推。
         if (!string.IsNullOrWhiteSpace(query.ModelKeyword))
@@ -556,7 +561,8 @@ public sealed class UsageLogsApiController : ControllerBase
                 .WhereIF(query.SiteId.HasValue, x => x.TargetSiteId == query.SiteId!.Value)
                 .WhereIF(query.AccessKeyId.HasValue, x => x.AccessKeyId == query.AccessKeyId!.Value)
                 .WhereIF(!string.IsNullOrWhiteSpace(query.Source), x => x.Source == query.Source!)
-                .WhereIF(!string.IsNullOrWhiteSpace(query.Status), x => x.Status == query.Status!);
+                .WhereIF(!string.IsNullOrWhiteSpace(query.Status), x => x.Status == query.Status!)
+                .WhereIF(query.IsStreaming.HasValue, x => x.IsStreaming == query.IsStreaming!.Value);
 
             if (!string.IsNullOrWhiteSpace(query.ModelKeyword))
             {

@@ -7,7 +7,7 @@ namespace AITool.Infrastructure.Google;
 
 /// <summary>
 /// Google 上游模型清单拉取实现。Antigravity 端点与解析对齐 gcli2api
-/// （src/api/antigravity.py fetch_available_models）；GeminiCli 无动态清单接口，返回静态清单。
+/// （src/api/antigravity.py fetch_available_models）。
 /// </summary>
 public sealed class GoogleModelFetcher : IGoogleModelFetcher
 {
@@ -21,15 +21,7 @@ public sealed class GoogleModelFetcher : IGoogleModelFetcher
     /// <inheritdoc />
     public async Task<IReadOnlyList<(string Slug, string DisplayName)>> FetchAsync(string accountKind, string accessToken, CancellationToken ct)
     {
-        if (string.Equals(GoogleAccountKinds.Normalize(accountKind), GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase))
-        {
-            return await FetchAntigravityModelsAsync(accessToken, ct);
-        }
-
-        // GeminiCli：与供给器共用静态清单。
-        return GoogleAccountKinds.GeminiCliModels
-            .Select(n => (n, n))
-            .ToList();
+        return await FetchAntigravityModelsAsync(accessToken, ct);
     }
 
     private async Task<IReadOnlyList<(string Slug, string DisplayName)>> FetchAntigravityModelsAsync(string accessToken, CancellationToken ct)

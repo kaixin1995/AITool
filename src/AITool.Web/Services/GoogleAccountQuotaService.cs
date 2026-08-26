@@ -16,7 +16,6 @@ namespace AITool.Web.Services;
 /// <para>
 /// Antigravity：v1internal:fetchAvailableModels 返回每个模型的 quotaInfo.remainingFraction
 /// （对齐 gcli2api fetch_quota_info），换算为已用百分比窗口；tier/积分取登录时 loadCodeAssist 的存档。
-/// GeminiCLI：上游无额度查询接口（对齐 gcli2api：仅展示 tier），返回带 tier 的空窗口快照。
 /// </para>
 /// </summary>
 public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
@@ -268,17 +267,6 @@ public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
         if (string.IsNullOrEmpty(account.AccessToken))
         {
             return new GoogleQuotaInfo { Success = false, Error = "账号无 access_token" };
-        }
-
-        // GeminiCLI：上游无额度接口（对齐 gcli2api——仅 tier 展示），返回带 tier 的空窗口快照。
-        if (!string.Equals(account.AccountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase))
-        {
-            return new GoogleQuotaInfo
-            {
-                Success = true,
-                PlanType = account.SubscriptionTier,
-                RawJson = JsonSerializer.Serialize(new { tier = account.SubscriptionTier ?? "unknown" }),
-            };
         }
 
         try

@@ -102,7 +102,7 @@ public sealed partial class OpenAiProxyController
         var effectiveEmulation = !string.IsNullOrWhiteSpace(route.ClientEmulation) && !string.Equals(route.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
             ? route.ClientEmulation
             : (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
-                ? (isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli)
+                ? Domain.Sites.ClientEmulationConstants.Antigravity
                 : Domain.Sites.ClientEmulationConstants.None);
 
         return ClientEmulationEngine.ResolveHeaders(
@@ -142,24 +142,6 @@ public sealed partial class OpenAiProxyController
         }
 
         return null;
-    }
-
-    private Func<string, CancellationToken, Task>? CreateCredentialPreparationCallback(
-        CachedProxyRouteTarget route)
-    {
-        if (!string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(route.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
-            || ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)
-            || string.IsNullOrWhiteSpace(route.GoogleProjectId)
-            || string.IsNullOrWhiteSpace(route.ApiKey))
-        {
-            return null;
-        }
-
-        return (accessToken, cancellationToken) => _googleCredentialRefreshService.EnsureGeminiCliApisAsync(
-            route.GoogleProjectId,
-            accessToken,
-            cancellationToken);
     }
 
     private Func<CancellationToken, Task>? CreateCredentialDisableCallback(

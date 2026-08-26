@@ -125,8 +125,7 @@ const clientEmulationOptions = computed(() => {
       { label: '⚡ OpenCode CLI 终端', value: 'OpenCode' },
       { label: '⚡ Claude Code 官方命令行', value: 'ClaudeCode' },
       { label: '⚡ ZCode / GLM 客户端', value: 'ZCode' },
-      { label: '⚡ Google Antigravity CLI', value: 'Antigravity' },
-      { label: '⚡ Google Gemini CLI', value: 'GeminiCli' }
+      { label: '⚡ Google Antigravity CLI', value: 'Antigravity' }
     )
   }
   return options
@@ -154,7 +153,7 @@ const filteredVendorGroups = computed(() => {
       ...group,
       models: group.models.filter((model) => {
         if (!keyword) return true
-        return `${model.modelName} ${model.displayName} ${group.vendorName}`.toLowerCase().includes(keyword)
+        return `${model.modelName} ${group.vendorName}`.toLowerCase().includes(keyword)
       })
     }))
     .filter((group) => group.models.length > 0)
@@ -238,7 +237,7 @@ async function openEdit(model: ModelListItem): Promise<void> {
   modelDetail.value = null
   Object.assign(form, {
     modelName: model.modelName,
-    displayName: model.displayName,
+    displayName: model.modelName,
     isEnabled: model.isEnabled,
     overrideReasoningEffort: model.overrideReasoningEffort,
     compatibilityProfileId: model.compatibilityProfileId,
@@ -296,7 +295,11 @@ async function handleSave(): Promise<void> {
     }
   }
   // 空字符串（选"无"）转 null，与后端 Guid? 一致。
-  const payload = { ...form, compatibilityProfileId: form.compatibilityProfileId || null }
+  const payload = {
+    ...form,
+    displayName: form.modelName.trim(),
+    compatibilityProfileId: form.compatibilityProfileId || null
+  }
   saving.value = true
   try {
     if (editingId.value) {
@@ -474,7 +477,9 @@ async function handleSaveMapping(mapping: modelsApi.ModelSiteMapping): Promise<v
       isEnabled: mapping.isEnabled,
       maxConcurrency: mapping.maxConcurrency,
       clientEmulation: mapping.clientEmulation || 'None',
-      extraHeadersJson: mapping.extraHeadersJson?.trim() || undefined
+      extraHeadersJson: mapping.extraHeadersJson?.trim() || undefined,
+      // Web 端映射编辑器不再提供代理下拉，回传加载时已有的值，避免后端全量写回时把映射级代理清空。
+      egressProxyUrl: mapping.egressProxyUrl?.trim() || undefined
     })
     message.success(`站点【${mapping.siteName}】映射配置已保存`)
   } catch (e) {
@@ -529,7 +534,7 @@ onMounted(() => {
         <NTabPane name="gallery" tab="模型分组">
           <div class="model-toolbar">
             <div class="model-search-box">
-              <NInput v-model:value="modelSearch" placeholder="搜索模型名称或显示名" clearable />
+              <NInput v-model:value="modelSearch" placeholder="搜索模型名称或厂商名" clearable />
             </div>
             <div class="model-toolbar-summary">
               共 <strong>{{ visibleModelCount }}</strong> / <span>{{ allModels.length }}</span> 个模型
@@ -561,8 +566,7 @@ onMounted(() => {
             <article v-for="model in group.models" :key="model.id" class="model-card">
               <div class="model-card-top">
                 <div class="model-card-title">
-                  <!-- 主标题优先显示名称（未填时回退模型名称）；各站点实际调用名在编辑弹窗的站点映射里查看 -->
-                  <div class="model-card-name">{{ model.displayName || model.modelName }}</div>
+                  <div class="model-card-name">{{ model.modelName }}</div>
                 </div>
                 <NTag size="small" :type="modelStatusType(model)" :bordered="false">
                   {{ model.isEnabled ? '启用' : '禁用' }}
@@ -584,7 +588,7 @@ onMounted(() => {
                   <template #trigger>
                     <NButton size="small" secondary type="error">删除</NButton>
                   </template>
-                  删除模型「{{ model.displayName }}」？关联映射和路由规则会一并清理。
+                  删除模型「{{ model.modelName }}」？关联映射和路由规则会一并清理。
                 </NPopconfirm>
               </div>
             </article>
@@ -667,7 +671,7 @@ onMounted(() => {
                 模型定义
                 <NTooltip trigger="hover">
                   <template #trigger><span class="tip-icon">?</span></template>
-                  维护模型在管理后台中的统一名称、展示方式和请求行为。
+                  对外统一模型名称，用于系统暴露与路由匹配。
                 </NTooltip>
               </div>
               <NTag :type="form.isEnabled ? 'success' : 'default'" :bordered="false" round>
@@ -682,16 +686,13 @@ onMounted(() => {
                     基本信息
                     <NTooltip trigger="hover">
                       <template #trigger><span class="tip-icon">?</span></template>
-                      模型名称用于路由匹配，显示名称用于页面展示。
+                      对外统一模型名称，用于系统暴露与路由匹配。
                     </NTooltip>
                   </h4>
                 </div>
-                <div class="model-form-grid model-form-grid-primary">
+                <div class="model-form-grid model-form-grid-single">
                   <NFormItem label="模型名称（唯一）" required>
-                    <NInput v-model:value="form.modelName" placeholder="如 gpt-4o" />
-                  </NFormItem>
-                  <NFormItem label="显示名称">
-                    <NInput v-model:value="form.displayName" placeholder="留空则使用模型名称" />
+                    <NInput v-model:value="form.modelName" placeholder="如 gpt-4o 或 claude-3-5-sonnet" />
                   </NFormItem>
                 </div>
               </section>
@@ -781,42 +782,40 @@ onMounted(() => {
                     </h4>
                   </div>
                   <NEmpty v-if="!modelDetail || modelDetail.siteMappings.length === 0" description="暂无关联站点" size="small" />
-                  <div v-else class="mapping-cards-list">
-                    <div v-for="m in modelDetail.siteMappings" :key="m.mappingId" class="mapping-card-item">
-                      <div class="mapping-card-header">
-                        <div class="mapping-card-title-group">
-                          <strong class="mapping-site-name">{{ m.siteName }}</strong>
-                          <NTag size="small" type="info" :bordered="false">{{ m.remoteModelName }}</NTag>
-                          <NTag v-if="!m.isEnabled" size="tiny" type="warning" :bordered="false">已禁用</NTag>
-                          <NTag v-else-if="m.clientEmulation && m.clientEmulation !== 'None'" size="tiny" type="success" :bordered="false">
-                            模拟: {{ m.clientEmulation }}
-                          </NTag>
+                  <div v-else class="mapping-table-wrap">
+                    <div class="mapping-table-header">
+                      <span class="col-site">站点</span>
+                      <span class="col-remote">远端模型名</span>
+                      <span class="col-concurrency">最大并发 (0=不限)</span>
+                      <span class="col-emulation">客户端特征模拟</span>
+                      <span class="col-status">启用</span>
+                      <span class="col-actions">操作</span>
+                    </div>
+                    <div class="mapping-rows-list">
+                      <div v-for="m in modelDetail.siteMappings" :key="m.mappingId" class="mapping-row-item">
+                        <div class="col-site">
+                          <strong class="mapping-site-name" :title="m.siteName">{{ m.siteName }}</strong>
                         </div>
-                        <div class="mapping-card-header-actions">
+                        <div class="col-remote">
+                          <NInput v-model:value="m.remoteModelName" size="small" placeholder="站点接受的模型名" />
+                        </div>
+                        <div class="col-concurrency">
+                          <NInputNumber v-model:value="m.maxConcurrency" size="small" :min="0" :precision="0" placeholder="0=不限" />
+                        </div>
+                        <div class="col-emulation">
+                          <NSelect v-model:value="m.clientEmulation" :options="clientEmulationOptions" size="small" />
+                        </div>
+                        <div class="col-status">
                           <NSwitch v-model:value="m.isEnabled" size="small" />
+                        </div>
+                        <div class="col-actions">
                           <NButton size="small" type="primary" secondary :loading="mappingUpdating[m.mappingId]" @click="handleSaveMapping(m)">
-                            保存配置
+                            保存
                           </NButton>
                           <NPopconfirm @positive-click="handleDeleteMapping(m.mappingId)">
                             <template #trigger><NButton size="small" quaternary type="error">删除</NButton></template>
                             删除该站点关联映射？
                           </NPopconfirm>
-                        </div>
-                      </div>
-                      <div class="mapping-card-body">
-                        <div class="mapping-fields-row">
-                          <div class="mapping-field-col">
-                            <span class="mapping-field-label">远端模型名</span>
-                            <NInput v-model:value="m.remoteModelName" size="small" placeholder="站点接受的模型名" />
-                          </div>
-                          <div class="mapping-field-col mapping-field-col-num">
-                            <span class="mapping-field-label">最大并发 (0=不限)</span>
-                            <NInputNumber v-model:value="m.maxConcurrency" size="small" :min="0" :precision="0" placeholder="0=不限" />
-                          </div>
-                          <div class="mapping-field-col">
-                            <span class="mapping-field-label">客户端特征模拟</span>
-                            <NSelect v-model:value="m.clientEmulation" :options="clientEmulationOptions" size="small" />
-                          </div>
                         </div>
                       </div>
                     </div>
@@ -1508,6 +1507,10 @@ onMounted(() => {
   gap: 14px 18px;
 }
 
+.model-form-grid-single {
+  grid-template-columns: 1fr;
+}
+
 .model-form-grid-primary,
 .model-form-grid-secondary {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1543,77 +1546,84 @@ onMounted(() => {
   min-width: 0;
 }
 
-.mapping-cards-list {
+.mapping-table-wrap {
   display: flex;
   flex-direction: column;
+  gap: 6px;
+}
+
+.mapping-table-header,
+.mapping-row-item {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(200px, 1.5fr) 130px minmax(240px, 1.5fr) 50px 110px;
   gap: 12px;
+  align-items: center;
+}
+
+.mapping-table-header {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-color-secondary);
+  border-bottom: 1px solid var(--border-color-global);
+}
+
+.mapping-table-header .col-status {
+  text-align: center;
+}
+
+.mapping-table-header .col-actions {
+  text-align: right;
+}
+
+.mapping-rows-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   max-height: min(48vh, 520px);
   padding-right: 4px;
   overflow-y: auto;
 }
 
-.mapping-card-item {
-  padding: 12px 14px;
+.mapping-row-item {
+  padding: 8px 12px;
   border: 1px solid var(--border-color-global);
-  border-radius: 10px;
+  border-radius: 8px;
   background: var(--bg-card-secondary, var(--bg-card));
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+  transition: all 0.15s ease;
 }
 
-.mapping-card-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid var(--border-color-global);
+.mapping-row-item:hover {
+  border-color: var(--primary-color-hover, #6366f1);
+  background: var(--bg-hover, rgba(255, 255, 255, 0.03));
 }
 
-.mapping-card-title-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+.mapping-row-item .col-site {
+  overflow: hidden;
 }
 
 .mapping-site-name {
-  color: var(--text-primary);
-  font-size: 14px;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
   font-weight: 600;
+  color: var(--text-primary);
 }
 
-.mapping-card-header-actions {
+.mapping-row-item .col-status {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.mapping-row-item .col-actions {
   display: flex;
   align-items: center;
-  gap: 10px;
-}
-
-.mapping-card-body {
-  padding-top: 10px;
-}
-
-.mapping-fields-row {
-  display: grid;
-  grid-template-columns: minmax(260px, 1.6fr) 140px minmax(260px, 1.4fr);
-  gap: 14px;
-  align-items: start;
-}
-
-.mapping-field-col {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.mapping-field-col-num {
-  min-width: 120px;
-}
-
-.mapping-field-label {
-  color: var(--text-color-secondary);
-  font-size: 12px;
-  font-weight: 500;
+  gap: 6px;
+  justify-content: flex-end;
 }
 
 .mapping-add-form-new {
@@ -1624,8 +1634,8 @@ onMounted(() => {
 
 .mapping-add-grid-primary {
   display: grid;
-  grid-template-columns: minmax(200px, 1.3fr) minmax(220px, 1.5fr) 130px minmax(240px, 1.5fr) auto auto;
-  gap: 14px;
+  grid-template-columns: minmax(160px, 1.2fr) minmax(200px, 1.5fr) 130px minmax(240px, 1.5fr) auto auto;
+  gap: 12px;
   align-items: end;
 }
 
@@ -1653,7 +1663,11 @@ onMounted(() => {
 }
 
 @media (max-width: 960px) {
-  .mapping-fields-row {
+  .mapping-table-header {
+    display: none;
+  }
+
+  .mapping-row-item {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -1663,7 +1677,7 @@ onMounted(() => {
 }
 
 @media (max-width: 768px) {
-  .mapping-fields-row,
+  .mapping-row-item,
   .mapping-add-grid-primary {
     grid-template-columns: 1fr;
   }
@@ -1714,7 +1728,7 @@ onMounted(() => {
 
   .model-form-grid-primary,
   .model-form-grid-secondary,
-  .mapping-fields-row,
+  .mapping-row-item,
   .mapping-add-grid-primary,
   .mapping-add-grid-secondary {
     grid-template-columns: 1fr;
@@ -1723,16 +1737,15 @@ onMounted(() => {
 
 @media (max-width: 560px) {
   .editor-tab-intro,
-  .editor-status-card,
-  .mapping-card-header {
+  .editor-status-card {
     align-items: stretch;
     flex-direction: column;
   }
 
   .editor-section,
   .editor-status-card,
-  .mapping-card-item {
-    padding: 14px;
+  .mapping-row-item {
+    padding: 12px;
   }
 }
 </style>

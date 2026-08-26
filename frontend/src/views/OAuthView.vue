@@ -22,8 +22,8 @@ import {
   isInspectionDisabledError
 } from './accountInspectionState'
 
-// 统一账号视图：Codex 与 Google（GeminiCLI/Antigravity）账号合入同一列表，用 provider 区分厂商。
-type ProviderKind = 'codex' | 'geminicli' | 'antigravity'
+// 统一账号视图：Codex 与 Google（Antigravity）账号合入同一列表，用 provider 区分厂商。
+type ProviderKind = 'codex' | 'antigravity'
 type ProviderFilter = 'all' | ProviderKind
 type AccountStatusFilter = 'enabled' | 'disabled' | 'all'
 type UnifiedAccount = OAuthAccount & {
@@ -35,20 +35,17 @@ type UnifiedAccount = OAuthAccount & {
 
 const PROVIDER_LABELS: Record<ProviderKind, string> = {
   codex: 'Codex',
-  geminicli: 'GeminiCLI',
   antigravity: 'Antigravity'
 }
 
 const PROVIDER_FILTER_OPTIONS: Array<{ key: ProviderFilter; label: string }> = [
   { key: 'all', label: '全部' },
   { key: 'codex', label: PROVIDER_LABELS.codex },
-  { key: 'geminicli', label: PROVIDER_LABELS.geminicli },
   { key: 'antigravity', label: PROVIDER_LABELS.antigravity }
 ]
 
 const PROVIDER_LOGIN_OPTIONS = [
   { key: 'codex', label: 'Codex' },
-  { key: 'geminicli', label: 'GeminiCLI' },
   { key: 'antigravity', label: 'Antigravity' }
 ] as const
 
@@ -58,7 +55,7 @@ const PROVIDER_IMPORT_OPTIONS = PROVIDER_LOGIN_OPTIONS
 function toUnifiedGoogleAccount(acc: GoogleAccountSummary): UnifiedAccount {
   return {
     ...acc,
-    provider: acc.accountKind === 'Antigravity' ? 'antigravity' : 'geminicli',
+    provider: 'antigravity',
     accountKind: acc.accountKind,
     accountId: null,
     planType: acc.subscriptionTier,
@@ -335,8 +332,8 @@ async function refreshSilently(force = false): Promise<void> {
   }
 }
 
-function googleKindOf(provider: ProviderKind): GoogleAccountKind {
-  return provider === 'antigravity' ? 'Antigravity' : 'GeminiCli'
+function googleKindOf(_provider?: ProviderKind): GoogleAccountKind {
+  return 'Antigravity'
 }
 
 function openOAuthModal(provider: ProviderKind = 'codex'): void {
@@ -993,9 +990,7 @@ onUnmounted(() => {
                   </div>
                 </div>
                 <div v-else class="oauth-window-placeholder">
-                  {{ acc.provider === 'geminicli'
-                    ? '该接入方式上游无额度接口，仅展示订阅等级'
-                    : acc.provider === 'antigravity' && (acc.selectedModels?.length ?? 0) === 0
+                  {{ acc.provider === 'antigravity' && (acc.selectedModels?.length ?? 0) === 0
                       ? '尚未拉取模型，不显示无关额度'
                       : acc.lastQuotaCheckedAt ? '暂无已拉取模型额度' : '未刷新额度，点击下方「刷新额度」获取' }}
                 </div>
@@ -1276,7 +1271,8 @@ onUnmounted(() => {
     </NModal>
 
     <!-- 拉取/导入模型弹窗 -->
-    <NModal v-model:show="modelModal" :title="`拉取模型 - ${modelAccount?.displayName ?? ''}`" preset="card" style="width: 560px; max-width: 92vw">
+    <!-- 拉取/导入模型弹窗 -->
+    <NModal v-model:show="modelModal" :title="`拉取模型 - ${modelAccount?.displayName ?? ''}`" preset="card" style="width: 720px; max-width: 94vw">
       <NSpin :show="modelLoading">
         <NEmpty v-if="!modelLoading && modelList.length === 0" description="该账号无可用模型" size="small" />
         <template v-else>
@@ -1291,6 +1287,12 @@ onUnmounted(() => {
             </NCheckbox>
           </div>
           <div class="oauth-model-hint">模型目录会完整读取上游列表；只有勾选项会导入或启用，未勾选的既有映射会禁用。</div>
+          <div class="oauth-model-list-header">
+            <span class="col-check"></span>
+            <span class="col-remote">远端模型名</span>
+            <span class="col-alias">对外模型名</span>
+            <span class="col-status">状态</span>
+          </div>
           <div class="oauth-model-list">
             <div
               v-for="m in filteredModelList"
@@ -1304,7 +1306,7 @@ onUnmounted(() => {
                   : (checkedModels = checkedModels.filter(name => name !== m.remoteModelName))"
               />
               <code :title="m.remoteModelName">{{ m.remoteModelName }}</code>
-              <NInput v-model:value="m.alias" size="small" placeholder="显示别名" />
+              <NInput v-model:value="m.alias" size="small" placeholder="对外模型名（留空用原始名）" />
               <NTag
                 size="tiny"
                 :type="m.existingMappingId ? (m.isEnabled ? 'success' : 'default') : 'info'"
@@ -1347,25 +1349,61 @@ onUnmounted(() => {
   flex: 1;
 }
 
+.oauth-model-list-header,
+.oauth-model-row {
+  display: grid;
+  grid-template-columns: 28px minmax(180px, 1fr) minmax(200px, 1.2fr) 68px;
+  align-items: center;
+  gap: 12px;
+}
+
+.oauth-model-list-header {
+  padding: 6px 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-color-secondary);
+  border-bottom: 1px solid var(--border-color-global);
+}
+
+.oauth-model-list-header .col-status {
+  text-align: center;
+}
+
 .oauth-model-list {
   max-height: 420px;
   overflow: auto;
+  padding-right: 4px;
 }
 
 .oauth-model-row {
-  display: grid;
-  grid-template-columns: 30px minmax(140px, 1fr) 200px auto;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 0;
+  padding: 7px 8px;
   border-bottom: 1px solid var(--border-color-global);
+  border-radius: 6px;
+  transition: background 0.15s ease;
+}
+
+.oauth-model-row:hover {
+  background: var(--bg-hover, rgba(255, 255, 255, 0.04));
 }
 
 .oauth-model-row code {
   overflow: hidden;
-  font-size: 13px;
+  font-size: 12.5px;
+  font-family: var(--font-mono, monospace);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.oauth-model-row :deep(.n-input) {
+  width: 100%;
+  min-width: 0;
+}
+
+.oauth-model-row :deep(.n-tag) {
+  display: flex;
+  justify-content: center;
+  width: 100%;
 }
 
 .oauth-form-group {
@@ -1724,7 +1762,6 @@ onUnmounted(() => {
 }
 
 .oauth-provider-filter[data-provider='codex']::before { background: #5b8ff9; }
-.oauth-provider-filter[data-provider='geminicli']::before { background: #38c995; }
 .oauth-provider-filter[data-provider='antigravity']::before { background: #f0a020; }
 
 .oauth-provider-filter:hover,

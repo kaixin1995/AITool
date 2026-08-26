@@ -287,7 +287,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(target.BaseUrl);
         var effectiveEmulation = !string.IsNullOrWhiteSpace(target.ClientEmulation) && !string.Equals(target.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
             ? target.ClientEmulation
-            : (isGeminiRoute ? (isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli) : Domain.Sites.ClientEmulationConstants.None);
+            : (isGeminiRoute ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.None);
 
         var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
             effectiveEmulation,
@@ -439,7 +439,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
 
             var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
                 isGeminiRoute
-                    ? (isTestAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli)
+                    ? Domain.Sites.ClientEmulationConstants.Antigravity
                     : Domain.Sites.ClientEmulationConstants.None,
                 extraHeaders: null,
                 request.TargetModelName,
@@ -683,7 +683,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(target.BaseUrl);
         var effectiveEmulation = !string.IsNullOrWhiteSpace(target.ClientEmulation) && !string.Equals(target.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
             ? target.ClientEmulation
-            : (isGeminiRoute ? (isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli) : Domain.Sites.ClientEmulationConstants.None);
+            : (isGeminiRoute ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.None);
 
         var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
             effectiveEmulation,

@@ -3,8 +3,8 @@ using SqlSugar;
 namespace AITool.Domain.Google;
 
 /// <summary>
-/// 表示一个通过 Google OAuth 登录或导入凭证建立的账号（GeminiCLI 或 Antigravity 两种接入方式，
-/// 由 <see cref="AccountKind"/> 区分，行为对齐 gcli2api 项目的两种凭证模式）。
+/// 表示一个通过 Google OAuth 登录或导入凭证建立的账号（Antigravity 接入方式，
+/// 行为对齐 gcli2api 项目的凭证模式；历史 GeminiCLI 接入方式已下线）。
 /// <para>
 /// 与 Codex 账号一致采用「隐藏 Site 复用」方案：每个账号自动创建一个 ProtocolType=Gemini 的隐藏 Site，
 /// OAuth access_token（<see cref="AccessToken"/>）同步写回隐藏 Site 的 ApiKey，由后台服务自动刷新，
@@ -40,15 +40,13 @@ public sealed class GoogleAccount
     public string? Email { get; set; }
 
     /// <summary>
-    /// 接入方式：GeminiCli（cloudcode-pa.googleapis.com，Gemini CLI 客户端身份）
-    /// 或 Antigravity（daily-cloudcode-pa.googleapis.com，Antigravity CLI 客户端身份）。
+    /// 接入方式：Antigravity（daily-cloudcode-pa.googleapis.com，Antigravity CLI 客户端身份）。
     /// </summary>
     [SugarColumn(Length = 50, IsNullable = false)]
-    public string AccountKind { get; set; } = "GeminiCli";
+    public string AccountKind { get; set; } = "Antigravity";
 
     /// <summary>
-    /// Google Cloud 项目 ID：GeminiCli 模式为凭证使用的 cloud-platform 项目；
-    /// Antigravity 模式为 loadCodeAssist 返回的 cloudaicompanionProject。
+    /// Google Cloud 项目 ID：Antigravity 模式为 loadCodeAssist 返回的 cloudaicompanionProject。
     /// 上游请求体会以该值作为 project 字段。
     /// </summary>
     [SugarColumn(Length = 100, IsNullable = true)]

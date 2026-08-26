@@ -747,7 +747,7 @@ public sealed class UpdateMappingRequest
     /// </summary>
     public int MaxConcurrency { get; set; }
     /// <summary>
-    /// 客户端特征模拟预设（None | OpenCode | ClaudeCode | CodexCli | Antigravity | GeminiCli | Custom）。
+    /// 客户端特征模拟预设（None | OpenCode | ClaudeCode | CodexCli | Antigravity | Custom）。
     /// </summary>
     public string? ClientEmulation { get; set; }
     /// <summary>

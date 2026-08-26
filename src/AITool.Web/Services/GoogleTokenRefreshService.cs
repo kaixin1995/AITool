@@ -7,7 +7,7 @@ using Microsoft.Extensions.Hosting;
 namespace AITool.Web.Services;
 
 /// <summary>
-/// 后台服务：周期扫描临期的 Google 账号（GeminiCLI / Antigravity），用 refresh_token 刷新 access_token，
+/// 后台服务：周期扫描临期的 Google 账号（Antigravity），用 refresh_token 刷新 access_token，
 /// 写回 GoogleAccount + LinkedSite.ApiKey 并失效路由缓存，保证转发链路始终用未过期 token。
 /// <para>
 /// Google access_token 有效期约 1 小时：扫描周期 5 分钟、提前 10 分钟刷新、

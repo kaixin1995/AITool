@@ -70,17 +70,5 @@
     "SortOrder": 6,
     "CreatedAt": "2026-08-25T00:00:00Z",
     "UpdatedAt": null
-  },
-  {
-    "Id": "10000000-0000-0000-0000-000000000007",
-    "Key": "GeminiCli",
-    "Name": "Google Gemini CLI",
-    "Description": "Google Gemini CLI 官方特征指纹",
-    "HeadersJson": "{\n  \"User-Agent\": \"GeminiCLI/0.35.2/${model} (win32; x64; cloud-shell)\"\n}",
-    "IsBuiltIn": true,
-    "IsEnabled": true,
-    "SortOrder": 7,
-    "CreatedAt": "2026-08-25T00:00:00Z",
-    "UpdatedAt": null
   }
 ]

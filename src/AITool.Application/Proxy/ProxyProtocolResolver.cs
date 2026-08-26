@@ -21,7 +21,7 @@ public static class ProxyProtocolResolver
     public const string Responses = "Responses";
 
     /// <summary>
-    /// Google Gemini GenerateContent 协议名称（GeminiCLI / Antigravity 上游共用）。
+    /// Google Gemini GenerateContent 协议名称（Antigravity 上游）。
     /// </summary>
     public const string Gemini = "Gemini";
 

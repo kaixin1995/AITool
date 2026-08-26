@@ -250,8 +250,5 @@ public sealed class TokenRefreshDisabledAccountTests : IDisposable
 
         public Task<GoogleCodeAssistProfile> LoadCodeAssistProfileAsync(string accountKind, string accessToken, CancellationToken ct) =>
             Task.FromResult(new GoogleCodeAssistProfile());
-
-        public Task<bool> EnsureGeminiCliApisAsync(string accessToken, string projectId, CancellationToken ct) =>
-            Task.FromResult(true);
     }
 }

@@ -49,7 +49,7 @@ public sealed class ModelLibraryItem
     public Guid? CompatibilityProfileId { get; set; }
 
     /// <summary>
-    /// 模型维度的默认客户端特征模拟预设（None | OpenCode | ClaudeCode | CodexCli | Antigravity | GeminiCli | Custom）。
+    /// 模型维度的默认客户端特征模拟预设（None | OpenCode | ClaudeCode | CodexCli | Antigravity | Custom）。
     /// </summary>
     [SugarColumn(Length = 50, IsNullable = false)]
     public string ClientEmulation { get; set; } = "None";

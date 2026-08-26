@@ -14,7 +14,7 @@ namespace AITool.ApplicationTests.Google;
 /// </summary>
 public sealed class GeminiForwardPipelineTests
 {
-    private const string GeminiCliBaseUrl = "https://cloudcode-pa.googleapis.com";
+    private const string AntigravityBaseUrl = "https://daily-cloudcode-pa.googleapis.com";
 
     private sealed class CapturedRequest
     {
@@ -32,7 +32,7 @@ public sealed class GeminiForwardPipelineTests
 
     private static ProxyForwardRequest GeminiRequest(bool streaming, string preparedBody) => new()
     {
-        TargetBaseUrl = GeminiCliBaseUrl,
+        TargetBaseUrl = AntigravityBaseUrl,
         TargetEndpointPathMode = "standard-root",
         TargetApiKey = "ya29-test-token",
         ProtocolType = "Gemini",
@@ -44,7 +44,7 @@ public sealed class GeminiForwardPipelineTests
         RetryCount = 0,
         ForwardHeaders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
-            ["User-Agent"] = "GeminiCLI/0.35.2/gemini-2.5-pro (win32; x64; cloud-shell)"
+            ["User-Agent"] = "antigravity/cli/1.1.20 (aidev_client; os_type=windows; arch=amd64; cl=970154694; auth_method=consumer)"
         },
         TargetPath = streaming ? "/v1internal:streamGenerateContent?alt=sse" : "/v1internal:generateContent"
     };

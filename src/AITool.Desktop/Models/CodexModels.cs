@@ -18,38 +18,34 @@ public partial class CodexAccount : ObservableObject
     public int? ResetCreditsAvailableCount { get; set; }
     public List<CodexQuotaWindow>? Windows { get; set; }
 
-    // —— Google 账号（GeminiCLI / Antigravity）扩展字段；Codex 账号为空 ——
+    // —— Google 账号（Antigravity）扩展字段；Codex 账号为空 ——
     public string? AccountKind { get; set; }
     public string? ProjectId { get; set; }
     public string? SubscriptionTier { get; set; }
     public int? CreditAmount { get; set; }
 
-    /// <summary>厂商标识：Codex / GeminiCli / Antigravity（Google 账号按 AccountKind 推导，默认 Codex）。</summary>
+    /// <summary>厂商标识：Codex / Antigravity（Google 账号按 AccountKind 推导，默认 Codex）。</summary>
     public string Provider
     {
         get
         {
             if (string.IsNullOrEmpty(AccountKind)) return "Codex";
-            return string.Equals(AccountKind, "Antigravity", StringComparison.OrdinalIgnoreCase) ? "Antigravity" : "GeminiCli";
+            return "Antigravity";
         }
     }
 
     public bool IsCodex => string.IsNullOrEmpty(AccountKind);
     public bool IsGoogle => !IsCodex;
     public string ProviderBadge => Provider;
-    /// <summary>卡片徽标底色（与网页端 NTag 配色对齐：Codex 蓝 / GeminiCLI 绿 / Antigravity 橙）。</summary>
+    /// <summary>卡片徽标底色（与网页端 NTag 配色对齐：Codex 蓝 / Antigravity 橙）。</summary>
     public IBrush ProviderBadgeBrush => Provider switch
     {
-        "GeminiCli" => new SolidColorBrush(Color.Parse("#18A058")),
         "Antigravity" => new SolidColorBrush(Color.Parse("#F0A016")),
         _ => new SolidColorBrush(Color.Parse("#2080F0"))
     };
     public string ProjectText => string.IsNullOrWhiteSpace(ProjectId) ? "" : $"项目：{ProjectId}";
     public string CreditText => CreditAmount.HasValue ? $"积分 {CreditAmount}" : "";
-    /// <summary>GeminiCLI 接入方式上游无额度接口，占位文案与网页一致。</summary>
-    public string EmptyWindowsHint => Provider == "GeminiCli"
-        ? "该接入方式上游无额度接口，仅展示订阅等级"
-        : "暂无额度窗口数据";
+    public string EmptyWindowsHint => "暂无额度窗口数据";
 
     [ObservableProperty]
     private bool _isEnabled;
@@ -254,13 +250,13 @@ internal static class CodexDateText
     }
 }
 
-// —— Google 账号（GeminiCLI / Antigravity）OAuth 支撑模型 ——
+// —— Google 账号（Antigravity）OAuth 支撑模型 ——
 
 public sealed class GoogleOAuthResult
 {
     public string Url { get; set; } = string.Empty;
     public string State { get; set; } = string.Empty;
-    public string Kind { get; set; } = "GeminiCli";
+    public string Kind { get; set; } = "Antigravity";
 }
 
 public sealed class GoogleCredentialImportResult
@@ -284,7 +280,6 @@ public sealed class ClientEmulationOption
         new() { Value = "ClaudeCode", Label = "Claude Code 官方命令行" },
         new() { Value = "ZCode", Label = "ZCode / GLM 客户端" },
         new() { Value = "Antigravity", Label = "Google Antigravity CLI" },
-        new() { Value = "GeminiCli", Label = "Google Gemini CLI" },
         new() { Value = "Custom", Label = "自定义特征 (Custom)" }
     ];
 }

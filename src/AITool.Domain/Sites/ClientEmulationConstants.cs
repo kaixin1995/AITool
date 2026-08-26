@@ -13,7 +13,6 @@ public static class ClientEmulationConstants
     public const string CodexVsCode = "CodexVsCode";
     public const string ZCode = "ZCode";
     public const string Antigravity = "Antigravity";
-    public const string GeminiCli = "GeminiCli";
     public const string Custom = "Custom";
 
     /// <summary>
@@ -41,8 +40,7 @@ public static class ClientEmulationConstants
         if (string.Equals(cleaned, CodexCli, StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "codex", StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "codexdesktop", StringComparison.OrdinalIgnoreCase)) return CodexCli;
         if (string.Equals(cleaned, CodexVsCode, StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "codexvscode", StringComparison.OrdinalIgnoreCase)) return CodexVsCode;
         if (string.Equals(cleaned, ZCode, StringComparison.OrdinalIgnoreCase)) return ZCode;
-        if (string.Equals(cleaned, Antigravity, StringComparison.OrdinalIgnoreCase)) return Antigravity;
-        if (string.Equals(cleaned, GeminiCli, StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "gemini", StringComparison.OrdinalIgnoreCase)) return GeminiCli;
+        if (string.Equals(cleaned, Antigravity, StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "gemini", StringComparison.OrdinalIgnoreCase) || string.Equals(cleaned, "geminicli", StringComparison.OrdinalIgnoreCase)) return Antigravity;
         if (string.Equals(cleaned, Custom, StringComparison.OrdinalIgnoreCase)) return Custom;
 
         return trimmed;

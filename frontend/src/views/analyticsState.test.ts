@@ -5,6 +5,7 @@ import {
   buildAnalyticsDefaultCustomRange,
   buildAnalyticsQuery,
   calculateAnalyticsTotalTokens,
+  formatAnalyticsTokenSplit,
   removeAnalyticsFilter,
   resetAnalyticsFilters,
   shouldAutoLoadAnalytics,
@@ -30,6 +31,18 @@ describe('Analytics 汇总', () => {
       totalCachedTokens: 20,
       totalOutputTokens: 30
     })).toBe(180)
+  })
+
+  it('正确格式化 输入 / 缓存 / 输出 三段 Token', () => {
+    expect(formatAnalyticsTokenSplit({
+      totalInputTokens: 1000,
+      totalCachedTokens: 500,
+      totalOutputTokens: 200
+    }, (v) => `${v}`)).toBe('1000 / 500 / 200')
+  })
+
+  it('空汇总时安全回退默认值 0 / 0 / 0', () => {
+    expect(formatAnalyticsTokenSplit(undefined, (v) => `${v}`)).toBe('0 / 0 / 0')
   })
 })
 

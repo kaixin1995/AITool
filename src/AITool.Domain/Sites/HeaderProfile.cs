@@ -9,7 +9,7 @@ public class HeaderProfile
     public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>
-    /// 唯一标识 Key，例如 "OpenCode", "ClaudeCode", "CodexCli", "CodexVsCode", "ZCode", "Antigravity", "GeminiCli", "my-custom-1"
+    /// 唯一标识 Key，例如 "OpenCode", "ClaudeCode", "CodexCli", "CodexVsCode", "ZCode", "Antigravity", "my-custom-1"
     /// </summary>
     public string Key { get; set; } = string.Empty;
 

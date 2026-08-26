@@ -9,6 +9,7 @@ import {
   NEmpty,
   NGi,
   NGrid,
+  NInput,
   NSelect,
   NStatistic,
   NSwitch,
@@ -64,6 +65,7 @@ const query = reactive({
   accessKeyId: null as string | null,
   source: null as string | null,
   status: null as string | null,
+  isStreaming: '' as string,
   startTime: null as number | null,
   endTime: null as number | null,
   modelKeyword: ''
@@ -75,6 +77,11 @@ const statusOptions: SelectOption[] = [
   { label: '全部', value: '' },
   { label: '成功', value: 'success' },
   { label: '失败', value: 'fail' }
+]
+const streamOptions: SelectOption[] = [
+  { label: '全部', value: '' },
+  { label: '流式', value: 'true' },
+  { label: '非流式', value: 'false' }
 ]
 const rangeOptions: SelectOption[] = [
   { label: '按天', value: 'day' },
@@ -171,6 +178,8 @@ function buildParams(page = query.page): Record<string, unknown> {
   if (query.accessKeyId) params.accessKeyId = query.accessKeyId
   if (query.source) params.source = query.source
   if (query.status) params.status = query.status
+  if (query.isStreaming === 'true') params.isStreaming = true
+  else if (query.isStreaming === 'false') params.isStreaming = false
   if (query.modelKeyword.trim()) params.modelKeyword = query.modelKeyword.trim()
   if (query.rangeType === 'custom' && query.startTime) params.startTime = new Date(query.startTime).toISOString()
   if (query.rangeType === 'custom' && query.endTime) params.endTime = new Date(query.endTime).toISOString()
@@ -286,7 +295,7 @@ function handleSearch(): void {
 
 // 筛选项选择后立即查询；自定义时间需先补齐默认范围，避免中间态请求。
 watch(
-  () => [query.rangeType, query.siteId, query.accessKeyId, query.source, query.status, query.startTime, query.endTime],
+  () => [query.rangeType, query.siteId, query.accessKeyId, query.source, query.status, query.isStreaming, query.startTime, query.endTime],
   () => {
     if (query.rangeType === 'custom' && (!query.startTime || !query.endTime)) {
       ensureCustomRangeDefaults()
@@ -429,16 +438,6 @@ onUnmounted(() => {
             <span>时间范围</span>
             <NSelect v-model:value="query.rangeType" :options="rangeOptions" size="small" />
           </label>
-          <template v-if="query.rangeType === 'custom'">
-            <label class="filter-field filter-field-wide">
-              <span>开始时间</span>
-              <NDatePicker v-model:value="query.startTime" type="datetime" size="small" />
-            </label>
-            <label class="filter-field filter-field-wide">
-              <span>结束时间</span>
-              <NDatePicker v-model:value="query.endTime" type="datetime" size="small" />
-            </label>
-          </template>
           <label class="filter-field">
             <span>站点</span>
             <NSelect v-model:value="query.siteId" :options="siteOptions" placeholder="全部站点" clearable size="small" />
@@ -455,12 +454,26 @@ onUnmounted(() => {
             <span>状态</span>
             <NSelect v-model:value="query.status" :options="statusOptions" clearable size="small" />
           </label>
-          <label class="filter-field filter-field-wide">
+          <label class="filter-field">
+            <span>流式模式</span>
+            <NSelect v-model:value="query.isStreaming" :options="streamOptions" placeholder="全部" clearable size="small" />
+          </label>
+          <label class="filter-field filter-field-search">
             <span>模型搜索</span>
             <div class="search-action-row">
-              <input v-model="query.modelKeyword" class="model-keyword-input" placeholder="模型模糊搜索" @keyup.enter="handleSearch" />
+              <NInput v-model:value="query.modelKeyword" size="small" placeholder="模型模糊搜索" clearable @keyup.enter="handleSearch" />
               <NButton class="usage-logs-refresh-button" type="primary" size="small" @click="handleSearch">刷新</NButton>
             </div>
+          </label>
+        </div>
+        <div v-if="query.rangeType === 'custom'" class="usage-logs-custom-range-row">
+          <label class="filter-field">
+            <span>开始时间</span>
+            <NDatePicker v-model:value="query.startTime" type="datetime" size="small" clearable />
+          </label>
+          <label class="filter-field">
+            <span>结束时间</span>
+            <NDatePicker v-model:value="query.endTime" type="datetime" size="small" clearable />
           </label>
         </div>
       </div>
@@ -675,13 +688,13 @@ onUnmounted(() => {
 }
 
 .usage-logs-filter-body {
-  padding: 18px;
+  padding: 16px 18px;
   border-top: 1px solid var(--border-color-global);
 }
 
 .usage-logs-filter-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr)) minmax(180px, 1.4fr);
   gap: 12px;
   align-items: end;
 }
@@ -695,29 +708,32 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
-.filter-field-wide {
-  grid-column: span 2;
+.filter-field-search {
+  min-width: 0;
 }
 
 .search-action-row {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 8px;
 }
 
-.model-keyword-input {
-  min-width: 0;
+.search-action-row :deep(.n-input) {
   flex: 1 1 auto;
-  height: 38px;
-  padding: 0 10px;
-  border: 1px solid var(--border-color-global);
-  border-radius: 4px;
-  background: var(--bg-card);
-  color: var(--text-primary);
+  min-width: 0;
 }
 
 .usage-logs-refresh-button {
-  height: 38px;
+  flex-shrink: 0;
+}
+
+.usage-logs-custom-range-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(200px, 280px));
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-color-global);
 }
 
 .usage-logs-summary-row {
@@ -977,9 +993,21 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1400px) {
   .usage-logs-filter-grid {
-    grid-template-columns: repeat(3, minmax(160px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .filter-field-search {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 991px) {
+  .usage-logs-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .filter-field-search {
+    grid-column: span 2;
   }
 }
 
@@ -997,8 +1025,12 @@ onUnmounted(() => {
     grid-template-columns: 1fr;
   }
 
-  .filter-field-wide {
+  .filter-field-search {
     grid-column: span 1;
+  }
+
+  .usage-logs-custom-range-row {
+    grid-template-columns: 1fr;
   }
 
   .usage-logs-pagination-wrap {

@@ -88,7 +88,7 @@ public sealed class Site
     public string? ExtraHeadersJson { get; set; }
 
     /// <summary>
-    /// 客户端特征模拟预设类型：None | OpenCode | ClaudeCode | CodexCli | Antigravity | GeminiCli | Custom
+    /// 客户端特征模拟预设类型：None | OpenCode | ClaudeCode | CodexCli | Antigravity | Custom
     /// </summary>
     [SugarColumn(Length = 50, IsNullable = false)]
     public string ClientEmulation { get; set; } = "None";

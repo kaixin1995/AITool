@@ -6,13 +6,13 @@ using FluentAssertions;
 namespace AITool.IntegrationTests.Proxy;
 
 /// <summary>
-/// Gemini（GeminiCLI / Antigravity 上游）协议桥回归测试：
+/// Gemini（Antigravity 上游）协议桥回归测试：
 /// 请求方向（Anthropic/OpenAI/Responses → Gemini 封套）、响应方向（Gemini → Anthropic/OpenAI/Responses）、
 /// SSE 状态机、思考等级强覆盖（受保护功能）与 Antigravity CLI 封套。行为对齐 gcli2api。
 /// </summary>
 public sealed class ProxyProtocolBridgeGeminiTests
 {
-    private const string GeminiCliBaseUrl = "https://cloudcode-pa.googleapis.com";
+    private const string StandardGeminiBaseUrl = "https://cloudcode-pa.googleapis.com";
     private const string AntigravityBaseUrl = "https://daily-cloudcode-pa.googleapis.com";
 
     private static JsonObject ParseEnvelope(string body)
@@ -53,7 +53,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
 
         var result = ProxyProtocolBridge.PrepareRequestBody(
             "Anthropic", "Gemini", anthropicBody, "gemini-2.5-pro", enableStreaming: false,
-            targetBaseUrl: GeminiCliBaseUrl, geminiProjectId: "my-project");
+            targetBaseUrl: StandardGeminiBaseUrl, geminiProjectId: "my-project");
 
         var envelope = ParseEnvelope(result);
         envelope["model"]!.GetValue<string>().Should().Be("gemini-2.5-pro");
@@ -101,7 +101,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
         // tool_choice auto → AUTO
         request["toolConfig"]!["functionCallingConfig"]!["mode"]!.GetValue<string>().Should().Be("AUTO");
 
-        // safetySettings：GeminiCLI 保留 BLOCK_NONE（10 类）
+        // safetySettings：非 Antigravity 历史上游保留全量 BLOCK_NONE（10 类）
         var safety = request["safetySettings"]!.AsArray();
         safety.Should().HaveCount(10);
         safety[0]!["threshold"]!.GetValue<string>().Should().Be("BLOCK_NONE");
@@ -120,7 +120,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
         """;
 
         var result = ProxyProtocolBridge.PrepareRequestBody(
-            "Anthropic", "Gemini", anthropicBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: GeminiCliBaseUrl);
+            "Anthropic", "Gemini", anthropicBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: StandardGeminiBaseUrl);
 
         var request = ParseEnvelope(result)["request"]!.AsObject();
         var thinking = request["generationConfig"]!["thinkingConfig"]!.AsObject();
@@ -141,7 +141,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
         """;
 
         var result = ProxyProtocolBridge.PrepareRequestBody(
-            "Anthropic", "Gemini", anthropicBody, "gemini-3-pro-preview", enableStreaming: false, targetBaseUrl: GeminiCliBaseUrl);
+            "Anthropic", "Gemini", anthropicBody, "gemini-3-pro-preview", enableStreaming: false, targetBaseUrl: StandardGeminiBaseUrl);
 
         var request = ParseEnvelope(result)["request"]!.AsObject();
         var thinking = request["generationConfig"]!["thinkingConfig"]!.AsObject();
@@ -166,7 +166,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
         """;
 
         var result = ProxyProtocolBridge.PrepareRequestBody(
-            "Anthropic", "Gemini", anthropicBody, "gemini-2.5-flash", enableStreaming: false, targetBaseUrl: GeminiCliBaseUrl);
+            "Anthropic", "Gemini", anthropicBody, "gemini-2.5-flash", enableStreaming: false, targetBaseUrl: StandardGeminiBaseUrl);
 
         // 单条 user 消息内的多个 part（图片+文本）保持在同一个 user 轮次中。
         var contents = ParseEnvelope(result)["request"]!["contents"]!.AsArray();
@@ -201,7 +201,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
 
         var result = ProxyProtocolBridge.PrepareRequestBody(
             "OpenAI", "Gemini", openAiBody, "gemini-2.5-pro", enableStreaming: true,
-            targetBaseUrl: GeminiCliBaseUrl, geminiProjectId: "p1");
+            targetBaseUrl: StandardGeminiBaseUrl, geminiProjectId: "p1");
 
         var envelope = ParseEnvelope(result);
         var request = envelope["request"]!.AsObject();
@@ -241,7 +241,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
         """;
 
         var result = ProxyProtocolBridge.PrepareRequestBody(
-            "Responses", "Gemini", responsesBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: GeminiCliBaseUrl);
+            "Responses", "Gemini", responsesBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: StandardGeminiBaseUrl);
 
         var envelope = ParseEnvelope(result);
         var request = envelope["request"]!.AsObject();
@@ -265,7 +265,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
 
         var result = ProxyProtocolBridge.PrepareRequestBody(
             "Anthropic", "Gemini", anthropicBody, "gemini-2.5-pro", enableStreaming: false,
-            overrideReasoningEffort: "low", targetBaseUrl: GeminiCliBaseUrl);
+            overrideReasoningEffort: "low", targetBaseUrl: StandardGeminiBaseUrl);
 
         var thinking = ParseEnvelope(result)["request"]!["generationConfig"]!["thinkingConfig"]!.AsObject();
         thinking["thinkingBudget"]!.GetValue<int>().Should().Be(1024, "覆盖值 low 必须盖过客户端 thinking.budget_tokens");
@@ -284,7 +284,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
 
         var result = ProxyProtocolBridge.PrepareRequestBody(
             "Anthropic", "Gemini", anthropicBody, "gemini-3-pro-preview", enableStreaming: false,
-            overrideReasoningEffort: "low", targetBaseUrl: GeminiCliBaseUrl);
+            overrideReasoningEffort: "low", targetBaseUrl: StandardGeminiBaseUrl);
 
         var thinking = ParseEnvelope(result)["request"]!["generationConfig"]!["thinkingConfig"]!.AsObject();
         thinking["thinkingLevel"]!.GetValue<string>().Should().Be("low");
@@ -607,7 +607,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
         """;
 
         var result = ProxyProtocolBridge.PrepareRequestBody(
-            "Anthropic", "Gemini", anthropicBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: GeminiCliBaseUrl);
+            "Anthropic", "Gemini", anthropicBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: StandardGeminiBaseUrl);
 
         var request = ParseEnvelope(result)["request"]!.AsObject();
         var contents = request["contents"]!.AsArray();
@@ -696,7 +696,7 @@ public sealed class ProxyProtocolBridgeGeminiTests
         """;
 
         var result = ProxyProtocolBridge.PrepareRequestBody(
-            "Anthropic", "Gemini", anthropicBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: GeminiCliBaseUrl);
+            "Anthropic", "Gemini", anthropicBody, "gemini-2.5-pro", enableStreaming: false, targetBaseUrl: StandardGeminiBaseUrl);
 
         var declaration = ParseEnvelope(result)["request"]!["tools"]!.AsArray()[0]!["functionDeclarations"]!.AsArray()[0]!.AsObject();
         var schemaText = declaration["parameters"]!.ToJsonString();

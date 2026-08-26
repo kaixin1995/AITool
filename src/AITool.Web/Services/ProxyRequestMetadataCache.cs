@@ -2163,7 +2163,7 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public Dictionary<string, string> ExtraHeaders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     /// <summary>
-    /// 客户端特征模拟预设类型（None | OpenCode | ClaudeCode | CodexCli | Antigravity | GeminiCli | Custom）。
+    /// 客户端特征模拟预设类型（None | OpenCode | ClaudeCode | CodexCli | Antigravity | Custom）。
     /// </summary>
     public string ClientEmulation { get; set; } = "None";
     /// <summary>
@@ -2171,7 +2171,7 @@ public sealed class CachedProxyRouteTarget
     /// </summary>
     public string? EgressProxyUrl { get; set; }
     /// <summary>
-    /// Google 账号（GeminiCLI / Antigravity 隐藏 Site）的项目 ID，作为 Gemini 上游请求体 project 字段。
+    /// Google 账号（Antigravity 隐藏 Site）的项目 ID，作为 Gemini 上游请求体 project 字段。
     /// 空表示非 Google 托管站点。
     /// </summary>
     public string GoogleProjectId { get; set; } = string.Empty;

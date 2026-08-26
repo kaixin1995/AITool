@@ -17,7 +17,7 @@ public sealed class ClientEmulationResolutionTests
         ProxyRequestMetadataCache.ResolveClientEmulation("claude-code", null, "OpenCode")
             .Should().Be("ClaudeCode", "映射层优先且内置预设应归一化");
         ProxyRequestMetadataCache.ResolveClientEmulation(null, "gemini", null)
-            .Should().Be("GeminiCli", "模型层级识别别名并归一化");
+            .Should().Be("Antigravity", "模型层级识别别名并归一化为 Antigravity");
         ProxyRequestMetadataCache.ResolveClientEmulation(null, null, "antigravity")
             .Should().Be("Antigravity");
     }

@@ -75,12 +75,9 @@ public interface IGoogleOAuthClient
     /// <summary>获取授权账号邮箱（userinfo）。失败返回 null。</summary>
     Task<string?> GetUserEmailAsync(string accessToken, CancellationToken ct);
 
-    /// <summary>获取用户可访问的活跃 Google Cloud 项目列表（projectId，GeminiCli 登录自动选择项目用）。</summary>
+    /// <summary>获取用户可访问的活跃 Google Cloud 项目列表（projectId）。</summary>
     Task<IReadOnlyList<string>> GetUserProjectsAsync(string accessToken, CancellationToken ct);
 
     /// <summary>调用 loadCodeAssist 获取 Antigravity 账号的 project/tier/积分（对齐 gcli2api fetch_project_id_and_tier，含 onboardUser 轮询回退）。</summary>
     Task<GoogleCodeAssistProfile> LoadCodeAssistProfileAsync(string accountKind, string accessToken, CancellationToken ct);
-
-    /// <summary>为 GeminiCLI 项目检查并启用 gcli2api 所需的 Google Cloud API。</summary>
-    Task<bool> EnsureGeminiCliApisAsync(string accessToken, string projectId, CancellationToken ct);
 }

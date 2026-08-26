@@ -364,7 +364,7 @@ public sealed class ModelHealthRequestService
 
         if (string.Equals(protocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
         {
-            return isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli;
+            return Domain.Sites.ClientEmulationConstants.Antigravity;
         }
 
         return Domain.Sites.ClientEmulationConstants.None;

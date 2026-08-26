@@ -10,7 +10,7 @@ using Microsoft.AspNetCore.Mvc;
 namespace AITool.Web.Controllers.Admin;
 
 /// <summary>
-/// Google 账号（GeminiCLI / Antigravity）管理接口：OAuth 登录（粘贴回调 URL）、凭证导入、
+/// Google 账号（Antigravity）管理接口：OAuth 登录（粘贴回调 URL）、凭证导入、
 /// 额度查询、启停、编辑、删除与模型拉取。结构与 CodexApiController 对齐，
 /// 走同一 OAuth 功能总开关。
 /// </summary>
@@ -48,7 +48,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
         _logger = logger;
     }
 
-    /// <summary>启动 OAuth 登录，返回授权 URL 与 state。kind: GeminiCli / Antigravity。</summary>
+    /// <summary>启动 OAuth 登录，返回授权 URL 与 state（Antigravity 客户端）。</summary>
     [HttpPost("start-oauth")]
     public IActionResult StartOAuth([FromBody] GoogleStartOAuthRequest? req)
     {
@@ -278,7 +278,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
         return Ok(ToSummary(account, selectedModels: currentSelectedModels));
     }
 
-    /// <summary>拉取账号可用模型（Antigravity 动态 / GeminiCli 静态清单，附现有映射状态）。</summary>
+    /// <summary>拉取账号可用模型（Antigravity 动态清单，附现有映射状态）。</summary>
     [HttpGet("accounts/{id}/fetch-models")]
     public async Task<IActionResult> FetchModels(Guid id, CancellationToken ct)
     {
@@ -294,16 +294,6 @@ public sealed class GoogleAccountsApiController : ControllerBase
             if (!string.IsNullOrWhiteSpace(refreshed))
             {
                 accessToken = refreshed;
-            }
-        }
-
-        if (string.Equals(account.AccountKind, GoogleAccountKinds.GeminiCli, StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(account.ProjectId))
-        {
-            var ready = await _oauth.EnsureGeminiCliApisAsync(accessToken, account.ProjectId, ct);
-            if (!ready)
-            {
-                _logger.LogWarning("GeminiCLI project API preparation was not fully successful for account {AccountId}", account.Id);
             }
         }
 
@@ -388,8 +378,7 @@ public sealed class GoogleAccountsApiController : ControllerBase
     // —— 私有 ——
 
     /// <summary>
-    /// 用刷新得到的 token 组装供给输入：Antigravity 经 loadCodeAssist 探测项目/tier/积分；
-    /// GeminiCli 经资源管理器选择项目（唯一项目自动选、多个取含 default 的或第一个、失败回落共享默认项目）。
+    /// 用刷新得到的 token 组装供给输入：Antigravity 经 loadCodeAssist 探测项目/tier/积分。
     /// </summary>
     private async Task<GoogleProvisionInput> BuildProvisionInputAsync(
         string accountKind,
@@ -399,50 +388,12 @@ public sealed class GoogleAccountsApiController : ControllerBase
         CancellationToken ct)
     {
         var kind = GoogleAccountKinds.Normalize(accountKind);
-        string? tier = null;
-        int? creditAmount = null;
-        string? email = null;
+        var profile = await _oauth.LoadCodeAssistProfileAsync(kind, tokens.AccessToken, ct);
+        projectId ??= profile.ProjectId;
+        var tier = profile.Tier;
+        var creditAmount = profile.CreditAmount;
 
-        if (string.Equals(kind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase))
-        {
-            var profile = await _oauth.LoadCodeAssistProfileAsync(kind, tokens.AccessToken, ct);
-            projectId ??= profile.ProjectId;
-            tier = profile.Tier;
-            creditAmount = profile.CreditAmount;
-        }
-        else
-        {
-            if (string.IsNullOrWhiteSpace(projectId))
-            {
-                var projects = await _oauth.GetUserProjectsAsync(tokens.AccessToken, ct);
-                if (projects.Count == 1)
-                {
-                    projectId = projects[0];
-                }
-                else if (projects.Count > 1)
-                {
-                    projectId = projects.FirstOrDefault(p => p.Contains("default", StringComparison.OrdinalIgnoreCase))
-                        ?? projects[0];
-                }
-                else
-                {
-                    // gcli2api 同款兜底共享项目。
-                    projectId = "gemini-pro-1751713012-07fc4dfd";
-                }
-            }
-        }
-
-        if (string.Equals(kind, GoogleAccountKinds.GeminiCli, StringComparison.OrdinalIgnoreCase)
-            && !string.IsNullOrWhiteSpace(projectId))
-        {
-            var ready = await _oauth.EnsureGeminiCliApisAsync(tokens.AccessToken, projectId, ct);
-            if (!ready)
-            {
-                _logger.LogWarning("GeminiCLI project API preparation was not fully successful for project {ProjectId}", projectId);
-            }
-        }
-
-        email = await _oauth.GetUserEmailAsync(tokens.AccessToken, ct);
+        var email = await _oauth.GetUserEmailAsync(tokens.AccessToken, ct);
 
         return new GoogleProvisionInput
         {

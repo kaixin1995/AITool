@@ -7,7 +7,7 @@ using System.Net;
 namespace AITool.Web.Services;
 
 /// <summary>
-/// 在实时代理请求命中 Google 上游（GeminiCLI / Antigravity）401 时，立即刷新账号凭证并同步隐藏站点。
+/// 在实时代理请求命中 Google 上游（Antigravity）401 时，立即刷新账号凭证并同步隐藏站点。
 /// </summary>
 public sealed class GoogleCredentialRefreshService
 {
@@ -42,38 +42,6 @@ public sealed class GoogleCredentialRefreshService
         using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
         {
             return await RefreshCoreAsync(linkedSiteId, staleAccessToken, cancellationToken);
-        }
-    }
-
-    /// <summary>
-    /// 发起 GeminiCLI 请求前检查并启用项目所需的 Google Cloud API。
-    /// 该操作由 OAuth 客户端按项目缓存，旧账号无需重新登录即可完成修复。
-    /// </summary>
-    public async Task EnsureGeminiCliApisAsync(
-        string projectId,
-        string accessToken,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(projectId) || string.IsNullOrWhiteSpace(accessToken))
-        {
-            return;
-        }
-
-        try
-        {
-            var ready = await _oauth.EnsureGeminiCliApisAsync(accessToken, projectId, cancellationToken);
-            if (!ready)
-            {
-                _logger.LogWarning("GeminiCLI project API preparation was not fully successful for project {ProjectId}", projectId);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            _logger.LogWarning(exception, "Unable to prepare GeminiCLI project APIs for project {ProjectId}", projectId);
         }
     }
 

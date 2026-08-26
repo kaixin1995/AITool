@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch, type VNode } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput,
@@ -741,32 +741,47 @@ const RESPONSES_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="non
 
 function formatDateTime(value: string): string {
   if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false
-  })
+  const d = new Date(value)
+  if (isNaN(d.getTime())) return '-'
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const hours = String(d.getHours()).padStart(2, '0')
+  const minutes = String(d.getMinutes()).padStart(2, '0')
+  return `${year}/${month}/${day} ${hours}:${minutes}`
 }
 
 const columns = computed<DataTableColumns<SiteListItem>>(() => [
-  { type: 'selection', width: 44 },
-  { title: '名称', key: 'name', width: 150, ellipsis: { tooltip: true }, render: (row) => h('strong', row.name) },
-  { title: '根地址', key: 'baseUrl', minWidth: 320, ellipsis: { tooltip: true }, render: (row) => h('code', { class: 'site-url' }, row.baseUrl) },
+  { type: 'selection', width: 40 },
+  { title: '名称', key: 'name', width: 120, ellipsis: { tooltip: true }, render: (row) => h('strong', row.name) },
+  { title: '根地址', key: 'baseUrl', minWidth: 180, width: 200, ellipsis: { tooltip: true }, render: (row) => h('code', { class: 'site-url' }, row.baseUrl) },
   {
     title: '协议',
     key: 'protocol',
-    minWidth: 180,
+    width: 250,
+    minWidth: 245,
     render: (row) => {
-      const items = []
+      const items: VNode[] = []
       if (row.supportsOpenAi) {
         items.push(
           h(
             NTooltip,
             null,
             {
-              trigger: () => h('span', { class: 'protocol-tag protocol-tag-openai' }, [
-                h('span', { class: 'protocol-tag-icon', innerHTML: OPENAI_SVG }),
-                h('span', { class: 'protocol-tag-text' }, 'OpenAI')
-              ]),
+              trigger: () => h(
+                NTag,
+                {
+                  size: 'small',
+                  type: 'success',
+                  bordered: false,
+                  class: 'protocol-tag',
+                  style: { cursor: 'pointer' }
+                },
+                () => [
+                  h('span', { class: 'protocol-tag-icon', innerHTML: OPENAI_SVG }),
+                  h('span', { class: 'protocol-tag-text' }, 'OpenAI')
+                ]
+              ),
               default: () => 'OpenAI Chat Completions 协议 (/v1/chat/completions)'
             }
           )
@@ -778,10 +793,20 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
             NTooltip,
             null,
             {
-              trigger: () => h('span', { class: 'protocol-tag protocol-tag-anthropic' }, [
-                h('span', { class: 'protocol-tag-icon', innerHTML: ANTHROPIC_SVG }),
-                h('span', { class: 'protocol-tag-text' }, 'Anthropic')
-              ]),
+              trigger: () => h(
+                NTag,
+                {
+                  size: 'small',
+                  type: 'warning',
+                  bordered: false,
+                  class: 'protocol-tag',
+                  style: { cursor: 'pointer' }
+                },
+                () => [
+                  h('span', { class: 'protocol-tag-icon', innerHTML: ANTHROPIC_SVG }),
+                  h('span', { class: 'protocol-tag-text' }, 'Anthropic')
+                ]
+              ),
               default: () => 'Anthropic Messages 协议 (/v1/messages)'
             }
           )
@@ -793,10 +818,20 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
             NTooltip,
             null,
             {
-              trigger: () => h('span', { class: 'protocol-tag protocol-tag-responses' }, [
-                h('span', { class: 'protocol-tag-icon', innerHTML: RESPONSES_SVG }),
-                h('span', { class: 'protocol-tag-text' }, 'Responses')
-              ]),
+              trigger: () => h(
+                NTag,
+                {
+                  size: 'small',
+                  type: 'info',
+                  bordered: false,
+                  class: 'protocol-tag',
+                  style: { cursor: 'pointer' }
+                },
+                () => [
+                  h('span', { class: 'protocol-tag-icon', innerHTML: RESPONSES_SVG }),
+                  h('span', { class: 'protocol-tag-text' }, 'Responses')
+                ]
+              ),
               default: () => 'OpenAI Responses API 协议 (/v1/responses)'
             }
           )
@@ -805,13 +840,14 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
       if (items.length === 0) {
         return h('span', { style: 'color: var(--text-tertiary)' }, '-')
       }
-      return h('div', { class: 'site-protocol-tags-group' }, items)
+      return h(NSpace, { size: 4, wrap: false, align: 'center' }, () => items)
     }
   },
   {
     title: '出口代理',
     key: 'egressProxyUrl',
-    width: 120,
+    width: 90,
+    align: 'center',
     render: (row) => {
       if (row.egressProxyUrl) {
         return h(
@@ -829,17 +865,25 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
   {
     title: '状态',
     key: 'isEnabled',
-    width: 80,
+    width: 70,
+    align: 'center',
     render: (row) =>
       h(NTag, { size: 'small', type: row.isEnabled ? 'success' : 'default', bordered: false }, () =>
         row.isEnabled ? '启用' : '禁用'
       )
   },
-  { title: '创建时间', key: 'createdAt', width: 150, render: (row) => formatDateTime(row.createdAt) },
+  {
+    title: '创建时间',
+    key: 'createdAt',
+    width: 150,
+    minWidth: 150,
+    align: 'center',
+    render: (row) => h('span', { style: 'white-space: nowrap' }, formatDateTime(row.createdAt))
+  },
   {
     title: '操作',
     key: 'actions',
-    width: 248,
+    width: 200,
     fixed: 'right',
     render: (row) => {
       // 高频操作（编辑/拉取/启停）直接显示为按钮；低频且需谨慎的（密钥管理/删除）收纳进「⋯」菜单。
@@ -912,7 +956,7 @@ onBeforeUnmount(handleCatalogClosed)
         :loading="loading"
         :row-key="(row: SiteListItem) => row.id"
         :pagination="{ pageSize: 20 }"
-        :scroll-x="1420"
+        :scroll-x="1060"
         size="small"
         striped
       />
@@ -1506,66 +1550,39 @@ onBeforeUnmount(handleCatalogClosed)
   font-size: 12px;
 }
 
-.site-protocol-tags-group {
-  display: inline-flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 5px;
+:deep(.protocol-tag) {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  vertical-align: middle !important;
 }
 
-.protocol-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
-  border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  line-height: 1.3;
-  cursor: pointer;
-  transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
-  user-select: none;
+:deep(.protocol-tag .n-tag__content) {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
 }
 
-.protocol-tag:hover {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
-}
-
-.protocol-tag-icon {
+:deep(.protocol-tag-icon) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 13px;
   height: 13px;
+  margin-right: 4px;
+  flex-shrink: 0;
 }
 
-.protocol-tag-icon svg {
+:deep(.protocol-tag-icon svg) {
   width: 13px;
   height: 13px;
+  display: block;
 }
 
-.protocol-tag-text {
-  font-size: 11px;
+:deep(.protocol-tag-text) {
+  display: inline-block;
   line-height: 1;
-}
-
-.protocol-tag.protocol-tag-openai {
-  background: color-mix(in srgb, #10a37f 12%, var(--bg-surface-soft, rgba(16, 163, 127, 0.08)));
-  color: #10a37f;
-  border: 1px solid color-mix(in srgb, #10a37f 25%, transparent);
-}
-
-.protocol-tag.protocol-tag-anthropic {
-  background: color-mix(in srgb, #d97706 12%, var(--bg-surface-soft, rgba(217, 119, 6, 0.08)));
-  color: #d97706;
-  border: 1px solid color-mix(in srgb, #d97706 25%, transparent);
-}
-
-.protocol-tag.protocol-tag-responses {
-  background: color-mix(in srgb, #8b5cf6 12%, var(--bg-surface-soft, rgba(139, 92, 246, 0.08)));
-  color: #8b5cf6;
-  border: 1px solid color-mix(in srgb, #8b5cf6 25%, transparent);
 }
 
 .site-protocols-row {

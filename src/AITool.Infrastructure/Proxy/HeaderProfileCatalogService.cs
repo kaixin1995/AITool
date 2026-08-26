@@ -215,7 +215,7 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                     var list = JsonSerializer.Deserialize<List<HeaderProfile>>(json, JsonOptions);
                     if (list != null && list.Count > 0)
                     {
-                        // 确保 7 种内置预设均存在（若新版本新增了预设如 CodexVsCode/ZCode，自动补齐）
+                        // 确保全部内置预设均存在（新版本新增预设如 CodexVsCode/ZCode 时自动补齐，并清理由旧版本下线的预设）
                         EnsureBuiltInDefaults(list);
                         return list;
                     }
@@ -265,6 +265,10 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
 
     private static void EnsureBuiltInDefaults(List<HeaderProfile> list)
     {
+        // 清理已下线的内置预设死条目（GeminiCLI 接入方式已移除；仅清内置项，用户自定义 Key 同名不受影响）。
+        // 仅从内存列表移除，文件在下次任意写操作时自然重写为干净版本。
+        list.RemoveAll(x => x.IsBuiltIn && string.Equals(x.Key, "GeminiCli", StringComparison.OrdinalIgnoreCase));
+
         var defaults = GetDefaultBuiltInProfiles();
         foreach (var def in defaults)
         {
@@ -428,21 +432,6 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                 IsBuiltIn = true,
                 IsEnabled = true,
                 SortOrder = 6,
-                CreatedAt = DateTimeOffset.UtcNow
-            },
-            new HeaderProfile
-            {
-                Id = Guid.Parse("10000000-0000-0000-0000-000000000007"),
-                Key = ClientEmulationConstants.GeminiCli,
-                Name = "Google Gemini CLI",
-                Description = "Google Gemini CLI 官方特征指纹",
-                HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
-                {
-                    ["User-Agent"] = "GeminiCLI/0.35.2/${model} (win32; x64; cloud-shell)"
-                }, JsonOptions),
-                IsBuiltIn = true,
-                IsEnabled = true,
-                SortOrder = 7,
                 CreatedAt = DateTimeOffset.UtcNow
             }
         ];

@@ -185,7 +185,7 @@ public sealed class ClientEmulationEngineTests
         Assert.Equal(ClientEmulationConstants.CodexVsCode, ClientEmulationConstants.Normalize("codex_vscode"));
         Assert.Equal(ClientEmulationConstants.ZCode, ClientEmulationConstants.Normalize("zcode"));
         Assert.Equal(ClientEmulationConstants.Antigravity, ClientEmulationConstants.Normalize("ANTIGRAVITY"));
-        Assert.Equal(ClientEmulationConstants.GeminiCli, ClientEmulationConstants.Normalize("gemini"));
+        Assert.Equal(ClientEmulationConstants.Antigravity, ClientEmulationConstants.Normalize("gemini"));
         Assert.Equal(ClientEmulationConstants.Custom, ClientEmulationConstants.Normalize("custom"));
         Assert.Equal(ClientEmulationConstants.None, ClientEmulationConstants.Normalize(null));
         Assert.Equal(ClientEmulationConstants.None, ClientEmulationConstants.Normalize(""));
@@ -198,7 +198,7 @@ public sealed class ClientEmulationEngineTests
     [InlineData("OpenCode", "ClaudeCode", "Antigravity", "OpenCode")]
     [InlineData("None", "ClaudeCode", "Antigravity", "ClaudeCode")]
     [InlineData("None", "None", "Antigravity", "Antigravity")]
-    [InlineData(null, null, "GeminiCli", "GeminiCli")]
+    [InlineData(null, null, "Antigravity", "Antigravity")]
     [InlineData(null, null, null, "None")]
     public void ResolveClientEmulation_FollowsPrecedenceHierarchy(
         string? mappingEmulation,

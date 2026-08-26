@@ -149,22 +149,6 @@ public static partial class ClientEmulationEngine
                 headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;
                 break;
 
-            case ClientEmulationConstants.GeminiCli:
-                // Google Cloud Code / Gemini CLI 特征
-                if (isAntigravity)
-                {
-                    headers["User-Agent"] = GoogleAccountKinds.AntigravityUserAgent;
-                }
-                else
-                {
-                    headers["User-Agent"] = $"GeminiCLI/0.35.2/{modelName ?? string.Empty} (win32; x64; cloud-shell)";
-                    if (!string.IsNullOrWhiteSpace(projectId))
-                    {
-                        headers["x-goog-user-project"] = projectId;
-                    }
-                }
-                break;
-
             case ClientEmulationConstants.None:
             case ClientEmulationConstants.Custom:
             default:

@@ -14,44 +14,27 @@ public sealed class GoogleAccountKindsTests
     [Fact]
     public void Normalize_maps_kind_names()
     {
-        GoogleAccountKinds.Normalize("GeminiCli").Should().Be(GoogleAccountKinds.GeminiCli);
-        GoogleAccountKinds.Normalize("geminicli").Should().Be(GoogleAccountKinds.GeminiCli);
         GoogleAccountKinds.Normalize("Antigravity").Should().Be(GoogleAccountKinds.Antigravity);
         GoogleAccountKinds.Normalize("antigravity").Should().Be(GoogleAccountKinds.Antigravity);
-        GoogleAccountKinds.Normalize(null).Should().Be(GoogleAccountKinds.GeminiCli);
-        GoogleAccountKinds.Normalize("bogus").Should().Be(GoogleAccountKinds.GeminiCli);
+        GoogleAccountKinds.Normalize(null).Should().Be(GoogleAccountKinds.Antigravity);
+        GoogleAccountKinds.Normalize("bogus").Should().Be(GoogleAccountKinds.Antigravity);
         GoogleAccountKinds.IsValid("Antigravity").Should().BeTrue();
-        GoogleAccountKinds.IsValid("GeminiCli").Should().BeTrue();
         GoogleAccountKinds.IsValid("bogus").Should().BeFalse();
     }
 
     [Fact]
-    public void GetBaseUrl_uses_distinct_endpoints()
+    public void GetBaseUrl_returns_antigravity_endpoint()
     {
-        // 端点对齐 gcli2api config.py：GeminiCLI→cloudcode-pa，Antigravity→daily-cloudcode-pa。
-        GoogleAccountKinds.GetBaseUrl(GoogleAccountKinds.GeminiCli).Should().Be("https://cloudcode-pa.googleapis.com");
-        GoogleAccountKinds.GetBaseUrl(GoogleAccountKinds.Antigravity).Should().Be("https://daily-cloudcode-pa.googleapis.com");
+        GoogleAccountKinds.GetBaseUrl().Should().Be("https://daily-cloudcode-pa.googleapis.com");
     }
 
     [Fact]
-    public void GetScopes_antigravity_includes_extra_scopes()
+    public void GetScopes_antigravity_includes_scopes()
     {
-        var geminiCli = GoogleAccountKinds.GetScopes(GoogleAccountKinds.GeminiCli);
-        geminiCli.Should().HaveCount(3);
-
-        var antigravity = GoogleAccountKinds.GetScopes(GoogleAccountKinds.Antigravity);
+        var antigravity = GoogleAccountKinds.GetScopes();
         antigravity.Should().HaveCount(5);
         antigravity.Should().Contain("https://www.googleapis.com/auth/cclog");
         antigravity.Should().Contain("https://www.googleapis.com/auth/experimentsandconfigs");
-    }
-
-    [Fact]
-    public void Client_ids_are_separated_per_kind()
-    {
-        GoogleAccountKinds.GetClientId(GoogleAccountKinds.GeminiCli)
-            .Should().NotBe(GoogleAccountKinds.GetClientId(GoogleAccountKinds.Antigravity));
-        GoogleAccountKinds.GetClientSecret(GoogleAccountKinds.GeminiCli)
-            .Should().NotBe(GoogleAccountKinds.GetClientSecret(GoogleAccountKinds.Antigravity));
     }
 }
 
@@ -187,16 +170,6 @@ public sealed class GoogleOAuthClientUrlTests
     }
 
     [Fact]
-    public void BuildAuthorizeUrl_kind_scopes_separated()
-    {
-        var client = new GoogleOAuthClient(new HttpClient());
-        var session = client.CreateSession();
-
-        var geminiCliUrl = client.BuildAuthorizeUrl(GoogleAccountKinds.GeminiCli, session);
-        geminiCliUrl.Should().NotContain(Uri.EscapeDataString("https://www.googleapis.com/auth/cclog"));
-    }
-
-    [Fact]
     public void CreateSession_state_is_url_safe_and_unique()
     {
         var client = new GoogleOAuthClient(new HttpClient());
@@ -205,77 +178,6 @@ public sealed class GoogleOAuthClientUrlTests
         first.State.Should().NotBe(second.State);
         first.State.Should().NotContainAny("+", "/", "=");
         first.IsExpired.Should().BeFalse();
-    }
-}
-
-public sealed class GoogleOAuthClientApiEnableTests
-{
-    [Fact]
-    public async Task EnsureGeminiCliApis_checks_and_enables_required_services_once()
-    {
-        var projectId = $"aitool-test-{Guid.NewGuid():N}";
-        var requests = new List<HttpRequestMessage>();
-        var handler = new StubHandler(request =>
-        {
-            requests.Add(request);
-            if (request.Method == HttpMethod.Get
-                && request.RequestUri!.AbsolutePath.EndsWith("/geminicloudassist.googleapis.com", StringComparison.Ordinal))
-            {
-                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
-                {
-                    Content = new StringContent("{\"state\": \"ENABLED\"}")
-                };
-            }
-
-            if (request.Method == HttpMethod.Get)
-            {
-                return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
-                {
-                    Content = new StringContent("{\"state\": \"DISABLED\"}")
-                };
-            }
-
-            return new HttpResponseMessage(System.Net.HttpStatusCode.OK)
-            {
-                Content = new StringContent("{}")
-            };
-        });
-        var client = new GoogleOAuthClient(new HttpClient(handler));
-
-        (await client.EnsureGeminiCliApisAsync("access-token", projectId, CancellationToken.None)).Should().BeTrue();
-        (await client.EnsureGeminiCliApisAsync("access-token", projectId, CancellationToken.None)).Should().BeTrue();
-
-        requests.Should().HaveCount(3);
-        requests.Count(request => request.Method == HttpMethod.Get).Should().Be(2);
-        requests.Count(request => request.Method == HttpMethod.Post).Should().Be(1);
-        requests.Should().OnlyContain(request => request.Headers.Authorization != null
-            && request.Headers.Authorization.Scheme == "Bearer");
-    }
-
-    private sealed class StubHandler : HttpMessageHandler
-    {
-        private readonly Func<HttpRequestMessage, HttpResponseMessage> _responder;
-
-        public StubHandler(Func<HttpRequestMessage, HttpResponseMessage> responder)
-        {
-            _responder = responder;
-        }
-
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request,
-            CancellationToken cancellationToken)
-            => Task.FromResult(_responder(request));
-    }
-}
-
-public sealed class GoogleModelFetcherStaticListTests
-{
-    [Fact]
-    public async Task GeminiCli_fetch_returns_shared_static_catalog()
-    {
-        var fetcher = new GoogleModelFetcher(new HttpClient());
-        var models = await fetcher.FetchAsync(GoogleAccountKinds.GeminiCli, "token", CancellationToken.None);
-        models.Select(m => m.Slug).Should().BeEquivalentTo(GoogleAccountKinds.GeminiCliModels);
     }
 }
 

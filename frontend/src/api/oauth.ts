@@ -230,9 +230,9 @@ export async function consumeResetCredit(id: string): Promise<void> {
   await httpPost(`/api/admin/oauth/accounts/${id}/consume-reset-credit`)
 }
 
-// —— Google 账号（GeminiCLI / Antigravity，gcli2api 移植）——
+// —— Google 账号（Antigravity）——
 
-export type GoogleAccountKind = 'GeminiCli' | 'Antigravity'
+export type GoogleAccountKind = 'Antigravity'
 
 export interface GoogleAccountSummary {
   id: string

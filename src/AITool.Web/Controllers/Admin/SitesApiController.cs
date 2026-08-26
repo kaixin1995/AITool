@@ -706,7 +706,7 @@ public sealed class SitePayload
     /// </summary>
     public bool SupportsResponses { get; set; }
     /// <summary>
-    /// 客户端特征模拟预设类型（None | OpenCode | ClaudeCode | CodexCli | Antigravity | GeminiCli | Custom）。
+    /// 客户端特征模拟预设类型（None | OpenCode | ClaudeCode | CodexCli | Antigravity | Custom）。
     /// </summary>
     public string ClientEmulation { get; set; } = "None";
     /// <summary>

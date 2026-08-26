@@ -137,7 +137,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// </summary>
     private readonly CodexCredentialRefreshService _codexCredentialRefreshService;
     /// <summary>
-    /// 负责在 Google 上游（GeminiCLI / Antigravity）凭证失效时即时刷新 access token。
+    /// 负责在 Google 上游（Antigravity）凭证失效时即时刷新 access token。
     /// </summary>
     private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
     /// <summary>
@@ -633,7 +633,6 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 ForwardHeaders = forwardHeaders,
                 EgressProxyUrl = route.EgressProxyUrl,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
-                PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
                 DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = defaultTargetPathFactory is null
                     ? (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)

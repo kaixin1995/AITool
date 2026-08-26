@@ -13,7 +13,7 @@ namespace AITool.Web.Services;
 /// </summary>
 public sealed record GoogleProvisionInput
 {
-    /// <summary>接入方式（GeminiCli / Antigravity）。</summary>
+    /// <summary>接入方式（Antigravity）。</summary>
     public required string AccountKind { get; init; }
 
     /// <summary>展示名（缺省用邮箱）。</summary>
@@ -46,15 +46,11 @@ public sealed record GoogleProvisionInput
 /// 并支持级联删除与编辑（对齐 CodexAccountProvisioner 的隐藏 Site 复用方案）。
 /// <para>
 /// 隐藏 Site 以 ProtocolType=Gemini 接入转发链路（Supports* 全 false），Models / Routes / Chat
-/// 经 SiteId 自动联动；模型目录：GeminiCli 用静态清单（对齐 gcli2api BASE_MODELS），
-/// Antigravity 走 fetchAvailableModels 动态拉取（失败时跳过，可稍后手动拉取）。
+/// 经 SiteId 自动联动；模型目录：Antigravity 走 fetchAvailableModels 动态拉取（失败时跳过，可稍后手动拉取）。
 /// </para>
 /// </summary>
 public sealed class GoogleAccountProvisioner
 {
-    /// <summary>GeminiCLI 静态模型清单（与模型拉取器共用，定义在 GoogleAccountKinds.GeminiCliModels）。</summary>
-    public static readonly string[] GeminiCliModels = GoogleAccountKinds.GeminiCliModels;
-
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
     private readonly IGoogleModelFetcher _modelFetcher;
@@ -153,35 +149,26 @@ public sealed class GoogleAccountProvisioner
         }
 
         // —— 模型映射 ——
-        if (string.Equals(account.AccountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase))
+        try
         {
-            // Antigravity：动态拉取模型清单（失败不阻断供给，可稍后手动拉取）。
-            try
+            var models = await _modelFetcher.FetchAsync(account.AccountKind, input.AccessToken, ct);
+            if (models.Count > 0)
             {
-                var models = await _modelFetcher.FetchAsync(account.AccountKind, input.AccessToken, ct);
-                if (models.Count > 0)
-                {
-                    await UpsertModelMappingsCoreAsync(site.Id, models, account.AccountKind, ct);
-                }
-            }
-            catch (Exception ex)
-            {
-                if (GoogleCredentialRefreshService.IsForbiddenResponse(ex))
-                {
-                    if (await _credentialRefreshService.DisableAsync(account.LinkedSiteId, "model-fetch-403", ct))
-                    {
-                        account.IsEnabled = false;
-                        account.DisabledByUpstream = true;
-                        site.IsEnabled = false;
-                    }
-                }
-                _logger.LogWarning(ex, "Antigravity 模型拉取失败（账号供给继续）: {AccountId}", account.Id);
+                await UpsertModelMappingsCoreAsync(site.Id, models, account.AccountKind, ct);
             }
         }
-        else
+        catch (Exception ex)
         {
-            var staticModels = GeminiCliModels.Select(n => (Slug: n, DisplayName: n));
-            await UpsertModelMappingsCoreAsync(site.Id, staticModels, account.AccountKind, ct);
+            if (GoogleCredentialRefreshService.IsForbiddenResponse(ex))
+            {
+                if (await _credentialRefreshService.DisableAsync(account.LinkedSiteId, "model-fetch-403", ct))
+                {
+                    account.IsEnabled = false;
+                    account.DisabledByUpstream = true;
+                    site.IsEnabled = false;
+                }
+            }
+            _logger.LogWarning(ex, "Antigravity 模型拉取失败（账号供给继续）: {AccountId}", account.Id);
         }
 
         _metadataCache.InvalidateRouteTargets();
@@ -295,9 +282,7 @@ public sealed class GoogleAccountProvisioner
         var modelList = models.ToList();
         if (modelList.Count == 0) return;
 
-        var emulation = string.Equals(accountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase)
-            ? ClientEmulationConstants.Antigravity
-            : ClientEmulationConstants.GeminiCli;
+        var emulation = ClientEmulationConstants.Antigravity;
 
         var remoteNames = modelList.Select(m => m.Slug).Distinct().ToList();
 
@@ -369,9 +354,7 @@ public sealed class GoogleAccountProvisioner
             .ToList();
         if (modelList.Count == 0) return;
 
-        var emulation = string.Equals(accountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase)
-            ? ClientEmulationConstants.Antigravity
-            : ClientEmulationConstants.GeminiCli;
+        var emulation = ClientEmulationConstants.Antigravity;
 
         var remoteNames = modelList.Select(model => model.Slug).ToList();
         var selectionByRemote = modelList.ToDictionary(model => model.Slug, StringComparer.OrdinalIgnoreCase);

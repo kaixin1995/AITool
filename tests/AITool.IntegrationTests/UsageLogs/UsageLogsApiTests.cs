@@ -117,6 +117,49 @@ public sealed class UsageLogsApiTests
     }
 
     /// <summary>
+    /// 验证日志列表接口支持按流式/非流式筛选。
+    /// </summary>
+    [Theory]
+    [InlineData(true, 4)]
+    [InlineData(false, 1)]
+    public async Task Get_list_filters_by_is_streaming(bool isStreaming, int expectedCount)
+    {
+        await using var factory = new UsageLogsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/api/admin/usage-logs/list?rangeType=all&isStreaming={isStreaming.ToString().ToLowerInvariant()}");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        using var document = JsonDocument.Parse(body);
+        var items = document.RootElement.GetProperty("items").EnumerateArray().ToList();
+
+        items.Should().HaveCount(expectedCount);
+        items.Should().OnlyContain(x => x.GetProperty("isStreaming").GetBoolean() == isStreaming);
+    }
+
+    /// <summary>
+    /// 验证日志摘要接口支持按流式/非流式筛选。
+    /// </summary>
+    [Theory]
+    [InlineData(true, 4)]
+    [InlineData(false, 1)]
+    public async Task Get_summary_filters_by_is_streaming(bool isStreaming, int expectedTotalRequests)
+    {
+        await using var factory = new UsageLogsWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var response = await client.GetAsync($"/api/admin/usage-logs/summary?rangeType=all&isStreaming={isStreaming.ToString().ToLowerInvariant()}");
+        var body = await response.Content.ReadAsStringAsync();
+
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        using var document = JsonDocument.Parse(body);
+        document.RootElement.GetProperty("totalRequests").GetInt32().Should().Be(expectedTotalRequests);
+    }
+
+    /// <summary>
     /// 验证请求详情接口会按请求标识聚合尝试记录，并按尝试序号排序。
     /// </summary>
     [Fact]

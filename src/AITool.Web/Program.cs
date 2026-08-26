@@ -223,13 +223,13 @@ builder.Services.AddHttpClient<CodexQuotaService>(c =>
 builder.Services.AddTransient<ICodexQuotaService>(sp => sp.GetRequiredService<CodexQuotaService>());
 builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<CodexQuotaService>());
 
-// 注册 Google OAuth 客户端（GeminiCLI / Antigravity 双套客户端身份，授权/交换/刷新/元信息探测）。
+// 注册 Google OAuth 客户端（Antigravity 客户端身份，授权/交换/刷新/元信息探测）。
 builder.Services.AddHttpClient<IGoogleOAuthClient, GoogleOAuthClient>(c =>
 {
     c.Timeout = TimeSpan.FromSeconds(30);
 });
 
-// 注册 Google 上游模型清单拉取（Antigravity 走 fetchAvailableModels，GeminiCli 静态清单）。
+// 注册 Google 上游模型清单拉取（Antigravity 走 fetchAvailableModels 动态清单）。
 builder.Services.AddHttpClient<IGoogleModelFetcher, GoogleModelFetcher>(c =>
 {
     c.Timeout = TimeSpan.FromSeconds(30);
@@ -263,7 +263,7 @@ builder.Services.AddSingleton<SiteUsageTracker>();
 builder.Services.AddHostedService<MemoryMaintenanceService>();
 // 周期刷新当前 OAuth 提供程序账号 token，写回隐藏 Site.ApiKey 并失效路由缓存。
 builder.Services.AddHostedService<CodexTokenRefreshService>();
-// 周期刷新 Google 账号（GeminiCLI / Antigravity）token（有效期约 1 小时，提前 10 分钟刷新）。
+// 周期刷新 Google 账号（Antigravity）token（有效期约 1 小时，提前 10 分钟刷新）。
 builder.Services.AddHostedService<GoogleTokenRefreshService>();
 // 周期恢复冷却到期的当前 OAuth 提供程序账号（清除冷却，恢复 Site，若未被手动禁用）。
 builder.Services.AddHostedService<CodexCooldownRecoveryService>();
@@ -284,7 +284,7 @@ builder.Services.AddSingleton<IModelPricingService, ModelPricingService>();
 // 注册 OAuth 账号供给相关服务（当前为 Codex 凭证实现）。
 builder.Services.AddScoped<SiteCascadeDeleter>();
 builder.Services.AddScoped<CodexAccountProvisioner>();
-// Google 账号供给（GeminiCLI / Antigravity 隐藏 Site + 模型映射）。
+// Google 账号供给（Antigravity 隐藏 Site + 模型映射）。
 builder.Services.AddScoped<GoogleAccountProvisioner>();
 // 实时代理命中 Codex 上游 401 时立即刷新凭证并同步隐藏站点。
 builder.Services.AddScoped<CodexCredentialRefreshService>();

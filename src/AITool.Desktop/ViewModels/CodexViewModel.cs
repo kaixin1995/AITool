@@ -55,8 +55,8 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
     [ObservableProperty] private CodexResetCreditsInfo? _resetCreditInfo;
     [ObservableProperty] private string _loginProvider = "Codex";
 
-    /// <summary>登录/导入凭证的厂商选项（Codex / GeminiCLI / Antigravity，与网页端下拉一致）。</summary>
-    public IReadOnlyList<string> ProviderOptions { get; } = ["Codex", "GeminiCli", "Antigravity"];
+    /// <summary>登录/导入凭证的厂商选项（Codex / Antigravity，与网页端下拉一致）。</summary>
+    public IReadOnlyList<string> ProviderOptions { get; } = ["Codex", "Antigravity"];
 
     public bool IsCodexProvider => LoginProvider == "Codex";
     public bool IsGoogleProvider => !IsCodexProvider;
@@ -400,7 +400,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
             foreach (var account in googleAccounts)
             {
                 // Google 账号缺省 AccountKind 字段兜底，订阅等级复用 PlanType 展示槽位。
-                if (string.IsNullOrWhiteSpace(account.AccountKind)) account.AccountKind = "GeminiCli";
+                if (string.IsNullOrWhiteSpace(account.AccountKind)) account.AccountKind = "Antigravity";
                 if (!string.IsNullOrWhiteSpace(account.SubscriptionTier)) account.PlanType = account.SubscriptionTier;
             }
         }
@@ -881,7 +881,7 @@ public partial class CodexViewModel : ViewModelBase, IDisposable
                     }
                     else
                     {
-                        // Google（GeminiCLI / Antigravity）：gcli2api 凭证 JSON，仅需 refresh_token 字段。
+                        // Google（Antigravity）：gcli2api 凭证 JSON，仅需 refresh_token 字段。
                         var googleResult = await _apiService.SendAsync<GoogleCredentialImportResult>(
                             HttpMethod.Post,
                             $"{GoogleApiPath($"/import-credential?kind={LoginProvider}")}&name={Uri.EscapeDataString(fileName)}",

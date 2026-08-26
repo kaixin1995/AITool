@@ -11,7 +11,7 @@ using AITool.Web.Services;
 namespace AITool.Web.Controllers.Proxy;
 
 /// <summary>
-/// 承载 Gemini 上游（GeminiCLI / Antigravity）的流式协议桥接逻辑：
+/// 承载 Gemini 上游（Antigravity）的流式协议桥接逻辑：
 /// Gemini SSE → OpenAI Chat / Responses 客户端事件流。
 /// </summary>
 public sealed partial class OpenAiProxyController

@@ -19,7 +19,7 @@ namespace AITool.IntegrationTests.Proxy;
 /// <summary>
 /// Gemini 站点端到端代理链路验证：真实 OpenAiProxyController + 真实 ProxyForwardService + mock HTTP。
 /// 覆盖控制器层接线——协议解析（OpenAI 客户端 → Gemini 桥接）、PrepareRequestBody 封套（含 project 注入）、
-/// v1internal 目标路径、GeminiCLI UA 请求头、HasUsableResponse 判定与响应转换（Gemini → OpenAI）。
+/// v1internal 目标路径、Antigravity UA 请求头、HasUsableResponse 判定与响应转换（Gemini → OpenAI）。
 /// </summary>
 public sealed class GeminiProxyEndToEndTests
 {
@@ -59,18 +59,18 @@ public sealed class GeminiProxyEndToEndTests
         // —— 上游请求断言 ——
         captured.Should().NotBeNull();
         captured!.RequestUri!.AbsolutePath.Should().Be("/v1internal:generateContent", "Gemini 非流式走 v1internal 端点");
-        captured.RequestUri.Host.Should().Be("cloudcode-pa.googleapis.com");
+        captured.RequestUri.Host.Should().Be("daily-cloudcode-pa.googleapis.com");
         captured.Headers.Authorization?.Scheme.Should().Be("Bearer");
         captured.Headers.Authorization?.Parameter.Should().Be("ya29-upstream-token");
         captured.Headers.TryGetValues("User-Agent", out var ua).Should().BeTrue();
-        ua!.First().Should().StartWith("GeminiCLI/", "GeminiCLI 上游需要客户端仿真 UA");
+        ua!.First().Should().StartWith("antigravity/", "Antigravity 上游需要客户端仿真 UA");
 
         using var requestDoc = System.Text.Json.JsonDocument.Parse(capturedBody!);
         var requestRoot = requestDoc.RootElement;
         requestRoot.GetProperty("model").GetString().Should().Be("gemini-2.5-pro");
         requestRoot.GetProperty("project").GetString().Should().Be("e2e-project-123", "路由目标应注入 Google 账号的项目 ID");
         requestRoot.GetProperty("request").GetProperty("contents").GetArrayLength().Should().BeGreaterThan(0);
-        requestRoot.GetProperty("request").GetProperty("safetySettings").GetArrayLength().Should().Be(10);
+        requestRoot.GetProperty("request").TryGetProperty("safetySettings", out _).Should().BeFalse("Antigravity 封套剥离 safetySettings");
 
         // —— 客户端响应断言（Gemini → OpenAI 转换）——
         using var doc = System.Text.Json.JsonDocument.Parse(body);
@@ -228,8 +228,8 @@ public sealed class GeminiProxyEndToEndTests
 
         public GeminiProxyWebApplicationFactory(
             Func<HttpRequestMessage, HttpResponseMessage> responder,
-            string accountKind = "GeminiCli",
-            string baseUrl = "https://cloudcode-pa.googleapis.com")
+            string accountKind = "Antigravity",
+            string baseUrl = "https://daily-cloudcode-pa.googleapis.com")
         {
             _responder = responder;
             _accountKind = accountKind;

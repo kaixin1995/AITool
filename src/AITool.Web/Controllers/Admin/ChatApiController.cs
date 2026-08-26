@@ -368,42 +368,6 @@ public sealed class ChatApiController : ControllerBase
         return null;
     }
 
-    private Func<string, CancellationToken, Task>? CreateCredentialPreparationCallback(
-        CachedProxyRouteTarget route)
-    {
-        if (!string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(route.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
-            || ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)
-            || string.IsNullOrWhiteSpace(route.GoogleProjectId)
-            || string.IsNullOrWhiteSpace(route.ApiKey))
-        {
-            return null;
-        }
-
-        return (accessToken, cancellationToken) => _googleCredentialRefreshService.EnsureGeminiCliApisAsync(
-            route.GoogleProjectId,
-            accessToken,
-            cancellationToken);
-    }
-
-    private Func<string, CancellationToken, Task>? CreateCredentialPreparationCallback(
-        CachedFallbackTarget route)
-    {
-        if (!string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(route.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
-            || ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)
-            || string.IsNullOrWhiteSpace(route.GoogleProjectId)
-            || string.IsNullOrWhiteSpace(route.ApiKey))
-        {
-            return null;
-        }
-
-        return (accessToken, cancellationToken) => _googleCredentialRefreshService.EnsureGeminiCliApisAsync(
-            route.GoogleProjectId,
-            accessToken,
-            cancellationToken);
-    }
-
     /// <summary>
     /// 获取可调试的模型列表。
     /// </summary>
@@ -533,7 +497,7 @@ public sealed class ChatApiController : ControllerBase
                 var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl);
                 var effectiveEmulation = !string.IsNullOrWhiteSpace(route.ClientEmulation) && !string.Equals(route.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
                     ? route.ClientEmulation
-                    : (isGeminiRoute ? (isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli) : Domain.Sites.ClientEmulationConstants.None);
+                    : (isGeminiRoute ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.None);
 
                 var chatForwardHeaders = ClientEmulationEngine.ResolveHeaders(
                     effectiveEmulation,
@@ -556,7 +520,6 @@ public sealed class ChatApiController : ControllerBase
                     RetryCount = runtimeSettings.ProxyRetryCount,
                     ForwardHeaders = chatForwardHeaders,
                     EgressProxyUrl = route.EgressProxyUrl,
-                    PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
                     DisableTargetCredentialAsync = CreateCredentialDisableCallback(route.ManagedSource, route.SiteId),
                     TargetPath = isGeminiRoute
                         ? "/v1internal:generateContent"
@@ -948,7 +911,7 @@ public sealed class ChatApiController : ControllerBase
         var isMappingAntigravity = ProxyProtocolBridge.IsAntigravityTarget(mapping.BaseUrl);
         var effectiveMappingEmulation = !string.IsNullOrWhiteSpace(mapping.ClientEmulation) && !string.Equals(mapping.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
             ? mapping.ClientEmulation
-            : (isGeminiMapping ? (isMappingAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli) : Domain.Sites.ClientEmulationConstants.None);
+            : (isGeminiMapping ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.None);
 
         var mappingForwardHeaders = ClientEmulationEngine.ResolveHeaders(
             effectiveMappingEmulation,
@@ -971,7 +934,6 @@ public sealed class ChatApiController : ControllerBase
             RetryCount = runtimeSettings.ProxyRetryCount,
             ForwardHeaders = mappingForwardHeaders,
             EgressProxyUrl = mapping.EgressProxyUrl,
-            PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(mapping),
             DisableTargetCredentialAsync = CreateCredentialDisableCallback(mapping.ManagedSource, mapping.SiteId),
             TargetPath = isGeminiMapping
                 ? "/v1internal:generateContent"

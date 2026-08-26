@@ -10,9 +10,8 @@ namespace AITool.Protocol;
 /// Gemini GenerateContent 协议桥（请求方向）。移植自 gcli2api
 /// （reference-projects/gcli2api/src/converter/anthropic2gemini.py、openai2gemini.py、gemini_fix.py、antigravity_fix.py）。
 /// <para>
-/// 上游为 Google Code Assist 的 v1internal 接口：GeminiCLI（cloudcode-pa.googleapis.com）与
-/// Antigravity（daily-cloudcode-pa.googleapis.com）共用 GenerateContent 语义，但 Antigravity 额外需要
-/// CLI 封套（project/requestId/labels/sessionId 等）。本文件产出最终上游请求体：
+/// 上游为 Google Code Assist 的 v1internal 接口：Antigravity（daily-cloudcode-pa.googleapis.com）
+/// 使用 GenerateContent 语义并需要 CLI 封套（project/requestId/labels/sessionId 等）。本文件产出最终上游请求体：
 /// Anthropic/OpenAI 客户端请求 → 内层 GenerateContent → 规范化 → CLI 封套。
 /// </para>
 /// </summary>
@@ -324,7 +323,7 @@ public static partial class ProxyProtocolBridge
     /// <summary>
     /// 把内层 GenerateContent 请求包成最终上游请求体（{model, project, request} 封套）。
     /// Antigravity 上游额外应用 CLI 封套字段（requestId/labels/sessionId/toolConfig/userAgent 等），
-    /// 与 gcli2api wrap_cli_request 一致；GeminiCLI 上游保持纯封套。
+    /// 与 gcli2api wrap_cli_request 一致；非 Antigravity 的历史上游保持纯封套。
     /// </summary>
     public static string WrapGeminiUpstreamBody(JsonObject inner, string model, string? projectId, bool isAntigravity)
     {

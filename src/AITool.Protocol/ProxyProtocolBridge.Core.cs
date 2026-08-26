@@ -127,7 +127,7 @@ public static partial class ProxyProtocolBridge
 
         if (string.Equals(targetProtocol, "Gemini", StringComparison.OrdinalIgnoreCase))
         {
-            // —— Gemini 目标（GeminiCLI / Antigravity 上游）——
+            // —— Gemini 目标（Antigravity 上游）——
             // Responses 客户端先经既有 Responses→Anthropic 直转桥，再统一走 Anthropic→Gemini；
             // OpenAI 客户端直转；Anthropic 客户端直转。内层构建 → 规范化 → 思考覆盖 → CLI 封套。
             rootNode = JsonNode.Parse(requestBody) as JsonObject;
@@ -630,7 +630,7 @@ public static partial class ProxyProtocolBridge
 
     /// <summary>
     /// 判断目标 URL 是否为 Antigravity 上游（daily-cloudcode-pa.googleapis.com）。
-    /// Antigravity 与 GeminiCLI 共用 v1internal GenerateContent 语义，但封套与请求头不同。
+    /// Antigravity 上游使用 v1internal GenerateContent 语义并携带 CLI 封套与客户端请求头。
     /// </summary>
     public static bool IsAntigravityTarget(string? targetBaseUrl)
     {
@@ -662,7 +662,7 @@ public static partial class ProxyProtocolBridge
 
         if (string.Equals(upstreamProtocol, "Gemini", StringComparison.OrdinalIgnoreCase))
         {
-            // —— Gemini 上游（GeminiCLI / Antigravity）——
+            // —— Gemini 上游（Antigravity）——
             // Anthropic/OpenAI 客户端直转；Responses 客户端经 Anthropic 桥链转（复用既有双向桥）。
             if (string.Equals(clientProtocol, "OpenAI", StringComparison.OrdinalIgnoreCase))
             {

@@ -12,6 +12,13 @@ export function calculateAnalyticsTotalTokens(summary: AnalyticsTokenSummary | u
     ?? (summary?.totalInputTokens ?? 0) + (summary?.totalOutputTokens ?? 0)
 }
 
+export function formatAnalyticsTokenSplit(
+  summary: AnalyticsTokenSummary | undefined,
+  formatter: (val: number) => string
+): string {
+  return `${formatter(summary?.totalInputTokens ?? 0)} / ${formatter(summary?.totalCachedTokens ?? 0)} / ${formatter(summary?.totalOutputTokens ?? 0)}`
+}
+
 export function shouldAutoLoadAnalytics(rangeType: string): boolean {
   return rangeType !== 'custom'
 }

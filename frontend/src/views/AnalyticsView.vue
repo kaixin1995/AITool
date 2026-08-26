@@ -33,6 +33,7 @@ import {
   buildAnalyticsDefaultCustomRange,
   buildAnalyticsQuery,
   calculateAnalyticsTotalTokens,
+  formatAnalyticsTokenSplit,
   removeAnalyticsFilter,
   resetAnalyticsFilters,
   shouldAutoLoadAnalytics,
@@ -122,7 +123,7 @@ const chartClickHandlers = new Map<ChartKey, (params: { dataIndex?: number }) =>
 
 const summary = computed(() => dashboard.value?.summary)
 const totalTokens = computed(() => calculateAnalyticsTotalTokens(summary.value))
-const tokenSplit = computed(() => `${formatCompact(summary.value?.totalInputTokens ?? 0)} / ${formatCompact(summary.value?.totalOutputTokens ?? 0)}`)
+const tokenSplit = computed(() => formatAnalyticsTokenSplit(summary.value, formatCompact))
 const filterSummary = computed(() => {
   const applied = dashboard.value?.appliedFilter
   const appliedRange = applied?.rangeType ?? rangeType.value
@@ -1078,8 +1079,8 @@ watch(activeAnalysisDimension, async () => {
                 clearable
               />
             </label>
-            <div class="analytics-filter-meta">{{ filterSummary }}</div>
           </div>
+          <div v-if="filterSummary" class="analytics-filter-meta">{{ filterSummary }}</div>
           <div v-if="analyticsFilterTags.length > 0" class="analytics-active-filters">
             <span class="analytics-active-filters-label">当前筛选</span>
             <NTag
@@ -1152,7 +1153,7 @@ watch(activeAnalysisDimension, async () => {
             <strong class="analytics-kpi-value warning">{{ formatCompact(summary.fallbackRequestCount ?? 0) }}</strong>
           </article>
           <article class="analytics-kpi-card">
-            <span class="analytics-kpi-label">输入（含缓存） / 输出 Tokens</span>
+            <span class="analytics-kpi-label">输入 / 缓存 / 输出 Tokens</span>
             <strong class="analytics-kpi-value compact">{{ tokenSplit }}</strong>
           </article>
           <article class="analytics-kpi-card">
@@ -1326,8 +1327,8 @@ watch(activeAnalysisDimension, async () => {
 
 .analytics-filter-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 12px;
   align-items: end;
 }
 
@@ -1360,9 +1361,8 @@ watch(activeAnalysisDimension, async () => {
 
 .analytics-filter-meta {
   display: flex;
-  grid-column: 1 / span 1;
   align-items: center;
-  min-height: 20px;
+  margin-top: 12px;
   color: var(--text-color-secondary);
   font-size: 13px;
   line-height: 1.5;
@@ -1657,9 +1657,9 @@ watch(activeAnalysisDimension, async () => {
   background: var(--bg-card);
 }
 
-@media (max-width: 1280px) {
+@media (max-width: 1400px) {
   .analytics-filter-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 

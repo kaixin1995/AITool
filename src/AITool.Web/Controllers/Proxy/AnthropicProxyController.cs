@@ -62,7 +62,7 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly CodexCredentialRefreshService _codexCredentialRefreshService;
     /// <summary>
-    /// 负责在 Google 上游（GeminiCLI / Antigravity）凭证失效时即时刷新 access token。
+    /// 负责在 Google 上游（Antigravity）凭证失效时即时刷新 access token。
     /// </summary>
     private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
     /// <summary>
@@ -138,24 +138,6 @@ public sealed class AnthropicProxyController : ControllerBase
         }
 
         return null;
-    }
-
-    private Func<string, CancellationToken, Task>? CreateCredentialPreparationCallback(
-        CachedProxyRouteTarget route)
-    {
-        if (!string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase)
-            || !string.Equals(route.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
-            || ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl)
-            || string.IsNullOrWhiteSpace(route.GoogleProjectId)
-            || string.IsNullOrWhiteSpace(route.ApiKey))
-        {
-            return null;
-        }
-
-        return (accessToken, cancellationToken) => _googleCredentialRefreshService.EnsureGeminiCliApisAsync(
-            route.GoogleProjectId,
-            accessToken,
-            cancellationToken);
     }
 
     /// <summary>
@@ -308,7 +290,7 @@ public sealed class AnthropicProxyController : ControllerBase
             var effectiveEmulation = !string.IsNullOrWhiteSpace(route.ClientEmulation) && !string.Equals(route.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
                 ? route.ClientEmulation
                 : (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
-                    ? (isAntigravity ? Domain.Sites.ClientEmulationConstants.Antigravity : Domain.Sites.ClientEmulationConstants.GeminiCli)
+                    ? Domain.Sites.ClientEmulationConstants.Antigravity
                     : Domain.Sites.ClientEmulationConstants.None);
 
             if (!string.Equals(effectiveEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase) ||
@@ -360,7 +342,6 @@ public sealed class AnthropicProxyController : ControllerBase
                 ForwardHeaders = effectiveForwardHeaders,
                 EgressProxyUrl = route.EgressProxyUrl,
                 RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
-                PrepareTargetCredentialAsync = CreateCredentialPreparationCallback(route),
                 DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
                     ? (enableStreaming ? "/v1internal:streamGenerateContent?alt=sse" : "/v1internal:generateContent")
@@ -1715,7 +1696,7 @@ public sealed class AnthropicProxyController : ControllerBase
     }
 
     /// <summary>
-    /// 把 Gemini 上游（GeminiCLI / Antigravity）流式响应转换为 Anthropic SSE 返回给客户端。
+    /// 把 Gemini 上游（Antigravity）流式响应转换为 Anthropic SSE 返回给客户端。
     /// 转换核心在 AITool.Protocol 的 Gemini→Anthropic 状态机，本方法负责流读取、写入与结果判定。
     /// </summary>
     private async Task<StreamForwardOutcome> ForwardGeminiStreamAsAnthropicAsync(
