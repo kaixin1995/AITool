@@ -156,7 +156,8 @@ public sealed class GeminiProxyEndToEndTests
             .Single(item => item.GetProperty("id").GetString() == GoogleAccountId.ToString());
         var windows = account.GetProperty("windows");
         windows.GetArrayLength().Should().Be(2, "额度结果应持久化并在账号列表解析为窗口");
-        windows[0].GetProperty("usedPercent").GetDouble().Should().BeApproximately(15d, 0.01);
+        var geminiWindow = windows.EnumerateArray().Single(w => w.GetProperty("id").GetString() == "gemini-3-pro-preview");
+        geminiWindow.GetProperty("usedPercent").GetDouble().Should().BeApproximately(15d, 0.01);
         account.GetProperty("lastQuotaCheckedAt").GetString().Should().NotBeNullOrEmpty();
     }
 

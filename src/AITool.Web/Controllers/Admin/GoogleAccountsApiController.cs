@@ -508,23 +508,44 @@ public sealed class GoogleAccountsApiController : ControllerBase
             var parsed = GoogleQuotaParser.Parse(a.LastQuotaRawJson);
             if (parsed is not null)
             {
-                var visibleWindows = string.Equals(a.AccountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase)
-                    ? (selectedModelNames.Length > 0
-                        ? parsed.Where(window => selectedModelNames.Any(modelName => IsModelMatchingQuotaWindow(window.Id, modelName)))
-                        : Array.Empty<GoogleQuotaParser.Window>())
-                    : parsed;
-                windows = visibleWindows.Select(w =>
+                if (string.Equals(a.AccountKind, GoogleAccountKinds.Antigravity, StringComparison.OrdinalIgnoreCase))
                 {
-                    var matchingSelected = selectedModelNames.FirstOrDefault(m => IsModelMatchingQuotaWindow(w.Id, m));
-                    var effectiveName = !string.IsNullOrWhiteSpace(matchingSelected) ? matchingSelected : w.Label;
-                    return (object)new
+                    if (selectedModelNames.Length > 0)
                     {
-                        id = effectiveName,
-                        label = effectiveName,
+                        var list = new List<object>();
+                        foreach (var modelName in selectedModelNames)
+                        {
+                            // 优先精确匹配，其次前缀/变体匹配，确保每个已勾选模型仅对应一条额度条
+                            var window = parsed.FirstOrDefault(w => string.Equals(w.Id, modelName, StringComparison.OrdinalIgnoreCase))
+                                         ?? parsed.FirstOrDefault(w => IsModelMatchingQuotaWindow(w.Id, modelName));
+                            if (window is not null)
+                            {
+                                list.Add(new
+                                {
+                                    id = modelName,
+                                    label = modelName,
+                                    usedPercent = window.UsedPercent,
+                                    resetLabel = window.ResetLabel,
+                                });
+                            }
+                        }
+                        windows = list;
+                    }
+                    else
+                    {
+                        windows = [];
+                    }
+                }
+                else
+                {
+                    windows = parsed.Select(w => (object)new
+                    {
+                        id = w.Id,
+                        label = w.Label,
                         usedPercent = w.UsedPercent,
                         resetLabel = w.ResetLabel,
-                    };
-                }).ToList();
+                    }).ToList();
+                }
             }
         }
 
