@@ -115,20 +115,28 @@ const protocolOptions = [
   { label: 'Google Gemini', value: 'Gemini' }
 ]
 
+function formatTargetLabel(target: ChatModelTarget): string {
+  const siteName = target.siteName?.trim() || '未命名站点'
+  const remoteModelName = target.siteModelName?.trim()
+  const displayName = target.modelDisplayName?.trim()
+  const modelLabel = displayName || remoteModelName || '未知模型'
+  return `${siteName} / ${modelLabel}`
+}
+
 const diagnosticModelOptions = computed<SelectOption[]>(() => {
   const unique = new Map<string, ChatModelTarget>()
   for (const t of chatTargets.value) {
     if (!unique.has(t.mappingId)) unique.set(t.mappingId, t)
   }
   return [...unique.values()].map((t) => ({
-    label: `${t.siteName || '站点'} / ${t.modelDisplayName || t.siteModelName || '模型'}`,
+    label: formatTargetLabel(t),
     value: t.mappingId
   }))
 })
 
 const targetSiteOptions = computed<SelectOption[]>(() => {
   return availableSites.value.map((s) => ({
-    label: `${s.name} (${s.protocolType})`,
+    label: `${s.name} (${s.protocolType || 'OpenAI'})`,
     value: s.id
   }))
 })
@@ -149,7 +157,7 @@ async function loadInitData(): Promise<void> {
   try {
     const [targetsData, sitesData, profilesData] = await Promise.all([
       getChatTargets(),
-      listSites(),
+      listSites(true),
       listProfiles()
     ])
     chatTargets.value = targetsData
@@ -441,6 +449,7 @@ onMounted(async () => {
               <NSelect
                 v-model:value="selectedDiagnosticMappingId"
                 :options="diagnosticModelOptions"
+                filterable
                 placeholder="选择用于诊断与微调的模型"
                 size="small"
               />
@@ -454,6 +463,7 @@ onMounted(async () => {
               <NSelect
                 v-model:value="selectedTargetSiteId"
                 :options="targetSiteOptions"
+                filterable
                 placeholder="选择用于实机调用的上游站点"
                 size="small"
               />

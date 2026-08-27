@@ -51,13 +51,13 @@ public sealed class SitesApiController : ControllerBase
     }
 
     /// <summary>
-    /// 获取站点列表（按名称排序，过滤托管站点）。
+    /// 获取站点列表（按名称排序，默认过滤托管站点，可传 includeManaged=true 包含 OAuth/托管站点）。
     /// </summary>
     [HttpGet]
-    public async Task<IActionResult> List(CancellationToken cancellationToken)
+    public async Task<IActionResult> List([FromQuery] bool includeManaged = false, CancellationToken cancellationToken = default)
     {
         var sites = await _dbContext.Sites
-            .Where(x => string.IsNullOrEmpty(x.ManagedSource))
+            .Where(x => includeManaged || string.IsNullOrEmpty(x.ManagedSource))
             .OrderBy(x => x.Name)
             .ToListAsync(cancellationToken);
 

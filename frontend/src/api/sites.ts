@@ -100,8 +100,8 @@ export interface ModelSelectionItem {
   selected: boolean
 }
 
-export async function listSites(): Promise<SiteListItem[]> {
-  return httpGet<SiteListItem[]>('/api/admin/sites')
+export async function listSites(includeManaged = false): Promise<SiteListItem[]> {
+  return httpGet<SiteListItem[]>(includeManaged ? '/api/admin/sites?includeManaged=true' : '/api/admin/sites')
 }
 
 export async function getSite(id: string): Promise<SiteDetail> {

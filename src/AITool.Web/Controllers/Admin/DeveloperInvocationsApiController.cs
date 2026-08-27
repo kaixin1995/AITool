@@ -382,7 +382,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         }
 
         // 2. 解析被测试的上游站点凭据与配置
-        var (testSiteName, testBaseUrl, testApiKey, testEndpointPathMode, testProtocol) =
+        var (testSiteName, testBaseUrl, testApiKey, testEndpointPathMode, testProtocol, testProjectId, testExtraHeaders) =
             await ResolveTestSiteInfoAsync(request, cancellationToken);
 
         if (string.IsNullOrWhiteSpace(testBaseUrl))
@@ -436,14 +436,17 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             var isGeminiRoute = string.Equals(testProtocol, "Gemini", StringComparison.OrdinalIgnoreCase);
             var isResponsesRoute = string.Equals(testProtocol, "Responses", StringComparison.OrdinalIgnoreCase);
             var isTestAntigravity = ProxyProtocolBridge.IsAntigravityTarget(testBaseUrl);
+            var extraHeadersDict = !string.IsNullOrWhiteSpace(testExtraHeaders)
+                ? ProxyRequestMetadataCache.MergeExtraHeaders(testExtraHeaders)
+                : null;
 
             var forwardHeaders = ClientEmulationEngine.ResolveHeaders(
                 isGeminiRoute
                     ? Domain.Sites.ClientEmulationConstants.Antigravity
                     : Domain.Sites.ClientEmulationConstants.None,
-                extraHeaders: null,
+                extraHeaders: extraHeadersDict,
                 request.TargetModelName,
-                projectId: null,
+                projectId: testProjectId,
                 isTestAntigravity);
 
             var targetPath = isGeminiRoute
@@ -592,7 +595,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         return null;
     }
 
-    private async Task<(string SiteName, string BaseUrl, string ApiKey, string EndpointPathMode, string ProtocolType)> ResolveTestSiteInfoAsync(
+    private async Task<(string SiteName, string BaseUrl, string ApiKey, string EndpointPathMode, string ProtocolType, string? ProjectId, string? ExtraHeaders)> ResolveTestSiteInfoAsync(
         DeveloperAutoDiagnoseLoopRequest request,
         CancellationToken cancellationToken)
     {
@@ -610,6 +613,33 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
         if (site != null)
         {
             var apiKey = site.ApiKey;
+            string? projectId = null;
+
+            if (string.Equals(site.ManagedSource, "google_oauth", StringComparison.OrdinalIgnoreCase))
+            {
+                var googleAccount = (await _dbContext.GoogleAccounts
+                    .Where(a => a.LinkedSiteId == site.Id)
+                    .ToListAsync(cancellationToken)).FirstOrDefault();
+                if (googleAccount != null)
+                {
+                    if (!string.IsNullOrWhiteSpace(googleAccount.AccessToken))
+                    {
+                        apiKey = googleAccount.AccessToken;
+                    }
+                    projectId = googleAccount.ProjectId;
+                }
+            }
+            else if (string.Equals(site.ManagedSource, "codex_oauth", StringComparison.OrdinalIgnoreCase))
+            {
+                var codexAccount = (await _dbContext.CodexAccounts
+                    .Where(a => a.LinkedSiteId == site.Id)
+                    .ToListAsync(cancellationToken)).FirstOrDefault();
+                if (codexAccount != null && !string.IsNullOrWhiteSpace(codexAccount.AccessToken))
+                {
+                    apiKey = codexAccount.AccessToken;
+                }
+            }
+
             if (string.IsNullOrWhiteSpace(apiKey))
             {
                 var firstKey = await _dbContext.SiteKeys.Where(k => k.SiteId == site.Id && k.IsEnabled).FirstAsync(cancellationToken);
@@ -621,7 +651,9 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                 site.BaseUrl,
                 apiKey,
                 site.EndpointPathMode,
-                !string.IsNullOrWhiteSpace(request.TargetProtocol) ? request.TargetProtocol : site.ProtocolType
+                !string.IsNullOrWhiteSpace(request.TargetProtocol) ? request.TargetProtocol : site.ProtocolType,
+                projectId,
+                site.ExtraHeadersJson
             );
         }
 
@@ -630,7 +662,9 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             request.TargetBaseUrl ?? string.Empty,
             request.TargetApiKey ?? string.Empty,
             request.TargetEndpointPathMode ?? "standard-root",
-            request.TargetProtocol ?? "OpenAI"
+            request.TargetProtocol ?? "OpenAI",
+            null,
+            null
         );
     }
 
