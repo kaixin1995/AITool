@@ -378,12 +378,12 @@ public sealed class ProxyRequestMetadataCache
                             join mapping in await dbContext.SiteModelMappings.ToListAsync(cancellationToken) on model.Id equals mapping.ModelLibraryItemId
                             join site in await dbContext.Sites.ToListAsync(cancellationToken) on mapping.SiteId equals site.Id
                             where model.IsEnabled && mapping.IsEnabled && site.IsEnabled
-                            group site by new { model.Id, model.DisplayName } into grouped
-                            orderby grouped.Key.DisplayName
+                            group site by new { model.Id, model.ModelName } into grouped
+                            orderby grouped.Key.ModelName
                             select new CachedChatModel
                             {
                                 ModelId = grouped.Key.Id,
-                                DisplayName = grouped.Key.DisplayName,
+                                DisplayName = grouped.Key.ModelName,
                                 AvailableSiteCount = grouped.Count()
                             })
                         .ToList();
@@ -458,7 +458,7 @@ public sealed class ProxyRequestMetadataCache
                             {
                                 MappingId = mapping.Id,
                                 ModelId = model.Id,
-                                ModelDisplayName = model.DisplayName,
+                                ModelDisplayName = model.ModelName,
                                 SiteId = site.Id,
                                 SiteKeyId = candidate.SiteKeyId,
                                 CircuitKey = BuildCircuitKey(site.Id, candidate.SiteKeyId, mapping.RemoteModelName),
@@ -822,11 +822,11 @@ public sealed class ProxyRequestMetadataCache
                         .ToListAsync(cancellationToken);
                     var sites = siteRows.ToDictionary(s => s.Id, s => s.Name);
                     var siteEnabledMap = siteRows.ToDictionary(s => s.Id, s => s.IsEnabled);
-                    // 上游模型名匹配模型库 ModelName 时回填显示名称，供候选队列展示对外名（未匹配时前端回退原名）。
+                    // 上游模型名匹配模型库 ModelName 时回填对外名称，供候选队列展示对外名（未匹配时前端回退原名）。
                     var displayNameByModel = (await dbContext.ModelLibraryItems
-                            .Select(m => new { m.ModelName, m.DisplayName })
+                            .Select(m => new { m.ModelName })
                             .ToListAsync(cancellationToken))
-                        .ToDictionary(x => x.ModelName, x => x.DisplayName, StringComparer.Ordinal);
+                        .ToDictionary(x => x.ModelName, x => x.ModelName, StringComparer.Ordinal);
                     var rules = await dbContext.ProxyRouteRules
                         
                         .OrderBy(r => r.Priority)

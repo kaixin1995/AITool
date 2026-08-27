@@ -50,56 +50,36 @@ public sealed class GoogleModelFetcher : IGoogleModelFetcher
         {
             foreach (var property in modelsElement.EnumerateObject())
             {
-                models.Add((property.Name, ExtractDisplayName(property.Value, property.Name)));
+                models.Add((property.Name, property.Name));
             }
 
             // Antigravity 常用别名与变体补齐（对齐 gcli2api 与 ProxyProtocolBridge）：
             // 1. 存在 claude-sonnet-4-6 时补充其 thinking 变体
             if (modelsElement.TryGetProperty("claude-sonnet-4-6", out _) && !modelsElement.TryGetProperty("claude-sonnet-4-6-thinking", out _))
             {
-                models.Add(("claude-sonnet-4-6-thinking", "Claude Sonnet 4.6 (Thinking)"));
+                models.Add(("claude-sonnet-4-6-thinking", "claude-sonnet-4-6-thinking"));
             }
 
             // 2. 存在 gemini-3.7-flash-tiered 时补充常用的 high / medium / low / 基础别名
             if (modelsElement.TryGetProperty("gemini-3.7-flash-tiered", out _))
             {
                 if (!modelsElement.TryGetProperty("gemini-3.7-flash-high", out _))
-                    models.Add(("gemini-3.7-flash-high", "Gemini 3.7 Flash (High)"));
+                    models.Add(("gemini-3.7-flash-high", "gemini-3.7-flash-high"));
                 if (!modelsElement.TryGetProperty("gemini-3.7-flash-medium", out _))
-                    models.Add(("gemini-3.7-flash-medium", "Gemini 3.7 Flash (Medium)"));
+                    models.Add(("gemini-3.7-flash-medium", "gemini-3.7-flash-medium"));
                 if (!modelsElement.TryGetProperty("gemini-3.7-flash-low", out _))
-                    models.Add(("gemini-3.7-flash-low", "Gemini 3.7 Flash (Low)"));
+                    models.Add(("gemini-3.7-flash-low", "gemini-3.7-flash-low"));
                 if (!modelsElement.TryGetProperty("gemini-3.7-flash", out _))
-                    models.Add(("gemini-3.7-flash", "Gemini 3.7 Flash"));
+                    models.Add(("gemini-3.7-flash", "gemini-3.7-flash"));
             }
 
             // 3. 存在 gemini-pro-agent 时补充 gemini-3.1-pro-high 别名
             if (modelsElement.TryGetProperty("gemini-pro-agent", out _) && !modelsElement.TryGetProperty("gemini-3.1-pro-high", out _))
             {
-                models.Add(("gemini-3.1-pro-high", "Gemini 3.1 Pro (High)"));
+                models.Add(("gemini-3.1-pro-high", "gemini-3.1-pro-high"));
             }
         }
 
         return models;
-    }
-
-    private static string ExtractDisplayName(JsonElement modelValue, string fallback)
-    {
-        if (modelValue.ValueKind != JsonValueKind.Object)
-        {
-            return fallback;
-        }
-
-        foreach (var propertyName in new[] { "displayName", "label" })
-        {
-            if (modelValue.TryGetProperty(propertyName, out var property)
-                && property.ValueKind == JsonValueKind.String
-                && !string.IsNullOrWhiteSpace(property.GetString()))
-            {
-                return property.GetString()!.Trim();
-            }
-        }
-
-        return fallback;
     }
 }

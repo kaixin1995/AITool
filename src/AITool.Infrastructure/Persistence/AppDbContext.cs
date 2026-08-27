@@ -278,5 +278,15 @@ public static class SqlSugarSetup
             typeof(SqlMigrationExecution),
             typeof(ProxyProfile),
             typeof(AITool.Domain.Auth.RefreshTokenRecord));
+
+        // 统一模型名称：将历史库中可能残留的 DisplayName 同步对齐为 ModelName。
+        try
+        {
+            db.Ado.ExecuteCommand("UPDATE ModelLibraryItems SET DisplayName = ModelName WHERE DisplayName != ModelName OR DisplayName IS NULL;");
+        }
+        catch (Exception ex)
+        {
+            logger?.LogWarning(ex, "Failed to align ModelLibraryItems DisplayName with ModelName");
+        }
     }
 }

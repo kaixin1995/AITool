@@ -199,8 +199,8 @@ public sealed class GoogleModelFetcherDynamicListTests
 
         var models = await fetcher.FetchAsync(GoogleAccountKinds.Antigravity, "token", CancellationToken.None);
 
-        models.Should().Contain(("claude-sonnet-4-6", "Claude Sonnet 4.6"));
-        models.Should().Contain(("gemini-3-pro", "Gemini 3 Pro"));
+        models.Should().Contain(("claude-sonnet-4-6", "claude-sonnet-4-6"));
+        models.Should().Contain(("gemini-3-pro", "gemini-3-pro"));
         models.Should().Contain(("name-only", "name-only"));
     }
 

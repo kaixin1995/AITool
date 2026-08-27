@@ -530,7 +530,7 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
       ...model,
       alias: model.existingDisplayName && model.existingDisplayName !== model.remoteModelName
         ? model.existingDisplayName
-        : model.displayName || model.remoteModelName
+        : ''
     }))
     const previouslyEnabled = models
       .filter(model => (

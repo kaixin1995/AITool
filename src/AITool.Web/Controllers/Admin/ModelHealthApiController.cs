@@ -114,7 +114,7 @@ public sealed class ModelHealthApiController : ControllerBase
             .Select(m => new
             {
                 modelLibraryItemId = m.ModelLibraryItemId,
-                displayName = models[m.ModelLibraryItemId].DisplayName
+                displayName = models[m.ModelLibraryItemId].ModelName
             })
             .OrderBy(m => m.displayName)
             .ToList();
@@ -122,8 +122,8 @@ public sealed class ModelHealthApiController : ControllerBase
         // 2. 可选模型（排除已监控的）。
         var availableModels = await _dbContext.ModelLibraryItems
             .Where(m => !monitoredModelIds.Contains(m.Id))
-            .OrderBy(m => m.DisplayName)
-            .Select(m => new { id = m.Id, displayName = m.DisplayName })
+            .OrderBy(m => m.ModelName)
+            .Select(m => new { id = m.Id, modelName = m.ModelName, displayName = m.ModelName })
             .ToListAsync(cancellationToken);
 
         // 3. 无监控模型时直接返回空 healthData。
@@ -281,7 +281,7 @@ public sealed class ModelHealthApiController : ControllerBase
             modelSummaries.Add(new
             {
                 modelLibraryItemId = modelId,
-                displayName = models[modelId].DisplayName,
+                displayName = models[modelId].ModelName,
                 siteCount,
                 healthySiteCount,
                 unhealthySiteCount,

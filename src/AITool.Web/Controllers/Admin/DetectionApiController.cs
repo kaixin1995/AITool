@@ -186,7 +186,7 @@ public sealed class DetectionApiController : ControllerBase
                 {
                     modelLibraryItemId = g.Key,
                     modelName = model.ModelName,
-                    displayName = model.DisplayName,
+                    displayName = model.ModelName,
                     sites = g.Select(m =>
                     {
                         latestLogs.TryGetValue((m.SiteId, model.ModelName), out var log);

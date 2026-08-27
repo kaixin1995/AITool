@@ -44,8 +44,8 @@ public sealed class DetectionTasksApiController : ControllerBase
     {
         // 1. 可选模型（创建表单用）。
         var availableModels = await _dbContext.ModelLibraryItems
-            .OrderBy(m => m.DisplayName)
-            .Select(m => new { id = m.Id, displayName = m.DisplayName })
+            .OrderBy(m => m.ModelName)
+            .Select(m => new { id = m.Id, modelName = m.ModelName, displayName = m.ModelName })
             .ToListAsync(cancellationToken);
 
         // 2. 任务列表（启用的排前面，再按名称）。
@@ -90,7 +90,7 @@ public sealed class DetectionTasksApiController : ControllerBase
             latestExecutions.TryGetValue(t.Id, out var latest);
             historyByTask.TryGetValue(t.Id, out var history);
             var modelName = t.ModelLibraryItemId.HasValue && models.TryGetValue(t.ModelLibraryItemId.Value, out var m)
-                ? m.DisplayName : null;
+                ? m.ModelName : null;
             return new
             {
                 id = t.Id,

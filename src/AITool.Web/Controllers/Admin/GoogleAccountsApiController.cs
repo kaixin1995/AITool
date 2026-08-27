@@ -333,11 +333,11 @@ public sealed class GoogleAccountsApiController : ControllerBase
             return (object)new
             {
                 remoteModelName = model.Slug,
-                displayName = model.DisplayName,
+                displayName = model.Slug,
                 existingMappingId = mapping?.Id,
                 existingDisplayName = existingModelItem is not null
-                    && !string.Equals(existingModelItem.DisplayName, model.Slug, StringComparison.OrdinalIgnoreCase)
-                    ? existingModelItem.DisplayName
+                    && !string.Equals(existingModelItem.ModelName, model.Slug, StringComparison.OrdinalIgnoreCase)
+                    ? existingModelItem.ModelName
                     : null,
                 isEnabled = mapping?.IsEnabled ?? false,
             };

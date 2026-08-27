@@ -11,6 +11,7 @@ import {
   NGrid,
   NInput,
   NSelect,
+  NSpin,
   NStatistic,
   NSwitch,
   NTag,
@@ -479,80 +480,80 @@ onUnmounted(() => {
       </div>
     </NCard>
 
-    <NGrid :cols="5" :x-gap="12" :y-gap="12" responsive="screen" item-responsive class="usage-logs-summary-row" :class="{ 'is-collapsed': !filtersExpanded }">
-      <NGi span="5 m:2 l:1"><NCard size="small" class="usage-logs-stat-card"><NStatistic label="总请求" :value="formatNumber(summary.totalRequests)" /></NCard></NGi>
-      <NGi span="5 m:2 l:1"><NCard size="small" class="usage-logs-stat-card"><NStatistic label="成功率" :value="formatPercent(summary.successRate)" /></NCard></NGi>
-      <NGi span="5 m:2 l:1"><NCard size="small" class="usage-logs-stat-card"><NStatistic label="总 Tokens" :value="formatMetricNumber(summary.totalTokens)" /></NCard></NGi>
-      <NGi span="5 m:2 l:1"><NCard size="small" class="usage-logs-stat-card"><NStatistic label="失败请求" :value="formatNumber(summary.failedRequests)" /></NCard></NGi>
-      <NGi span="5 m:2 l:1">
-        <NCard size="small" class="usage-logs-cost-card">
-          <div class="n-statistic__label">总消耗（{{ currency }}）</div>
-          <div class="n-statistic__value usage-logs-cost-value">{{ formatTotalCost(summary.totalCostUsd) }}</div>
-        </NCard>
-      </NGi>
-    </NGrid>
+    <div class="usage-logs-summary-grid" :class="{ 'is-collapsed': !filtersExpanded }">
+      <NCard size="small" class="usage-logs-stat-card"><NStatistic label="总请求" :value="formatNumber(summary.totalRequests)" /></NCard>
+      <NCard size="small" class="usage-logs-stat-card"><NStatistic label="成功率" :value="formatPercent(summary.successRate)" /></NCard>
+      <NCard size="small" class="usage-logs-stat-card"><NStatistic label="总 Tokens" :value="formatMetricNumber(summary.totalTokens)" /></NCard>
+      <NCard size="small" class="usage-logs-stat-card"><NStatistic label="失败请求" :value="formatNumber(summary.failedRequests)" /></NCard>
+      <NCard size="small" class="usage-logs-cost-card">
+        <div class="n-statistic__label">总消耗（{{ currency }}）</div>
+        <div class="n-statistic__value usage-logs-cost-value">{{ formatTotalCost(summary.totalCostUsd) }}</div>
+      </NCard>
+    </div>
 
-    <div class="table-wrapper usage-logs-table-wrapper">
-      <table class="table usage-logs-table">
-        <thead>
-          <tr>
-            <th>时间</th>
-            <th>来源</th>
-            <th>模型</th>
-            <th>目标站点</th>
-            <th>访问密钥</th>
-            <th>状态</th>
-            <th>用时/首字</th>
-            <th>输入</th>
-            <th>缓存</th>
-            <th>输出</th>
-            <th>总Token数</th>
-            <th>成本({{ symbol }})</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="loading">
-            <td colspan="13">
-              <div class="table-empty">
-                <div class="table-empty-text">加载中...</div>
-              </div>
-            </td>
-          </tr>
-          <tr v-else-if="items.length === 0">
-            <td colspan="13">
-              <div class="table-empty">
-                <div class="table-empty-icon">📋</div>
-                <div class="table-empty-text">暂无调用日志</div>
-              </div>
-            </td>
-          </tr>
-          <template v-else>
-            <tr v-for="item in items" :key="item.id">
-              <td>{{ formatDateTime(item.requestedAt) }}</td>
-              <td><SourceIcon :source="item.source" /></td>
-              <td><code>{{ formatUsageLogModel(item.requestModel, item.attemptedModel, item.source) }}</code></td>
-              <td>{{ item.siteName || '-' }}</td>
-              <td>{{ item.accessKeyName || '-' }}</td>
-              <td><NTag size="small" :type="getStatusMeta(item).type" :bordered="false">{{ getStatusMeta(item).label }}</NTag></td>
-              <td><div class="latency-chips">
-                <span class="usage-log-chip usage-log-chip-total">{{ formatDuration(item.totalDurationMs) }}</span>
-                <span class="usage-log-chip usage-log-chip-first">{{ item.isStreaming ? formatDuration(item.firstTokenLatencyMs) : '-' }}</span>
-                <span :class="['usage-log-chip usage-log-chip-stream', item.isStreamInterrupted ? 'usage-log-chip-stream-interrupted' : '']">{{ item.isStreaming ? '流' : '非流' }}</span>
-              </div></td>
-              <td>{{ formatNumber(item.inputTokens) }}</td>
-              <td>{{ formatNumber(item.cachedTokens) }}</td>
-              <td>{{ formatNumber(item.outputTokens) }}</td>
-              <td><strong>{{ formatNumber(item.totalTokens) }}</strong></td>
-              <td><strong :class="{ 'usage-logs-cost-unpriced': item.costUsd === null || item.costUsd === undefined }">{{ formatCost(item.costUsd) }}</strong></td>
-              <td>
-                <NButton size="small" secondary type="primary" @click="openRequestDetail(item.requestId)">查看链路</NButton>
+    <NSpin :show="loading">
+      <div class="table-wrapper usage-logs-table-wrapper">
+        <table class="table usage-logs-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>来源</th>
+              <th>模型</th>
+              <th>目标站点</th>
+              <th>访问密钥</th>
+              <th>状态</th>
+              <th>用时/首字</th>
+              <th>输入</th>
+              <th>缓存</th>
+              <th>输出</th>
+              <th>总Token数</th>
+              <th>成本({{ symbol }})</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="items.length === 0 && !loading">
+              <td colspan="13">
+                <div class="table-empty">
+                  <div class="table-empty-icon">📋</div>
+                  <div class="table-empty-text">暂无调用日志</div>
+                </div>
               </td>
             </tr>
-          </template>
-        </tbody>
-      </table>
-    </div>
+            <tr v-else-if="items.length === 0 && loading">
+              <td colspan="13">
+                <div class="table-empty">
+                  <div class="table-empty-text">加载中...</div>
+                </div>
+              </td>
+            </tr>
+            <template v-else>
+              <tr v-for="item in items" :key="item.id">
+                <td>{{ formatDateTime(item.requestedAt) }}</td>
+                <td><SourceIcon :source="item.source" /></td>
+                <td><code>{{ formatUsageLogModel(item.requestModel, item.attemptedModel, item.source) }}</code></td>
+                <td>{{ item.siteName || '-' }}</td>
+                <td>{{ item.accessKeyName || '-' }}</td>
+                <td><NTag size="small" :type="getStatusMeta(item).type" :bordered="false">{{ getStatusMeta(item).label }}</NTag></td>
+                <td><div class="latency-chips">
+                  <span class="usage-log-chip usage-log-chip-total">{{ formatDuration(item.totalDurationMs) }}</span>
+                  <span class="usage-log-chip usage-log-chip-first">{{ item.isStreaming ? formatDuration(item.firstTokenLatencyMs) : '-' }}</span>
+                  <span :class="['usage-log-chip usage-log-chip-stream', item.isStreamInterrupted ? 'usage-log-chip-stream-interrupted' : '']">{{ item.isStreaming ? '流' : '非流' }}</span>
+                </div></td>
+                <td>{{ formatNumber(item.inputTokens) }}</td>
+                <td>{{ formatNumber(item.cachedTokens) }}</td>
+                <td>{{ formatNumber(item.outputTokens) }}</td>
+                <td><strong>{{ formatNumber(item.totalTokens) }}</strong></td>
+                <td><strong :class="{ 'usage-logs-cost-unpriced': item.costUsd === null || item.costUsd === undefined }">{{ formatCost(item.costUsd) }}</strong></td>
+                <td>
+                  <NButton size="small" secondary type="primary" @click="openRequestDetail(item.requestId)">查看链路</NButton>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </NSpin>
 
     <div class="usage-logs-pagination-wrap">
       <div class="usage-logs-pagination-summary">{{ paginationSummary }}</div>
@@ -736,11 +737,14 @@ onUnmounted(() => {
   border-top: 1px dashed var(--border-color-global);
 }
 
-.usage-logs-summary-row {
+.usage-logs-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
   margin-bottom: 16px;
 }
 
-.usage-logs-summary-row.is-collapsed {
+.usage-logs-summary-grid.is-collapsed {
   display: none;
 }
 
@@ -768,26 +772,31 @@ onUnmounted(() => {
 }
 
 .usage-logs-table-wrapper {
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   border: 1px solid var(--border-color-global);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--bg-card);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.03);
+  -webkit-overflow-scrolling: touch;
 }
 
 .usage-logs-table {
   width: 100%;
-  min-width: 1320px;
+  min-width: 1240px;
   margin: 0;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
 }
 
 .usage-logs-table th,
 .usage-logs-table td {
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border-color-global);
   text-align: left;
   vertical-align: middle;
   white-space: nowrap;
+  font-size: 13px;
 }
 
 .usage-logs-table th {
@@ -797,8 +806,66 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+.usage-logs-table tbody tr {
+  background: var(--bg-card);
+  transition: background-color 0.15s ease;
+}
+
+.usage-logs-table tbody tr:hover td {
+  background: var(--hover-color, rgba(148, 163, 184, 0.06));
+}
+
 .usage-logs-table tbody tr:last-child td {
   border-bottom: 0;
+}
+
+.table-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-color-secondary);
+}
+
+.table-empty-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.table-empty-text {
+  font-size: 14px;
+}
+
+/* 冻结首列：时间 */
+.usage-logs-table th:first-child,
+.usage-logs-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--bg-card);
+  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.04);
+}
+.usage-logs-table th:first-child {
+  background: var(--bg-page);
+  z-index: 3;
+}
+
+/* 冻结末列：操作 */
+.usage-logs-table th:last-child,
+.usage-logs-table td:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--bg-card);
+  text-align: center;
+  box-shadow: -2px 0 6px rgba(0, 0, 0, 0.04);
+}
+.usage-logs-table th:last-child {
+  background: var(--bg-page);
+  z-index: 3;
 }
 
 .usage-logs-pagination-wrap {
@@ -930,43 +997,44 @@ onUnmounted(() => {
 }
 
 .latency-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  white-space: nowrap;
 }
 
 .usage-log-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 24px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
+  height: 22px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11.5px;
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
 }
 
 .usage-log-chip-total {
-  background: #e8f7ea;
-  color: #2e7d32;
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
 }
 
 .usage-log-chip-first {
-  background: #fff1e0;
-  color: #c77800;
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
 }
 
 .usage-log-chip-stream {
-  background: #e7f1ff;
-  color: #246bfe;
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
 }
 
 .usage-log-chip-stream-interrupted {
-  background: #fff3cd;
-  color: #996c00;
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
 }
 
 .detail-placeholder,
@@ -1002,6 +1070,12 @@ onUnmounted(() => {
   }
 }
 
+@media (max-width: 1200px) {
+  .usage-logs-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 991px) {
   .usage-logs-filter-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -1011,7 +1085,17 @@ onUnmounted(() => {
   }
 }
 
+@media (max-width: 768px) {
+  .usage-logs-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
 @media (max-width: 640px) {
+  .usage-logs-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
   .usage-logs-filter-header {
     align-items: stretch;
     flex-direction: column;

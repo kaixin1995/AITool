@@ -407,7 +407,7 @@ public sealed class CodexApiController : ControllerBase
                 result.Add(new
                 {
                     remoteModelName = remote.Slug,
-                    displayName = remote.DisplayName,
+                    displayName = remote.Slug,
                     existingMappingId = hasValidImport ? mapping!.Id : (Guid?)null,
                     isEnabled = hasValidImport && mapping!.IsEnabled,
                     existingDisplayName = modelItem?.ModelName != remote.Slug ? modelItem?.ModelName : null

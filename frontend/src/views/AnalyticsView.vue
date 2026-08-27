@@ -1080,7 +1080,6 @@ watch(activeAnalysisDimension, async () => {
               />
             </label>
           </div>
-          <div v-if="filterSummary" class="analytics-filter-meta">{{ filterSummary }}</div>
           <div v-if="analyticsFilterTags.length > 0" class="analytics-active-filters">
             <span class="analytics-active-filters-label">当前筛选</span>
             <NTag
@@ -1137,8 +1136,34 @@ watch(activeAnalysisDimension, async () => {
             <strong class="analytics-kpi-value danger">{{ formatPercentage(summary.failureRate) }}</strong>
           </article>
           <article class="analytics-kpi-card">
+            <span class="analytics-kpi-label">总消耗（{{ currency }}）</span>
+            <strong class="analytics-kpi-value">{{ formatTotalCost(summary.totalCostUsd) }}</strong>
+          </article>
+          <article class="analytics-kpi-card">
             <span class="analytics-kpi-label">总 Tokens</span>
             <strong class="analytics-kpi-value">{{ formatCompact(totalTokens) }}</strong>
+          </article>
+          <article
+            class="analytics-kpi-card analytics-kpi-tokens-card"
+            :title="`输入: ${(summary.totalInputTokens ?? 0).toLocaleString()} | 缓存: ${(summary.totalCachedTokens ?? 0).toLocaleString()} | 输出: ${(summary.totalOutputTokens ?? 0).toLocaleString()}`"
+          >
+            <span class="analytics-kpi-label">输入 / 缓存 / 输出 Tokens</span>
+            <div class="analytics-tokens-split-group">
+              <span class="tokens-split-segment">
+                <span class="tokens-split-tag prompt">入</span>
+                <span class="tokens-split-num">{{ formatCompact(summary.totalInputTokens ?? 0) }}</span>
+              </span>
+              <span class="tokens-split-divider">/</span>
+              <span class="tokens-split-segment">
+                <span class="tokens-split-tag cached">缓</span>
+                <span class="tokens-split-num">{{ formatCompact(summary.totalCachedTokens ?? 0) }}</span>
+              </span>
+              <span class="tokens-split-divider">/</span>
+              <span class="tokens-split-segment">
+                <span class="tokens-split-tag completion">出</span>
+                <span class="tokens-split-num">{{ formatCompact(summary.totalOutputTokens ?? 0) }}</span>
+              </span>
+            </div>
           </article>
           <article class="analytics-kpi-card">
             <span class="analytics-kpi-label">平均总耗时</span>
@@ -1151,14 +1176,6 @@ watch(activeAnalysisDimension, async () => {
           <article class="analytics-kpi-card">
             <span class="analytics-kpi-label">回退触发数</span>
             <strong class="analytics-kpi-value warning">{{ formatCompact(summary.fallbackRequestCount ?? 0) }}</strong>
-          </article>
-          <article class="analytics-kpi-card">
-            <span class="analytics-kpi-label">输入 / 缓存 / 输出 Tokens</span>
-            <strong class="analytics-kpi-value compact">{{ tokenSplit }}</strong>
-          </article>
-          <article class="analytics-kpi-card">
-            <span class="analytics-kpi-label">总消耗（{{ currency }}）</span>
-            <strong class="analytics-kpi-value">{{ formatTotalCost(summary.totalCostUsd) }}</strong>
           </article>
         </section>
 
@@ -1359,15 +1376,6 @@ watch(activeAnalysisDimension, async () => {
   font-size: 13px;
 }
 
-.analytics-filter-meta {
-  display: flex;
-  align-items: center;
-  margin-top: 12px;
-  color: var(--text-color-secondary);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
 .analytics-custom-range-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr)) minmax(160px, auto) minmax(240px, 1.2fr);
@@ -1398,17 +1406,17 @@ watch(activeAnalysisDimension, async () => {
 
 .analytics-kpi-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
 }
 
 .analytics-kpi-card {
   min-width: 0;
-  padding: 18px 20px;
+  padding: 16px 18px;
   border: 1px solid var(--border-color-global);
-  border-radius: 18px;
+  border-radius: 16px;
   background: var(--bg-card);
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.03);
 }
 
 .analytics-kpi-label {
@@ -1421,22 +1429,75 @@ watch(activeAnalysisDimension, async () => {
 .analytics-kpi-value {
   display: block;
   color: var(--text-primary);
-  font-size: 28px;
+  font-size: clamp(20px, 1.8vw, 26px);
   font-weight: 700;
-  line-height: 1.1;
+  line-height: 1.15;
+  word-break: break-all;
+  min-width: 0;
 }
 
 .analytics-kpi-value.compact {
-  overflow: hidden;
-  font-size: 22px;
-  letter-spacing: -0.02em;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: clamp(16px, 1.4vw, 20px);
+  letter-spacing: -0.01em;
+  word-break: break-all;
+  line-height: 1.2;
 }
 
 .analytics-kpi-value.success { color: #099268; }
 .analytics-kpi-value.danger { color: #e03131; }
 .analytics-kpi-value.warning { color: #d97706; }
+
+.analytics-tokens-split-group {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.tokens-split-segment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.tokens-split-tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 1px 5px;
+  border-radius: 4px;
+  line-height: 1.2;
+}
+
+.tokens-split-tag.prompt {
+  background: rgba(99, 102, 241, 0.12);
+  color: #6366f1;
+}
+
+.tokens-split-tag.cached {
+  background: rgba(16, 185, 129, 0.12);
+  color: #10b981;
+}
+
+.tokens-split-tag.completion {
+  background: rgba(245, 158, 11, 0.12);
+  color: #f59e0b;
+}
+
+.tokens-split-num {
+  color: var(--text-primary);
+  font-size: clamp(15px, 1.35vw, 20px);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.tokens-split-divider {
+  color: var(--text-color-tertiary, #94a3b8);
+  font-weight: 400;
+  font-size: 14px;
+}
 
 .analytics-grid {
   display: grid;
@@ -1663,17 +1724,17 @@ watch(activeAnalysisDimension, async () => {
   }
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1024px) {
   .analytics-kpi-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .analytics-analysis-metrics {
+  .analytics-filter-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .analytics-kpi-value.compact {
-    font-size: 20px;
+  .analytics-analysis-metrics {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -1723,13 +1784,22 @@ watch(activeAnalysisDimension, async () => {
     height: 280px;
   }
 
-  .analytics-filter-grid,
+  .analytics-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .analytics-kpi-grid {
     grid-template-columns: 1fr;
   }
 
   .analytics-chart-body {
     height: 280px;
+  }
+}
+
+@media (max-width: 480px) {
+  .analytics-filter-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>
