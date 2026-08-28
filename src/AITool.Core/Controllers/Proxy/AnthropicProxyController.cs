@@ -1,12 +1,15 @@
 using System.Text;
 using System.Text.Json;
+using AITool.Application.Google;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Infrastructure.Hosting;
+using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using AITool.Core.Services;
+using AITool.Protocol;
 
 namespace AITool.Core.Controllers.Proxy;
 
@@ -52,9 +55,33 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
     /// <summary>
-    /// 负责在路由回退时发布 route-fallback 事件到 Admin 侧。
+    /// 负责在路由回退时发布 route-fallback 事件到 Admin 侧（split 双宿主）。
     /// </summary>
     private readonly CoreRouteFallbackEventPublisher _routeFallbackPublisher;
+    /// <summary>
+    /// 开发者调用追踪存储（Core 上与统一调用记录器共用，事件链由 TraceStore 完成时事件驱动）。
+    /// </summary>
+    private readonly DeveloperInvocationTraceStore _traceStore;
+    /// <summary>
+    /// 负责在 Codex 上游凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly CodexCredentialRefreshService _codexCredentialRefreshService;
+    /// <summary>
+    /// 负责在 Google 上游（Antigravity）凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
+    /// <summary>
+    /// 负责在 Kimi 上游凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly KimiCredentialRefreshService _kimiCredentialRefreshService;
+    /// <summary>
+    /// 用量日志服务（非热路径端点与安全日志路径使用；转发主链路走统一调用记录器）。
+    /// </summary>
+    private readonly IUsageLogService _usageLogService;
+    /// <summary>
+    /// 记录代理请求诊断转储与对比样本（文件型抓包，Core 与 Admin 共享目录）。
+    /// </summary>
+    private readonly IProxyDiagnosticService _diagnosticService;
     /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
@@ -68,17 +95,76 @@ public sealed class AnthropicProxyController : ControllerBase
         IProxyCallRecorder proxyCallRecorder,
         RouteCircuitStateStore circuitStore,
         ProxyRequestMetadataCache metadataCache,
+        DeveloperInvocationTraceStore traceStore,
         ModelConcurrencyLimiter concurrencyLimiter,
+        IUsageLogService usageLogService,
         CoreRouteFallbackEventPublisher routeFallbackPublisher,
+        CodexCredentialRefreshService codexCredentialRefreshService,
+        GoogleCredentialRefreshService googleCredentialRefreshService,
+        KimiCredentialRefreshService kimiCredentialRefreshService,
+        IProxyDiagnosticService diagnosticService,
         ILogger<AnthropicProxyController> logger)
     {
         _forwardService = forwardService;
         _proxyCallRecorder = proxyCallRecorder;
         _circuitStore = circuitStore;
         _metadataCache = metadataCache;
+        _traceStore = traceStore;
         _concurrencyLimiter = concurrencyLimiter;
+        _usageLogService = usageLogService;
         _routeFallbackPublisher = routeFallbackPublisher;
+        _codexCredentialRefreshService = codexCredentialRefreshService;
+        _googleCredentialRefreshService = googleCredentialRefreshService;
+        _kimiCredentialRefreshService = kimiCredentialRefreshService;
+        _diagnosticService = diagnosticService;
         _logger = logger;
+    }
+
+    /// <summary>
+    /// 仅为托管隐藏站点绑定实时凭证刷新回调（Codex / Google / Kimi），普通站点的 401 不触发 OAuth 刷新。
+    /// </summary>
+    private Func<string, CancellationToken, Task<string?>>? CreateCredentialRefreshCallback(
+        CachedProxyRouteTarget route)
+    {
+        if (string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _codexCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        if (string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _googleCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        if (string.Equals(route.ManagedSource, "kimi_oauth", StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _kimiCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        return null;
+    }
+
+    private Func<CancellationToken, Task>? CreateCredentialDisableCallback(
+        CachedProxyRouteTarget route)
+    {
+        if (string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
+        {
+            return cancellationToken => _googleCredentialRefreshService.DisableAsync(
+                route.SiteId,
+                "proxy-403",
+                cancellationToken);
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -266,7 +352,48 @@ public sealed class AnthropicProxyController : ControllerBase
                 route.OverrideReasoningEffort,
                 route.BaseUrl,
                 route.CompatibilityRules,
-                isPassthrough: string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase));
+                isPassthrough: string.Equals(actualProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase),
+                geminiProjectId: route.GoogleProjectId);
+
+            var effectiveProtocolType = actualProtocolType switch
+            {
+                var protocol when string.Equals(protocol, "Responses", StringComparison.OrdinalIgnoreCase) => "OpenAI",
+                var protocol when string.Equals(protocol, "Gemini", StringComparison.OrdinalIgnoreCase) => "Gemini",
+                var protocol => protocol
+            };
+            var effectiveForwardHeaders = forwardHeaders;
+            var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl);
+            var effectiveEmulation = !string.IsNullOrWhiteSpace(route.ClientEmulation) && !string.Equals(route.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
+                ? route.ClientEmulation
+                : (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                    ? Domain.Sites.ClientEmulationConstants.Antigravity
+                    : Domain.Sites.ClientEmulationConstants.None);
+
+            if (!string.Equals(effectiveEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase) ||
+                (route.ExtraHeaders != null && route.ExtraHeaders.Count > 0) ||
+                string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+            {
+                var resolvedHeaders = ClientEmulationEngine.ResolveHeaders(
+                    effectiveEmulation,
+                    route.ExtraHeaders,
+                    route.SiteModelName,
+                    route.GoogleProjectId,
+                    isAntigravity);
+
+                if (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase))
+                {
+                    effectiveForwardHeaders = resolvedHeaders;
+                }
+                else
+                {
+                    effectiveForwardHeaders = new Dictionary<string, string>(forwardHeaders, StringComparer.OrdinalIgnoreCase);
+                    foreach (var (k, v) in resolvedHeaders)
+                    {
+                        effectiveForwardHeaders[k] = v;
+                    }
+                }
+            }
+
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
@@ -274,9 +401,6 @@ public sealed class AnthropicProxyController : ControllerBase
                 reasoningEffort = route.OverrideReasoningEffort;
             }
 
-            var effectiveProtocolType = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                ? "OpenAI"
-                : actualProtocolType;
             var forwardRequest = new ProxyForwardRequest
             {
                 TargetBaseUrl = route.BaseUrl,
@@ -288,11 +412,17 @@ public sealed class AnthropicProxyController : ControllerBase
                 PreparedRequestBody = preparedRequestBody,
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
+                StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                ForwardHeaders = forwardHeaders,
-                TargetPath = string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                    ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
-                    : null
+                ForwardHeaders = effectiveForwardHeaders,
+                EgressProxyUrl = route.EgressProxyUrl,
+                RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
+                DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
+                TargetPath = string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                    ? (enableStreaming ? "/v1internal:streamGenerateContent?alt=sse" : "/v1internal:generateContent")
+                    : string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                        ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
+                        : null
             };
 
             // 记录预处理后的请求体到上下文
@@ -308,19 +438,29 @@ public sealed class AnthropicProxyController : ControllerBase
                         traceId,
                         traceAttemptId,
                         cancellationToken)
-                    : await ForwardAnthropicStreamPassthroughAsync(
-                        forwardRequest,
-                        callContext,
-                        traceId,
-                        traceAttemptId,
-                        cancellationToken);
+                    : string.Equals(effectiveProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                        ? await ForwardGeminiStreamAsAnthropicAsync(
+                            forwardRequest,
+                            modelName,
+                            traceId,
+                            traceAttemptId,
+                            cancellationToken)
+                        : await ForwardAnthropicStreamPassthroughAsync(
+                            forwardRequest,
+                            callContext,
+                            traceId,
+                            traceAttemptId,
+                            cancellationToken);
                 var streamResult = streamOutcome.Result;
                 if (streamResult.IsCanceled)
                 {
                     return new EmptyResult();
                 }
 
-                SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
+                SafeRecordProxyDiagnostic("Anthropic", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, streamResult, requestId, traceId);
+                var streamCanFallback = !streamResult.Success
+                    && streamOutcome.CanFallback
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
 
                 // 将流式结果写入统一上下文后，一次性派发到各存储
                 callContext.Success = streamResult.Success;
@@ -337,8 +477,8 @@ public sealed class AnthropicProxyController : ControllerBase
                 callContext.TotalDurationMs = streamResult.TotalDurationMs;
                 callContext.HasStartedStreaming = streamResult.HasStartedStreaming;
                 callContext.RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex;
-                callContext.IsFinalResult = streamResult.Success;
-                callContext.FallbackTriggered = !streamResult.Success;
+                callContext.IsFinalResult = streamResult.Success || !streamCanFallback;
+                callContext.FallbackTriggered = !streamResult.Success && streamCanFallback;
                 await _proxyCallRecorder.RecordUsageAsync(callContext, CancellationToken.None);
 
                 if (streamResult.Success)
@@ -373,7 +513,32 @@ public sealed class AnthropicProxyController : ControllerBase
                 return new EmptyResult();
             }
 
-            SafeWriteConsoleProxyLog("Anthropic", requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
+            SafeRecordProxyDiagnostic("Anthropic", requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
+            var canFallback = allRoutes.Skip(routeIndex + 1).Any(candidate => !IsRouteBlockedSafely(candidate.CircuitKey));
+
+            // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账。
+            // 否则会出现"日志已记成功、客户端却收到 502"，以及 fallback 成功后第一次尝试的真实
+            // token 消耗在 Analytics 按 RequestId 取最终行时被漏掉的口径错位。
+            string? responseBody = null;
+            if (result.Success)
+            {
+                responseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
+                    "Anthropic",
+                    actualProtocolType,
+                    result.ResponseBody,
+                    result.IsStreaming,
+                    modelName,
+                    result.InputTokens,
+                    result.CachedTokens,
+                    result.OutputTokens);
+
+                if (string.IsNullOrEmpty(responseBody))
+                {
+                    // 转换失败不能伪装成成功响应，也不能把空消息返回给客户端。
+                    result.Success = false;
+                    result.ErrorMessage ??= "upstream response protocol conversion failed";
+                }
+            }
 
             // 将非流式结果写入统一上下文后，一次性派发到各存储
             callContext.Success = result.Success;
@@ -390,8 +555,8 @@ public sealed class AnthropicProxyController : ControllerBase
             callContext.TotalDurationMs = result.TotalDurationMs;
             callContext.HasStartedStreaming = result.HasStartedStreaming;
             callContext.RetryCount = result.Success ? attemptIndex - 1 : attemptIndex;
-            callContext.IsFinalResult = result.Success;
-            callContext.FallbackTriggered = !result.Success;
+            callContext.IsFinalResult = result.Success || !canFallback;
+            callContext.FallbackTriggered = !result.Success && canFallback;
             await _proxyCallRecorder.RecordUsageAsync(callContext, cancellationToken);
 
             if (result.Success)
@@ -405,19 +570,10 @@ public sealed class AnthropicProxyController : ControllerBase
                     return new EmptyResult();
                 }
 
-                var responseBody = ProxyProtocolBridge.AdaptResponseBodyForClient(
-                    "Anthropic",
-                    actualProtocolType,
-                    result.ResponseBody,
-                    result.IsStreaming,
-                    modelName,
-                    result.InputTokens,
-                    result.CachedTokens,
-                    result.OutputTokens);
                 if (result.IsStreaming && result.HasStartedStreaming && result.IsStreamInterrupted &&
                     string.Equals(effectiveProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase))
                 {
-                    responseBody = ProxyProtocolBridge.EnsureAnthropicStreamClosed(responseBody, modelName, result.InputTokens, result.CachedTokens, result.OutputTokens);
+                    responseBody = ProxyProtocolBridge.EnsureAnthropicStreamClosed(responseBody!, modelName, result.InputTokens, result.CachedTokens, result.OutputTokens);
                 }
 
                 // 将适配后的响应体和内容类型写入上下文，供开发者追踪使用
@@ -427,15 +583,15 @@ public sealed class AnthropicProxyController : ControllerBase
 
                 // 流式响应以 SSE 格式返回，使用 text/event-stream 内容类型
                 var contentType = result.IsStreaming ? "text/event-stream" : "application/json";
-                return Content(responseBody, contentType);
+                return Content(responseBody!, contentType);
             }
 
             callContext.ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
             _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
 
-            // 转发失败，通知熔断器（达到阈值才会真正触发熔断）
-            SafeBlockRoute(route.CircuitKey);
+            // 转发或转换失败，通知熔断器（达到阈值才会真正触发熔断）
+            SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             lastResult = result;
             lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, result.ErrorMessage);
         }
@@ -514,6 +670,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 if (!string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
                 {
                     UpdateAnthropicUsageFromPayload(eventName, payload, ref inputTokens, ref cachedTokens, ref outputTokens, ref receivedMessageStop);
+                    // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。
                 }
             }
 
@@ -612,7 +769,13 @@ public sealed class AnthropicProxyController : ControllerBase
             Response.Headers.Connection = "keep-alive";
         }
 
-        var state = new ProxyProtocolBridge.AnthropicOpenAiStreamState();
+        // Responses 上游的逐事件直转状态（不经 Chat 中转，保住 reasoning/function_call/document 语义）。
+        // state 必须取直转状态的 Core：块管理、usage 与收尾事件共享同一实例。
+        var responsesToAnthropicState = new ProxyProtocolBridge.ResponsesToAnthropicStreamState
+        {
+            Model = modelName
+        };
+        var state = responsesToAnthropicState.Core;
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
         var startedWriting = false;
@@ -650,50 +813,17 @@ public sealed class AnthropicProxyController : ControllerBase
                     return;
                 }
 
-                var openAiSse = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
-                    $"event: {responsesEventName}\ndata: {responsesPayload}\n\n",
-                    modelName,
-                    state.InputTokens,
-                    state.CachedTokens,
-                    state.OutputTokens);
-                if (string.IsNullOrEmpty(openAiSse))
+                // Responses → Anthropic 逐事件直转；只有真正产生 Anthropic 事件时才发送 message_start，
+                // 保留尚未写出时的 fallback 能力。收尾事件由流结束后的 CompleteAnthropicStream 统一补齐。
+                var responsesConvertedChunk = ProxyProtocolBridge.ConvertResponsesSseEventToAnthropic(responsesEventName, responsesPayload, responsesToAnthropicState);
+                if (!string.IsNullOrEmpty(responsesConvertedChunk))
                 {
-                    return;
-                }
-
-                if (!startedWriting)
-                {
-                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
-                }
-
-                using var reader = new StringReader(openAiSse);
-                string? line;
-                var openAiSseLines = new List<string>();
-                while ((line = reader.ReadLine()) is not null)
-                {
-                    if (string.IsNullOrEmpty(line))
+                    if (!startedWriting)
                     {
-                        if (TryExtractSseDataPayload(openAiSseLines, out var openAiJsonText))
-                        {
-                            openAiSseLines.Clear();
-                            if (string.Equals(openAiJsonText, "[DONE]", StringComparison.OrdinalIgnoreCase))
-                            {
-                                state.ReceivedDoneEvent = true;
-                                continue;
-                            }
-
-                            var convertedResponsesChunk = ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(openAiJsonText, state);
-                            await WriteChunkAsync(convertedResponsesChunk, token);
-                        }
-                        else
-                        {
-                            openAiSseLines.Clear();
-                        }
-
-                        continue;
+                        await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
                     }
 
-                    openAiSseLines.Add(line);
+                    await WriteChunkAsync(responsesConvertedChunk, token);
                 }
 
                 return;
@@ -724,13 +854,18 @@ public sealed class AnthropicProxyController : ControllerBase
                 }
             }
 
-            if (!startedWriting)
-            {
-                await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
-            }
-
+            // 只有转换器实际产生 Anthropic 事件时才发送 message_start，避免 role-only、usage-only
+            // 或无法识别的 chunk 被包装成空响应并阻断 fallback。
             var convertedChunk = ProxyProtocolBridge.ConvertOpenAiStreamChunkToAnthropic(jsonText, state);
-            await WriteChunkAsync(convertedChunk, token);
+            if (!string.IsNullOrEmpty(convertedChunk))
+            {
+                if (!startedWriting)
+                {
+                    await WriteChunkAsync(ProxyProtocolBridge.BuildAnthropicStreamStart(modelName, state), token);
+                }
+
+                await WriteChunkAsync(convertedChunk, token);
+            }
         }
 
         var result = await _forwardService.ForwardStreamingAsync(
@@ -756,6 +891,20 @@ public sealed class AnthropicProxyController : ControllerBase
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
 
+        if (result.Success && responsesToAnthropicState.Failed)
+        {
+            // Responses 上游以 response.failed/error 终态收尾：已写出按中断处理，未写出按失败允许回退。
+            result.Success = false;
+            result.ErrorMessage ??= startedWriting ? "stream interrupted by response.failed" : "upstream responses stream failed";
+            result.IsStreamInterrupted = startedWriting;
+        }
+
+        if (result.Success && state.ConversionFailed && !startedWriting)
+        {
+            result.Success = false;
+            result.ErrorMessage ??= "upstream response protocol conversion failed";
+        }
+
         if (result.Success)
         {
             if (!state.ReceivedDoneEvent)
@@ -772,7 +921,9 @@ public sealed class AnthropicProxyController : ControllerBase
             }
 
             result.InputTokens = state.InputTokens;
-            result.CachedTokens = state.CachedTokens;
+            // 日志的 CachedTokens 是"读+写"合并口径（与 ExtractUsageFromElement 一致）；
+            // 客户端出口的 message_delta 由 CompleteAnthropicStream 按读/写分桶，互不影响。
+            result.CachedTokens = state.CachedTokens + state.CacheCreationTokens;
             result.OutputTokens = state.OutputTokens;
 
             if (startedWriting)
@@ -803,7 +954,8 @@ public sealed class AnthropicProxyController : ControllerBase
             await WriteChunkAsync(closingChunk, cancellationToken);
             result.ResponseBody = responseBuilder.ToString();
             result.InputTokens = state.InputTokens;
-            result.CachedTokens = state.CachedTokens;
+            // 同成功路径：日志缓存列按"读+写"合并口径。
+            result.CachedTokens = state.CachedTokens + state.CacheCreationTokens;
             result.OutputTokens = state.OutputTokens;
             result.IsStreamInterrupted = true;
 
@@ -831,7 +983,8 @@ public sealed class AnthropicProxyController : ControllerBase
             : string.Empty;
         if (!string.IsNullOrWhiteSpace(explicitSource))
         {
-            return explicitSource;
+            // 统一显式来源的大小写，确保写入、展示和筛选使用同一口径。
+            return explicitSource.ToLowerInvariant();
         }
 
         var userAgent = request.Headers.UserAgent.ToString();
@@ -859,6 +1012,11 @@ public sealed class AnthropicProxyController : ControllerBase
         if (normalizedUserAgent.Contains("zcode"))
         {
             return "zcode";
+        }
+
+        if (normalizedUserAgent.Contains("deepseek-harness"))
+        {
+            return "deepseek-harness";
         }
 
         return "proxy";
@@ -988,10 +1146,19 @@ public sealed class AnthropicProxyController : ControllerBase
                     inputTokens = startInput.GetInt32();
                 }
 
+                // Anthropic 的 input_tokens 已含缓存（cache_read + cache_creation 是其子集），
+                // 必须减去缓存才是"新输入"，否则缓存会在输入列与缓存列重复统计，总 token 虚高。
                 if (startUsage.TryGetProperty("cache_read_input_tokens", out var startCached) && startCached.ValueKind == JsonValueKind.Number)
                 {
                     cachedTokens = startCached.GetInt32();
                 }
+
+                if (startUsage.TryGetProperty("cache_creation_input_tokens", out var startCreated) && startCreated.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens += startCreated.GetInt32();
+                }
+
+                inputTokens = Math.Max(0, inputTokens - cachedTokens);
 
                 if (startUsage.TryGetProperty("output_tokens", out var startOutput) && startOutput.ValueKind == JsonValueKind.Number)
                 {
@@ -1008,9 +1175,23 @@ public sealed class AnthropicProxyController : ControllerBase
                         inputTokens = deltaInput.GetInt32();
                     }
 
+                    // usage 字段是累计值（不是增量）：delta 重复携带累计 usage 时用覆盖语义，
+                    // 否则缓存会被重复累加（与 OpenAiProxyController.UpdateAnthropicUsageFromElement 保持一致）。
                     if (deltaUsage.TryGetProperty("cache_read_input_tokens", out var deltaCached) && deltaCached.ValueKind == JsonValueKind.Number)
                     {
                         cachedTokens = deltaCached.GetInt32();
+                    }
+
+                    if (deltaUsage.TryGetProperty("cache_creation_input_tokens", out var deltaCreated) && deltaCreated.ValueKind == JsonValueKind.Number)
+                    {
+                        cachedTokens += deltaCreated.GetInt32();
+                    }
+
+                    // 减法只在该事件自带 input_tokens 时执行（官方 message_delta 通常只有 output_tokens），
+                    // 否则会对已减去缓存的新输入再次减法，导致输入被重复扣减。
+                    if (deltaUsage.TryGetProperty("input_tokens", out var _))
+                    {
+                        inputTokens = Math.Max(0, inputTokens - cachedTokens);
                     }
 
                     if (deltaUsage.TryGetProperty("output_tokens", out var deltaOutput) && deltaOutput.ValueKind == JsonValueKind.Number)
@@ -1027,6 +1208,124 @@ public sealed class AnthropicProxyController : ControllerBase
         }
         catch
         {
+        }
+    }
+
+    /// <summary>
+    /// 在开发者追踪开启时创建一次请求级追踪记录。
+    /// </summary>
+    private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
+    {
+        if (!runtimeSettings.DeveloperFeaturesEnabled)
+        {
+            return null;
+        }
+
+        return _traceStore.AddRequest(new DeveloperInvocationTraceRequest
+        {
+            RequestId = Guid.NewGuid(),
+            Source = requestSource,
+            UserAgent = Request.Headers.UserAgent.ToString(),
+            ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+            ProtocolType = protocolType,
+            RequestPath = Request.Path,
+            RequestModel = modelName,
+            RequestBody = DeveloperInvocationTraceStore.FormatBody(requestBody),
+            RequestHeaders = DeveloperInvocationTraceStore.CaptureHeaders(Request.Headers)
+        });
+    }
+
+    /// <summary>
+    /// 安全地创建开发者追踪，避免追踪失败影响正常代理。
+    /// </summary>
+    private Guid? TryCreateDeveloperTraceSafely(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
+    {
+        try
+        {
+            return TryCreateDeveloperTrace(runtimeSettings, requestSource, protocolType, modelName, requestBody);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "创建开发者调用追踪失败，但请求继续转发。Protocol={Protocol}, RequestModel={RequestModel}",
+                protocolType,
+                modelName);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 为当前追踪追加一次路由尝试记录。
+    /// </summary>
+    /// <param name="traceId">调用追踪 Id（未启用追踪时为 null）。</param>
+    /// <param name="route">本次尝试命中的路由目标。</param>
+    /// <param name="actualProtocolType">实际发给上游的协议类型（可能因桥接与入口不同）。</param>
+    /// <param name="preparedRequestBody">转换后实际发给上游的请求体，用于在调用追踪页排查上游参数错误。</param>
+    /// <param name="preparedRequestHeaders">重写/模拟后实际发给上游的请求头。</param>
+    private Guid AddDeveloperTraceAttempt(
+        Guid? traceId,
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string preparedRequestBody,
+        IReadOnlyDictionary<string, string>? preparedRequestHeaders = null)
+    {
+        if (!traceId.HasValue)
+        {
+            return Guid.Empty;
+        }
+
+        return _traceStore.AddAttempt(traceId.Value, new DeveloperInvocationAttempt
+        {
+            AttemptedModel = route.UpstreamModelName,
+            UpstreamProtocolType = actualProtocolType,
+            ForwardingMode = ResolveForwardingMode("Anthropic", actualProtocolType),
+            TargetSiteId = route.SiteId,
+            TargetSiteName = route.SiteName,
+            PreparedRequestBody = preparedRequestBody,
+            PreparedRequestHeaders = preparedRequestHeaders
+        });
+    }
+
+    /// <summary>
+    /// 安全地记录一次路由尝试，避免追踪异常中断主流程。
+    /// </summary>
+    private Guid AddDeveloperTraceAttemptSafely(
+        Guid? traceId,
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string preparedRequestBody,
+        IReadOnlyDictionary<string, string>? preparedRequestHeaders = null)
+    {
+        try
+        {
+            return AddDeveloperTraceAttempt(traceId, route, actualProtocolType, preparedRequestBody, preparedRequestHeaders);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "创建开发者调用追踪尝试失败，但请求继续转发。RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
+                route.ExternalModelName,
+                route.UpstreamModelName);
+            return Guid.Empty;
+        }
+    }
+
+    /// <summary>
+    /// 安全地写入用量日志，记录失败时不影响响应返回。
+    /// </summary>
+    private async Task SafeLogUsageAsync(UsageLogEntry entry, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _usageLogService.LogAsync(entry, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "记录使用日志失败，但请求继续返回。Protocol={Protocol}, RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
+                entry.ProtocolType,
+                entry.RequestModel,
+                entry.AttemptedModel);
         }
     }
 
@@ -1068,11 +1367,11 @@ public sealed class AnthropicProxyController : ControllerBase
     /// <summary>
     /// 安全地累计路由失败状态。
     /// </summary>
-    private void SafeBlockRoute(Guid routeId)
+    private void SafeBlockRoute(Guid routeId, CircuitRouteMeta? meta = null)
     {
         try
         {
-            _circuitStore.Block(routeId);
+            _circuitStore.Block(routeId, meta);
         }
         catch (Exception ex)
         {
@@ -1115,6 +1414,66 @@ public sealed class AnthropicProxyController : ControllerBase
     }
 
     /// <summary>
+    /// 统一记录代理请求诊断信息（失败自动落盘独立复现文件与 error.log，成功采样对比样本）。
+    /// </summary>
+    private void SafeRecordProxyDiagnostic(
+        string clientProtocol,
+        string requestSource,
+        string modelName,
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string rawRequestBody,
+        string preparedRequestBody,
+        ProxyForwardResult result,
+        Guid requestId,
+        Guid? traceId)
+    {
+        try
+        {
+            var forwardingMode = ResolveForwardingMode(clientProtocol, actualProtocolType);
+            var context = new ProxyDiagnosticContext
+            {
+                RequestId = requestId,
+                TraceId = traceId,
+                ClientProtocol = clientProtocol,
+                RequestSource = requestSource,
+                ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+                UserAgent = Request.Headers.UserAgent.ToString(),
+                RequestPath = Request.Path,
+                RouteName = modelName,
+                TargetSiteId = route.SiteId,
+                TargetSiteName = route.SiteName,
+                TargetBaseUrl = route.BaseUrl,
+                RequestModel = modelName,
+                AttemptedModel = route.UpstreamModelName,
+                UpstreamProtocol = actualProtocolType,
+                ForwardingMode = forwardingMode,
+                ClientHeaders = ProxyDiagnosticContext.SnapshotHeaders(Request.Headers),
+                RawClientRequestBody = rawRequestBody,
+                PreparedRequestBody = preparedRequestBody,
+                Result = result
+            };
+
+            _diagnosticService.RecordDiagnostic(context);
+
+            SafeWriteConsoleProxyLog(
+                clientProtocol,
+                requestSource,
+                modelName,
+                actualProtocolType,
+                preparedRequestBody,
+                result,
+                rawRequestBody.Length,
+                route.SiteName,
+                forwardingMode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "执行代理请求诊断记录异常: Route={Route}, Site={Site}", modelName, route.SiteName);
+        }
+    }
+
+    /// <summary>
     /// 安全地记录失败的代理请求明细。
     /// </summary>
     private void SafeLogFailedProxyAttempt(
@@ -1148,7 +1507,9 @@ public sealed class AnthropicProxyController : ControllerBase
         string actualProtocolType,
         string preparedRequestBody,
         ProxyForwardResult result,
-        int requestBodyLength)
+        int requestBodyLength,
+        string? siteName = null,
+        string? forwardingMode = null)
     {
         // 只有异常（失败/中断）才输出到控制台，正常请求不再刷屏
         if (result.Success && !result.IsStreamInterrupted) return;
@@ -1166,7 +1527,9 @@ public sealed class AnthropicProxyController : ControllerBase
                 result.IsStreamInterrupted,
                 result.TotalDurationMs,
                 requestBodyLength,
-                result.ResponseBody?.Length ?? 0));
+                result.ResponseBody?.Length ?? 0,
+                siteName,
+                forwardingMode));
         }
         catch
         {
@@ -1184,14 +1547,20 @@ public sealed class AnthropicProxyController : ControllerBase
         string preparedRequestBody,
         ProxyForwardResult result)
     {
+        var modeLabel = string.Equals(ResolveForwardingMode("Anthropic", actualProtocolType), "direct", StringComparison.OrdinalIgnoreCase)
+            ? "直接透传 (direct)"
+            : "兼容转换 (bridge)";
+
         _logger.LogError(
-            "代理请求失败\nSource={Source}\nClientProtocol={ClientProtocol}\nUpstreamProtocol={UpstreamProtocol}\nRequestModel={RequestModel}\nAttemptedModel={AttemptedModel}\nSiteName={SiteName}\nBaseUrl={BaseUrl}\nStatusCode={StatusCode}\nIsStreaming={IsStreaming}\nIsStreamInterrupted={IsStreamInterrupted}\nErrorMessage={ErrorMessage}\nRequestBody={RequestBody}\nResponseBody={ResponseBody}",
+            "代理请求失败\nSource={Source}\nClientProtocol={ClientProtocol}\nUpstreamProtocol={UpstreamProtocol}\nForwardingMode={ForwardingMode}\nRequestModel={RequestModel}\nAttemptedModel={AttemptedModel}\nSiteName={SiteName}\nSiteId={SiteId}\nBaseUrl={BaseUrl}\nStatusCode={StatusCode}\nIsStreaming={IsStreaming}\nIsStreamInterrupted={IsStreamInterrupted}\nErrorMessage={ErrorMessage}\nRequestBody={RequestBody}\nResponseBody={ResponseBody}",
             requestSource,
             "Anthropic",
             actualProtocolType,
+            modeLabel,
             modelName,
             route.UpstreamModelName,
             route.SiteName,
+            route.SiteId,
             route.BaseUrl,
             result.StatusCode,
             result.IsStreaming,
@@ -1379,4 +1748,161 @@ public sealed class AnthropicProxyController : ControllerBase
     }
 
     /// <summary>
+    /// 把 Gemini 上游（Antigravity）流式响应转换为 Anthropic SSE 返回给客户端。
+    /// 转换核心在 AITool.Protocol 的 Gemini→Anthropic 状态机，本方法负责流读取、写入与结果判定。
+    /// </summary>
+    private async Task<StreamForwardOutcome> ForwardGeminiStreamAsAnthropicAsync(
+        ProxyForwardRequest forwardRequest,
+        string modelName,
+        Guid? traceId,
+        Guid traceAttemptId,
+        CancellationToken cancellationToken)
+    {
+        if (!Response.HasStarted)
+        {
+            Response.StatusCode = StatusCodes.Status200OK;
+            Response.ContentType = "text/event-stream";
+            Response.Headers.CacheControl = "no-cache";
+            Response.Headers.Connection = "keep-alive";
+        }
+
+        var state = new ProxyProtocolBridge.GeminiToAnthropicStreamState();
+        var responseBuilder = new StringBuilder();
+        var pendingSseLines = new List<string>();
+        var startedWriting = false;
+
+        async Task WriteChunkAsync(string chunk, CancellationToken token)
+        {
+            if (string.IsNullOrEmpty(chunk))
+            {
+                return;
+            }
+
+            if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.Append(chunk); }
+            await Response.WriteAsync(chunk, token);
+            await Response.Body.FlushAsync(token);
+            startedWriting = true;
+        }
+
+        async Task FlushGeminiBlockAsync(CancellationToken token)
+        {
+            if (!TryExtractSseDataPayload(pendingSseLines, out var payload))
+            {
+                pendingSseLines.Clear();
+                return;
+            }
+
+            pendingSseLines.Clear();
+            if (string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            var convertedChunk = ProxyProtocolBridge.ConvertGeminiSseChunkToAnthropic(payload, modelName, state);
+            await WriteChunkAsync(convertedChunk, token);
+        }
+
+        var result = await _forwardService.ForwardStreamingAsync(
+            forwardRequest,
+            async (line, token) =>
+            {
+                if (string.IsNullOrEmpty(line))
+                {
+                    await FlushGeminiBlockAsync(token);
+                    return;
+                }
+
+                pendingSseLines.Add(line);
+            },
+            cancellationToken);
+
+        if (pendingSseLines.Count > 0)
+        {
+            await FlushGeminiBlockAsync(cancellationToken);
+        }
+
+        result.ResponseBody = responseBuilder.ToString();
+        result.IsStreaming = true;
+        result.HasStartedStreaming = startedWriting;
+        result.InputTokens = state.InputTokens;
+        result.CachedTokens = state.CachedTokens;
+        result.OutputTokens = state.OutputTokens;
+
+        // Gemini 流没有 [DONE] 标记：finishReason 出现即视为正常完成，收尾事件由状态机统一补齐。
+        if (result.Success && state.FinishReason is null)
+        {
+            result.Success = false;
+            result.IsStreamInterrupted = startedWriting;
+            result.ErrorMessage ??= startedWriting
+                ? "stream interrupted before finishReason"
+                : "stream ended before any gemini candidate";
+        }
+
+        if (result.Success)
+        {
+            await WriteChunkAsync(ProxyProtocolBridge.CompleteGeminiToAnthropicStream(state), cancellationToken);
+            result.ResponseBody = responseBuilder.ToString();
+            result.IsStreamInterrupted = false;
+            result.ErrorMessage = null;
+
+            if (startedWriting)
+            {
+                SafeCompleteDeveloperTraceAttempt(traceId, traceAttemptId, new DeveloperInvocationResult
+                {
+                    Status = "success",
+                    StatusCode = result.StatusCode,
+                    ResponseBody = DeveloperInvocationTraceStore.FormatBody(result.ResponseBody),
+                    ResponseContentType = "text/event-stream",
+                    IsStreaming = true,
+                    InputTokens = result.InputTokens,
+                    CachedTokens = result.CachedTokens,
+                    OutputTokens = result.OutputTokens,
+                    TotalDurationMs = result.TotalDurationMs
+                });
+            }
+
+            return new StreamForwardOutcome
+            {
+                Result = result,
+                CanFallback = false
+            };
+        }
+
+        if (startedWriting)
+        {
+            // 已写出部分内容：补发收尾事件，客户端不至于挂起；不能再 fallback。
+            await WriteChunkAsync(ProxyProtocolBridge.CompleteGeminiToAnthropicStream(state), CancellationToken.None);
+            result.ResponseBody = responseBuilder.ToString();
+            result.IsStreamInterrupted = true;
+        }
+
+        return new StreamForwardOutcome
+        {
+            Result = result,
+            CanFallback = !startedWriting
+        };
+    }
+
+    /// <summary>
+    /// 安全版：将一次路由尝试的结果写回开发者追踪，失败不影响请求返回（master 同名方法，Gemini/Responses 流桥使用）。
+    /// </summary>
+    private void SafeCompleteDeveloperTraceAttempt(Guid? traceId, Guid traceAttemptId, DeveloperInvocationResult result)
+    {
+        try
+        {
+            if (!traceId.HasValue || traceAttemptId == Guid.Empty)
+            {
+                return;
+            }
+
+            _traceStore.CompleteAttempt(traceId.Value, traceAttemptId, result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "完成开发者调用追踪失败，但请求继续返回。TraceId={TraceId}, AttemptId={AttemptId}",
+                traceId,
+                traceAttemptId);
+        }
+    }
 }

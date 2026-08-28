@@ -172,6 +172,12 @@ public sealed class ProxyCallRecorder : IProxyCallRecorder
                 IsFinalResult = context.IsFinalResult,
                 FallbackTriggered = context.FallbackTriggered,
                 ErrorMessage = context.Success ? string.Empty : context.ErrorMessage,
+                HttpStatusCode = context.StatusCode > 0 ? context.StatusCode : null,
+                ErrorCategory = context.Success ? null : UsageLogErrorClassifier.Classify(
+                    context.Success ? "success" : "fail",
+                    context.StatusCode > 0 ? context.StatusCode : null,
+                    context.ErrorMessage,
+                    context.IsStreamInterrupted),
                 InputTokens = context.InputTokens,
                 CachedTokens = context.CachedTokens,
                 OutputTokens = context.OutputTokens,

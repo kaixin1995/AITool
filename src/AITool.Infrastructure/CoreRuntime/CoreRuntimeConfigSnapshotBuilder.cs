@@ -2,6 +2,8 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.CoreRuntime;
+using AITool.Application.Kimi;
+using AITool.Domain.Codex;
 using AITool.Domain.Models;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
@@ -36,7 +38,12 @@ public static class CoreRuntimeConfigSnapshotBuilder
         long configVersion,
         DateTimeOffset generatedAt,
         IEnumerable<CompatibilityProfile>? compatibilityProfiles = null,
-        IEnumerable<SiteKey>? siteKeys = null)
+        IEnumerable<SiteKey>? siteKeys = null,
+        IEnumerable<CodexAccount>? codexAccounts = null,
+        IEnumerable<Domain.Google.GoogleAccount>? googleAccounts = null,
+        IEnumerable<Domain.Kimi.KimiAccount>? kimiAccounts = null,
+        IEnumerable<Domain.Sites.ProxyProfile>? proxyProfiles = null,
+        IReadOnlyDictionary<string, string>? activeHeaderProfiles = null)
     {
         // 预解析兼容规则集：构建 Id→规则列表字典（仅启用的），供路由规则投影时查（避免 N+1）。
         var profileRules = compatibilityProfiles is null
@@ -64,7 +71,11 @@ public static class CoreRuntimeConfigSnapshotBuilder
                     ProtocolType = x.ProtocolType,
                     SupportsOpenAi = x.SupportsOpenAi,
                     SupportsAnthropic = x.SupportsAnthropic,
+                    SupportsResponses = x.SupportsResponses,
                     IsEnabled = x.IsEnabled,
+                    ManagedSource = x.ManagedSource,
+                    ClientEmulation = x.ClientEmulation,
+                    EgressProxyUrl = x.EgressProxyUrl,
                     ExtraHeadersJson = x.ExtraHeadersJson
                 })
                 .ToList(),
@@ -86,6 +97,26 @@ public static class CoreRuntimeConfigSnapshotBuilder
                     CreatedAt = x.CreatedAt
                 })
                 .ToList(),
+            // 托管 OAuth 账号凭证（Codex/Google/Kimi）：Core 401 即刷的 refresh token 与 Google 项目标识来源。
+            AccountCredentials = BuildAccountCredentials(codexAccounts, googleAccounts, kimiAccounts),
+            // 客户端特征模拟档案：请求头模板（JSON 文件存储）与出口代理池（表存储）。
+            HeaderProfiles = (activeHeaderProfiles ?? new Dictionary<string, string>(StringComparer.Ordinal))
+                .Select(kv => new CoreRuntimeHeaderProfile
+                {
+                    Key = kv.Key,
+                    HeadersJson = kv.Value,
+                    IsEnabled = true
+                })
+                .ToList(),
+            ProxyProfiles = (proxyProfiles ?? [])
+                .Where(x => x.IsEnabled)
+                .Select(x => new CoreRuntimeProxyProfile
+                {
+                    Key = x.Key,
+                    ProxyUrl = x.ProxyUrl,
+                    IsEnabled = x.IsEnabled
+                })
+                .ToList(),
             Models = modelList
                 .OrderBy(x => x.Id)
                 .Select(x => new CoreRuntimeModel
@@ -95,7 +126,9 @@ public static class CoreRuntimeConfigSnapshotBuilder
                     DisplayName = x.DisplayName,
                     IsEnabled = x.IsEnabled,
                     OverrideReasoningEffort = x.OverrideReasoningEffort ?? string.Empty,
-                    CompatibilityProfileId = x.CompatibilityProfileId
+                    CompatibilityProfileId = x.CompatibilityProfileId,
+                    ClientEmulation = x.ClientEmulation,
+                    ExtraHeadersJson = x.ExtraHeadersJson
                 })
                 .ToList(),
             SiteModelMappings = siteModelMappings
@@ -108,7 +141,10 @@ public static class CoreRuntimeConfigSnapshotBuilder
                     RemoteModelName = x.RemoteModelName,
                     LastStatus = x.LastStatus,
                     IsEnabled = x.IsEnabled,
-                    MaxConcurrency = x.MaxConcurrency
+                    MaxConcurrency = x.MaxConcurrency,
+                    ClientEmulation = x.ClientEmulation,
+                    ExtraHeadersJson = x.ExtraHeadersJson,
+                    EgressProxyUrl = x.EgressProxyUrl
                 })
                 .ToList(),
             RouteEntries = routeEntries
@@ -197,5 +233,57 @@ public static class CoreRuntimeConfigSnapshotBuilder
         var json = JsonSerializer.Serialize(payload, HashSerializerOptions);
         var hashBytes = SHA256.HashData(Encoding.UTF8.GetBytes(json));
         return "sha256:" + Convert.ToHexString(hashBytes);
+    }
+
+    /// <summary>
+    /// 投影托管 OAuth 账号凭证（Codex/Google/Kimi）到 Core 快照。
+    /// 仅包含启用的账号；禁用账号的站点已同步禁用，Core 无需其凭证。
+    /// </summary>
+    private static List<CoreRuntimeAccountCredential> BuildAccountCredentials(
+        IEnumerable<CodexAccount>? codexAccounts,
+        IEnumerable<Domain.Google.GoogleAccount>? googleAccounts,
+        IEnumerable<Domain.Kimi.KimiAccount>? kimiAccounts)
+    {
+        var credentials = new List<CoreRuntimeAccountCredential>();
+        foreach (var account in codexAccounts ?? [])
+        {
+            if (!account.IsEnabled) continue;
+            credentials.Add(new CoreRuntimeAccountCredential
+            {
+                Provider = "Codex",
+                AccountId = account.Id,
+                LinkedSiteId = account.LinkedSiteId,
+                RefreshToken = account.RefreshToken ?? string.Empty,
+                IsEnabled = true
+            });
+        }
+        foreach (var account in googleAccounts ?? [])
+        {
+            if (!account.IsEnabled) continue;
+            credentials.Add(new CoreRuntimeAccountCredential
+            {
+                Provider = "Google",
+                AccountId = account.Id,
+                LinkedSiteId = account.LinkedSiteId,
+                RefreshToken = account.RefreshToken ?? string.Empty,
+                ProjectId = account.ProjectId,
+                AccountKind = account.AccountKind,
+                IsEnabled = true
+            });
+        }
+        foreach (var account in kimiAccounts ?? [])
+        {
+            if (!account.IsEnabled) continue;
+            credentials.Add(new CoreRuntimeAccountCredential
+            {
+                Provider = KimiConstants.ManagedSource,
+                AccountId = account.Id,
+                LinkedSiteId = account.LinkedSiteId,
+                RefreshToken = account.RefreshToken ?? string.Empty,
+                DeviceId = account.DeviceId,
+                IsEnabled = true
+            });
+        }
+        return credentials;
     }
 }

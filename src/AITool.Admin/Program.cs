@@ -204,6 +204,8 @@ builder.Services.AddSingleton(sp =>
 // Admin 侧事件拉取核心逻辑，从 HostedService 中提取出来以便独立测试。
 // HostedService 每个轮次创建新 scope 并通过 ActivatorUtilities 解析此服务。
 builder.Services.AddScoped<CoreEventPullService>();
+// 凭证事件摄取器（credential-refreshed/disabled 落库并触发配置同步）。
+builder.Services.AddScoped<AdminCredentialEventIngestor>();
 
 // Admin 侧缓存失效门面，通过 CoreAdminClient 向 Core 下发全量配置快照以刷新运行时缓存。
 builder.Services.AddSingleton<CoreSyncStatusStore>();

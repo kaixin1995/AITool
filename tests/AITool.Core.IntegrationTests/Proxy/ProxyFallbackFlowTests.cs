@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using AITool.Core.IntegrationTests;
 using AITool.Application.Proxy;
+using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
@@ -57,10 +58,123 @@ public sealed class ProxyFallbackFlowTests
         logs.Should().HaveCount(2);
         logs[0].AttemptedModel.Should().Be("gpt-5.5");
         logs[0].Status.Should().Be("fail");
+        logs[0].HttpStatusCode.Should().Be(500);
         logs[0].FallbackTriggered.Should().BeTrue();
         logs[1].AttemptedModel.Should().Be("glm-5.1");
         logs[1].Status.Should().Be("success");
+        logs[1].HttpStatusCode.Should().Be(200);
         logs[1].IsFinalResult.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// 验证没有收到上游 HTTP 响应时，使用日志不会伪造 502 状态码。
+    /// </summary>
+    [Fact]
+    public async Task Post_chat_completions_keeps_http_status_null_when_forward_result_has_no_status()
+    {
+        var fakeForwardService = new FakeProxyForwardService
+        {
+            ForwardResultFactory = _ => new ProxyForwardResult
+            {
+                Success = false,
+                ErrorMessage = "connection refused"
+            }
+        };
+        await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"chat-prod\",\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+
+        var response = await client.SendAsync(request);
+        response.StatusCode.Should().Be(HttpStatusCode.BadGateway);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.OrderBy(x => x.AttemptIndex).ToListAsync();
+
+        logs.Should().HaveCount(2);
+        logs.Select(x => x.HttpStatusCode).Should().OnlyContain(x => x == null);
+        logs[0].FallbackTriggered.Should().BeTrue();
+        logs[0].IsFinalResult.Should().BeFalse();
+        logs[1].FallbackTriggered.Should().BeFalse();
+        logs[1].IsFinalResult.Should().BeTrue();
+    }
+
+    // split 双宿主说明：master 的 Get_route_fallback_list_returns_filtered_summary_and_sample_metadata
+    // 测试调用 /api/admin/route-fallback/list（Admin 宿主端点），在 Core 测试宿主不可达，
+    // 该行为由 Admin 宿主的 RouteFallbackApiController 及其集成测试覆盖（master 版在阶段6/9同步）。
+    /// <summary>
+    /// 验证路由保存触发延迟刷新时，旧运行时快照仍保留转发元数据。
+    /// </summary>
+    [Fact]
+    public async Task Save_route_rules_deferred_previous_snapshot_preserves_forwarding_metadata()
+    {
+        await using var factory = new ProxyFallbackWebApplicationFactory();
+        using var client = factory.CreateClient();
+
+        var firstSiteId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        var profileId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
+        await using (var setupScope = factory.Services.CreateAsyncScope())
+        {
+            var db = setupScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var firstSite = await db.Sites.SingleAsync(x => x.Id == firstSiteId);
+            firstSite.ExtraHeadersJson = "{\"X-Codex-Originator\":\"route-test\"}";
+            await db.UpdateAsync(firstSite);
+            db.CompatibilityProfiles.Add(new CompatibilityProfile
+            {
+                Id = profileId,
+                Name = "Deferred Snapshot Profile",
+                Description = "Used by deferred route snapshot metadata tests",
+                IsEnabled = true,
+                RulesJson = "[{\"op\":\"strip\",\"target\":\"reasoning_content\",\"scope\":\"all\"}]"
+            });
+            db.ModelLibraryItems.Add(new ModelLibraryItem
+            {
+                Id = Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+                ModelName = "gpt-5.5",
+                DisplayName = "GPT 5.5",
+                OverrideReasoningEffort = "high",
+                CompatibilityProfileId = profileId,
+                IsEnabled = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var limiter = factory.Services.GetRequiredService<ModelConcurrencyLimiter>();
+        var cache = factory.Services.GetRequiredService<ProxyRequestMetadataCache>();
+        using var activeHandle = await limiter.AcquireAsync(
+            factory.Services,
+            firstSiteId,
+            "gpt-5.5-a",
+            ConcurrencyAcquireMode.WaitForSlot,
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+        activeHandle.Acquired.Should().BeTrue();
+
+        // split 双宿主：route-rules/save 端点在 Admin 宿主。按本文件惯例改为直接改库 + 手动失效，
+        // 触发同样的「调用中保留旧快照」延迟刷新链路（InvalidateRouteTargets 在活跃句柄存在时延迟生效）。
+        await using (var saveScope = factory.Services.CreateAsyncScope())
+        {
+            var saveDb = saveScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var rule = await saveDb.ProxyRouteRules.SingleAsync(x => x.ExternalModelName == "chat-prod" && x.UpstreamModelName == "gpt-5.5");
+            rule.Priority = 0;
+            rule.ModelPriority = 0;
+            await saveDb.UpdateAsync(rule);
+        }
+        cache.InvalidateRouteTargets();
+
+        var deferredTargets = await cache.GetRouteTargetsForModelAsync("OpenAI", "chat-prod", CancellationToken.None);
+        var oldTarget = deferredTargets.Should().ContainSingle(x => x.SiteModelName == "gpt-5.5-a").Subject;
+        oldTarget.ExtraHeaders.Should().ContainKey("X-Codex-Originator").WhoseValue.Should().Be("route-test");
+        oldTarget.OverrideReasoningEffort.Should().Be("high");
+        oldTarget.CompatibilityRules.Should().ContainSingle(rule =>
+            rule.Op == "strip"
+            && rule.Target == "reasoning_content"
+            && rule.Scope == "all");
     }
 
     /// <summary>
@@ -350,9 +464,51 @@ public sealed class ProxyFallbackFlowTests
         logs.Should().ContainSingle();
         logs[0].Status.Should().Be("success");
         logs[0].IsStreaming.Should().BeTrue();
-        logs[0].InputTokens.Should().Be(4);
+        // 上游 prompt_tokens=4 已含缓存（cached=2），日志输入统一为不含缓存的新输入。
+        logs[0].InputTokens.Should().Be(2);
         logs[0].CachedTokens.Should().Be(2);
         logs[0].OutputTokens.Should().Be(3);
+    }
+
+    /// <summary>
+    /// 验证 deepseek-harness 客户端的 User-Agent 会被识别为独立来源。
+    /// </summary>
+    [Fact]
+    public async Task Post_chat_completions_identifies_deepseek_harness_user_agent_source()
+    {
+        var fakeForwardService = new FakeProxyForwardService
+        {
+            ForwardResultFactory = _ => new ProxyForwardResult
+            {
+                Success = true,
+                StatusCode = 200,
+                ResponseBody = "{\"choices\":[{\"message\":{\"content\":\"ok\"}}],\"usage\":{\"prompt_tokens\":2,\"completion_tokens\":1}}",
+                InputTokens = 2,
+                OutputTokens = 1
+            }
+        };
+        await using var factory = new ProxyFallbackWebApplicationFactory(fakeForwardService);
+        using var client = factory.CreateClient();
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions")
+        {
+            Content = new StringContent("{\"model\":\"chat-prod\",\"stream\":false,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}", Encoding.UTF8, "application/json")
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "test-key");
+        request.Headers.TryAddWithoutValidation(
+            "User-Agent",
+            "deepseek-harness/0.1.0-rc.6 (+https://github.com/deepseek-ai/deepseek-harness)");
+
+        var response = await client.SendAsync(request);
+        var body = await response.Content.ReadAsStringAsync();
+        response.StatusCode.Should().Be(HttpStatusCode.OK, body);
+
+        await using var scope = factory.Services.CreateAsyncScope();
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var logs = await db.ProxyUsageLogs.OrderBy(x => x.AttemptIndex).ToListAsync();
+
+        logs.Should().ContainSingle();
+        logs[0].Source.Should().Be("deepseek-harness");
     }
 
     /// <summary>
@@ -400,7 +556,8 @@ public sealed class ProxyFallbackFlowTests
         logs[0].AttemptedModel.Should().Be("gpt-5.5");
         logs[0].Status.Should().Be("fail");
         logs[0].IsStreamInterrupted.Should().BeTrue();
-        logs[0].FallbackTriggered.Should().BeTrue();
+        logs[0].FallbackTriggered.Should().BeFalse();
+        logs[0].IsFinalResult.Should().BeTrue();
     }
 }
 

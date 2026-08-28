@@ -86,7 +86,8 @@ public sealed class AdminCacheInvalidationService
         ISystemRuntimeSettingsService runtimeSettingsService,
         CoreSyncStatusStore syncStatusStore,
         ILogger<AdminCacheInvalidationService> logger,
-        ProxyRequestMetadataCache metadataCache)
+        ProxyRequestMetadataCache metadataCache,
+        AITool.Application.Proxy.IHeaderProfileCatalogService? headerProfileCatalog = null)
     {
         _coreClient = coreClient;
         _dbContext = dbContext;
@@ -94,7 +95,11 @@ public sealed class AdminCacheInvalidationService
         _syncStatusStore = syncStatusStore;
         _logger = logger;
         _metadataCache = metadataCache;
+        _headerProfileCatalog = headerProfileCatalog;
     }
+
+    /// <summary>请求头模板目录：全量同步时下发启用的 HeaderProfile 模板给 Core。</summary>
+    private readonly AITool.Application.Proxy.IHeaderProfileCatalogService? _headerProfileCatalog;
 
     /// <summary>
     /// 失效访问密钥相关缓存。
@@ -145,6 +150,28 @@ public sealed class AdminCacheInvalidationService
     {
         await SyncToCoreAsync(["RouteRules"], cancellationToken);
         _metadataCache.InvalidateCompatibilityProfiles(); // Admin 本地缓存同步失效
+    }
+
+    /// <summary>
+    /// 托管 OAuth 账号（Codex/Google/Kimi）变更后的失效。
+    /// 账号凭证不是 Patch 类别（凭证经快照 AccountCredentials 段整体下发），直接走全量同步；
+    /// 同时失效路由目标（隐藏站点的 ApiKey/启用状态会随账号变化）与各家账号缓存。
+    /// </summary>
+    public async Task InvalidateAccountCredentialsAsync(CancellationToken cancellationToken = default)
+    {
+        // 账号凭证经快照 AccountCredentials 段整体下发，Patch 类别不覆盖；直接全量同步保证凭证到位。
+        try
+        {
+            await FullSyncFallbackAsync(ConfigVersion(), cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "账号凭证变更后的 Admin→Core 全量同步失败，等待下次写操作或启动推送重试。");
+        }
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateCodexAccounts();
+        _metadataCache.InvalidateGoogleAccounts();
+        _metadataCache.InvalidateKimiAccounts();
     }
 
     /// <summary>
@@ -438,10 +465,20 @@ public sealed class AdminCacheInvalidationService
         var compatibilityProfiles = await _dbContext.CompatibilityProfiles.ToListAsync(cancellationToken);
         var runtimeSettings = await _runtimeSettingsService.GetOrCreateAsync(cancellationToken);
         var siteKeys = await _dbContext.SiteKeys.ToListAsync(cancellationToken);
+        // 托管 OAuth 账号凭证（Core 401 即刷所需）。
+        var codexAccounts = await _dbContext.CodexAccounts.ToListAsync(cancellationToken);
+        var googleAccounts = await _dbContext.GoogleAccounts.ToListAsync(cancellationToken);
+        var kimiAccounts = await _dbContext.KimiAccounts.ToListAsync(cancellationToken);
+        // 客户端特征模拟档案：出口代理池（表）+ 请求头模板（JSON 目录）。
+        var proxyProfiles = await _dbContext.ProxyProfiles.ToListAsync(cancellationToken);
+        var activeHeaderProfiles = _headerProfileCatalog is not null
+            ? await _headerProfileCatalog.GetActiveProfilesDictionaryAsync(cancellationToken)
+            : null;
 
         var snapshot = CoreRuntimeConfigSnapshotBuilder.Build(
             sites, models, mappings, routeEntries, routeRules, accessKeys,
-            runtimeSettings, version, DateTimeOffset.UtcNow, compatibilityProfiles, siteKeys);
+            runtimeSettings, version, DateTimeOffset.UtcNow, compatibilityProfiles, siteKeys,
+            codexAccounts, googleAccounts, kimiAccounts, proxyProfiles, activeHeaderProfiles);
 
         var result = await _coreClient.FullSyncAsync(snapshot, cancellationToken);
 

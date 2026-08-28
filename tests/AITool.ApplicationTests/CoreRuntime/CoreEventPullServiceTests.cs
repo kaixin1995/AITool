@@ -18,6 +18,8 @@ public sealed class CoreEventPullServiceTests : IDisposable
     private readonly AdminRouteFallbackEventIngestor _routeFallbackIngestor;
     private readonly AdminConfigAppliedEventIngestor _configAppliedIngestor;
     private readonly AdminCircuitBreakerEventIngestor _circuitBreakerIngestor;
+    private readonly AITool.Admin.Services.AdminCredentialEventIngestor _credentialIngestor;
+    private readonly AITool.Admin.Services.AdminCacheInvalidationService _cacheInvalidation;
     private readonly CoreEventAckStateStore _ackStateStore;
     private readonly string _ackMetaPath;
 
@@ -44,6 +46,10 @@ public sealed class CoreEventPullServiceTests : IDisposable
         _circuitBreakerIngestor = new AdminCircuitBreakerEventIngestor(
             circuitBreakerStore, LoggerStub.Create<AdminCircuitBreakerEventIngestor>());
 
+        _credentialIngestor = new AITool.Admin.Services.AdminCredentialEventIngestor(
+            null!, LoggerStub.Create<AITool.Admin.Services.AdminCredentialEventIngestor>());
+        _cacheInvalidation = null!;
+
         _ackMetaPath = Path.Combine(Path.GetTempPath(), $"aitool-test-ack-{Guid.NewGuid():N}", "ack.meta");
         _ackStateStore = new CoreEventAckStateStore(_ackMetaPath, LoggerStub.Create<CoreEventAckStateStore>());
     }
@@ -56,7 +62,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 0, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _credentialIngestor, _cacheInvalidation, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count = await service.PullAndProcessAsync(CancellationToken.None);
         count.Should().Be(0);
@@ -78,7 +84,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 11, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _credentialIngestor, _cacheInvalidation, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count = await service.PullAndProcessAsync(CancellationToken.None);
         count.Should().Be(2);
@@ -101,7 +107,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         handler.SetupAckResponse(new CoreAckResult { AckedSequenceId = 3, AckedAt = DateTimeOffset.UtcNow });
 
         var coreClient = CreateCoreClient(handler);
-        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
+        var service = new CoreEventPullService(coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _credentialIngestor, _cacheInvalidation, _ackStateStore, LoggerStub.Create<CoreEventPullService>());
 
         var count1 = await service.PullAndProcessAsync(CancellationToken.None);
         count1.Should().Be(3);
@@ -131,7 +137,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
         var coreClient = CreateCoreClient(handler);
 
         var service1 = new CoreEventPullService(
-            coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _ackStateStore,
+            coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _credentialIngestor, _cacheInvalidation, _ackStateStore,
             LoggerStub.Create<CoreEventPullService>());
         var count1 = await service1.PullAndProcessAsync(CancellationToken.None);
         count1.Should().Be(5);
@@ -139,7 +145,7 @@ public sealed class CoreEventPullServiceTests : IDisposable
 
         var ackStateStore2 = new CoreEventAckStateStore(_ackMetaPath, LoggerStub.Create<CoreEventAckStateStore>());
         var service2 = new CoreEventPullService(
-            coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, ackStateStore2,
+            coreClient, _unifiedIngestor, _routeFallbackIngestor, _configAppliedIngestor, _circuitBreakerIngestor, _credentialIngestor, _cacheInvalidation, ackStateStore2,
             LoggerStub.Create<CoreEventPullService>());
 
         service2.AckedSequenceId.Should().Be(5);

@@ -5,8 +5,10 @@ using System.Text.Json.Nodes;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Infrastructure.Hosting;
+using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
+using AITool.Protocol;
 
 namespace AITool.Core.Controllers.Proxy;
 
@@ -21,11 +23,13 @@ public sealed partial class OpenAiProxyController
     /// <param name="webSocket">已经完成鉴权并接受的下游 WebSocket 连接。</param>
     /// <param name="forwardRequest">已经完成路由选择和请求体准备的上游转发请求。</param>
     /// <param name="cancellationToken">用于中断当前 WebSocket 转发的取消令牌。</param>
+    /// <param name="payloadConverter">可选的上游 SSE 数据转换器，用于将 Chat Completions 事件转换为 Responses 事件。</param>
     /// <returns>返回本轮 WebSocket 流式转发结果和可用于续传的输出内容。</returns>
     private async Task<StreamForwardOutcome> ForwardOpenAiResponsesAsWebSocketAsync(
         WebSocket webSocket,
         ProxyForwardRequest forwardRequest,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<string, string>? payloadConverter = null)
     {
         var responseBuilder = new StringBuilder();
         var pendingSseLines = new List<string>();
@@ -53,11 +57,28 @@ public sealed partial class OpenAiProxyController
                 else
                 {
                     UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
-                    if (TryExtractResponsesCompletedOutput(payload, out var outputJson))
+                    var responsePayload = payloadConverter is null ? payload : payloadConverter(payload);
+                    if (string.IsNullOrWhiteSpace(responsePayload))
                     {
-                        // 保存 response.completed 的 output，供下一轮 response.append 合并上下文。
-                        completedOutputJson = outputJson;
-                        receivedDoneEvent = true;
+                        pendingSseLines.Clear();
+                        return;
+                    }
+
+                    IEnumerable<string> responsePayloads = payloadConverter is null
+                        ? [responsePayload]
+                        : ExtractWebSocketJsonPayloadsFromSseText(responsePayload);
+                    foreach (var convertedPayload in responsePayloads)
+                    {
+                        if (TryExtractResponsesCompletedOutput(convertedPayload, out var outputJson))
+                        {
+                            // 保存 response.completed 的 output，供下一轮 response.append 合并上下文。
+                            completedOutputJson = outputJson;
+                            receivedDoneEvent = true;
+                        }
+
+                        if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars) { responseBuilder.AppendLine(convertedPayload); }
+                        await SendWebSocketJsonPayloadAsync(webSocket, convertedPayload, token);
+                        startedWriting = true;
                     }
                     if (responseBuilder.Length < ProxyForwardConstants.MaxStreamBodyCaptureChars)
                     {
@@ -170,7 +191,7 @@ public sealed partial class OpenAiProxyController
             {
             }
 
-            var responsesSse = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
+            // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。            var responsesSse = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
             if (string.IsNullOrEmpty(responsesSse))
             {
                 return;
@@ -291,7 +312,7 @@ public sealed partial class OpenAiProxyController
                 return;
             }
 
-            // 直接把 Anthropic SSE 事件转为 Responses 事件
+            // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。            // 直接把 Anthropic SSE 事件转为 Responses 事件
             var responsesChunk = ProxyProtocolBridge.ConvertAnthropicStreamChunkToResponses(eventName, payload, responsesState);
             if (!string.IsNullOrEmpty(responsesChunk))
             {
@@ -389,18 +410,34 @@ public sealed partial class OpenAiProxyController
     /// <param name="outputTokens">保存提取到的输出 token 数。</param>
     private static void UpdateAnthropicUsageFromSseEvent(string eventName, JsonElement root, ref int inputTokens, ref int cachedTokens, ref int outputTokens)
     {
+        // 口径与 AnthropicProxyController.UpdateAnthropicUsageFromElement / UpdateAnthropicUsageFromPayload 保持一致：
+        // input_tokens 按含缓存处理，扣除 cache_read + cache_creation 得到"不含缓存的新输入"；
+        // 减法仅在该事件自带 input_tokens 时执行，避免对已扣减的值重复扣减。
         if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
         {
             if (root.TryGetProperty("message", out var message) && message.TryGetProperty("usage", out var usage))
             {
-                if (usage.TryGetProperty("input_tokens", out var it))
+                var hasInputTokens = false;
+                if (usage.TryGetProperty("input_tokens", out var it) && it.ValueKind == JsonValueKind.Number)
                 {
                     inputTokens = it.GetInt32();
+                    hasInputTokens = true;
                 }
 
-                if (usage.TryGetProperty("cache_read_input_tokens", out var ct))
+                cachedTokens = 0;
+                if (usage.TryGetProperty("cache_read_input_tokens", out var ct) && ct.ValueKind == JsonValueKind.Number)
                 {
-                    cachedTokens = ct.GetInt32();
+                    cachedTokens += ct.GetInt32();
+                }
+
+                if (usage.TryGetProperty("cache_creation_input_tokens", out var cct) && cct.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens += cct.GetInt32();
+                }
+
+                if (hasInputTokens)
+                {
+                    inputTokens = Math.Max(0, inputTokens - cachedTokens);
                 }
             }
         }
@@ -408,7 +445,29 @@ public sealed partial class OpenAiProxyController
         {
             if (root.TryGetProperty("usage", out var usage))
             {
-                if (usage.TryGetProperty("output_tokens", out var ot))
+                var hasInputTokens = false;
+                if (usage.TryGetProperty("input_tokens", out var it) && it.ValueKind == JsonValueKind.Number)
+                {
+                    inputTokens = it.GetInt32();
+                    hasInputTokens = true;
+                }
+
+                if (usage.TryGetProperty("cache_read_input_tokens", out var ct) && ct.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens = ct.GetInt32();
+                }
+
+                if (usage.TryGetProperty("cache_creation_input_tokens", out var cct) && cct.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens += cct.GetInt32();
+                }
+
+                if (hasInputTokens)
+                {
+                    inputTokens = Math.Max(0, inputTokens - cachedTokens);
+                }
+
+                if (usage.TryGetProperty("output_tokens", out var ot) && ot.ValueKind == JsonValueKind.Number)
                 {
                     outputTokens = ot.GetInt32();
                 }
@@ -476,7 +535,9 @@ public sealed partial class OpenAiProxyController
 
         async Task FlushOpenAiSseBlockAsync(CancellationToken token)
         {
-            // OpenAI SSE 事件块可能包含 usage 或完成事件，需要先提取统计再原样写出。
+            // 每块不再无条件 JSON 解析：usage 与完成事件都先做子串命中，命中才解析。
+            // 语义与逐块解析完全一致（无 "usage" 子串的块本来也提取不到任何统计），
+            // 常规增量块的每块开销从"一次全量 Parse"降为"两次 IndexOf 扫描"。
             if (pendingSseLines.Count == 0)
             {
                 return;
@@ -490,10 +551,13 @@ public sealed partial class OpenAiProxyController
                 }
                 else
                 {
-                    UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+                    if (payload.Contains("\"usage\"", StringComparison.Ordinal))
+                    {
+                        UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
+                    }
 
-                    // 兼容 Responses API：上游可能以 response.completed 事件而非 [DONE] 结束流
-                    if (!receivedDoneEvent)
+                    // 兼容 Responses API：上游可能以 response.completed 事件而非 [DONE] 结束流。
+                    if (!receivedDoneEvent && payload.Contains("response.completed", StringComparison.Ordinal))
                     {
                         try
                         {
@@ -581,6 +645,26 @@ public sealed partial class OpenAiProxyController
     }
 
     /// <summary>
+    /// 将一个 OpenAI Chat Completions SSE 块转换为 Responses SSE 事件。
+    /// </summary>
+    private static string ConvertOpenAiChatSseBlockToResponses(
+        string sseBlock,
+        ChatToResponsesStreamState responsesState)
+    {
+        var lines = sseBlock
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .ToList();
+        if (!TryExtractSseDataPayload(lines, out var payload)
+            || string.Equals(payload, "[DONE]", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Empty;
+        }
+
+        return ProxyProtocolBridge.ConvertChatStreamChunkToResponses(payload, responsesState);
+    }
+
+    /// <summary>
     /// 透传 OpenAI 流式响应并转换为 legacy Completions SSE 格式。
     /// </summary>
     /// <param name="forwardRequest">已经完成路由选择和请求体转换的上游转发请求。</param>
@@ -646,6 +730,11 @@ public sealed partial class OpenAiProxyController
         var inputTokens = 0;
         var cachedTokens = 0;
         var outputTokens = 0;
+        var conversionFailed = false;
+        var responsesState = new ResponsesToChatStreamState
+        {
+            Model = modelName
+        };
 
         async Task WriteChunkAsync(string chunk, CancellationToken token)
         {
@@ -678,10 +767,20 @@ public sealed partial class OpenAiProxyController
             }
 
             UpdateOpenAiUsageFromPayload(payload, ref inputTokens, ref cachedTokens, ref outputTokens);
-            var openAiChunk = ProxyProtocolBridge.ConvertResponsesStreamingToChat($"event: {eventName}\ndata: {payload}\n\n", modelName, inputTokens, cachedTokens, outputTokens);
+            responsesState.InputTokens = inputTokens;
+            responsesState.CachedTokens = cachedTokens;
+            responsesState.OutputTokens = outputTokens;
+            // 累积原始 Responses 正文，不受 64KB 诊断副本限制。
+            var openAiChunk = ProxyProtocolBridge.ConvertResponsesStreamingToChat(
+                $"event: {eventName}\ndata: {payload}\n\n",
+                responsesState);
             if (!string.IsNullOrEmpty(openAiChunk))
             {
                 await WriteChunkAsync(openAiChunk, token);
+            }
+            else if (responsesState.ConversionFailed)
+            {
+                conversionFailed = true;
             }
 
             if (string.Equals(eventName, "response.completed", StringComparison.OrdinalIgnoreCase))
@@ -716,7 +815,13 @@ public sealed partial class OpenAiProxyController
         result.CachedTokens = cachedTokens;
         result.OutputTokens = outputTokens;
 
-        if (result.Success && !receivedDoneEvent)
+        if (result.Success && conversionFailed && !startedWriting)
+        {
+            result.Success = false;
+            result.ErrorMessage ??= "upstream response protocol conversion failed";
+        }
+
+        if (result.Success && !responsesState.Completed && !receivedDoneEvent)
         {
             result.Success = false;
             result.IsStreamInterrupted = startedWriting;
@@ -835,7 +940,7 @@ public sealed partial class OpenAiProxyController
                 using var document = JsonDocument.Parse(payload);
                 var root = document.RootElement;
 
-                if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
+                // 累积原始 Anthropic 正文，不受 64KB 诊断副本限制。                if (string.Equals(eventName, "message_start", StringComparison.OrdinalIgnoreCase))
                 {
                     if (root.TryGetProperty("message", out var message) &&
                         message.TryGetProperty("usage", out var startUsage))
@@ -1023,12 +1128,12 @@ public sealed partial class OpenAiProxyController
             await FlushAnthropicSseBlockAsync(cancellationToken);
         }
 
-        var totalPromptTokens = state.InputTokens + state.CachedTokens + state.CacheCreationTokens;
         result.ResponseBody = responseBuilder.ToString();
         result.IsStreaming = true;
         result.HasStartedStreaming = startedWriting;
-        result.InputTokens = totalPromptTokens;
-        result.CachedTokens = state.CachedTokens;
+        // 日志统一语义：InputTokens 为不含缓存的新输入，缓存列合并 cache_read + cache_creation。
+        result.InputTokens = state.InputTokens;
+        result.CachedTokens = state.CachedTokens + state.CacheCreationTokens;
         result.OutputTokens = state.OutputTokens;
 
         if (result.Success && !state.ReceivedMessageStop)

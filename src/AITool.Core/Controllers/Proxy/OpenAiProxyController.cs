@@ -5,10 +5,12 @@ using System.Text.Json.Nodes;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Infrastructure.Hosting;
+using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using AITool.Core.Services;
+using AITool.Protocol;
 
 namespace AITool.Core.Controllers.Proxy;
 
@@ -128,9 +130,33 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// </summary>
     private readonly CoreRouteFallbackEventPublisher _routeFallbackPublisher;
     /// <summary>
+    /// 开发者调用追踪存储（Core 上与统一调用记录器共用同一实例，事件链由 TraceStore 完成时事件驱动）。
+    /// </summary>
+    private readonly DeveloperInvocationTraceStore _traceStore;
+    /// <summary>
     /// 模型并发限制器，按站点+模型粒度控制最大并发请求数。
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
+    /// <summary>
+    /// 用量日志服务（非热路径端点与安全日志路径使用；转发主链路走统一调用记录器）。
+    /// </summary>
+    private readonly IUsageLogService _usageLogService;
+    /// <summary>
+    /// 负责在 Codex 上游凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly CodexCredentialRefreshService _codexCredentialRefreshService;
+    /// <summary>
+    /// 负责在 Google 上游（Antigravity）凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
+    /// <summary>
+    /// 负责在 Kimi 上游凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly KimiCredentialRefreshService _kimiCredentialRefreshService;
+    /// <summary>
+    /// 记录代理请求诊断转储与对比样本（文件型抓包，Core 与 Admin 共享目录）。
+    /// </summary>
+    private readonly IProxyDiagnosticService _diagnosticService;
     /// <summary>
     /// 记录代理过程中的诊断日志。
     /// </summary>
@@ -144,16 +170,28 @@ public sealed partial class OpenAiProxyController : ControllerBase
         IProxyCallRecorder proxyCallRecorder,
         RouteCircuitStateStore circuitStore,
         ProxyRequestMetadataCache metadataCache,
+        DeveloperInvocationTraceStore traceStore,
         ModelConcurrencyLimiter concurrencyLimiter,
+        IUsageLogService usageLogService,
         CoreRouteFallbackEventPublisher routeFallbackPublisher,
+        CodexCredentialRefreshService codexCredentialRefreshService,
+        GoogleCredentialRefreshService googleCredentialRefreshService,
+        KimiCredentialRefreshService kimiCredentialRefreshService,
+        IProxyDiagnosticService diagnosticService,
         ILogger<OpenAiProxyController> logger)
     {
         _forwardService = forwardService;
         _proxyCallRecorder = proxyCallRecorder;
         _circuitStore = circuitStore;
         _metadataCache = metadataCache;
+        _traceStore = traceStore;
         _concurrencyLimiter = concurrencyLimiter;
+        _usageLogService = usageLogService;
         _routeFallbackPublisher = routeFallbackPublisher;
+        _codexCredentialRefreshService = codexCredentialRefreshService;
+        _googleCredentialRefreshService = googleCredentialRefreshService;
+        _kimiCredentialRefreshService = kimiCredentialRefreshService;
+        _diagnosticService = diagnosticService;
         _logger = logger;
     }
 
@@ -350,10 +388,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     result.OutputTokens);
                 return ProxyProtocolBridge.ConvertChatResponseToCompletions(chatBody);
             },
-            streamingBridgeFactory: static (controller, forwardRequest, modelName, ct) =>
+            streamingBridgeFactory: static (controller, forwardRequest, modelName, cancellationToken) =>
                 string.Equals(forwardRequest.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
-                    ? controller.ForwardAnthropicStreamAsCompletionsAsync(forwardRequest, modelName, ct)
-                    : controller.ForwardOpenAiStreamAsCompletionsAsync(forwardRequest, modelName, ct),
+                    ? controller.ForwardAnthropicStreamAsCompletionsAsync(forwardRequest, modelName, cancellationToken)
+                    : controller.ForwardOpenAiStreamAsCompletionsAsync(forwardRequest, modelName, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -412,12 +450,14 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     result.InputTokens,
                     result.CachedTokens,
                     result.OutputTokens),
-            streamingBridgeFactory: static (controller, forwardRequest, modelName, ct) =>
+            streamingBridgeFactory: static (controller, forwardRequest, modelName, cancellationToken) =>
                 string.Equals(forwardRequest.ProtocolType, "Anthropic", StringComparison.OrdinalIgnoreCase)
-                    ? controller.ForwardAnthropicStreamAsOpenAiAsync(forwardRequest, modelName, ct)
+                    ? controller.ForwardAnthropicStreamAsOpenAiAsync(forwardRequest, modelName, cancellationToken)
                     : string.Equals(forwardRequest.ProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                        ? controller.ForwardResponsesStreamAsOpenAiAsync(forwardRequest, modelName, ct)
-                        : controller.ForwardOpenAiStreamPassthroughAsync(forwardRequest, ct),
+                        ? controller.ForwardResponsesStreamAsOpenAiAsync(forwardRequest, modelName, cancellationToken)
+                        : string.Equals(forwardRequest.ProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                            ? controller.ForwardGeminiStreamAsOpenAiAsync(forwardRequest, modelName, cancellationToken)
+                            : controller.ForwardOpenAiStreamPassthroughAsync(forwardRequest, cancellationToken),
             cancellationToken: cancellationToken);
     }
 
@@ -466,12 +506,13 @@ public sealed partial class OpenAiProxyController : ControllerBase
     }
 
     /// <summary>
-    /// 处理 OpenAI Responses Compact 请求，并复用 Responses 代理链路。
+    /// 处理 OpenAI Responses Compact 请求（Codex 远程压缩）：与普通 Responses 共用链路，
+    /// 但上游端点固定为 responses/compact，且不做 Codex 的 stream=true 强制（压缩端点只接受非流式）。
     /// </summary>
     [HttpPost("/v1/responses/compact")]
     public async Task<IActionResult> ResponsesCompact(CancellationToken cancellationToken)
     {
-        return await Responses(cancellationToken);
+        return await ResponsesCore(cancellationToken, isCompact: true);
     }
 
     /// <summary>
@@ -637,7 +678,9 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 route.OverrideReasoningEffort,
                 route.BaseUrl,
                 route.CompatibilityRules,
-                isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase));
+                isPassthrough: string.Equals(actualProtocolType, "OpenAI", StringComparison.OrdinalIgnoreCase),
+                geminiProjectId: route.GoogleProjectId);
+            var forwardHeaders = BuildForwardHeaders(route, actualProtocolType, preparedRequestBody);
 
             // 如果模型配置了强制思考等级，PrepareRequestBody 已内联覆盖，同步更新日志变量
             if (!string.IsNullOrWhiteSpace(route.OverrideReasoningEffort))
@@ -656,12 +699,18 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 PreparedRequestBody = preparedRequestBody,
                 EnableStreaming = enableStreaming,
                 RequestTimeoutSeconds = runtimeSettings.ProxyRequestTimeoutSeconds,
+                StreamIdleTimeoutSeconds = runtimeSettings.ProxyStreamIdleTimeoutSeconds,
                 RetryCount = runtimeSettings.ProxyRetryCount,
-                ForwardHeaders = MergeExtraHeaders(route.ExtraHeaders),
+                ForwardHeaders = forwardHeaders,
+                EgressProxyUrl = route.EgressProxyUrl,
+                RefreshTargetApiKeyAsync = CreateCredentialRefreshCallback(route),
+                DisableTargetCredentialAsync = CreateCredentialDisableCallback(route),
                 TargetPath = defaultTargetPathFactory is null
-                    ? (string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
-                        ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
-                        : null)
+                    ? (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                        ? ResolveGeminiTargetPath(enableStreaming)
+                        : string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase)
+                            ? SiteEndpointPathResolver.ResolvePath(route.EndpointPathMode, "responses")
+                            : null)
                     : defaultTargetPathFactory(route)
             };
 
@@ -682,7 +731,12 @@ public sealed partial class OpenAiProxyController : ControllerBase
                     return new EmptyResult();
                 }
 
-                SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, streamResult, requestBody.Length);
+                SafeRecordProxyDiagnostic(routeLabel, requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, streamResult, requestId, traceId);
+                var streamCanFallback = !streamResult.Success
+                    && streamOutcome.CanFallback
+                    && allRoutes.Skip(routeIndex + 1).Any(candidate =>
+                        !IsRouteBlockedSafely(candidate.CircuitKey)
+                        && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
 
                 // 将流式结果写入统一上下文后，一次性派发到各存储
                 callContext.Success = streamResult.Success;
@@ -699,8 +753,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 callContext.TotalDurationMs = streamResult.TotalDurationMs;
                 callContext.HasStartedStreaming = streamResult.HasStartedStreaming;
                 callContext.RetryCount = streamResult.Success ? attemptIndex - 1 : attemptIndex;
-                callContext.IsFinalResult = streamResult.Success;
-                callContext.FallbackTriggered = !streamResult.Success;
+                callContext.IsFinalResult = streamResult.Success || !streamCanFallback;
+                callContext.FallbackTriggered = !streamResult.Success && streamCanFallback;
                 await _proxyCallRecorder.RecordUsageAsync(callContext, CancellationToken.None);
 
                 if (streamResult.Success)
@@ -717,7 +771,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 // 视为部分成功，不触发熔断，避免健康路由因上游偶发流中断被错误拉黑。
                 if (!streamResult.HasStartedStreaming)
                 {
-                    SafeBlockRoute(route.CircuitKey);
+                    SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
                 }
                 lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, streamResult.ErrorMessage);
                 lastResult = streamResult;
@@ -736,7 +790,25 @@ public sealed partial class OpenAiProxyController : ControllerBase
                 return new EmptyResult();
             }
 
-            SafeWriteConsoleProxyLog(routeLabel, requestSource, modelName, actualProtocolType, preparedRequestBody, result, requestBody.Length);
+            SafeRecordProxyDiagnostic(routeLabel, requestSource, modelName, route, actualProtocolType, requestBody, preparedRequestBody, result, requestId, traceId);
+            var canFallback = allRoutes.Skip(routeIndex + 1).Any(candidate =>
+                !IsRouteBlockedSafely(candidate.CircuitKey)
+                && (routeEligibility is null || routeEligibility(candidate, candidate.ResolveProtocolForClient("OpenAI"))));
+
+            // 协议转换先行：转换失败必须在写日志之前置为失败，保证该次尝试按 fail 入账，
+            // 避免出现"日志已记成功、客户端却收到 502"，以及 fallback 成功后第一次尝试的真实
+            // token 消耗在 Analytics 按 RequestId 取最终行时被漏掉的口径错位。
+            string? convertedResponseBody = null;
+            if (result.Success)
+            {
+                convertedResponseBody = responseFactory(result, actualProtocolType, modelName);
+                if (string.IsNullOrEmpty(convertedResponseBody))
+                {
+                    // 转换失败不能伪装成成功响应，保留 fallback 机会给下一条路由。
+                    result.Success = false;
+                    result.ErrorMessage ??= "upstream response protocol conversion failed";
+                }
+            }
 
             // 将非流式结果写入统一上下文后，一次性派发到各存储
             callContext.Success = result.Success;
@@ -753,8 +825,8 @@ public sealed partial class OpenAiProxyController : ControllerBase
             callContext.TotalDurationMs = result.TotalDurationMs;
             callContext.HasStartedStreaming = result.HasStartedStreaming;
             callContext.RetryCount = result.Success ? attemptIndex - 1 : attemptIndex;
-            callContext.IsFinalResult = result.Success;
-            callContext.FallbackTriggered = !result.Success;
+            callContext.IsFinalResult = result.Success || !canFallback;
+            callContext.FallbackTriggered = !result.Success && canFallback;
             await _proxyCallRecorder.RecordUsageAsync(callContext, cancellationToken);
 
             if (result.Success)
@@ -773,7 +845,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
             callContext.ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
             _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
             SafeLogFailedProxyAttempt(requestSource, modelName, route, actualProtocolType, preparedRequestBody, result);
-            SafeBlockRoute(route.CircuitKey);
+            SafeBlockRoute(route.CircuitKey, new CircuitRouteMeta(route.SiteName, route.SiteModelName));
             lastFailedRoute = (route.RouteId, route.SiteId, route.SiteModelName, result.ErrorMessage);
             lastResult = result;
         }

@@ -728,3 +728,51 @@ public sealed class CoreUnifiedAttemptDetail
     /// <summary>本次尝试结束时间。</summary>
     public DateTimeOffset FinishedAt { get; set; } = DateTimeOffset.UtcNow;
 }
+
+/// <summary>
+/// Core 侧托管凭证刷新事件（401 即刷链路）。
+/// Core 无数据库：刷新成功后立即回写本地运行时快照并发布本事件，
+/// Admin 侧摄取后持久化到对应账号表与隐藏站点 ApiKey，并触发配置同步。
+/// </summary>
+public sealed class CoreCredentialRefreshedEvent
+{
+    /// <summary>提供商标识：Codex | Google | kimi_oauth。</summary>
+    public string Provider { get; set; } = string.Empty;
+
+    /// <summary>账号标识。</summary>
+    public Guid AccountId { get; set; }
+
+    /// <summary>关联隐藏站点标识。</summary>
+    public Guid LinkedSiteId { get; set; }
+
+    /// <summary>刷新后的访问令牌（写回 Site.ApiKey）。</summary>
+    public string NewAccessToken { get; set; } = string.Empty;
+
+    /// <summary>刷新后的刷新令牌（Google 会轮换；空表示上游未轮换）。</summary>
+    public string NewRefreshToken { get; set; } = string.Empty;
+
+    /// <summary>刷新时间。</summary>
+    public DateTimeOffset RefreshedAt { get; set; } = DateTimeOffset.UtcNow;
+}
+
+/// <summary>
+/// Core 侧托管凭证禁用事件（上游 403 等不可恢复错误）。
+/// Admin 侧摄取后禁用对应账号与隐藏站点，并触发配置同步。
+/// </summary>
+public sealed class CoreCredentialDisabledEvent
+{
+    /// <summary>提供商标识：Codex | Google | kimi_oauth。</summary>
+    public string Provider { get; set; } = string.Empty;
+
+    /// <summary>账号标识。</summary>
+    public Guid AccountId { get; set; }
+
+    /// <summary>关联隐藏站点标识。</summary>
+    public Guid LinkedSiteId { get; set; }
+
+    /// <summary>禁用原因（如 proxy-403）。</summary>
+    public string Reason { get; set; } = string.Empty;
+
+    /// <summary>禁用时间。</summary>
+    public DateTimeOffset DisabledAt { get; set; } = DateTimeOffset.UtcNow;
+}

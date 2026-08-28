@@ -30,6 +30,8 @@ public sealed class CoreEventPullService
     private readonly AdminRouteFallbackEventIngestor _routeFallbackIngestor;
     private readonly AdminConfigAppliedEventIngestor _configAppliedIngestor;
     private readonly AdminCircuitBreakerEventIngestor _circuitBreakerIngestor;
+    private readonly AdminCredentialEventIngestor _credentialIngestor;
+    private readonly AdminCacheInvalidationService _cacheInvalidation;
     private readonly CoreEventAckStateStore _ackStateStore;
     private readonly ILogger<CoreEventPullService> _logger;
 
@@ -53,6 +55,8 @@ public sealed class CoreEventPullService
         AdminRouteFallbackEventIngestor routeFallbackIngestor,
         AdminConfigAppliedEventIngestor configAppliedIngestor,
         AdminCircuitBreakerEventIngestor circuitBreakerIngestor,
+        AdminCredentialEventIngestor credentialIngestor,
+        AdminCacheInvalidationService cacheInvalidation,
         CoreEventAckStateStore ackStateStore,
         ILogger<CoreEventPullService> logger,
         string? adminInstanceId = null)
@@ -62,6 +66,8 @@ public sealed class CoreEventPullService
         _routeFallbackIngestor = routeFallbackIngestor;
         _configAppliedIngestor = configAppliedIngestor;
         _circuitBreakerIngestor = circuitBreakerIngestor;
+        _credentialIngestor = credentialIngestor;
+        _cacheInvalidation = cacheInvalidation;
         _ackStateStore = ackStateStore;
         _logger = logger;
         _adminInstanceId = adminInstanceId ?? $"admin-{Environment.MachineName}-{Environment.ProcessId}";
@@ -105,6 +111,19 @@ public sealed class CoreEventPullService
         var routeFallbackMax = await _routeFallbackIngestor.IngestRouteFallbackEventsAsync(envelopes, cancellationToken);
         var configAppliedMax = await _configAppliedIngestor.IngestConfigAppliedEventsAsync(envelopes, cancellationToken);
         var circuitBreakerMax = await _circuitBreakerIngestor.IngestCircuitBreakerEventsAsync(envelopes, cancellationToken);
+        // 凭证事件落库后触发全量同步，把新凭证下发回 Core（闭环）。
+        var credentialHandled = await _credentialIngestor.IngestCredentialEventsAsync(envelopes, cancellationToken);
+        if (credentialHandled)
+        {
+            try
+            {
+                await _cacheInvalidation.InvalidateAccountCredentialsAsync(cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "凭证事件落库后的配置同步失败，等待下次写操作或启动推送重试。");
+            }
+        }
 
         // ack 序号始终推进到本批次最大值，确保 spool 中所有事件都被确认（包括无法消费的未知类型）
         var maxAcked = envelopes.Max(e => e.SequenceId);

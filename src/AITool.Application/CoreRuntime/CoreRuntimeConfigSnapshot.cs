@@ -58,9 +58,76 @@ public sealed class CoreRuntimeConfigSnapshot
     public List<CoreRuntimeAccessKey> AccessKeys { get; set; } = [];
 
     /// <summary>
+    /// 托管 OAuth 账号凭证（Codex/Google/Kimi）。
+    /// Core 无数据库，401 即刷凭证所需的 refresh token 与 Google 项目标识从这里读取。
+    /// </summary>
+    public List<CoreRuntimeAccountCredential> AccountCredentials { get; set; } = [];
+
+    /// <summary>
+    /// 请求头模板档案（HeaderProfile），Core 侧客户端特征模拟的模板来源。
+    /// </summary>
+    public List<CoreRuntimeHeaderProfile> HeaderProfiles { get; set; } = [];
+
+    /// <summary>
+    /// 网络代理档案（ProxyProfile），Core 侧出口代理解析来源。
+    /// </summary>
+    public List<CoreRuntimeProxyProfile> ProxyProfiles { get; set; } = [];
+
+    /// <summary>
     /// Core 运行时设置。
     /// </summary>
     public CoreRuntimeSettings RuntimeSettings { get; set; } = new();
+}
+
+/// <summary>
+/// Core 运行时托管账号凭证项。
+/// <para>
+/// 双宿主设计：master 单体在转发进程内直接写库刷新凭证；split 的 Core 无库，
+/// 刷新走「纯 HTTP 刷新 → 本快照即时回写 → credential-refreshed 事件 → Admin 持久化」链路。
+/// 凭证经 127.0.0.1 内网通道传输，与 Sites.ApiKey 同级敏感。
+/// </para>
+/// </summary>
+public sealed class CoreRuntimeAccountCredential
+{
+    /// <summary>
+    /// 提供商标识：Codex | Google | kimi_oauth（与各实体 ManagedSource 一致）。
+    /// </summary>
+    public string Provider { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 账号标识（Admin 侧对应账号表主键）。
+    /// </summary>
+    public Guid AccountId { get; set; }
+
+    /// <summary>
+    /// 关联的隐藏站点标识。
+    /// </summary>
+    public Guid LinkedSiteId { get; set; }
+
+    /// <summary>
+    /// 刷新令牌（Google 会轮换，以 Admin 下发为准）。
+    /// </summary>
+    public string RefreshToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Google 项目标识（Gemini 封套 project 字段；仅 Google 账号有值）。
+    /// </summary>
+    public string? ProjectId { get; set; }
+
+    /// <summary>
+    /// Google 账号类型（Antigravity；仅 Google 账号有值）。
+    /// </summary>
+    public string? AccountKind { get; set; }
+
+    /// <summary>
+    /// Kimi 设备标识（刷新时随请求上送；仅 Kimi 账号有值）。
+    /// </summary>
+    public string? DeviceId { get; set; }
+
+    /// <summary>
+    /// 账号是否启用。
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
 }
 
 /// <summary>
@@ -118,6 +185,26 @@ public sealed class CoreRuntimeSite
     /// Core 转发时通过 MergeExtraHeaders 解析并注入上游请求，缺失会导致 Codex 请求被上游拒绝。
     /// </summary>
     public string? ExtraHeadersJson { get; set; }
+
+    /// <summary>
+    /// 托管提供商标识（Codex | Google | kimi_oauth；自建站点为空）。401 即刷回调按此分流。
+    /// </summary>
+    public string? ManagedSource { get; set; }
+
+    /// <summary>
+    /// 是否支持 OpenAI Responses 原生接口。
+    /// </summary>
+    public bool SupportsResponses { get; set; }
+
+    /// <summary>
+    /// 站点维度客户端特征模拟预设（None | OpenCode | ClaudeCode | CodexCli | Antigravity | Kimi | 自定义 Key）。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+
+    /// <summary>
+    /// 站点专用出口网络代理地址（http/https/socks5，可为 ProxyProfile Key）。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
 }
 
 /// <summary>
@@ -191,6 +278,14 @@ public sealed class CoreRuntimeModel
     /// 关联的兼容规则集 Id（可空）。为空表示不应用任何规则集。
     /// </summary>
     public Guid? CompatibilityProfileId { get; set; }
+    /// <summary>
+    /// 模型维度默认客户端特征模拟预设。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+    /// <summary>
+    /// 模型维度默认自定义转发请求头（JSON）。
+    /// </summary>
+    public string? ExtraHeadersJson { get; set; }
 }
 
 /// <summary>
@@ -222,6 +317,18 @@ public sealed class CoreRuntimeSiteModelMapping
     /// 最近状态。
     /// </summary>
     public string LastStatus { get; set; } = string.Empty;
+    /// <summary>
+    /// 映射维度客户端特征模拟预设（三层优先级最高）。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+    /// <summary>
+    /// 映射维度自定义转发请求头（JSON，支持  等动态占位符）。
+    /// </summary>
+    public string? ExtraHeadersJson { get; set; }
+    /// <summary>
+    /// 映射专属出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
 
     /// <summary>
     /// 是否启用。
@@ -409,4 +516,34 @@ public sealed class CoreRuntimeSettings
     /// 是否启用开发者功能。
     /// </summary>
     public bool DeveloperFeaturesEnabled { get; set; }
+}
+
+/// <summary>
+/// Core 运行时请求头模板档案项（HeaderProfile 的 Key→模板头 JSON 投影，来自 Admin 的 client-header-profiles.json）。
+/// </summary>
+public sealed class CoreRuntimeHeaderProfile
+{
+    /// <summary>档案 Key（ClientEmulation 引用它）。</summary>
+    public string Key { get; set; } = string.Empty;
+
+    /// <summary>模板头 JSON（含 ${guid}/${model} 等占位符，Core 侧由 ClientEmulationEngine 求值）。</summary>
+    public string HeadersJson { get; set; } = "{}";
+
+    /// <summary>是否启用。</summary>
+    public bool IsEnabled { get; set; } = true;
+}
+
+/// <summary>
+/// Core 运行时网络代理档案项（ProxyProfile 的 Key→URL 投影，来自 Admin 数据库 ProxyProfiles 表）。
+/// </summary>
+public sealed class CoreRuntimeProxyProfile
+{
+    /// <summary>档案 Key（EgressProxyUrl 可引用它）。</summary>
+    public string Key { get; set; } = string.Empty;
+
+    /// <summary>代理地址（http/https/socks4/4a/5）。</summary>
+    public string ProxyUrl { get; set; } = string.Empty;
+
+    /// <summary>是否启用。</summary>
+    public bool IsEnabled { get; set; } = true;
 }

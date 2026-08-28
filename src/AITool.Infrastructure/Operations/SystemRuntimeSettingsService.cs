@@ -26,12 +26,17 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
     /// <summary>
     /// 注入数据库上下文
     /// </summary>
+    /// <summary>请求头模板目录（可选）：构建 Core 快照时下发启用的 HeaderProfile 模板。</summary>
+    private readonly AITool.Application.Proxy.IHeaderProfileCatalogService? _headerProfileCatalog;
+
     public SystemRuntimeSettingsService(
         AppDbContext dbContext,
-        IEnumerable<IAccountQuotaProvider>? quotaProviders = null)
+        IEnumerable<IAccountQuotaProvider>? quotaProviders = null,
+        AITool.Application.Proxy.IHeaderProfileCatalogService? headerProfileCatalog = null)
     {
         _dbContext = dbContext;
         _quotaProviders = quotaProviders?.ToList() ?? [];
+        _headerProfileCatalog = headerProfileCatalog;
     }
 
     /// <summary>
@@ -114,6 +119,16 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
         var routeRules = await _dbContext.ProxyRouteRules.ToListAsync(cancellationToken);
         var accessKeys = await _dbContext.ProxyAccessKeys.ToListAsync(cancellationToken);
         var compatibilityProfiles = await _dbContext.CompatibilityProfiles.ToListAsync(cancellationToken);
+        var siteKeys = await _dbContext.SiteKeys.ToListAsync(cancellationToken);
+        // 托管 OAuth 账号凭证（Core 401 即刷所需）：三家账号表全量读取后由 Builder 过滤投影。
+        var codexAccounts = await _dbContext.CodexAccounts.ToListAsync(cancellationToken);
+        var googleAccounts = await _dbContext.GoogleAccounts.ToListAsync(cancellationToken);
+        var kimiAccounts = await _dbContext.KimiAccounts.ToListAsync(cancellationToken);
+        // 客户端特征模拟档案：出口代理池（表）+ 请求头模板（JSON 目录，经目录服务读取）。
+        var proxyProfiles = await _dbContext.ProxyProfiles.ToListAsync(cancellationToken);
+        var activeHeaderProfiles = _headerProfileCatalog is not null
+            ? await _headerProfileCatalog.GetActiveProfilesDictionaryAsync(cancellationToken)
+            : null;
         var runtimeSettings = await GetOrCreateAsync(cancellationToken);
 
         return CoreRuntimeConfigSnapshotBuilder.Build(
@@ -126,7 +141,13 @@ public sealed class SystemRuntimeSettingsService : ISystemRuntimeSettingsService
             runtimeSettings,
             configVersion,
             generatedAt,
-            compatibilityProfiles);
+            compatibilityProfiles,
+            siteKeys,
+            codexAccounts,
+            googleAccounts,
+            kimiAccounts,
+            proxyProfiles,
+            activeHeaderProfiles);
     }
 
     /// <summary>

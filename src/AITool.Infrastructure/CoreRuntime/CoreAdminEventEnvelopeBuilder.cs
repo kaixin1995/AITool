@@ -103,4 +103,34 @@ public static class CoreAdminEventEnvelopeBuilder
             PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
         };
     }
+
+    /// <summary>
+    /// 构造一条托管凭证刷新事件信封（Core 401 即刷 → Admin 持久化）。
+    /// </summary>
+    public static CoreAdminEventEnvelope CreateCredentialRefreshedEnvelope(long sequenceId, CoreCredentialRefreshedEvent payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return new CoreAdminEventEnvelope
+        {
+            SequenceId = sequenceId,
+            EventType = "credential-refreshed",
+            OccurredAt = payload.RefreshedAt,
+            PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
+        };
+    }
+
+    /// <summary>
+    /// 构造一条托管凭证禁用事件信封（Core 403 → Admin 禁用账号与站点）。
+    /// </summary>
+    public static CoreAdminEventEnvelope CreateCredentialDisabledEnvelope(long sequenceId, CoreCredentialDisabledEvent payload)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        return new CoreAdminEventEnvelope
+        {
+            SequenceId = sequenceId,
+            EventType = "credential-disabled",
+            OccurredAt = payload.DisabledAt,
+            PayloadJson = JsonSerializer.Serialize(payload, SerializerOptions)
+        };
+    }
 }

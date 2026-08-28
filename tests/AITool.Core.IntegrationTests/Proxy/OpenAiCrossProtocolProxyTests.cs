@@ -144,6 +144,14 @@ public sealed class OpenAiCrossProtocolProxyTests
         prepared.Should().Contain("\"call_id\":\"call_weather_1\"");
         prepared.Should().Contain("\"type\":\"function_call_output\"");
         prepared.Should().NotContain("\"content\":[{\"type\":\"output_text\",\"text\":\"让我调用工具\"},{\"type\":\"function_call\"");
+
+        using var preparedDocument = JsonDocument.Parse(prepared);
+        var functionCall = preparedDocument.RootElement
+            .GetProperty("input")
+            .EnumerateArray()
+            .Single(item => item.GetProperty("type").GetString() == "function_call");
+        functionCall.GetProperty("id").GetString().Should().StartWith("fc_");
+        functionCall.GetProperty("call_id").GetString().Should().Be("call_weather_1");
     }
 
     [Fact]
@@ -279,8 +287,8 @@ public sealed class OpenAiCrossProtocolProxyTests
         body.Should().Contain("\"reasoning_content\":\"step-1\"");
         body.Should().Contain("\"content\":\"bridged-openai-stream\"");
         body.Should().Contain("\"finish_reason\":\"stop\"");
-        // 流式 usage 由宿主控制器侧计算，Core 控制器同步前的现状口径：7 输入 + 1 缓存 = 8（控制器对齐后改为 7）。
-        body.Should().Contain("\"prompt_tokens\":8");
+        // 上游 input_tokens=7 已含缓存（cache_read=1），输出 prompt_tokens 还原为 7，不再叠加缓存。
+        body.Should().Contain("\"prompt_tokens\":7");
         body.Should().Contain("\"cached_tokens\":1");
         body.Should().Contain("\"completion_tokens\":8");
         body.Should().Contain("data: [DONE]");
@@ -330,8 +338,8 @@ public sealed class OpenAiCrossProtocolProxyTests
         body.Should().Contain("\"object\":\"text_completion\"");
         body.Should().Contain("\"text\":\"legacy-stream\"");
         body.Should().Contain("\"finish_reason\":\"stop\"");
-        // 流式 usage 由宿主控制器侧计算，Core 控制器同步前的现状口径：7 输入 + 1 缓存 = 8（控制器对齐后改为 7）。
-        body.Should().Contain("\"prompt_tokens\":8");
+        // 上游 input_tokens=7 已含缓存（cache_read=1），输出 prompt_tokens 还原为 7，不再叠加缓存。
+        body.Should().Contain("\"prompt_tokens\":7");
         body.Should().Contain("data: [DONE]");
         body.Should().NotContain("chat.completion.chunk");
     }

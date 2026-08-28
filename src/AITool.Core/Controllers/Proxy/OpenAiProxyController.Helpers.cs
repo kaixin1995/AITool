@@ -2,10 +2,15 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using AITool.Application.Google;
+using AITool.Application.Kimi;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Infrastructure.Hosting;
+using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Proxy;
+using AITool.Protocol;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 
 using AITool.Core.Services;
@@ -16,6 +21,19 @@ namespace AITool.Core.Controllers.Proxy;
 /// </summary>
 public sealed partial class OpenAiProxyController
 {
+    private static readonly string[] CodexResponsesForwardHeaderNames =
+    [
+        "Version",
+        "X-Codex-Beta-Features",
+        "X-Codex-Turn-Metadata",
+        "X-Client-Request-Id",
+        "X-Codex-Window-Id",
+        "Thread-Id",
+        "Session-Id",
+        "Conversation_id",
+        "X-Openai-Internal-Codex-Responses-Lite"
+    ];
+
     /// <summary>
     /// 把缓存路由目标携带的自定义请求头（来自 Site.ExtraHeadersJson）转换为转发请求头字典。
     /// 空或空字典返回新的空字典（大小写不敏感），避免共享缓存实例被修改。
@@ -28,6 +46,151 @@ public sealed partial class OpenAiProxyController
             return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         }
         return new Dictionary<string, string>(extra, StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// 合并 Codex Responses 请求的动态会话头。只接受 Codex 协议需要的白名单头，避免把客户端鉴权、主机和代理身份头带到上游。
+    /// </summary>
+    public static Dictionary<string, string> MergeCodexResponsesHeaders(
+        Dictionary<string, string>? extra,
+        IHeaderDictionary? clientHeaders,
+        string? preparedRequestBody,
+        string? modelName = null,
+        string? projectId = null)
+    {
+        var merged = MergeExtraHeaders(extra);
+        if (clientHeaders is not null)
+        {
+            foreach (var headerName in CodexResponsesForwardHeaderNames)
+            {
+                if (clientHeaders.TryGetValue(headerName, out var values))
+                {
+                    var value = values.ToString().Trim();
+                    if (!string.IsNullOrWhiteSpace(value))
+                    {
+                        merged[headerName] = value;
+                    }
+                }
+            }
+        }
+
+        var promptCacheKey = TryExtractPromptCacheKey(preparedRequestBody);
+        if (!string.IsNullOrWhiteSpace(promptCacheKey))
+        {
+            merged["Session-Id"] = promptCacheKey;
+        }
+
+        var evaluated = new Dictionary<string, string>(merged.Count, StringComparer.OrdinalIgnoreCase);
+        foreach (var (k, v) in merged)
+        {
+            evaluated[k] = ClientEmulationEngine.EvaluatePlaceholders(v, modelName, projectId);
+        }
+
+        return evaluated;
+    }
+
+    private Dictionary<string, string> BuildForwardHeaders(
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string? preparedRequestBody)
+    {
+        if (string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase)
+            && string.Equals(actualProtocolType, "Responses", StringComparison.OrdinalIgnoreCase))
+        {
+            return MergeCodexResponsesHeaders(route.ExtraHeaders, Request.Headers, preparedRequestBody, route.SiteModelName, route.GoogleProjectId);
+        }
+
+        var isAntigravity = ProxyProtocolBridge.IsAntigravityTarget(route.BaseUrl);
+        var effectiveEmulation = !string.IsNullOrWhiteSpace(route.ClientEmulation) && !string.Equals(route.ClientEmulation, Domain.Sites.ClientEmulationConstants.None, StringComparison.OrdinalIgnoreCase)
+            ? route.ClientEmulation
+            : (string.Equals(actualProtocolType, "Gemini", StringComparison.OrdinalIgnoreCase)
+                ? Domain.Sites.ClientEmulationConstants.Antigravity
+                : Domain.Sites.ClientEmulationConstants.None);
+
+        return ClientEmulationEngine.ResolveHeaders(
+            effectiveEmulation,
+            route.ExtraHeaders,
+            route.SiteModelName,
+            route.GoogleProjectId,
+            isAntigravity);
+    }
+
+    /// <summary>
+    /// 解析 Gemini 上游的目标路径：流式走 streamGenerateContent?alt=sse，非流式走 generateContent（v1internal）。
+    /// </summary>
+    private static string ResolveGeminiTargetPath(bool enableStreaming)
+        => enableStreaming ? "/v1internal:streamGenerateContent?alt=sse" : "/v1internal:generateContent";
+
+    /// <summary>
+    /// 仅为托管隐藏站点绑定实时凭证刷新回调（Codex / Google / Kimi），普通站点的 401 不触发 OAuth 刷新。
+    /// </summary>
+    private Func<string, CancellationToken, Task<string?>>? CreateCredentialRefreshCallback(
+        CachedProxyRouteTarget route)
+    {
+        if (string.Equals(route.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _codexCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        if (string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _googleCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        if (string.Equals(route.ManagedSource, KimiConstants.ManagedSource, StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _kimiCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        return null;
+    }
+
+    private Func<CancellationToken, Task>? CreateCredentialDisableCallback(
+        CachedProxyRouteTarget route)
+    {
+        if (string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
+        {
+            return cancellationToken => _googleCredentialRefreshService.DisableAsync(
+                route.SiteId,
+                "proxy-403",
+                cancellationToken);
+        }
+
+        return null;
+    }
+
+    private static string? TryExtractPromptCacheKey(string? preparedRequestBody)
+    {
+        if (string.IsNullOrWhiteSpace(preparedRequestBody))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(preparedRequestBody);
+            if (document.RootElement.ValueKind == JsonValueKind.Object
+                && document.RootElement.TryGetProperty("prompt_cache_key", out var promptCacheKey)
+                && promptCacheKey.ValueKind == JsonValueKind.String)
+            {
+                var value = promptCacheKey.GetString()?.Trim();
+                return string.IsNullOrWhiteSpace(value) ? null : value;
+            }
+        }
+        catch (JsonException)
+        {
+        }
+
+        return null;
     }
     /// <summary>
     /// 接收一条完整的 WebSocket 文本消息。
@@ -377,7 +540,8 @@ public sealed partial class OpenAiProxyController
             : string.Empty;
         if (!string.IsNullOrWhiteSpace(explicitSource))
         {
-            return explicitSource;
+            // 统一显式来源的大小写，确保写入、展示和筛选使用同一口径。
+            return explicitSource.ToLowerInvariant();
         }
 
         var userAgent = request.Headers.UserAgent.ToString();
@@ -405,6 +569,11 @@ public sealed partial class OpenAiProxyController
         if (normalizedUserAgent.Contains("zcode"))
         {
             return "zcode";
+        }
+
+        if (normalizedUserAgent.Contains("deepseek-harness"))
+        {
+            return "deepseek-harness";
         }
 
         return "proxy";
@@ -521,13 +690,16 @@ public sealed partial class OpenAiProxyController
                 return;
             }
 
+            var hasInputTokens = false;
             if (usage.TryGetProperty("input_tokens", out var inputTokenElement) && inputTokenElement.ValueKind == JsonValueKind.Number)
             {
                 inputTokens = inputTokenElement.GetInt32();
+                hasInputTokens = true;
             }
             else if (usage.TryGetProperty("prompt_tokens", out var promptTokens) && promptTokens.ValueKind == JsonValueKind.Number)
             {
                 inputTokens = promptTokens.GetInt32();
+                hasInputTokens = true;
             }
 
             // output_tokens 优先；但部分中间层（如 newapi）会把 output_tokens 设为 0 而把真实值放在 completion_tokens，
@@ -542,7 +714,7 @@ public sealed partial class OpenAiProxyController
             }
 
             // 缓存 token：同时兼容 input_tokens_details / prompt_tokens_details 两种格式。
-            // 部分中间层（如 newapi）的 input_tokens_details 为 null，需要回退到 prompt_tokens_details。
+            // 部分中间层（如 newapi）会在同一个 usage 里同时放这两种字段，取先命中的非零值。
             if (usage.TryGetProperty("input_tokens_details", out var inputTokenDetails)
                 && inputTokenDetails.ValueKind == JsonValueKind.Object
                 && inputTokenDetails.TryGetProperty("cached_tokens", out var inputCachedTokenElement)
@@ -557,6 +729,34 @@ public sealed partial class OpenAiProxyController
             {
                 cachedTokens = cachedTokenElement.GetInt32();
             }
+
+            // 缓存写 token：兼容 cached_creation_tokens / cache_write_tokens（与 ExtractUsageFromElement 口径一致），
+            // 并入缓存列，避免被计入"新输入"。
+            var detailsForWrite = usage.TryGetProperty("input_tokens_details", out var itdWrite) && itdWrite.ValueKind == JsonValueKind.Object
+                ? itdWrite
+                : usage.TryGetProperty("prompt_tokens_details", out var ptdWrite) && ptdWrite.ValueKind == JsonValueKind.Object
+                    ? ptdWrite
+                    : default;
+            if (detailsForWrite.ValueKind == JsonValueKind.Object)
+            {
+                if (detailsForWrite.TryGetProperty("cached_creation_tokens", out var ccWrite) && ccWrite.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens += ccWrite.GetInt32();
+                }
+                else if (detailsForWrite.TryGetProperty("cache_write_tokens", out var cwWrite) && cwWrite.ValueKind == JsonValueKind.Number)
+                {
+                    cachedTokens += cwWrite.GetInt32();
+                }
+            }
+
+            // OpenAI 的 input_tokens/prompt_tokens 已包含缓存命中部分（cached_tokens 是其子集），
+            // 统一减去缓存，日志输入记录"不含缓存的新输入"，避免缓存重复统计。
+            // 减法只在本事件自带输入字段时执行：部分中间层的后续 usage 事件只带 cached 字段，
+            // 否则会对已减去缓存的输入再次扣减（与 UpdateAnthropicUsageFromElement 的守卫一致）。
+            if (hasInputTokens)
+            {
+                inputTokens = Math.Max(0, inputTokens - cachedTokens);
+            }
         }
         catch
         {
@@ -570,9 +770,14 @@ public sealed partial class OpenAiProxyController
     /// <param name="state">正在转换为 OpenAI SSE 的流式状态对象。</param>
     private static void UpdateAnthropicUsageFromElement(JsonElement usage, AnthropicToOpenAiStreamState state)
     {
+        // Anthropic 的 input_tokens 已含缓存（cache_read + cache_creation 是其子集），
+        // 这里记录"不含缓存的新输入"，缓存分别记入 CachedTokens / CacheCreationTokens，
+        // 输出与日志需要"含缓存"时再按 新输入 + 缓存 还原，避免缓存重复统计。
+        var hasInputTokens = false;
         if (usage.TryGetProperty("input_tokens", out var inputTokens) && inputTokens.ValueKind == JsonValueKind.Number)
         {
             state.InputTokens = inputTokens.GetInt32();
+            hasInputTokens = true;
         }
 
         if (usage.TryGetProperty("cache_read_input_tokens", out var cachedTokens) && cachedTokens.ValueKind == JsonValueKind.Number)
@@ -588,6 +793,13 @@ public sealed partial class OpenAiProxyController
         if (usage.TryGetProperty("output_tokens", out var outputTokens) && outputTokens.ValueKind == JsonValueKind.Number)
         {
             state.OutputTokens = outputTokens.GetInt32();
+        }
+
+        // 减法只在本事件自带 input_tokens 时执行：message_delta 通常只有 output_tokens，
+        // 否则会对已减去缓存的输入再次扣减。
+        if (hasInputTokens)
+        {
+            state.InputTokens = Math.Max(0, state.InputTokens - state.CachedTokens - state.CacheCreationTokens);
         }
     }
 
@@ -704,6 +916,105 @@ public sealed partial class OpenAiProxyController
     }
 
     /// <summary>
+    /// 在开发者追踪开启时创建一次请求级追踪记录。
+    /// </summary>
+    private Guid? TryCreateDeveloperTrace(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
+    {
+        if (!runtimeSettings.DeveloperFeaturesEnabled)
+        {
+            return null;
+        }
+
+        return _traceStore.AddRequest(new DeveloperInvocationTraceRequest
+        {
+            RequestId = Guid.NewGuid(),
+            Source = requestSource,
+            UserAgent = Request.Headers.UserAgent.ToString(),
+            ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+            ProtocolType = protocolType,
+            RequestPath = Request.Path,
+            RequestModel = modelName,
+            RequestBody = DeveloperInvocationTraceStore.FormatBody(requestBody),
+            RequestHeaders = DeveloperInvocationTraceStore.CaptureHeaders(Request.Headers)
+        });
+    }
+
+    /// <summary>
+    /// 安全地创建开发者追踪，避免追踪失败影响正常代理。
+    /// </summary>
+    private Guid? TryCreateDeveloperTraceSafely(CachedProxyRuntimeSettings runtimeSettings, string requestSource, string protocolType, string modelName, string requestBody)
+    {
+        try
+        {
+            return TryCreateDeveloperTrace(runtimeSettings, requestSource, protocolType, modelName, requestBody);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "创建开发者调用追踪失败，但请求继续转发。Protocol={Protocol}, RequestModel={RequestModel}",
+                protocolType,
+                modelName);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// 为当前追踪追加一次路由尝试记录。
+    /// </summary>
+    /// <param name="traceId">调用追踪 Id（未启用追踪时为 null）。</param>
+    /// <param name="route">本次尝试命中的路由目标。</param>
+    /// <param name="actualProtocolType">实际发给上游的协议类型（可能因桥接与入口不同）。</param>
+    /// <param name="preparedRequestBody">转换后实际发给上游的请求体，用于在调用追踪页排查上游参数错误。</param>
+    /// <param name="preparedRequestHeaders">重写/模拟后实际发给上游的请求头。</param>
+    private Guid AddDeveloperTraceAttempt(
+        Guid? traceId,
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string preparedRequestBody,
+        IReadOnlyDictionary<string, string>? preparedRequestHeaders = null)
+    {
+        if (!traceId.HasValue)
+        {
+            return Guid.Empty;
+        }
+
+        return _traceStore.AddAttempt(traceId.Value, new DeveloperInvocationAttempt
+        {
+            AttemptedModel = route.UpstreamModelName,
+            UpstreamProtocolType = actualProtocolType,
+            ForwardingMode = ResolveForwardingMode("OpenAI", actualProtocolType),
+            TargetSiteId = route.SiteId,
+            TargetSiteName = route.SiteName,
+            PreparedRequestBody = preparedRequestBody,
+            PreparedRequestHeaders = preparedRequestHeaders
+        });
+    }
+
+    /// <summary>
+    /// 安全地记录一次路由尝试，避免追踪异常中断主流程。
+    /// </summary>
+    private Guid AddDeveloperTraceAttemptSafely(
+        Guid? traceId,
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string preparedRequestBody,
+        IReadOnlyDictionary<string, string>? preparedRequestHeaders = null)
+    {
+        try
+        {
+            return AddDeveloperTraceAttempt(traceId, route, actualProtocolType, preparedRequestBody, preparedRequestHeaders);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "创建开发者调用追踪尝试失败，但请求继续转发。RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
+                route.ExternalModelName,
+                route.UpstreamModelName);
+            return Guid.Empty;
+        }
+    }
+
+    /// <summary>
     /// 根据客户端协议和上游协议判断当前是直连还是兼容转发。
     /// </summary>
     private static string ResolveForwardingMode(string clientProtocolType, string upstreamProtocolType)
@@ -780,54 +1091,136 @@ public sealed partial class OpenAiProxyController
     }
 
     /// <summary>
-    /// 安全地读取路由熔断状态。
+    /// 安全地写入用量日志，记录失败时不影响响应返回。
     /// </summary>
-    private bool IsRouteBlockedSafely(Guid routeId)
+    private async Task SafeLogUsageAsync(UsageLogEntry entry, CancellationToken cancellationToken)
     {
         try
         {
-            return _circuitStore.IsBlocked(routeId);
+            await _usageLogService.LogAsync(entry, cancellationToken);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "读取熔断状态失败，按未熔断继续转发。RouteId={RouteId}",
-                routeId);
+                "记录使用日志失败，但请求继续返回。Protocol={Protocol}, RequestModel={RequestModel}, AttemptedModel={AttemptedModel}",
+                entry.ProtocolType,
+                entry.RequestModel,
+                entry.AttemptedModel);
+        }
+    }
+
+    /// <summary>
+    /// 统一记录代理请求诊断信息（失败自动落盘独立复现文件与 error.log，成功采样对比样本）。
+    /// </summary>
+    private void SafeRecordProxyDiagnostic(
+        string clientProtocol,
+        string requestSource,
+        string modelName,
+        CachedProxyRouteTarget route,
+        string actualProtocolType,
+        string rawRequestBody,
+        string preparedRequestBody,
+        ProxyForwardResult result,
+        Guid requestId,
+        Guid? traceId)
+    {
+        try
+        {
+            var forwardingMode = ResolveForwardingMode(clientProtocol, actualProtocolType);
+            var context = new ProxyDiagnosticContext
+            {
+                RequestId = requestId,
+                TraceId = traceId,
+                ClientProtocol = clientProtocol,
+                RequestSource = requestSource,
+                ClientIp = HttpContext.Connection.RemoteIpAddress?.ToString() ?? string.Empty,
+                UserAgent = Request.Headers.UserAgent.ToString(),
+                RequestPath = Request.Path,
+                RouteName = modelName,
+                TargetSiteId = route.SiteId,
+                TargetSiteName = route.SiteName,
+                TargetBaseUrl = route.BaseUrl,
+                RequestModel = modelName,
+                AttemptedModel = route.UpstreamModelName,
+                UpstreamProtocol = actualProtocolType,
+                ForwardingMode = forwardingMode,
+                ClientHeaders = ProxyDiagnosticContext.SnapshotHeaders(Request.Headers),
+                RawClientRequestBody = rawRequestBody,
+                PreparedRequestBody = preparedRequestBody,
+                Result = result
+            };
+
+            _diagnosticService.RecordDiagnostic(context);
+
+            SafeWriteConsoleProxyLog(
+                clientProtocol,
+                requestSource,
+                modelName,
+                actualProtocolType,
+                preparedRequestBody,
+                result,
+                rawRequestBody.Length,
+                route.SiteName,
+                forwardingMode);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "执行代理请求诊断记录异常: Route={Route}, Site={Site}", modelName, route.SiteName);
+        }
+    }
+
+    /// <summary>
+    /// 安全地读取路由熔断状态。
+    /// 参数为熔断身份键（多 Key 展开后用合成键，区分同一路由的不同 Key）。
+    /// </summary>
+    private bool IsRouteBlockedSafely(Guid circuitKey)
+    {
+        try
+        {
+            return _circuitStore.IsBlocked(circuitKey);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex,
+                "读取熔断状态失败，按未熔断继续转发。CircuitKey={CircuitKey}",
+                circuitKey);
             return false;
         }
     }
 
     /// <summary>
     /// 安全地标记路由调用成功。
+    /// 参数为熔断身份键（多 Key 展开后用合成键，区分同一路由的不同 Key）。
     /// </summary>
-    private void SafeSucceedRoute(Guid routeId)
+    private void SafeSucceedRoute(Guid circuitKey)
     {
         try
         {
-            _circuitStore.Succeed(routeId);
+            _circuitStore.Succeed(circuitKey);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "更新路由成功状态失败，但请求继续返回。RouteId={RouteId}",
-                routeId);
+                "更新路由成功状态失败，但请求继续返回。CircuitKey={CircuitKey}",
+                circuitKey);
         }
     }
 
     /// <summary>
     /// 安全地累计路由失败状态。
+    /// 参数为熔断身份键（站点+Key+模型维度）；meta 携带站点/模型归属，供面板在候选移除后展示。
     /// </summary>
-    private void SafeBlockRoute(Guid routeId)
+    private void SafeBlockRoute(Guid circuitKey, CircuitRouteMeta? meta = null)
     {
         try
         {
-            _circuitStore.Block(routeId);
+            _circuitStore.Block(circuitKey, meta);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex,
-                "更新路由失败状态失败，但继续尝试后续路由。RouteId={RouteId}",
-                routeId);
+                "更新路由失败状态失败，但继续尝试后续路由。CircuitKey={CircuitKey}",
+                circuitKey);
         }
     }
 
@@ -897,7 +1290,9 @@ public sealed partial class OpenAiProxyController
         string actualProtocolType,
         string preparedRequestBody,
         ProxyForwardResult result,
-        int requestBodyLength)
+        int requestBodyLength,
+        string? siteName = null,
+        string? forwardingMode = null)
     {
         // 只有异常（失败/中断）才输出到控制台，正常请求不再刷屏
         if (result.Success && !result.IsStreamInterrupted) return;
@@ -915,7 +1310,9 @@ public sealed partial class OpenAiProxyController
                 result.IsStreamInterrupted,
                 result.TotalDurationMs,
                 requestBodyLength,
-                result.ResponseBody?.Length ?? 0));
+                result.ResponseBody?.Length ?? 0,
+                siteName,
+                forwardingMode));
         }
         catch
         {
