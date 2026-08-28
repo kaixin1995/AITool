@@ -3,26 +3,26 @@ using SqlSugar;
 namespace AITool.Domain.Models;
 
 /// <summary>
-/// 表示模型库中的一条统一模型定义，用于在不同站点、路由和检测场景中复用同一套模型标识。
+/// 表示模型库中的一项定义，用于集中维护可供代理和检测使用的模型名称及其显示信息。
 /// </summary>
 [SugarTable("ModelLibraryItems")]
 [SugarIndex("UX_ModelLibraryItems_ModelName", nameof(ModelName), OrderByType.Asc, true)]
 public sealed class ModelLibraryItem
 {
     /// <summary>
-    /// 模型唯一标识，用于在系统内部稳定引用该模型定义。
+    /// 模型库项唯一标识，用于在映射、健康监控等关联关系中引用该模型。
     /// </summary>
     [SugarColumn(IsPrimaryKey = true, IsIdentity = false, ColumnName = "Id")]
     public Guid Id { get; set; } = Guid.NewGuid();
 
     /// <summary>
-    /// 统一模型名称，作为系统内部识别模型的标准名称。
+    /// 模型名称，作为对外暴露和路由匹配的唯一标识，需保证全局唯一。
     /// </summary>
     [SugarColumn(Length = 200, IsNullable = false)]
     public string ModelName { get; set; } = string.Empty;
 
     /// <summary>
-    /// 页面展示名称，用于界面显示或对外说明时提供更友好的可读文本。
+    /// 显示名称，用于在界面上呈现更友好的模型标识，便于用户识别；列允许为空（split 分支语义：未设置时由展示层回退模型名）。
     /// </summary>
     [SugarColumn(Length = 200, IsNullable = true)]
     public string DisplayName { get; set; } = string.Empty;
@@ -49,13 +49,25 @@ public sealed class ModelLibraryItem
     public Guid? CompatibilityProfileId { get; set; }
 
     /// <summary>
+    /// 模型维度的默认客户端特征模拟预设（None | OpenCode | ClaudeCode | CodexCli | Antigravity | Custom）。
+    /// </summary>
+    [SugarColumn(Length = 50, IsNullable = false)]
+    public string ClientEmulation { get; set; } = "None";
+
+    /// <summary>
+    /// 模型维度的默认自定义转发请求头（JSON 格式）。
+    /// </summary>
+    [SugarColumn(IsNullable = true, ColumnDataType = "text")]
+    public string? ExtraHeadersJson { get; set; }
+
+    /// <summary>
     /// 标记该模型当前是否启用，禁用后不再参与代理路由和检测任务。
     /// </summary>
     [SugarColumn(IsNullable = false)]
     public bool IsEnabled { get; set; } = true;
 
     /// <summary>
-    /// 模型定义创建时间，用于保留基础数据的建立时间信息。
+    /// 模型库项配置创建时间，用于记录该模型定义何时被加入系统。
     /// </summary>
     public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
 }

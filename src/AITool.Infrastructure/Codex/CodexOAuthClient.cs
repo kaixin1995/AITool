@@ -1,8 +1,8 @@
-using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Codex;
+using AITool.Infrastructure.Common;
 
 namespace AITool.Infrastructure.Codex;
 
@@ -45,7 +45,7 @@ public sealed class CodexOAuthClient : ICodexOAuthClient
     }
 
     /// <inheritdoc />
-    public string BuildAuthorizeUrl(string state, string verifier)
+    public async Task<string> BuildAuthorizeUrlAsync(string state, string verifier, CancellationToken cancellationToken = default)
     {
         var challenge = GenerateCodeChallenge(verifier);
 
@@ -65,7 +65,7 @@ public sealed class CodexOAuthClient : ICodexOAuthClient
         };
 
         using var content = new FormUrlEncodedContent(parameters);
-        var query = content.ReadAsStringAsync().Result;
+        var query = await content.ReadAsStringAsync(cancellationToken);
         return $"{AuthURL}?{query}";
     }
 
@@ -84,16 +84,15 @@ public sealed class CodexOAuthClient : ICodexOAuthClient
         return await PostTokenEndpointAsync(parameters, cancellationToken);
     }
 
-    // —— single-flight：同一 refresh_token 并发只触发一次真实上游请求 ——
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _refreshLocks = new();
+    /// <summary>
+    /// 同一 refresh_token 跨 transient 客户端实例只触发一次真实上游请求。
+    /// </summary>
+    private static readonly KeyedAsyncLock RefreshLocks = new();
 
     /// <inheritdoc />
     public async Task<CodexTokenSet> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken)
     {
-        // 同一 refresh_token 串行化，避免并发重复打上游（CPA 用 singleflight.Group 达到同样目的）
-        var gate = _refreshLocks.GetOrAdd(refreshToken, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken);
-        try
+        using (await RefreshLocks.WaitAsync(refreshToken, cancellationToken))
         {
             // 注意刷新 scope 与授权不同：openid profile email，无 offline_access（CPA openai_auth.go:210-278）
             var parameters = new Dictionary<string, string?>
@@ -105,17 +104,6 @@ public sealed class CodexOAuthClient : ICodexOAuthClient
             };
 
             return await PostTokenEndpointAsync(parameters, cancellationToken);
-        }
-        finally
-        {
-            gate.Release();
-            // 清理无竞争的 entry，避免 token 轮换后旧 SemaphoreSlim 泄漏。
-            // 仅当此刻空闲（CurrentCount==1，即无人等待）才移除；并发等待中则保留复用。
-            // 用 CompareExchange 风格：先判断空闲再 TryRemove，移除成功才 Dispose（避免误释放正在等待的信号量）。
-            if (gate.CurrentCount == 1 && _refreshLocks.TryRemove(refreshToken, out var removed) && ReferenceEquals(removed, gate))
-            {
-                removed.Dispose();
-            }
         }
     }
 

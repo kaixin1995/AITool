@@ -1,8 +1,9 @@
 using AITool.Infrastructure.Proxy;
-using System.Collections.Concurrent;
 using System.Net.Http.Headers;
+using AITool.Application.Accounts;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.Caching.Memory;
@@ -18,11 +19,11 @@ namespace AITool.Admin.Services;
 /// 5 小时窗口(18000s)与周窗口(604800s)。
 /// </para>
 /// </summary>
-public sealed class CodexQuotaService : ICodexQuotaService
+public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvider
 {
     // wham/usage 端点（codex-patrol 同款）
     private const string UsageUrl = "https://chatgpt.com/backend-api/wham/usage";
-    private const string UserAgent = "codex_cli_rs/0.133.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
+    private const string UserAgent = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
 
     /// <summary>结果缓存 TTL（防抖）。</summary>
     private static readonly TimeSpan ResultCacheTtl = TimeSpan.FromSeconds(30);
@@ -30,19 +31,17 @@ public sealed class CodexQuotaService : ICodexQuotaService
     private readonly HttpClient _httpClient;
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
-    private readonly AdminCacheInvalidationService _adminCacheInvalidation;
     private readonly IMemoryCache _resultCache;
     private readonly CodexCredentialRefreshService _credentialRefreshService;
     private readonly ILogger<CodexQuotaService> _logger;
 
-    /// <summary>single-flight：同 accountId 并发只一次真实请求。</summary>
-    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _locks = new();
+    /// <summary>single-flight：同 accountId 并发只一次真实请求。KeyedAsyncLock 会在账号不再使用时回收锁条目。</summary>
+    private static readonly KeyedAsyncLock Locks = new();
 
     public CodexQuotaService(
         HttpClient httpClient,
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
-        AdminCacheInvalidationService adminCacheInvalidation,
         IMemoryCache resultCache,
         CodexCredentialRefreshService credentialRefreshService,
         ILogger<CodexQuotaService> logger)
@@ -50,10 +49,140 @@ public sealed class CodexQuotaService : ICodexQuotaService
         _httpClient = httpClient;
         _dbContext = dbContext;
         _metadataCache = metadataCache;
-        _adminCacheInvalidation = adminCacheInvalidation;
         _resultCache = resultCache;
         _credentialRefreshService = credentialRefreshService;
         _logger = logger;
+    }
+
+    public string ProviderKey => "codex";
+
+    public async Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken)
+    {
+        var accounts = await _dbContext.CodexAccounts
+            .Where(a => !a.DisabledByFeatureToggle)
+            .OrderBy(a => a.LastQuotaCheckedAt)
+            .ToListAsync(cancellationToken);
+
+        return accounts.Select(ToQuotaTarget).ToList();
+    }
+
+    public AccountQuotaSnapshot? ParseCachedQuota(string rawJson)
+    {
+        if (string.IsNullOrWhiteSpace(rawJson)) return null;
+
+        try
+        {
+            var (planType, windows) = CodexUsageParser.Parse(rawJson);
+            return new AccountQuotaSnapshot
+            {
+                Success = windows.Count > 0,
+                PlanType = planType,
+                RawJson = rawJson,
+                Windows = windows.Select(ToQuotaWindow).ToList(),
+            };
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    public async Task<AccountQuotaSnapshot> QueryAsync(
+        AccountQuotaTarget account,
+        bool forceRefresh,
+        CancellationToken cancellationToken)
+    {
+        var current = (await _dbContext.CodexAccounts
+            .Where(a => a.Id == account.AccountId)
+            .ToListAsync(cancellationToken))
+            .FirstOrDefault();
+
+        if (current is null)
+        {
+            return new AccountQuotaSnapshot
+            {
+                Success = false,
+                Error = "账号不存在",
+                CheckedAt = DateTimeOffset.UtcNow,
+            };
+        }
+
+        return ToQuotaSnapshot(await QueryAsync(current, forceRefresh, cancellationToken));
+    }
+
+    public async Task SetEnabledAsync(
+        AccountQuotaTarget account,
+        bool enabled,
+        string reason,
+        CancellationToken cancellationToken)
+    {
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        var current = (await client.Queryable<CodexAccount>()
+            .Where(a => a.Id == account.AccountId)
+            .ToListAsync(cancellationToken))
+            .FirstOrDefault();
+        if (current is null) return;
+
+        if (enabled)
+        {
+            current.IsEnabled = true;
+            if (string.Equals(reason, "quota-recovered", StringComparison.OrdinalIgnoreCase))
+            {
+                current.ManuallyDisabled = false;
+            }
+            if (string.Equals(reason, "feature-toggle-on", StringComparison.OrdinalIgnoreCase))
+            {
+                current.DisabledByFeatureToggle = false;
+            }
+        }
+        else
+        {
+            current.IsEnabled = false;
+            if (string.Equals(reason, "feature-toggle-off", StringComparison.OrdinalIgnoreCase))
+            {
+                current.DisabledByFeatureToggle = account.IsEnabled;
+            }
+        }
+
+        await client.Updateable(current)
+            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled, x.DisabledByFeatureToggle })
+            .ExecuteCommandAsync(cancellationToken);
+        await SetLinkedSiteEnabledAsync(client, current.LinkedSiteId, enabled, cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateCodexAccounts();
+    }
+
+    public async Task ApplyFeatureToggleAsync(bool enabled, CancellationToken cancellationToken)
+    {
+        using var client = _dbContext.Client.CopyNew();
+        client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+        var accounts = await client.Queryable<CodexAccount>().ToListAsync(cancellationToken);
+
+        foreach (var account in accounts)
+        {
+            if (!enabled)
+            {
+                account.DisabledByFeatureToggle = account.IsEnabled;
+                account.IsEnabled = false;
+                await client.Updateable(account)
+                    .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
+                    .ExecuteCommandAsync(cancellationToken);
+                await SetLinkedSiteEnabledAsync(client, account.LinkedSiteId, false, cancellationToken);
+            }
+            else if (account.DisabledByFeatureToggle)
+            {
+                account.IsEnabled = true;
+                account.DisabledByFeatureToggle = false;
+                await client.Updateable(account)
+                    .UpdateColumns(x => new { x.IsEnabled, x.DisabledByFeatureToggle })
+                    .ExecuteCommandAsync(cancellationToken);
+                await SetLinkedSiteEnabledAsync(client, account.LinkedSiteId, true, cancellationToken);
+            }
+        }
+
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateCodexAccounts();
     }
 
     /// <inheritdoc />
@@ -67,87 +196,57 @@ public sealed class CodexQuotaService : ICodexQuotaService
             return cached;
         }
 
-        // single-flight 锁内做上游 HTTP + DB 写；推送 Core 的 HTTP 挪到锁外，避免持锁等 Core 响应。
-        var (info, siteDisabled) = await QueryUnderSingleFlightAsync(account, forceRefresh, cacheKey, cancellationToken);
-
-        // 锁外：仅当账号被自动禁用且 Site 状态变更时，才推送 Core。
-        if (siteDisabled)
-        {
-            try
-            {
-                await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "推送 Core 路由缓存失效失败（账号 {Id} 自动禁用后）", account.Id);
-            }
-        }
-
-        return info;
-    }
-
-    /// <summary>
-    /// single-flight 锁内的核心查询逻辑。返回额度结果 + 是否触发了 Site 禁用（需锁外推送 Core）。
-    /// 上游 HTTP 必须在锁内（single-flight 的目的就是防重复打上游）；DB 写也在锁内保护并发。
-    /// </summary>
-    private async Task<(CodexQuotaInfo Info, bool SiteDisabled)> QueryUnderSingleFlightAsync(
-        CodexAccount account, bool forceRefresh, string cacheKey, CancellationToken cancellationToken)
-    {
-        var gate = _locks.GetOrAdd(account.Id, _ => new SemaphoreSlim(1, 1));
-        await gate.WaitAsync(cancellationToken);
-        try
+        // single-flight
+        using (await Locks.WaitAsync(account.Id.ToString("N"), cancellationToken))
         {
             // 二次检查缓存（等待期间可能已被并发填充）
-            if (!forceRefresh && _resultCache.TryGetValue(cacheKey, out CodexQuotaInfo? cached) && cached != null)
+            if (!forceRefresh && _resultCache.TryGetValue(cacheKey, out cached) && cached != null)
             {
-                return (cached, false);
+                return cached;
             }
 
             var info = await QueryUpstreamAsync(account, cancellationToken);
 
-            // 持久化（用 CopyNew 独立连接写入）
-            bool siteDisabled = false;
-            try
+            // 失败响应不覆盖上一次成功额度，避免“刷新时间已更新但额度窗口为空”。
+            if (info.Success)
             {
-                using var writeClient = _dbContext.Client.CopyNew();
-                writeClient.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-                account.LastQuotaRawJson = info.RawJson;
-                account.LastQuotaCheckedAt = DateTimeOffset.UtcNow;
-                await writeClient.Updateable(account).ExecuteCommandAsync(cancellationToken);
-                // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
-                _metadataCache.InvalidateCodexAccounts();
-
-                // 自动禁用判定：任一窗口使用百分比达到全局阈值时禁用（阈值用百分比 0-100 表达）
-                var runtime = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
-                if (info.Success && account.IsEnabled)
+                // 持久化（用 CopyNew 独立连接写入）
+                try
                 {
-                    var maxPercent = GetMaxUsedPercent(info);
-                    var threshold = (double)runtime.CodexAutoDisableThresholdPercent;
-                    if (maxPercent.HasValue && maxPercent.Value >= threshold)
+                    using var writeClient = _dbContext.Client.CopyNew();
+                    writeClient.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+                    account.LastQuotaRawJson = info.RawJson;
+                    account.LastQuotaCheckedAt = DateTimeOffset.UtcNow;
+                    // 只更新本次变更的列：account 可能来自 30s 元数据缓存（旧快照），整行回写会把
+                    // 后台 token 刷新服务刚写入的 AccessToken/TokenExpiresAt 回滚成旧值。
+                    await writeClient.Updateable(account)
+                        .UpdateColumns(x => new { x.LastQuotaRawJson, x.LastQuotaCheckedAt })
+                        .ExecuteCommandAsync(cancellationToken);
+                    // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
+                    _metadataCache.InvalidateCodexAccounts();
+
+                    // 自动禁用判定：任一窗口使用百分比达到全局阈值时禁用（阈值用百分比 0-100 表达）
+                    var runtime = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
+                    if (account.IsEnabled)
                     {
-                        siteDisabled = await DisableAccountAsync(account, cancellationToken,
-                            $"额度使用 {maxPercent.Value:F1}% 达到全局阈值 {threshold}");
+                        var maxPercent = GetMaxUsedPercent(info);
+                        var threshold = (double)runtime.OAuthAutoDisableThresholdPercent;
+                        if (maxPercent.HasValue && maxPercent.Value >= threshold)
+                        {
+                            await DisableAccountAsync(account, cancellationToken,
+                                $"额度使用 {maxPercent.Value:F1}% 达到全局阈值 {threshold}");
+                        }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Persist codex quota result failed for account {Id}", account.Id);
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Persist codex quota result failed for account {Id}", account.Id);
+                }
             }
 
             // 写缓存（无论成功失败都缓存 30s，避免失败风暴）
             _resultCache.Set(cacheKey, info, ResultCacheTtl);
-            return (info, siteDisabled);
-        }
-        finally
-        {
-            gate.Release();
-            // 清理无竞争的 entry：账号被删除后，其 SemaphoreSlim 若不清理会随增删累积泄漏。
-            // 仅当此刻空闲（CurrentCount==1）才移除；并发等待中则保留复用。
-            if (gate.CurrentCount == 1 && _locks.TryRemove(account.Id, out var removed) && ReferenceEquals(removed, gate))
-            {
-                removed.Dispose();
-            }
+            return info;
         }
     }
 
@@ -191,6 +290,7 @@ public sealed class CodexQuotaService : ICodexQuotaService
                         return await QueryUpstreamAsync(account, ct, false);
                     }
                 }
+
                 info.Success = false;
                 info.Error = $"上游返回 {(int)response.StatusCode}";
                 return info;
@@ -221,27 +321,80 @@ public sealed class CodexQuotaService : ICodexQuotaService
 
     /// <summary>
     /// 获取用于自动禁用判定的已使用百分比。
-    /// 规则：优先看 5 小时窗口；没有 5 小时才看周窗口。只看一个，不叠加。
+    /// 任一额度窗口达到阈值都应触发禁用，因此取所有窗口中的最大值。
     /// </summary>
     private static double? GetMaxUsedPercent(CodexQuotaInfo info)
+        => info.Windows.Count == 0 ? null : info.Windows.Max(w => w.UsedPercent);
+
+    private static AccountQuotaTarget ToQuotaTarget(CodexAccount account) => new()
     {
-        var fiveHour = info.Windows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
-        if (fiveHour.HasValue) return fiveHour;
-        return info.Windows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;
+        ProviderKey = "codex",
+        AccountId = account.Id,
+        DisplayName = account.DisplayName,
+        LinkedSiteId = account.LinkedSiteId,
+        IsEnabled = account.IsEnabled,
+        IsQuotaCooling = account.IsQuotaCooling,
+        DisabledByFeatureToggle = account.DisabledByFeatureToggle,
+        ManuallyDisabled = account.ManuallyDisabled,
+        TokenExpiresAt = account.TokenExpiresAt,
+        LastQuotaCheckedAt = account.LastQuotaCheckedAt,
+        LastQuotaRawJson = account.LastQuotaRawJson,
+    };
+
+    private static AccountQuotaSnapshot ToQuotaSnapshot(CodexQuotaInfo info) => new()
+    {
+        Success = info.Success,
+        Error = info.Error,
+        PlanType = info.PlanType,
+        RawJson = info.RawJson,
+        CheckedAt = info.CheckedAt,
+        Windows = info.Windows.Select(ToQuotaWindow).ToList(),
+    };
+
+    private static AccountQuotaWindow ToQuotaWindow(CodexQuotaWindow window) => new()
+    {
+        Id = window.Id,
+        Label = window.Label,
+        UsedPercent = window.UsedPercent,
+        ResetLabel = window.ResetLabel,
+        ResetAtUtc = window.ResetAtUtc,
+        LimitWindowSeconds = window.LimitWindowSeconds,
+    };
+
+    private static AccountQuotaWindow ToQuotaWindow(CodexUsageParser.Window window) => new()
+    {
+        Id = window.Id,
+        Label = window.Label,
+        UsedPercent = window.UsedPercent,
+        ResetLabel = window.ResetLabel,
+        ResetAtUtc = window.ResetAtUtc,
+        LimitWindowSeconds = window.LimitWindowSeconds,
+    };
+
+    private static async Task SetLinkedSiteEnabledAsync(
+        SqlSugar.ISqlSugarClient client,
+        Guid linkedSiteId,
+        bool enabled,
+        CancellationToken cancellationToken)
+    {
+        var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(linkedSiteId);
+        if (site is null || site.IsEnabled == enabled) return;
+
+        site.IsEnabled = enabled;
+        await client.Updateable(site)
+            .UpdateColumns(x => new { x.IsEnabled })
+            .ExecuteCommandAsync(cancellationToken);
     }
 
-    /// <summary>
-    /// 禁用账号 + 关联隐藏 Site。仅做 DB 写，返回是否有 Site 状态变更。
-    /// 缓存失效（含 HTTP 推送 Core）由调用方在 single-flight 锁外统一处理，避免持锁等 HTTP。
-    /// </summary>
-    /// <returns>true 表示 Site.IsEnabled 被改（需要推送 Core）；false 表示 Site 本就禁用。</returns>
-    private async Task<bool> DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)
+    private async Task DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)
     {
-        // 用 CopyNew 独立连接写入
+        // 用 CopyNew 独立连接写入；只更新目标列，避免整行覆盖并发写入的其他字段。
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         account.IsEnabled = false;
-        await client.Updateable(account).ExecuteCommandAsync(ct);
+        await client.Updateable(account)
+            .UpdateColumns(x => new { x.IsEnabled })
+            .ExecuteCommandAsync(ct);
 
         var site = await client.Queryable<Domain.Sites.Site>().InSingleAsync(account.LinkedSiteId);
         if (site != null && site.IsEnabled)
@@ -250,10 +403,8 @@ public sealed class CodexQuotaService : ICodexQuotaService
             await client.Updateable(site).ExecuteCommandAsync(ct);
         }
 
-        // CodexAccounts 缓存只在 Admin 端（Core 不缓存账号实体），本地内存失效即可，无 HTTP。
         _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateCodexAccounts();
         _logger.LogWarning("Codex account {Id} auto-disabled: {Reason}", account.Id, reason);
-        return site != null && !site.IsEnabled;
     }
 }

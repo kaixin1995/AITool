@@ -16,9 +16,10 @@ builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
 
-// Core 宿主版本号，与 Web 宿主区分。
-var applicationVersion = "1.0.1.7-core";
-builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
+// Core 宿主版本号：优先读程序集元数据，编译时间从 AssemblyMetadata "BuildTimestamp" 读取（构建期注入）。
+var applicationVersion = ReadApplicationVersion();
+var buildTime = ReadBuildTimestamp() ?? DateTimeOffset.UtcNow;
+builder.Services.AddSingleton(new AppVersionInfo(applicationVersion, buildTime));
 
 // Core 宿主默认监听 5029 端口（代理主端口），与 Admin 的 5030 端口分开。
 var serverPort = builder.Configuration.GetValue<int?>("CoreServer:Port") ?? builder.Configuration.GetValue<int?>("Server:Port") ?? 5029;
@@ -187,6 +188,55 @@ app.MapGet("/health", () => Results.Ok(new { status = "ok" }));
 app.MapControllers();
 
 app.Run();
+
+// 版本号优先从程序集元数据（AssemblyInformationalVersion / AssemblyFileVersion / AssemblyVersion）读取（由 csproj 配置）。
+static string ReadApplicationVersion()
+{
+    var assembly = typeof(Program).Assembly;
+    var infoVersionAttr = assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+        .FirstOrDefault();
+
+    if (!string.IsNullOrWhiteSpace(infoVersionAttr?.InformationalVersion))
+    {
+        // 去除可能的 git commit hash 后缀 (例如 1.0.1.10+abc1234)
+        var cleanVersion = infoVersionAttr.InformationalVersion.Split('+')[0].Trim();
+        if (!string.IsNullOrWhiteSpace(cleanVersion))
+        {
+            return cleanVersion;
+        }
+    }
+
+    var fileVersionAttr = assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyFileVersionAttribute), false)
+        .OfType<System.Reflection.AssemblyFileVersionAttribute>()
+        .FirstOrDefault();
+
+    if (!string.IsNullOrWhiteSpace(fileVersionAttr?.Version))
+    {
+        return fileVersionAttr.Version.Trim();
+    }
+
+    var asmVersion = assembly.GetName().Version;
+    return asmVersion is not null ? asmVersion.ToString() : "1.0.0.0";
+}
+
+// 从主程序集元数据读取编译时间戳（csproj 构建时注入的 AssemblyMetadata "BuildTimestamp"）。
+static DateTimeOffset? ReadBuildTimestamp()
+{
+    var attr = typeof(Program).Assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+        .OfType<System.Reflection.AssemblyMetadataAttribute>()
+        .FirstOrDefault(a => string.Equals(a.Key, "BuildTimestamp", StringComparison.OrdinalIgnoreCase));
+    if (attr is null || string.IsNullOrWhiteSpace(attr.Value))
+    {
+        return null;
+    }
+    return DateTimeOffset.TryParse(attr.Value, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out var ts)
+        ? ts
+        : null;
+}
 
 /// <summary>
 /// 程序入口。

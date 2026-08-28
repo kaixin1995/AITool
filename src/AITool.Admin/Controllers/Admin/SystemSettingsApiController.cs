@@ -1,7 +1,7 @@
-using AITool.Application.Operations;
-using AITool.Infrastructure.Proxy;
 using AITool.Application.Common;
+using AITool.Application.Operations;
 using AITool.Admin.Services;
+using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Admin.Controllers.Admin;
@@ -30,9 +30,9 @@ public sealed class SystemSettingsApiController : ControllerBase
     /// </summary>
     private readonly RouteCircuitStateStore _circuitStore;
     /// <summary>
-    /// 后台缓存失效服务（双宿主下推送到 Core）。
+    /// 统计查询执行器（清空 UsageLogs 后需失效其缓存）。
     /// </summary>
-    private readonly AdminCacheInvalidationService _adminCacheInvalidation;
+    private readonly AnalyticsBackgroundQueryExecutor _analyticsQueryExecutor;
 
     /// <summary>
     /// 初始化系统设置 API 控制器。
@@ -41,12 +41,12 @@ public sealed class SystemSettingsApiController : ControllerBase
         ISystemRuntimeSettingsService systemRuntimeSettingsService,
         ProxyRequestMetadataCache metadataCache,
         RouteCircuitStateStore circuitStore,
-        AdminCacheInvalidationService adminCacheInvalidation)
+        AnalyticsBackgroundQueryExecutor analyticsQueryExecutor)
     {
         _systemRuntimeSettingsService = systemRuntimeSettingsService;
         _metadataCache = metadataCache;
         _circuitStore = circuitStore;
-        _adminCacheInvalidation = adminCacheInvalidation;
+        _analyticsQueryExecutor = analyticsQueryExecutor;
     }
 
     /// <summary>
@@ -68,14 +68,14 @@ public sealed class SystemSettingsApiController : ControllerBase
             usageLogRetentionDays = settings.UsageLogRetentionDays,
             usageLogAutoCleanupEnabled = settings.UsageLogAutoCleanupEnabled,
             developerFeaturesEnabled = settings.DeveloperFeaturesEnabled,
-            conversationLogEnabled = settings.ConversationLogEnabled,
             concurrencyMode = settings.ConcurrencyMode,
             concurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
-            codexFeaturesEnabled = settings.CodexFeaturesEnabled,
-            codexInspectionEnabled = settings.CodexInspectionEnabled,
-            codexInspectionIntervalSeconds = settings.CodexInspectionIntervalSeconds,
-            codexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours,
-            codexAutoDisableThresholdPercent = settings.CodexAutoDisableThresholdPercent,
+            oauthFeaturesEnabled = settings.OAuthFeaturesEnabled,
+            oauthInspectionEnabled = settings.OAuthInspectionEnabled,
+            oauthInspectionIntervalSeconds = settings.OAuthInspectionIntervalSeconds,
+            oauthQuotaMaxCacheHours = settings.OAuthQuotaMaxCacheHours,
+            oauthAutoDisableThresholdPercent = settings.OAuthAutoDisableThresholdPercent,
+            oauthInspectionCacheEnabled = settings.OAuthInspectionCacheEnabled,
             lastUsageLogPrunedAt = settings.LastUsageLogPrunedAt,
             lastUsageLogPrunedCount = settings.LastUsageLogPrunedCount
         }));
@@ -91,21 +91,23 @@ public sealed class SystemSettingsApiController : ControllerBase
         // UpdateAsync 内部对各数值字段有下限保护，无效值会被夹紧，无需在此重复校验。
         var settings = await _systemRuntimeSettingsService.UpdateAsync(request, cancellationToken);
 
-        await _adminCacheInvalidation.InvalidateRuntimeSettingsAsync(cancellationToken);
+        _metadataCache.InvalidateRuntimeSettings();
         _circuitStore.UpdateOptions(
             TimeSpan.FromMinutes(settings.CircuitBreakerRecoveryMinutes),
             settings.CircuitBreakerFailureThreshold);
         // Codex 功能总开关联动了托管站点的启用状态，需同步失效路由/模型缓存，使转发链路立即感知。
-        await _adminCacheInvalidation.InvalidateRuntimeRouteTargetsAsync(cancellationToken);
-        await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
+        _metadataCache.InvalidateRuntimeRouteTargets();
+        _metadataCache.InvalidateModelMetadata();
 
         return Ok(ApiResponse.Ok("设置已保存"));
     }
 
     /// <summary>
     /// 按条件清空使用日志。
-    /// <param name="clearAll">true 表示清空全部；false 表示按 source/时间范围筛选清空。</param>
     /// </summary>
+    /// <param name="clearAll">true 表示清空全部；false 表示按 source/时间范围筛选清空。</param>
+    /// <param name="request">按条件清空的筛选参数（clearAll=false 时生效）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
     [HttpPost("clear-usage-logs")]
     public async Task<IActionResult> ClearUsageLogs([FromQuery] bool clearAll, [FromBody] ClearUsageLogsRequest? request, CancellationToken cancellationToken)
     {
@@ -115,8 +117,8 @@ public sealed class SystemSettingsApiController : ControllerBase
 
         var deletedCount = await _systemRuntimeSettingsService.ClearUsageLogsAsync(effectiveRequest, cancellationToken);
 
-        await _adminCacheInvalidation.InvalidateRuntimeSettingsAsync(cancellationToken);
-        
+        _metadataCache.InvalidateRuntimeSettings();
+        _analyticsQueryExecutor.InvalidateAll();
 
         return Ok(ApiResponse.Ok(new { deletedCount }, clearAll ? $"已清空全部 UsageLogs，共 {deletedCount} 条" : $"已清空 {deletedCount} 条 UsageLogs"));
     }

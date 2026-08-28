@@ -19,7 +19,7 @@ public interface ISystemRuntimeSettingsService
     Task<SystemRuntimeSettings> UpdateAsync(UpdateSystemRuntimeSettingsRequest request, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// 从当前权威数据源构建一份完整的 Core 运行时配置快照。
+    /// 从当前权威数据源构建一份完整的 Core 运行时配置快照（split 双宿主：Admin 是配置唯一权威源）。
     /// </summary>
     Task<CoreRuntimeConfigSnapshot> BuildCoreRuntimeConfigSnapshotAsync(long configVersion, CancellationToken cancellationToken = default);
 
@@ -38,6 +38,11 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     /// 控制代理转发请求的超时时间，单位为秒。
     /// </summary>
     public int ProxyRequestTimeoutSeconds { get; set; }
+
+    /// <summary>
+    /// 流式转发空闲超时（秒），相邻两次读到上游数据的最大间隔；0 表示不启用（默认）。
+    /// </summary>
+    public int ProxyStreamIdleTimeoutSeconds { get; set; }
 
     /// <summary>
     /// 控制代理转发在失败时的重试次数。
@@ -85,7 +90,7 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public bool DeveloperFeaturesEnabled { get; set; }
 
     /// <summary>
-    /// 控制对话记录页面及记录写入功能是否启用。
+    /// 控制对话记录页面及记录写入功能是否启用（split 分支）。
     /// </summary>
     public bool ConversationLogEnabled { get; set; }
 
@@ -100,30 +105,36 @@ public sealed class UpdateSystemRuntimeSettingsRequest
     public int ConcurrencyQueueTimeoutSeconds { get; set; }
 
     /// <summary>
-    /// Codex 功能总开关（含 OAuth 账号、凭证导入、巡检）。关闭后隐藏 Codex 页面并禁用所有 Codex 托管站点。
+    /// OAuth 账号功能总开关（含 OAuth 登录账号、凭证导入和额度巡检）。
+    /// 关闭后隐藏 OAuth 页面并禁用所有托管账号站点。
     /// </summary>
-    public bool CodexFeaturesEnabled { get; set; }
+    public bool OAuthFeaturesEnabled { get; set; }
 
     /// <summary>
-    /// Codex 巡检自动执行开关。
+    /// OAuth 账号额度巡检自动执行开关。
     /// </summary>
-    public bool CodexInspectionEnabled { get; set; }
+    public bool OAuthInspectionEnabled { get; set; }
 
     /// <summary>
-    /// Codex 巡检周期（秒），下限 30。
+    /// OAuth 账号额度巡检周期（秒），下限 30。
     /// </summary>
-    public int CodexInspectionIntervalSeconds { get; set; }
+    public int OAuthInspectionIntervalSeconds { get; set; }
 
     /// <summary>
-    /// Codex 额度缓存最大小时数，超过则强制真实刷新。
+    /// OAuth 账号额度缓存最大小时数，超过则强制真实刷新。
     /// </summary>
-    public int CodexQuotaMaxCacheHours { get; set; }
+    public int OAuthQuotaMaxCacheHours { get; set; }
 
     /// <summary>
-    /// Codex 自动禁用阈值（百分比，1-100）。
+    /// OAuth 账号自动禁用阈值（百分比，1-100）。
     /// 当任一关键额度窗口的已使用百分比达到该阈值时，账号自动禁用。
     /// </summary>
-    public int CodexAutoDisableThresholdPercent { get; set; }
+    public int OAuthAutoDisableThresholdPercent { get; set; }
+
+    /// <summary>
+    /// OAuth 账号额度巡检缓存复用开关。关闭时每轮巡检都真实刷新额度；开启时未被使用的账号沿用缓存快照。
+    /// </summary>
+    public bool OAuthInspectionCacheEnabled { get; set; }
 }
 
 /// <summary>

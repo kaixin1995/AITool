@@ -8,7 +8,8 @@ namespace AITool.Domain.Proxy;
 public sealed class CompatibilityRule
 {
     /// <summary>
-    /// 操作类型：strip（剔除字段）/ rename（重命名顶层字段）/ default（为缺失字段补默认值）。
+    /// 操作类型：strip（剔除字段）/ rename（重命名顶层字段）/ default（为缺失字段补默认值）/
+    /// keep_reasoning（Anthropic→OpenAI 转换时保留 thinking 为 reasoning_content，deepseek 等上游工具调用时要求回传）。
     /// </summary>
     [JsonPropertyName("op")]
     public string Op { get; set; } = "strip";

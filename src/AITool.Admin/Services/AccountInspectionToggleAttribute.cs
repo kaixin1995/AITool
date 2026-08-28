@@ -5,14 +5,13 @@ using Microsoft.AspNetCore.Mvc.Filters;
 namespace AITool.Admin.Services;
 
 /// <summary>
-/// 校验 Codex 巡检功能是否开启；关闭时返回 404，禁止通过直接调用 API 绕过页面隐藏。
-/// 仅用于巡检相关 action，不影响其它 Codex 账号管理接口。
+/// 校验通用账号额度巡检开关；关闭时返回 404，避免通过直接调用 API 绕过页面开关。
 /// </summary>
-public sealed class CodexInspectionToggleAttribute : ActionFilterAttribute
+public sealed class AccountInspectionToggleAttribute : ActionFilterAttribute
 {
     private readonly ISystemRuntimeSettingsService _runtimeSettings;
 
-    public CodexInspectionToggleAttribute(ISystemRuntimeSettingsService runtimeSettings)
+    public AccountInspectionToggleAttribute(ISystemRuntimeSettingsService runtimeSettings)
     {
         _runtimeSettings = runtimeSettings;
     }
@@ -20,9 +19,9 @@ public sealed class CodexInspectionToggleAttribute : ActionFilterAttribute
     public override async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
         var settings = await _runtimeSettings.GetOrCreateAsync(context.HttpContext.RequestAborted);
-        if (!settings.CodexFeaturesEnabled || !settings.CodexInspectionEnabled)
+        if (!settings.OAuthFeaturesEnabled || !settings.OAuthInspectionEnabled)
         {
-            context.Result = new NotFoundObjectResult(new { message = "Codex 巡检未启用" });
+            context.Result = new NotFoundObjectResult(new { message = "账号额度巡检未启用" });
             return;
         }
 

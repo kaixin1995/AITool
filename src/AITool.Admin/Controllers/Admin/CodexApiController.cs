@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
+using AITool.Application.Accounts;
 using AITool.Application.Codex;
 using AITool.Application.Common;
 using AITool.Domain.Codex;
@@ -12,13 +13,14 @@ using Microsoft.AspNetCore.Mvc;
 namespace AITool.Admin.Controllers.Admin;
 
 /// <summary>
-/// Codex 账号管理 API。集中暴露 OAuth 登录、凭证导入、账号列表、额度查询/重置、启用禁用、删除、编辑等。
-/// 路由前缀 /api/admin/codex，自动受 /api/admin/* 鉴权保护。
-/// 受 Codex 功能总开关保护：关闭时全部返回 404。
+/// OAuth 账号管理 API。集中暴露 OAuth 登录、凭证导入、账号列表、额度查询/重置、启用禁用、删除、编辑等。
+/// 规范路由前缀为 /api/admin/oauth；/api/admin/codex 仅作为旧客户端兼容别名。
+/// 受 OAuth 账号功能总开关保护：关闭时全部返回 404。
 /// </summary>
 [ApiController]
+[Route("api/admin/oauth")]
 [Route("api/admin/codex")]
-[ServiceFilter(typeof(CodexFeatureToggleAttribute))]
+[ServiceFilter(typeof(OAuthFeatureToggleAttribute))]
 public sealed class CodexApiController : ControllerBase
 {
     // —— OAuth 会话暂存（state → verifier，TTL 10min）——
@@ -32,10 +34,9 @@ public sealed class CodexApiController : ControllerBase
     private readonly ICodexQuotaService _quotaService;
     private readonly ICodexQuotaCooldownService _cooldownService;
     private readonly ICodexResetCreditsService _resetCreditsService;
-    private readonly CodexInspectionService _inspectionService;
+    private readonly AccountQuotaInspectionService _inspectionService;
     private readonly ILogger<CodexApiController> _logger;
     private readonly ProxyRequestMetadataCache _metadataCache;
-    private readonly AdminCacheInvalidationService _adminCacheInvalidation;
 
     public CodexApiController(
         AppDbContext dbContext,
@@ -45,10 +46,9 @@ public sealed class CodexApiController : ControllerBase
         ICodexQuotaService quotaService,
         ICodexQuotaCooldownService cooldownService,
         ICodexResetCreditsService resetCreditsService,
-        CodexInspectionService inspectionService,
+        AccountQuotaInspectionService inspectionService,
         ILogger<CodexApiController> logger,
-        ProxyRequestMetadataCache metadataCache,
-        AdminCacheInvalidationService adminCacheInvalidation)
+        ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
         _oauth = oauth;
@@ -60,16 +60,15 @@ public sealed class CodexApiController : ControllerBase
         _inspectionService = inspectionService;
         _logger = logger;
         _metadataCache = metadataCache;
-        _adminCacheInvalidation = adminCacheInvalidation;
     }
 
     /// <summary>启动 OAuth 登录，返回授权 URL 与 state。</summary>
     [HttpPost("start-oauth")]
-    public IActionResult StartOAuth([FromBody] StartOAuthRequest? req)
+    public async Task<IActionResult> StartOAuth([FromBody] StartOAuthRequest? req, CancellationToken ct)
     {
         CleanupExpiredSessions();
         var (state, verifier) = _oauth.CreateOAuthSession();
-        var url = _oauth.BuildAuthorizeUrl(state, verifier);
+        var url = await _oauth.BuildAuthorizeUrlAsync(state, verifier, ct);
         Sessions[state] = new OAuthSession(state, verifier, DateTimeOffset.UtcNow.AddMinutes(10));
         return Ok(new { url, state });
     }
@@ -118,14 +117,14 @@ public sealed class CodexApiController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Codex OAuth code exchange failed");
+            _logger.LogWarning(ex, "OAuth code exchange failed");
             return BadRequest(new { message = "授权码交换失败：" + ex.Message });
         }
 
         var claims = CodexJwtParser.Parse(tokens.IdToken);
         var input = new CodexProvisionInput
         {
-            DisplayName = !string.IsNullOrWhiteSpace(req.DisplayName) ? req.DisplayName : (claims?.Email ?? "Codex 账号"),
+            DisplayName = !string.IsNullOrWhiteSpace(req.DisplayName) ? req.DisplayName : (claims?.Email ?? "OAuth 账号"),
             AccessToken = tokens.AccessToken,
             RefreshToken = tokens.RefreshToken,
             IdToken = tokens.IdToken,
@@ -166,7 +165,7 @@ public sealed class CodexApiController : ControllerBase
         {
             var input = new CodexProvisionInput
             {
-                DisplayName = r.DisplayName ?? "Codex 账号",
+                DisplayName = r.DisplayName ?? "OAuth 账号",
                 AccessToken = r.AccessToken ?? string.Empty,
                 RefreshToken = r.RefreshToken ?? string.Empty,
                 IdToken = r.IdToken ?? string.Empty,
@@ -187,7 +186,7 @@ public sealed class CodexApiController : ControllerBase
         return Ok(new { successes = summaries });
     }
 
-    /// <summary>列出全部 Codex 账号（含状态/额度缓存字段）。</summary>
+    /// <summary>列出全部 OAuth 账号（含状态/额度缓存字段）。</summary>
     [HttpGet("accounts")]
     public async Task<IActionResult> ListAccounts(CancellationToken ct)
     {
@@ -242,8 +241,7 @@ public sealed class CodexApiController : ControllerBase
             site.IsEnabled = account.IsEnabled;
             await _dbContext.UpdateAsync(site, ct);
         }
-        // 写 Site.IsEnabled 后必须推送到 Core，否则 Core 转发仍用旧启用状态。
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+        _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateCodexAccounts();
         return Ok(ToSummary(account));
     }
@@ -263,7 +261,7 @@ public sealed class CodexApiController : ControllerBase
         }
     }
 
-    /// <summary>编辑账号（支持修改名称与 refresh_token 凭证）。</summary>
+    /// <summary>编辑账号（当前仅支持修改名称）。</summary>
     [HttpPut("accounts/{id}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] UpdateAccountRequest req, CancellationToken ct)
     {
@@ -304,8 +302,7 @@ public sealed class CodexApiController : ControllerBase
                         site.ApiKey = tokens.AccessToken;
                         await _dbContext.UpdateAsync(site, ct);
                     }
-                    // 写 Site.ApiKey（新 token）后必须推送到 Core，否则 Core 转发仍用过期 token。
-                    await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+                    _metadataCache.InvalidateRouteTargets();
                     _metadataCache.InvalidateCodexAccounts();
                 }
                 catch (Exception ex)
@@ -358,8 +355,7 @@ public sealed class CodexApiController : ControllerBase
                 site.ApiKey = tokens.AccessToken;
                 await _dbContext.UpdateAsync(site, ct);
             }
-            // 写 Site.ApiKey（新 token）后必须推送到 Core，否则 Core 转发仍用过期 token。
-            await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+            _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateCodexAccounts();
             return Ok(ToSummary(account));
         }
@@ -388,28 +384,34 @@ public sealed class CodexApiController : ControllerBase
                 .ToListAsync(ct);
 
             var remoteNames = remoteModels.Select(m => m.Slug).ToList();
+            // 模型库的 ModelName 可能是用户自定义的对外名（不等于远端 slug），
+            // 需同时通过映射引用的 ModelLibraryItemId 加载，避免已导入的模型查不到。
+            var mappingModelIds = existingMappings.Where(m => m.ModelLibraryItemId != Guid.Empty).Select(m => m.ModelLibraryItemId).Distinct().ToList();
             var modelItems = await _dbContext.ModelLibraryItems
-                .Where(m => remoteNames.Contains(m.ModelName))
+                .Where(m => remoteNames.Contains(m.ModelName) || mappingModelIds.Contains(m.Id))
                 .ToListAsync(ct);
 
             // 使用 Dictionary 优化 Join，避免 O(n²) 复杂度
             var mappingDict = existingMappings.ToDictionary(m => m.RemoteModelName);
-            var modelItemDict = modelItems.ToDictionary(m => m.ModelName);
+            var modelItemByIdDict = modelItems.ToDictionary(m => m.Id);
 
             var result = new List<object>();
             foreach (var remote in remoteModels)
             {
                 mappingDict.TryGetValue(remote.Slug, out var mapping);
-                modelItemDict.TryGetValue(remote.Slug, out var modelItem);
+                // 通过映射的 ModelLibraryItemId 查找模型库记录（ModelName 可能是自定义名）
+                var modelItem = mapping is not null && modelItemByIdDict.TryGetValue(mapping.ModelLibraryItemId, out var mi)
+                    ? mi
+                    : modelItems.FirstOrDefault(m => m.ModelName == remote.Slug);
                 var hasValidImport = mapping != null && modelItem != null && mapping.ModelLibraryItemId == modelItem.Id;
 
                 result.Add(new
                 {
                     remoteModelName = remote.Slug,
-                    displayName = remote.DisplayName,
+                    displayName = remote.Slug,
                     existingMappingId = hasValidImport ? mapping!.Id : (Guid?)null,
                     isEnabled = hasValidImport && mapping!.IsEnabled,
-                    existingDisplayName = modelItem?.DisplayName
+                    existingDisplayName = modelItem?.ModelName != remote.Slug ? modelItem?.ModelName : null
                 });
             }
 
@@ -417,12 +419,12 @@ public sealed class CodexApiController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Fetch Codex models failed for account {AccountId}", id);
+            _logger.LogError(ex, "Fetch OAuth account models failed for account {AccountId}", id);
             return Ok(new { success = false, message = ex.Message });
         }
     }
 
-    /// <summary>导入选中的 Codex 模型（用户已在前端选择）。</summary>
+    /// <summary>导入选中的账号模型（用户已在前端选择）。</summary>
     [HttpPost("accounts/{id}/import-selected-models")]
     public async Task<IActionResult> ImportSelectedModels(Guid id, [FromBody] ImportCodexModelsRequest request, CancellationToken ct)
     {
@@ -454,7 +456,7 @@ public sealed class CodexApiController : ControllerBase
 
     /// <summary>触发一轮巡检。force=true 强制真实刷新全部账号；false 允许命中缓存。</summary>
     [HttpPost("inspection/run")]
-    [ServiceFilter(typeof(CodexInspectionToggleAttribute))]
+    [ServiceFilter(typeof(AccountInspectionToggleAttribute))]
     public async Task<IActionResult> RunInspection([FromQuery] bool force, CancellationToken ct)
     {
         var result = await _inspectionService.RunManualAsync(force, ct);
@@ -463,7 +465,7 @@ public sealed class CodexApiController : ControllerBase
 
     /// <summary>巡检状态（是否运行中、下次调度时间、上次完成时间）。</summary>
     [HttpGet("inspection/status")]
-    [ServiceFilter(typeof(CodexInspectionToggleAttribute))]
+    [ServiceFilter(typeof(AccountInspectionToggleAttribute))]
     public IActionResult InspectionStatus()
     {
         return Ok(_inspectionService.GetStatus());
@@ -471,7 +473,7 @@ public sealed class CodexApiController : ControllerBase
 
     /// <summary>上次巡检结果（每账号动作/原因/百分比）。</summary>
     [HttpGet("inspection/last-run")]
-    [ServiceFilter(typeof(CodexInspectionToggleAttribute))]
+    [ServiceFilter(typeof(AccountInspectionToggleAttribute))]
     public IActionResult InspectionLastRun()
     {
         return Ok(_inspectionService.GetLastRun());
@@ -479,7 +481,7 @@ public sealed class CodexApiController : ControllerBase
 
     /// <summary>巡检操作日志（最新在前）。</summary>
     [HttpGet("inspection/logs")]
-    [ServiceFilter(typeof(CodexInspectionToggleAttribute))]
+    [ServiceFilter(typeof(AccountInspectionToggleAttribute))]
     public IActionResult InspectionLogs()
     {
         return Ok(_inspectionService.GetLogs());

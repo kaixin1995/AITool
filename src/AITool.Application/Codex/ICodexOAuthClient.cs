@@ -18,7 +18,7 @@ public interface ICodexOAuthClient
     /// <summary>
     /// 构造授权 URL（含 PKCE challenge 与 Codex CLI 必需参数）。
     /// </summary>
-    string BuildAuthorizeUrl(string state, string verifier);
+    Task<string> BuildAuthorizeUrlAsync(string state, string verifier, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 用授权码交换 token。

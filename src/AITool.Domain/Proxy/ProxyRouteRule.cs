@@ -7,7 +7,7 @@ namespace AITool.Domain.Proxy;
 /// </summary>
 [SugarTable("ProxyRouteRules")]
 [SugarIndex("IX_ProxyRouteRules_ExternalModelName_Priority", nameof(ExternalModelName), OrderByType.Asc, nameof(Priority), OrderByType.Asc)]
-[SugarIndex("IX_ProxyRouteRules_ExternalModelName_IsEnabled_ModelPriority_InstancePriority_Priority", nameof(ExternalModelName), OrderByType.Asc, nameof(IsEnabled), OrderByType.Asc, nameof(ModelPriority), OrderByType.Asc, nameof(InstancePriority), OrderByType.Asc, nameof(Priority), OrderByType.Asc)]
+[SugarIndex("IX_ProxyRouteRules_ExternalModelName_IsEnabled_Priorities", nameof(ExternalModelName), OrderByType.Asc, nameof(IsEnabled), OrderByType.Asc, nameof(ModelPriority), OrderByType.Asc, nameof(InstancePriority), OrderByType.Asc, nameof(Priority), OrderByType.Asc)]
 public sealed class ProxyRouteRule
 {
     /// <summary>
@@ -57,6 +57,7 @@ public sealed class ProxyRouteRule
     /// <summary>
     /// 标记该路由规则是否启用，禁用后不应参与请求匹配和转发。
     /// </summary>
+    [SugarColumn(IsNullable = false)]
     public bool IsEnabled { get; set; } = true;
 
     /// <summary>

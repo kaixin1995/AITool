@@ -1,40 +1,50 @@
+using AITool.Infrastructure.Proxy;
 using AITool.Application.Codex;
 using AITool.Domain.Codex;
+using AITool.Infrastructure.Common;
 using AITool.Infrastructure.Persistence;
-using AITool.Infrastructure.Proxy;
 
 namespace AITool.Admin.Services;
 
 /// <summary>
 /// 在实时代理请求命中 Codex 上游 401 时，立即刷新账号凭证并同步隐藏站点。
-/// <para>
-/// 仅在 Admin 宿主注册：依赖 AppDbContext 直接读写数据库。
-/// Core 宿主无数据库访问，不使用本服务。
-/// </para>
 /// </summary>
 public sealed class CodexCredentialRefreshService
 {
+    /// <summary>
+    /// 同一隐藏站点的 401 刷新采用 single-flight，避免并发请求重复轮换 refresh_token。
+    /// </summary>
+    private static readonly KeyedAsyncLock RefreshLocks = new();
+
     private readonly AppDbContext _dbContext;
     private readonly ICodexOAuthClient _oauth;
     private readonly ProxyRequestMetadataCache _metadataCache;
-    private readonly AdminCacheInvalidationService _adminCacheInvalidation;
     private readonly ILogger<CodexCredentialRefreshService> _logger;
 
     public CodexCredentialRefreshService(
         AppDbContext dbContext,
         ICodexOAuthClient oauth,
         ProxyRequestMetadataCache metadataCache,
-        AdminCacheInvalidationService adminCacheInvalidation,
         ILogger<CodexCredentialRefreshService> logger)
     {
         _dbContext = dbContext;
         _oauth = oauth;
         _metadataCache = metadataCache;
-        _adminCacheInvalidation = adminCacheInvalidation;
         _logger = logger;
     }
 
     public async Task<string?> RefreshAsync(
+        Guid linkedSiteId,
+        string staleAccessToken,
+        CancellationToken cancellationToken)
+    {
+        using (await RefreshLocks.WaitAsync(linkedSiteId.ToString("N"), cancellationToken))
+        {
+            return await RefreshCoreAsync(linkedSiteId, staleAccessToken, cancellationToken);
+        }
+    }
+
+    private async Task<string?> RefreshCoreAsync(
         Guid linkedSiteId,
         string staleAccessToken,
         CancellationToken cancellationToken)
@@ -50,7 +60,7 @@ public sealed class CodexCredentialRefreshService
                 return null;
             }
 
-            // 后台服务或其他并发请求已经完成刷新时直接复用新 token，避免重复轮换。
+            // 其他请求已经完成刷新时直接复用新 token，避免重复轮换。
             if (!string.Equals(account.AccessToken, staleAccessToken, StringComparison.Ordinal))
             {
                 return account.AccessToken;
@@ -59,15 +69,17 @@ public sealed class CodexCredentialRefreshService
             var tokens = await _oauth.RefreshTokenAsync(account.RefreshToken, cancellationToken);
             await _dbContext.SerialExecuteAsync(async () =>
             {
-                // 仅在上游返回了非空值时才覆盖，避免空响应清空有效 token。
                 if (!string.IsNullOrWhiteSpace(tokens.AccessToken))
                 {
                     account.AccessToken = tokens.AccessToken;
                 }
+
+                // OpenAI 会轮换 refresh_token，但某些响应可能不返回新 refresh_token，保留旧值避免被清空导致永久无法刷新。
                 if (!string.IsNullOrWhiteSpace(tokens.RefreshToken))
                 {
                     account.RefreshToken = tokens.RefreshToken;
                 }
+
                 if (!string.IsNullOrWhiteSpace(tokens.IdToken))
                 {
                     account.IdToken = tokens.IdToken;
@@ -88,8 +100,6 @@ public sealed class CodexCredentialRefreshService
 
             _metadataCache.InvalidateRouteTargets();
             _metadataCache.InvalidateCodexAccounts();
-            // 路由目标缓存（含 Site.ApiKey）必须推送到 Core，否则 Core 转发仍用过期 token。
-            await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
             _logger.LogInformation("Codex account {Id} token refreshed after upstream unauthorized", account.Id);
             return tokens.AccessToken;
         }

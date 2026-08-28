@@ -271,11 +271,13 @@ public sealed partial class ProxyRequestMetadataCache
                             ConversationLogEnabled = settings.ConversationLogEnabled,
                             ConcurrencyMode = settings.ConcurrencyMode,
                             ConcurrencyQueueTimeoutSeconds = settings.ConcurrencyQueueTimeoutSeconds,
-                            CodexFeaturesEnabled = settings.CodexFeaturesEnabled,
-                            CodexInspectionEnabled = settings.CodexInspectionEnabled,
-                            CodexInspectionIntervalSeconds = settings.CodexInspectionIntervalSeconds,
-                            CodexQuotaMaxCacheHours = settings.CodexQuotaMaxCacheHours,
-                            CodexAutoDisableThresholdPercent = settings.CodexAutoDisableThresholdPercent
+                            ProxyStreamIdleTimeoutSeconds = settings.ProxyStreamIdleTimeoutSeconds,
+                            OAuthFeaturesEnabled = settings.OAuthFeaturesEnabled,
+                            OAuthInspectionEnabled = settings.OAuthInspectionEnabled,
+                            OAuthInspectionIntervalSeconds = settings.OAuthInspectionIntervalSeconds,
+                            OAuthQuotaMaxCacheHours = settings.OAuthQuotaMaxCacheHours,
+                            OAuthAutoDisableThresholdPercent = settings.OAuthAutoDisableThresholdPercent,
+                            OAuthInspectionCacheEnabled = settings.OAuthInspectionCacheEnabled
                         };
                 })
             ?? new CachedProxyRuntimeSettings();
@@ -1379,6 +1381,10 @@ public sealed class CachedProxyRuntimeSettings
     /// </summary>
     public int ProxyRequestTimeoutSeconds { get; set; } = 60;
     /// <summary>
+    /// 流式转发空闲超时（秒）；0 表示不启用。
+    /// </summary>
+    public int ProxyStreamIdleTimeoutSeconds { get; set; }
+    /// <summary>
     /// 代理重试次数。
     /// </summary>
     public int ProxyRetryCount { get; set; } = 1;
@@ -1411,7 +1417,7 @@ public sealed class CachedProxyRuntimeSettings
     /// </summary>
     public bool DeveloperFeaturesEnabled { get; set; }
     /// <summary>
-    /// 是否启用对话记录功能。
+    /// 是否启用对话记录功能（split 分支）。
     /// </summary>
     public bool ConversationLogEnabled { get; set; } = true;
     /// <summary>
@@ -1423,25 +1429,29 @@ public sealed class CachedProxyRuntimeSettings
     /// </summary>
     public int ConcurrencyQueueTimeoutSeconds { get; set; } = 120;
     /// <summary>
-    /// Codex 功能总开关。
+    /// OAuth 账号功能总开关。
     /// </summary>
-    public bool CodexFeaturesEnabled { get; set; }
+    public bool OAuthFeaturesEnabled { get; set; }
     /// <summary>
-    /// Codex 巡检自动执行开关。
+    /// OAuth 账号巡检自动执行开关。
     /// </summary>
-    public bool CodexInspectionEnabled { get; set; }
+    public bool OAuthInspectionEnabled { get; set; }
     /// <summary>
-    /// Codex 巡检周期（秒）。
+    /// OAuth 账号巡检周期（秒）。
     /// </summary>
-    public int CodexInspectionIntervalSeconds { get; set; } = 1800;
+    public int OAuthInspectionIntervalSeconds { get; set; } = 1800;
     /// <summary>
-    /// Codex 额度缓存最大小时数。
+    /// OAuth 账号额度缓存最大小时数。
     /// </summary>
-    public int CodexQuotaMaxCacheHours { get; set; } = 6;
+    public int OAuthQuotaMaxCacheHours { get; set; } = 6;
     /// <summary>
-    /// Codex 自动禁用阈值（百分比，1-100）。
+    /// OAuth 账号自动禁用阈值（百分比，1-100）。
     /// </summary>
-    public int CodexAutoDisableThresholdPercent { get; set; } = 95;
+    public int OAuthAutoDisableThresholdPercent { get; set; } = 95;
+    /// <summary>
+    /// OAuth 账号巡检缓存复用开关。关闭时每轮巡检都真实刷新额度；开启时未被使用的账号沿用缓存快照。
+    /// </summary>
+    public bool OAuthInspectionCacheEnabled { get; set; }
 }
 
 /// <summary>

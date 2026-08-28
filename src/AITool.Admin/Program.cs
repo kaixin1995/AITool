@@ -1,11 +1,14 @@
 using AppVersionInfo = AITool.Infrastructure.Hosting.AppVersionInfo;
 using AITool.Application.Codex;
 using AITool.Application.Common;
+using AITool.Application.Pricing;
+using AITool.Application.Proxy;
 using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.DependencyInjection;
 using AITool.Infrastructure.Hosting;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Pricing;
 using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Retention;
 using AITool.Admin.Services;
@@ -25,8 +28,10 @@ builder.Logging.AddDebug();
 builder.Host.UseNLog();
 
 var startupLogger = LogManager.GetLogger("Startup");
-var applicationVersion = "1.0.1.7-admin";
-builder.Services.AddSingleton(new AppVersionInfo(applicationVersion));
+// 版本号优先从程序集元数据读取（csproj 的 Version 属性），编译时间从 AssemblyMetadata "BuildTimestamp" 读取（构建期注入）。
+var applicationVersion = ReadApplicationVersion();
+var buildTime = ReadBuildTimestamp() ?? DateTimeOffset.UtcNow;
+builder.Services.AddSingleton(new AppVersionInfo(applicationVersion, buildTime));
 
 var serverPort = builder.Configuration.GetValue<int?>("AdminServer:Port") ?? builder.Configuration.GetValue<int?>("Server:Port") ?? 5030;
 builder.WebHost.UseUrls($"http://0.0.0.0:{serverPort}");
@@ -236,6 +241,8 @@ builder.Services.AddHttpClient<ICodexOAuthClient, CodexOAuthClient>(c =>
 });
 // 注册 Codex 静态模型目录（进程内只读）。
 builder.Services.AddSingleton<ICodexModelCatalog, CodexModelCatalog>();
+// Codex 上游客户端版本配置化（模型拉取 UA / client_version 参数可按上游演进调整，780ac7b）。
+builder.Services.Configure<CodexUpstreamOptions>(builder.Configuration.GetSection(CodexUpstreamOptions.SectionName));
 // 注册 Codex 动态模型拉取客户端（chatgpt.com/backend-api/codex/models）。
 builder.Services.AddHttpClient<ICodexModelFetcher, CodexModelFetcher>(c =>
 {
@@ -263,13 +270,25 @@ builder.Services.AddHttpClient<ICodexResetCreditsService, CodexResetCreditsServi
 {
     client.Timeout = TimeSpan.FromSeconds(30);
 });
-// Codex 功能总开关过滤器（控制器级 gating）。
-builder.Services.AddScoped<CodexFeatureToggleAttribute>();
-// Codex 巡检开关过滤器（仅巡检相关 action 使用，关闭时返回 404）。
-builder.Services.AddScoped<CodexInspectionToggleAttribute>();
-// Codex 巡检后台服务（周期额度巡检 + 缓存策略 + 自动禁用）。单例，供 API 与后台共用状态。
-builder.Services.AddSingleton<CodexInspectionService>();
-builder.Services.AddHostedService(sp => sp.GetRequiredService<CodexInspectionService>());
+// OAuth 账号功能总开关过滤器（控制器级 gating，Codex/Google/Kimi 统一）。
+builder.Services.AddScoped<OAuthFeatureToggleAttribute>();
+// 账号巡检开关过滤器（仅巡检相关 action 使用，关闭时返回 404）。
+builder.Services.AddScoped<AccountInspectionToggleAttribute>();
+// 账号额度统一巡检后台服务（聚合 Codex/Google/Kimi 的 IAccountQuotaProvider：周期额度巡检 + 缓存策略 + 自动禁用）。
+// 单例，供 API 与后台共用状态（手动巡检 RunManualAsync 与后台循环跑同一实例）。
+builder.Services.AddSingleton<AccountQuotaInspectionService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AccountQuotaInspectionService>());
+
+// 客户端特征模拟：请求头模板档案（client-header-profiles.json 本地文件存储，不落数据库）。
+builder.Services.AddSingleton<IHeaderProfileCatalogService, HeaderProfileCatalogService>();
+// 模型定价目录（model-pricing.json 本地文件存储，按 LastWriteTime 自动刷新快照）。
+builder.Services.AddSingleton<IModelPricingService, ModelPricingService>();
+// 管理端长任务统一托管队列（SQL 迁移执行等耗时操作的取消/进度管理）。
+builder.Services.AddSingleton<AdminBackgroundTaskQueue>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AdminBackgroundTaskQueue>());
+// 可视化分析后台查询执行器（有界 Channel 单消费者 + 版本化结果缓存，避免并发长查询打爆 SQLite）。
+builder.Services.AddSingleton<AnalyticsBackgroundQueryExecutor>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<AnalyticsBackgroundQueryExecutor>());
 
 // Admin 通过最小 Core 客户端与核心宿主通信。当前阶段先提供握手、full-sync、ack、replay 这几项最关键能力。
 var coreBaseUrl = builder.Configuration["CoreServer:BaseUrl"] ?? $"http://127.0.0.1:{builder.Configuration.GetValue<int?>("CoreServer:Port") ?? 5029}/";
@@ -378,5 +397,55 @@ app.MapControllers();
 // wwwroot 静态文件由上方的 UseStaticFiles 提供（Vite 构建产物输出到 Admin/wwwroot）。
 app.MapFallbackToFile("index.html");
 app.Run();
+
+// 版本号优先从程序集元数据（AssemblyInformationalVersion / AssemblyFileVersion / AssemblyVersion）读取（由 csproj 配置）。
+static string ReadApplicationVersion()
+{
+    var assembly = typeof(Program).Assembly;
+    var infoVersionAttr = assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyInformationalVersionAttribute), false)
+        .OfType<System.Reflection.AssemblyInformationalVersionAttribute>()
+        .FirstOrDefault();
+
+    if (!string.IsNullOrWhiteSpace(infoVersionAttr?.InformationalVersion))
+    {
+        // 去除可能的 git commit hash 后缀 (例如 1.0.1.10+abc1234)
+        var cleanVersion = infoVersionAttr.InformationalVersion.Split('+')[0].Trim();
+        if (!string.IsNullOrWhiteSpace(cleanVersion))
+        {
+            return cleanVersion;
+        }
+    }
+
+    var fileVersionAttr = assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyFileVersionAttribute), false)
+        .OfType<System.Reflection.AssemblyFileVersionAttribute>()
+        .FirstOrDefault();
+
+    if (!string.IsNullOrWhiteSpace(fileVersionAttr?.Version))
+    {
+        return fileVersionAttr.Version.Trim();
+    }
+
+    var asmVersion = assembly.GetName().Version;
+    return asmVersion is not null ? asmVersion.ToString() : "1.0.0.0";
+}
+
+// 从主程序集元数据读取编译时间戳（csproj 构建时注入的 AssemblyMetadata "BuildTimestamp"）。
+// 单文件/独立发布下程序集无独立 dll 文件，读取文件时间戳会失效，故用元数据方案。
+static DateTimeOffset? ReadBuildTimestamp()
+{
+    var attr = typeof(Program).Assembly
+        .GetCustomAttributes(typeof(System.Reflection.AssemblyMetadataAttribute), false)
+        .OfType<System.Reflection.AssemblyMetadataAttribute>()
+        .FirstOrDefault(a => string.Equals(a.Key, "BuildTimestamp", StringComparison.OrdinalIgnoreCase));
+    if (attr is null || string.IsNullOrWhiteSpace(attr.Value))
+    {
+        return null;
+    }
+    return DateTimeOffset.TryParse(attr.Value, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.RoundtripKind, out var ts)
+        ? ts
+        : null;
+}
 
 public partial class Program;

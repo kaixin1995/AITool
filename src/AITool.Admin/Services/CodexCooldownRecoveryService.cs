@@ -7,7 +7,7 @@ namespace AITool.Admin.Services;
 /// <summary>
 /// 后台服务：周期扫描冷却到期的 Codex 账号，自动清除冷却并恢复 Site（若账号未被手动禁用）。
 /// <para>
-/// 性能（P7）：周期 2 分钟；查询条件 IsQuotaCooling && QuotaCoolingUntil<=now（冷却账号极少）；
+/// 性能（P7）：周期 2 分钟；查询条件 IsQuotaCooling 且 QuotaCoolingUntil 不晚于当前时间（冷却账号极少）；
 /// 恢复前检查 account.IsEnabled（手动禁用优先，不被冷却到期自动覆盖）。
 /// </para>
 /// </summary>
@@ -56,12 +56,10 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
         using var scope = _services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
-        // 双宿主下需通过 AdminCacheInvalidationService 把变更推送到 Core，否则 Core 仍用旧 Site.IsEnabled。
-        var adminCacheInvalidation = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
 
         // 尊重 Codex 功能总开关：关闭时跳过本轮（避免恢复被总开关禁用的账号）。
         // 此处在 SerialExecuteAsync 外查询，可能与 Web 请求并发踩 SqlSugarScope 竞态，
-        // 用 try-catch 降级：查询失败时默认 Codex 未启用，跳过本轮（下轮重试）。
+        // 用 try-catch 降级：查询失败时跳过本轮（下轮重试）。
         CachedProxyRuntimeSettings runtime;
         try
         {
@@ -72,22 +70,21 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
             _logger.LogWarning("GetRuntimeSettingsAsync failed in cooldown recovery, skipping this round");
             return;
         }
-        if (!runtime.CodexFeaturesEnabled)
+        if (!runtime.OAuthFeaturesEnabled)
         {
             return;
         }
 
         // 用全局 SQLite 串行化锁包裹"查 due → 更新账号/站点"完整块，
         // 避免与巡检/日志写等后台服务并发踩 SqlSugarScope 竞态。
-        // 缓存失效（含 HTTP 推送 Core）在锁外执行，避免持锁等 Core 响应阻塞其他后台 DB 写。
-        var anySiteRecovered = await dbContext.SerialExecuteAsync(async () =>
+        await dbContext.SerialExecuteAsync(async () =>
         {
             var now = DateTimeOffset.UtcNow;
             var due = await dbContext.CodexAccounts
                 .Where(a => a.IsQuotaCooling && a.QuotaCoolingUntil != null && a.QuotaCoolingUntil <= now)
                 .ToListAsync(ct);
 
-            if (due.Count == 0) return false;
+            if (due.Count == 0) return;
 
             var anyRecovered = false;
             foreach (var account in due)
@@ -110,18 +107,11 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
                 _logger.LogInformation("Codex account {Id} cooldown recovered", account.Id);
             }
 
-            // CodexAccounts 缓存只在 Admin 端（Core 不缓存账号实体），本地内存失效即可，无 HTTP。
             if (anyRecovered)
             {
+                cache.InvalidateRouteTargets();
                 cache.InvalidateCodexAccounts();
             }
-            return anyRecovered;
         }, ct);
-
-        // 锁外：仅当有 Site 恢复时才推送 Core。
-        if (anySiteRecovered)
-        {
-            await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
-        }
     }
 }

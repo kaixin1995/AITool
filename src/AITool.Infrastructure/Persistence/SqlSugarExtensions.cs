@@ -40,25 +40,7 @@ public static class SqlSugarQueryableExtensions
         }
     }
 
-    /// <summary>单实体的 DateTimeOffset offset 规范化（用于 First/Single 等单结果）。</summary>
-    private static T NormalizeSingle<T>(T? item) where T : class
-    {
-        if (item is null) return default!;
-        var type = typeof(T);
-        foreach (var prop in type.GetProperties().Where(p => p.PropertyType == typeof(DateTimeOffset)))
-        {
-            var current = (DateTimeOffset)prop.GetValue(item)!;
-            if (current.Offset != TimeSpan.Zero)
-            {
-                prop.SetValue(item, new DateTimeOffset(current.DateTime, TimeSpan.Zero));
-            }
-        }
-        return item;
-    }
-
     // —— DateTimeOffset offset 规范化的终端操作包装（关键：命中原生实例方法，不递归）——
-    // 注意：不提供 FirstAsync/InSingleAsync 包装方法。这两个在 SqlSugar 中是扩展方法，
-    // 再包装会递归调用自身（坑#6）。直接使用 SqlSugar 原生实例方法，规范化在调用点或通过 ToListAsync 完成。
 
     /// <summary>ToListAsync 包装：物化后规范化 DateTimeOffset offset。</summary>
     public static async Task<List<T>> ToListAsync<T>(this ISugarQueryable<T> query, CancellationToken cancellationToken = default)
@@ -75,6 +57,13 @@ public static class SqlSugarQueryableExtensions
         NormalizeDateTimeOffsets(list);
         return list;
     }
+
+    // 注意：FirstAsync/InSingleAsync 的包装方法会导致递归（SqlSugar 的这些方法是扩展方法而非实例方法，
+    // 编译时解析到自定义包装而非原生实现）。因此不包装 FirstAsync/InSingleAsync，
+    // 直接使用 SqlSugar 原生扩展方法。DateTimeOffset 规范化仅在 ToListAsync 包装中处理
+    // （ToListAsync 是 SqlSugar 的实例方法，包装方法内部调用不会递归）。
+    // 对于通过 FirstAsync/InSingleAsync 查回的实体，调用方在内存比较 DateTimeOffset 时
+    // 需自行用 DateTime 部分比较（AnalyticsApiController 已在读后统一规范化）。
 
     // —— 其他 EF 兼容扩展（不涉及 DateTimeOffset，纯转发）——
 
@@ -115,7 +104,7 @@ public static class SqlSugarQueryableExtensions
     // —— 写操作兼容（立即执行，替代 EF 的 Add/Remove + SaveChanges 两步模式）——
     // 注意：必须用同步 ExecuteCommand（不是异步），因为原 EF 代码里 dbSet.Add(entity)
     // 是同步调用且无 await（EF 的 Add 返回 void）。如果用异步 ExecuteCommandAsync
-    // 且调用方不 await，Task 会被丢弃导致写操作不执行（坑#4）。同步执行确保立即落库。
+    // 且调用方不 await，Task 会被丢弃导致写操作不执行。同步执行确保立即落库。
 
     /// <summary>立即插入单条实体（兼容 EF 的 dbSet.Add，同步执行确保落库）。</summary>
     public static int Add<T>(this ISugarQueryable<T> query, T entity) where T : class, new()

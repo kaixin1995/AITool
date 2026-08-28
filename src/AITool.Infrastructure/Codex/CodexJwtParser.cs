@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using AITool.Application.Codex;
@@ -11,20 +10,59 @@ namespace AITool.Infrastructure.Codex;
 /// </summary>
 public static class CodexJwtParser
 {
-    private static readonly ConcurrentDictionary<string, CodexIdTokenClaims?> Cache = new();
+    private sealed record CacheEntry(CodexIdTokenClaims? Claims, DateTimeOffset ExpiresAt);
+
+    private const int MaxCacheEntries = 256;
+    private static readonly TimeSpan CacheDuration = TimeSpan.FromMinutes(10);
+    private static readonly object CacheGate = new();
+    private static readonly Dictionary<string, CacheEntry> Cache = new(StringComparer.Ordinal);
 
     /// <summary>
     /// 解析 id_token，提取 account_id / email / plan_type / 订阅窗口。失败返回 null（不抛异常）。
-    /// 结果按 token 内容缓存（同 id_token 只解析一次）。
+    /// 结果按 token 内容短时缓存，且缓存容量有上限，避免刷新 token 后无界保留历史凭证。
     /// </summary>
     public static CodexIdTokenClaims? Parse(string? idToken)
     {
         if (string.IsNullOrWhiteSpace(idToken)) return null;
-        return Cache.GetOrAdd(idToken, static token =>
+
+        var now = DateTimeOffset.UtcNow;
+        lock (CacheGate)
         {
-            try { return ParseInternal(token); }
-            catch { return null; }
-        });
+            if (Cache.TryGetValue(idToken, out var cached))
+            {
+                if (cached.ExpiresAt > now) return cached.Claims;
+                Cache.Remove(idToken);
+            }
+        }
+
+        CodexIdTokenClaims? claims;
+        try { claims = ParseInternal(idToken); }
+        catch { claims = null; }
+
+        lock (CacheGate)
+        {
+            TrimCache(now);
+            Cache[idToken] = new CacheEntry(claims, now.Add(CacheDuration));
+        }
+
+        return claims;
+    }
+
+    private static void TrimCache(DateTimeOffset now)
+    {
+        foreach (var key in Cache
+                     .Where(pair => pair.Value.ExpiresAt <= now)
+                     .Select(pair => pair.Key)
+                     .ToList())
+        {
+            Cache.Remove(key);
+        }
+
+        while (Cache.Count >= MaxCacheEntries)
+        {
+            var oldest = Cache.MinBy(pair => pair.Value.ExpiresAt);
+            Cache.Remove(oldest.Key);
+        }
     }
 
     private static CodexIdTokenClaims? ParseInternal(string idToken)

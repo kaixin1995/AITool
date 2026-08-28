@@ -6,7 +6,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- 只生成 zh-Hans 的语言资源 -->
     <SatelliteResourceLanguages>zh</SatelliteResourceLanguages>
+    <Version>1.0.1.17</Version>
+    <AssemblyVersion>1.0.1.17</AssemblyVersion>
+    <FileVersion>1.0.1.17</FileVersion>
+    <!-- 编译时间戳注入到程序集元数据（AssemblyMetadata），供运行时读取展示 -->
+    <BuildTimestamp>$([System.DateTime]::UtcNow.ToString("O"))</BuildTimestamp>
   </PropertyGroup>
+
+  <ItemGroup>
+    <AssemblyMetadata Include="BuildTimestamp" Value="$(BuildTimestamp)" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\AITool.Application\AITool.Application.csproj" />

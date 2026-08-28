@@ -6,16 +6,11 @@ namespace AITool.Domain.Proxy;
 /// 表示一条代理使用日志，用于记录一次请求链路中的调用目标、重试过程、耗时表现和结果状态。
 /// </summary>
 [SugarTable("ProxyUsageLogs")]
-// 以下索引服务于 Admin 查询热路径（UsageLogs/Analytics/Detection/ModelHealth）。
 [SugarIndex("IX_ProxyUsageLogs_RequestedAt", nameof(RequestedAt), OrderByType.Asc)]
 [SugarIndex("IX_ProxyUsageLogs_RequestId", nameof(RequestId), OrderByType.Asc)]
-// 时间 + 状态：UsageLogs 状态筛选、Analytics 成功/失败统计。
 [SugarIndex("IX_ProxyUsageLogs_RequestedAt_Status", nameof(RequestedAt), OrderByType.Asc, nameof(Status), OrderByType.Asc)]
-// 站点筛选（UsageLogs/Analytics/ModelHealth 按 TargetSiteId 过滤）。
 [SugarIndex("IX_ProxyUsageLogs_TargetSiteId", nameof(TargetSiteId), OrderByType.Asc)]
-// 访问密钥筛选（UsageLogs/Analytics 按 AccessKeyId 过滤）。
 [SugarIndex("IX_ProxyUsageLogs_AccessKeyId", nameof(AccessKeyId), OrderByType.Asc)]
-// 上游模型名筛选（UsageLogs 模型关键字、Analytics 模型分布）。
 [SugarIndex("IX_ProxyUsageLogs_AttemptedModel", nameof(AttemptedModel), OrderByType.Asc)]
 public sealed class ProxyUsageLog
 {
@@ -100,6 +95,18 @@ public sealed class ProxyUsageLog
     /// </summary>
     [SugarColumn(Length = 2000, IsNullable = false)]
     public string ErrorMessage { get; set; } = string.Empty;
+
+    /// <summary>
+    /// 上游响应的 HTTP 状态码；未收到 HTTP 响应时为空。
+    /// </summary>
+    [SugarColumn(IsNullable = true)]
+    public int? HttpStatusCode { get; set; }
+
+    /// <summary>
+    /// 错误分类；成功记录和旧数据可以为空。
+    /// </summary>
+    [SugarColumn(Length = 50, IsNullable = true)]
+    public string? ErrorCategory { get; set; }
 
     /// <summary>
     /// 输入 Token 数，用于统计提示词或请求正文消耗的输入量。

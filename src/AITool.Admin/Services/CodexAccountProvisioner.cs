@@ -22,11 +22,10 @@ public sealed class CodexAccountProvisioner
 {
     private const string CodexManagedSource = "Codex";
     private const string CodexBaseUrl = "https://chatgpt.com/backend-api/codex";
-    private const string CodexUserAgent = "codex_cli_rs/0.133.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9";
+    private const string CodexUserAgent = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
 
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
-    private readonly AdminCacheInvalidationService _adminCacheInvalidation;
     private readonly ICodexModelCatalog _modelCatalog;
     private readonly SiteCascadeDeleter _cascadeDeleter;
     private readonly ILogger<CodexAccountProvisioner> _logger;
@@ -34,14 +33,12 @@ public sealed class CodexAccountProvisioner
     public CodexAccountProvisioner(
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
-        AdminCacheInvalidationService adminCacheInvalidation,
         ICodexModelCatalog modelCatalog,
         SiteCascadeDeleter cascadeDeleter,
         ILogger<CodexAccountProvisioner> logger)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
-        _adminCacheInvalidation = adminCacheInvalidation;
         _modelCatalog = modelCatalog;
         _cascadeDeleter = cascadeDeleter;
         _logger = logger;
@@ -95,7 +92,9 @@ public sealed class CodexAccountProvisioner
                 EndpointPathMode = "versioned-base",
                 ApiKey = input.AccessToken,
                 SupportsOpenAi = false,
-                SupportsAnthropic = false, // → ResolveSiteProtocolType 返回 "Responses"
+                SupportsAnthropic = false,
+                // Codex 上游使用 Responses 原生接口，显式声明以避免依赖旧配置兼容分支。
+                SupportsResponses = true,
                 ManagedSource = CodexManagedSource,
                 IsEnabled = true,
             };
@@ -123,8 +122,7 @@ public sealed class CodexAccountProvisioner
         await UpsertModelMappingsAsync(site.Id, account.PlanType, ct);
 
         // —— 失效缓存（一次性）——
-        // 路由目标缓存（含 Site.ApiKey）必须推送到 Core，否则 Core 仍用旧 token。
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+        _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
         _metadataCache.InvalidateCodexAccounts();
 
@@ -150,8 +148,7 @@ public sealed class CodexAccountProvisioner
         await _cascadeDeleter.RemoveSitesAsync([account.LinkedSiteId], ct);
         await client.Deleteable<CodexAccount>().Where(a => a.Id == codexAccountId).ExecuteCommandAsync(ct);
 
-        // 路由目标缓存（含隐藏 Site）必须推送到 Core，否则 Core 仍用旧 token/旧 Site 转发。
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+        _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
         _metadataCache.InvalidateCodexAccounts();
 
@@ -180,8 +177,7 @@ public sealed class CodexAccountProvisioner
         }
         await client.Updateable(account).ExecuteCommandAsync(ct);
 
-        // 仅改 DisplayName 也需推送：Core 侧不缓存 DisplayName 但路由表一致性靠此同步。
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+        _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateCodexAccounts();
     }
 
@@ -191,8 +187,7 @@ public sealed class CodexAccountProvisioner
     public async Task UpsertRemoteModelsAsync(Guid linkedSiteId, IEnumerable<(string Slug, string DisplayName)> models, CancellationToken ct)
     {
         await UpsertModelMappingsCoreAsync(linkedSiteId, models, ct);
-        // 路由目标缓存（含 Site/Mapping）必须推送到 Core，否则 Core 仍用旧映射。
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+        _metadataCache.InvalidateRouteTargets();
         _metadataCache.InvalidateModelMetadata();
         _metadataCache.InvalidateCodexAccounts();
     }
@@ -274,18 +269,20 @@ public sealed class CodexAccountProvisioner
                 RemoteModelName = slug,
                 LastStatus = "imported",
                 IsEnabled = true,
+                ClientEmulation = ClientEmulationConstants.CodexCli,
             });
         }
     }
 
     private static void UpdateSiteExtraHeaders(Site site, string? accountId)
     {
-        var headers = new Dictionary<string, string>
+        var headers = new Dictionary<string, string>();
+        if (!string.IsNullOrWhiteSpace(accountId))
         {
-            ["Originator"] = "codex_cli_rs",
-            ["Chatgpt-Account-Id"] = accountId ?? string.Empty,
-            ["User-Agent"] = CodexUserAgent,
-        };
-        site.ExtraHeadersJson = JsonSerializer.Serialize(headers, JsonSerializerPresets.Compact);
+            headers["Chatgpt-Account-Id"] = accountId.Trim();
+        }
+        site.ExtraHeadersJson = headers.Count > 0
+            ? JsonSerializer.Serialize(headers, JsonSerializerPresets.Compact)
+            : null;
     }
 }
