@@ -1,0 +1,141 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.DetectionTasksView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:DetectionTasksViewModel"
+    x:CompileBindings="False">
+  <Grid>
+    <Grid RowDefinitions="Auto,Auto,*" RowSpacing="18">
+      <StackPanel Spacing="4">
+        <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="检测任务" />
+        <TextBlock Classes="page-subtitle" Text="配置定时模型检测任务和执行记录" />
+      </StackPanel>
+
+      <Border Grid.Row="1" Classes="content-card" Padding="18">
+        <Grid ColumnDefinitions="1.3*,1*,1.3*,Auto" ColumnSpacing="12">
+            <StackPanel Spacing="6">
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="任务名称" />
+              <TextBox Classes="form-input" Text="{Binding TaskName}" Watermark="如：全量模型半小时检测" />
+            </StackPanel>
+            <StackPanel Grid.Column="1" Spacing="6">
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="Cron 表达式" />
+              <TextBox Classes="form-input" Text="{Binding CronExpression}" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Spacing="6">
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="检测模型" />
+              <ComboBox ItemsSource="{Binding AvailableModels}" SelectedItem="{Binding SelectedModel}" PlaceholderText="全部模型">
+                <ComboBox.ItemTemplate>
+                  <DataTemplate><TextBlock Text="{Binding DisplayName}" TextTrimming="CharacterEllipsis" /></DataTemplate>
+                </ComboBox.ItemTemplate>
+              </ComboBox>
+            </StackPanel>
+            <Button
+                Grid.Column="3"
+                Classes="primary-button"
+                Command="{Binding CreateCommand}"
+                Content="创建任务"
+                IsEnabled="{Binding CanCreate}"
+                VerticalAlignment="Bottom"
+                Padding="14,8" />
+        </Grid>
+      </Border>
+
+      <Grid Grid.Row="2">
+        <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}">
+          <StackPanel Spacing="7">
+            <ProgressBar Height="4" IsIndeterminate="True" />
+            <TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="正在加载检测任务..." />
+          </StackPanel>
+        </Border>
+        <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}">
+          <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+            <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" VerticalAlignment="Center" />
+            <Button Grid.Column="1" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="重试" IsEnabled="{Binding CanRetry}" Padding="12,7" />
+          </Grid>
+        </Border>
+        <TextBlock
+            HorizontalAlignment="Center"
+            VerticalAlignment="Top"
+            Foreground="{DynamicResource AppTextTertiaryBrush}"
+            IsVisible="{Binding ShowEmptyState}"
+            Margin="0,30"
+            Text="暂无检测任务" />
+
+        <ScrollViewer
+            HorizontalScrollBarVisibility="Disabled"
+            VerticalScrollBarVisibility="Auto"
+            IsVisible="{Binding IsListVisible}">
+          <StackPanel>
+            <ItemsControl ItemsSource="{Binding Tasks}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Classes="content-card" Margin="0,0,0,12" Padding="18">
+                    <StackPanel Spacing="10">
+                      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="14">
+                        <StackPanel Spacing="4" MinWidth="0">
+                          <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                          <StackPanel Orientation="Horizontal" Spacing="12">
+                            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding CronExpression}" />
+                            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding ModelText}" TextTrimming="CharacterEllipsis" />
+                          </StackPanel>
+                          <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" IsVisible="{Binding HasBusyText}" Text="{Binding BusyText}" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+                          <Grid>
+                            <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsEnabled}">
+                              <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" />
+                            </Border>
+                            <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsDisabled}">
+                              <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" />
+                            </Border>
+                          </Grid>
+                          <Button
+                              Classes="secondary-button"
+                              Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                              CommandParameter="{Binding}"
+                              Content="{Binding ToggleActionText}"
+                              IsEnabled="{Binding CanToggle}"
+                              Padding="10,6" />
+                          <Button
+                              Classes="secondary-button"
+                              Command="{Binding DataContext.ExecuteCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                              CommandParameter="{Binding}"
+                              Content="立即执行"
+                              IsEnabled="{Binding CanExecute}"
+                              Padding="10,6" />
+                          <Button
+                              Classes="secondary-button"
+                              CommandParameter="{Binding}"
+                              Click="ConfirmDeleteTask"
+                              Content="删除"
+                              IsEnabled="{Binding CanDelete}"
+                              Padding="10,6" />
+                        </StackPanel>
+                      </Grid>
+                      <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding LastExecutionStatus, StringFormat='上次执行：{0}'}" />
+                      <ItemsControl ItemsSource="{Binding ExecutionHistory}">
+                        <ItemsControl.ItemTemplate>
+                          <DataTemplate>
+                            <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="6" Padding="10" Margin="0,2">
+                              <Grid ColumnDefinitions="1.4*,1*,1*,2*" ColumnSpacing="12">
+                                <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StartedAt}" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Grid.Column="1" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding DurationText}" />
+                                <TextBlock Grid.Column="2" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Status}" />
+                                <TextBlock Grid.Column="3" FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Summary}" TextTrimming="CharacterEllipsis" />
+                              </Grid>
+                            </Border>
+                          </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                      </ItemsControl>
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
+      </Grid>
+    </Grid>
+  </Grid>
+</UserControl>

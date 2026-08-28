@@ -1,0 +1,102 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.CompatibilityView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:CompatibilityViewModel"
+    x:CompileBindings="False">
+  <Grid>
+    <Grid RowDefinitions="Auto,*" RowSpacing="24">
+      <Grid ColumnDefinitions="*,Auto" IsVisible="{Binding ShowPageHeader, RelativeSource={RelativeSource AncestorType=UserControl}}">
+        <StackPanel Spacing="4">
+          <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="兼容规则集" />
+          <TextBlock Classes="page-subtitle" Text="维护字段级剔除、重命名和默认值规则，可被多个模型引用" TextWrapping="Wrap" />
+        </StackPanel>
+        <Button Grid.Column="1" Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新建规则集" Padding="14,8" />
+      </Grid>
+
+      <Grid Grid.Row="1" ColumnDefinitions="1.15*,2*" ColumnSpacing="16">
+        <Border Classes="content-card" Padding="14">
+          <DockPanel>
+            <TextBlock DockPanel.Dock="Top" FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Margin="4,0,4,12" Text="规则集列表" />
+            <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding IsLoading}" Margin="10" Text="正在加载规则集..." />
+            <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoItems}" Margin="10" Text="暂无规则集，请先新建" TextWrapping="Wrap" />
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+              <ItemsControl ItemsSource="{Binding Items}">
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate>
+                    <Border Background="{DynamicResource AppInputBackgroundBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="9" Margin="0,0,0,8" Padding="12">
+                      <StackPanel Spacing="7">
+                        <Grid ColumnDefinitions="*,Auto">
+                          <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Name}" TextTrimming="CharacterEllipsis" />
+                          <Border Grid.Column="1" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,2"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
+                        </Grid>
+                        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Description}" TextWrapping="Wrap" />
+                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="6">
+                          <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding RuleCount, StringFormat='规则 {0} 条'}" VerticalAlignment="Center" />
+                          <Button Grid.Column="1" Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="8,5" />
+                          <Button Grid.Column="2" Classes="secondary-button" Click="ConfirmDeleteProfile" CommandParameter="{Binding}" Content="删除" Padding="8,5" />
+                        </Grid>
+                        <Button Classes="secondary-button" Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑规则集" HorizontalContentAlignment="Center" Padding="8,5" />
+                      </StackPanel>
+                    </Border>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </ScrollViewer>
+          </DockPanel>
+        </Border>
+
+        <Border Grid.Column="1" Classes="content-card" Padding="20">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="14">
+              <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="*,Auto">
+                <StackPanel Spacing="3">
+                  <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding EditorTitle}" />
+                  <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="修改后点击保存生效" />
+                </StackPanel>
+                <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseEditorCommand}" Content="关闭" IsVisible="{Binding IsEditorOpen}" Padding="10,6" />
+              </Grid>
+              <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding ShowEditorPlaceholder}" Text="请从左侧选择或新建一个规则集" Margin="20" />
+
+              <StackPanel IsVisible="{Binding IsEditorOpen}" Spacing="12">
+                <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="名称" /><TextBox Classes="form-input" Text="{Binding Form.Name}" Watermark="如：GPT 兼容" /></StackPanel>
+                <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="说明" /><TextBox Classes="form-input" Text="{Binding Form.Description}" Watermark="适用场景描述" /></StackPanel>
+                <CheckBox Content="启用（禁用的规则集不会生效）" IsChecked="{Binding Form.IsEnabled}" />
+
+                <Grid ColumnDefinitions="*,Auto" Margin="0,6,0,0">
+                  <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="规则" />
+                  <Button Grid.Column="1" Classes="secondary-button" Command="{Binding AddRuleCommand}" Content="添加规则" Padding="9,5" />
+                </Grid>
+                <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="strip 填 target；rename 填 from/to；default 填 key/value。scope 支持 all、passthrough、bridge。" TextWrapping="Wrap" />
+                <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoRules}" Text="暂无规则，请点击添加规则" />
+                <ItemsControl ItemsSource="{Binding Form.Rules}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Background="{DynamicResource AppInputBackgroundBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="8" Padding="12" Margin="0,0,0,8">
+                        <Grid RowDefinitions="Auto,Auto,Auto" ColumnDefinitions="130,*,Auto" RowSpacing="8" ColumnSpacing="8">
+                          <ComboBox ItemsSource="{Binding DataContext.OperationOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding Operation}" />
+                          <ComboBox Grid.Column="1" ItemsSource="{Binding DataContext.ScopeOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding Scope}" />
+                          <Button Grid.Column="2" Classes="secondary-button" Command="{Binding DataContext.RemoveRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="8,5" />
+                          <TextBox Grid.Row="1" Text="{Binding Target}" Watermark="target（strip）" IsVisible="{Binding IsTargetVisible}" />
+                          <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding From}" Watermark="from（rename）" IsVisible="{Binding IsRenameVisible}" />
+                          <TextBox Grid.Row="1" Grid.Column="2" Text="{Binding To}" Watermark="to（rename）" IsVisible="{Binding IsRenameVisible}" />
+                          <TextBox Grid.Row="2" Text="{Binding Key}" Watermark="key（default）" IsVisible="{Binding IsDefaultVisible}" />
+                          <TextBox Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Text="{Binding Value}" Watermark="value（default）" IsVisible="{Binding IsDefaultVisible}" />
+                        </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+
+                <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" IsVisible="{Binding HasError}" Padding="12"><TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
+                <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="8" IsVisible="{Binding HasMessage}" Padding="12"><TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding Message}" TextWrapping="Wrap" /></Border>
+                <Button Classes="primary-button" Command="{Binding SaveCommand}" Content="保存规则集" IsEnabled="{Binding CanSave}" HorizontalContentAlignment="Center" Padding="12,9" />
+              </StackPanel>
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+      </Grid>
+    </Grid>
+  </Grid>
+</UserControl>

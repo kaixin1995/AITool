@@ -1,0 +1,147 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.DetectionView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:DetectionViewModel"
+    x:CompileBindings="False">
+  <Grid RowDefinitions="Auto,Auto,*" RowSpacing="18">
+    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+      <StackPanel Spacing="4">
+        <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="模型检测" />
+        <TextBlock Classes="page-subtitle" Text="检测已配置模型的可用性和响应耗时" />
+      </StackPanel>
+      <Button
+          Grid.Column="1"
+          Classes="primary-button"
+          Command="{Binding ProbeAllCommand}"
+          Content="全部检测"
+          IsEnabled="{Binding CanProbe}"
+          Padding="14,8" />
+    </Grid>
+
+    <Grid Grid.Row="1" ColumnDefinitions="*,Auto" ColumnSpacing="12">
+      <TextBox
+          HorizontalAlignment="Stretch"
+          Text="{Binding SearchKeyword, Mode=TwoWay}"
+          Watermark="搜索模型或站点名称..." />
+      <TextBlock
+          Grid.Column="1"
+          VerticalAlignment="Center"
+          Foreground="{DynamicResource AppTextSecondaryBrush}"
+          Text="{Binding VisibleGroupCount, StringFormat='匹配模型：{0}'}" />
+    </Grid>
+
+    <ScrollViewer
+        Grid.Row="2"
+        HorizontalScrollBarVisibility="Disabled"
+        VerticalScrollBarVisibility="Auto">
+      <StackPanel Spacing="14">
+        <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding IsLoading}">
+          <TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="正在加载模型检测数据..." />
+        </Border>
+        <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding HasProgress}">
+          <StackPanel Spacing="8">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding ProgressText}" />
+              <TextBlock Grid.Column="1" Foreground="{DynamicResource AppInfoTextBrush}" Text="{Binding ProgressPercent, StringFormat={}{0}%}" />
+            </Grid>
+            <ProgressBar Height="8" Minimum="0" Maximum="100" Value="{Binding ProgressPercent}" />
+            <Grid ColumnDefinitions="*,*,*" ColumnSpacing="12">
+              <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding ProgressCompleted, StringFormat='已完成：{0}'}" />
+              <TextBlock Grid.Column="1" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding SuccessCount, StringFormat='成功：{0}'}" />
+              <TextBlock Grid.Column="2" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding FailedCount, StringFormat='失败：{0}'}" />
+            </Grid>
+          </StackPanel>
+        </Border>
+        <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding HasError}">
+          <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+        </Border>
+
+        <TextBlock
+            HorizontalAlignment="Center"
+            Foreground="{DynamicResource AppTextTertiaryBrush}"
+            IsVisible="{Binding ShowEmptyState}"
+            Margin="0,30"
+            Text="暂无映射数据，请先配置站点和模型" />
+        <TextBlock
+            HorizontalAlignment="Center"
+            Foreground="{DynamicResource AppTextTertiaryBrush}"
+            IsVisible="{Binding ShowNoMatchState}"
+            Margin="0,30"
+            Text="没有匹配的模型或站点" />
+
+        <ItemsControl ItemsSource="{Binding FilteredGroups}">
+          <ItemsControl.ItemTemplate>
+            <DataTemplate>
+              <Border Classes="content-card" Margin="0,0,0,14" Padding="0">
+                <StackPanel>
+                  <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="18,13">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                      <StackPanel Spacing="3">
+                        <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding DisplayName}" />
+                        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding ModelName}" />
+                      </StackPanel>
+                      <Button
+                          Grid.Column="1"
+                          Classes="secondary-button"
+                          Command="{Binding DataContext.ProbeModelCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                          CommandParameter="{Binding}"
+                          Content="检测此模型"
+                          IsEnabled="{Binding DataContext.CanProbe, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                          Padding="10,6" />
+                    </Grid>
+                  </Border>
+                  <ItemsControl ItemsSource="{Binding Sites}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="18,13">
+                          <Grid ColumnDefinitions="2*,1.5*,1*,1.3*,Auto" ColumnSpacing="12">
+                            <StackPanel Spacing="3">
+                              <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SiteName}" />
+                              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding RemoteModelName}" />
+                            </StackPanel>
+                            <TextBlock Grid.Column="1" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding LastCheckedAt}" VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="2" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding DurationText}" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="3" Spacing="3" VerticalAlignment="Center">
+                              <Grid HorizontalAlignment="Left">
+                                <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsSuccess}">
+                                  <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" />
+                                </Border>
+                                <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsFailed}">
+                                  <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding StatusText}" />
+                                </Border>
+                                <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="12" Padding="9,4" IsVisible="{Binding IsUnknown}">
+                                  <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StatusText}" />
+                                </Border>
+                              </Grid>
+                              <TextBlock
+                                  FontSize="11"
+                                  Foreground="{DynamicResource AppDangerTextBrush}"
+                                  IsVisible="{Binding HasError}"
+                                  MaxWidth="250"
+                                  Text="{Binding LastError}"
+                                  TextWrapping="Wrap" />
+                            </StackPanel>
+                            <Button
+                                Grid.Column="4"
+                                Classes="secondary-button"
+                                Command="{Binding DataContext.ProbeMappingCommand, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                CommandParameter="{Binding}"
+                                Content="检测"
+                                IsEnabled="{Binding DataContext.CanProbe, RelativeSource={RelativeSource AncestorType=UserControl}}"
+                                Padding="10,6" />
+                          </Grid>
+                        </Border>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

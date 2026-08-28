@@ -1,0 +1,75 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.ChatView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:ChatViewModel"
+    x:CompileBindings="False">
+  <Grid RowDefinitions="Auto,*,Auto" ColumnDefinitions="1.8*,1*" ColumnSpacing="16">
+    <Grid Grid.Column="0" ColumnDefinitions="1.25*,0.9*,Auto" ColumnSpacing="10" Margin="0,0,0,14" VerticalAlignment="Top">
+      <StackPanel Spacing="5">
+        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="模型搜索" />
+        <TextBox Classes="form-input" Height="34" MinHeight="34" Text="{Binding ModelSearchText}" Watermark="搜索站点或模型" />
+      </StackPanel>
+      <StackPanel Grid.Column="1" Spacing="5">
+        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="站点 / 模型" />
+        <ComboBox Height="34" MinHeight="34" ItemsSource="{Binding FilteredTargets}" SelectedItem="{Binding SelectedTarget}" PlaceholderText="选择站点模型">
+          <ComboBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding DisplayText}" TextTrimming="CharacterEllipsis" /></DataTemplate></ComboBox.ItemTemplate>
+        </ComboBox>
+      </StackPanel>
+      <WrapPanel Grid.Column="2" ItemSpacing="10" LineSpacing="8" VerticalAlignment="Bottom">
+        <CheckBox Content="启用流式" IsChecked="{Binding EnableStreaming}" Height="34" MinHeight="34" VerticalContentAlignment="Center" />
+        <CheckBox Content="开启思考" IsChecked="{Binding EnableReasoning}" Height="34" MinHeight="34" VerticalContentAlignment="Center" />
+        <StackPanel Spacing="5" IsVisible="{Binding EnableReasoning}">
+          <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="思考等级" />
+          <ComboBox Height="34" MinHeight="34" ItemsSource="{Binding ReasoningEffortOptions}" SelectedItem="{Binding ReasoningEffort}" />
+        </StackPanel>
+        <Button Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新候选" Height="34" Padding="10,6" />
+        <Button Classes="secondary-button" Command="{Binding ClearCommand}" Content="清空" IsEnabled="{Binding CanClear}" Height="34" Padding="10,6" />
+      </WrapPanel>
+    </Grid>
+    <Border Grid.Row="1" Grid.Column="0" Classes="content-card" Padding="18"><ScrollViewer x:Name="MessagesScrollViewer" VerticalScrollBarVisibility="Auto"><StackPanel Spacing="14"><TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoMessages}" Text="选择站点模型后输入问题开始对话" Margin="0,30" /><ItemsControl ItemsSource="{Binding Messages}"><ItemsControl.ItemTemplate><DataTemplate><Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="10" Padding="14"><StackPanel Spacing="8"><TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding RoleText}" /><TextBlock Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding Content}" TextWrapping="Wrap" /><Border Background="{DynamicResource AppResponseBackgroundBrush}" CornerRadius="6" Padding="10" IsVisible="{Binding HasReasoning}"><TextBlock Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding Reasoning}" TextWrapping="Wrap" /></Border><ItemsControl ItemsSource="{Binding Attempts}" IsVisible="{Binding HasAttempts}"><ItemsControl.ItemTemplate><DataTemplate><Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="8" Padding="10"><StackPanel Spacing="6"><Grid ColumnDefinitions="*,Auto"><TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding AttemptTitle}" /><Border Grid.Column="1" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,3" IsVisible="{Binding IsSuccess}"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border><Border Grid.Column="1" Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="7,3" IsVisible="{Binding HasError}"><TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding StatusText}" /></Border></Grid><TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding AttemptModelText}" TextTrimming="CharacterEllipsis" /><WrapPanel><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding DurationText}" Margin="0,0,10,0" /><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding FirstTokenText}" Margin="0,0,10,0" /><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StreamingText}" Margin="0,0,10,0" /><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding TokenText}" /></WrapPanel><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding ForwardingMode}" /><TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding UpstreamProtocolType}" /><TextBlock FontSize="12" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" IsVisible="{Binding HasError}" TextWrapping="Wrap" /><ToggleButton Classes="secondary-button" Content="查看请求/响应详情" IsChecked="{Binding IsExpanded, Mode=TwoWay}" IsVisible="{Binding HasDetails}" HorizontalAlignment="Left" Padding="9,5" /><StackPanel Spacing="6" IsVisible="{Binding IsExpanded}"><TextBox Classes="code-box" AcceptsReturn="True" IsReadOnly="True" Height="90" Text="{Binding RequestBody}" IsVisible="{Binding HasRequestBody}" TextWrapping="Wrap" /><TextBox Classes="code-box response-box" AcceptsReturn="True" IsReadOnly="True" Height="90" Text="{Binding ResponseBody}" IsVisible="{Binding HasResponseBody}" TextWrapping="Wrap" /></StackPanel></StackPanel></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl><TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding TotalDurationText}" /><TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding CreatedAt}" /></StackPanel></Border></DataTemplate></ItemsControl.ItemTemplate></ItemsControl><Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="12" IsVisible="{Binding HasError}"><TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border></StackPanel></ScrollViewer></Border>
+    <Grid Grid.Row="2" Grid.Column="0" ColumnDefinitions="*,Auto" ColumnSpacing="10" Margin="0,14,0,0"><TextBox Classes="form-input" Text="{Binding Input}" Watermark="输入消息，Enter 发送，Shift+Enter 换行" AcceptsReturn="True" KeyDown="HandleInputKeyDown" MinHeight="70" TextWrapping="Wrap" /><StackPanel Grid.Column="1" Spacing="8" VerticalAlignment="Bottom"><Button Classes="primary-button" Command="{Binding SendCommand}" Content="发送" IsEnabled="{Binding CanSend}" Padding="16,9" /><Button Classes="secondary-button" Command="{Binding StopCommand}" Content="停止" IsEnabled="{Binding IsSending}" Padding="16,9" /></StackPanel></Grid>
+    <ScrollViewer Grid.Row="1" Grid.Column="1" Grid.RowSpan="2" VerticalScrollBarVisibility="Auto">
+      <StackPanel Spacing="14">
+        <Border Classes="content-card" Padding="16">
+          <StackPanel Spacing="10">
+            <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="思考内容" />
+            <TextBlock Foreground="{DynamicResource AppTextTertiaryBrush}" Text="开启思考模式并且上游返回思考内容后，这里会展示。" TextWrapping="Wrap" IsVisible="{Binding HasNoCurrentReasoning}" />
+            <TextBox Classes="code-box response-box" AcceptsReturn="True" IsReadOnly="True" MinHeight="160" Text="{Binding CurrentReasoning}" TextWrapping="Wrap" IsVisible="{Binding HasCurrentReasoning}" />
+          </StackPanel>
+        </Border>
+        <Border Classes="content-card" Padding="16">
+          <StackPanel Spacing="10">
+            <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="调用详细过程" />
+            <TextBlock Foreground="{DynamicResource AppTextTertiaryBrush}" Text="发送一条消息后显示本次请求的每次尝试。" TextWrapping="Wrap" IsVisible="{Binding HasNoLastAttempts}" />
+            <ItemsControl ItemsSource="{Binding LastAttempts}" IsVisible="{Binding HasLastAttempts}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Background="{DynamicResource AppSurfaceSoftBrush}" CornerRadius="8" Padding="10" Margin="0,0,0,8">
+                    <StackPanel Spacing="6">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="3">
+                          <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding AttemptTitle}" TextWrapping="Wrap" />
+                          <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding AttemptModelText}" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <Border Grid.Column="1" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="10" Padding="7,3" IsVisible="{Binding IsSuccess}"><TextBlock FontSize="11" Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" /></Border>
+                        <Border Grid.Column="1" Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" Padding="7,3" IsVisible="{Binding HasError}"><TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding StatusText}" /></Border>
+                      </Grid>
+                      <WrapPanel>
+                        <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding DurationText}" Margin="0,0,8,0" />
+                        <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding FirstTokenText}" Margin="0,0,8,0" />
+                        <TextBlock FontSize="11" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding StreamingText}" />
+                      </WrapPanel>
+                      <TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" IsVisible="{Binding HasError}" TextWrapping="Wrap" />
+                    </StackPanel>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

@@ -1,0 +1,116 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.LoginView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:AuthViewModel">
+  <Grid>
+    <Grid.Background>
+      <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+        <GradientStop Color="{DynamicResource AppLoginGradientStartColor}" Offset="0" />
+        <GradientStop Color="{DynamicResource AppLoginGradientEndColor}" Offset="1" />
+      </LinearGradientBrush>
+    </Grid.Background>
+
+    <!-- 轻量装饰元素，保持 Vue 登录页的柔和渐变氛围。 -->
+    <Ellipse
+        Width="420"
+        Height="420"
+        Fill="{DynamicResource AppOnPrimaryBrush}"
+        HorizontalAlignment="Left"
+        Margin="-160,0,0,120"
+        Opacity="0.08"
+        VerticalAlignment="Bottom" />
+    <Ellipse
+        Width="360"
+        Height="360"
+        Fill="{DynamicResource AppOnPrimaryBrush}"
+        HorizontalAlignment="Right"
+        Margin="0,80,-130,0"
+        Opacity="0.08"
+        VerticalAlignment="Top" />
+
+    <Border
+        MaxWidth="430"
+        Margin="16"
+        Padding="34"
+        HorizontalAlignment="Stretch"
+        VerticalAlignment="Center"
+        Background="{DynamicResource AppCardBackgroundBrush}"
+        CornerRadius="16">
+      <StackPanel Spacing="18">
+        <StackPanel HorizontalAlignment="Center" Spacing="6">
+          <TextBlock
+              FontSize="24"
+              FontWeight="Bold"
+              Foreground="{DynamicResource AppTextPrimaryBrush}"
+              HorizontalAlignment="Center"
+              Text="AI Tool 管理后台" />
+          <TextBlock
+              FontSize="14"
+              Foreground="{DynamicResource AppTextSecondaryBrush}"
+              HorizontalAlignment="Center"
+              Text="{Binding PageSubtitle}" />
+        </StackPanel>
+
+        <Border
+            IsVisible="{Binding HasError}"
+            Background="{DynamicResource AppDangerSoftBrush}"
+            CornerRadius="8"
+            Padding="12">
+          <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+        </Border>
+
+        <StackPanel Spacing="7">
+          <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="服务端地址" />
+          <TextBox
+              Classes="form-input"
+              Text="{Binding ServerUrl}"
+              Watermark="http://192.168.3.8:5029" />
+        </StackPanel>
+
+        <StackPanel Spacing="7">
+          <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="管理密码" />
+          <TextBox
+              Classes="form-input"
+              PasswordChar="●"
+              Text="{Binding Password}"
+              Watermark="请输入管理密码" />
+        </StackPanel>
+
+        <StackPanel IsVisible="{Binding IsSetupMode}" Spacing="7">
+          <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="确认密码" />
+          <TextBox
+              Classes="form-input"
+              PasswordChar="●"
+              Text="{Binding ConfirmPassword}"
+              Watermark="再次输入密码" />
+        </StackPanel>
+
+        <Button
+            Classes="primary-button"
+            Command="{Binding SubmitCommand}"
+            Content="{Binding SubmitButtonText}"
+            HorizontalAlignment="Stretch"
+            HorizontalContentAlignment="Center"
+            IsDefault="True"
+            IsEnabled="{Binding CanSubmit}"
+            Padding="14,10" />
+
+        <TextBlock
+            FontSize="13"
+            FontWeight="SemiBold"
+            Foreground="{DynamicResource AppInfoTextBrush}"
+            HorizontalAlignment="Center"
+            IsVisible="{Binding IsBusy}"
+            Text="正在登录，请稍候..." />
+
+        <TextBlock
+            FontSize="12"
+            Foreground="{DynamicResource AppTextTertiaryBrush}"
+            HorizontalAlignment="Center"
+            Text="连接到已部署的 AI Tool 服务" />
+      </StackPanel>
+    </Border>
+  </Grid>
+</UserControl>

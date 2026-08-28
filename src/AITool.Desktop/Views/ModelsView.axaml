@@ -1,0 +1,282 @@
+<UserControl
+    x:Class="AITool.Desktop.Views.ModelsView"
+    xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:AITool.Desktop.ViewModels"
+    x:DataType="vm:ModelsViewModel"
+    x:CompileBindings="False">
+  <Grid>
+    <Grid RowDefinitions="Auto,Auto,*" RowSpacing="16">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Spacing="4">
+          <TextBlock FontSize="22" FontWeight="Bold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="模型库" />
+          <TextBlock Classes="page-subtitle" Text="统一管理模型映射和启用状态" />
+        </StackPanel>
+        <WrapPanel Grid.Column="1" HorizontalAlignment="Right" ItemSpacing="8" LineSpacing="6">
+          <Button Classes="secondary-button" Click="ConfirmClearAll" Content="清空全部模型" IsEnabled="{Binding CanClearAll}" Padding="12,8" />
+          <Button Classes="primary-button" Command="{Binding OpenCreateCommand}" Content="新增模型" Padding="14,8" />
+        </WrapPanel>
+      </Grid>
+
+      <Grid Grid.Row="1" ColumnDefinitions="Auto,*,Auto" ColumnSpacing="10">
+        <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+          <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="gallery" Content="模型分组" IsChecked="{Binding IsGalleryTab}" />
+          <ToggleButton Classes="filter-toggle" Command="{Binding SelectTabCommand}" CommandParameter="rules" Content="厂商规则" IsChecked="{Binding IsVendorRulesTab}" />
+        </StackPanel>
+        <TextBox Grid.Column="1" Classes="form-input" Text="{Binding SearchText}" Watermark="搜索模型名、显示名或厂商名" IsVisible="{Binding IsGalleryTab}" />
+        <TextBox Grid.Column="1" Classes="form-input" Text="{Binding VendorSearchText}" Watermark="搜索厂商名或匹配规则" IsVisible="{Binding IsVendorRulesTab}" />
+        <Button Grid.Column="2" Classes="secondary-button" Command="{Binding RefreshCommand}" Content="刷新" Padding="12,7" />
+      </Grid>
+
+      <Grid Grid.Row="2">
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="{DynamicResource AppTextSecondaryBrush}" IsVisible="{Binding ShowGalleryLoading}" Text="正在加载模型..." />
+        <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding ShowGalleryError}"><TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" /></Border>
+        <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="8" Padding="14" IsVisible="{Binding ShowGalleryMessage}"><TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding Message}" TextWrapping="Wrap" /></Border>
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="{DynamicResource AppTextSecondaryBrush}" IsVisible="{Binding ShowGalleryNoModels}" Text="暂无模型，请先新增模型。" />
+        <TextBlock HorizontalAlignment="Center" Margin="0,35,0,0" Foreground="{DynamicResource AppTextSecondaryBrush}" IsVisible="{Binding ShowGalleryNoSearchResults}" Text="没有匹配当前搜索条件的模型。" />
+        <ScrollViewer IsVisible="{Binding IsGalleryTab}" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+          <ItemsControl ItemsSource="{Binding FilteredVendorGroups}">
+            <ItemsControl.ItemTemplate>
+              <DataTemplate>
+                <Border Classes="content-card" Margin="0,0,0,14" Padding="0">
+                  <StackPanel>
+                    <Border Background="{DynamicResource AppInputBackgroundBrush}" Padding="18,13">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock FontSize="15" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding VendorName}" />
+                        <TextBlock Grid.Column="1" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding Models.Count, StringFormat='共 {0} 个模型'}" />
+                      </Grid>
+                    </Border>
+                    <ItemsControl ItemsSource="{Binding Models}">
+                      <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                          <Border BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="18,13">
+                            <Grid ColumnDefinitions="2.2*,1.2*,1*,1.8*" ColumnSpacing="14">
+                              <StackPanel Spacing="3">
+                                <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding DisplayName}" />
+                                <TextBlock FontSize="12" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="{Binding ModelName}" />
+                              </StackPanel>
+                              <TextBlock Grid.Column="1" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding SiteCount, StringFormat='关联站点：{0}'}" VerticalAlignment="Center" />
+                              <Border Grid.Column="2" Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="12" Padding="9,4" HorizontalAlignment="Left" VerticalAlignment="Center">
+                                <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding StatusText}" />
+                              </Border>
+                              <WrapPanel Grid.Column="3" ItemSpacing="6" LineSpacing="6" VerticalAlignment="Center">
+                                <Button Classes="secondary-button" Command="{Binding DataContext.OpenEditCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,6" />
+                                <Button Classes="secondary-button" Command="{Binding DataContext.OpenMappingCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="映射" IsEnabled="{Binding DataContext.CanOpenMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="10,6" />
+                                <Button Classes="secondary-button" Command="{Binding DataContext.ToggleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="{Binding ToggleActionText}" Padding="10,6" />
+                                <Button Classes="secondary-button" Click="ConfirmDeleteModel" Content="删除" Padding="10,6" />
+                              </WrapPanel>
+                            </Grid>
+                          </Border>
+                        </DataTemplate>
+                      </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                  </StackPanel>
+                </Border>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </ScrollViewer>
+
+        <ScrollViewer IsVisible="{Binding IsVendorRulesTab}" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto">
+          <StackPanel Spacing="12">
+            <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="14">
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+                <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="每个厂商可配置标题样式和多条匹配规则，规则按优先级从小到大匹配。" TextWrapping="Wrap" />
+                <WrapPanel Grid.Column="1" HorizontalAlignment="Right" ItemSpacing="8" LineSpacing="6">
+                  <Button Classes="secondary-button" Command="{Binding AddVendorCommand}" Content="新增厂商" Padding="10,6" />
+                  <Button Classes="primary-button" Command="{Binding SaveVendorCatalogCommand}" Content="保存厂商规则" IsEnabled="{Binding CanSaveVendorCatalog}" Padding="10,6" />
+                </WrapPanel>
+              </Grid>
+            </Border>
+            <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" Padding="12" IsVisible="{Binding HasVendorError}">
+              <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding VendorErrorMessage}" TextWrapping="Wrap" />
+            </Border>
+            <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextSecondaryBrush}" IsVisible="{Binding HasNoVendorDefinitions}" Margin="20" Text="暂无厂商配置，请先新增厂商。" />
+            <ItemsControl ItemsSource="{Binding FilteredVendorDefinitions}">
+              <ItemsControl.ItemTemplate>
+                <DataTemplate>
+                  <Border Classes="content-card" Margin="0,0,0,10" Padding="14">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                      <StackPanel Spacing="4">
+                        <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding VendorName}" />
+                        <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Rules.Count, StringFormat='规则 {0} 条'}" />
+                        <ItemsControl ItemsSource="{Binding Rules}">
+                          <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                              <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding Pattern}" TextTrimming="CharacterEllipsis" />
+                            </DataTemplate>
+                          </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                      </StackPanel>
+                      <WrapPanel Grid.Column="1" ItemSpacing="8" LineSpacing="6" VerticalAlignment="Top">
+                        <Button Classes="secondary-button" Command="{Binding DataContext.OpenVendorEditorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="编辑" Padding="10,6" />
+                        <Button Classes="secondary-button" Command="{Binding DataContext.DeleteVendorCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="10,6" />
+                      </WrapPanel>
+                    </Grid>
+                  </Border>
+                </DataTemplate>
+              </ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
+
+        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsVendorEditorOpen}" Padding="24" Margin="12" MaxWidth="900" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="10">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="14">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="厂商规则编辑" />
+                <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseVendorEditorCommand}" Content="关闭" Padding="10,6" />
+              </Grid>
+              <Grid ColumnDefinitions="1.5*,1*,Auto" ColumnSpacing="10">
+                <StackPanel Spacing="5"><TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="厂商名称" /><TextBox Classes="form-input" Text="{Binding EditingVendor.VendorName, Mode=TwoWay}" /></StackPanel>
+                <StackPanel Grid.Column="1" Spacing="5"><TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="标题背景色" /><TextBox Classes="form-input" Text="{Binding EditingVendor.HeaderBackground, Mode=TwoWay}" /></StackPanel>
+                <StackPanel Grid.Column="2" Spacing="5"><TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="排序值" /><NumericUpDown Width="90" Value="{Binding EditingVendor.SortOrder, Mode=TwoWay}" /></StackPanel>
+              </Grid>
+              <StackPanel Spacing="5"><TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="标题 SVG 图标内容" /><TextBox Classes="form-input" Text="{Binding EditingVendor.IconSvgBody, Mode=TwoWay}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="100" Watermark="可粘贴 SVG 内容或 path/defs" /></StackPanel>
+              <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="12">
+                <StackPanel Spacing="8">
+                  <Grid ColumnDefinitions="*,Auto"><TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="匹配规则" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding AddVendorRuleCommand}" Content="新增规则" Padding="10,6" /></Grid>
+                  <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="支持 exact、wildcard 和 regex，优先级越小越先匹配。" TextWrapping="Wrap" />
+                  <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding HasNoEditingVendorRules}" Text="暂无规则" />
+                  <ItemsControl ItemsSource="{Binding EditingVendorRules}">
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate>
+                        <Grid ColumnDefinitions="Auto,Auto,*,Auto" ColumnSpacing="8" Margin="0,4">
+                          <NumericUpDown Width="72" Value="{Binding Priority, Mode=TwoWay}" Minimum="0" />
+                          <ComboBox Grid.Column="1" Width="110" ItemsSource="{Binding DataContext.MatchTypeOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedItem="{Binding MatchType, Mode=TwoWay}" />
+                          <TextBox Grid.Column="2" Classes="form-input" Text="{Binding Pattern, Mode=TwoWay}" Watermark="匹配表达式" />
+                          <Button Grid.Column="3" Classes="secondary-button" Command="{Binding DataContext.DeleteVendorRuleCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="删除" Padding="9,5" />
+                        </Grid>
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </StackPanel>
+              </Border>
+              <Button Classes="primary-button" Command="{Binding SaveVendorCatalogCommand}" Content="保存厂商规则" IsEnabled="{Binding CanSaveVendorCatalog}" HorizontalContentAlignment="Center" Padding="12,9" />
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+
+        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsEditorOpen}" Padding="24" Margin="12" MaxWidth="520" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="10">
+          <StackPanel Spacing="14">
+            <Grid ColumnDefinitions="*,Auto"><TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding EditorTitle}" /><Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseEditorCommand}" Content="关闭" Padding="10,6" /></Grid>
+            <StackPanel Spacing="6">
+              <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="模型名称" />
+              <TextBox Classes="form-input" Text="{Binding Form.ModelName}" Watermark="例如 claude-3-7-sonnet" IsReadOnly="{Binding IsEditMode}" />
+              <TextBlock FontSize="12" Foreground="{DynamicResource AppWarningTextBrush}" IsVisible="{Binding IsEditMode}" Text="编辑已有模型时不能修改模型名称，修改会影响现有路由关联。" TextWrapping="Wrap" />
+            </StackPanel>
+            <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="显示名称" /><TextBox Classes="form-input" Text="{Binding Form.DisplayName}" /></StackPanel>
+            <StackPanel Spacing="6"><TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="推理强度覆盖" /><TextBox Classes="form-input" Text="{Binding Form.OverrideReasoningEffort}" Watermark="可选" /></StackPanel>
+            <StackPanel Spacing="6">
+              <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="兼容规则集" />
+              <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                <ComboBox ItemsSource="{Binding ProfileOptions}" SelectedItem="{Binding SelectedCompatibilityProfile}">
+                  <ComboBox.ItemTemplate>
+                    <DataTemplate>
+                      <StackPanel Orientation="Horizontal" Spacing="6">
+                        <TextBlock Text="{Binding Name}" />
+                        <TextBlock Foreground="{DynamicResource AppWarningTextBrush}" Text="{Binding StatusText, StringFormat='（{0}）'}" />
+                      </StackPanel>
+                    </DataTemplate>
+                  </ComboBox.ItemTemplate>
+                </ComboBox>
+                <Button Grid.Column="1" Classes="secondary-button" Command="{Binding ClearCompatibilityProfileCommand}" Content="清除" Padding="10,6" />
+              </Grid>
+            </StackPanel>
+            <CheckBox Content="启用模型" IsChecked="{Binding Form.IsEnabled}" />
+            <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" IsVisible="{Binding HasError}" Text="{Binding ErrorMessage}" TextWrapping="Wrap" />
+            <Button Classes="primary-button" Command="{Binding SaveCommand}" Content="保存模型" IsEnabled="{Binding CanSave}" HorizontalContentAlignment="Center" Padding="12,9" />
+          </StackPanel>
+        </Border>
+
+        <Border Background="{DynamicResource AppCardBackgroundBrush}" BorderBrush="{DynamicResource AppBorderStrongBrush}" BorderThickness="1" CornerRadius="14" IsVisible="{Binding IsMappingOpen}" Padding="24" Margin="12" MaxWidth="560" MaxHeight="720" HorizontalAlignment="Stretch" VerticalAlignment="Center" ZIndex="11">
+          <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel Spacing="14">
+              <Grid ColumnDefinitions="*,Auto">
+                <TextBlock FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding MappingTitle}" />
+                <Button Grid.Column="1" Classes="secondary-button" Command="{Binding CloseMappingCommand}" Content="关闭" Padding="10,6" />
+              </Grid>
+
+              <Border Background="{DynamicResource AppInfoSoftBrush}" CornerRadius="8" IsVisible="{Binding IsMappingLoading}" Padding="12">
+                <TextBlock Foreground="{DynamicResource AppInfoTextBrush}" Text="正在加载站点映射..." />
+              </Border>
+              <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="8" IsVisible="{Binding HasMappingError}" Padding="12">
+                <TextBlock Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding MappingErrorMessage}" TextWrapping="Wrap" />
+              </Border>
+              <Border Background="{DynamicResource AppSuccessSoftBrush}" CornerRadius="8" IsVisible="{Binding HasMappingMessage}" Padding="12">
+                <TextBlock Foreground="{DynamicResource AppSuccessTextBrush}" Text="{Binding MappingMessage}" TextWrapping="Wrap" />
+              </Border>
+
+              <StackPanel IsVisible="{Binding HasMappingRows}" Spacing="8">
+                <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="已关联站点" />
+                <ItemsControl ItemsSource="{Binding MappingDetail.SiteMappings}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                      <Border Background="{DynamicResource AppInputBackgroundBrush}" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="1" CornerRadius="8" Margin="0,0,0,8" Padding="12">
+                        <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="*,Auto" RowSpacing="10">
+                          <StackPanel Spacing="3">
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                              <TextBlock FontWeight="SemiBold" Foreground="{DynamicResource AppTextPrimaryBrush}" Text="{Binding SiteName}" />
+                              <Border Background="{DynamicResource AppDangerSoftBrush}" CornerRadius="10" IsVisible="{Binding IsDisabled}" Padding="7,2">
+                                <TextBlock FontSize="11" Foreground="{DynamicResource AppDangerTextBrush}" Text="{Binding StatusText}" />
+                              </Border>
+                            </StackPanel>
+                            <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="{Binding RemoteModelName}" TextWrapping="Wrap" />
+                          </StackPanel>
+                          <Button Grid.Column="1" Classes="secondary-button" Click="ConfirmDeleteMapping" Content="删除" Padding="9,5" />
+                          <Grid Grid.Row="1" Grid.ColumnSpan="2" ColumnDefinitions="Auto,100,Auto" ColumnSpacing="8">
+                            <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="最大并发" VerticalAlignment="Center" />
+                            <NumericUpDown Grid.Column="1" Minimum="0" Maximum="100000" Value="{Binding MaxConcurrency, Mode=TwoWay}" IsEnabled="{Binding DataContext.CanEditMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="5,2" />
+                            <Button Grid.Column="2" Classes="secondary-button" Command="{Binding DataContext.UpdateMappingConcurrencyCommand, RelativeSource={RelativeSource AncestorType=UserControl}}" CommandParameter="{Binding}" Content="保存" IsEnabled="{Binding DataContext.CanSaveMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" Padding="9,5" />
+                          </Grid>
+                          <!-- 映射级客户端特征模拟（预设 / 自定义头 / 出口代理），与网页端映射编辑对齐 -->
+                          <Border Grid.Row="2" Grid.ColumnSpan="2" BorderBrush="{DynamicResource AppBorderBrush}" BorderThickness="0,1,0,0" Padding="0,10,0,0">
+                            <StackPanel Spacing="8">
+                              <Grid ColumnDefinitions="Auto,220" ColumnSpacing="8">
+                                <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="特征仿真" VerticalAlignment="Center" />
+                                <ComboBox Grid.Column="1" ItemsSource="{Binding DataContext.ClientEmulationOptions, RelativeSource={RelativeSource AncestorType=UserControl}}" SelectedValue="{Binding ClientEmulation, Mode=TwoWay}" SelectedValueBinding="{Binding Value}" IsEnabled="{Binding DataContext.CanEditMapping, RelativeSource={RelativeSource AncestorType=UserControl}}">
+                                  <ComboBox.ItemTemplate>
+                                    <DataTemplate><TextBlock Text="{Binding Label}" /></DataTemplate>
+                                  </ComboBox.ItemTemplate>
+                                </ComboBox>
+                              </Grid>
+                              <Grid ColumnDefinitions="Auto,220" ColumnSpacing="8">
+                                <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" Text="出口代理" VerticalAlignment="Center" />
+                                <TextBox Grid.Column="1" Classes="form-input" Text="{Binding EgressProxyUrl, Mode=TwoWay}" Watermark="留空继承站点配置" IsEnabled="{Binding DataContext.CanEditMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                              </Grid>
+                              <StackPanel Spacing="3">
+                                <TextBlock FontSize="11" Foreground="{DynamicResource AppTextTertiaryBrush}" Text="自定义请求头 JSON（支持 ${guid}/${nanoid:12}/${model} 占位符，留空继承站点配置）" TextWrapping="Wrap" />
+                                <TextBox Classes="form-input" AcceptsReturn="True" MinHeight="48" Text="{Binding ExtraHeadersJson, Mode=TwoWay}" TextWrapping="Wrap" Watermark='例如 {"User-Agent": "my-app/1.0"}' IsEnabled="{Binding DataContext.CanEditMapping, RelativeSource={RelativeSource AncestorType=UserControl}}" />
+                              </StackPanel>
+                            </StackPanel>
+                          </Border>
+                        </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+              <TextBlock HorizontalAlignment="Center" Foreground="{DynamicResource AppTextTertiaryBrush}" IsVisible="{Binding ShowNoMappingRows}" Text="暂无关联站点" />
+
+              <Border Background="{DynamicResource AppInputBackgroundBrush}" CornerRadius="8" Padding="14">
+                <StackPanel Spacing="9">
+                  <TextBlock FontSize="13" FontWeight="SemiBold" Foreground="{DynamicResource AppCodeForegroundBrush}" Text="添加站点映射" />
+                  <TextBlock FontSize="12" Foreground="{DynamicResource AppTextSecondaryBrush}" Text="同一站点可配置站点侧实际使用的模型名称；最大并发为 0 时表示不限制。" TextWrapping="Wrap" />
+                  <TextBlock Foreground="{DynamicResource AppTextSecondaryBrush}" IsVisible="{Binding ShowNoAvailableSites}" Text="{Binding NoAvailableSitesMessage}" />
+                  <ComboBox ItemsSource="{Binding MappingDetail.AvailableSites}" SelectedItem="{Binding SelectedMappingSite}" IsVisible="{Binding HasAvailableSites}" IsEnabled="{Binding CanEditMapping}">
+                    <ComboBox.ItemTemplate>
+                      <DataTemplate><TextBlock Text="{Binding Name}" /></DataTemplate>
+                    </ComboBox.ItemTemplate>
+                  </ComboBox>
+                  <TextBox Classes="form-input" Text="{Binding NewMappingRemoteName}" Watermark="站点上的模型名" IsVisible="{Binding HasAvailableSites}" IsEnabled="{Binding CanEditMapping}" />
+                  <CheckBox Content="启用映射" IsChecked="{Binding NewMappingEnabled}" IsVisible="{Binding HasAvailableSites}" IsEnabled="{Binding CanEditMapping}" />
+                  <Button Classes="primary-button" Command="{Binding AddMappingCommand}" Content="添加映射" IsEnabled="{Binding CanAddMapping}" IsVisible="{Binding HasAvailableSites}" HorizontalContentAlignment="Center" Padding="12,8" />
+                </StackPanel>
+              </Border>
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
+      </Grid>
+    </Grid>
+  </Grid>
+</UserControl>

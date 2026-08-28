@@ -3,6 +3,7 @@
     <Project Path="src/AITool.Admin/AITool.Admin.csproj" />
     <Project Path="src/AITool.Application/AITool.Application.csproj" />
     <Project Path="src/AITool.Core/AITool.Core.csproj" />
+    <Project Path="src/AITool.Desktop/AITool.Desktop.csproj" />
     <Project Path="src/AITool.Domain/AITool.Domain.csproj" />
     <Project Path="src/AITool.Infrastructure/AITool.Infrastructure.csproj" />
     <Project Path="src/AITool.Protocol/AITool.Protocol.csproj" />
