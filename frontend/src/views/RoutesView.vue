@@ -24,7 +24,8 @@ import {
   createRuleKeyResolver,
   filterSiteInstances,
   getDeleteEntryConfirmation,
-  isLatestRouteLoad
+  isLatestRouteLoad,
+  moveCandidate
 } from './routes/routeEditorState'
 
 interface TimeRange {
@@ -47,9 +48,11 @@ const refreshingPool = ref(false)
 const creatingEntry = ref(false)
 const saving = ref(false)
 const dirty = ref(false)
-const editingRanges = ref<Record<string, TimeRange[]>>({})
+// 时间规则编辑草稿：模式与时间段只改草稿，点「确定」才写回规则并保存，点「取消」或再次点击按钮丢弃。
+const availabilityDraft = ref<{ key: string; mode: RouteAvailabilityMode; ranges: TimeRange[] } | null>(null)
 const openAvailabilityKey = ref<string | null>(null)
 const draggingRuleIndex = ref<number | null>(null)
+const dragOverRuleIndex = ref<number | null>(null)
 const resolveRuleKey = createRuleKeyResolver()
 let latestLoadToken = 0
 let pendingSaveAfterCurrent = false
@@ -62,7 +65,7 @@ const filteredInstances = computed(
   () => filterSiteInstances(siteInstances.value, candidateSearch.value)
 )
 const siteInstanceOptions = computed(() => filteredInstances.value.map((instance) => ({
-  label: `${instance.siteName} / ${instance.siteModelName} / ${instance.protocolType}`,
+  label: `${instance.siteName} / ${instance.siteModelName}`,
   value: `${instance.siteId}::${instance.siteModelName}`
 })))
 const selectedSiteInstance = computed(() => filteredInstances.value.find(
@@ -89,16 +92,8 @@ function serializeTimeRanges(ranges: TimeRange[]): string {
   return JSON.stringify(ranges)
 }
 
-function getRanges(rule: RouteRuleItem): TimeRange[] {
-  const key = resolveRuleKey(rule)
-  if (!editingRanges.value[key]) {
-    editingRanges.value[key] = parseTimeRanges(rule.timeRangesJson)
-  }
-  return editingRanges.value[key]
-}
-
 function getAvailabilitySummary(rule: RouteRuleItem): { text: string; className: string } {
-  const ranges = rule.availabilityMode === 'AllDay' ? [] : getRanges(rule)
+  const ranges = rule.availabilityMode === 'AllDay' ? [] : parseTimeRanges(rule.timeRangesJson)
   if (rule.availabilityMode === 'AllDay' || ranges.length === 0) {
     return { text: '全天可用', className: 'route-badge-muted' }
   }
@@ -117,7 +112,15 @@ function isAvailabilityOpen(rule: RouteRuleItem): boolean {
 
 function toggleAvailabilityEditor(rule: RouteRuleItem): void {
   const key = resolveRuleKey(rule)
-  openAvailabilityKey.value = openAvailabilityKey.value === key ? null : key
+  if (openAvailabilityKey.value === key) {
+    // 再次点击同一行：丢弃草稿并折叠
+    availabilityDraft.value = null
+    openAvailabilityKey.value = null
+    return
+  }
+  // 打开编辑器：用已保存值初始化草稿，编辑期间不落库
+  availabilityDraft.value = { key, mode: rule.availabilityMode, ranges: parseTimeRanges(rule.timeRangesJson) }
+  openAvailabilityKey.value = key
 }
 
 function markDirty(): void {
@@ -129,21 +132,30 @@ function saveAfterChange(): void {
   void handleSave()
 }
 
-function handleAvailabilityChange(
-  rule: RouteRuleItem,
-  index: number,
-  mode: RouteAvailabilityMode
-): void {
-  rule.availabilityMode = mode
-  openAvailabilityKey.value = resolveRuleKey(rule)
-
-  if (mode === 'AllDay') {
-    rule.timeRangesJson = ''
-  } else {
-    rule.timeRangesJson = serializeTimeRanges(getRanges(rule))
+function handleAvailabilityChange(mode: RouteAvailabilityMode): void {
+  // 只改草稿，不保存；由「确定」统一写回
+  if (availabilityDraft.value) {
+    availabilityDraft.value.mode = mode
   }
+}
 
-  saveAfterChange()
+function confirmAvailability(): void {
+  const draft = availabilityDraft.value
+  if (!draft) return
+  const rule = rules.value.find((item) => resolveRuleKey(item) === draft.key)
+  if (rule) {
+    rule.availabilityMode = draft.mode
+    rule.timeRangesJson = draft.mode === 'AllDay' ? '' : serializeTimeRanges(draft.ranges)
+    saveAfterChange()
+  }
+  availabilityDraft.value = null
+  openAvailabilityKey.value = null
+}
+
+function cancelAvailability(): void {
+  // 丢弃草稿并折叠，规则保持已保存状态
+  availabilityDraft.value = null
+  openAvailabilityKey.value = null
 }
 
 function timeToTimestamp(value: string): number {
@@ -182,7 +194,8 @@ async function loadSelectedEntry(entryName: string | null): Promise<void> {
 
   if (!entryName) {
     rules.value = []
-    editingRanges.value = {}
+    availabilityDraft.value = null
+    openAvailabilityKey.value = null
     loading.value = false
     return
   }
@@ -193,7 +206,8 @@ async function loadSelectedEntry(entryName: string | null): Promise<void> {
     if (!isLatestRouteLoad(token, latestLoadToken)) return
 
     rules.value = loadedRules
-    editingRanges.value = {}
+    // 规则重载后旧的编辑草稿/展开状态失效，一并清理
+    availabilityDraft.value = null
     openAvailabilityKey.value = null
     dirty.value = false
   } finally {
@@ -269,7 +283,8 @@ async function deleteCurrentEntry(): Promise<void> {
 
   await api.deleteRouteEntry(entryName)
   rules.value = []
-  editingRanges.value = {}
+  availabilityDraft.value = null
+  openAvailabilityKey.value = null
   dirty.value = false
   await loadEntries()
   await loadSelectedEntry(selectedEntryName.value)
@@ -291,31 +306,82 @@ function addSelectedCandidate(): void {
   selectedSiteInstanceKey.value = null
 }
 
-function handleRuleDragStart(index: number): void {
+function handleRuleDragStart(index: number, event: DragEvent): void {
+  if (!canEdit.value) {
+    event.preventDefault()
+    return
+  }
+
+  const target = event.target as HTMLElement | null
+  if (target?.closest('button, input, select, .n-button, .n-select, .n-time-picker, .availability-popover, .route-actions, .order-actions')) {
+    event.preventDefault()
+    return
+  }
+
   draggingRuleIndex.value = index
+  dragOverRuleIndex.value = index
+
+  if (event.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    // Firefox / Safari 强制要求在 dragstart 中调用 setData，否则判定为无效拖拽并直接取消
+    event.dataTransfer.setData('text/plain', String(index))
+    event.dataTransfer.setData('application/x-aitool-route-index', String(index))
+  }
 }
 
-function handleRuleDragOver(index: number): void {
-  const from = draggingRuleIndex.value
-  if (from === null || from === index) return
+function handleRuleDragOver(index: number, event: DragEvent): void {
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+  if (draggingRuleIndex.value === null) return
+  if (dragOverRuleIndex.value !== index) {
+    dragOverRuleIndex.value = index
+  }
+}
 
-  const nextRules = [...rules.value]
-  const [draggedRule] = nextRules.splice(from, 1)
-  nextRules.splice(index, 0, draggedRule)
-  rules.value = nextRules
-  draggingRuleIndex.value = index
+function handleRuleDragEnter(index: number, event: DragEvent): void {
+  event.preventDefault()
+  if (event.dataTransfer) {
+    event.dataTransfer.dropEffect = 'move'
+  }
+  if (draggingRuleIndex.value !== null) {
+    dragOverRuleIndex.value = index
+  }
+}
+
+function handleRuleDrop(targetIndex: number, event: DragEvent): void {
+  event.preventDefault()
+  const from = draggingRuleIndex.value
+  if (from !== null && from !== targetIndex && from >= 0 && from < rules.value.length) {
+    const nextRules = [...rules.value]
+    const [draggedRule] = nextRules.splice(from, 1)
+    nextRules.splice(targetIndex, 0, draggedRule)
+    rules.value = nextRules
+    saveAfterChange()
+  }
+  draggingRuleIndex.value = null
+  dragOverRuleIndex.value = null
 }
 
 function handleRuleDragEnd(): void {
-  if (draggingRuleIndex.value !== null) {
-    draggingRuleIndex.value = null
+  draggingRuleIndex.value = null
+  dragOverRuleIndex.value = null
+}
+
+function handleMoveRule(index: number, direction: -1 | 1): void {
+  if (!canEdit.value) return
+  const next = moveCandidate(rules.value, index, direction)
+  if (next !== rules.value) {
+    rules.value = next
     saveAfterChange()
   }
 }
 
 function removeRule(index: number): void {
   rules.value = rules.value.filter((_, ruleIndex) => ruleIndex !== index)
-  editingRanges.value = {}
+  availabilityDraft.value = null
+  openAvailabilityKey.value = null
   saveAfterChange()
 }
 
@@ -403,7 +469,7 @@ onMounted(() => {
             :class="{ active: entry.entryName === selectedEntryName }"
             @click="changeEntry(entry.entryName)"
           >
-            <span class="entry-name">{{ entry.entryName }}</span>
+            <span class="entry-name">{{ entry.displayName || entry.entryName }}</span>
             <span class="entry-count">{{ entry.candidateCount }} 个候选</span>
           </button>
         </div>
@@ -414,7 +480,7 @@ onMounted(() => {
           <div>
             <h5 class="route-panel-title">候选实例队列</h5>
             <div class="route-panel-subtitle">
-              <template v-if="selectedEntry">当前主入口：{{ selectedEntry.entryName }}</template>
+              <template v-if="selectedEntry">当前主入口：{{ selectedEntry.displayName || selectedEntry.entryName }}</template>
               <template v-else>请选择或创建一个主入口</template>
             </div>
           </div>
@@ -462,13 +528,18 @@ onMounted(() => {
                   v-for="(rule, index) in rules"
                   :key="resolveRuleKey(rule)"
                   class="route-item"
-                  :class="{ dragging: draggingRuleIndex === index }"
-                  draggable="true"
-                  @dragstart="handleRuleDragStart(index)"
-                  @dragover.prevent="handleRuleDragOver(index)"
+                  :class="{
+                    dragging: draggingRuleIndex === index,
+                    'drop-target-active': dragOverRuleIndex === index && draggingRuleIndex !== null && draggingRuleIndex !== index
+                  }"
+                  :draggable="canEdit"
+                  @dragstart="handleRuleDragStart(index, $event)"
+                  @dragover="handleRuleDragOver(index, $event)"
+                  @dragenter="handleRuleDragEnter(index, $event)"
+                  @drop="handleRuleDrop(index, $event)"
                   @dragend="handleRuleDragEnd"
                 >
-                  <span class="drag-handle" aria-hidden="true">⠿</span>
+                  <span class="drag-handle" title="按住拖拽调整顺序" aria-hidden="true">⠿</span>
                   <span class="priority-num">{{ index + 1 }}</span>
                   <div class="site-info">
                     <div class="site-name-row">
@@ -477,9 +548,30 @@ onMounted(() => {
                       <span :class="['route-badge', getAvailabilitySummary(rule).className]">{{ getAvailabilitySummary(rule).text }}</span>
                       <span v-if="!rule.isEnabled" class="route-badge route-badge-muted">规则已禁用</span>
                     </div>
-                    <div class="remote-name">上游模型：{{ rule.upstreamModelName }} · 站点实例：{{ rule.siteModelName }}</div>
+                    <!-- 上游模型优先显示对外名（显示名称），未匹配模型库时回退站点名 -->
+                    <div class="remote-name">上游模型：{{ rule.modelDisplayName || rule.upstreamModelName }} · 站点实例：{{ rule.siteModelName }}</div>
                   </div>
-                  <NButton size="small" secondary class="availability-trigger" :disabled="!canEdit" @click="toggleAvailabilityEditor(rule)">时间规则</NButton>
+                  <div class="order-actions">
+                    <NButton
+                      size="tiny"
+                      quaternary
+                      :disabled="!canEdit || index === 0"
+                      title="上移"
+                      @click.stop="handleMoveRule(index, -1)"
+                    >
+                      ▲
+                    </NButton>
+                    <NButton
+                      size="tiny"
+                      quaternary
+                      :disabled="!canEdit || index === rules.length - 1"
+                      title="下移"
+                      @click.stop="handleMoveRule(index, 1)"
+                    >
+                      ▼
+                    </NButton>
+                  </div>
+                  <NButton size="small" secondary class="availability-trigger" :disabled="!canEdit" @click.stop="toggleAvailabilityEditor(rule)">时间规则</NButton>
                   <div class="route-actions">
                     <NPopconfirm @positive-click="removeRule(index)">
                       <template #trigger>
@@ -489,31 +581,36 @@ onMounted(() => {
                     </NPopconfirm>
                   </div>
                   <div :class="['availability-popover', { open: isAvailabilityOpen(rule) }]">
+                    <!-- 编辑只改草稿（availabilityDraft），点「确定」才写回规则并保存，点「取消」丢弃 -->
                     <NSelect
-                      :value="rule.availabilityMode"
+                      :value="availabilityDraft?.mode"
                       :options="availabilityOptions"
                       size="small"
                       :disabled="!canEdit"
                       class="availability-select"
-                      @update:value="(value: RouteAvailabilityMode) => handleAvailabilityChange(rule, index, value)"
+                      @update:value="(value: RouteAvailabilityMode) => handleAvailabilityChange(value)"
                     />
-                    <span v-show="rule.availabilityMode !== 'AllDay'" class="time-range-fields">
+                    <span v-show="availabilityDraft?.mode && availabilityDraft.mode !== 'AllDay'" class="time-range-fields">
                       <NTimePicker
-                        :value="timeToTimestamp(getRanges(rule)[0]?.start ?? '00:00')"
+                        :value="timeToTimestamp(availabilityDraft?.ranges[0]?.start ?? '00:00')"
                         format="HH:mm"
                         size="small"
                         :disabled="!canEdit"
-                        @update:value="(value: number | null) => { if (value !== null) { getRanges(rule)[0].start = timestampToTime(value); rule.timeRangesJson = serializeTimeRanges([getRanges(rule)[0]]); saveAfterChange() } }"
+                        @update:value="(value: number | null) => { if (value !== null && availabilityDraft) availabilityDraft.ranges[0].start = timestampToTime(value) }"
                       />
                       <span>至</span>
                       <NTimePicker
-                        :value="timeToTimestamp(getRanges(rule)[0]?.end ?? '23:59')"
+                        :value="timeToTimestamp(availabilityDraft?.ranges[0]?.end ?? '23:59')"
                         format="HH:mm"
                         size="small"
                         :disabled="!canEdit"
-                        @update:value="(value: number | null) => { if (value !== null) { getRanges(rule)[0].end = timestampToTime(value); rule.timeRangesJson = serializeTimeRanges([getRanges(rule)[0]]); saveAfterChange() } }"
+                        @update:value="(value: number | null) => { if (value !== null && availabilityDraft) availabilityDraft.ranges[0].end = timestampToTime(value) }"
                       />
                     </span>
+                    <div class="availability-actions">
+                      <NButton size="tiny" secondary :disabled="!canEdit" @click="cancelAvailability">取消</NButton>
+                      <NButton size="tiny" type="primary" :disabled="!canEdit" @click="confirmAvailability">确定</NButton>
+                    </div>
                     <span class="availability-hint">留空或无效配置会按全天可用处理</span>
                   </div>
                 </div>
@@ -675,14 +772,21 @@ onMounted(() => {
 
 .route-item {
   display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto auto;
+  grid-template-columns: auto auto minmax(0, 1fr) auto auto auto;
   align-items: center;
   gap: 12px;
   padding: 14px 16px;
   border-bottom: 1px solid var(--border-color-global);
   cursor: grab;
   user-select: none;
-  transition: background 0.15s;
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -webkit-user-drag: element;
+  transition: background 0.15s, outline 0.15s;
+}
+
+.route-item:active {
+  cursor: grabbing;
 }
 
 .route-item:hover {
@@ -690,8 +794,14 @@ onMounted(() => {
 }
 
 .route-item.dragging {
-  opacity: 0.58;
+  opacity: 0.45;
   background: var(--status-info-bg);
+}
+
+.route-item.drop-target-active {
+  background: color-mix(in srgb, var(--primary-color) 12%, var(--bg-card));
+  outline: 2px dashed var(--primary-color);
+  outline-offset: -2px;
 }
 
 .drag-handle {
@@ -699,6 +809,36 @@ onMounted(() => {
   color: var(--text-color-secondary);
   font-size: 18px;
   cursor: grab;
+  touch-action: none;
+  user-select: none;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.drag-handle:hover {
+  color: var(--primary-color);
+  background: var(--bg-page);
+}
+
+.order-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.order-actions :deep(.n-button) {
+  height: 18px;
+  width: 24px;
+  padding: 0;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--text-color-secondary);
+}
+
+.order-actions :deep(.n-button:hover:not(:disabled)) {
+  color: var(--primary-color);
 }
 
 .priority-num {
@@ -800,6 +940,13 @@ onMounted(() => {
   border-radius: 8px;
   background: var(--bg-page);
   cursor: default;
+}
+
+.availability-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
 }
 
 .availability-popover.open {

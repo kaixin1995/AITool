@@ -19,6 +19,7 @@ export const routeAvailabilityOptions: Array<{
 
 export interface RouteEntry {
   entryName: string
+  displayName?: string | null
   candidateCount: number
 }
 export interface SiteInstanceItem {
@@ -34,6 +35,7 @@ export interface RouteRuleItem {
   siteName: string
   siteEnabled: boolean
   upstreamModelName: string
+  modelDisplayName?: string | null
   siteModelName: string
   priority: number
   modelPriority: number

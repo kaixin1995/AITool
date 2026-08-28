@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   inspectionActionLabel,
   isInspectionDisabledError
-} from './codexInspectionState'
+} from './accountInspectionState'
 
-describe('Codex 巡检状态', () => {
+describe('OAuth 巡检状态', () => {
   it('只有 404 表示巡检功能未开启', () => {
     expect(isInspectionDisabledError({ status: 404 })).toBe(true)
     expect(isInspectionDisabledError({ status: 500 })).toBe(false)

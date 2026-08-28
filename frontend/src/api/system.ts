@@ -2,6 +2,7 @@ import { httpGet, httpPut, httpPost } from './http'
 
 export interface SystemSettings {
   proxyRequestTimeoutSeconds: number
+  proxyStreamIdleTimeoutSeconds: number
   proxyRetryCount: number
   detectionRequestTimeoutSeconds: number
   detectionRetryCount: number
@@ -13,11 +14,12 @@ export interface SystemSettings {
   developerFeaturesEnabled: boolean
   concurrencyMode: number
   concurrencyQueueTimeoutSeconds: number
-  codexFeaturesEnabled: boolean
-  codexInspectionEnabled: boolean
-  codexInspectionIntervalSeconds: number
-  codexQuotaMaxCacheHours: number
-  codexAutoDisableThresholdPercent: number
+  oauthFeaturesEnabled: boolean
+  oauthInspectionEnabled: boolean
+  oauthInspectionIntervalSeconds: number
+  oauthQuotaMaxCacheHours: number
+  oauthAutoDisableThresholdPercent: number
+  oauthInspectionCacheEnabled: boolean
   lastUsageLogPrunedAt: string | null
   lastUsageLogPrunedCount: number
 }

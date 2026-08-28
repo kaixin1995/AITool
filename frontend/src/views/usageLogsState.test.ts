@@ -2,8 +2,27 @@ import { describe, expect, it } from 'vitest'
 import {
   buildUsageLogsDefaultCustomRange,
   buildVisibleUsageLogPages,
-  canAutoLoadUsageLogs
+  canAutoLoadUsageLogs,
+  formatUsageLogModel
 } from './usageLogsState'
+
+describe('Usage Logs 模型显示', () => {
+  it('chat 页等非路由调用只显示对外模型', () => {
+    expect(formatUsageLogModel('deepseek-v4-flash', 'deepseek-ai/deepseek-v4-flash-0731', 'chat')).toBe('deepseek-v4-flash')
+    expect(formatUsageLogModel('', 'gpt-5.2', 'chat')).toBe('gpt-5.2')
+  })
+
+  it('路由调用显示 路由名 -> 对外模型', () => {
+    expect(formatUsageLogModel('chat-prod', 'gpt-5.5', 'proxy')).toBe('chat-prod -> gpt-5.5')
+    expect(formatUsageLogModel('gpt-5.2', 'gpt-5.2', 'proxy')).toBe('gpt-5.2')
+    expect(formatUsageLogModel('', 'gpt-5.2', 'proxy')).toBe('gpt-5.2')
+    expect(formatUsageLogModel(null, null, 'proxy')).toBe('-')
+  })
+
+  it('未知来源按路由调用处理，名称相同时不重复拼接', () => {
+    expect(formatUsageLogModel('deepseek-v4-flash', 'deepseek-v4-flash')).toBe('deepseek-v4-flash')
+  })
+})
 
 describe('Usage Logs 分页', () => {
   it('在末页仍显示完整五个连续页码', () => {

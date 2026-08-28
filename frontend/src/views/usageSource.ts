@@ -11,6 +11,7 @@ export const usageSourceOptions: SelectOption[] = [
   { label: 'Codex', value: 'codex' },
   { label: 'Open Code', value: 'open-code' },
   { label: 'ZCode', value: 'zcode' },
+  { label: 'DeepSeek Harness', value: 'deepseek-harness' },
   { label: '手动检测', value: 'detection-manual' },
   { label: '定时检测', value: 'detection-task' }
 ]
@@ -22,6 +23,7 @@ const usageSourceLabels: Record<string, string> = {
   codex: 'Codex',
   'open-code': 'Open Code',
   zcode: 'ZCode',
+  'deepseek-harness': 'DeepSeek Harness',
   'detection-manual': '手动检测',
   'detection-task': '定时检测'
 }

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, h, onMounted, onUnmounted, provide, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   NAlert,
@@ -18,14 +18,31 @@ import {
   type DataTableColumns
 } from 'naive-ui'
 import * as api from '@/api/developer'
-import type { DeveloperInvocationSummary, DeveloperConcurrencyItem } from '@/api/developer'
+import type { DeveloperInvocationSummary } from '@/api/developer'
+import { isRequestCanceled } from '@/api/http'
 import PageHeader from '@/components/PageHeader.vue'
 import ClientSimulator from './ClientSimulator.vue'
-import CircuitBreakerTab from './CircuitBreakerTab.vue'
+import ProtocolDiagnosticsTab from './ProtocolDiagnosticsTab.vue'
+import DiagnosticDumpsTab from './DiagnosticDumpsTab.vue'
+import HeaderProfilesTab from './HeaderProfilesTab.vue'
+import ProxyProfilesTab from './ProxyProfilesTab.vue'
+import SqlMigrationsTab from './SqlMigrationsTab.vue'
+import DeveloperAiDiagnosisDrawer from './DeveloperAiDiagnosisDrawer.vue'
+import JsonDiffView from '@/components/JsonDiffView.vue'
+import { analyzeProtocolError } from '@/utils/protocolErrorAnalyzer'
 import {
   developerHashForTab,
   developerTabFromHash,
-  type DeveloperToolTab
+  setProtocolDiagnosticsPrefill,
+  hasRewrittenHeaders,
+  getRewrittenHeaders,
+  getCurrentDisplayHeaders,
+  hasConvertedRequestBody,
+  getCurrentDisplayRequestBody,
+  hasConvertedResponseBody,
+  getCurrentDisplayResponseBody,
+  type DeveloperToolTab,
+  type ProtocolDiagnosticsPrefill
 } from './developerInvocationsState'
 
 interface DeveloperInvocationAttempt {
@@ -38,6 +55,7 @@ interface DeveloperInvocationAttempt {
   statusCode: number
   errorMessage: string
   preparedRequestBody: string
+  preparedRequestHeaders?: Record<string, string>
   responseBody: string
   responseContentType: string
   isStreaming: boolean
@@ -59,6 +77,7 @@ interface DeveloperInvocationDetail {
   requestPath: string
   requestModel: string
   requestHeaders: Record<string, string>
+  preparedRequestHeaders?: Record<string, string>
   requestBody: string
   targetSiteName: string
   attemptedModel: string
@@ -79,16 +98,15 @@ const message = useMessage()
 const route = useRoute()
 const router = useRouter()
 const activeTab = ref<DeveloperToolTab>(developerTabFromHash(route.hash))
+const prefillSignal = ref(0)
+provide('protocol-diagnostics-prefill', prefillSignal)
 const loading = ref(false)
-const concurrencyLoading = ref(false)
-const concurrencyError = ref('')
 const autoRefresh = ref(false)
 const summarizeDetail = ref(true)
 const entries = ref<DeveloperInvocationSummary[]>([])
 const totalCount = ref(0)
 const failedCount = ref(0)
 const pendingCount = ref(0)
-const concurrency = ref<DeveloperConcurrencyItem[]>([])
 const page = ref(1)
 const pageSize = 40
 const totalPages = ref(1)
@@ -97,6 +115,7 @@ const details = ref<Record<string, DeveloperInvocationDetail>>({})
 const detailLoading = ref<Record<string, boolean>>({})
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let invocationRequestRunning = false
+const detailAbortControllers = new Map<string, AbortController>()
 
 function isPending(status: string): boolean {
   return status?.toLowerCase() === 'pending'
@@ -122,6 +141,29 @@ function statusClass(status: string): string {
 function formatDateTime(value: string | null | undefined): string {
   if (!value) return '-'
   return new Date(value).toLocaleString('zh-CN')
+}
+
+function pruneInvocationDetails(nextEntries: DeveloperInvocationSummary[]): void {
+  const validTraceIds = new Set(nextEntries.map((entry) => entry.traceId))
+  for (const [traceId, controller] of detailAbortControllers) {
+    if (!validTraceIds.has(traceId)) {
+      controller.abort()
+      detailAbortControllers.delete(traceId)
+    }
+  }
+
+  const nextDetails: Record<string, DeveloperInvocationDetail> = {}
+  for (const [traceId, detail] of Object.entries(details.value)) {
+    if (validTraceIds.has(traceId)) nextDetails[traceId] = detail
+  }
+  details.value = nextDetails
+
+  const nextLoading: Record<string, boolean> = {}
+  for (const [traceId, isLoading] of Object.entries(detailLoading.value)) {
+    if (validTraceIds.has(traceId)) nextLoading[traceId] = isLoading
+  }
+  detailLoading.value = nextLoading
+  expandedTraceIds.value = new Set([...expandedTraceIds.value].filter((traceId) => validTraceIds.has(traceId)))
 }
 
 function formatDuration(value: number | null | undefined): string {
@@ -157,6 +199,41 @@ function headersText(headers: Record<string, string> | null | undefined): string
   return Object.entries(headers).map(([key, value]) => `${key}: ${value}`).join('\n')
 }
 
+const headersTab = ref<Record<string, 'original' | 'rewritten'>>({})
+const requestBodyTabs = ref<Record<string, 'original' | 'prepared'>>({})
+const responseBodyTabs = ref<Record<string, 'final' | 'upstream'>>({})
+
+function getAttemptKey(traceId: string, attempt: DeveloperInvocationAttempt, index: number): string {
+  return `${traceId}-${attempt.attemptId || index}`
+}
+
+function getActiveRequestBodyMode(traceId: string, attempt: DeveloperInvocationAttempt, index: number): 'original' | 'prepared' {
+  const key = getAttemptKey(traceId, attempt, index)
+  return requestBodyTabs.value[key] || 'original'
+}
+
+function setRequestBodyMode(traceId: string, attempt: DeveloperInvocationAttempt, index: number, mode: 'original' | 'prepared'): void {
+  const key = getAttemptKey(traceId, attempt, index)
+  requestBodyTabs.value[key] = mode
+}
+
+function getActiveResponseBodyMode(traceId: string, attempt: DeveloperInvocationAttempt, index: number): 'final' | 'upstream' {
+  const key = getAttemptKey(traceId, attempt, index)
+  return responseBodyTabs.value[key] || 'final'
+}
+
+function setResponseBodyMode(traceId: string, attempt: DeveloperInvocationAttempt, index: number, mode: 'final' | 'upstream'): void {
+  const key = getAttemptKey(traceId, attempt, index)
+  responseBodyTabs.value[key] = mode
+}
+
+function getActiveHeadersMode(traceId: string, detail: DeveloperInvocationDetail): 'original' | 'rewritten' {
+  if (headersTab.value[traceId]) {
+    return headersTab.value[traceId]
+  }
+  return hasRewrittenHeaders(detail) ? 'rewritten' : 'original'
+}
+
 function attemptStats(entry: DeveloperInvocationSummary): string {
   const success = entry.successAttemptCount ?? 0
   const failed = entry.failedAttemptCount ?? 0
@@ -168,20 +245,137 @@ function canShowDetailBody(value: unknown): boolean {
   return bodyText(value) !== '无'
 }
 
+// ── 调用记录 → 协议诊断台 联动 ──────────────────────────────
+function clientProtocolFromPath(path: string | undefined): string {
+  if (path?.includes('/v1/messages')) return 'Anthropic'
+  if (path?.includes('/v1/responses')) return 'Responses'
+  return 'OpenAI'
+}
+
+// 响应方向流式离线转换支持矩阵（与后端 IsSupportedStreamingDirection 的 response 分支一致）。
+// 键 = 上游协议，值 = 支持流式转换的客户端协议列表。
+const STREAM_RESPONSE_SUPPORTED: Record<string, readonly string[]> = {
+  OpenAI: ['Anthropic'],
+  Anthropic: ['OpenAI'],
+  Responses: ['OpenAI', 'Anthropic']
+}
+
+function isStreamResponseSupported(upstream: string, client: string): boolean {
+  if (upstream === client) return true
+  return STREAM_RESPONSE_SUPPORTED[upstream]?.includes(client) ?? false
+}
+
+function openProtocolDiagnostics(prefill: ProtocolDiagnosticsPrefill): void {
+  setProtocolDiagnosticsPrefill(prefill)
+  prefillSignal.value += 1
+  if (activeTab.value !== 'protocol-diagnostics') {
+    activeTab.value = 'protocol-diagnostics'
+  }
+}
+
+function diagnoseEntryRequest(entry: DeveloperInvocationDetail): void {
+  // 请求方向永远是整体转换（PrepareRequestBody 一次改写），与客户端是否流式无关。
+  openProtocolDiagnostics({
+    direction: 'request',
+    sourceProtocol: clientProtocolFromPath(entry.requestPath),
+    targetProtocol: entry.attempts[0]?.upstreamProtocolType || entry.protocolType || 'OpenAI',
+    streaming: false,
+    modelName: entry.requestModel,
+    payload: entry.requestBody
+  })
+}
+
+function diagnoseEntryResponse(entry: DeveloperInvocationDetail): void {
+  const upstream = entry.protocolType || 'OpenAI'
+  const client = clientProtocolFromPath(entry.requestPath)
+  openProtocolDiagnostics({
+    direction: 'response',
+    sourceProtocol: upstream,
+    targetProtocol: client,
+    // 流式响应转换只支持部分组合；不支持的组合退化为非流式（保留完整 SSE 便于手动调整）。
+    streaming: entry.isStreaming && isStreamResponseSupported(upstream, client),
+    modelName: entry.requestModel,
+    payload: entry.responseBody,
+    inputTokens: entry.inputTokens,
+    cachedTokens: entry.cachedTokens,
+    outputTokens: entry.outputTokens
+  })
+}
+
+// ── AI 智能诊断抽屉与对比状态 ──
+const showAiDrawer = ref(false)
+const aiDrawerContext = ref<api.DeveloperAiDiagnosePayload | null>(null)
+const expandedDiffAttemptIds = ref<Set<string>>(new Set())
+
+function toggleAttemptDiff(attemptId: string): void {
+  if (expandedDiffAttemptIds.value.has(attemptId)) {
+    expandedDiffAttemptIds.value.delete(attemptId)
+  } else {
+    expandedDiffAttemptIds.value.add(attemptId)
+  }
+}
+
+function openAiDiagnose(entry: DeveloperInvocationDetail, attempt: DeveloperInvocationAttempt): void {
+  aiDrawerContext.value = {
+    modelId: '',
+    clientProtocol: clientProtocolFromPath(entry.requestPath),
+    requestPath: entry.requestPath,
+    requestModel: entry.requestModel,
+    attemptedModel: attempt.attemptedModel,
+    targetSiteName: attempt.targetSiteName,
+    upstreamProtocolType: attempt.upstreamProtocolType,
+    forwardingMode: attempt.forwardingMode,
+    statusCode: attempt.statusCode,
+    errorMessage: attempt.errorMessage || details.value[entry.traceId]?.errorMessage || '',
+    originalRequestBody: entry.requestBody,
+    preparedRequestBody: attempt.preparedRequestBody
+  }
+  showAiDrawer.value = true
+}
+
+function openProtocolDiagnosticsWithAttempt(entry: DeveloperInvocationDetail, attempt: DeveloperInvocationAttempt): void {
+  const diag = analyzeProtocolError(attempt.errorMessage, attempt.statusCode)
+  openProtocolDiagnostics({
+    direction: 'request',
+    sourceProtocol: clientProtocolFromPath(entry.requestPath),
+    targetProtocol: attempt.upstreamProtocolType || 'OpenAI',
+    streaming: false,
+    modelName: entry.requestModel,
+    payload: entry.requestBody,
+    targetSiteName: attempt.targetSiteName,
+    attemptedModel: attempt.attemptedModel,
+    statusCode: attempt.statusCode,
+    errorMessage: attempt.errorMessage,
+    trialRules: diag?.recommendedRule ? [diag.recommendedRule] : []
+  })
+}
+
+function diagnoseAttemptResponse(entry: DeveloperInvocationDetail, attempt: DeveloperInvocationAttempt): void {
+  const upstream = attempt.upstreamProtocolType || 'OpenAI'
+  const client = clientProtocolFromPath(entry.requestPath)
+  openProtocolDiagnostics({
+    direction: 'response',
+    sourceProtocol: upstream,
+    targetProtocol: client,
+    streaming: attempt.isStreaming && isStreamResponseSupported(upstream, client),
+    modelName: entry.requestModel,
+    payload: attempt.responseBody,
+    inputTokens: attempt.inputTokens,
+    cachedTokens: attempt.cachedTokens,
+    outputTokens: attempt.outputTokens
+  })
+}
+
 function configureAutoRefresh(): void {
   if (pollTimer) {
     clearInterval(pollTimer)
     pollTimer = null
   }
-  if (
-    activeTab.value !== 'concurrency'
-    && !(activeTab.value === 'invocations' && autoRefresh.value)
-  ) return
+  if (!(activeTab.value === 'invocations' && autoRefresh.value)) return
 
   pollTimer = setInterval(() => {
     if (document.visibilityState !== 'visible') return
-    if (activeTab.value === 'concurrency') void loadConcurrency(false)
-    else if (activeTab.value === 'invocations' && autoRefresh.value) void loadInvocations(false)
+    if (activeTab.value === 'invocations' && autoRefresh.value) void loadInvocations(false)
   }, 5000)
 }
 
@@ -192,6 +386,7 @@ async function loadInvocations(showSpinner = true, targetPage = page.value): Pro
   try {
     const listResp = await api.getDeveloperList(targetPage, pageSize)
     entries.value = listResp.entries ?? []
+    pruneInvocationDetails(entries.value)
     page.value = listResp.page
     totalPages.value = listResp.totalPages || 1
     totalCount.value = listResp.totalCount
@@ -207,30 +402,14 @@ async function loadInvocations(showSpinner = true, targetPage = page.value): Pro
   }
 }
 
-async function loadConcurrency(showError = true): Promise<void> {
-  if (concurrencyLoading.value) return
-  concurrencyLoading.value = true
-  if (showError) concurrencyError.value = ''
-  try {
-    const response = await api.getDeveloperConcurrency()
-    concurrency.value = response.items ?? []
-    concurrencyError.value = ''
-  } catch (error) {
-    if ((error as { status?: number }).status !== 404) {
-      concurrencyError.value = '并发数据加载失败，当前保留上次成功结果。'
-    }
-  } finally {
-    concurrencyLoading.value = false
-  }
-}
-
 function refreshActiveTab(): void {
   if (activeTab.value === 'invocations') void loadInvocations(false)
-  else if (activeTab.value === 'concurrency') void loadConcurrency(false)
 }
 
 function handleVisibilityChange(): void {
-  if (document.visibilityState === 'visible') refreshActiveTab()
+  if (document.visibilityState === 'visible' && autoRefresh.value) {
+    refreshActiveTab()
+  }
 }
 
 function handleSummarizeChange(): void {
@@ -245,14 +424,22 @@ function handleSummarizeChange(): void {
 }
 
 async function loadDetail(traceId: string): Promise<void> {
+  detailAbortControllers.get(traceId)?.abort()
+  const controller = new AbortController()
+  detailAbortControllers.set(traceId, controller)
   detailLoading.value = { ...detailLoading.value, [traceId]: true }
   try {
-    const detail = await api.getDeveloperDetail(traceId, summarizeDetail.value) as DeveloperInvocationDetail
-    details.value = { ...details.value, [traceId]: detail }
+    const detail = await api.getDeveloperDetail(traceId, summarizeDetail.value, controller.signal) as DeveloperInvocationDetail
+    if (!controller.signal.aborted && expandedTraceIds.value.has(traceId)) {
+      details.value = { ...details.value, [traceId]: detail }
+    }
   } catch (e) {
-    message.error((e as Error).message)
+    if (!isRequestCanceled(e)) message.error((e as Error).message)
   } finally {
-    detailLoading.value = { ...detailLoading.value, [traceId]: false }
+    if (detailAbortControllers.get(traceId) === controller) {
+      detailAbortControllers.delete(traceId)
+      detailLoading.value = { ...detailLoading.value, [traceId]: false }
+    }
   }
 }
 
@@ -261,6 +448,11 @@ async function toggleDetail(traceId: string): Promise<void> {
   if (next.has(traceId)) {
     next.delete(traceId)
     expandedTraceIds.value = next
+    detailAbortControllers.get(traceId)?.abort()
+    const nextDetails = { ...details.value }
+    delete nextDetails[traceId]
+    details.value = nextDetails
+    detailLoading.value = { ...detailLoading.value, [traceId]: false }
     return
   }
   next.add(traceId)
@@ -301,31 +493,10 @@ const paginationSummary = computed(() => {
   return `显示第 ${formatNumber(start)}-${formatNumber(end)} 条，共 ${formatNumber(totalCount.value)} 条，一页最多 40 条`
 })
 
-const concColumns = computed<DataTableColumns<DeveloperConcurrencyItem>>(() => [
-  { title: '模型名', key: 'modelName', minWidth: 180, ellipsis: { tooltip: true } },
-  { title: '站点', key: 'siteName', minWidth: 160, ellipsis: { tooltip: true } },
-  {
-    title: '并发数',
-    key: 'activeCount',
-    width: 100,
-    align: 'right',
-    render: (r) => h('span', { class: ['concurrency-count-badge', r.activeCount > 0 ? 'is-active' : ''] }, r.activeCount)
-  },
-  { title: '最大并发', key: 'maxConcurrency', width: 110, align: 'right', render: (r) => r.maxConcurrency ?? '不限' },
-  {
-    title: '排队数',
-    key: 'queueCount',
-    width: 100,
-    align: 'right',
-    render: (r) => h('span', { class: ['concurrency-count-badge', r.queueCount > 0 ? 'is-queued' : ''] }, r.queueCount)
-  }
-])
-
 watch(activeTab, (tab) => {
   const hash = developerHashForTab(tab)
   if (route.hash !== hash) void router.replace({ hash })
   if (tab === 'invocations') void loadInvocations()
-  else if (tab === 'concurrency') void loadConcurrency()
   configureAutoRefresh()
 })
 
@@ -336,7 +507,6 @@ watch(() => route.hash, (hash) => {
 
 onMounted(() => {
   if (activeTab.value === 'invocations') void loadInvocations()
-  else if (activeTab.value === 'concurrency') void loadConcurrency()
   configureAutoRefresh()
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
@@ -344,6 +514,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
+  for (const controller of detailAbortControllers.values()) controller.abort()
+  detailAbortControllers.clear()
 })
 </script>
 
@@ -449,10 +621,36 @@ onUnmounted(() => {
                     </div>
                     <div class="trace-code-panel">
                       <div class="trace-panel-header">
-                        <div class="trace-section-title">请求头</div>
-                        <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(headersText(details[entry.traceId].requestHeaders))">复制</NButton>
+                        <div class="trace-header-toggle-wrap">
+                          <button
+                            type="button"
+                            class="trace-header-toggle-btn"
+                            :class="{ active: getActiveHeadersMode(entry.traceId, details[entry.traceId]) === 'original' }"
+                            @click="headersTab[entry.traceId] = 'original'"
+                          >
+                            原始请求头
+                          </button>
+                          <button
+                            type="button"
+                            class="trace-header-toggle-btn"
+                            :class="{ active: getActiveHeadersMode(entry.traceId, details[entry.traceId]) === 'rewritten' }"
+                            @click="headersTab[entry.traceId] = 'rewritten'"
+                          >
+                            ⚡ 重写后请求头
+                            <span v-if="hasRewrittenHeaders(details[entry.traceId])" class="trace-header-badge-tag">已改写</span>
+                            <span v-else class="trace-header-badge-tag-muted">无改写</span>
+                          </button>
+                        </div>
+                        <NButton
+                          size="tiny"
+                          secondary
+                          class="trace-copy-btn"
+                          @click="copyText(headersText(getCurrentDisplayHeaders(details[entry.traceId], getActiveHeadersMode(entry.traceId, details[entry.traceId]))))"
+                        >
+                          复制
+                        </NButton>
                       </div>
-                      <pre class="trace-pre trace-pre-compact">{{ headersText(details[entry.traceId].requestHeaders) }}</pre>
+                      <pre class="trace-pre trace-pre-compact">{{ headersText(getCurrentDisplayHeaders(details[entry.traceId], getActiveHeadersMode(entry.traceId, details[entry.traceId]))) }}</pre>
                     </div>
                   </div>
                   <div v-if="details[entry.traceId].errorMessage" class="trace-code-panel trace-code-panel-danger trace-final-error">
@@ -485,37 +683,170 @@ onUnmounted(() => {
                         <div class="trace-section-title trace-section-title-danger">错误信息</div>
                         <pre class="trace-pre">{{ attempt.errorMessage }}</pre>
                       </div>
-                      <div class="trace-attempt-body-grid">
-                        <div v-if="canShowDetailBody(attempt.preparedRequestBody)" class="trace-code-panel">
-                          <div class="trace-panel-header">
-                            <div class="trace-section-title">转换后请求体（发往上游）</div>
-                            <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.preparedRequestBody))">复制</NButton>
-                          </div>
-                          <pre class="trace-pre">{{ bodyText(attempt.preparedRequestBody) }}</pre>
+
+                      <!-- 智能错误归因与修复建议条 -->
+                      <div v-if="analyzeProtocolError(attempt.errorMessage, attempt.statusCode)" class="trace-smart-diagnosis-card">
+                        <div class="smart-diag-header">
+                          <span class="smart-diag-title">💡 智能诊断与归因</span>
+                          <span class="smart-diag-badge">{{ analyzeProtocolError(attempt.errorMessage, attempt.statusCode)?.title }}</span>
                         </div>
-                        <div v-if="canShowDetailBody(attempt.responseBody)" class="trace-code-panel">
+                        <p class="smart-diag-detail">{{ analyzeProtocolError(attempt.errorMessage, attempt.statusCode)?.detail }}</p>
+                        <p class="smart-diag-action">{{ analyzeProtocolError(attempt.errorMessage, attempt.statusCode)?.suggestedAction }}</p>
+                        <div class="smart-diag-actions">
+                          <NButton
+                            size="tiny"
+                            type="primary"
+                            @click="openProtocolDiagnosticsWithAttempt(details[entry.traceId], attempt)"
+                          >
+                            ⚡ 载入规则并测试
+                          </NButton>
+                          <NButton
+                            size="tiny"
+                            type="warning"
+                            ghost
+                            @click="openAiDiagnose(details[entry.traceId], attempt)"
+                          >
+                            🤖 AI 深度诊断
+                          </NButton>
+                        </div>
+                      </div>
+
+                      <div class="trace-attempt-body-grid">
+                        <!-- 请求体面板 -->
+                        <div
+                          v-if="canShowDetailBody(details[entry.traceId].requestBody) || canShowDetailBody(attempt.preparedRequestBody)"
+                          class="trace-code-panel"
+                        >
                           <div class="trace-panel-header">
-                            <div class="trace-section-title">尝试返回体</div>
-                            <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(attempt.responseBody))">复制</NButton>
+                            <!-- 若有协议转换：显示原始 ↔ 转换后请求体切换 Tab；若透传/无改写：仅显示标题 -->
+                            <div v-if="hasConvertedRequestBody(details[entry.traceId], attempt)" class="trace-header-toggle-wrap">
+                              <button
+                                type="button"
+                                class="trace-header-toggle-btn"
+                                :class="{ active: getActiveRequestBodyMode(entry.traceId, attempt, index) === 'original' }"
+                                @click="setRequestBodyMode(entry.traceId, attempt, index, 'original')"
+                              >
+                                原始请求体
+                              </button>
+                              <button
+                                type="button"
+                                class="trace-header-toggle-btn"
+                                :class="{ active: getActiveRequestBodyMode(entry.traceId, attempt, index) === 'prepared' }"
+                                @click="setRequestBodyMode(entry.traceId, attempt, index, 'prepared')"
+                              >
+                                ⚡ 转换后请求体
+                                <span class="trace-header-badge-tag">发往上游</span>
+                              </button>
+                            </div>
+                            <div v-else class="trace-section-title">
+                              请求体
+                              <span class="trace-header-badge-tag-muted">透传</span>
+                            </div>
+
+                            <div class="trace-panel-actions">
+                              <NButton
+                                v-if="hasConvertedRequestBody(details[entry.traceId], attempt)"
+                                size="tiny"
+                                :type="expandedDiffAttemptIds.has(attempt.attemptId || String(index)) ? 'primary' : 'default'"
+                                secondary
+                                class="trace-copy-btn"
+                                @click="toggleAttemptDiff(attempt.attemptId || String(index))"
+                              >
+                                {{ expandedDiffAttemptIds.has(attempt.attemptId || String(index)) ? '收起 Diff' : '对比 Diff' }}
+                              </NButton>
+                              <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="openProtocolDiagnosticsWithAttempt(details[entry.traceId], attempt)">诊断</NButton>
+                              <NButton
+                                size="tiny"
+                                secondary
+                                class="trace-copy-btn"
+                                @click="copyText(bodyText(getCurrentDisplayRequestBody(details[entry.traceId], attempt, getActiveRequestBodyMode(entry.traceId, attempt, index))))"
+                              >
+                                复制
+                              </NButton>
+                            </div>
                           </div>
-                          <pre class="trace-pre">{{ bodyText(attempt.responseBody) }}</pre>
+
+                          <!-- 就地 Diff 对比视图 -->
+                          <div
+                            v-if="expandedDiffAttemptIds.has(attempt.attemptId || String(index)) && hasConvertedRequestBody(details[entry.traceId], attempt)"
+                            class="attempt-diff-container mb-2"
+                          >
+                            <div class="text-xs font-bold text-slate-500 mb-1">原始请求 (before) ➔ 发往上游 (after) 差异对比：</div>
+                            <JsonDiffView
+                              :before="bodyText(details[entry.traceId].requestBody)"
+                              :after="bodyText(attempt.preparedRequestBody)"
+                            />
+                          </div>
+                          <pre v-else class="trace-pre">{{ bodyText(getCurrentDisplayRequestBody(details[entry.traceId], attempt, getActiveRequestBodyMode(entry.traceId, attempt, index))) }}</pre>
+                        </div>
+
+                        <!-- 响应体面板 -->
+                        <div
+                          v-if="canShowDetailBody(details[entry.traceId].responseBody) || canShowDetailBody(attempt.responseBody)"
+                          class="trace-code-panel"
+                        >
+                          <div class="trace-panel-header">
+                            <!-- 若响应发生格式转换：显示客户端响应体 ↔ 上游返回体切换 Tab；若透传/无转换：仅显示标题 -->
+                            <div v-if="hasConvertedResponseBody(details[entry.traceId], attempt)" class="trace-header-toggle-wrap">
+                              <button
+                                type="button"
+                                class="trace-header-toggle-btn"
+                                :class="{ active: getActiveResponseBodyMode(entry.traceId, attempt, index) === 'final' }"
+                                @click="setResponseBodyMode(entry.traceId, attempt, index, 'final')"
+                              >
+                                客户端响应体
+                              </button>
+                              <button
+                                type="button"
+                                class="trace-header-toggle-btn"
+                                :class="{ active: getActiveResponseBodyMode(entry.traceId, attempt, index) === 'upstream' }"
+                                @click="setResponseBodyMode(entry.traceId, attempt, index, 'upstream')"
+                              >
+                                ⚡ 上游返回体
+                                <span class="trace-header-badge-tag">原始</span>
+                              </button>
+                            </div>
+                            <div v-else class="trace-section-title">
+                              响应体
+                            </div>
+
+                            <div class="trace-panel-actions">
+                              <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="diagnoseAttemptResponse(details[entry.traceId], attempt)">诊断</NButton>
+                              <NButton
+                                size="tiny"
+                                secondary
+                                class="trace-copy-btn"
+                                @click="copyText(bodyText(getCurrentDisplayResponseBody(details[entry.traceId], attempt, getActiveResponseBodyMode(entry.traceId, attempt, index))))"
+                              >
+                                复制
+                              </NButton>
+                            </div>
+                          </div>
+                          <pre class="trace-pre">{{ bodyText(getCurrentDisplayResponseBody(details[entry.traceId], attempt, getActiveResponseBodyMode(entry.traceId, attempt, index))) }}</pre>
                         </div>
                       </div>
                     </article>
                   </div>
 
-                  <div class="trace-error-stack">
-                    <div class="trace-code-panel">
+                  <!-- 无尝试时的兜底请求/响应展示 -->
+                  <div v-if="!details[entry.traceId].attempts || details[entry.traceId].attempts.length === 0" class="trace-attempt-body-grid">
+                    <div v-if="canShowDetailBody(details[entry.traceId].requestBody)" class="trace-code-panel">
                       <div class="trace-panel-header">
                         <div class="trace-section-title">请求体</div>
-                        <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(details[entry.traceId].requestBody))">复制</NButton>
+                        <div class="trace-panel-actions">
+                          <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="diagnoseEntryRequest(details[entry.traceId])">诊断此请求</NButton>
+                          <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(details[entry.traceId].requestBody))">复制</NButton>
+                        </div>
                       </div>
                       <pre class="trace-pre">{{ bodyText(details[entry.traceId].requestBody) }}</pre>
                     </div>
-                    <div class="trace-code-panel">
+                    <div v-if="canShowDetailBody(details[entry.traceId].responseBody)" class="trace-code-panel">
                       <div class="trace-panel-header">
                         <div class="trace-section-title">响应体</div>
-                        <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(details[entry.traceId].responseBody))">复制</NButton>
+                        <div class="trace-panel-actions">
+                          <NButton size="tiny" type="primary" ghost class="trace-copy-btn" @click="diagnoseEntryResponse(details[entry.traceId])">诊断此响应</NButton>
+                          <NButton size="tiny" secondary class="trace-copy-btn" @click="copyText(bodyText(details[entry.traceId].responseBody))">复制</NButton>
+                        </div>
                       </div>
                       <pre class="trace-pre">{{ bodyText(details[entry.traceId].responseBody) }}</pre>
                     </div>
@@ -532,41 +863,38 @@ onUnmounted(() => {
           </div>
         </NTabPane>
 
+        <NTabPane name="diagnostic-dumps" tab="诊断抓包与样本">
+          <DiagnosticDumpsTab />
+        </NTabPane>
+
+        <NTabPane name="protocol-diagnostics" tab="协议自愈">
+          <ProtocolDiagnosticsTab />
+        </NTabPane>
+
         <NTabPane name="simulator" tab="客户端模拟">
           <ClientSimulator />
         </NTabPane>
 
-        <NTabPane name="concurrency" tab="当前模型并发数检测">
-          <div class="concurrency-header">
-            <h2 class="pane-title concurrency-title">
-              <span>当前模型并发数检测</span>
-              <NTooltip trigger="hover">
-                <template #trigger><span class="concurrency-help-trigger">?</span></template>
-                仅展示最近 6 小时内出现过的站点模型，并同步显示当前并发数、最大并发和排队数。
-              </NTooltip>
-            </h2>
-            <div class="concurrency-refresh-tip">进入此页后自动刷新</div>
-          </div>
-          <NAlert v-if="concurrencyError" type="error" :show-icon="false" class="concurrency-error">
-            {{ concurrencyError }}
-          </NAlert>
-          <NCard class="concurrency-table-card" :content-style="{ padding: 0 }">
-            <NDataTable
-              :columns="concColumns"
-              :data="concurrency"
-              :loading="concurrencyLoading"
-              :row-key="(r: DeveloperConcurrencyItem) => r.siteId + r.modelName"
-              :pagination="{ pageSize: 20 }"
-              :scroll-x="760"
-              size="small"
-            />
-          </NCard>
+        <NTabPane name="header-presets" tab="请求头模板库">
+          <HeaderProfilesTab />
         </NTabPane>
-        <NTabPane name="circuit-breaker" tab="熔断监控">
-          <CircuitBreakerTab />
+
+        <NTabPane name="proxy-profiles" tab="网络代理池">
+          <ProxyProfilesTab />
+        </NTabPane>
+
+        <NTabPane name="sql-migrations" tab="SQL 迁移">
+          <SqlMigrationsTab />
         </NTabPane>
       </NTabs>
     </NCard>
+
+    <!-- AI 智能故障诊断抽屉 -->
+    <DeveloperAiDiagnosisDrawer
+      v-model:show="showAiDrawer"
+      :context="aiDrawerContext"
+      @open-diagnostics="activeTab = 'protocol-diagnostics'"
+    />
   </div>
 </template>
 
@@ -751,6 +1079,70 @@ onUnmounted(() => {
   flex-wrap: wrap;
 }
 
+.trace-header-toggle-wrap {
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg-surface-soft);
+  padding: 2px;
+  border-radius: 6px;
+  border: 1px solid var(--border-color-soft);
+  gap: 2px;
+}
+
+.trace-header-toggle-btn {
+  background: transparent;
+  border: none;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-color-secondary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.trace-header-toggle-btn:hover {
+  color: var(--text-color-primary);
+}
+
+.trace-header-toggle-btn.active {
+  background: var(--primary-color, #10b981);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.trace-header-badge-tag {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  border-radius: 4px;
+  background: rgba(16, 185, 129, 0.2);
+  color: #10b981;
+  font-weight: 600;
+}
+
+.trace-header-toggle-btn.active .trace-header-badge-tag {
+  background: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+.trace-header-badge-tag-muted {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 1px 5px;
+  font-size: 10px;
+  border-radius: 4px;
+  background: var(--bg-surface-soft);
+  color: var(--text-color-tertiary, #94a3b8);
+  font-weight: 400;
+}
+
+.trace-header-toggle-btn.active .trace-header-badge-tag-muted {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.85);
+}
+
 .trace-title-group,
 .trace-model-pair {
   display: flex;
@@ -848,21 +1240,75 @@ onUnmounted(() => {
 }
 
 .trace-detail-grid,
-.trace-error-stack,
 .trace-attempt-body-grid {
   display: grid;
   gap: 12px;
   min-width: 0;
   margin-top: 12px;
-}
-
-.trace-detail-grid,
-.trace-attempt-body-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .trace-final-error {
   margin: 12px 0;
+}
+
+.trace-smart-diagnosis-card {
+  margin-top: 12px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: rgba(245, 158, 11, 0.08);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.smart-diag-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.smart-diag-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #d97706;
+}
+
+.smart-diag-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: rgba(245, 158, 11, 0.15);
+  color: #b45309;
+  font-weight: 600;
+}
+
+.smart-diag-detail {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-primary);
+  line-height: 1.5;
+}
+
+.smart-diag-action {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 600;
+  color: #0284c7;
+}
+
+.smart-diag-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.attempt-diff-container {
+  padding: 8px;
+  background: var(--bg-surface-soft);
+  border: 1px solid var(--border-color-soft);
+  border-radius: 8px;
 }
 
 .trace-basic-grid {
@@ -925,6 +1371,16 @@ onUnmounted(() => {
   min-width: 96px;
 }
 
+.trace-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.trace-panel-header .trace-panel-actions .trace-copy-btn {
+  min-width: auto;
+}
+
 .trace-pre {
   margin: 0;
   white-space: pre-wrap;
@@ -952,55 +1408,6 @@ onUnmounted(() => {
 .trace-pagination-actions {
   display: flex;
   gap: 8px;
-}
-
-.concurrency-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.concurrency-help-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--bg-surface-soft);
-  color: var(--text-color-secondary);
-  font-size: 12px;
-  font-weight: 800;
-  cursor: help;
-}
-
-.concurrency-table-card,
-.concurrency-table-card :deep(.n-data-table) {
-  max-width: 100%;
-}
-
-.concurrency-count-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 54px;
-  min-height: 30px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  background: var(--status-info-bg);
-  color: var(--status-info-text);
-  font-weight: 700;
-}
-
-.concurrency-count-badge.is-active {
-  background: var(--status-success-bg);
-  color: var(--status-success-text);
-}
-
-.concurrency-count-badge.is-queued {
-  background: var(--status-warning-bg);
-  color: var(--status-warning-text);
 }
 
 [data-theme='dark'] .trace-overview-card-primary,

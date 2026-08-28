@@ -1,5 +1,6 @@
 const numericFieldLabels: Record<string, string> = {
   proxyRequestTimeoutSeconds: '代理超时时间',
+  proxyStreamIdleTimeoutSeconds: '流式空闲超时',
   proxyRetryCount: '代理重试次数',
   detectionRequestTimeoutSeconds: '检测超时时间',
   detectionRetryCount: '检测重试次数',
@@ -9,9 +10,9 @@ const numericFieldLabels: Record<string, string> = {
   usageLogRetentionDays: 'UsageLogs 保留天数',
   concurrencyMode: '并发打满策略',
   concurrencyQueueTimeoutSeconds: '排队等待超时',
-  codexInspectionIntervalSeconds: 'Codex 巡检周期',
-  codexQuotaMaxCacheHours: 'Codex 额度缓存最大小时数',
-  codexAutoDisableThresholdPercent: 'Codex 自动禁用阈值'
+  oauthInspectionIntervalSeconds: '账号巡检周期',
+  oauthQuotaMaxCacheHours: '额度缓存最大小时数',
+  oauthAutoDisableThresholdPercent: '自动禁用阈值'
 }
 
 export function validateSystemSettingsNumbers(settings: object): string | null {

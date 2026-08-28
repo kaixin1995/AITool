@@ -1,16 +1,15 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { NCard, NSelect, NInput, NButton, NSwitch, useMessage, type SelectOption } from 'naive-ui'
 import * as chatApi from '@/api/chat'
 import type { ChatModelTarget, ChatAttemptResult, ChatSendResult } from '@/api/chat'
 
-interface Message { role: 'user' | 'assistant'; content: string; reasoning?: string; meta?: ChatSendResult; error?: boolean; createdAt: number; streaming?: boolean; reasoningEnabled?: boolean; durationMs?: number }
+interface Message { role: 'user' | 'assistant'; content: string; reasoning?: string; error?: boolean; createdAt: number; streaming?: boolean; reasoningEnabled?: boolean; durationMs?: number }
 
 const message = useMessage()
 const selectedModelId = ref<string | null>(null)
 const targets = ref<ChatModelTarget[]>([])
 const selectedMappingId = ref<string | null>(null)
-const modelSearch = ref('')
 const input = ref('')
 const sending = ref(false)
 const messages = ref<Message[]>([])
@@ -31,6 +30,7 @@ const lastAttempts = ref<ChatAttemptResult[] | null>(null)
 const expandedAttemptIndexes = ref<Set<number>>(new Set())
 const messagesContainer = ref<HTMLElement | null>(null)
 let abortController: AbortController | null = null
+const maxMessageHistory = 200
 
 async function loadModels(): Promise<void> {
   await loadTargets()
@@ -39,10 +39,10 @@ async function loadModels(): Promise<void> {
 async function loadTargets(): Promise<void> {
   lastAttempts.value = null
   targets.value = await chatApi.getChatTargets()
-  if (!selectedMappingId.value && targets.value.length > 0) {
-    selectedMappingId.value = targets.value[0].mappingId
-    selectedModelId.value = targets.value[0].modelId
-  }
+  // 刷新后若原映射已被删除或禁用，清空旧 value，避免选择框回退显示 mappingId。
+  const nextTarget = targets.value.find((item) => item.mappingId === selectedMappingId.value) ?? targets.value[0]
+  selectedMappingId.value = nextTarget?.mappingId ?? null
+  selectedModelId.value = nextTarget?.modelId ?? null
 }
 
 watch(selectedMappingId, (mappingId) => {
@@ -50,17 +50,39 @@ watch(selectedMappingId, (mappingId) => {
   selectedModelId.value = target?.modelId ?? null
 })
 
+function formatTargetLabel(target: ChatModelTarget): string {
+  const siteName = target.siteName?.trim() || '未命名站点'
+  const remoteModelName = target.siteModelName?.trim()
+  const displayName = target.modelDisplayName?.trim()
+  const modelLabel = displayName || remoteModelName || '未知模型'
+  return `${siteName} / ${modelLabel}`
+}
+
 const targetOptionsComputed = computed<SelectOption[]>(() => {
-  const keyword = modelSearch.value.trim().toLowerCase()
-  return targets.value
-    .filter((t) => {
-      const text = `${t.modelDisplayName} ${t.siteName} ${t.siteModelName}`.toLowerCase()
-      return !keyword || text.includes(keyword)
-    })
-    .map((t) => ({ label: `${t.siteName} / ${t.siteModelName}`, value: t.mappingId }))
+  // 不再用 modelSearch 过滤 options：选中项被过滤掉时 NSelect 会回退显示 value（乱码）。
+  // 搜索交由 NSelect 自身的 filterable 处理，保证选中项始终在 options 中。
+  // 同一站点模型会按多个 Key 展开为多个调度候选；选择值仍是 mappingId，界面只保留一项，避免重复展示。
+  const uniqueTargets = new Map<string, ChatModelTarget>()
+  for (const target of targets.value) {
+    if (!uniqueTargets.has(target.mappingId)) uniqueTargets.set(target.mappingId, target)
+  }
+
+  return [...uniqueTargets.values()]
+    .map((target) => ({ label: formatTargetLabel(target), value: target.mappingId }))
 })
 
-const currentReasoning = computed(() => streamingReasoning.value || [...messages.value].reverse().find((m) => m.reasoning)?.reasoning || '')
+const currentReasoning = computed(() => {
+  if (streamingReasoning.value) return streamingReasoning.value
+  for (let index = messages.value.length - 1; index >= 0; index--) {
+    if (messages.value[index].reasoning) return messages.value[index].reasoning || ''
+  }
+  return ''
+})
+
+function trimMessageHistory(): void {
+  const overflow = messages.value.length - maxMessageHistory
+  if (overflow > 0) messages.value.splice(0, overflow)
+}
 
 async function scrollToBottom(): Promise<void> {
   await nextTick()
@@ -78,6 +100,7 @@ async function handleSend(): Promise<void> {
   const startedAt = Date.now()
   messages.value.push({ role: 'user', content: text, createdAt: startedAt })
   messages.value.push({ role: 'assistant', content: '', createdAt: startedAt, streaming: enableStreaming.value, reasoningEnabled: enableReasoning.value })
+  trimMessageHistory()
   const assistantIdx = messages.value.length - 1
   streamingContent.value = ''
   streamingReasoning.value = ''
@@ -114,7 +137,6 @@ async function handleSend(): Promise<void> {
           const m = meta as ChatSendResult
           if (m?.attempts) {
             lastAttempts.value = m.attempts
-            messages.value[assistantIdx].meta = m
           }
         },
         onDone: () => {
@@ -127,7 +149,6 @@ async function handleSend(): Promise<void> {
           const streamError = err as Error & { attempts?: ChatAttemptResult[] }
           if (streamError.attempts) {
             lastAttempts.value = streamError.attempts
-            messages.value[assistantIdx].meta = { success: false, content: '', attempts: streamError.attempts }
           }
           messages.value[assistantIdx].error = true
           messages.value[assistantIdx].content = `(错误：${err.message})`
@@ -139,7 +160,6 @@ async function handleSend(): Promise<void> {
       }
     } else {
       const result = await chatApi.sendChat(commonOpts)
-      messages.value[assistantIdx].meta = result
       lastAttempts.value = result.attempts ?? []
       messages.value[assistantIdx].durationMs = result.totalDurationMs || result.durationMs || (Date.now() - startedAt)
       if (result.success) {
@@ -229,6 +249,11 @@ function toggleAttemptDetail(index: number): void {
 }
 
 onMounted(loadModels)
+// 组件卸载（切换路由）时中止进行中的流式请求：fetch 循环会持续回调写入已卸载组件的状态，
+// 长回复可拖数分钟，连接与内存都无法回收。
+onUnmounted(() => {
+  abortController?.abort()
+})
 </script>
 
 <template>
@@ -238,10 +263,6 @@ onMounted(loadModels)
       <div class="chat-admin-main">
         <NCard class="chat-card" :content-style="{ padding: '0', flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }">
           <div class="chat-toolbar">
-            <label class="chat-toolbar-field chat-toolbar-field-search">
-              <span class="chat-toolbar-field-label">模型搜索</span>
-              <NInput v-model:value="modelSearch" placeholder="搜索模型" clearable />
-            </label>
             <label class="chat-toolbar-field chat-toolbar-field-target">
               <span class="chat-toolbar-field-label">站点 / 模型</span>
               <NSelect v-model:value="selectedMappingId" :options="targetOptionsComputed" placeholder="-- 请选择站点模型 --" filterable />
@@ -555,6 +576,47 @@ onMounted(loadModels)
   margin-top: 6px;
   color: rgba(100, 116, 139, 0.9);
   font-size: 11px;
+}
+
+/* 现代化皮肤下气泡与输入框的深度美化 */
+[data-skin='modern'] .chat-bubble-user {
+  background: var(--primary-gradient, linear-gradient(135deg, #6366F1 0%, #A855F7 100%));
+  color: #ffffff;
+  box-shadow: 0 4px 14px rgba(99, 102, 241, 0.25);
+  border-radius: 16px;
+  border-bottom-right-radius: 4px;
+}
+
+[data-skin='modern'] .chat-bubble-ai {
+  background: var(--bg-surface-soft, #f1f5f9);
+  color: var(--text-primary, #0f172a);
+  border: 1px solid var(--border-color-soft);
+  border-radius: 16px;
+  border-bottom-left-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.03);
+}
+
+[data-skin='modern'] .chat-card,
+[data-skin='modern'] .chat-side-card {
+  border-radius: 16px;
+  box-shadow: var(--card-shadow);
+  border: 1px solid var(--border-color-soft);
+}
+
+[data-skin='modern'] .chat-toolbar {
+  background: var(--bg-surface-soft);
+  border-bottom: 1px solid var(--border-color-soft);
+}
+
+[data-skin='modern'] .chat-input-wrapper {
+  border-radius: 14px;
+  border-color: var(--border-color-soft);
+  transition: all 0.2s ease;
+}
+
+[data-skin='modern'] .chat-input-wrapper:focus-within {
+  border-color: #6366F1;
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
 
 .chat-bubble-user .chat-bubble-meta {

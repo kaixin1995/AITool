@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch, type VNode } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   NCard, NButton, NSpace, NDataTable, NTag, NModal, NForm, NFormItem, NInput,
-  NSwitch, NPopconfirm, NSelect, NCheckbox, NProgress, NInputNumber, NDropdown,
+  NSwitch, NPopconfirm, NSelect, NCheckbox, NProgress, NInputNumber, NDropdown, NTooltip,
+  NTabs, NTabPane, NBadge,
   useMessage, useDialog, type DataTableColumns
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
 import * as sitesApi from '@/api/sites'
 import type { ModelSelectionItem, SiteFetchResult, SiteListItem, SitePayload } from '@/api/sites'
+import { getProxyProfiles, type ProxyProfile } from '@/api/proxyProfiles'
 import {
   buildSelectedSitesExportJson,
   parseSitesImportText,
@@ -23,6 +25,28 @@ const route = useRoute()
 const loading = ref(false)
 const sites = ref<SiteListItem[]>([])
 const checkedRowKeys = ref<Array<string | number>>([])
+const proxyProfiles = ref<ProxyProfile[]>([])
+
+async function loadProxyProfiles(): Promise<void> {
+  try {
+    proxyProfiles.value = await getProxyProfiles()
+  } catch {}
+}
+
+const proxyProfileOptions = computed(() => {
+  const options = [{ label: '直连 (默认不使用代理)', value: '' }]
+  if (proxyProfiles.value && proxyProfiles.value.length > 0) {
+    for (const p of proxyProfiles.value) {
+      if (p.isEnabled) {
+        options.push({
+          label: `🌐 ${p.name} (${p.proxyUrl})`,
+          value: p.proxyUrl
+        })
+      }
+    }
+  }
+  return options
+})
 
 // 创建/编辑模态框
 const showModal = ref(false)
@@ -34,6 +58,10 @@ const form = reactive<SitePayload>({
   apiKey: '',
   supportsOpenAi: true,
   supportsAnthropic: false,
+  supportsResponses: false,
+  clientEmulation: 'None',
+  extraHeadersJson: '',
+  egressProxyUrl: '',
   isEnabled: true
 })
 const saving = ref(false)
@@ -59,8 +87,10 @@ function openCreate(): void {
   editingId.value = null
   Object.assign(form, {
     name: '', baseUrl: '', endpointPathMode: 'standard-root', apiKey: '',
-    supportsOpenAi: true, supportsAnthropic: false, isEnabled: true
+    supportsOpenAi: true, supportsAnthropic: false, supportsResponses: false,
+    clientEmulation: 'None', extraHeadersJson: '', egressProxyUrl: '', isEnabled: true
   })
+  loadProxyProfiles()
   showModal.value = true
 }
 
@@ -74,6 +104,7 @@ watch(
 
 async function openEdit(row: SiteListItem): Promise<void> {
   editingId.value = row.id
+  loadProxyProfiles()
   const detail = await sitesApi.getSite(row.id)
   Object.assign(form, {
     name: detail.name,
@@ -82,6 +113,10 @@ async function openEdit(row: SiteListItem): Promise<void> {
     apiKey: '', // 编辑时留空表示保留原密钥
     supportsOpenAi: detail.supportsOpenAi,
     supportsAnthropic: detail.supportsAnthropic,
+    supportsResponses: detail.supportsResponses,
+    clientEmulation: detail.clientEmulation || 'None',
+    extraHeadersJson: detail.extraHeadersJson || '',
+    egressProxyUrl: detail.egressProxyUrl || '',
     isEnabled: detail.isEnabled
   })
   showModal.value = true
@@ -96,6 +131,29 @@ async function handleSave(): Promise<void> {
     message.warning('密钥不能为空')
     return
   }
+
+  // 校验自定义 Header JSON 合法性
+  if (form.extraHeadersJson && form.extraHeadersJson.trim()) {
+    try {
+      const parsed = JSON.parse(form.extraHeadersJson.trim())
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        message.error('自定义请求头必须是一个合法的 JSON 键值对对象 (如: {"Header-Name": "Header-Value"})')
+        return
+      }
+    } catch (e) {
+      message.error(`自定义请求头 JSON 格式无效: ${(e as Error).message}`)
+      return
+    }
+  }
+
+  // 出口网络代理格式友好提示
+  if (form.egressProxyUrl && form.egressProxyUrl.trim()) {
+    const proxy = form.egressProxyUrl.trim().toLowerCase()
+    if (!proxy.startsWith('http://') && !proxy.startsWith('https://') && !proxy.startsWith('socks5://') && !proxy.startsWith('socks4://')) {
+      message.warning('出口网络代理地址建议以 http://, https:// 或 socks5:// 开头 (例如: http://127.0.0.1:7890)')
+    }
+  }
+
   saving.value = true
   try {
     if (editingId.value) {
@@ -456,13 +514,18 @@ async function handleImport(): Promise<void> {
 // 远端模型目录拉取/导入：恢复历史站点页的一键拉取、单站拉取、筛选和别名编辑流程。
 const catalogVisible = ref(false)
 const catalogLoading = ref(false)
+// 单站拉取按钮的独立 loading 状态（按行），避免点一个全部转圈
+const fetchingSiteId = ref<string | null>(null)
 const catalogImporting = ref(false)
 const catalogSearch = ref('')
 const catalogTaskId = ref('')
 const catalogProgress = ref({ total: 0, completed: 0 })
 const catalogSites = ref<SiteFetchResult[]>([])
 const catalogSelections = ref<ModelSelectionItem[]>([])
+const catalogTab = ref<'new' | 'imported'>('new')
 let catalogTimer: number | undefined
+let catalogGeneration = 0
+const pendingCatalogPolls = new Set<string>()
 
 const catalogProgressPercent = computed(() => {
   if (catalogProgress.value.total === 0) return 0
@@ -482,9 +545,45 @@ const filteredCatalogSites = computed(() => {
     .filter((site) => site.models.length > 0 || site.status === 'fail')
 })
 
-const selectedCatalogCount = computed(() => catalogSelections.value.filter((item) => item.selected).length)
-const selectableCatalogCount = computed(() => catalogSelections.value.length)
+// 按导入状态拆分：新模型（无 existingMappingId）与已导入模型（有 existingMappingId）。
+// 仅影响弹窗展示——两个 tab 共享同一份 catalogSelections，勾选/全选/导入逻辑不变。
+const newCatalogSites = computed(() =>
+  filteredCatalogSites.value
+    .map((site) => ({ ...site, models: site.models.filter((model) => !model.existingMappingId) }))
+    .filter((site) => site.models.length > 0 || site.status === 'fail')
+)
+
+const importedCatalogSites = computed(() =>
+  filteredCatalogSites.value
+    .map((site) => ({ ...site, models: site.models.filter((model) => model.existingMappingId) }))
+    .filter((site) => site.models.length > 0)
+)
+
+const newCatalogCount = computed(() => newCatalogSites.value.reduce((total, site) => total + site.models.length, 0))
+const importedCatalogCount = computed(() => importedCatalogSites.value.reduce((total, site) => total + site.models.length, 0))
+
+const activeCatalogSites = computed(() =>
+  catalogTab.value === 'imported' ? importedCatalogSites.value : newCatalogSites.value
+)
+
+// 全选/计数仅作用于当前 tab 内的模型。
+const activeTabSelectionKeys = computed(() => {
+  const keys = new Set<string>()
+  for (const site of activeCatalogSites.value) {
+    for (const model of site.models) {
+      if (model.remoteModelName) keys.add(`${site.siteId}\n${model.remoteModelName}`)
+    }
+  }
+  return keys
+})
+
+const selectedCatalogCount = computed(() =>
+  catalogSelections.value.filter((item) => item.selected && activeTabSelectionKeys.value.has(`${item.siteId}\n${item.remoteModelName}`)).length
+)
+const selectableCatalogCount = computed(() => activeTabSelectionKeys.value.size)
 const allCatalogSelected = computed(() => selectableCatalogCount.value > 0 && selectedCatalogCount.value === selectableCatalogCount.value)
+// 底部按钮用全局已选数（跨 tab），全选/标签内计数仅作用于当前 tab。
+const totalSelectedCatalogCount = computed(() => catalogSelections.value.filter((item) => item.selected).length)
 
 function selectionFor(siteId: string, remoteModelName: string): ModelSelectionItem | undefined {
   return catalogSelections.value.find((item) => item.siteId === siteId && item.remoteModelName === remoteModelName)
@@ -496,18 +595,20 @@ function applyCatalogSites(results: SiteFetchResult[]): void {
     siteId: site.siteId,
     remoteModelName: model.remoteModelName,
     displayName: model.existingDisplayName || model.remoteModelName,
-    selected: !model.existingMappingId || model.isEnabled
+    // 未导入默认不勾选（用户主动勾选要新增的）；已导入默认勾选（重新导入=更新映射）。
+    selected: Boolean(model.existingMappingId)
   })))
 }
 
 function openCatalog(results: SiteFetchResult[]): void {
   applyCatalogSites(results)
+  catalogTab.value = 'new'
   catalogSearch.value = ''
   catalogVisible.value = true
 }
 
 async function handleFetchModels(row: SiteListItem): Promise<void> {
-  catalogLoading.value = true
+  fetchingSiteId.value = row.id
   catalogTaskId.value = ''
   catalogProgress.value = { total: 1, completed: 0 }
   try {
@@ -518,18 +619,24 @@ async function handleFetchModels(row: SiteListItem): Promise<void> {
     }
     openCatalog([{ siteId: row.id, siteName: row.name, status: 'success', models: result }])
   } finally {
-    catalogLoading.value = false
+    fetchingSiteId.value = null
     catalogProgress.value = { total: 0, completed: 0 }
   }
 }
 
 async function handleFetchAllModels(): Promise<void> {
+  const generation = ++catalogGeneration
+  if (catalogTimer) {
+    window.clearInterval(catalogTimer)
+    catalogTimer = undefined
+  }
   catalogLoading.value = true
   catalogVisible.value = true
   catalogSites.value = []
   catalogSelections.value = []
   try {
     const result = await sitesApi.fetchAllSiteModels()
+    if (generation !== catalogGeneration) return
     if (!result.taskId) {
       message.warning(result.message || '没有可拉取的站点')
       catalogLoading.value = false
@@ -537,29 +644,53 @@ async function handleFetchAllModels(): Promise<void> {
     }
     catalogTaskId.value = result.taskId
     await pollCatalogProgress()
+    if (generation !== catalogGeneration || catalogTaskId.value !== result.taskId) return
     catalogTimer = window.setInterval(() => { void pollCatalogProgress() }, 1200)
   } catch (e) {
+    if (generation !== catalogGeneration) return
     message.error((e as Error).message)
     catalogLoading.value = false
   }
 }
 
 async function pollCatalogProgress(): Promise<void> {
-  if (!catalogTaskId.value) return
-  const progress = await sitesApi.getFetchAllProgress(catalogTaskId.value)
-  catalogProgress.value = { total: progress.totalSites, completed: progress.completedSites }
-  applyCatalogSites(progress.sites)
-  if (progress.isCompleted) {
-    catalogLoading.value = false
+  const taskId = catalogTaskId.value
+  const generation = catalogGeneration
+  if (!taskId || pendingCatalogPolls.has(taskId)) return
+  pendingCatalogPolls.add(taskId)
+  // 失败即停止轮询并复位状态：任务过期/网络断开时若不停止，会每 1.2s 弹一次全局错误直到关闭页面。
+  try {
+    const progress = await sitesApi.getFetchAllProgress(taskId)
+    if (generation !== catalogGeneration || taskId !== catalogTaskId.value) return
+    catalogProgress.value = { total: progress.totalSites, completed: progress.completedSites }
+    applyCatalogSites(progress.sites)
+    if (progress.isCompleted) {
+      catalogLoading.value = false
+      if (catalogTimer) {
+        window.clearInterval(catalogTimer)
+        catalogTimer = undefined
+      }
+    }
+  } catch (e) {
+    if (generation !== catalogGeneration || taskId !== catalogTaskId.value) return
     if (catalogTimer) {
       window.clearInterval(catalogTimer)
       catalogTimer = undefined
     }
+    catalogLoading.value = false
+    message.error(`拉取进度已停止：${(e as Error).message}`)
+  } finally {
+    pendingCatalogPolls.delete(taskId)
   }
 }
 
 function toggleAllCatalog(value: boolean): void {
-  catalogSelections.value.forEach((item) => { item.selected = value })
+  const keys = activeTabSelectionKeys.value
+  catalogSelections.value.forEach((item) => {
+    if (keys.has(`${item.siteId}\n${item.remoteModelName}`)) {
+      item.selected = value
+    }
+  })
 }
 
 function updateCatalogSelected(siteId: string, remoteModelName: string, selected: boolean): void {
@@ -594,50 +725,165 @@ async function handleImportSelectedModels(): Promise<void> {
 }
 
 function handleCatalogClosed(): void {
+  catalogGeneration++
   if (catalogTimer) {
     window.clearInterval(catalogTimer)
     catalogTimer = undefined
   }
+  catalogTaskId.value = ''
 }
+
+const OPENAI_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V11.6a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0l-4.8303-2.7865A4.504 4.504 0 0 1 2.3408 7.872zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7913a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7866a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V6.0742a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.459a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997Z"/></svg>`
+
+const ANTHROPIC_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z"/></svg>`
+
+const RESPONSES_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M13 7l-4 5h3.5l-1 5 4.5-6h-3.5z"/></svg>`
 
 function formatDateTime(value: string): string {
   if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', {
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', hour12: false
-  })
+  const d = new Date(value)
+  if (isNaN(d.getTime())) return '-'
+  const year = d.getFullYear()
+  const month = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  const hours = String(d.getHours()).padStart(2, '0')
+  const minutes = String(d.getMinutes()).padStart(2, '0')
+  return `${year}/${month}/${day} ${hours}:${minutes}`
 }
 
 const columns = computed<DataTableColumns<SiteListItem>>(() => [
-  { type: 'selection', width: 44 },
-  { title: '名称', key: 'name', width: 150, ellipsis: { tooltip: true }, render: (row) => h('strong', row.name) },
-  { title: '根地址', key: 'baseUrl', minWidth: 320, ellipsis: { tooltip: true }, render: (row) => h('code', { class: 'site-url' }, row.baseUrl) },
+  { type: 'selection', width: 40 },
+  { title: '名称', key: 'name', width: 120, ellipsis: { tooltip: true }, render: (row) => h('strong', row.name) },
+  { title: '根地址', key: 'baseUrl', minWidth: 180, width: 200, ellipsis: { tooltip: true }, render: (row) => h('code', { class: 'site-url' }, row.baseUrl) },
   {
     title: '协议',
     key: 'protocol',
-    width: 170,
+    width: 250,
+    minWidth: 245,
     render: (row) => {
-      return h(NSpace, { size: 4, wrap: false }, () => [
-        row.supportsOpenAi ? h(NTag, { size: 'small', type: 'success', bordered: false }, () => 'OpenAI') : null,
-        row.supportsAnthropic ? h(NTag, { size: 'small', type: 'info', bordered: false }, () => 'Anthropic') : null,
-        !row.supportsOpenAi && !row.supportsAnthropic ? h(NTag, { size: 'small', type: 'warning', bordered: false }, () => row.protocolType || 'Responses') : null
-      ])
+      const items: VNode[] = []
+      if (row.supportsOpenAi) {
+        items.push(
+          h(
+            NTooltip,
+            null,
+            {
+              trigger: () => h(
+                NTag,
+                {
+                  size: 'small',
+                  type: 'success',
+                  bordered: false,
+                  class: 'protocol-tag',
+                  style: { cursor: 'pointer' }
+                },
+                () => [
+                  h('span', { class: 'protocol-tag-icon', innerHTML: OPENAI_SVG }),
+                  h('span', { class: 'protocol-tag-text' }, 'OpenAI')
+                ]
+              ),
+              default: () => 'OpenAI Chat Completions 协议 (/v1/chat/completions)'
+            }
+          )
+        )
+      }
+      if (row.supportsAnthropic) {
+        items.push(
+          h(
+            NTooltip,
+            null,
+            {
+              trigger: () => h(
+                NTag,
+                {
+                  size: 'small',
+                  type: 'warning',
+                  bordered: false,
+                  class: 'protocol-tag',
+                  style: { cursor: 'pointer' }
+                },
+                () => [
+                  h('span', { class: 'protocol-tag-icon', innerHTML: ANTHROPIC_SVG }),
+                  h('span', { class: 'protocol-tag-text' }, 'Anthropic')
+                ]
+              ),
+              default: () => 'Anthropic Messages 协议 (/v1/messages)'
+            }
+          )
+        )
+      }
+      if (row.supportsResponses) {
+        items.push(
+          h(
+            NTooltip,
+            null,
+            {
+              trigger: () => h(
+                NTag,
+                {
+                  size: 'small',
+                  type: 'info',
+                  bordered: false,
+                  class: 'protocol-tag',
+                  style: { cursor: 'pointer' }
+                },
+                () => [
+                  h('span', { class: 'protocol-tag-icon', innerHTML: RESPONSES_SVG }),
+                  h('span', { class: 'protocol-tag-text' }, 'Responses')
+                ]
+              ),
+              default: () => 'OpenAI Responses API 协议 (/v1/responses)'
+            }
+          )
+        )
+      }
+      if (items.length === 0) {
+        return h('span', { style: 'color: var(--text-tertiary)' }, '-')
+      }
+      return h(NSpace, { size: 4, wrap: false, align: 'center' }, () => items)
+    }
+  },
+  {
+    title: '出口代理',
+    key: 'egressProxyUrl',
+    width: 90,
+    align: 'center',
+    render: (row) => {
+      if (row.egressProxyUrl) {
+        return h(
+          NTooltip,
+          null,
+          {
+            trigger: () => h(NTag, { size: 'small', type: 'info', bordered: false }, () => '🛡️ 代理'),
+            default: () => `出口代理: ${row.egressProxyUrl}`
+          }
+        )
+      }
+      return h('span', { style: 'color: var(--text-tertiary)' }, '-')
     }
   },
   {
     title: '状态',
     key: 'isEnabled',
-    width: 80,
+    width: 70,
+    align: 'center',
     render: (row) =>
       h(NTag, { size: 'small', type: row.isEnabled ? 'success' : 'default', bordered: false }, () =>
         row.isEnabled ? '启用' : '禁用'
       )
   },
-  { title: '创建时间', key: 'createdAt', width: 150, render: (row) => formatDateTime(row.createdAt) },
+  {
+    title: '创建时间',
+    key: 'createdAt',
+    width: 150,
+    minWidth: 150,
+    align: 'center',
+    render: (row) => h('span', { style: 'white-space: nowrap' }, formatDateTime(row.createdAt))
+  },
   {
     title: '操作',
     key: 'actions',
-    width: 248,
+    width: 200,
     fixed: 'right',
     render: (row) => {
       // 高频操作（编辑/拉取/启停）直接显示为按钮；低频且需谨慎的（密钥管理/删除）收纳进「⋯」菜单。
@@ -654,7 +900,7 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
       ]
       return h(NSpace, { size: 4, wrap: false, align: 'center' }, () => [
         h(NButton, { size: 'small', secondary: true, onClick: () => openEdit(row) }, () => '编辑'),
-        h(NButton, { size: 'small', secondary: true, loading: catalogLoading.value, onClick: () => handleFetchModels(row) }, () => '拉取'),
+        h(NButton, { size: 'small', secondary: true, loading: fetchingSiteId.value === row.id, onClick: () => handleFetchModels(row) }, () => '拉取'),
         h(NButton, { size: 'small', secondary: true, onClick: () => handleToggle(row) }, () =>
           row.isEnabled ? '禁用' : '启用'
         ),
@@ -676,7 +922,10 @@ const columns = computed<DataTableColumns<SiteListItem>>(() => [
   }
 ])
 
-onMounted(loadSites)
+onMounted(() => {
+  loadSites()
+  loadProxyProfiles()
+})
 onBeforeUnmount(handleCatalogClosed)
 </script>
 
@@ -707,7 +956,7 @@ onBeforeUnmount(handleCatalogClosed)
         :loading="loading"
         :row-key="(row: SiteListItem) => row.id"
         :pagination="{ pageSize: 20 }"
-        :scroll-x="1180"
+        :scroll-x="1060"
         size="small"
         striped
       />
@@ -738,15 +987,57 @@ onBeforeUnmount(handleCatalogClosed)
             placeholder="sk-...（作为首个默认密钥，更多密钥创建后用「密钥管理」添加）"
           />
         </NFormItem>
-        <NFormItem label="协议支持">
-          <NSpace vertical :size="6">
-            <NSpace>
-              <NSwitch v-model:value="form.supportsOpenAi" /> OpenAI
-              <NSwitch v-model:value="form.supportsAnthropic" /> Anthropic
+        <NFormItem>
+          <template #label>
+            <NSpace align="center" :size="4">
+              <span>协议支持</span>
+              <NTooltip trigger="hover">
+                <template #trigger><span class="site-protocol-help-trigger">?</span></template>
+                配置站点支持的上游协议：OpenAI Chat（/v1/chat/completions）、Anthropic（/v1/messages）、Responses（/v1/responses）。未勾选协议时系统会自动按可用协议转换转发。
+              </NTooltip>
             </NSpace>
-            <span class="site-form-tip">如果两个都不勾选，则按仅支持 Responses 的站点处理。</span>
-          </NSpace>
+          </template>
+          <div class="site-protocols-row">
+            <label class="site-protocol-switch-item">
+              <NSwitch v-model:value="form.supportsOpenAi" size="small" />
+              <span>OpenAI Chat</span>
+            </label>
+            <label class="site-protocol-switch-item">
+              <NSwitch v-model:value="form.supportsAnthropic" size="small" />
+              <span>Anthropic</span>
+            </label>
+            <label class="site-protocol-switch-item">
+              <NSwitch v-model:value="form.supportsResponses" size="small" />
+              <span>Responses</span>
+              <NTooltip trigger="hover">
+                <template #trigger><span class="site-protocol-help-trigger">?</span></template>
+                Responses 协议（/v1/responses）：勾选后直接透传；未勾选时会按 OpenAI/Anthropic 能力自动转换。
+              </NTooltip>
+            </label>
+          </div>
         </NFormItem>
+
+
+
+        <NFormItem>
+          <template #label>
+            <NSpace align="center" :size="4">
+              <span>站点出口网络代理 (Egress Proxy)</span>
+              <NTooltip trigger="hover">
+                <template #trigger><span class="site-protocol-help-trigger">?</span></template>
+                为该站点指定专属网络出口代理（支持 HTTP / SOCKS5）。用于规避机房 IP 限制或配合住宅代理池防封。默认无代理直连。
+              </NTooltip>
+            </NSpace>
+          </template>
+          <NSelect
+            v-model:value="form.egressProxyUrl"
+            :options="proxyProfileOptions"
+            filterable
+            tag
+            placeholder="选择代理节点（留空或直连则不使用代理）"
+          />
+        </NFormItem>
+
         <NFormItem label="启用">
           <NSwitch v-model:value="form.isEnabled" />
         </NFormItem>
@@ -880,7 +1171,7 @@ onBeforeUnmount(handleCatalogClosed)
                   <NSpace size="small">
                     <NTag v-if="site.supportsOpenAi" size="small" type="success" :bordered="false">OpenAI</NTag>
                     <NTag v-if="site.supportsAnthropic" size="small" type="info" :bordered="false">Anthropic</NTag>
-                    <NTag v-if="!site.supportsOpenAi && !site.supportsAnthropic" size="small" type="warning" :bordered="false">Responses</NTag>
+                    <NTag v-if="site.supportsResponses" size="small" type="warning" :bordered="false">Responses</NTag>
                   </NSpace>
                 </td>
               </tr>
@@ -972,45 +1263,78 @@ onBeforeUnmount(handleCatalogClosed)
             <NTag size="small" :bordered="false">已选 {{ selectedCatalogCount }} / {{ selectableCatalogCount }}</NTag>
           </NSpace>
         </div>
-        <div class="catalog-site-list">
-          <NCard v-for="site in filteredCatalogSites" :key="site.siteId" class="catalog-site-card" size="small">
-            <template #header>
-              <NSpace align="center" :wrap="false">
-                <span>{{ site.siteName }}</span>
-                <NTag size="small" :type="site.status === 'success' ? 'success' : site.status === 'fail' ? 'error' : 'warning'" :bordered="false">{{ site.status }}</NTag>
-                <span class="catalog-count">{{ site.models.length }} 个模型</span>
-              </NSpace>
-            </template>
-            <template v-if="site.status === 'fail'">
-              <div class="catalog-error">
-                <span>{{ site.error || '拉取失败' }}</span>
-                <NButton size="tiny" tertiary @click="copyCatalogError(site.error)">复制错误</NButton>
-              </div>
-            </template>
-            <div v-else class="catalog-model-list">
-              <div v-for="model in site.models" :key="model.remoteModelName" class="catalog-model-row">
-                <NCheckbox
-                  :checked="selectionFor(site.siteId, model.remoteModelName)?.selected"
-                  @update:checked="(value) => updateCatalogSelected(site.siteId, model.remoteModelName, value)"
-                />
-                <code class="catalog-remote-name">{{ model.remoteModelName }}</code>
-                <NInput
-                  :value="selectionFor(site.siteId, model.remoteModelName)?.displayName"
-                  size="small"
-                  placeholder="显示名称 / 别名"
-                  @update:value="(value) => updateCatalogDisplayName(site.siteId, model.remoteModelName, value)"
-                />
-                <NTag v-if="model.existingMappingId" size="small" :type="model.isEnabled ? 'success' : 'default'" :bordered="false">{{ model.isEnabled ? '已导入' : '已禁用' }}</NTag>
-              </div>
+        <NTabs v-model:value="catalogTab" type="line" size="small">
+          <NTabPane name="new" :tab="`未导入 (${newCatalogCount})`">
+            <div class="catalog-site-list">
+              <NCard v-for="site in newCatalogSites" :key="site.siteId" class="catalog-site-card" size="small">
+                <template #header>
+                  <NSpace align="center" :wrap="false">
+                    <span>{{ site.siteName }}</span>
+                    <NTag size="small" :type="site.status === 'success' ? 'success' : site.status === 'fail' ? 'error' : 'warning'" :bordered="false">{{ site.status }}</NTag>
+                    <span class="catalog-count">{{ site.models.length }} 个模型</span>
+                  </NSpace>
+                </template>
+                <template v-if="site.status === 'fail'">
+                  <div class="catalog-error">
+                    <span>{{ site.error || '拉取失败' }}</span>
+                    <NButton size="tiny" tertiary @click="copyCatalogError(site.error)">复制错误</NButton>
+                  </div>
+                </template>
+                <div v-else class="catalog-model-list">
+                  <div v-for="model in site.models" :key="model.remoteModelName" class="catalog-model-row">
+                    <NCheckbox
+                      :checked="selectionFor(site.siteId, model.remoteModelName)?.selected"
+                      @update:checked="(value) => updateCatalogSelected(site.siteId, model.remoteModelName, value)"
+                    />
+                    <code class="catalog-remote-name" :title="model.remoteModelName">{{ model.remoteModelName }}</code>
+                    <NInput
+                      :value="selectionFor(site.siteId, model.remoteModelName)?.displayName"
+                      size="small"
+                      placeholder="对外模型名（留空用原始名）"
+                      @update:value="(value) => updateCatalogDisplayName(site.siteId, model.remoteModelName, value)"
+                    />
+                  </div>
+                </div>
+              </NCard>
+              <NEmpty v-if="!catalogLoading && newCatalogSites.length === 0" description="暂无新模型" />
             </div>
-          </NCard>
-          <NEmpty v-if="!catalogLoading && filteredCatalogSites.length === 0" description="暂无可导入模型" />
-        </div>
+          </NTabPane>
+          <NTabPane name="imported" :tab="`已导入 (${importedCatalogCount})`">
+            <div class="catalog-site-list">
+              <NCard v-for="site in importedCatalogSites" :key="site.siteId" class="catalog-site-card" size="small">
+                <template #header>
+                  <NSpace align="center" :wrap="false">
+                    <span>{{ site.siteName }}</span>
+                    <NTag size="small" type="success" :bordered="false">success</NTag>
+                    <span class="catalog-count">{{ site.models.length }} 个模型</span>
+                  </NSpace>
+                </template>
+                <div class="catalog-model-list">
+                  <div v-for="model in site.models" :key="model.remoteModelName" class="catalog-model-row">
+                    <NCheckbox
+                      :checked="selectionFor(site.siteId, model.remoteModelName)?.selected"
+                      @update:checked="(value) => updateCatalogSelected(site.siteId, model.remoteModelName, value)"
+                    />
+                    <code class="catalog-remote-name" :title="model.remoteModelName">{{ model.remoteModelName }}</code>
+                    <NInput
+                      :value="selectionFor(site.siteId, model.remoteModelName)?.displayName"
+                      size="small"
+                      placeholder="对外模型名（留空用原始名）"
+                      @update:value="(value) => updateCatalogDisplayName(site.siteId, model.remoteModelName, value)"
+                    />
+                    <NTag size="small" :type="model.isEnabled ? 'success' : 'default'" :bordered="false">{{ model.isEnabled ? '已导入' : '已禁用' }}</NTag>
+                  </div>
+                </div>
+              </NCard>
+              <NEmpty v-if="!catalogLoading && importedCatalogSites.length === 0" description="暂无已导入模型" />
+            </div>
+          </NTabPane>
+        </NTabs>
       </NSpace>
       <template #footer>
         <NSpace justify="end">
           <NButton @click="catalogVisible = false">取消</NButton>
-          <NButton type="primary" :disabled="selectedCatalogCount === 0" :loading="catalogImporting" @click="handleImportSelectedModels">导入选中</NButton>
+          <NButton type="primary" :disabled="totalSelectedCatalogCount === 0" :loading="catalogImporting" @click="handleImportSelectedModels">导入选中</NButton>
         </NSpace>
       </template>
     </NModal>
@@ -1042,9 +1366,18 @@ onBeforeUnmount(handleCatalogClosed)
   margin-bottom: 12px;
 }
 
-.site-form-tip {
+.site-protocol-help-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--bg-surface-soft);
   color: var(--text-color-secondary);
   font-size: 12px;
+  font-weight: 800;
+  cursor: help;
 }
 
 .site-actions {
@@ -1168,16 +1501,23 @@ onBeforeUnmount(handleCatalogClosed)
 
 .catalog-model-row {
   display: grid;
-  grid-template-columns: auto minmax(180px, 1fr) minmax(180px, 1fr) auto;
+  grid-template-columns: auto minmax(220px, 280px) minmax(200px, 1fr) 72px;
   gap: 8px;
   align-items: center;
   min-width: 0;
 }
 
 .catalog-remote-name {
+  display: block;
+  width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.catalog-model-row :deep(.n-input) {
+  width: 100%;
+  min-width: 0;
 }
 
 @media (max-width: 768px) {
@@ -1185,5 +1525,81 @@ onBeforeUnmount(handleCatalogClosed)
   .catalog-model-row {
     grid-template-columns: 1fr;
   }
+}
+
+.emulation-hint-box {
+  background: var(--bg-tertiary, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border-color-global, rgba(255, 255, 255, 0.08));
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-color-secondary);
+}
+
+.placeholder-chips-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.chips-label {
+  color: var(--text-color-secondary);
+  font-size: 12px;
+}
+
+:deep(.protocol-tag) {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  vertical-align: middle !important;
+}
+
+:deep(.protocol-tag .n-tag__content) {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  line-height: 1 !important;
+}
+
+:deep(.protocol-tag-icon) {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+
+:deep(.protocol-tag-icon svg) {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+:deep(.protocol-tag-text) {
+  display: inline-block;
+  line-height: 1;
+}
+
+.site-protocols-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  min-height: 34px;
+}
+
+.site-protocol-switch-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  color: var(--text-color-primary);
+  white-space: nowrap;
 }
 </style>

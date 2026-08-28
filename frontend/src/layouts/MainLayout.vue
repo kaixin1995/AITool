@@ -1,15 +1,24 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { NLayoutContent, NButton, NTooltip } from 'naive-ui'
-import { useTheme } from '@/composables/useTheme'
+import { useRoute, useRouter, RouterLink, RouterView } from 'vue-router'
+import { NLayoutContent, NButton, NTooltip, NDropdown } from 'naive-ui'
+import { useTheme, type SkinMode } from '@/composables/useTheme'
 import { useAuthStore } from '@/stores/auth'
-import { version } from '@/composables/useVersion'
+import { version, buildTimeDisplay } from '@/composables/useVersion'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
-const { isDark, toggleTheme } = useTheme()
+const { isDark, skin, toggleTheme, setSkin } = useTheme()
+
+const skinOptions = [
+  { label: '✨ 现代科技 (Modern)', key: 'modern' },
+  { label: '🏛️ 经典简约 (Classic)', key: 'classic' }
+]
+
+function handleSelectSkin(key: string): void {
+  setSkin(key as SkinMode)
+}
 
 const collapsed = ref(localStorage.getItem('aitool.sidebarCollapsed') === 'true')
 const mobileSidebarOpen = ref(false)
@@ -37,7 +46,7 @@ const navGroups = computed<NavGroup[]>(() => {
       title: '资源管理',
       items: [
         { label: '站点管理', key: 'sites', icon: '🌐' },
-        ...(features?.codexEnabled ? [{ label: 'OAuth 管理', key: 'codex', icon: '🔐' }] : []),
+        ...((features?.oauthEnabled ?? features?.codexEnabled) ? [{ label: 'OAuth 管理', key: 'oauth', icon: '🔐' }] : []),
         { label: '模型库', key: 'models', icon: '🧠' }
       ]
     },
@@ -52,7 +61,6 @@ const navGroups = computed<NavGroup[]>(() => {
       title: '监控运维',
       items: [
         { label: '模型检测', key: 'detection', icon: '🔍' },
-        { label: '检测任务', key: 'detection-tasks', icon: '⏰' },
         { label: '模型健康', key: 'model-health', icon: '💊' },
         ...(features?.developerEnabled ? [{ label: '调试工具', key: 'developer-invocations', icon: '🛠️' }] : []),
         { label: '使用日志', key: 'usage-logs', icon: '📋' },
@@ -63,7 +71,11 @@ const navGroups = computed<NavGroup[]>(() => {
   return groups
 })
 
-const activeKey = computed(() => (route.name as string) ?? '')
+const activeKey = computed(() => {
+  const name = (route.name as string) ?? ''
+  if (name === 'detection-tasks') return 'detection'
+  return name
+})
 
 function handleNavigate(key: string): void {
   mobileSidebarOpen.value = false
@@ -110,23 +122,29 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- 导航：纯 HTML，完全复刻原 _Layout.cshtml 的 sidebar-link 结构 -->
+      <!-- 导航：使用真实 href 和 RouterLink 语义，支持 Ctrl+点击 / 中键新窗口打开 -->
       <nav class="sidebar-nav">
         <div v-for="group in navGroups" :key="group.title" class="sidebar-section">
           <div class="sidebar-section-title">{{ group.title }}</div>
-          <a
+          <RouterLink
             v-for="item in group.items"
             :key="item.key"
             class="sidebar-link"
             :class="{ active: activeKey === item.key }"
             :title="collapsed ? item.label : undefined"
-            href="javascript:void(0)"
-            @click="handleNavigate(item.key)"
+            :to="{ name: item.key }"
+            @click="mobileSidebarOpen = false"
           >
             <span class="sidebar-link-icon">{{ item.icon }}</span>{{ item.label }}
-          </a>
+          </RouterLink>
         </div>
       </nav>
+
+      <!-- 侧边栏底部：版本号 + 编译时间，折叠时隐藏 -->
+      <div v-if="!collapsed" class="sidebar-footer">
+        <div class="sidebar-footer-version">AI Tool v{{ version }}</div>
+        <div v-if="buildTimeDisplay" class="sidebar-footer-build">Build {{ buildTimeDisplay }}</div>
+      </div>
     </aside>
     <button v-if="mobileSidebarOpen" class="sidebar-overlay" type="button" aria-label="关闭导航" @click="mobileSidebarOpen = false" />
 
@@ -137,13 +155,19 @@ onBeforeUnmount(() => {
           <h1 class="app-topbar-title">{{ (route.meta.title as string) ?? 'AI Tool' }}</h1>
         </div>
         <div class="app-topbar-right">
+          <!-- 皮肤切换下拉 -->
+          <NDropdown trigger="click" :options="skinOptions" @select="handleSelectSkin">
+            <button class="theme-icon-toggle" type="button" :title="`当前皮肤: ${skin === 'modern' ? '现代科技' : '经典简约'}`">
+              🎨
+            </button>
+          </NDropdown>
+
           <NTooltip trigger="hover">
             <template #trigger>
               <button class="theme-icon-toggle" type="button" @click="toggleTheme">{{ isDark ? '☀️' : '🌙' }}</button>
             </template>
-            {{ isDark ? '切换到经典模式' : '切换到暗夜模式' }}
+            {{ isDark ? '切换到亮色模式' : '切换到暗夜模式' }}
           </NTooltip>
-          <span class="topbar-version">AI Tool v{{ version }}</span>
           <NButton size="small" quaternary @click="handleLogout">退出</NButton>
         </div>
       </header>
@@ -258,7 +282,18 @@ onBeforeUnmount(() => {
 }
 .theme-icon-toggle:hover { background: rgba(0, 0, 0, 0.03); }
 [data-theme='dark'] .theme-icon-toggle:hover { background: rgba(255, 255, 255, 0.05); }
-.topbar-version { font-size: 13px; color: var(--text-color-secondary); }
+
+/* 侧边栏底部：版本号 + 编译时间，文字小、两行展示，折叠时整体隐藏 */
+.sidebar-footer {
+  flex-shrink: 0; padding: 10px 16px 14px;
+  border-top: 1px solid var(--border-color-global);
+}
+.sidebar-footer-version {
+  font-size: 12px; font-weight: 600; color: var(--text-color-secondary); line-height: 1.4;
+}
+.sidebar-footer-build {
+  font-size: 11px; color: var(--text-color-secondary); opacity: 0.7; line-height: 1.4; margin-top: 2px;
+}
 
 /* 内容区 */
 .app-content { flex: 1; background: var(--bg-page); overflow: hidden; }
@@ -406,10 +441,6 @@ onBeforeUnmount(() => {
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .topbar-version {
-    display: none;
   }
 }
 

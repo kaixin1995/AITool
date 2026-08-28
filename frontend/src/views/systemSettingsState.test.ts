@@ -13,7 +13,7 @@ describe('系统设置数值校验', () => {
       detectionRetryCount: 8,
       detectionConcurrency: 50,
       usageLogRetentionDays: 730,
-      codexQuotaMaxCacheHours: 168
+      oauthQuotaMaxCacheHours: 168
     })).toBeNull()
   })
 })

@@ -1,7 +1,7 @@
 // ECharts 按需引入：只注册项目实际用到的图表类型和组件，大幅减小打包体积。
 // 全量 import * as echarts 会引入 ~1MB，按需后可降至 ~200KB。
 import * as echarts from 'echarts/core'
-import { LineChart, PieChart, BarChart } from 'echarts/charts'
+import { LineChart, PieChart, BarChart, SankeyChart } from 'echarts/charts'
 import {
   TitleComponent,
   TooltipComponent,
@@ -14,6 +14,8 @@ echarts.use([
   LineChart,
   PieChart,
   BarChart,
+  // AnalyticsView 的"回退链路"维度使用 sankey 系列，未注册会渲染空白并报 series not exists。
+  SankeyChart,
   TitleComponent,
   TooltipComponent,
   GridComponent,

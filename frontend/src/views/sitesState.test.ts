@@ -52,7 +52,26 @@ describe('Sites 导入解析', () => {
       endpointPathMode: 'versioned-base',
       protocolType: 'Responses',
       supportsOpenAi: false,
-      supportsAnthropic: false
+      supportsAnthropic: false,
+      supportsResponses: true
+    }))
+  })
+
+  it('保留同时支持 OpenAI Chat 和 Responses 的独立能力声明', () => {
+    const result = parseSitesImportText(JSON.stringify([{
+      name: 'Dual protocol',
+      baseUrl: 'https://example.com',
+      apiKey: 'sk-dual',
+      supportsOpenAi: true,
+      supportsAnthropic: false,
+      supportsResponses: true
+    }]))
+
+    expect(result.items[0]).toEqual(expect.objectContaining({
+      protocolType: 'Responses',
+      supportsOpenAi: true,
+      supportsAnthropic: false,
+      supportsResponses: true
     }))
   })
 

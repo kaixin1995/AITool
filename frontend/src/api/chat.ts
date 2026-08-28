@@ -131,6 +131,7 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
     enableStreaming: true,
     reasoningEffort: opts.reasoningEffort ?? 'high'
   }
+  let reader: ReadableStreamDefaultReader<Uint8Array> | null = null
   try {
     const resp = await fetch('/api/admin/chat/send-stream', {
       method: 'POST',
@@ -175,7 +176,7 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
       return false
     }
 
-    const reader = resp.body.getReader()
+    reader = resp.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
     while (true) {
@@ -198,5 +199,10 @@ export async function sendChatStream(opts: ChatSendOptions, cb: ChatStreamCallba
   } catch (e) {
     if ((e as Error).name === 'AbortError') return
     cb.onError(e as Error)
+  } finally {
+    if (reader) {
+      try { await reader.cancel() } catch { }
+      try { reader.releaseLock() } catch { }
+    }
   }
 }

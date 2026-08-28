@@ -53,6 +53,31 @@ describe('chat stream', () => {
     expect(events).toEqual(['token:实时', 'done'])
   })
 
+  it('收到 done 后取消底层响应流', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => 'test-token' })
+    const encoder = new TextEncoder()
+    let canceled = false
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: done\ndata: {}\n\n'))
+      },
+      cancel() {
+        canceled = true
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(stream, {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })))
+
+    await sendChatStream({ modelId: 'model', message: 'hello' }, {
+      onToken: () => {},
+      onError: error => { throw error },
+    })
+
+    expect(canceled).toBe(true)
+  })
+
   it('流式错误保留后端返回的调用尝试明细', async () => {
     vi.stubGlobal('localStorage', { getItem: () => 'test-token' })
     const encoder = new TextEncoder()

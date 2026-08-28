@@ -13,6 +13,11 @@ export async function listAccessKeys(): Promise<AccessKeyItem[]> {
   return httpGet<AccessKeyItem[]>('/api/admin/access-keys')
 }
 
+// 按需获取单条密钥的完整明文（列表接口出于安全只返回脱敏值）。
+export async function getAccessKeyPlain(keyId: string): Promise<{ plainKey: string }> {
+  return httpGet<{ plainKey: string }>(`/api/admin/access-keys/${keyId}/plain`)
+}
+
 export async function createAccessKey(keyName: string, allowedRouteNames?: string[]): Promise<{ plainKey: string }> {
   return httpPost<{ plainKey: string }>('/api/admin/access-keys/create', { keyName, allowedRouteNames })
 }

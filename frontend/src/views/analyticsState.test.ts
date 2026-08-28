@@ -5,6 +5,7 @@ import {
   buildAnalyticsDefaultCustomRange,
   buildAnalyticsQuery,
   calculateAnalyticsTotalTokens,
+  formatAnalyticsTokenSplit,
   removeAnalyticsFilter,
   resetAnalyticsFilters,
   shouldAutoLoadAnalytics,
@@ -31,11 +32,24 @@ describe('Analytics 汇总', () => {
       totalOutputTokens: 30
     })).toBe(180)
   })
+
+  it('正确格式化 输入 / 缓存 / 输出 三段 Token', () => {
+    expect(formatAnalyticsTokenSplit({
+      totalInputTokens: 1000,
+      totalCachedTokens: 500,
+      totalOutputTokens: 200
+    }, (v) => `${v}`)).toBe('1000 / 500 / 200')
+  })
+
+  it('空汇总时安全回退默认值 0 / 0 / 0', () => {
+    expect(formatAnalyticsTokenSplit(undefined, (v) => `${v}`)).toBe('0 / 0 / 0')
+  })
 })
 
 describe('Analytics 来源筛选', () => {
   it('来源筛选使用与 Usage Logs 相同的稳定值', () => {
     expect(getUsageSourceLabel('claude-code')).toBe('Claude Code')
+    expect(getUsageSourceLabel('deepseek-harness')).toBe('DeepSeek Harness')
     expect(getUsageSourceLabel('detection-task')).toBe('定时检测')
   })
 

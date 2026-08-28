@@ -10,7 +10,11 @@ export interface SiteListItem {
   keyCount: number
   supportsOpenAi: boolean
   supportsAnthropic: boolean
+  supportsResponses: boolean
   protocolType: string
+  clientEmulation?: string
+  extraHeadersJson?: string
+  egressProxyUrl?: string
   isEnabled: boolean
   createdAt: string
 }
@@ -32,7 +36,11 @@ export interface SiteDetail {
   endpointPathMode: string
   supportsOpenAi: boolean
   supportsAnthropic: boolean
+  supportsResponses: boolean
   protocolType: string
+  clientEmulation?: string
+  extraHeadersJson?: string
+  egressProxyUrl?: string
   isEnabled: boolean
   createdAt: string
   keys: SiteKeyItem[]
@@ -45,6 +53,10 @@ export interface SitePayload {
   apiKey: string
   supportsOpenAi?: boolean
   supportsAnthropic?: boolean
+  supportsResponses?: boolean
+  clientEmulation?: string
+  extraHeadersJson?: string
+  egressProxyUrl?: string
   isEnabled?: boolean
 }
 
@@ -76,6 +88,8 @@ export interface FetchAllProgress {
   totalSites: number
   completedSites: number
   isCompleted: boolean
+  createdAt?: string
+  completedAt?: string | null
   sites: SiteFetchResult[]
 }
 
@@ -86,8 +100,8 @@ export interface ModelSelectionItem {
   selected: boolean
 }
 
-export async function listSites(): Promise<SiteListItem[]> {
-  return httpGet<SiteListItem[]>('/api/admin/sites')
+export async function listSites(includeManaged = false): Promise<SiteListItem[]> {
+  return httpGet<SiteListItem[]>(includeManaged ? '/api/admin/sites?includeManaged=true' : '/api/admin/sites')
 }
 
 export async function getSite(id: string): Promise<SiteDetail> {

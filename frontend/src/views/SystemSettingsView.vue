@@ -8,8 +8,16 @@ import PageHeader from '@/components/PageHeader.vue'
 import * as systemApi from '@/api/system'
 import type { SystemSettings } from '@/api/system'
 import { validateSystemSettingsNumbers } from './systemSettingsState'
+import { useCurrency } from '@/composables/useCurrency'
+import type { SelectOption } from 'naive-ui'
 
 const message = useMessage()
+const { currency, setCurrencyDisplay } = useCurrency()
+
+const currencyOptions: SelectOption[] = [
+  { label: '美元（$）', value: 'USD' },
+  { label: '人民币（¥）', value: 'CNY' }
+]
 const loading = ref(false)
 const saving = ref(false)
 
@@ -24,7 +32,7 @@ const sourceOptions = [
   { label: '代理', value: 'proxy' },
   { label: '对话测试', value: 'chat' },
   { label: 'Claude Code', value: 'claude-code' },
-  { label: 'Codex', value: 'codex' },
+  { label: 'OAuth 账号', value: 'codex' },
   { label: 'Open Code', value: 'open-code' },
   { label: 'ZCode', value: 'zcode' },
   { label: '手动检测', value: 'detection-manual' },
@@ -41,6 +49,7 @@ const clearLogsScopeText = computed(() => {
 
 const form = reactive<SystemSettings>({
   proxyRequestTimeoutSeconds: 60,
+  proxyStreamIdleTimeoutSeconds: 0,
   proxyRetryCount: 1,
   detectionRequestTimeoutSeconds: 60,
   detectionRetryCount: 0,
@@ -52,11 +61,12 @@ const form = reactive<SystemSettings>({
   developerFeaturesEnabled: false,
   concurrencyMode: 0,
   concurrencyQueueTimeoutSeconds: 120,
-  codexFeaturesEnabled: false,
-  codexInspectionEnabled: false,
-  codexInspectionIntervalSeconds: 1800,
-  codexQuotaMaxCacheHours: 6,
-  codexAutoDisableThresholdPercent: 95,
+  oauthFeaturesEnabled: false,
+  oauthInspectionEnabled: false,
+  oauthInspectionIntervalSeconds: 1800,
+  oauthQuotaMaxCacheHours: 6,
+  oauthAutoDisableThresholdPercent: 95,
+  oauthInspectionCacheEnabled: false,
   lastUsageLogPrunedAt: null,
   lastUsageLogPrunedCount: 0
 })
@@ -114,9 +124,21 @@ onMounted(loadSettings)
     <NSpin :show="loading">
       <div class="settings-stack">
         <NCard class="settings-card settings-body-card">
+          <h5 class="settings-card-title">显示设置</h5>
+          <NForm label-placement="top">
+            <div class="settings-grid">
+              <NFormItem>
+                <template #label><span class="form-label-tip">金额货币<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>统计页与使用日志中消耗金额的展示货币。计价基准恒为美元，人民币按模型价格表中的汇率换算显示。选择后立即生效，无需点保存。</NTooltip></span></template>
+                <NSelect :value="currency" :options="currencyOptions" @update:value="setCurrencyDisplay" />
+              </NFormItem>
+            </div>
+          </NForm>
+        </NCard>
+
+        <NCard class="settings-card settings-body-card">
           <h5 class="settings-card-title">检测设置</h5>
           <NForm label-placement="top">
-            <div class="settings-grid cols-3">
+            <div class="settings-grid">
               <NFormItem>
                 <template #label><span class="form-label-tip">检测超时时间（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>单次检测请求在上游站点等待响应的最长时间。数值过小可能把慢站点误判为失败。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.detectionRequestTimeoutSeconds" :min="1" :step="5" />
@@ -136,10 +158,14 @@ onMounted(loadSettings)
         <NCard class="settings-card settings-body-card">
           <h5 class="settings-card-title">代理设置</h5>
           <NForm label-placement="top">
-            <div class="settings-grid cols-4">
+            <div class="settings-grid">
               <NFormItem>
                 <template #label><span class="form-label-tip">代理超时时间（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>单次代理转发请求等待上游响应的最长时间。值过小容易让慢响应被截断。</NTooltip></span></template>
                 <NInputNumber v-model:value="form.proxyRequestTimeoutSeconds" :min="1" :step="5" />
+              </NFormItem>
+              <NFormItem>
+                <template #label><span class="form-label-tip">流式空闲超时（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>流式转发时相邻两次收到上游数据的最大间隔，超过即判定上游挂起并终止。0 表示不启用（默认）。推理模型首 token 前可能长时间静默，请谨慎调小。</NTooltip></span></template>
+                <NInputNumber v-model:value="form.proxyStreamIdleTimeoutSeconds" :min="0" :step="30" />
               </NFormItem>
               <NFormItem>
                 <template #label><span class="form-label-tip">代理重试次数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>当前路由失败后允许重新尝试的次数。值越大越有机会切到其他路由。</NTooltip></span></template>
@@ -154,7 +180,7 @@ onMounted(loadSettings)
                 <NInputNumber v-model:value="form.circuitBreakerRecoveryMinutes" :min="1" />
               </NFormItem>
             </div>
-            <div class="settings-grid cols-3 compact-row">
+            <div class="settings-grid compact-row">
               <NFormItem>
                 <template #label><span class="form-label-tip">并发打满策略<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>“跳过”直接尝试下一顺位路由；“排队等待”先等待并发槽位释放。</NTooltip></span></template>
                 <NSelect
@@ -177,7 +203,7 @@ onMounted(loadSettings)
         <NCard class="settings-card settings-body-card">
           <h5 class="settings-card-title">日志设置</h5>
           <NForm label-placement="top">
-            <div class="settings-grid cols-3">
+            <div class="settings-grid">
               <NFormItem label="UsageLogs 保留天数">
                 <NInputNumber v-model:value="form.usageLogRetentionDays" :min="1" />
               </NFormItem>
@@ -195,28 +221,31 @@ onMounted(loadSettings)
           <h5 class="settings-card-title">开发者功能</h5>
           <div class="switch-stack">
             <label class="switch-line"><NSwitch v-model:value="form.developerFeaturesEnabled" /><span class="form-label-tip">启用开发者功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后显示调试工具入口，并保留最近 100 条调用轨迹。</NTooltip></span></label>
-            <label class="switch-line"><NSwitch v-model:value="form.codexFeaturesEnabled" /><span class="form-label-tip">启用 Codex 功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>总开关，控制 Codex OAuth 账号、凭证导入、额度与巡检功能。</NTooltip></span></label>
+            <label class="switch-line"><NSwitch v-model:value="form.oauthFeaturesEnabled" /><span class="form-label-tip">启用 OAuth 账号功能<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>总开关，控制 OAuth 账号、凭证导入、额度与巡检功能。</NTooltip></span></label>
           </div>
         </NCard>
 
         <NCard class="settings-card settings-body-card">
-          <h5 class="settings-card-title form-label-tip">Codex 巡检<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在 Codex 功能总开关开启时生效。巡检会周期性检查各 Codex 账号额度。</NTooltip></h5>
+          <h5 class="settings-card-title form-label-tip">账号额度巡检<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>仅在 OAuth 账号功能总开关开启时生效。巡检会周期性检查各账号的额度窗口。</NTooltip></h5>
           <NForm label-placement="top">
-            <div class="settings-grid cols-4">
+            <div class="oauth-inspection-row">
               <NFormItem>
-                <label class="settings-switch-inline"><NSwitch v-model:value="form.codexInspectionEnabled" :disabled="!form.codexFeaturesEnabled" />启用自动巡检</label>
+                <div class="oauth-switch-pair">
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.oauthInspectionEnabled" :disabled="!form.oauthFeaturesEnabled" />启用自动巡检</label>
+                  <label class="settings-switch-inline"><NSwitch v-model:value="form.oauthInspectionCacheEnabled" :disabled="!form.oauthFeaturesEnabled" /><span class="form-label-tip">启用巡检缓存<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>开启后，未被使用的账号可命中近期缓存额度，减少上游请求；关闭（默认）后每次巡检都真实刷新额度，数据最准但会增加上游请求。</NTooltip></span></label>
+                </div>
               </NFormItem>
-              <NFormItem>
+              <NFormItem class="oauth-field">
                 <template #label><span class="form-label-tip">巡检周期（秒）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>每隔多少秒执行一轮自动巡检，下限 30 秒。</NTooltip></span></template>
-                <NInputNumber v-model:value="form.codexInspectionIntervalSeconds" :min="30" :step="30" :disabled="!form.codexFeaturesEnabled" />
+                <NInputNumber v-model:value="form.oauthInspectionIntervalSeconds" :min="30" :step="30" :disabled="!form.oauthFeaturesEnabled" />
               </NFormItem>
-              <NFormItem>
+              <NFormItem class="oauth-field">
                 <template #label><span class="form-label-tip">额度缓存最大小时数<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>未被使用的账号可以命中缓存，但超过该小时数后会强制真实刷新一次额度。</NTooltip></span></template>
-                <NInputNumber v-model:value="form.codexQuotaMaxCacheHours" :min="1" :disabled="!form.codexFeaturesEnabled" />
+                <NInputNumber v-model:value="form.oauthQuotaMaxCacheHours" :min="1" :disabled="!form.oauthFeaturesEnabled" />
               </NFormItem>
-              <NFormItem>
+              <NFormItem class="oauth-field">
                 <template #label><span class="form-label-tip">自动禁用阈值（%）<NTooltip trigger="hover"><template #trigger><span class="tip-icon">?</span></template>当账号额度达到该使用百分比时自动禁用，建议 95。</NTooltip></span></template>
-                <NInputNumber v-model:value="form.codexAutoDisableThresholdPercent" :min="1" :max="100" :disabled="!form.codexFeaturesEnabled" />
+                <NInputNumber v-model:value="form.oauthAutoDisableThresholdPercent" :min="1" :max="100" :disabled="!form.oauthFeaturesEnabled" />
               </NFormItem>
             </div>
           </NForm>
@@ -287,8 +316,11 @@ onMounted(loadSettings)
 }
 
 .settings-grid {
-  display: grid;
-  gap: 16px 24px;
+  /* 控件已是固定窄宽，用 flex 换行让相邻控件紧凑排列，
+     不再用等分网格列（会在窄控件右侧留大片空列）。 */
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px 32px;
   align-items: end;
 }
 
@@ -296,17 +328,44 @@ onMounted(loadSettings)
   margin-bottom: 0;
 }
 
-.settings-grid :deep(.n-input-number),
+/* 数值输入只需要少量字符，固定窄宽；下拉需容下最长选项文本 + 展开箭头。
+   小屏（<卡片单列）回退为占满，避免截断。 */
+.settings-grid :deep(.n-input-number) {
+  width: 168px;
+  max-width: 100%;
+}
+
 .settings-grid :deep(.n-select) {
+  width: 220px;
+  max-width: 100%;
+}
+
+/* 账号额度巡检：开关组 + 三个数值输入框用 flex 紧凑连续排列 */
+.oauth-inspection-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 16px 28px;
+}
+
+.oauth-inspection-row .oauth-field {
+  width: 168px;
+}
+
+.oauth-inspection-row :deep(.n-input-number) {
   width: 100%;
 }
 
-.settings-grid.cols-3 {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+.oauth-inspection-row :deep(.n-form-item-label) {
+  white-space: nowrap;
 }
 
-.settings-grid.cols-4 {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+.oauth-switch-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  align-items: center;
+  min-height: 34px;
 }
 
 .compact-row {
@@ -378,7 +437,7 @@ onMounted(loadSettings)
 
 .clear-logs-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(200px, 240px));
   gap: 16px;
   margin-bottom: 14px;
 }
@@ -394,6 +453,7 @@ onMounted(loadSettings)
 
 .danger-time-input {
   height: 34px;
+  width: 100%;
   min-width: 0;
   padding: 0 10px;
   border: 1px solid var(--border-color-global);
@@ -411,18 +471,18 @@ onMounted(loadSettings)
   border-color: rgba(255, 255, 255, 0.55);
 }
 
-@media (max-width: 1100px) {
-  .settings-grid.cols-4,
-  .settings-grid.cols-3 {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 640px) {
-  .settings-grid.cols-4,
-  .settings-grid.cols-3,
+  /* flex 换行布局下，窄屏让每个控件占满整行，标签和输入都不截断 */
+  .settings-grid :deep(.n-form-item) {
+    width: 100%;
+  }
+
   .clear-logs-grid {
     grid-template-columns: 1fr;
+  }
+
+  .oauth-inspection-row .oauth-field {
+    width: 100%;
   }
 }
 </style>

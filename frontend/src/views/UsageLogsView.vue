@@ -9,7 +9,9 @@ import {
   NEmpty,
   NGi,
   NGrid,
+  NInput,
   NSelect,
+  NSpin,
   NStatistic,
   NSwitch,
   NTag,
@@ -17,16 +19,22 @@ import {
   type SelectOption
 } from 'naive-ui'
 import PageHeader from '@/components/PageHeader.vue'
+import SourceIcon from '@/components/SourceIcon.vue'
+import { isRequestCanceled } from '@/api/http'
 import * as api from '@/api/usageLogs'
 import type { UsageLogItem, UsageLogRequestDetail, UsageLogSummary } from '@/api/usageLogs'
+import { getModelPricing } from '@/api/models'
+import { useCurrency } from '@/composables/useCurrency'
 import {
   buildUsageLogsDefaultCustomRange,
   buildVisibleUsageLogPages,
-  canAutoLoadUsageLogs
+  canAutoLoadUsageLogs,
+  formatUsageLogModel
 } from './usageLogsState'
-import { getUsageSourceMeta as getSourceMeta, usageSourceOptions as sourceOptions } from './usageSource'
+import { usageSourceOptions as sourceOptions } from './usageSource'
 
 const message = useMessage()
+const { currency, symbol, formatCost, formatTotalCost, setUsdToCny } = useCurrency()
 const loading = ref(false)
 const detailLoading = ref(false)
 const filtersExpanded = ref(false)
@@ -42,6 +50,13 @@ const requestDetail = ref<UsageLogRequestDetail | null>(null)
 let refreshTimer: number | undefined
 let searchTimer: number | undefined
 let incrementalRefreshInFlight = false
+let loadAbortController: AbortController | undefined
+let incrementalAbortController: AbortController | undefined
+// load() 的请求序号：仅最后一次触发的加载允许写回状态。
+let loadRequestSeq = 0
+// 明细请求可被后续点击取消，且序号校验避免慢请求覆盖当前选中的链路。
+let detailRequestSeq = 0
+let detailAbortController: AbortController | undefined
 
 const query = reactive({
   page: 1,
@@ -51,6 +66,7 @@ const query = reactive({
   accessKeyId: null as string | null,
   source: null as string | null,
   status: null as string | null,
+  isStreaming: '' as string,
   startTime: null as number | null,
   endTime: null as number | null,
   modelKeyword: ''
@@ -62,6 +78,11 @@ const statusOptions: SelectOption[] = [
   { label: '全部', value: '' },
   { label: '成功', value: 'success' },
   { label: '失败', value: 'fail' }
+]
+const streamOptions: SelectOption[] = [
+  { label: '全部', value: '' },
+  { label: '流式', value: 'true' },
+  { label: '非流式', value: 'false' }
 ]
 const rangeOptions: SelectOption[] = [
   { label: '按天', value: 'day' },
@@ -137,11 +158,6 @@ function statusTag(row: UsageLogItem) {
   return h(NTag, { size: 'small', type: meta.type, bordered: false }, () => meta.label)
 }
 
-function sourceTag(source: string) {
-  const meta = getSourceMeta(source)
-  return h(NTag, { size: 'small', type: meta.type, bordered: false }, () => meta.label)
-}
-
 function latencyBadges(row: UsageLogItem) {
   return h('div', { class: 'latency-chips' }, [
     h('span', { class: 'usage-log-chip usage-log-chip-total' }, formatDuration(row.totalDurationMs)),
@@ -163,6 +179,8 @@ function buildParams(page = query.page): Record<string, unknown> {
   if (query.accessKeyId) params.accessKeyId = query.accessKeyId
   if (query.source) params.source = query.source
   if (query.status) params.status = query.status
+  if (query.isStreaming === 'true') params.isStreaming = true
+  else if (query.isStreaming === 'false') params.isStreaming = false
   if (query.modelKeyword.trim()) params.modelKeyword = query.modelKeyword.trim()
   if (query.rangeType === 'custom' && query.startTime) params.startTime = new Date(query.startTime).toISOString()
   if (query.rangeType === 'custom' && query.endTime) params.endTime = new Date(query.endTime).toISOString()
@@ -174,14 +192,22 @@ async function loadFilters(): Promise<void> {
 }
 
 async function load(page = query.page): Promise<void> {
+  // 请求序号守卫：快速切换筛选/翻页时并发多个 load，慢的旧响应后返回
+  // 会把表格覆盖成过期筛选条件的结果（与 refreshIncrementally 的 requestKey 守卫同思路）。
+  const requestSeq = ++loadRequestSeq
+  loadAbortController?.abort()
+  incrementalAbortController?.abort()
+  const abortController = new AbortController()
+  loadAbortController = abortController
   loading.value = true
   try {
     query.page = page
     const params = buildParams(page)
     const [listResp, summaryResp] = await Promise.all([
-      api.listUsageLogs(params),
-      api.getUsageLogSummary(params)
+      api.listUsageLogs(params, abortController.signal),
+      api.getUsageLogSummary(params, abortController.signal)
     ])
+    if (requestSeq !== loadRequestSeq) return
     items.value = listResp.items ?? []
     query.page = listResp.page
     query.pageSize = listResp.pageSize
@@ -189,9 +215,14 @@ async function load(page = query.page): Promise<void> {
     totalPages.value = listResp.totalPages
     summary.value = summaryResp
   } catch (e) {
-    message.error((e as Error).message)
+    if (requestSeq === loadRequestSeq && !isRequestCanceled(e)) {
+      message.error((e as Error).message)
+    }
   } finally {
-    loading.value = false
+    if (requestSeq === loadRequestSeq) {
+      loading.value = false
+      if (loadAbortController === abortController) loadAbortController = undefined
+    }
   }
 }
 
@@ -205,15 +236,18 @@ function usageLogSummarySignature(value: UsageLogSummary): string {
 
 // 自动刷新只更新发生变化的记录，避免无变化时触发表格整体重绘。
 async function refreshIncrementally(): Promise<void> {
-  if (incrementalRefreshInFlight) return
+  if (incrementalRefreshInFlight || loading.value) return
   incrementalRefreshInFlight = true
+  const abortController = new AbortController()
+  incrementalAbortController = abortController
   const page = query.page
-  const requestKey = JSON.stringify(buildParams(page))
+  const params = buildParams(page)
+  const requestKey = JSON.stringify(params)
 
   try {
     const [listResp, summaryResp] = await Promise.all([
-      api.listUsageLogs(buildParams(page)),
-      api.getUsageLogSummary(buildParams(page))
+      api.listUsageLogs(params, abortController.signal),
+      api.getUsageLogSummary(params, abortController.signal)
     ])
 
     // 筛选或分页在请求期间发生变化时，丢弃过期的自动刷新结果。
@@ -242,9 +276,10 @@ async function refreshIncrementally(): Promise<void> {
       summary.value = summaryResp
     }
   } catch (e) {
-    message.error((e as Error).message)
+    if (!isRequestCanceled(e)) message.error((e as Error).message)
   } finally {
     incrementalRefreshInFlight = false
+    if (incrementalAbortController === abortController) incrementalAbortController = undefined
   }
 }
 
@@ -261,7 +296,7 @@ function handleSearch(): void {
 
 // 筛选项选择后立即查询；自定义时间需先补齐默认范围，避免中间态请求。
 watch(
-  () => [query.rangeType, query.siteId, query.accessKeyId, query.source, query.status, query.startTime, query.endTime],
+  () => [query.rangeType, query.siteId, query.accessKeyId, query.source, query.status, query.isStreaming, query.startTime, query.endTime],
   () => {
     if (query.rangeType === 'custom' && (!query.startTime || !query.endTime)) {
       ensureCustomRangeDefaults()
@@ -289,15 +324,28 @@ async function openRequestDetail(requestId: string): Promise<void> {
     message.warning('当前记录缺少 requestId，无法查看链路')
     return
   }
+  detailRequestSeq++
+  detailAbortController?.abort()
+  const requestSeq = detailRequestSeq
+  const abortController = new AbortController()
+  detailAbortController = abortController
   detailVisible.value = true
   detailLoading.value = true
   requestDetail.value = null
   try {
-    requestDetail.value = await api.getUsageLogRequestDetail(requestId)
+    const detail = await api.getUsageLogRequestDetail(requestId, abortController.signal)
+    if (requestSeq === detailRequestSeq) {
+      requestDetail.value = detail
+    }
   } catch (e) {
-    message.error((e as Error).message)
+    if (requestSeq === detailRequestSeq && !isRequestCanceled(e)) {
+      message.error((e as Error).message)
+    }
   } finally {
-    detailLoading.value = false
+    if (requestSeq === detailRequestSeq) {
+      detailLoading.value = false
+      detailAbortController = undefined
+    }
   }
 }
 
@@ -308,6 +356,8 @@ function configureAutoRefresh(): void {
   }
   if (autoRefresh.value) {
     refreshTimer = window.setInterval(() => {
+      // 后台标签页不轮询（与其他页面一致），避免不可见时持续打两个接口。
+      if (document.visibilityState !== 'visible') return
       void refreshIncrementally()
     }, 5000)
   }
@@ -346,11 +396,18 @@ onMounted(async () => {
   await loadFilters()
   await load()
   configureAutoRefresh()
+  // 汇率来自本地价格表（model-pricing.json 的 usdToCny），失败时保持默认值。
+  getModelPricing().then((catalog) => setUsdToCny(catalog?.usdToCny)).catch(() => undefined)
 })
 
 onUnmounted(() => {
   if (refreshTimer) window.clearInterval(refreshTimer)
   clearSearchTimer()
+  detailRequestSeq++
+  detailAbortController?.abort()
+  loadRequestSeq++
+  loadAbortController?.abort()
+  incrementalAbortController?.abort()
 })
 </script>
 
@@ -382,16 +439,6 @@ onUnmounted(() => {
             <span>时间范围</span>
             <NSelect v-model:value="query.rangeType" :options="rangeOptions" size="small" />
           </label>
-          <template v-if="query.rangeType === 'custom'">
-            <label class="filter-field filter-field-wide">
-              <span>开始时间</span>
-              <NDatePicker v-model:value="query.startTime" type="datetime" size="small" />
-            </label>
-            <label class="filter-field filter-field-wide">
-              <span>结束时间</span>
-              <NDatePicker v-model:value="query.endTime" type="datetime" size="small" />
-            </label>
-          </template>
           <label class="filter-field">
             <span>站点</span>
             <NSelect v-model:value="query.siteId" :options="siteOptions" placeholder="全部站点" clearable size="small" />
@@ -408,83 +455,105 @@ onUnmounted(() => {
             <span>状态</span>
             <NSelect v-model:value="query.status" :options="statusOptions" clearable size="small" />
           </label>
-          <label class="filter-field filter-field-wide">
+          <label class="filter-field">
+            <span>流式模式</span>
+            <NSelect v-model:value="query.isStreaming" :options="streamOptions" placeholder="全部" clearable size="small" />
+          </label>
+          <label class="filter-field filter-field-search">
             <span>模型搜索</span>
             <div class="search-action-row">
-              <input v-model="query.modelKeyword" class="model-keyword-input" placeholder="模型模糊搜索" @keyup.enter="handleSearch" />
+              <NInput v-model:value="query.modelKeyword" size="small" placeholder="模型模糊搜索" clearable @keyup.enter="handleSearch" />
               <NButton class="usage-logs-refresh-button" type="primary" size="small" @click="handleSearch">刷新</NButton>
             </div>
+          </label>
+        </div>
+        <div v-if="query.rangeType === 'custom'" class="usage-logs-custom-range-row">
+          <label class="filter-field">
+            <span>开始时间</span>
+            <NDatePicker v-model:value="query.startTime" type="datetime" size="small" clearable />
+          </label>
+          <label class="filter-field">
+            <span>结束时间</span>
+            <NDatePicker v-model:value="query.endTime" type="datetime" size="small" clearable />
           </label>
         </div>
       </div>
     </NCard>
 
-    <NGrid :cols="4" :x-gap="12" :y-gap="12" responsive="screen" item-responsive class="usage-logs-summary-row" :class="{ 'is-collapsed': !filtersExpanded }">
-      <NGi span="4 m:2 l:1"><NCard size="small"><NStatistic label="总请求" :value="formatNumber(summary.totalRequests)" /></NCard></NGi>
-      <NGi span="4 m:2 l:1"><NCard size="small"><NStatistic label="成功率" :value="formatPercent(summary.successRate)" /></NCard></NGi>
-      <NGi span="4 m:2 l:1"><NCard size="small"><NStatistic label="总 Tokens" :value="formatMetricNumber(summary.totalTokens)" /></NCard></NGi>
-      <NGi span="4 m:2 l:1"><NCard size="small"><NStatistic label="失败请求" :value="formatNumber(summary.failedRequests)" /></NCard></NGi>
-    </NGrid>
+    <div class="usage-logs-summary-grid" :class="{ 'is-collapsed': !filtersExpanded }">
+      <NCard size="small" class="usage-logs-stat-card"><NStatistic label="总请求" :value="formatNumber(summary.totalRequests)" /></NCard>
+      <NCard size="small" class="usage-logs-stat-card"><NStatistic label="成功率" :value="formatPercent(summary.successRate)" /></NCard>
+      <NCard size="small" class="usage-logs-stat-card"><NStatistic label="总 Tokens" :value="formatMetricNumber(summary.totalTokens)" /></NCard>
+      <NCard size="small" class="usage-logs-stat-card"><NStatistic label="失败请求" :value="formatNumber(summary.failedRequests)" /></NCard>
+      <NCard size="small" class="usage-logs-cost-card">
+        <div class="n-statistic__label">总消耗（{{ currency }}）</div>
+        <div class="n-statistic__value usage-logs-cost-value">{{ formatTotalCost(summary.totalCostUsd) }}</div>
+      </NCard>
+    </div>
 
-    <div class="table-wrapper usage-logs-table-wrapper">
-      <table class="table usage-logs-table">
-        <thead>
-          <tr>
-            <th>时间</th>
-            <th>来源</th>
-            <th>模型</th>
-            <th>目标站点</th>
-            <th>访问密钥</th>
-            <th>状态</th>
-            <th>用时/首字</th>
-            <th>输入</th>
-            <th>缓存</th>
-            <th>输出</th>
-            <th>总Token数</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-if="loading">
-            <td colspan="12">
-              <div class="table-empty">
-                <div class="table-empty-text">加载中...</div>
-              </div>
-            </td>
-          </tr>
-          <tr v-else-if="items.length === 0">
-            <td colspan="12">
-              <div class="table-empty">
-                <div class="table-empty-icon">📋</div>
-                <div class="table-empty-text">暂无调用日志</div>
-              </div>
-            </td>
-          </tr>
-          <template v-else>
-            <tr v-for="item in items" :key="item.id">
-              <td>{{ formatDateTime(item.requestedAt) }}</td>
-              <td><NTag size="small" :type="getSourceMeta(item.source).type" :bordered="false">{{ getSourceMeta(item.source).label }}</NTag></td>
-              <td><code>{{ item.attemptedModel || item.requestModel || '-' }}</code></td>
-              <td>{{ item.siteName || '-' }}</td>
-              <td>{{ item.accessKeyName || '-' }}</td>
-              <td><NTag size="small" :type="getStatusMeta(item).type" :bordered="false">{{ getStatusMeta(item).label }}</NTag></td>
-              <td><div class="latency-chips">
-                <span class="usage-log-chip usage-log-chip-total">{{ formatDuration(item.totalDurationMs) }}</span>
-                <span class="usage-log-chip usage-log-chip-first">{{ item.isStreaming ? formatDuration(item.firstTokenLatencyMs) : '-' }}</span>
-                <span :class="['usage-log-chip usage-log-chip-stream', item.isStreamInterrupted ? 'usage-log-chip-stream-interrupted' : '']">{{ item.isStreaming ? '流' : '非流' }}</span>
-              </div></td>
-              <td>{{ formatNumber(item.inputTokens) }}</td>
-              <td>{{ formatNumber(item.cachedTokens) }}</td>
-              <td>{{ formatNumber(item.outputTokens) }}</td>
-              <td><strong>{{ formatNumber(item.totalTokens) }}</strong></td>
-              <td>
-                <NButton size="small" secondary type="primary" @click="openRequestDetail(item.requestId)">查看链路</NButton>
+    <NSpin :show="loading">
+      <div class="table-wrapper usage-logs-table-wrapper">
+        <table class="table usage-logs-table">
+          <thead>
+            <tr>
+              <th>时间</th>
+              <th>来源</th>
+              <th>模型</th>
+              <th>目标站点</th>
+              <th>访问密钥</th>
+              <th>状态</th>
+              <th>用时/首字</th>
+              <th>输入</th>
+              <th>缓存</th>
+              <th>输出</th>
+              <th>总Token数</th>
+              <th>成本({{ symbol }})</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-if="items.length === 0 && !loading">
+              <td colspan="13">
+                <div class="table-empty">
+                  <div class="table-empty-icon">📋</div>
+                  <div class="table-empty-text">暂无调用日志</div>
+                </div>
               </td>
             </tr>
-          </template>
-        </tbody>
-      </table>
-    </div>
+            <tr v-else-if="items.length === 0 && loading">
+              <td colspan="13">
+                <div class="table-empty">
+                  <div class="table-empty-text">加载中...</div>
+                </div>
+              </td>
+            </tr>
+            <template v-else>
+              <tr v-for="item in items" :key="item.id">
+                <td>{{ formatDateTime(item.requestedAt) }}</td>
+                <td><SourceIcon :source="item.source" /></td>
+                <td><code>{{ formatUsageLogModel(item.requestModel, item.attemptedModel, item.source) }}</code></td>
+                <td>{{ item.siteName || '-' }}</td>
+                <td>{{ item.accessKeyName || '-' }}</td>
+                <td><NTag size="small" :type="getStatusMeta(item).type" :bordered="false">{{ getStatusMeta(item).label }}</NTag></td>
+                <td><div class="latency-chips">
+                  <span class="usage-log-chip usage-log-chip-total">{{ formatDuration(item.totalDurationMs) }}</span>
+                  <span class="usage-log-chip usage-log-chip-first">{{ item.isStreaming ? formatDuration(item.firstTokenLatencyMs) : '-' }}</span>
+                  <span :class="['usage-log-chip usage-log-chip-stream', item.isStreamInterrupted ? 'usage-log-chip-stream-interrupted' : '']">{{ item.isStreaming ? '流' : '非流' }}</span>
+                </div></td>
+                <td>{{ formatNumber(item.inputTokens) }}</td>
+                <td>{{ formatNumber(item.cachedTokens) }}</td>
+                <td>{{ formatNumber(item.outputTokens) }}</td>
+                <td><strong>{{ formatNumber(item.totalTokens) }}</strong></td>
+                <td><strong :class="{ 'usage-logs-cost-unpriced': item.costUsd === null || item.costUsd === undefined }">{{ formatCost(item.costUsd) }}</strong></td>
+                <td>
+                  <NButton size="small" secondary type="primary" @click="openRequestDetail(item.requestId)">查看链路</NButton>
+                </td>
+              </tr>
+            </template>
+          </tbody>
+        </table>
+      </div>
+    </NSpin>
 
     <div class="usage-logs-pagination-wrap">
       <div class="usage-logs-pagination-summary">{{ paginationSummary }}</div>
@@ -620,13 +689,13 @@ onUnmounted(() => {
 }
 
 .usage-logs-filter-body {
-  padding: 18px;
+  padding: 16px 18px;
   border-top: 1px solid var(--border-color-global);
 }
 
 .usage-logs-filter-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(120px, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr)) minmax(180px, 1.4fr);
   gap: 12px;
   align-items: end;
 }
@@ -640,60 +709,94 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
-.filter-field-wide {
-  grid-column: span 2;
+.filter-field-search {
+  min-width: 0;
 }
 
 .search-action-row {
   display: flex;
-  align-items: stretch;
+  align-items: center;
   gap: 8px;
 }
 
-.model-keyword-input {
-  min-width: 0;
+.search-action-row :deep(.n-input) {
   flex: 1 1 auto;
-  height: 38px;
-  padding: 0 10px;
-  border: 1px solid var(--border-color-global);
-  border-radius: 4px;
-  background: var(--bg-card);
-  color: var(--text-primary);
+  min-width: 0;
 }
 
 .usage-logs-refresh-button {
-  height: 38px;
+  flex-shrink: 0;
 }
 
-.usage-logs-summary-row {
+.usage-logs-custom-range-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(200px, 280px));
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border-color-global);
+}
+
+.usage-logs-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 12px;
   margin-bottom: 16px;
 }
 
-.usage-logs-summary-row.is-collapsed {
+.usage-logs-summary-grid.is-collapsed {
   display: none;
 }
 
+/* 一行五卡的紧凑数值：长数字不撑破卡片 */
+.usage-logs-stat-card :deep(.n-statistic__value),
+.usage-logs-cost-value {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.usage-logs-cost-card :deep(.n-card__content) {
+  padding-bottom: 10px;
+}
+
+.usage-logs-cost-value {
+  font-size: 24px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.usage-logs-cost-unpriced {
+  opacity: 0.45;
+  font-weight: 400;
+}
+
 .usage-logs-table-wrapper {
-  overflow: auto;
+  overflow-x: auto;
+  overflow-y: hidden;
   border: 1px solid var(--border-color-global);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--bg-card);
+  box-shadow: 0 4px 16px rgba(15, 23, 42, 0.03);
+  -webkit-overflow-scrolling: touch;
 }
 
 .usage-logs-table {
   width: 100%;
-  min-width: 1320px;
+  min-width: 1240px;
   margin: 0;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
 }
 
 .usage-logs-table th,
 .usage-logs-table td {
-  padding: 14px 16px;
+  padding: 12px 14px;
   border-bottom: 1px solid var(--border-color-global);
   text-align: left;
   vertical-align: middle;
   white-space: nowrap;
+  font-size: 13px;
 }
 
 .usage-logs-table th {
@@ -703,8 +806,66 @@ onUnmounted(() => {
   font-weight: 600;
 }
 
+.usage-logs-table tbody tr {
+  background: var(--bg-card);
+  transition: background-color 0.15s ease;
+}
+
+.usage-logs-table tbody tr:hover td {
+  background: var(--hover-color, rgba(148, 163, 184, 0.06));
+}
+
 .usage-logs-table tbody tr:last-child td {
   border-bottom: 0;
+}
+
+.table-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+  padding: 40px 20px;
+  text-align: center;
+  color: var(--text-color-secondary);
+}
+
+.table-empty-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+}
+
+.table-empty-text {
+  font-size: 14px;
+}
+
+/* 冻结首列：时间 */
+.usage-logs-table th:first-child,
+.usage-logs-table td:first-child {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--bg-card);
+  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.04);
+}
+.usage-logs-table th:first-child {
+  background: var(--bg-page);
+  z-index: 3;
+}
+
+/* 冻结末列：操作 */
+.usage-logs-table th:last-child,
+.usage-logs-table td:last-child {
+  position: sticky;
+  right: 0;
+  z-index: 2;
+  background: var(--bg-card);
+  text-align: center;
+  box-shadow: -2px 0 6px rgba(0, 0, 0, 0.04);
+}
+.usage-logs-table th:last-child {
+  background: var(--bg-page);
+  z-index: 3;
 }
 
 .usage-logs-pagination-wrap {
@@ -836,43 +997,44 @@ onUnmounted(() => {
 }
 
 .latency-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  display: inline-flex;
   align-items: center;
+  flex-wrap: nowrap;
+  gap: 4px;
+  white-space: nowrap;
 }
 
 .usage-log-chip {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 24px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  font-size: 12px;
+  height: 22px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  font-size: 11.5px;
   font-weight: 600;
   line-height: 1;
   white-space: nowrap;
 }
 
 .usage-log-chip-total {
-  background: #e8f7ea;
-  color: #2e7d32;
+  background: rgba(16, 185, 129, 0.12);
+  color: #059669;
 }
 
 .usage-log-chip-first {
-  background: #fff1e0;
-  color: #c77800;
+  background: rgba(245, 158, 11, 0.12);
+  color: #d97706;
 }
 
 .usage-log-chip-stream {
-  background: #e7f1ff;
-  color: #246bfe;
+  background: rgba(59, 130, 246, 0.12);
+  color: #2563eb;
 }
 
 .usage-log-chip-stream-interrupted {
-  background: #fff3cd;
-  color: #996c00;
+  background: rgba(239, 68, 68, 0.12);
+  color: #dc2626;
 }
 
 .detail-placeholder,
@@ -899,13 +1061,41 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 
-@media (max-width: 1200px) {
+@media (max-width: 1400px) {
   .usage-logs-filter-grid {
-    grid-template-columns: repeat(3, minmax(160px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .filter-field-search {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 1200px) {
+  .usage-logs-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 991px) {
+  .usage-logs-filter-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .filter-field-search {
+    grid-column: span 2;
+  }
+}
+
+@media (max-width: 768px) {
+  .usage-logs-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
 @media (max-width: 640px) {
+  .usage-logs-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
   .usage-logs-filter-header {
     align-items: stretch;
     flex-direction: column;
@@ -919,8 +1109,12 @@ onUnmounted(() => {
     grid-template-columns: 1fr;
   }
 
-  .filter-field-wide {
+  .filter-field-search {
     grid-column: span 1;
+  }
+
+  .usage-logs-custom-range-row {
+    grid-template-columns: 1fr;
   }
 
   .usage-logs-pagination-wrap {
@@ -943,5 +1137,22 @@ onUnmounted(() => {
     justify-content: center;
     margin-top: 4px;
   }
+}
+
+.usage-logs-cost-card {
+  :deep(.n-card__content) {
+    padding-bottom: 10px;
+  }
+}
+
+.usage-logs-cost-value {
+  font-size: 24px;
+  font-weight: 600;
+  margin-top: 2px;
+}
+
+.usage-logs-cost-unpriced {
+  opacity: 0.45;
+  font-weight: 400;
 }
 </style>
