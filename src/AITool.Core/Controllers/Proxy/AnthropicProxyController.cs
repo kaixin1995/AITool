@@ -577,7 +577,7 @@ public sealed class AnthropicProxyController : ControllerBase
                 }
 
                 // 将适配后的响应体和内容类型写入上下文，供开发者追踪使用
-                callContext.AdaptedResponseBody = responseBody;
+                callContext.AdaptedResponseBody = responseBody ?? string.Empty;
                 callContext.ResponseContentType = result.IsStreaming ? "text/event-stream" : "application/json";
                 _proxyCallRecorder.CompleteTraceAttempt(traceId, traceAttemptId, callContext);
 

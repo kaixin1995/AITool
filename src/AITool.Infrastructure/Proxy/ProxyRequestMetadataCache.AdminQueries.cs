@@ -124,6 +124,17 @@ public sealed partial class ProxyRequestMetadataCache
                                 : new Dictionary<Guid, List<Domain.Sites.SiteKey>> { [item.site.Id] = keysForSite };
                             var candidates = ResolveSiteKeyCandidates(item.site.Id, item.site.ApiKey, keysBySiteTyped);
 
+                            // master 同步：聊天/调试目标同样走三层仿真解析（映射 > 模型 > 站点）+ Google 项目。
+                            var chatEmulation = ResolveClientEmulation(item.mapping.ClientEmulation, item.model.ClientEmulation, item.site.ClientEmulation);
+                            var chatHeaderProfileMap = (IReadOnlyDictionary<string, Dictionary<string, string>>?)(snapshot.HeaderProfiles ?? [])
+                                .GroupBy(h => h.Key, StringComparer.OrdinalIgnoreCase)
+                                .ToDictionary(g => g.Key, g => TryParseExtraHeaders(g.First().HeadersJson), StringComparer.OrdinalIgnoreCase);
+                            var chatGoogleProjects = (snapshot.AccountCredentials ?? [])
+                                .Where(a => string.Equals(a.Provider, "Google", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(a.ProjectId))
+                                .GroupBy(a => a.LinkedSiteId)
+                                .ToDictionary(g => g.Key, g => g.First().ProjectId!);
+                            var chatHeaders = BuildEffectiveExtraHeaders(chatEmulation, chatHeaderProfileMap, item.site.ExtraHeadersJson, item.model.ExtraHeadersJson, item.mapping.ExtraHeadersJson);
+
                             foreach (var candidate in candidates)
                             {
                                 expanded.Add(new CachedChatTarget
@@ -139,6 +150,10 @@ public sealed partial class ProxyRequestMetadataCache
                                     BaseUrl = item.site.BaseUrl,
                                     EndpointPathMode = item.site.EndpointPathMode,
                                     ApiKey = candidate.ApiKey,
+                                    ManagedSource = item.site.ManagedSource ?? string.Empty,
+                                    ExtraHeaders = chatHeaders.Count > 0 ? chatHeaders : TryParseExtraHeaders(item.site.ExtraHeadersJson),
+                                    ClientEmulation = chatEmulation,
+                                    GoogleProjectId = chatGoogleProjects.TryGetValue(item.site.Id, out var chatGoogleProject) ? chatGoogleProject : string.Empty,
                                     SiteModelName = item.mapping.RemoteModelName
                                 });
                             }

@@ -881,6 +881,32 @@ public sealed partial class ProxyRequestMetadataCache
                             .GroupBy(k => k.SiteId)
                             .ToDictionary(g => g.Key, g => g.ToList());
 
+                        // master 同步：派生数据（映射/模型/档案/凭证），用于三层仿真、出口代理、
+                        // Google 项目标识与托管源（ManagedSource）投影——缺失会导致 Core 上 401 即刷
+                        // 永不触发、仿真头/出口代理/Gemini project 失效（快照 DTO 与 Builder 已携带）。
+                        var snapshotMappings = snapshot.SiteModelMappings ?? [];
+                        var snapshotModelsById = (snapshot.Models ?? [])
+                            .GroupBy(m => m.Id)
+                            .ToDictionary(g => g.Key, g => g.First());
+                        var snapshotModelsByName = (snapshot.Models ?? [])
+                            .GroupBy(m => m.ModelName, StringComparer.Ordinal)
+                            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+                        var mappingsByRemote = snapshotMappings
+                            .GroupBy(m => (m.SiteId, m.RemoteModelName))
+                            .ToDictionary(g => g.Key, g => g.First());
+                        var mappingsByModelId = snapshotMappings
+                            .GroupBy(m => (m.SiteId, m.ModelLibraryItemId))
+                            .ToDictionary(g => g.Key, g => g.First());
+                        var headerProfileMap = (IReadOnlyDictionary<string, Dictionary<string, string>>?)(snapshot.HeaderProfiles ?? [])
+                            .GroupBy(h => h.Key, StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(g => g.Key, g => TryParseExtraHeaders(g.First().HeadersJson), StringComparer.OrdinalIgnoreCase);
+                        var proxyMap = (snapshot.ProxyProfiles ?? [])
+                            .GroupBy(pp => pp.Key, StringComparer.OrdinalIgnoreCase)
+                            .ToDictionary(g => g.Key, g => g.First().ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                        var googleProjectsBySite = (snapshot.AccountCredentials ?? [])
+                            .Where(a => string.Equals(a.Provider, "Google", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(a.ProjectId))
+                            .GroupBy(a => a.LinkedSiteId)
+                            .ToDictionary(g => g.Key, g => g.First().ProjectId!);
                         // 基础路由投影（每条 route × site 一条），不含 Key 维度。
                         var baseTargets = snapshot.RouteRules
                             .Where(r => r.IsEnabled)
@@ -903,6 +929,26 @@ public sealed partial class ProxyRequestMetadataCache
                                 : new Dictionary<Guid, List<SiteKey>> { [site.Id] = keysForSite };
                             var candidates = ResolveSiteKeyCandidates(site.Id, site.ApiKey, keysBySiteTyped);
 
+                            // master 同步：按 (SiteId, SiteModelName) / (SiteId, ModelId) 双路解析映射，
+                            // 与 Admin/DB 路径同口径（自定义对外名经模型反查），再走三层仿真/出口代理解析。
+                            CoreRuntimeSiteModelMapping? mapping = null;
+                            if (mappingsByRemote.TryGetValue((site.Id, rule.SiteModelName), out var cm1))
+                            {
+                                mapping = cm1;
+                            }
+                            else
+                            {
+                                snapshotModelsByName.TryGetValue(rule.UpstreamModelName, out var routeModel);
+                                if (routeModel is not null && mappingsByModelId.TryGetValue((site.Id, routeModel.Id), out var cm2))
+                                {
+                                    mapping = cm2;
+                                }
+                            }
+                            snapshotModelsByName.TryGetValue(rule.UpstreamModelName, out var modelForEmulation);
+                            var clientEmulation = ResolveClientEmulation(mapping?.ClientEmulation, modelForEmulation?.ClientEmulation, site.ClientEmulation);
+                            var extraHeaders = BuildEffectiveExtraHeaders(clientEmulation, headerProfileMap, site.ExtraHeadersJson, modelForEmulation?.ExtraHeadersJson, mapping?.ExtraHeadersJson);
+                            var egressProxyUrl = ResolveEgressProxyUrl(mapping?.EgressProxyUrl, site.EgressProxyUrl, proxyMap);
+
                             foreach (var candidate in candidates)
                             {
                                 targets.Add(new CachedProxyRouteTarget
@@ -923,7 +969,18 @@ public sealed partial class ProxyRequestMetadataCache
                                     ApiKey = candidate.ApiKey,
                                     // Codex 隐藏 Site 的自定义请求头（Originator/Chatgpt-Account-Id 等），
                                     // Core 转发时通过 MergeExtraHeaders 注入上游，缺失会导致 Codex 请求被拒绝。
-                                    ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
+                                    ManagedSource = site.ManagedSource ?? string.Empty,
+                                SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+                                    site.SupportsOpenAi,
+                                    site.SupportsAnthropic,
+                                    site.SupportsResponses,
+                                    site.ProtocolType),
+                                // 三层合并后的最终请求头（模板档案最底层注入 + Site/Model/Mapping 覆盖），
+                                // 兼容旧语义：站点 ExtraHeadersJson 仍是最小兜底。
+                                ExtraHeaders = extraHeaders.Count > 0 ? extraHeaders : TryParseExtraHeaders(site.ExtraHeadersJson),
+                                ClientEmulation = clientEmulation,
+                                EgressProxyUrl = egressProxyUrl,
+                                GoogleProjectId = googleProjectsBySite.TryGetValue(site.Id, out var googleProject) ? googleProject : string.Empty,
                                     ModelPriority = rule.ModelPriority,
                                     InstancePriority = rule.InstancePriority,
                                     Priority = rule.Priority,
@@ -1166,7 +1223,21 @@ public sealed partial class ProxyRequestMetadataCache
                             {
                                 var site = sitesById[m.SiteId];
                                 var model = modelsById[m.ModelLibraryItemId];
-                                return new { m.ModelLibraryItemId, m.Id, model.ModelName, m.SiteId, site, m.RemoteModelName };
+                                // master 同步：带上映射/模型维度的仿真与出口代理字段（兜底目标同口径）。
+                                return new
+                                {
+                                    m.ModelLibraryItemId,
+                                    m.Id,
+                                    model.ModelName,
+                                    m.SiteId,
+                                    site,
+                                    m.RemoteModelName,
+                                    m.ClientEmulation,
+                                    m.ExtraHeadersJson,
+                                    m.EgressProxyUrl,
+                                    ModelClientEmulation = model.ClientEmulation,
+                                    ModelExtraHeadersJson = model.ExtraHeadersJson
+                                };
                             })
                             .ToList();
 
@@ -1187,6 +1258,21 @@ public sealed partial class ProxyRequestMetadataCache
                                     ? new Dictionary<Guid, List<Domain.Sites.SiteKey>>()
                                     : new Dictionary<Guid, List<Domain.Sites.SiteKey>> { [first.site.Id] = keysForSite };
                                 var candidates = ResolveSiteKeyCandidates(first.site.Id, first.site.ApiKey, keysBySiteTyped);
+
+                                // master 同步：三层仿真/出口代理解析（映射 > 模型 > 站点），与主路由同口径。
+                                var fallbackEmulation = ResolveClientEmulation(first.ClientEmulation, first.ModelClientEmulation, first.site.ClientEmulation);
+                                var fallbackHeaderProfileMap = (IReadOnlyDictionary<string, Dictionary<string, string>>?)(snapshot.HeaderProfiles ?? [])
+                                    .GroupBy(h => h.Key, StringComparer.OrdinalIgnoreCase)
+                                    .ToDictionary(g => g.Key, g => TryParseExtraHeaders(g.First().HeadersJson), StringComparer.OrdinalIgnoreCase);
+                                var fallbackProxyMap = (snapshot.ProxyProfiles ?? [])
+                                    .GroupBy(pp => pp.Key, StringComparer.OrdinalIgnoreCase)
+                                    .ToDictionary(g => g.Key, g => g.First().ProxyUrl, StringComparer.OrdinalIgnoreCase);
+                                var fallbackGoogleProjects = (snapshot.AccountCredentials ?? [])
+                                    .Where(a => string.Equals(a.Provider, "Google", StringComparison.Ordinal) && !string.IsNullOrWhiteSpace(a.ProjectId))
+                                    .GroupBy(a => a.LinkedSiteId)
+                                    .ToDictionary(g => g.Key, g => g.First().ProjectId!);
+                                var fallbackHeaders = BuildEffectiveExtraHeaders(fallbackEmulation, fallbackHeaderProfileMap, first.site.ExtraHeadersJson, first.ModelExtraHeadersJson, first.ExtraHeadersJson);
+                                var fallbackEgressProxy = ResolveEgressProxyUrl(first.EgressProxyUrl, first.site.EgressProxyUrl, fallbackProxyMap);
                                 return candidates.Select(candidate => new CachedFallbackTarget
                                 {
                                     ModelId = grouped.Key,
@@ -1199,6 +1285,11 @@ public sealed partial class ProxyRequestMetadataCache
                                     BaseUrl = first.site.BaseUrl,
                                     EndpointPathMode = first.site.EndpointPathMode,
                                     ApiKey = candidate.ApiKey,
+                                    ManagedSource = first.site.ManagedSource ?? string.Empty,
+                                    ExtraHeaders = fallbackHeaders.Count > 0 ? fallbackHeaders : TryParseExtraHeaders(first.site.ExtraHeadersJson),
+                                    ClientEmulation = fallbackEmulation,
+                                    EgressProxyUrl = fallbackEgressProxy,
+                                    GoogleProjectId = fallbackGoogleProjects.TryGetValue(first.site.Id, out var fallbackGoogleProject) ? fallbackGoogleProject : string.Empty,
                                     SiteModelName = first.RemoteModelName
                                 });
                             })
@@ -2106,6 +2197,10 @@ public sealed class CachedChatTarget
     /// Google 账号（Gemini 上游隐藏 Site）的项目 ID，空表示非 Google 托管站点。
     /// </summary>
     public string GoogleProjectId { get; set; } = string.Empty;
+    /// <summary>
+    /// 托管提供商标识（Codex | Google | kimi_oauth；自建为空）。聊天转发 401 即刷按此分流。
+    /// </summary>
+    public string ManagedSource { get; set; } = string.Empty;
 }
 
 /// <summary>
