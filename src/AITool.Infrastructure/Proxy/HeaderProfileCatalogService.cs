@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Text.Json;
 using AITool.Application.Google;
+using AITool.Application.Kimi;
 using AITool.Application.Proxy;
 using AITool.Domain.Sites;
 using Microsoft.Extensions.Hosting;
@@ -229,7 +230,36 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
 
         // 初始化默认配置
         var defaults = GetDefaultBuiltInProfiles();
-        await SaveInternalAsync(defaults, cancellationToken);
+        try
+        {
+            await SaveInternalAsync(defaults, cancellationToken);
+        }
+        catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
+        {
+            // 并发初始化竞争（多个宿主实例共享同一目录，如测试并行工厂）：
+            // 写入失败通常意味着另一实例已抢先写出文件，尝试直接读取现成配置。
+            _logger?.LogWarning(ex, "写入默认请求头配置 {Path} 失败，尝试读取并发实例写入的文件", _catalogPath);
+            if (File.Exists(_catalogPath))
+            {
+                try
+                {
+                    var json = await File.ReadAllTextAsync(_catalogPath, cancellationToken);
+                    var list = JsonSerializer.Deserialize<List<HeaderProfile>>(json, JsonOptions);
+                    if (list is { Count: > 0 })
+                    {
+                        EnsureBuiltInDefaults(list);
+                        return list;
+                    }
+                }
+                catch (Exception readEx)
+                {
+                    _logger?.LogWarning(readEx, "读取并发实例写入的 {Path} 失败", _catalogPath);
+                }
+            }
+
+            throw;
+        }
+
         return defaults;
     }
 
@@ -284,7 +314,14 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                 existing.Description = def.Description;
                 existing.SortOrder = def.SortOrder;
                 // 若内置请求头发生升级且用户未修改过，同步最新请求头
-                if (string.IsNullOrWhiteSpace(existing.HeadersJson) || existing.HeadersJson.Contains("codex_cli_rs") || existing.HeadersJson.Contains("opencode/1.15.0") || existing.HeadersJson.Contains("antigravity/1.10.4") || existing.HeadersJson.Contains("x-goog-api-client"))
+                // （各标记为对应预设旧版本的特征值；Kimi 预设旧版曾用 claude-cli UA，升级后指纹换为 KimiCLI/{版本}，
+                //   后续版本升级时需把 outgoing 版本串追加为标记）
+                if (string.IsNullOrWhiteSpace(existing.HeadersJson)
+                    || existing.HeadersJson.Contains("codex_cli_rs")
+                    || existing.HeadersJson.Contains("opencode/1.15.0")
+                    || existing.HeadersJson.Contains("antigravity/1.10.4")
+                    || existing.HeadersJson.Contains("x-goog-api-client")
+                    || existing.HeadersJson.Contains("claude-cli/2.1.161"))
                 {
                     existing.HeadersJson = def.HeadersJson;
                 }
@@ -432,6 +469,32 @@ public sealed class HeaderProfileCatalogService : IHeaderProfileCatalogService
                 IsBuiltIn = true,
                 IsEnabled = true,
                 SortOrder = 6,
+                CreatedAt = DateTimeOffset.UtcNow
+            },
+            new HeaderProfile
+            {
+                Id = Guid.Parse("10000000-0000-0000-0000-000000000007"),
+                Key = ClientEmulationConstants.Kimi,
+                Name = "Kimi Code CLI (Moonshot)",
+                Description = "官方 Kimi Code CLI 1.49.0 真实抓包指纹（Python/OpenAI SDK）；X-Msh-Device-Id/Name/Model/Os-Version 由账号供给按账号与部署机写入站点自定义头",
+                HeadersJson = JsonSerializer.Serialize(new Dictionary<string, string>
+                {
+                    ["User-Agent"] = KimiConstants.ClientUserAgent,
+                    ["X-Msh-Platform"] = "kimi_cli",
+                    ["X-Msh-Version"] = KimiConstants.ClientVersion,
+                    ["X-Stainless-Lang"] = "python",
+                    ["X-Stainless-Package-Version"] = "2.14.0",
+                    ["X-Stainless-OS"] = "Windows",
+                    ["X-Stainless-Arch"] = "other:amd64",
+                    ["X-Stainless-Runtime"] = "CPython",
+                    ["X-Stainless-Runtime-Version"] = "3.13.15",
+                    ["X-Stainless-Async"] = "async:asyncio",
+                    ["X-Stainless-Retry-Count"] = "0",
+                    ["X-Stainless-Read-Timeout"] = "600"
+                }, JsonOptions),
+                IsBuiltIn = true,
+                IsEnabled = true,
+                SortOrder = 7,
                 CreatedAt = DateTimeOffset.UtcNow
             }
         ];

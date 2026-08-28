@@ -66,6 +66,10 @@ public sealed class AnthropicProxyController : ControllerBase
     /// </summary>
     private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
     /// <summary>
+    /// 负责在 Kimi 上游凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly KimiCredentialRefreshService _kimiCredentialRefreshService;
+    /// <summary>
     /// 记录代理请求诊断转储与对比样本。
     /// </summary>
     private readonly IProxyDiagnosticService _diagnosticService;
@@ -86,6 +90,7 @@ public sealed class AnthropicProxyController : ControllerBase
         ModelConcurrencyLimiter concurrencyLimiter,
         CodexCredentialRefreshService codexCredentialRefreshService,
         GoogleCredentialRefreshService googleCredentialRefreshService,
+        KimiCredentialRefreshService kimiCredentialRefreshService,
         IProxyDiagnosticService diagnosticService,
         ILogger<AnthropicProxyController> logger)
     {
@@ -97,12 +102,13 @@ public sealed class AnthropicProxyController : ControllerBase
         _concurrencyLimiter = concurrencyLimiter;
         _codexCredentialRefreshService = codexCredentialRefreshService;
         _googleCredentialRefreshService = googleCredentialRefreshService;
+        _kimiCredentialRefreshService = kimiCredentialRefreshService;
         _diagnosticService = diagnosticService;
         _logger = logger;
     }
 
     /// <summary>
-    /// 仅为托管隐藏站点绑定实时凭证刷新回调（Codex / Google），普通站点的 401 不触发 OAuth 刷新。
+    /// 仅为托管隐藏站点绑定实时凭证刷新回调（Codex / Google / Kimi），普通站点的 401 不触发 OAuth 刷新。
     /// </summary>
     private Func<string, CancellationToken, Task<string?>>? CreateCredentialRefreshCallback(
         CachedProxyRouteTarget route)
@@ -118,6 +124,14 @@ public sealed class AnthropicProxyController : ControllerBase
         if (string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
         {
             return (staleToken, cancellationToken) => _googleCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        if (string.Equals(route.ManagedSource, "kimi_oauth", StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _kimiCredentialRefreshService.RefreshAsync(
                 route.SiteId,
                 staleToken,
                 cancellationToken);

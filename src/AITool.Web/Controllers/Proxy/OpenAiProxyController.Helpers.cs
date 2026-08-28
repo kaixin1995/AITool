@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using AITool.Application.Google;
+using AITool.Application.Kimi;
 using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Application.UsageLogs;
@@ -120,7 +121,7 @@ public sealed partial class OpenAiProxyController
         => enableStreaming ? "/v1internal:streamGenerateContent?alt=sse" : "/v1internal:generateContent";
 
     /// <summary>
-    /// 仅为托管隐藏站点绑定实时凭证刷新回调（Codex / Google），普通站点的 401 不触发 OAuth 刷新。
+    /// 仅为托管隐藏站点绑定实时凭证刷新回调（Codex / Google / Kimi），普通站点的 401 不触发 OAuth 刷新。
     /// </summary>
     private Func<string, CancellationToken, Task<string?>>? CreateCredentialRefreshCallback(
         CachedProxyRouteTarget route)
@@ -136,6 +137,14 @@ public sealed partial class OpenAiProxyController
         if (string.Equals(route.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
         {
             return (staleToken, cancellationToken) => _googleCredentialRefreshService.RefreshAsync(
+                route.SiteId,
+                staleToken,
+                cancellationToken);
+        }
+
+        if (string.Equals(route.ManagedSource, KimiConstants.ManagedSource, StringComparison.OrdinalIgnoreCase))
+        {
+            return (staleToken, cancellationToken) => _kimiCredentialRefreshService.RefreshAsync(
                 route.SiteId,
                 staleToken,
                 cancellationToken);

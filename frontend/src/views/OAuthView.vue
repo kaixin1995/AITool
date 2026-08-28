@@ -22,8 +22,8 @@ import {
   isInspectionDisabledError
 } from './accountInspectionState'
 
-// 统一账号视图：Codex 与 Google（Antigravity）账号合入同一列表，用 provider 区分厂商。
-type ProviderKind = 'codex' | 'antigravity'
+// 统一账号视图：Codex、Google（Antigravity）与 Kimi (Moonshot AI) 账号合入同一列表，用 provider 区分厂商。
+type ProviderKind = 'codex' | 'antigravity' | 'kimi'
 type ProviderFilter = 'all' | ProviderKind
 type AccountStatusFilter = 'enabled' | 'disabled' | 'all'
 type UnifiedAccount = OAuthAccount & {
@@ -35,18 +35,21 @@ type UnifiedAccount = OAuthAccount & {
 
 const PROVIDER_LABELS: Record<ProviderKind, string> = {
   codex: 'Codex',
-  antigravity: 'Antigravity'
+  antigravity: 'Antigravity',
+  kimi: 'Kimi'
 }
 
 const PROVIDER_FILTER_OPTIONS: Array<{ key: ProviderFilter; label: string }> = [
   { key: 'all', label: '全部' },
   { key: 'codex', label: PROVIDER_LABELS.codex },
-  { key: 'antigravity', label: PROVIDER_LABELS.antigravity }
+  { key: 'antigravity', label: PROVIDER_LABELS.antigravity },
+  { key: 'kimi', label: PROVIDER_LABELS.kimi }
 ]
 
 const PROVIDER_LOGIN_OPTIONS = [
   { key: 'codex', label: 'Codex' },
-  { key: 'antigravity', label: 'Antigravity' }
+  { key: 'antigravity', label: 'Antigravity' },
+  { key: 'kimi', label: 'Kimi' }
 ] as const
 
 const PROVIDER_IMPORT_OPTIONS = PROVIDER_LOGIN_OPTIONS
@@ -66,17 +69,34 @@ function toUnifiedGoogleAccount(acc: GoogleAccountSummary): UnifiedAccount {
   }
 }
 
+// Kimi 账号摘要映射为统一卡片结构。
+function toUnifiedKimiAccount(acc: api.KimiAccountSummary): UnifiedAccount {
+  return {
+    ...acc,
+    provider: 'kimi',
+    accountId: acc.userId ?? null,
+    accountKind: 'Kimi Code',
+    planType: acc.planType ?? 'Kimi Code',
+    resetCreditsAvailableCount: null,
+    autoDisableThreshold: null,
+    fiveHourUsedPercent: null,
+    weeklyUsedPercent: null
+  }
+}
+
 function providerLabel(acc: UnifiedAccount): string {
   return PROVIDER_LABELS[acc.provider] ?? acc.provider
 }
 
 function providerTagType(acc: UnifiedAccount): 'info' | 'success' | 'warning' {
   if (acc.provider === 'codex') return 'info'
-  return acc.provider === 'antigravity' ? 'warning' : 'success'
+  if (acc.provider === 'antigravity') return 'warning'
+  return 'success'
 }
 
-// 导出凭证仅支持 Codex 账号。
-const codexAccountCount = computed(() => accounts.value.filter(acc => acc.provider === 'codex').length)
+// 导出凭证支持的账号数量（Codex 与 Kimi）。
+const exportableAccountCount = computed(() => accounts.value.filter(acc => acc.provider === 'codex' || acc.provider === 'kimi').length)
+const codexAccountCount = exportableAccountCount
 const accountStatusFilter = ref<AccountStatusFilter>('enabled')
 const accountStatusFilterOptions: Array<{ label: string; value: AccountStatusFilter }> = [
   { label: '已启用', value: 'enabled' },
@@ -110,9 +130,15 @@ function handleSelectImportProvider(key: string | number): void {
   openImportCredential(key as ProviderKind)
 }
 
-const importPlaceholder = computed(() => importProvider.value === 'codex'
-  ? '{"access_token":"...","refresh_token":"...","id_token":"..."}'
-  : '{"refresh_token":"...","project_id":"..."}')
+const importPlaceholder = computed(() => {
+  if (importProvider.value === 'codex') {
+    return '{"access_token":"...","refresh_token":"...","id_token":"..."}'
+  }
+  if (importProvider.value === 'kimi') {
+    return '{"type":"kimi","access_token":"...","refresh_token":"...","device_id":"..."}'
+  }
+  return '{"refresh_token":"...","project_id":"..."}'
+})
 
 const message = useMessage()
 const route = useRoute()
@@ -225,10 +251,11 @@ function invalidatePendingRefreshes(): void {
 
 async function loadAccounts(showError: boolean): Promise<void> {
   const requestId = ++accountsRequestId
-  // Codex 与 Google 账号合并展示；Google 接口在功能开关关闭时同样 404。
-  const [codexResult, googleResult] = await Promise.allSettled([
+  // Codex、Google 与 Kimi 账号合并展示；接口在功能开关关闭时返回 404。
+  const [codexResult, googleResult, kimiResult] = await Promise.allSettled([
     api.listOAuthAccounts(),
-    api.listGoogleAccounts()
+    api.listGoogleAccounts(),
+    api.listKimiAccounts()
   ])
   if (requestId !== accountsRequestId) return
 
@@ -249,8 +276,14 @@ async function loadAccounts(showError: boolean): Promise<void> {
   if (googleResult.status === 'rejected' && showError) {
     message.error(`Google 账号加载失败：${(googleResult.reason as Error).message}`)
   }
+  const kimiAccounts: UnifiedAccount[] = kimiResult.status === 'fulfilled'
+    ? kimiResult.value.map(toUnifiedKimiAccount)
+    : []
+  if (kimiResult.status === 'rejected' && showError) {
+    message.error(`Kimi 账号加载失败：${(kimiResult.reason as Error).message}`)
+  }
 
-  accounts.value = [...codexAccounts, ...googleAccounts].sort(
+  accounts.value = [...codexAccounts, ...googleAccounts, ...kimiAccounts].sort(
     (a, b) => new Date(b.createdAt ?? 0).getTime() - new Date(a.createdAt ?? 0).getTime()
   )
   featureDisabled.value = false
@@ -336,22 +369,101 @@ function googleKindOf(_provider?: ProviderKind): GoogleAccountKind {
   return 'Antigravity'
 }
 
+// Kimi 设备码授权状态
+const kimiDeviceCode = ref('')
+const kimiUserCode = ref('')
+const kimiVerificationUri = ref('')
+const kimiVerificationUriComplete = ref('')
+const kimiExpiresIn = ref(300)
+const kimiCountdown = ref(300)
+const kimiDeviceId = ref('')
+let kimiPollTimer: ReturnType<typeof setInterval> | null = null
+let kimiCountdownTimer: ReturnType<typeof setInterval> | null = null
+
+function clearKimiDeviceFlow(): void {
+  if (kimiPollTimer) {
+    clearInterval(kimiPollTimer)
+    kimiPollTimer = null
+  }
+  if (kimiCountdownTimer) {
+    clearInterval(kimiCountdownTimer)
+    kimiCountdownTimer = null
+  }
+  kimiDeviceCode.value = ''
+  kimiUserCode.value = ''
+  kimiVerificationUri.value = ''
+  kimiVerificationUriComplete.value = ''
+  kimiExpiresIn.value = 300
+  kimiCountdown.value = 300
+  kimiDeviceId.value = ''
+}
+
+function formatSeconds(secs: number): string {
+  const m = Math.floor(secs / 60)
+  const s = secs % 60
+  return `${m}:${s < 10 ? '0' : ''}${s}`
+}
+
 function openOAuthModal(provider: ProviderKind = 'codex'): void {
   oauthProvider.value = provider
   oauthUrl.value = ''
   oauthCallbackInput.value = ''
   oauthDisplayName.value = ''
+  clearKimiDeviceFlow()
   oauthModal.value = true
 }
 
 async function handleStartOAuth(): Promise<void> {
   oauthStartLoading.value = true
+  clearKimiDeviceFlow()
   try {
-    const result = oauthProvider.value === 'codex'
-      ? await api.startOAuth()
-      : await api.startGoogleOAuth(googleKindOf(oauthProvider.value))
-    oauthUrl.value = result.url
-    oauthCallbackInput.value = ''
+    if (oauthProvider.value === 'kimi') {
+      const result = await api.startKimiDeviceFlow()
+      kimiDeviceCode.value = result.deviceCode
+      kimiUserCode.value = result.userCode
+      kimiVerificationUri.value = result.verificationUri
+      kimiVerificationUriComplete.value = result.verificationUriComplete
+      kimiExpiresIn.value = result.expiresIn
+      kimiCountdown.value = result.expiresIn
+      kimiDeviceId.value = result.deviceId
+
+      kimiCountdownTimer = setInterval(() => {
+        if (kimiCountdown.value > 0) {
+          kimiCountdown.value--
+        } else {
+          clearKimiDeviceFlow()
+          message.warning('Kimi 授权码已过期，请重新开始登录')
+        }
+      }, 1000)
+
+      kimiPollTimer = setInterval(async () => {
+        if (!kimiDeviceCode.value || !oauthModal.value) return
+        try {
+          const pollRes = await api.pollKimiToken(
+            kimiDeviceCode.value,
+            kimiDeviceId.value || undefined,
+            oauthDisplayName.value.trim() || undefined
+          )
+          if (pollRes.status === 'success') {
+            clearKimiDeviceFlow()
+            message.success('Kimi OAuth 登录成功')
+            oauthModal.value = false
+            await load()
+          } else if (pollRes.status === 'error') {
+            clearKimiDeviceFlow()
+            message.error(pollRes.errorDescription || 'Kimi 授权失败')
+          }
+        } catch {
+          // 轮询异常静默
+        }
+      }, (result.interval || 5) * 1000)
+    } else {
+      const result = oauthProvider.value === 'codex'
+        ? await api.startOAuth()
+        : await api.startGoogleOAuth(googleKindOf(oauthProvider.value))
+      oauthUrl.value = result.url
+      oauthCallbackInput.value = ''
+    }
   } catch (e) {
     message.error((e as Error).message)
   } finally {
@@ -359,7 +471,39 @@ async function handleStartOAuth(): Promise<void> {
   }
 }
 
+async function handleManualCheckKimiAuth(): Promise<void> {
+  if (!kimiDeviceCode.value) return
+  oauthLoading.value = true
+  try {
+    const pollRes = await api.pollKimiToken(
+      kimiDeviceCode.value,
+      kimiDeviceId.value || undefined,
+      oauthDisplayName.value.trim() || undefined
+    )
+    if (pollRes.status === 'success') {
+      clearKimiDeviceFlow()
+      message.success('Kimi OAuth 登录成功')
+      oauthModal.value = false
+      await load()
+    } else if (pollRes.status === 'pending') {
+      message.info('尚未检测到授权确认，请在浏览器中确认后重试')
+    } else if (pollRes.status === 'slow_down') {
+      message.warning('操作过于频繁，请稍候重试')
+    } else {
+      message.error(pollRes.errorDescription || '授权未成功')
+    }
+  } catch (e) {
+    message.error((e as Error).message)
+  } finally {
+    oauthLoading.value = false
+  }
+}
+
 async function handleCompleteOAuth(): Promise<void> {
+  if (oauthProvider.value === 'kimi') {
+    await handleManualCheckKimiAuth()
+    return
+  }
   if (!oauthCallbackInput.value.trim()) { message.warning('请粘贴回调 URL'); return }
   oauthLoading.value = true
   try {
@@ -382,8 +526,10 @@ async function handleToggle(acc: UnifiedAccount): Promise<void> {
   try {
     if (acc.provider === 'codex') {
       await api.toggleOAuthAccount(acc.id)
-    } else {
+    } else if (acc.provider === 'antigravity') {
       await api.toggleGoogleAccount(acc.id, !acc.isEnabled)
+    } else if (acc.provider === 'kimi') {
+      await api.toggleKimiAccount(acc.id, !acc.isEnabled)
     }
     acc.isEnabled = !acc.isEnabled
   } catch (e) { message.error((e as Error).message) }
@@ -392,18 +538,24 @@ async function handleRefreshQuota(acc: UnifiedAccount): Promise<void> {
   try {
     if (acc.provider === 'codex') {
       await api.refreshOAuthQuota(acc.id)
-    } else {
+      message.success('已刷新额度')
+    } else if (acc.provider === 'antigravity') {
       await api.refreshGoogleQuota(acc.id)
+      message.success('已刷新额度')
+    } else if (acc.provider === 'kimi') {
+      await api.refreshKimiQuota(acc.id)
+      message.success('已刷新额度')
     }
-    message.success('已刷新额度')
     await load()
   } catch (e) { message.error((e as Error).message) }
 }
 async function handleDelete(acc: UnifiedAccount): Promise<void> {
   if (acc.provider === 'codex') {
     await api.deleteOAuthAccount(acc.id)
-  } else {
+  } else if (acc.provider === 'antigravity') {
     await api.deleteGoogleAccount(acc.id)
+  } else if (acc.provider === 'kimi') {
+    await api.deleteKimiAccount(acc.id)
   }
   message.success('已删除账号')
   await load()
@@ -451,8 +603,15 @@ async function handleSaveEdit(): Promise<void> {
       } else {
         message.success('已更新')
       }
-    } else {
+    } else if (editAccount.value.provider === 'antigravity') {
       await api.updateGoogleAccount(
+        editAccount.value.id,
+        editDisplayName.value.trim(),
+        editRefreshToken.value || undefined
+      )
+      message.success(editRefreshToken.value ? '凭证已更新并刷新' : '已更新')
+    } else if (editAccount.value.provider === 'kimi') {
+      await api.updateKimiAccount(
         editAccount.value.id,
         editDisplayName.value.trim(),
         editRefreshToken.value || undefined
@@ -464,12 +623,16 @@ async function handleSaveEdit(): Promise<void> {
   } catch (e) { message.error((e as Error).message) } finally { editLoading.value = false }
 }
 
-// 手动刷新 access_token（兜底手段：自动刷新未生效时用此恢复；仅 Codex 提供专用端点）
+// 手动刷新 access_token（兜底手段：自动刷新未生效时用此恢复）
 async function handleManualRefreshToken(): Promise<void> {
-  if (!editAccount.value || editAccount.value.provider !== 'codex') return
+  if (!editAccount.value) return
   editTokenRefreshing.value = true
   try {
-    await api.refreshOAuthToken(editAccount.value.id)
+    if (editAccount.value.provider === 'codex') {
+      await api.refreshOAuthToken(editAccount.value.id)
+    } else if (editAccount.value.provider === 'kimi') {
+      await api.refreshKimiToken(editAccount.value.id)
+    }
     message.success('Token 已刷新')
     // 刷新后更新当前编辑的账号对象和列表，让用户看到新的过期时间
     await load()
@@ -523,9 +686,14 @@ async function openFetchModels(acc: UnifiedAccount): Promise<void> {
   modelLoading.value = true
   try {
     modelSearch.value = ''
-    const models = acc.provider === 'codex'
-      ? await api.fetchOAuthModels(acc.id)
-      : await api.fetchGoogleModels(acc.id)
+    let models: OAuthRemoteModelItem[] = []
+    if (acc.provider === 'codex') {
+      models = await api.fetchOAuthModels(acc.id)
+    } else if (acc.provider === 'antigravity') {
+      models = await api.fetchGoogleModels(acc.id)
+    } else if (acc.provider === 'kimi') {
+      models = await api.fetchKimiModels(acc.id)
+    }
     modelList.value = models.map(model => ({
       ...model,
       alias: model.existingDisplayName && model.existingDisplayName !== model.remoteModelName
@@ -572,22 +740,17 @@ async function handleImportModels(): Promise<void> {
   }
   modelLoading.value = true
   try {
+    const selections: OAuthModelSelection[] = modelList.value.map(model => ({
+      remoteModelName: model.remoteModelName,
+      displayName: model.alias.trim() || model.remoteModelName,
+      selected: checkedModels.value.includes(model.remoteModelName)
+    }))
     if (modelAccount.value.provider === 'codex') {
-      const selections: OAuthModelSelection[] = modelList.value.map(model => ({
-        remoteModelName: model.remoteModelName,
-        displayName: model.alias.trim() || model.remoteModelName,
-        selected: checkedModels.value.includes(model.remoteModelName)
-      }))
       await api.importSelectedOAuthModels(modelAccount.value.id, selections)
-    } else {
-      // Google 账号按本次完整拉取清单同步：未勾选的既有映射会被禁用，
-      // 这样取消勾选不会在下次拉取时又继续出现在路由和聊天页。
-      const selections: OAuthModelSelection[] = modelList.value.map(model => ({
-        remoteModelName: model.remoteModelName,
-        displayName: model.alias.trim() || model.remoteModelName,
-        selected: checkedModels.value.includes(model.remoteModelName)
-      }))
+    } else if (modelAccount.value.provider === 'antigravity') {
       await api.importSelectedGoogleModels(modelAccount.value.id, selections)
+    } else if (modelAccount.value.provider === 'kimi') {
+      await api.importSelectedKimiModels(modelAccount.value.id, selections)
     }
     message.success(modelAccount.value.provider === 'codex'
       ? `已导入 ${checkedModels.value.length} 个模型`
@@ -631,6 +794,11 @@ async function handleImportCredential(): Promise<void> {
         ? await api.importCredentialFiles(importFiles.value)
         : await api.importCredential(importJsonText.value.trim())
       result = codexResult
+    } else if (importProvider.value === 'kimi') {
+      const kimiResult = importFiles.value.length > 0
+        ? await api.importKimiCredentialFiles(importFiles.value)
+        : await api.importKimiCredential(importJsonText.value.trim())
+      result = kimiResult
     } else {
       // Google 凭证：仅支持粘贴 JSON（需含 refresh_token），文件导入走 Codex。
       if (!importJsonText.value.trim()) {
@@ -682,6 +850,7 @@ function downloadCredential(
   const identity = String(
     credential.email
     || credential.account_id
+    || credential.display_name
     || index + 1
   ).replace(/[^a-zA-Z0-9._-]+/g, '_')
   const blob = new Blob(
@@ -703,11 +872,22 @@ async function handleExportCredentials(): Promise<void> {
   }
   exportLoading.value = true
   try {
-    const result = await api.exportCredentials(
-      selectedExportAccountIds.value
-    )
-    result.credentials.forEach(downloadCredential)
-    message.success(`已导出 ${result.credentials.length} 个凭证文件`)
+    const selectedAccounts = accounts.value.filter(a => selectedExportAccountIds.value.includes(a.id))
+    const codexIds = selectedAccounts.filter(a => a.provider === 'codex').map(a => a.id)
+    const kimiIds = selectedAccounts.filter(a => a.provider === 'kimi').map(a => a.id)
+
+    const allCredentials: api.OAuthExportCredential[] = []
+    if (codexIds.length > 0) {
+      const res = await api.exportCredentials(codexIds)
+      if (res.credentials) allCredentials.push(...res.credentials)
+    }
+    if (kimiIds.length > 0) {
+      const res = await api.exportKimiCredentials(kimiIds)
+      if (res.credentials) allCredentials.push(...res.credentials)
+    }
+
+    allCredentials.forEach(downloadCredential)
+    message.success(`已导出 ${allCredentials.length} 个凭证文件`)
     cancelExportCredentials()
   } catch (e) {
     message.error((e as Error).message)
@@ -875,6 +1055,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
+  clearKimiDeviceFlow()
   invalidatePendingRefreshes()
 })
 </script>
@@ -938,10 +1119,10 @@ onUnmounted(() => {
                 :key="acc.id"
                 class="oauth-card"
                 :class="{ disabled: !acc.isEnabled, selected: selectedExportAccountIds.includes(acc.id) }"
-                @click="exportMode && acc.provider === 'codex' && toggleExportAccount(acc.id, !selectedExportAccountIds.includes(acc.id))"
+                @click="exportMode && (acc.provider === 'codex' || acc.provider === 'kimi') && toggleExportAccount(acc.id, !selectedExportAccountIds.includes(acc.id))"
               >
                 <NCheckbox
-                  v-if="exportMode && acc.provider === 'codex'"
+                  v-if="exportMode && (acc.provider === 'codex' || acc.provider === 'kimi')"
                   class="oauth-export-checkbox"
                   :checked="selectedExportAccountIds.includes(acc.id)"
                   @click.stop
@@ -967,7 +1148,15 @@ onUnmounted(() => {
                       <NTag size="small" :type="accountStatusType(acc)" :bordered="false">{{ accountStatusLabel(acc) }}</NTag>
                       <span v-if="acc.planType" class="oauth-plan">{{ acc.planType }}</span>
                       <span v-if="acc.creditAmount != null" class="oauth-plan">积分 {{ acc.creditAmount }}</span>
-                      <span v-if="acc.tokenExpiresAt" class="oauth-token-expiry" :class="{ 'oauth-token-expired': isTokenExpired(acc.tokenExpiresAt), 'oauth-token-warning': isTokenExpiringSoon(acc.tokenExpiresAt) }">
+                      <!-- Kimi 的 access_token 官方即约 15 分钟一换（后台自动续期），常驻红色预警没有参考价值 -->
+                      <span
+                        v-if="acc.tokenExpiresAt"
+                        class="oauth-token-expiry"
+                        :class="{
+                          'oauth-token-expired': acc.provider !== 'kimi' && isTokenExpired(acc.tokenExpiresAt),
+                          'oauth-token-warning': acc.provider !== 'kimi' && isTokenExpiringSoon(acc.tokenExpiresAt)
+                        }"
+                      >
                         Token：{{ formatDateTime(acc.tokenExpiresAt) }}
                       </span>
                     </div>
@@ -1119,14 +1308,42 @@ onUnmounted(() => {
     </NSpin>
 
     <!-- OAuth 弹窗：保持旧页面“先填写名称，再开始登录”的操作顺序；按厂商展示对应流程。 -->
-    <NModal v-model:show="oauthModal" :title="`OAuth 登录 - ${PROVIDER_LABELS[oauthProvider]}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false">
+    <NModal v-model:show="oauthModal" :title="`OAuth 登录 - ${PROVIDER_LABELS[oauthProvider]}`" preset="card" style="width: 720px; max-width: 92vw" :mask-closable="false" @after-leave="clearKimiDeviceFlow">
       <div class="oauth-form-group">
         <p class="oauth-form-label">账号显示名称（可选）</p>
-        <NInput v-model:value="oauthDisplayName" placeholder="留空则用邮箱" />
+        <NInput v-model:value="oauthDisplayName" :placeholder="oauthProvider === 'kimi' ? '留空则默认 Kimi 账号' : '留空则用邮箱'" />
       </div>
-      <NButton type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">开始登录</NButton>
+      <NButton type="primary" :loading="oauthStartLoading" @click="handleStartOAuth">
+        {{ oauthProvider === 'kimi' && kimiUserCode ? '重新获取验证码' : '开始登录' }}
+      </NButton>
 
-      <div v-if="oauthUrl" class="oauth-auth-area">
+      <!-- Kimi RFC 8628 设备码授权区域 -->
+      <div v-if="oauthProvider === 'kimi' && kimiUserCode" class="oauth-auth-area">
+        <NAlert type="info" :show-icon="false">
+          <strong>操作步骤：</strong>
+          <ol class="oauth-steps">
+            <li>点击下方<strong>「打开 Kimi 授权页面」</strong>按钮，将在新标签页中打开 Moonshot Kimi 官方授权页。</li>
+            <li>在授权页中确认或输入用户验证码：<strong style="color: #18a058; font-size: 1.15em">{{ kimiUserCode }}</strong></li>
+            <li>授权成功后系统将自动检测并完成登录（有效时间剩余：<strong>{{ formatSeconds(kimiCountdown) }}</strong>）。</li>
+          </ol>
+        </NAlert>
+        <p class="oauth-form-label">用户验证码 (User Code)</p>
+        <div class="oauth-url-row">
+          <NInput :value="kimiUserCode" readonly style="font-weight: bold; font-size: 1.25em; text-align: center; letter-spacing: 2px" />
+          <NButton secondary @click="copyText(kimiUserCode)">复制验证码</NButton>
+          <NButton tag="a" :href="kimiVerificationUriComplete || kimiVerificationUri" target="_blank" type="primary">打开 Kimi 授权页面</NButton>
+        </div>
+        <div style="margin-top: 14px; display: flex; align-items: center; justify-content: space-between; color: var(--n-text-color-3)">
+          <span style="display: inline-flex; align-items: center">
+            <NSpin size="small" style="margin-right: 8px" />
+            正在等待浏览器授权确认...
+          </span>
+          <NButton size="small" secondary :loading="oauthLoading" @click="handleManualCheckKimiAuth">已完成授权，立即检查</NButton>
+        </div>
+      </div>
+
+      <!-- Codex / Google 标准重定向授权区域 -->
+      <div v-else-if="oauthUrl" class="oauth-auth-area">
         <NAlert type="info" :show-icon="false">
           <strong>操作步骤：</strong>
           <ol class="oauth-steps">
@@ -1149,19 +1366,19 @@ onUnmounted(() => {
       <template #footer>
         <NSpace justify="end">
           <NButton @click="oauthModal = false">取消</NButton>
-          <NButton type="primary" :loading="oauthLoading" @click="handleCompleteOAuth">完成登录</NButton>
+          <NButton v-if="oauthProvider !== 'kimi'" type="primary" :loading="oauthLoading" @click="handleCompleteOAuth">完成登录</NButton>
         </NSpace>
       </template>
     </NModal>
 
-    <!-- 导入凭证弹窗：Codex 支持文件+JSON；Google 仅支持粘贴 gcli2api 凭证 JSON -->
+    <!-- 导入凭证弹窗：Codex / Kimi 支持文件+JSON；Google 仅支持粘贴 gcli2api 凭证 JSON -->
     <NModal v-model:show="importModal" :title="`导入 ${PROVIDER_LABELS[importProvider]} 凭证`" preset="card" style="width: 600px; max-width: 92vw" :mask-closable="false" @after-leave="closeImportCredential">
-      <template v-if="importProvider === 'codex'">
-        <p class="credential-import-label">选择一个或多个 CPA 凭证 JSON 文件：</p>
+      <template v-if="importProvider === 'codex' || importProvider === 'kimi'">
+        <p class="credential-import-label">选择一个或多个 {{ importProvider === 'kimi' ? 'Kimi' : 'CPA' }} 凭证 JSON 文件：</p>
         <input class="credential-file-input" type="file" accept=".json,application/json" multiple @change="handleCredentialFiles">
         <div v-if="importFiles.length" class="credential-file-summary">已选择 {{ importFiles.length }} 个文件，将优先导入所选文件。</div>
         <div class="credential-import-divider"><span>或粘贴 JSON</span></div>
-        <p class="credential-import-label">粘贴 CPA 格式的凭证 JSON（含 access_token / refresh_token / id_token）：</p>
+        <p class="credential-import-label">粘贴 {{ importProvider === 'kimi' ? 'Kimi' : 'CPA' }} 格式的凭证 JSON：</p>
       </template>
       <template v-else>
         <p class="credential-import-label">粘贴 gcli2api 凭证 JSON（需包含 refresh_token 字段，可选 project_id）：</p>
@@ -1204,7 +1421,7 @@ onUnmounted(() => {
           />
           <p class="edit-hint">填入后会立即用新凭证刷新 access_token。token 过期或失效时可用此功能恢复。</p>
         </div>
-        <div v-if="editAccount?.provider === 'codex'">
+        <div v-if="editAccount?.provider === 'codex' || editAccount?.provider === 'kimi'">
           <p class="edit-label">手动刷新 Token</p>
           <NSpace align="center" :size="8">
             <NButton :loading="editTokenRefreshing" @click="handleManualRefreshToken">立即刷新 access_token</NButton>

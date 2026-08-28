@@ -141,6 +141,10 @@ public sealed partial class OpenAiProxyController : ControllerBase
     /// </summary>
     private readonly GoogleCredentialRefreshService _googleCredentialRefreshService;
     /// <summary>
+    /// 负责在 Kimi 上游凭证失效时即时刷新 access token。
+    /// </summary>
+    private readonly KimiCredentialRefreshService _kimiCredentialRefreshService;
+    /// <summary>
     /// 记录代理请求诊断转储与对比样本。
     /// </summary>
     private readonly IProxyDiagnosticService _diagnosticService;
@@ -161,6 +165,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         ModelConcurrencyLimiter concurrencyLimiter,
         CodexCredentialRefreshService codexCredentialRefreshService,
         GoogleCredentialRefreshService googleCredentialRefreshService,
+        KimiCredentialRefreshService kimiCredentialRefreshService,
         IProxyDiagnosticService diagnosticService,
         ILogger<OpenAiProxyController> logger)
     {
@@ -172,6 +177,7 @@ public sealed partial class OpenAiProxyController : ControllerBase
         _concurrencyLimiter = concurrencyLimiter;
         _codexCredentialRefreshService = codexCredentialRefreshService;
         _googleCredentialRefreshService = googleCredentialRefreshService;
+        _kimiCredentialRefreshService = kimiCredentialRefreshService;
         _diagnosticService = diagnosticService;
         _logger = logger;
     }

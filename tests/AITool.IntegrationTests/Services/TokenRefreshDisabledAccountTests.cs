@@ -1,7 +1,9 @@
 using AITool.Application.Codex;
 using AITool.Application.Google;
+using AITool.Application.Kimi;
 using AITool.Domain.Codex;
 using AITool.Domain.Google;
+using AITool.Domain.Kimi;
 using AITool.Domain.Operations;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
@@ -29,6 +31,8 @@ public sealed class TokenRefreshDisabledAccountTests : IDisposable
         services.AddSingleton<ICodexOAuthClient>(serviceProvider => serviceProvider.GetRequiredService<StubCodexOAuthClient>());
         services.AddSingleton<StubGoogleOAuthClient>();
         services.AddSingleton<IGoogleOAuthClient>(serviceProvider => serviceProvider.GetRequiredService<StubGoogleOAuthClient>());
+        services.AddSingleton<StubKimiOAuthClient>();
+        services.AddSingleton<IKimiOAuthClient>(serviceProvider => serviceProvider.GetRequiredService<StubKimiOAuthClient>());
         _serviceProvider = services.BuildServiceProvider();
         SqlSugarSetup.InitializeDatabase(_serviceProvider.GetRequiredService<SqlSugar.ISqlSugarClient>());
     }
@@ -165,6 +169,58 @@ public sealed class TokenRefreshDisabledAccountTests : IDisposable
         (await db.Sites.SingleAsync(site => site.Id == siteId)).IsEnabled.Should().BeFalse();
     }
 
+    [Fact]
+    public async Task Disabled_kimi_account_is_still_refreshed()
+    {
+        // 不变量：任何禁用状态（手动 / 总开关 / 普通禁用）都不得阻断 token 刷新——
+        // refresh_token 靠轮换续命，断档过长账号会彻底失效。
+        var siteId = Guid.NewGuid();
+        var accountId = Guid.NewGuid();
+        await SeedRuntimeSettingsAsync();
+        await using (var scope = _serviceProvider.CreateAsyncScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            db.Sites.Add(new Site
+            {
+                Id = siteId,
+                Name = "Disabled Kimi site",
+                BaseUrl = "https://example.com",
+                ApiKey = "old-kimi-token",
+                IsEnabled = false
+            });
+            db.KimiAccounts.Add(new KimiAccount
+            {
+                Id = accountId,
+                DisplayName = "Disabled Kimi account",
+                AccessToken = "old-kimi-token",
+                RefreshToken = "kimi-refresh-token",
+                DeviceId = "device-1",
+                TokenExpiresAt = DateTimeOffset.UtcNow.AddMinutes(-1),
+                LinkedSiteId = siteId,
+                IsEnabled = false,
+                ManuallyDisabled = true,
+                DisabledByFeatureToggle = true
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var service = new KimiTokenRefreshService(
+            _serviceProvider,
+            NullLogger<KimiTokenRefreshService>.Instance,
+            new TestingHostEnvironment());
+
+        await service.RefreshDueAccountsAsync(CancellationToken.None);
+
+        var oauth = _serviceProvider.GetRequiredService<StubKimiOAuthClient>();
+        oauth.RefreshCallCount.Should().Be(1);
+        await using var verifyScope = _serviceProvider.CreateAsyncScope();
+        var verifyDb = verifyScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var account = await verifyDb.KimiAccounts.SingleAsync(item => item.Id == accountId);
+        account.AccessToken.Should().Be("new-kimi-token");
+        account.RefreshToken.Should().Be("new-kimi-refresh-token");
+        (await verifyDb.Sites.SingleAsync(site => site.Id == siteId)).ApiKey.Should().Be("new-kimi-token");
+    }
+
     private async Task SeedRuntimeSettingsAsync()
     {
         await using var scope = _serviceProvider.CreateAsyncScope();
@@ -188,6 +244,30 @@ public sealed class TokenRefreshDisabledAccountTests : IDisposable
         try { File.Delete(databasePath); } catch { }
         try { File.Delete(databasePath + "-wal"); } catch { }
         try { File.Delete(databasePath + "-shm"); } catch { }
+    }
+
+    private sealed class StubKimiOAuthClient : IKimiOAuthClient
+    {
+        public int RefreshCallCount { get; private set; }
+
+        public Task<KimiDeviceCodeResponse> StartDeviceFlowAsync(string? deviceId, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<KimiTokenExchangeResult> ExchangeDeviceCodeAsync(string deviceCode, string? deviceId, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<KimiTokenSet> RefreshTokenAsync(string refreshToken, string? deviceId, CancellationToken ct)
+        {
+            RefreshCallCount++;
+            return Task.FromResult(new KimiTokenSet
+            {
+                AccessToken = "new-kimi-token",
+                RefreshToken = "new-kimi-refresh-token",
+                TokenType = "bearer",
+                ExpiresIn = 900,
+                ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(900)
+            });
+        }
     }
 
     private sealed class TestingHostEnvironment : IHostEnvironment

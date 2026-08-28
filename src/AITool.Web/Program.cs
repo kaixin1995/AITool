@@ -4,6 +4,7 @@ using AITool.Application.Accounts;
 using AITool.Application.Codex;
 using AITool.Application.Common;
 using AITool.Application.Google;
+using AITool.Application.Kimi;
 using AITool.Application.Operations;
 using AITool.Application.Pricing;
 using AITool.Application.Proxy;
@@ -11,6 +12,7 @@ using AITool.Application.SiteCatalog;
 using AITool.Application.UsageLogs;
 using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.Google;
+using AITool.Infrastructure.Kimi;
 using AITool.Infrastructure.Health;
 using AITool.Infrastructure.Operations;
 using AITool.Infrastructure.OpenAI;
@@ -242,6 +244,25 @@ builder.Services.AddHttpClient<GoogleAccountQuotaService>(c =>
 });
 builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<GoogleAccountQuotaService>());
 
+// 注册 Kimi OAuth 客户端（RFC 8628 设备授权、Token 交换与刷新）。
+builder.Services.AddHttpClient<IKimiOAuthClient, KimiOAuthClient>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// 注册 Kimi 上游模型拉取。
+builder.Services.AddHttpClient<IKimiModelFetcher, KimiModelFetcher>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+
+// 注册 Kimi 账号额度查询（GET /coding/v1/usages），并纳入统一多窗口额度巡检。
+builder.Services.AddHttpClient<KimiQuotaService>(c =>
+{
+    c.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<KimiQuotaService>());
+
 // 注册代理主入口实体配置，配置 SocketsHttpHandler 连接池提高并发能力。
 builder.Services.AddHttpClient<IProxyForwardService, ProxyForwardService>()
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler
@@ -265,6 +286,8 @@ builder.Services.AddHostedService<MemoryMaintenanceService>();
 builder.Services.AddHostedService<CodexTokenRefreshService>();
 // 周期刷新 Google 账号（Antigravity）token（有效期约 1 小时，提前 10 分钟刷新）。
 builder.Services.AddHostedService<GoogleTokenRefreshService>();
+// 周期刷新 Kimi 账号 token。
+builder.Services.AddHostedService<KimiTokenRefreshService>();
 // 周期恢复冷却到期的当前 OAuth 提供程序账号（清除冷却，恢复 Site，若未被手动禁用）。
 builder.Services.AddHostedService<CodexCooldownRecoveryService>();
 builder.Services.AddSingleton<DeveloperInvocationTraceStore>();
@@ -286,10 +309,14 @@ builder.Services.AddScoped<SiteCascadeDeleter>();
 builder.Services.AddScoped<CodexAccountProvisioner>();
 // Google 账号供给（Antigravity 隐藏 Site + 模型映射）。
 builder.Services.AddScoped<GoogleAccountProvisioner>();
+// Kimi 账号供给（隐藏 Site + 模型映射）。
+builder.Services.AddScoped<KimiAccountProvisioner>();
 // 实时代理命中 Codex 上游 401 时立即刷新凭证并同步隐藏站点。
 builder.Services.AddScoped<CodexCredentialRefreshService>();
 // 实时代理命中 Google 上游 401 时立即刷新凭证并同步隐藏站点。
 builder.Services.AddScoped<GoogleCredentialRefreshService>();
+// 实时代理命中 Kimi 上游 401 时立即刷新凭证并同步隐藏站点。
+builder.Services.AddScoped<KimiCredentialRefreshService>();
 // Codex 额度被动冷却与重置服务。
 builder.Services.AddScoped<ICodexQuotaCooldownService, CodexQuotaCooldownService>();
 // Codex 手动重置 credits 服务（查询剩余次数/过期时间 + 消耗一张 credit 执行真实重置）。

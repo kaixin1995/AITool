@@ -615,7 +615,8 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
             var apiKey = site.ApiKey;
             string? projectId = null;
 
-            if (string.Equals(site.ManagedSource, "google_oauth", StringComparison.OrdinalIgnoreCase))
+            // 注意：ManagedSource 的实际存储值为 "Google" / "Codex" / "kimi_oauth"（见各 Provisioner 常量）。
+            if (string.Equals(site.ManagedSource, "Google", StringComparison.OrdinalIgnoreCase))
             {
                 var googleAccount = (await _dbContext.GoogleAccounts
                     .Where(a => a.LinkedSiteId == site.Id)
@@ -629,7 +630,7 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                     projectId = googleAccount.ProjectId;
                 }
             }
-            else if (string.Equals(site.ManagedSource, "codex_oauth", StringComparison.OrdinalIgnoreCase))
+            else if (string.Equals(site.ManagedSource, "Codex", StringComparison.OrdinalIgnoreCase))
             {
                 var codexAccount = (await _dbContext.CodexAccounts
                     .Where(a => a.LinkedSiteId == site.Id)
@@ -637,6 +638,16 @@ public sealed class DeveloperInvocationsApiController : ControllerBase
                 if (codexAccount != null && !string.IsNullOrWhiteSpace(codexAccount.AccessToken))
                 {
                     apiKey = codexAccount.AccessToken;
+                }
+            }
+            else if (string.Equals(site.ManagedSource, "kimi_oauth", StringComparison.OrdinalIgnoreCase))
+            {
+                var kimiAccount = (await _dbContext.KimiAccounts
+                    .Where(a => a.LinkedSiteId == site.Id)
+                    .ToListAsync(cancellationToken)).FirstOrDefault();
+                if (kimiAccount != null && !string.IsNullOrWhiteSpace(kimiAccount.AccessToken))
+                {
+                    apiKey = kimiAccount.AccessToken;
                 }
             }
 

@@ -312,3 +312,144 @@ export async function importSelectedGoogleModels(
 ): Promise<void> {
   await httpPost(`/api/admin/google-accounts/accounts/${id}/import-selected-models`, { models: selections })
 }
+
+// —— Kimi 账号 (Moonshot AI) ——
+
+export interface KimiAccountSummary {
+  id: string
+  displayName: string
+  email: string | null
+  userId: string | null
+  deviceId: string | null
+  planType: string | null
+  isEnabled: boolean
+  isQuotaCooling: boolean
+  quotaCoolingUntil: string | null
+  lastQuotaCheckedAt: string | null
+  // 额度窗口（从最近一次 /coding/v1/usages 查询解析：周额度 + 5 小时滚动窗口）
+  windows?: OAuthQuotaWindow[] | null
+  tokenExpiresAt: string | null
+  createdAt: string | null
+  linkedSiteId: string
+}
+
+export interface KimiDeviceCodeResponse {
+  deviceCode: string
+  userCode: string
+  verificationUri: string
+  verificationUriComplete: string
+  expiresIn: number
+  interval: number
+  deviceId: string
+}
+
+export interface KimiPollTokenResponse {
+  status: 'pending' | 'slow_down' | 'success' | 'error'
+  message?: string
+  error?: string
+  errorDescription?: string
+  account?: KimiAccountSummary
+}
+
+export async function listKimiAccounts(): Promise<KimiAccountSummary[]> {
+  return httpGet<KimiAccountSummary[]>('/api/admin/kimi-accounts/accounts')
+}
+
+export async function startKimiDeviceFlow(
+  deviceId?: string
+): Promise<KimiDeviceCodeResponse> {
+  return httpPost<KimiDeviceCodeResponse>('/api/admin/kimi-accounts/start-device-flow', { deviceId })
+}
+
+export async function pollKimiToken(
+  deviceCode: string,
+  deviceId?: string,
+  displayName?: string
+): Promise<KimiPollTokenResponse> {
+  return httpPost<KimiPollTokenResponse>('/api/admin/kimi-accounts/poll-token', {
+    deviceCode,
+    deviceId,
+    displayName
+  })
+}
+
+export async function toggleKimiAccount(id: string, enabled: boolean): Promise<void> {
+  await httpPost(`/api/admin/kimi-accounts/accounts/${id}/toggle`, { isEnabled: enabled })
+}
+
+export async function refreshKimiToken(id: string): Promise<void> {
+  await httpPost(`/api/admin/kimi-accounts/accounts/${id}/refresh-token`)
+}
+
+export interface KimiQuotaWindows {
+  checkedAt: string
+  planType: string | null
+  windows: OAuthQuotaWindow[]
+}
+
+export async function refreshKimiQuota(id: string): Promise<KimiQuotaWindows> {
+  return httpPost<KimiQuotaWindows>(`/api/admin/kimi-accounts/accounts/${id}/refresh-quota`)
+}
+
+export async function updateKimiAccount(
+  id: string,
+  displayName: string,
+  refreshToken?: string
+): Promise<void> {
+  const body: Record<string, string> = { displayName }
+  if (refreshToken && refreshToken.trim()) body.refreshToken = refreshToken.trim()
+  await httpPut(`/api/admin/kimi-accounts/accounts/${id}`, body)
+}
+
+export async function deleteKimiAccount(id: string): Promise<void> {
+  await httpDelete(`/api/admin/kimi-accounts/accounts/${id}`)
+}
+
+export async function fetchKimiModels(id: string): Promise<OAuthRemoteModelItem[]> {
+  return httpGet<OAuthRemoteModelItem[]>(`/api/admin/kimi-accounts/accounts/${id}/fetch-models`)
+}
+
+export async function importSelectedKimiModels(
+  id: string,
+  selections: OAuthModelSelection[]
+): Promise<void> {
+  await httpPost(`/api/admin/kimi-accounts/accounts/${id}/import-selected-models`, { models: selections })
+}
+
+export async function importKimiCredential(
+  jsonText: string
+): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
+  const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
+    '/api/admin/kimi-accounts/import-credential?name=imported.json',
+    JSON.parse(jsonText)
+  )
+  return {
+    successes: result.successes ?? [],
+    failures: result.failures ?? []
+  }
+}
+
+export async function importKimiCredentialFiles(
+  files: File[]
+): Promise<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }> {
+  const form = new FormData()
+  files.forEach(file => form.append('files', file))
+  const result = await httpPost<Partial<{ successes: unknown[]; failures: { fileName: string | null; error: string }[] }>>(
+    '/api/admin/kimi-accounts/import-credential',
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' } }
+  )
+  return {
+    successes: result.successes ?? [],
+    failures: result.failures ?? []
+  }
+}
+
+export async function exportKimiCredentials(
+  accountIds: string[]
+): Promise<OAuthExportResult> {
+  return httpGet<OAuthExportResult>(
+    `/api/admin/kimi-accounts/export-credential?ids=${encodeURIComponent(accountIds.join(','))}`
+  )
+}
+

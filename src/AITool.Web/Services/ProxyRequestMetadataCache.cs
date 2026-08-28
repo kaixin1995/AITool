@@ -57,6 +57,7 @@ public sealed class ProxyRequestMetadataCache
     /// </summary>
     private const string CodexAccountsCacheKey = "codex-accounts";
     private const string GoogleAccountsCacheKey = "google-accounts";
+    private const string KimiAccountsCacheKey = "kimi-accounts";
     /// <summary>
     /// 启用站点名称缓存键。
     /// </summary>
@@ -987,6 +988,15 @@ public sealed class ProxyRequestMetadataCache
     }
 
     /// <summary>
+    /// 清除 Kimi 账号列表缓存（一并失效路由缓存）。
+    /// </summary>
+    public void InvalidateKimiAccounts()
+    {
+        InvalidateCacheKey(KimiAccountsCacheKey);
+        InvalidateRouteTargets();
+    }
+
+    /// <summary>
     /// 兼容规则集发生增删改后调用。规则随路由目标一起缓存，故复用路由缓存失效。
     /// </summary>
     public void InvalidateCompatibilityProfiles()
@@ -1039,6 +1049,30 @@ public sealed class ProxyRequestMetadataCache
                     return await dbContext.GoogleAccounts
                         .Where(a => !a.DisabledByFeatureToggle && !a.DisabledByUpstream)
                         .OrderBy(a => a.LastQuotaCheckedAt)
+                        .ToListAsync(cancellationToken);
+                }, cancellationToken)
+            ?? [];
+
+        return cached.Select(static a => a.Clone()).ToList();
+    }
+
+    /// <summary>
+    /// 获取待巡检/刷新的 Kimi 账号列表。
+    /// 走缓存，账号变更后需调 <see cref="InvalidateKimiAccounts"/> 失效。
+    /// </summary>
+    public async Task<List<Domain.Kimi.KimiAccount>> GetKimiAccountsAsync(CancellationToken cancellationToken)
+    {
+        var cached = await GetOrCreateCachedAsync(
+                KimiAccountsCacheKey,
+                async entry =>
+                {
+                    entry.AbsoluteExpirationRelativeToNow = CacheDuration;
+
+                    using var scope = _scopeFactory.CreateScope();
+                    var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                    return await dbContext.KimiAccounts
+                        .Where(a => !a.IsDeleted)
+                        .OrderBy(a => a.CreatedAt)
                         .ToListAsync(cancellationToken);
                 }, cancellationToken)
             ?? [];

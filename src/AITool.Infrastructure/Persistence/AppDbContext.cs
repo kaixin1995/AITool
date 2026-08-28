@@ -3,6 +3,7 @@ using System.Linq.Expressions;
 using AITool.Domain.Codex;
 using AITool.Domain.Detection;
 using AITool.Domain.Google;
+using AITool.Domain.Kimi;
 using AITool.Domain.Models;
 using AITool.Domain.Operations;
 using AITool.Domain.Proxy;
@@ -89,6 +90,7 @@ public sealed class AppDbContext : IDisposable, IAsyncDisposable
     public ISugarQueryable<SiteKey> SiteKeys => _client.Queryable<SiteKey>();
     public ISugarQueryable<CodexAccount> CodexAccounts => _client.Queryable<CodexAccount>();
     public ISugarQueryable<GoogleAccount> GoogleAccounts => _client.Queryable<GoogleAccount>();
+    public ISugarQueryable<KimiAccount> KimiAccounts => _client.Queryable<KimiAccount>();
     public ISugarQueryable<ModelLibraryItem> ModelLibraryItems => _client.Queryable<ModelLibraryItem>();
     public ISugarQueryable<SiteModelMapping> SiteModelMappings => _client.Queryable<SiteModelMapping>();
     public ISugarQueryable<DetectionTask> DetectionTasks => _client.Queryable<DetectionTask>();
@@ -264,6 +266,7 @@ public static class SqlSugarSetup
             typeof(SiteKey),
             typeof(CodexAccount),
             typeof(GoogleAccount),
+            typeof(KimiAccount),
             typeof(ModelLibraryItem),
             typeof(SiteModelMapping),
             typeof(DetectionTask),
