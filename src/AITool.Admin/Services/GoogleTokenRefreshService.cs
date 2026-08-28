@@ -76,7 +76,7 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         // split 双宿主：变更需推送到 Core，否则 Core 仍用旧 token/旧启用状态。
-        var adminCacheInvalidation = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
+        var adminCacheInvalidation = scope.ServiceProvider.GetService<AdminCacheInvalidationService>();
         var oauthClient = scope.ServiceProvider.GetRequiredService<IGoogleOAuthClient>();
 
         // 尊重 OAuth 功能总开关：关闭时跳过本轮
@@ -123,7 +123,10 @@ public sealed class GoogleTokenRefreshService : BackgroundService
         if (anyUpdated)
         {
             cache.InvalidateRouteTargets();
+            if (adminCacheInvalidation is not null)
+            {
             await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+            }
             cache.InvalidateGoogleAccounts();
         }
     }

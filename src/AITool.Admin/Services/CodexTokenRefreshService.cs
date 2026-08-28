@@ -77,7 +77,7 @@ public sealed class CodexTokenRefreshService : BackgroundService
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         // split 双宿主：变更需推送到 Core，否则 Core 仍用旧 token/旧启用状态。
-        var adminCacheInvalidation = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
+        var adminCacheInvalidation = scope.ServiceProvider.GetService<AdminCacheInvalidationService>();
         // 现取 typed HttpClient，避免单例持有导致 HttpMessageHandler 被钉死（DNS 陈旧）。
         var oauthClient = scope.ServiceProvider.GetRequiredService<ICodexOAuthClient>();
 
@@ -128,7 +128,10 @@ public sealed class CodexTokenRefreshService : BackgroundService
         if (anyUpdated)
         {
             cache.InvalidateRouteTargets();
+            if (adminCacheInvalidation is not null)
+            {
             await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+            }
             cache.InvalidateCodexAccounts();
         }
     }

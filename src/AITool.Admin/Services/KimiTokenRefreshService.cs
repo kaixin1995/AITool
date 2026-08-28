@@ -72,7 +72,7 @@ public sealed class KimiTokenRefreshService : BackgroundService
         var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         var cache = scope.ServiceProvider.GetRequiredService<ProxyRequestMetadataCache>();
         // split 双宿主：变更需推送到 Core，否则 Core 仍用旧 token/旧启用状态。
-        var adminCacheInvalidation = scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>();
+        var adminCacheInvalidation = scope.ServiceProvider.GetService<AdminCacheInvalidationService>();
         var oauthClient = scope.ServiceProvider.GetRequiredService<IKimiOAuthClient>();
 
         var runtime = await cache.GetRuntimeSettingsAsync(ct);
@@ -118,7 +118,10 @@ public sealed class KimiTokenRefreshService : BackgroundService
         if (anyUpdated)
         {
             cache.InvalidateRouteTargets();
+            if (adminCacheInvalidation is not null)
+            {
             await adminCacheInvalidation.InvalidateRouteTargetsAsync(ct);
+            }
             cache.InvalidateKimiAccounts();
         }
     }

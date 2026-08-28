@@ -8,7 +8,7 @@ using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Caching.Memory;
 
-namespace AITool.Core.IntegrationTests.System;
+namespace AITool.Core.IntegrationTests.SystemSettings;
 
 /// <summary>
 /// 系统设置缓存测试，验证通过 ISystemRuntimeSettingsService 更新设置后，

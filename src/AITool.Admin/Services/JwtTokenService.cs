@@ -1,4 +1,3 @@
-using System.Collections.Concurrent;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
@@ -20,6 +19,10 @@ namespace AITool.Admin.Services;
 /// </summary>
 public sealed class JwtTokenService
 {
+    private static readonly object TokenStoreSync = new();
+    private static readonly TimeSpan CleanupInterval = TimeSpan.FromMinutes(5);
+    private static long _lastCleanupUtcTicks;
+
     private readonly JwtOptions _options;
     private readonly SymmetricSecurityKey _signingKey;
     private readonly AppDbContext _dbContext;
@@ -42,25 +45,30 @@ public sealed class JwtTokenService
     /// </summary>
     public TokenPair IssueTokens(string subjectId)
     {
-        CleanupExpiredIfNeeded();
-
-        var now = DateTimeOffset.UtcNow;
-        var accessExpires = now.AddMinutes(Math.Max(1, _options.AccessTokenMinutes));
-        var refreshExpires = now.AddDays(Math.Max(1, _options.RefreshTokenDays));
-
-        var access = BuildAccessToken(subjectId, now, accessExpires);
-        var refresh = GenerateRefreshTokenString();
-
-        // 持久化 refresh token 到数据库
-        _dbContext.Client.Insertable(new RefreshTokenRecord
+        lock (TokenStoreSync)
         {
-            Token = refresh,
-            SubjectId = subjectId,
-            ExpiresAt = refreshExpires,
-            CreatedAt = now
-        }).ExecuteCommand();
+            CleanupExpiredIfNeeded();
 
-        return new TokenPair(access, refresh, accessExpires, refreshExpires);
+            var now = DateTimeOffset.UtcNow;
+            var accessExpires = now.AddMinutes(Math.Max(1, _options.AccessTokenMinutes));
+            var refreshExpires = now.AddDays(Math.Max(1, _options.RefreshTokenDays));
+
+            var access = BuildAccessToken(subjectId, now, accessExpires);
+            var refresh = GenerateRefreshTokenString();
+
+            // 用 CopyNew 独立连接写入，不碰单例 SqlSugarScope
+            using var client = _dbContext.Client.CopyNew();
+            client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+            client.Insertable(new RefreshTokenRecord
+            {
+                Token = refresh,
+                SubjectId = subjectId,
+                ExpiresAt = refreshExpires,
+                CreatedAt = now
+            }).ExecuteCommand();
+
+            return new TokenPair(access, refresh, accessExpires, refreshExpires);
+        }
     }
 
     /// <summary>
@@ -73,27 +81,34 @@ public sealed class JwtTokenService
             return null;
         }
 
-        // 先查再删（轮换）
-        var record = _dbContext.Client.Queryable<RefreshTokenRecord>()
-            .Where(r => r.Token == refreshToken)
-            .First();
-
-        if (record == null)
+        lock (TokenStoreSync)
         {
-            return null;
+            // 用 CopyNew 独立连接，不碰单例 SqlSugarScope
+            using var client = _dbContext.Client.CopyNew();
+            client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+
+            var record = client.Queryable<RefreshTokenRecord>()
+                .Where(r => r.Token == refreshToken)
+                .First();
+
+            if (record == null)
+            {
+                return null;
+            }
+
+            // 删除旧 token（轮换），即使后续校验失败也作废。
+            // IssueTokens/Revoke 同样受 TokenStoreSync 保护，避免同一 token 被并发消费两次。
+            client.Deleteable<RefreshTokenRecord>()
+                .Where(r => r.Token == refreshToken)
+                .ExecuteCommand();
+
+            if (record.ExpiresAt <= DateTimeOffset.UtcNow)
+            {
+                return null;
+            }
+
+            return IssueTokens(record.SubjectId);
         }
-
-        // 删除旧 token（轮换），即使后续校验失败也作废
-        _dbContext.Client.Deleteable<RefreshTokenRecord>()
-            .Where(r => r.Token == refreshToken)
-            .ExecuteCommand();
-
-        if (record.ExpiresAt <= DateTimeOffset.UtcNow)
-        {
-            return null;
-        }
-
-        return IssueTokens(record.SubjectId);
     }
 
     /// <summary>
@@ -101,9 +116,16 @@ public sealed class JwtTokenService
     /// </summary>
     public void Revoke(string refreshToken)
     {
-        if (!string.IsNullOrWhiteSpace(refreshToken))
+        if (string.IsNullOrWhiteSpace(refreshToken))
         {
-            _dbContext.Client.Deleteable<RefreshTokenRecord>()
+            return;
+        }
+
+        lock (TokenStoreSync)
+        {
+            using var client = _dbContext.Client.CopyNew();
+            client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+            client.Deleteable<RefreshTokenRecord>()
                 .Where(r => r.Token == refreshToken)
                 .ExecuteCommand();
         }
@@ -140,12 +162,22 @@ public sealed class JwtTokenService
     /// </summary>
     private void CleanupExpiredIfNeeded()
     {
+        var now = DateTimeOffset.UtcNow;
+        var nowTicks = now.UtcDateTime.Ticks;
+        var lastCleanupTicks = Volatile.Read(ref _lastCleanupUtcTicks);
+        if (lastCleanupTicks != 0 && nowTicks - lastCleanupTicks < CleanupInterval.Ticks)
+        {
+            return;
+        }
+
         try
         {
-            var now = DateTimeOffset.UtcNow;
-            _dbContext.Client.Deleteable<RefreshTokenRecord>()
+            using var client = _dbContext.Client.CopyNew();
+            client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
+            client.Deleteable<RefreshTokenRecord>()
                 .Where(r => r.ExpiresAt <= now)
                 .ExecuteCommand();
+            Volatile.Write(ref _lastCleanupUtcTicks, nowTicks);
         }
         catch
         {

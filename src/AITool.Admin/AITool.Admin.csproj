@@ -19,6 +19,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="AITool.Admin.IntegrationTests" />
+    <InternalsVisibleTo Include="AITool.ApplicationTests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\AITool.Application\AITool.Application.csproj" />
     <ProjectReference Include="..\AITool.Infrastructure\AITool.Infrastructure.csproj" />
   </ItemGroup>

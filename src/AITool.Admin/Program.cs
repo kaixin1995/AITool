@@ -328,6 +328,13 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<AccountQuotaInspec
 
 // 客户端特征模拟：请求头模板档案（client-header-profiles.json 本地文件存储，不落数据库）。
 builder.Services.AddSingleton<IHeaderProfileCatalogService, HeaderProfileCatalogService>();
+// 代理诊断抓包（文件型转储）：开发者工具「诊断抓包」页的数据源；Core 宿主写同一目录实现跨宿主可见。
+builder.Services.AddSingleton<IProxyDiagnosticService>(sp =>
+{
+    var logger = sp.GetRequiredService<ILogger<ProxyDiagnosticService>>();
+    var metadataCache = sp.GetService<ProxyRequestMetadataCache>();
+    return new ProxyDiagnosticService(logger, metadataCache);
+});
 // 模型定价目录（model-pricing.json 本地文件存储，按 LastWriteTime 自动刷新快照）。
 builder.Services.AddSingleton<IModelPricingService, ModelPricingService>();
 // 管理端长任务统一托管队列（SQL 迁移执行等耗时操作的取消/进度管理）。
