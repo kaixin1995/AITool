@@ -1,7 +1,7 @@
 using System.Text.Json;
-using AITool.Admin.Services;
 using AITool.Domain.Proxy;
 using AITool.Infrastructure.Persistence;
+using AITool.Admin.Services;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 
@@ -9,7 +9,7 @@ namespace AITool.Admin.Controllers.Admin;
 
 /// <summary>
 /// 兼容规则集管理控制器：对 <see cref="CompatibilityProfile"/> 做 CRUD。
-/// 规则集合随路由目标一起缓存，任何写操作后都需失效缓存并推送到 Core（双宿主下规则烤进 RouteRule 下发）。
+/// 规则集合随路由目标一起缓存，任何写操作后都需失效缓存。
 /// </summary>
 [ApiController]
 [Route("api/admin/compatibility-profiles")]
@@ -17,16 +17,11 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
 {
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
-    private readonly AdminCacheInvalidationService _adminCacheInvalidation;
 
-    public CompatibilityProfilesApiController(
-        AppDbContext dbContext,
-        ProxyRequestMetadataCache metadataCache,
-        AdminCacheInvalidationService adminCacheInvalidation)
+    public CompatibilityProfilesApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
-        _adminCacheInvalidation = adminCacheInvalidation;
     }
 
     /// <summary>
@@ -81,16 +76,20 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
             return BadRequest(new { message = "名称不能为空" });
         }
 
+        if (!TryNormalizeRulesJson(payload.RulesJson, out var rulesJson))
+        {
+            return BadRequest(new { message = "规则必须是有效的 JSON 数组" });
+        }
+
         var profile = new CompatibilityProfile
         {
             Name = payload.Name.Trim(),
             Description = payload.Description?.Trim() ?? string.Empty,
-            RulesJson = NormalizeRulesJson(payload.RulesJson),
+            RulesJson = rulesJson,
             IsEnabled = payload.IsEnabled
         };
         await _dbContext.InsertAsync(profile, cancellationToken);
-        // 规则集是路由目标的派生数据（烤进 RouteRule），变更后重发 RouteRules 让 Core 拿到新规则。
-        await _adminCacheInvalidation.InvalidateCompatibilityProfilesAsync(cancellationToken);
+        _metadataCache.InvalidateCompatibilityProfiles();
 
         return Ok(new { id = profile.Id });
     }
@@ -108,15 +107,18 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
 
         var profile = await _dbContext.CompatibilityProfiles.InSingleAsync(id);
         if (profile is null) return NotFound(new { message = "规则集不存在" });
+        if (!TryNormalizeRulesJson(payload.RulesJson, out var rulesJson))
+        {
+            return BadRequest(new { message = "规则必须是有效的 JSON 数组" });
+        }
 
         profile.Name = payload.Name.Trim();
         profile.Description = payload.Description?.Trim() ?? string.Empty;
-        profile.RulesJson = NormalizeRulesJson(payload.RulesJson);
+        profile.RulesJson = rulesJson;
         profile.IsEnabled = payload.IsEnabled;
         profile.UpdatedAt = DateTimeOffset.UtcNow;
         await _dbContext.UpdateAsync(profile, cancellationToken);
-        // 规则集是路由目标的派生数据（烤进 RouteRule），变更后重发 RouteRules 让 Core 拿到新规则。
-        await _adminCacheInvalidation.InvalidateCompatibilityProfilesAsync(cancellationToken);
+        _metadataCache.InvalidateCompatibilityProfiles();
 
         return Ok(new { id = profile.Id });
     }
@@ -133,8 +135,7 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
         profile.IsEnabled = !profile.IsEnabled;
         profile.UpdatedAt = DateTimeOffset.UtcNow;
         await _dbContext.UpdateAsync(profile, cancellationToken);
-        // 规则集是路由目标的派生数据（烤进 RouteRule），变更后重发 RouteRules 让 Core 拿到新规则。
-        await _adminCacheInvalidation.InvalidateCompatibilityProfilesAsync(cancellationToken);
+        _metadataCache.InvalidateCompatibilityProfiles();
 
         return Ok(new { id = profile.Id, isEnabled = profile.IsEnabled });
     }
@@ -149,26 +150,28 @@ public sealed class CompatibilityProfilesApiController : ControllerBase
         if (profile is null) return NotFound(new { message = "规则集不存在" });
 
         await _dbContext.DeleteAsync(profile, cancellationToken);
-        // 规则集是路由目标的派生数据（烤进 RouteRule），变更后重发 RouteRules 让 Core 拿到新规则。
-        await _adminCacheInvalidation.InvalidateCompatibilityProfilesAsync(cancellationToken);
+        _metadataCache.InvalidateCompatibilityProfiles();
 
         return Ok(new { id });
     }
 
     /// <summary>
-    /// 规范化 RulesJson：空或解析失败时返回 "[]"，否则原样保留（已是合法 JSON 数组）。
+    /// 校验并规范化 RulesJson；无效 JSON 或非数组输入由接口明确拒绝。
     /// </summary>
-    private static string NormalizeRulesJson(string? raw)
+    private static bool TryNormalizeRulesJson(string? raw, out string normalized)
     {
-        if (string.IsNullOrWhiteSpace(raw)) return "[]";
+        normalized = "[]";
+        if (string.IsNullOrWhiteSpace(raw)) return true;
         try
         {
             var rules = JsonSerializer.Deserialize<List<CompatibilityRule>>(raw);
-            return rules is null ? "[]" : JsonSerializer.Serialize(rules);
+            if (rules is null) return false;
+            normalized = JsonSerializer.Serialize(rules);
+            return true;
         }
         catch
         {
-            return "[]";
+            return false;
         }
     }
 

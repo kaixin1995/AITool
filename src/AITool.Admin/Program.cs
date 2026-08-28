@@ -1,12 +1,17 @@
 using AppVersionInfo = AITool.Infrastructure.Hosting.AppVersionInfo;
+using AITool.Application.Accounts;
 using AITool.Application.Codex;
 using AITool.Application.Common;
+using AITool.Application.Google;
+using AITool.Application.Kimi;
 using AITool.Application.Pricing;
 using AITool.Application.Proxy;
 using AITool.Infrastructure.Codex;
 using AITool.Infrastructure.CoreRuntime;
 using AITool.Infrastructure.DependencyInjection;
+using AITool.Infrastructure.Google;
 using AITool.Infrastructure.Hosting;
+using AITool.Infrastructure.Kimi;
 using AITool.Infrastructure.Persistence;
 using AITool.Infrastructure.Pricing;
 using AITool.Infrastructure.Proxy;
@@ -272,6 +277,46 @@ builder.Services.AddHttpClient<ICodexResetCreditsService, CodexResetCreditsServi
 {
     client.Timeout = TimeSpan.FromSeconds(30);
 });
+
+// —— Google（Antigravity）账号托管五件套 ——
+builder.Services.AddHttpClient<IGoogleOAuthClient, GoogleOAuthClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddHttpClient<IGoogleModelFetcher, GoogleModelFetcher>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddHttpClient<GoogleAccountQuotaService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<GoogleAccountQuotaService>());
+builder.Services.AddHostedService<GoogleTokenRefreshService>();
+builder.Services.AddScoped<GoogleAccountProvisioner>();
+builder.Services.AddScoped<GoogleCredentialRefreshService>();
+
+// —— Kimi（Moonshot）账号托管五件套 ——
+builder.Services.AddHttpClient<IKimiOAuthClient, KimiOAuthClient>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddHttpClient<IKimiModelFetcher, KimiModelFetcher>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddHttpClient<KimiQuotaService>(client =>
+{
+    client.Timeout = TimeSpan.FromSeconds(30);
+});
+builder.Services.AddTransient<IAccountQuotaProvider>(sp => sp.GetRequiredService<KimiQuotaService>());
+builder.Services.AddHostedService<KimiTokenRefreshService>();
+builder.Services.AddScoped<KimiAccountProvisioner>();
+builder.Services.AddScoped<KimiCredentialRefreshService>();
+
+// —— SQL 迁移执行服务（仅执行服务器 sql-migrations 目录脚本，密码确认 + 事务 + dry-run） ——
+builder.Services.AddScoped<SqlMigrationRunnerService>();
+
 // OAuth 账号功能总开关过滤器（控制器级 gating，Codex/Google/Kimi 统一）。
 builder.Services.AddScoped<OAuthFeatureToggleAttribute>();
 // 账号巡检开关过滤器（仅巡检相关 action 使用，关闭时返回 404）。

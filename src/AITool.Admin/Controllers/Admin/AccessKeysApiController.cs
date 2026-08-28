@@ -43,33 +43,6 @@ public sealed class CreateAccessKeyResult
 }
 
 /// <summary>
-/// 访问密钥列表项，用于密钥管理页面展示每条密钥的基本信息。
-/// </summary>
-public sealed class AccessKeyListItem
-{
-    /// <summary>
-    /// 密钥标识。
-    /// </summary>
-    public Guid KeyId { get; set; }
-    /// <summary>
-    /// 密钥名称。
-    /// </summary>
-    public string KeyName { get; set; } = string.Empty;
-    /// <summary>
-    /// 明文密钥。
-    /// </summary>
-    public string PlainKey { get; set; } = string.Empty;
-    /// <summary>
-    /// 是否启用。
-    /// </summary>
-    public bool IsEnabled { get; set; }
-    /// <summary>
-    /// 允许访问的路由入口名称列表。空列表=允许全部路由。
-    /// </summary>
-    public List<string> AllowedRouteNames { get; set; } = [];
-}
-
-/// <summary>
 /// 更新访问密钥路由权限的请求参数。
 /// </summary>
 public sealed class UpdateAccessKeyRoutesRequest
@@ -112,19 +85,34 @@ public sealed class AccessKeysApiController : ControllerBase
     public async Task<IActionResult> List(CancellationToken cancellationToken)
     {
         var keys = await _dbContext.ProxyAccessKeys
-            
+
             .OrderBy(k => k.KeyName)
             .ToListAsync(cancellationToken);
 
-        var items = keys.Select(k => new AccessKeyListItem
+        // 列表只返回脱敏密钥（maskedValue），不返回完整明文，避免一次请求泄漏所有密钥。
+        // 完整明文仅创建时返回一次（见 Create 端点）。
+        var items = keys.Select(k => new
         {
-            KeyId = k.Id,
-            KeyName = k.KeyName,
-            PlainKey = k.PlainKey,
-            IsEnabled = k.IsEnabled,
-            AllowedRouteNames = DeserializeRouteNames(k.AllowedRouteNames)
+            id = k.Id,
+            keyName = k.KeyName,
+            maskedValue = k.MaskedValue,
+            isEnabled = k.IsEnabled,
+            allowedRouteNames = DeserializeRouteNames(k.AllowedRouteNames)
         }).ToList();
         return Ok(items);
+    }
+
+    /// <summary>
+    /// 按密钥标识获取其完整明文，供后台按需复制。
+    /// 列表接口不批量返回明文，避免一次请求泄漏所有密钥；此端点按需返回单条。
+    /// </summary>
+    [HttpGet("{keyId}/plain")]
+    public async Task<IActionResult> GetPlain(Guid keyId, CancellationToken cancellationToken)
+    {
+        var key = await _dbContext.ProxyAccessKeys.InSingleAsync(keyId);
+        if (key is null) return NotFound(new { message = "密钥不存在" });
+
+        return Ok(new { keyId, plainKey = key.PlainKey });
     }
 
     /// <summary>

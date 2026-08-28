@@ -1,10 +1,12 @@
 using System.Collections.Concurrent;
 using AITool.Admin.Services;
+using AITool.Infrastructure.Proxy;
 using AITool.Application.SiteCatalog;
 using AITool.Domain.Models;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Admin.Services;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Admin.Controllers.Admin;
@@ -84,6 +86,16 @@ public sealed class FetchAllProgress
     /// 各站点抓取进度。
     /// </summary>
     public List<SiteFetchResult> Sites { get; set; } = [];
+
+    /// <summary>
+    /// 任务创建时间，用于清理长期未完成的失联任务。
+    /// </summary>
+    public DateTimeOffset CreatedAt { get; set; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// 任务完成时间，用于保留一段时间供前端读取最终结果。
+    /// </summary>
+    public DateTimeOffset? CompletedAt { get; set; }
 }
 
 /// <summary>
@@ -127,6 +139,8 @@ public sealed class ImportSelectedRequest
 [Route("api/admin/site-catalog")]
 public sealed class SiteCatalogApiController : ControllerBase
 {
+    private const int MaxConcurrentSiteFetches = 4;
+
     /// <summary>
     /// 数据库上下文。
     /// </summary>
@@ -139,6 +153,11 @@ public sealed class SiteCatalogApiController : ControllerBase
     /// 后台缓存失效服务。
     /// </summary>
     private readonly AdminCacheInvalidationService _cacheInvalidationService;
+    private readonly ProxyRequestMetadataCache _metadataCache;
+    /// <summary>
+    /// 管理后台长任务队列。
+    /// </summary>
+    private readonly AdminBackgroundTaskQueue _taskQueue;
 
     /// <summary>
     /// 批量抓取进度缓存。
@@ -148,11 +167,18 @@ public sealed class SiteCatalogApiController : ControllerBase
     /// <summary>
     /// 创建站点目录控制器。
     /// </summary>
-    public SiteCatalogApiController(AppDbContext dbContext, IServiceScopeFactory scopeFactory, AdminCacheInvalidationService cacheInvalidationService)
+    public SiteCatalogApiController(
+        AppDbContext dbContext,
+        IServiceScopeFactory scopeFactory,
+        ProxyRequestMetadataCache metadataCache,
+        AdminCacheInvalidationService cacheInvalidationService,
+        AdminBackgroundTaskQueue taskQueue)
     {
         _dbContext = dbContext;
         _scopeFactory = scopeFactory;
+        _metadataCache = metadataCache;
         _cacheInvalidationService = cacheInvalidationService;
+        _taskQueue = taskQueue;
     }
 
     /// <summary>
@@ -189,15 +215,21 @@ public sealed class SiteCatalogApiController : ControllerBase
             .ToListAsync(cancellationToken);
 
         var modelNames = remoteModels.ToList();
+        // 模型库的 ModelName 可能是自定义对外名（不等于远端名），需同时通过映射引用的 ModelLibraryItemId 加载。
+        var mappingModelIds = existingMappings.Where(m => m.ModelLibraryItemId != Guid.Empty).Select(m => m.ModelLibraryItemId).Distinct().ToList();
         var modelItems = await _dbContext.ModelLibraryItems
-            .Where(m => modelNames.Contains(m.ModelName))
+            .Where(m => modelNames.Contains(m.ModelName) || mappingModelIds.Contains(m.Id))
             .ToListAsync(cancellationToken);
 
         var result = new List<RemoteModelInfo>();
         foreach (var remoteName in remoteModels)
         {
             var mapping = existingMappings.FirstOrDefault(m => m.RemoteModelName == remoteName);
-            var modelItem = modelItems.FirstOrDefault(m => m.ModelName == remoteName);
+            // 模型库的 ModelName 可能是用户自定义的对外名（不等于 remoteName），
+            // 需要通过映射的 ModelLibraryItemId 查找对应的模型库记录。
+            var modelItem = mapping is not null
+                ? modelItems.FirstOrDefault(m => m.Id == mapping.ModelLibraryItemId)
+                : modelItems.FirstOrDefault(m => m.ModelName == remoteName);
             var hasValidImport = mapping is not null && modelItem is not null && mapping.ModelLibraryItemId == modelItem.Id;
 
             result.Add(new RemoteModelInfo
@@ -205,7 +237,8 @@ public sealed class SiteCatalogApiController : ControllerBase
                 RemoteModelName = remoteName,
                 ExistingMappingId = hasValidImport ? mapping!.Id : null,
                 IsEnabled = hasValidImport && mapping!.IsEnabled,
-                ExistingDisplayName = modelItem?.DisplayName
+                // 返回模型库的对外名（可能是自定义名），供前端预填到输入框
+                ExistingDisplayName = modelItem?.ModelName != remoteName ? modelItem?.ModelName : null
             });
         }
 
@@ -218,6 +251,8 @@ public sealed class SiteCatalogApiController : ControllerBase
     [HttpPost("fetch-all-models")]
     public async Task<IActionResult> FetchAllModels(CancellationToken cancellationToken)
     {
+        PurgeExpiredProgress();
+
         // 仅拉取用户自建站点；Codex 等托管 Site 的 baseUrl 不兼容 OpenAI catalog 接口，跳过避免误报。
         var sites = await _dbContext.Sites
             .Where(s => s.IsEnabled && string.IsNullOrEmpty(s.ManagedSource))
@@ -242,17 +277,17 @@ public sealed class SiteCatalogApiController : ControllerBase
         };
         ProgressStore[taskId] = progress;
 
-        _ = Task.Run(async () =>
+        var scopeFactory = _scopeFactory;
+        var siteSnapshot = sites.ToArray();
+        if (!_taskQueue.TryQueue(queueCancellationToken => RunFetchAllAsync(
+                scopeFactory,
+                taskId,
+                siteSnapshot,
+                queueCancellationToken)))
         {
-            var tasks = sites.Select((site, index) => FetchSingleSiteModelsAsync(taskId, index, site, cancellationToken));
-            await Task.WhenAll(tasks);
-
-            if (ProgressStore.TryGetValue(taskId, out var current))
-            {
-                current.IsCompleted = true;
-                current.CompletedSites = current.Sites.Count(s => s.Status is "success" or "fail");
-            }
-        }, cancellationToken);
+            ProgressStore.TryRemove(taskId, out _);
+            return StatusCode(StatusCodes.Status429TooManyRequests, new { message = "后台模型抓取任务较多，请稍后重试" });
+        }
 
         return Ok(new { taskId });
     }
@@ -263,12 +298,39 @@ public sealed class SiteCatalogApiController : ControllerBase
     [HttpGet("fetch-all-progress/{taskId}")]
     public IActionResult GetFetchAllProgress(string taskId)
     {
+        PurgeExpiredProgress();
+
         if (!ProgressStore.TryGetValue(taskId, out var progress))
         {
             return NotFound(new { message = "任务不存在" });
         }
 
-        return Ok(progress);
+        lock (progress)
+        {
+            return Ok(new FetchAllProgress
+            {
+                TaskId = progress.TaskId,
+                TotalSites = progress.TotalSites,
+                CompletedSites = progress.CompletedSites,
+                IsCompleted = progress.IsCompleted,
+                CreatedAt = progress.CreatedAt,
+                CompletedAt = progress.CompletedAt,
+                Sites = progress.Sites.Select(site => new SiteFetchResult
+                {
+                    SiteId = site.SiteId,
+                    SiteName = site.SiteName,
+                    Status = site.Status,
+                    Error = site.Error,
+                    Models = site.Models.Select(model => new RemoteModelInfo
+                    {
+                        RemoteModelName = model.RemoteModelName,
+                        ExistingMappingId = model.ExistingMappingId,
+                        IsEnabled = model.IsEnabled,
+                        ExistingDisplayName = model.ExistingDisplayName
+                    }).ToList()
+                }).ToList()
+            });
+        }
     }
 
     /// <summary>
@@ -293,13 +355,15 @@ public sealed class SiteCatalogApiController : ControllerBase
             .Where(m => allSiteIds.Contains(m.SiteId))
             .ToListAsync(cancellationToken);
 
-        var allRemoteNames = request.Selections
+        // 用户可自定义对外模型名（displayName），自定义名不为空且与原始名不同时用它作为 ModelLibraryItem.ModelName。
+        // 没有自定义名时回退到原始名。模型库按"对外名"查重（而非原始名），确保同一个自定义名只创建一条模型库记录。
+        var allPublicNames = request.Selections
             .Where(s => s.Selected)
-            .Select(s => s.RemoteModelName)
+            .Select(s => string.IsNullOrWhiteSpace(s.DisplayName) ? s.RemoteModelName : s.DisplayName.Trim())
             .Distinct()
             .ToList();
         var existingModelItems = await _dbContext.ModelLibraryItems
-            .Where(m => allRemoteNames.Contains(m.ModelName))
+            .Where(m => allPublicNames.Contains(m.ModelName))
             .ToDictionaryAsync(m => m.ModelName, m => m, cancellationToken);
 
         var siteGroups = request.Selections.GroupBy(s => s.SiteId);
@@ -310,16 +374,20 @@ public sealed class SiteCatalogApiController : ControllerBase
 
             foreach (var item in group)
             {
+                // 对外名：用户自定义优先，否则用原始名
+                var publicName = string.IsNullOrWhiteSpace(item.DisplayName)
+                    ? item.RemoteModelName
+                    : item.DisplayName.Trim();
                 var mapping = siteMappings.FirstOrDefault(m => m.RemoteModelName == item.RemoteModelName);
 
                 if (item.Selected)
                 {
-                    if (!existingModelItems.TryGetValue(item.RemoteModelName, out var modelItem))
+                    if (!existingModelItems.TryGetValue(publicName, out var modelItem))
                     {
                         modelItem = new ModelLibraryItem
                         {
-                            ModelName = item.RemoteModelName,
-                            DisplayName = string.IsNullOrWhiteSpace(item.DisplayName) ? item.RemoteModelName : item.DisplayName
+                            ModelName = publicName,
+                            DisplayName = publicName
                         };
                         await _dbContext.InsertAsync(modelItem, cancellationToken);
                         existingModelItems[item.RemoteModelName] = modelItem;
@@ -328,6 +396,15 @@ public sealed class SiteCatalogApiController : ControllerBase
                     {
                         modelItem.DisplayName = item.DisplayName;
                         await _dbContext.UpdateAsync(modelItem, cancellationToken);
+                        _dbContext.ModelLibraryItems.Add(modelItem);
+                        existingModelItems[item.RemoteModelName] = modelItem;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(item.DisplayName) && item.DisplayName != modelItem.DisplayName)
+                    {
+                        modelItem.DisplayName = item.DisplayName;
+                        await _dbContext.UpdateAsync(modelItem, cancellationToken);
+                        _dbContext.ModelLibraryItems.Add(modelItem);
+                        existingModelItems[publicName] = modelItem;
                     }
 
                     if (mapping is null)
@@ -369,18 +446,58 @@ public sealed class SiteCatalogApiController : ControllerBase
     /// <summary>
     /// 抓取单个站点的模型并更新进度。
     /// </summary>
-    private async Task FetchSingleSiteModelsAsync(string taskId, int siteIndex, Site site, CancellationToken cancellationToken)
+    private static async Task RunFetchAllAsync(
+        IServiceScopeFactory scopeFactory,
+        string taskId,
+        IReadOnlyList<Site> sites,
+        CancellationToken cancellationToken)
+    {
+        for (var batchStart = 0; batchStart < sites.Count; batchStart += MaxConcurrentSiteFetches)
+        {
+            var tasks = sites
+                .Skip(batchStart)
+                .Take(MaxConcurrentSiteFetches)
+                .Select((site, offset) => FetchSingleSiteModelsAsync(
+                    scopeFactory,
+                    taskId,
+                    batchStart + offset,
+                    site,
+                    cancellationToken));
+
+            await Task.WhenAll(tasks);
+        }
+
+        if (ProgressStore.TryGetValue(taskId, out var current))
+        {
+            lock (current)
+            {
+                current.IsCompleted = true;
+                current.CompletedSites = current.Sites.Count(s => s.Status is "success" or "fail");
+                current.CompletedAt = DateTimeOffset.UtcNow;
+            }
+        }
+    }
+
+    private static async Task FetchSingleSiteModelsAsync(
+        IServiceScopeFactory scopeFactory,
+        string taskId,
+        int siteIndex,
+        Site site,
+        CancellationToken cancellationToken)
     {
         if (!ProgressStore.TryGetValue(taskId, out var progress))
         {
             return;
         }
 
-        progress.Sites[siteIndex].Status = "running";
+        lock (progress)
+        {
+            progress.Sites[siteIndex].Status = "running";
+        }
 
         try
         {
-            using var scope = _scopeFactory.CreateScope();
+            using var scope = scopeFactory.CreateScope();
             var catalogClient = scope.ServiceProvider.GetRequiredService<ISiteCatalogClient>();
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
 
@@ -390,15 +507,20 @@ public sealed class SiteCatalogApiController : ControllerBase
                 .ToListAsync(cancellationToken);
 
             var modelNames = remoteModels.ToList();
+            // 模型库的 ModelName 可能是自定义对外名，需同时通过映射引用的 ModelLibraryItemId 加载。
+            var batchMappingModelIds = existingMappings.Where(m => m.ModelLibraryItemId != Guid.Empty).Select(m => m.ModelLibraryItemId).Distinct().ToList();
             var modelItems = await db.ModelLibraryItems
-                .Where(m => modelNames.Contains(m.ModelName))
+                .Where(m => modelNames.Contains(m.ModelName) || batchMappingModelIds.Contains(m.Id))
                 .ToListAsync(cancellationToken);
+            var modelItemById = modelItems.ToDictionary(m => m.Id);
 
             var models = new List<RemoteModelInfo>();
             foreach (var remoteName in remoteModels)
             {
                 var mapping = existingMappings.FirstOrDefault(m => m.RemoteModelName == remoteName);
-                var modelItem = modelItems.FirstOrDefault(m => m.ModelName == remoteName);
+                var modelItem = mapping is not null && modelItemById.TryGetValue(mapping.ModelLibraryItemId, out var mi)
+                    ? mi
+                    : modelItems.FirstOrDefault(m => m.ModelName == remoteName);
                 var hasValidImport = mapping is not null && modelItem is not null && mapping.ModelLibraryItemId == modelItem.Id;
 
                 models.Add(new RemoteModelInfo
@@ -406,19 +528,50 @@ public sealed class SiteCatalogApiController : ControllerBase
                     RemoteModelName = remoteName,
                     ExistingMappingId = hasValidImport ? mapping!.Id : null,
                     IsEnabled = hasValidImport && mapping!.IsEnabled,
-                    ExistingDisplayName = modelItem?.DisplayName
+                    ExistingDisplayName = modelItem?.ModelName != remoteName ? modelItem?.ModelName : null
                 });
             }
 
-            progress.Sites[siteIndex].Status = "success";
-            progress.Sites[siteIndex].Models = models;
+            lock (progress)
+            {
+                progress.Sites[siteIndex].Status = "success";
+                progress.Sites[siteIndex].Models = models;
+            }
         }
         catch (Exception ex)
         {
-            progress.Sites[siteIndex].Status = "fail";
-            progress.Sites[siteIndex].Error = ex.Message;
+            lock (progress)
+            {
+                progress.Sites[siteIndex].Status = "fail";
+                progress.Sites[siteIndex].Error = ex.Message;
+            }
         }
 
-        progress.CompletedSites = progress.Sites.Count(s => s.Status is "success" or "fail");
+        lock (progress)
+        {
+            progress.CompletedSites = progress.Sites.Count(s => s.Status is "success" or "fail");
+        }
+    }
+
+    /// <summary>
+    /// 保留已完成任务一段时间供前端读取，并清理宿主停止或请求断开后遗留的任务。
+    /// </summary>
+    private static void PurgeExpiredProgress()
+    {
+        var now = DateTimeOffset.UtcNow;
+        var completedCutoff = now.AddMinutes(-10);
+        var staleCutoff = now.AddHours(-1);
+
+        foreach (var pair in ProgressStore)
+        {
+            var progress = pair.Value;
+            var expired = progress.IsCompleted
+                ? progress.CompletedAt is { } completedAt && completedAt <= completedCutoff
+                : progress.CreatedAt <= staleCutoff;
+            if (expired)
+            {
+                ProgressStore.TryRemove(pair.Key, out _);
+            }
+        }
     }
 }

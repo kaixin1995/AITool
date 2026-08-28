@@ -26,6 +26,8 @@ public sealed class CodexAccountProvisioner
 
     private readonly AppDbContext _dbContext;
     private readonly ProxyRequestMetadataCache _metadataCache;
+    /// <summary>split 双宿主：变更推送 Core（惰性解析，避免 配额服务→失效服务→设置服务→配额服务 的 DI 环）。</summary>
+    private readonly IServiceScopeFactory _corePushScopeFactory;
     private readonly ICodexModelCatalog _modelCatalog;
     private readonly SiteCascadeDeleter _cascadeDeleter;
     private readonly ILogger<CodexAccountProvisioner> _logger;
@@ -33,12 +35,14 @@ public sealed class CodexAccountProvisioner
     public CodexAccountProvisioner(
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
+        IServiceScopeFactory corePushScopeFactory,
         ICodexModelCatalog modelCatalog,
         SiteCascadeDeleter cascadeDeleter,
         ILogger<CodexAccountProvisioner> logger)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
+        _corePushScopeFactory = corePushScopeFactory;
         _modelCatalog = modelCatalog;
         _cascadeDeleter = cascadeDeleter;
         _logger = logger;
@@ -123,8 +127,11 @@ public sealed class CodexAccountProvisioner
 
         // —— 失效缓存（一次性）——
         _metadataCache.InvalidateRouteTargets();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateModelMetadata();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateCodexAccounts();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
 
         _logger.LogInformation("Codex account {Id} provisioned (site {SiteId})", account.Id, site.Id);
         return account;
@@ -149,8 +156,11 @@ public sealed class CodexAccountProvisioner
         await client.Deleteable<CodexAccount>().Where(a => a.Id == codexAccountId).ExecuteCommandAsync(ct);
 
         _metadataCache.InvalidateRouteTargets();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateModelMetadata();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateCodexAccounts();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
 
         _logger.LogInformation("Codex account {Id} deprovisioned", codexAccountId);
     }
@@ -178,7 +188,9 @@ public sealed class CodexAccountProvisioner
         await client.Updateable(account).ExecuteCommandAsync(ct);
 
         _metadataCache.InvalidateRouteTargets();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateCodexAccounts();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
     }
 
     /// <summary>
@@ -188,8 +200,11 @@ public sealed class CodexAccountProvisioner
     {
         await UpsertModelMappingsCoreAsync(linkedSiteId, models, ct);
         _metadataCache.InvalidateRouteTargets();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateModelMetadata();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
         _metadataCache.InvalidateCodexAccounts();
+        await PushToCoreAsyncAccountCredentials(CancellationToken.None);
     }
 
     // —— 私有 ——
@@ -284,5 +299,20 @@ public sealed class CodexAccountProvisioner
         site.ExtraHeadersJson = headers.Count > 0
             ? JsonSerializer.Serialize(headers, JsonSerializerPresets.Compact)
             : null;
+    }
+
+    /// <summary>惰性解析 AdminCacheInvalidationService 推送变更到 Core（scoped，调用点建作用域）。</summary>
+    private async Task PushToCoreAsyncAccountCredentials(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _corePushScopeFactory.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>()
+                .InvalidateAccountCredentialsAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // 推送失败不影响主流程：下次写操作或启动推送会重试。
+        }
     }
 }

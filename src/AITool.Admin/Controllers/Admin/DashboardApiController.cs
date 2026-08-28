@@ -1,4 +1,3 @@
-using AITool.Infrastructure.Proxy;
 using AITool.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Mvc;
 

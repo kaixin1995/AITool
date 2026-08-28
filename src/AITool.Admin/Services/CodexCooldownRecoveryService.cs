@@ -111,6 +111,9 @@ public sealed class CodexCooldownRecoveryService : BackgroundService
             {
                 cache.InvalidateRouteTargets();
                 cache.InvalidateCodexAccounts();
+                // split 双宿主：恢复的账号/站点需推送到 Core。
+                await scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>()
+                    .InvalidateAccountCredentialsAsync(ct);
             }
         }, ct);
     }

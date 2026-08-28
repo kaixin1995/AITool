@@ -1,12 +1,57 @@
 using System.Text.Json;
-using AITool.Admin.Services;
 using AITool.Application.Common;
+using AITool.Application.Proxy;
+using AITool.Domain.Models;
 using AITool.Domain.Proxy;
+using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Admin.Services;
 using AITool.Infrastructure.Proxy;
 using Microsoft.AspNetCore.Mvc;
 
 namespace AITool.Admin.Controllers.Admin;
+
+/// <summary>
+/// 路由规则配置页中展示的模型项，包含该模型的站点数量和路由配置状态。
+/// </summary>
+public sealed class RouteModelItem
+{
+    /// <summary>
+    /// 模型名称。
+    /// </summary>
+    public string ModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 显示名称。
+    /// </summary>
+    public string DisplayName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点数量。
+    /// </summary>
+    public int SiteCount { get; set; }
+    /// <summary>
+    /// 是否已配置路由规则。
+    /// </summary>
+    public bool HasRouteRules { get; set; }
+}
+
+/// <summary>
+/// 路由主入口列表项，展示入口名称和其下的候选实例数量。
+/// </summary>
+public sealed class RouteEntryListItem
+{
+    /// <summary>
+    /// 主入口名称。
+    /// </summary>
+    public string EntryName { get; set; } = string.Empty;
+    /// <summary>
+    /// 模型显示名称（入口名匹配模型库 ModelName 时回填，供展示层优先显示；否则为空）。
+    /// </summary>
+    public string? DisplayName { get; set; }
+    /// <summary>
+    /// 候选实例数量。
+    /// </summary>
+    public int CandidateCount { get; set; }
+}
 
 /// <summary>
 /// 创建路由主入口的请求参数。
@@ -28,6 +73,115 @@ public sealed class DeleteRouteEntryRequest
     /// 主入口名称。
     /// </summary>
     public string EntryName { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// 可选站点实例项，用于路由规则配置页中展示可绑定的站点映射。
+/// </summary>
+public sealed class SiteInstanceItem
+{
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
+    public Guid SiteId { get; set; }
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
+    public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
+    public string SiteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 协议类型。
+    /// </summary>
+    public string ProtocolType { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点是否启用，用于在管理页面区分已禁用站点。
+    /// </summary>
+    public bool SiteEnabled { get; set; } = true;
+}
+
+/// <summary>
+/// 按模型名称发现的可用站点项，展示站点信息和远端模型名称。
+/// </summary>
+public sealed class DiscoveredSiteItem
+{
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
+    public Guid SiteId { get; set; }
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
+    public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 远端模型名称。
+    /// </summary>
+    public string RemoteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点是否启用。
+    /// </summary>
+    public bool SiteEnabled { get; set; }
+}
+
+/// <summary>
+/// 路由规则列表项，展示单条规则的详细信息，包括站点、模型、优先级和启用状态。
+/// </summary>
+public sealed class RouteRuleListItem
+{
+    /// <summary>
+    /// 规则标识。
+    /// </summary>
+    public Guid RuleId { get; set; }
+    /// <summary>
+    /// 站点标识。
+    /// </summary>
+    public Guid SiteId { get; set; }
+    /// <summary>
+    /// 站点名称。
+    /// </summary>
+    public string SiteName { get; set; } = string.Empty;
+    /// <summary>
+    /// 上游模型名称。
+    /// </summary>
+    public string UpstreamModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 上游模型的显示名称（按 UpstreamModelName 匹配模型库取 DisplayName，供展示层优先显示对外名）。
+    /// </summary>
+    public string ModelDisplayName { get; set; } = string.Empty;
+    /// <summary>
+    /// 站点模型名称。
+    /// </summary>
+    public string SiteModelName { get; set; } = string.Empty;
+    /// <summary>
+    /// 全局优先级。
+    /// </summary>
+    public int Priority { get; set; }
+    /// <summary>
+    /// 模型优先级。
+    /// </summary>
+    public int ModelPriority { get; set; }
+    /// <summary>
+    /// 实例优先级。
+    /// </summary>
+    public int InstancePriority { get; set; }
+    /// <summary>
+    /// 是否启用。
+    /// </summary>
+    public bool IsEnabled { get; set; }
+    /// <summary>
+    /// 站点是否启用，用于在管理页面区分已禁用站点。
+    /// </summary>
+    public bool SiteEnabled { get; set; } = true;
+    /// <summary>
+    /// 时间可用性模式，旧规则为空时按全天可用处理。
+    /// </summary>
+    public string AvailabilityMode { get; set; } = "AllDay";
+    /// <summary>
+    /// 每日时间范围 JSON，空值表示不限制。
+    /// </summary>
+    public string TimeRangesJson { get; set; } = string.Empty;
 }
 
 /// <summary>
@@ -63,6 +217,10 @@ public sealed class SaveRouteRuleEntry
     /// </summary>
     public string SiteModelName { get; set; } = string.Empty;
     /// <summary>
+    /// 是否启用，未传时默认启用以兼容旧调用方。
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
+    /// <summary>
     /// 时间可用性模式，未传时默认全天可用。
     /// </summary>
     public string AvailabilityMode { get; set; } = "AllDay";
@@ -88,12 +246,7 @@ public sealed class RouteTimeRange
 }
 
 /// <summary>
-/// 路由规则管理控制器，提供主入口和规则条目的增删改查。
-/// <para>
-/// 从 AITool.Web 迁移而来，适配 Admin 宿主的异步缓存失效机制。
-/// Admin 侧不直接操作运行时并发限制器，保存规则后通过
-/// <see cref="AdminCacheInvalidationService"/> 向 Core 宿主下发配置快照。
-/// </para>
+/// 路由规则管理控制器，提供主入口、站点实例和规则条目的增删改查。
 /// </summary>
 [ApiController]
 [Route("api/admin/route-rules")]
@@ -104,40 +257,39 @@ public sealed class RouteRulesApiController : ControllerBase
     /// </summary>
     private readonly AppDbContext _dbContext;
     /// <summary>
-    /// 后台缓存失效服务。
+    /// 代理元数据缓存。
     /// </summary>
-    private readonly AdminCacheInvalidationService _cacheInvalidation;
+    private readonly ProxyRequestMetadataCache _metadataCache;
     /// <summary>
-    /// 后台查询元数据服务。
+    /// 模型并发限制器，用于判断路由保存时是否存在正在调用的模型实例。
     /// </summary>
-    private readonly AdminQueryMetadataService _adminQueryMetadataService;
+    private readonly ModelConcurrencyLimiter _concurrencyLimiter;
 
     /// <summary>
     /// 创建路由规则控制器。
     /// </summary>
     public RouteRulesApiController(
         AppDbContext dbContext,
-        AdminCacheInvalidationService cacheInvalidation,
-        AdminQueryMetadataService adminQueryMetadataService)
+        ProxyRequestMetadataCache metadataCache,
+        ModelConcurrencyLimiter concurrencyLimiter)
     {
         _dbContext = dbContext;
-        _cacheInvalidation = cacheInvalidation;
-        _adminQueryMetadataService = adminQueryMetadataService;
+        _metadataCache = metadataCache;
+        _concurrencyLimiter = concurrencyLimiter;
     }
 
     /// <summary>
-    /// 获取所有路由主入口名称，合并 ProxyRouteEntries 表和 ProxyRouteRules 表中的
-    /// ExternalModelName 去重后返回。
+    /// 获取主入口列表。
     /// </summary>
     [HttpGet("entries")]
     public async Task<IActionResult> GetEntries(CancellationToken cancellationToken)
     {
-        var result = await _adminQueryMetadataService.GetRouteEntriesAsync(cancellationToken);
+        var result = await _metadataCache.GetRouteEntriesAsync(cancellationToken);
         return Ok(result);
     }
 
     /// <summary>
-    /// 创建空的主入口记录。
+    /// 创建主入口。
     /// </summary>
     [HttpPost("entries")]
     public async Task<IActionResult> CreateEntry(
@@ -155,17 +307,17 @@ public sealed class RouteRulesApiController : ControllerBase
         if (existsInEntries || existsInRules)
             return BadRequest(new { message = "主入口已存在" });
 
-        await _dbContext.InsertAsync(new ProxyRouteEntry
+        _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
         {
             EntryName = entryName
-        }, cancellationToken);
-        await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        });
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "创建成功" });
     }
 
     /// <summary>
-    /// 删除主入口及其下所有路由规则。
+    /// 删除主入口。
     /// </summary>
     [HttpPost("entries/delete")]
     public async Task<IActionResult> DeleteEntry(
@@ -187,17 +339,27 @@ public sealed class RouteRulesApiController : ControllerBase
 
         if (entry is not null)
         {
-            await _dbContext.DeleteAsync(entry, cancellationToken);
+            _dbContext.ProxyRouteEntries.Remove(entry);
         }
 
         if (rules.Count > 0)
         {
-            await _dbContext.DeleteRangeAsync(rules, cancellationToken);
+            _dbContext.ProxyRouteRules.RemoveRange(rules);
         }
 
-        await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "删除成功" });
+    }
+
+    /// <summary>
+    /// 获取可选站点实例。
+    /// </summary>
+    [HttpGet("site-instances")]
+    public async Task<IActionResult> GetSiteInstances(CancellationToken cancellationToken)
+    {
+        var result = await _metadataCache.GetRouteSiteInstancesAsync(cancellationToken);
+        return Ok(result);
     }
 
     /// <summary>
@@ -206,7 +368,7 @@ public sealed class RouteRulesApiController : ControllerBase
     [HttpGet("models")]
     public async Task<IActionResult> GetModels(CancellationToken cancellationToken)
     {
-        var models = await _adminQueryMetadataService.GetRouteModelsAsync(cancellationToken);
+        var models = await _metadataCache.GetRouteModelsAsync(cancellationToken);
         return Ok(models);
     }
 
@@ -218,24 +380,24 @@ public sealed class RouteRulesApiController : ControllerBase
         [FromQuery] string modelName,
         CancellationToken cancellationToken)
     {
-        var results = await _adminQueryMetadataService.GetDiscoveredSitesAsync(modelName, cancellationToken);
+        var results = await _metadataCache.GetDiscoveredSitesAsync(modelName, cancellationToken);
         return Ok(results);
     }
 
     /// <summary>
-    /// 获取指定模型的路由规则列表。
+    /// 获取路由规则列表。
     /// </summary>
     [HttpGet("list")]
     public async Task<IActionResult> ListRules(
         [FromQuery] string modelName,
         CancellationToken cancellationToken)
     {
-        var result = await _adminQueryMetadataService.GetRouteRulesAsync(modelName, cancellationToken);
+        var result = await _metadataCache.GetRouteRulesAsync(modelName, cancellationToken);
         return Ok(result);
     }
 
     /// <summary>
-    /// 批量保存路由规则，按外部模型名称整体覆盖该模型下的所有规则。
+    /// 保存路由规则。
     /// </summary>
     [HttpPost("save")]
     public async Task<IActionResult> SaveRules(
@@ -246,55 +408,30 @@ public sealed class RouteRulesApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(entryName))
             return BadRequest(new { message = "模型名称不能为空" });
 
-        // 校验每条规则引用的 SiteId 都存在且非空，避免写入孤儿规则（路由运行时会静默忽略）。
-        if (request.Rules.Count > 0)
+        var requestedSiteIds = request.Rules
+            .Select(x => x.SiteId)
+            .Distinct()
+            .ToList();
+        if (requestedSiteIds.Contains(Guid.Empty))
+            return BadRequest(new { message = "站点标识不能为空" });
+
+        if (requestedSiteIds.Count > 0)
         {
-            var ruleSiteIds = request.Rules
-                .Where(r => r.SiteId != Guid.Empty)
-                .Select(r => r.SiteId)
-                .Distinct()
-                .ToHashSet();
-            if (ruleSiteIds.Count > 0)
-            {
-                var existingSiteIds = await _dbContext.Sites
-                    
-                    .Where(s => ruleSiteIds.Contains(s.Id))
-                    .Select(s => s.Id)
-                    .ToListAsync(cancellationToken);
-                var missingSiteIds = ruleSiteIds.Except(existingSiteIds).ToList();
-                if (missingSiteIds.Count > 0)
-                {
-                    return BadRequest(new { message = $"以下站点不存在，无法保存规则：{string.Join(", ", missingSiteIds)}" });
-                }
-            }
+            var existingSiteIds = await _dbContext.Sites
+                .Where(x => requestedSiteIds.Contains(x.Id))
+                .Select(x => x.Id)
+                .ToListAsync(cancellationToken);
+            if (existingSiteIds.Count != requestedSiteIds.Count)
+                return BadRequest(new { message = "包含不存在的站点" });
         }
 
-        // 确保主入口存在
-        var existingEntry = await _dbContext.ProxyRouteEntries
-            .FirstAsync(x => x.EntryName == entryName, cancellationToken);
-        if (existingEntry is null)
-        {
-            await _dbContext.InsertAsync(new ProxyRouteEntry
-            {
-                EntryName = entryName
-            }, cancellationToken);
-        }
-
-        // 删除该模型的所有旧规则
-        var existingRules = await _dbContext.ProxyRouteRules
-            .Where(r => r.ExternalModelName == entryName)
-            .ToListAsync(cancellationToken);
-        if (existingRules.Count > 0)
-        {
-            await _dbContext.DeleteRangeAsync(existingRules, cancellationToken);
-        }
-
-        // 按列表顺序创建新规则，Priority = 全局顺序，ModelPriority/InstancePriority = 分组顺序
+        // 在任何写入前完成全部候选的规范化和校验，避免 SqlSugar 立即写入导致旧规则被部分覆盖。
         var upstreamOrder = request.Rules
             .Select(r => r.UpstreamModelName)
             .Where(name => !string.IsNullOrWhiteSpace(name))
             .Distinct()
             .ToList();
+        var newRules = new List<ProxyRouteRule>(request.Rules.Count);
 
         for (int i = 0; i < request.Rules.Count; i++)
         {
@@ -315,8 +452,10 @@ public sealed class RouteRulesApiController : ControllerBase
                 upstreamOrder.Add(normalizedUpstreamModelName);
             }
 
-            var availability = NormalizeAvailability(entry.AvailabilityMode, entry.TimeRangesJson);
-            await _dbContext.InsertAsync(new ProxyRouteRule
+            if (!TryNormalizeAvailability(entry.AvailabilityMode, entry.TimeRangesJson, out var availability))
+                return BadRequest(new { message = "时间范围配置无效" });
+
+            newRules.Add(new ProxyRouteRule
             {
                 ExternalModelName = entryName,
                 UpstreamModelName = normalizedUpstreamModelName,
@@ -325,17 +464,257 @@ public sealed class RouteRulesApiController : ControllerBase
                 Priority = i,
                 ModelPriority = modelPriority,
                 InstancePriority = sameModelEarlierCount,
-                IsEnabled = true,
+                IsEnabled = entry.IsEnabled,
                 AvailabilityMode = availability.Mode,
                 TimeRangesJson = availability.TimeRangesJson
-            }, cancellationToken);
+            });
         }
 
-        // Admin 侧不直接操作运行时并发限制器，直接刷新路由缓存即可
-        await _cacheInvalidation.InvalidateAdminRouteMetadataAsync(cancellationToken);
-        await _cacheInvalidation.InvalidateRuntimeRouteTargetsAsync(cancellationToken);
+        var existingEntry = await _dbContext.ProxyRouteEntries
+            .FirstAsync(x => x.EntryName == entryName, cancellationToken);
+        if (existingEntry is null)
+        {
+            _dbContext.ProxyRouteEntries.Add(new ProxyRouteEntry
+            {
+                EntryName = entryName
+            });
+        }
 
-        return Ok(new { message = "保存成功" });
+        // 删除该模型的所有旧规则
+        var existingRules = await _dbContext.ProxyRouteRules
+            .Where(r => r.ExternalModelName == entryName)
+            .ToListAsync(cancellationToken);
+        var previousRouteTargets = await LoadPreviousRouteTargetsAsync(existingRules, cancellationToken);
+        _dbContext.ProxyRouteRules.RemoveRange(existingRules);
+        _dbContext.ProxyRouteRules.AddRange(newRules);
+
+        var affectedRouteTargets = BuildAffectedRouteTargets(existingRules, request.Rules);
+
+        _metadataCache.InvalidateAdminRouteMetadata();
+        var routeRefreshDeferred = _concurrencyLimiter.TryDeferRuntimeRouteTargetsRefresh(entryName, affectedRouteTargets, previousRouteTargets);
+        if (!routeRefreshDeferred)
+        {
+            _metadataCache.InvalidateRuntimeRouteTargets();
+        }
+
+        return Ok(new { message = routeRefreshDeferred ? "保存成功，调用中的模型会在当前请求结束后生效" : "保存成功" });
+    }
+
+    /// <summary>
+    /// 将旧规则转换成运行时路由快照，活跃调用期间继续沿用该快照。
+    /// </summary>
+    private async Task<IReadOnlyList<CachedProxyRouteTarget>> LoadPreviousRouteTargetsAsync(
+        IReadOnlyCollection<ProxyRouteRule> existingRules,
+        CancellationToken cancellationToken)
+    {
+        if (existingRules.Count == 0)
+        {
+            return [];
+        }
+
+        var siteIds = existingRules.Select(x => x.SiteId).Distinct().ToList();
+        var sites = await _dbContext.Sites
+
+            .Where(x => siteIds.Contains(x.Id) && x.IsEnabled)
+            .ToDictionaryAsync(x => x.Id, x => x, cancellationToken);
+        // 加载这些站点的启用 SiteKey，按 SiteId 分组，用于按 Key 展开为多条候选（与缓存层一致）。
+        var siteKeys = await _dbContext.SiteKeys
+            .Where(k => k.IsEnabled && siteIds.Contains(k.SiteId))
+            .ToListAsync(cancellationToken);
+        var siteKeysBySite = siteKeys
+            .GroupBy(k => k.SiteId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+        var upstreamModelNames = existingRules
+            .Select(x => x.UpstreamModelName)
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .Distinct()
+            .ToList();
+        var models = await _dbContext.ModelLibraryItems
+            .Where(x => upstreamModelNames.Contains(x.ModelName))
+            .ToDictionaryAsync(x => x.ModelName, x => x, cancellationToken);
+        var compatibilityProfileIds = models.Values
+            .Select(x => x.CompatibilityProfileId)
+            .Where(x => x is not null && x.Value != Guid.Empty)
+            .Select(x => x!.Value)
+            .Distinct()
+            .ToList();
+        var profiles = compatibilityProfileIds.Count == 0
+            ? new Dictionary<Guid, IReadOnlyList<CompatibilityRule>>()
+            : (await _dbContext.CompatibilityProfiles
+                .Where(x => x.IsEnabled && compatibilityProfileIds.Contains(x.Id))
+                .ToListAsync(cancellationToken))
+            .ToDictionary(x => x.Id, x => ParseCompatibilityRules(x.RulesJson));
+
+        // 按 SiteKey 展开：每条路由 × 每个启用 Key 各产出一条候选，保证延迟刷新期间的旧快照
+        // 与缓存热路径产出一致（SiteKeyId/CircuitKey/ApiKey 都正确），避免保护期内熔断键错乱。
+        var expanded = new List<CachedProxyRouteTarget>();
+        foreach (var rule in existingRules.Where(x => x.IsEnabled && sites.ContainsKey(x.SiteId)))
+        {
+            var site = sites[rule.SiteId];
+            models.TryGetValue(rule.UpstreamModelName, out var model);
+            var candidates = ProxyRequestMetadataCache.ResolveSiteKeyCandidates(site.Id, site.ApiKey, siteKeysBySite);
+
+            foreach (var candidate in candidates)
+            {
+                expanded.Add(new CachedProxyRouteTarget
+                {
+                    RouteId = rule.Id,
+                    SiteId = site.Id,
+                    SiteKeyId = candidate.SiteKeyId,
+                    CircuitKey = ProxyRequestMetadataCache.BuildCircuitKey(site.Id, candidate.SiteKeyId, rule.SiteModelName),
+                    SiteName = site.Name,
+                    ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(
+                        site.SupportsOpenAi,
+                        site.SupportsAnthropic,
+                        site.SupportsResponses,
+                        site.ProtocolType),
+                    EndpointPathMode = site.EndpointPathMode,
+                    SupportsOpenAi = site.SupportsOpenAi,
+                    SupportsAnthropic = site.SupportsAnthropic,
+                    SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+                        site.SupportsOpenAi,
+                        site.SupportsAnthropic,
+                        site.SupportsResponses,
+                        site.ProtocolType),
+                    ExternalModelName = rule.ExternalModelName,
+                    UpstreamModelName = rule.UpstreamModelName,
+                    SiteModelName = rule.SiteModelName,
+                    BaseUrl = site.BaseUrl,
+                    ApiKey = candidate.ApiKey,
+                    ExtraHeaders = TryParseExtraHeaders(site.ExtraHeadersJson),
+                    ModelPriority = rule.ModelPriority,
+                    InstancePriority = rule.InstancePriority,
+                    Priority = rule.Priority,
+                    OverrideReasoningEffort = model?.OverrideReasoningEffort ?? string.Empty,
+                    CompatibilityRules = GetRulesForModel(model, profiles),
+                    AvailabilityMode = rule.AvailabilityMode,
+                    TimeRangesJson = rule.TimeRangesJson
+                });
+            }
+        }
+
+        return expanded
+            .OrderBy(x => x.ModelPriority)
+            .ThenBy(x => x.InstancePriority)
+            .ThenBy(x => x.Priority)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 解析兼容规则 JSON，保持与运行时路由目标投影一致的容错行为。
+    /// </summary>
+    private static IReadOnlyList<CompatibilityRule> ParseCompatibilityRules(string? rulesJson)
+    {
+        if (string.IsNullOrWhiteSpace(rulesJson)) return Array.Empty<CompatibilityRule>();
+        try
+        {
+            var rules = JsonSerializer.Deserialize<List<CompatibilityRule>>(rulesJson);
+            return rules is null || rules.Count == 0 ? Array.Empty<CompatibilityRule>() : rules;
+        }
+        catch
+        {
+            return Array.Empty<CompatibilityRule>();
+        }
+    }
+
+    /// <summary>
+    /// 读取模型关联的兼容规则集。
+    /// </summary>
+    private static IReadOnlyList<CompatibilityRule> GetRulesForModel(
+        ModelLibraryItem? model,
+        IReadOnlyDictionary<Guid, IReadOnlyList<CompatibilityRule>> profileRules)
+    {
+        var profileId = model?.CompatibilityProfileId;
+        if (profileId is null || profileId == Guid.Empty) return Array.Empty<CompatibilityRule>();
+        return profileRules.TryGetValue(profileId.Value, out var rules) ? rules : Array.Empty<CompatibilityRule>();
+    }
+
+    /// <summary>
+    /// 解析站点额外请求头，保持与运行时路由目标投影一致的容错行为。
+    /// </summary>
+    private static Dictionary<string, string> TryParseExtraHeaders(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        try
+        {
+            var headers = JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonSerializerPresets.CaseInsensitive);
+            return headers is null
+                ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                : new Dictionary<string, string>(headers, StringComparer.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+    }
+
+    /// <summary>
+    /// 规范化时间可用性配置，空配置和无效配置都回落为全天可用以兼容旧规则。
+    /// </summary>
+    private static bool TryNormalizeAvailability(
+        string? mode,
+        string? timeRangesJson,
+        out (string Mode, string TimeRangesJson) availability)
+    {
+        var normalizedMode = string.Equals(mode, "AvailableOnly", StringComparison.Ordinal)
+            ? "AvailableOnly"
+            : string.Equals(mode, "Unavailable", StringComparison.Ordinal)
+                ? "Unavailable"
+                : "AllDay";
+        if (normalizedMode == "AllDay" || string.IsNullOrWhiteSpace(timeRangesJson))
+        {
+            availability = ("AllDay", string.Empty);
+            return true;
+        }
+
+        try
+        {
+            var ranges = JsonSerializer.Deserialize<List<RouteTimeRange?>>(timeRangesJson, JsonSerializerPresets.CaseInsensitive) ?? [];
+            if (ranges.Any(x => x is null))
+            {
+                availability = default;
+                return false;
+            }
+
+            var validRanges = ranges
+                .Where(x => IsValidTimeText(x!.Start) && IsValidTimeText(x.End))
+                .Select(x => new RouteTimeRange { Start = x!.Start.Trim(), End = x.End.Trim() })
+                .ToList();
+            availability = validRanges.Count == 0
+                ? ("AllDay", string.Empty)
+                : (normalizedMode, JsonSerializer.Serialize(validRanges, JsonSerializerPresets.CamelCase));
+            return true;
+        }
+        catch (JsonException)
+        {
+            availability = ("AllDay", string.Empty);
+            return true;
+        }
+    }
+
+    /// <summary>
+    /// 校验 HH:mm 时间文本，避免无效配置影响运行时选路。
+    /// </summary>
+    private static bool IsValidTimeText(string? value)
+    {
+        return TimeOnly.TryParseExact(value, "HH:mm", out _);
+    }
+
+    /// <summary>
+    /// 收集当前保存影响到的站点模型，命中活跃调用时运行时路由顺序需要延迟刷新。
+    /// </summary>
+    private static IReadOnlyCollection<RouteTargetIdentity> BuildAffectedRouteTargets(
+        IReadOnlyCollection<ProxyRouteRule> existingRules,
+        IReadOnlyCollection<SaveRouteRuleEntry> newRules)
+    {
+        return existingRules
+            .Select(x => new RouteTargetIdentity(x.SiteId, x.SiteModelName))
+            .Concat(newRules.Select(x => new RouteTargetIdentity(x.SiteId, x.SiteModelName)))
+            .ToHashSet(RouteTargetIdentityComparer.Instance);
     }
 
     /// <summary>
@@ -350,23 +729,13 @@ public sealed class RouteRulesApiController : ControllerBase
 
         rule.IsEnabled = !rule.IsEnabled;
         await _dbContext.UpdateAsync(rule, cancellationToken);
-        await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "状态已切换", isEnabled = rule.IsEnabled });
     }
 
     /// <summary>
-    /// 获取所有已启用的站点实例，供前端路由页面的候选实例下拉列表使用。
-    /// </summary>
-    [HttpGet("site-instances")]
-    public async Task<IActionResult> GetSiteInstances(CancellationToken cancellationToken)
-    {
-        var result = await _adminQueryMetadataService.GetRouteSiteInstancesAsync(cancellationToken);
-        return Ok(result);
-    }
-
-    /// <summary>
-    /// 删除单条路由规则。
+    /// 删除路由规则。
     /// </summary>
     [HttpPost("delete/{ruleId}")]
     public async Task<IActionResult> DeleteRule(Guid ruleId, CancellationToken cancellationToken)
@@ -375,84 +744,9 @@ public sealed class RouteRulesApiController : ControllerBase
         if (rule is null)
             return NotFound(new { message = "规则不存在" });
 
-        await _dbContext.DeleteAsync(rule, cancellationToken);
-        await _cacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _dbContext.ProxyRouteRules.Remove(rule);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(new { message = "规则已删除" });
-    }
-
-    /// <summary>
-    /// 规范化时间可用性模式，旧值和异常值统一按全天可用处理。
-    /// </summary>
-    private static string NormalizeAvailabilityMode(string? mode)
-    {
-        return string.Equals(mode, "AvailableOnly", StringComparison.Ordinal)
-            ? "AvailableOnly"
-            : string.Equals(mode, "Unavailable", StringComparison.Ordinal)
-                ? "Unavailable"
-                : "AllDay";
-    }
-
-    /// <summary>
-    /// 规范化每日时间范围 JSON，无有效范围时返回空字符串以表示全天可用。
-    /// </summary>
-    private static string NormalizeTimeRangesJson(string? mode, string? timeRangesJson)
-    {
-        if (NormalizeAvailabilityMode(mode) == "AllDay" || string.IsNullOrWhiteSpace(timeRangesJson))
-        {
-            return string.Empty;
-        }
-
-        try
-        {
-            var ranges = JsonSerializer.Deserialize<List<RouteTimeRange>>(timeRangesJson, JsonSerializerPresets.CaseInsensitive) ?? [];
-            ranges = ranges
-                .Where(x => IsValidTimeText(x.Start) && IsValidTimeText(x.End))
-                .Select(x => new RouteTimeRange { Start = x.Start.Trim(), End = x.End.Trim() })
-                .ToList();
-            return ranges.Count == 0
-                ? string.Empty
-                : JsonSerializer.Serialize(ranges, JsonSerializerPresets.CamelCase);
-        }
-        catch (JsonException)
-        {
-            return string.Empty;
-        }
-    }
-
-    /// <summary>
-    /// 规范化时间可用性配置，空配置和无效配置都回落为全天可用以兼容旧规则。
-    /// </summary>
-    private static (string Mode, string TimeRangesJson) NormalizeAvailability(string? mode, string? timeRangesJson)
-    {
-        var normalizedMode = NormalizeAvailabilityMode(mode);
-        if (normalizedMode == "AllDay" || string.IsNullOrWhiteSpace(timeRangesJson))
-        {
-            return ("AllDay", string.Empty);
-        }
-
-        try
-        {
-            var ranges = JsonSerializer.Deserialize<List<RouteTimeRange>>(timeRangesJson, JsonSerializerPresets.CaseInsensitive) ?? [];
-            ranges = ranges
-                .Where(x => IsValidTimeText(x.Start) && IsValidTimeText(x.End))
-                .Select(x => new RouteTimeRange { Start = x.Start.Trim(), End = x.End.Trim() })
-                .ToList();
-            return ranges.Count == 0
-                ? ("AllDay", string.Empty)
-                : (normalizedMode, JsonSerializer.Serialize(ranges, JsonSerializerPresets.CamelCase));
-        }
-        catch (JsonException)
-        {
-            return ("AllDay", string.Empty);
-        }
-    }
-
-    /// <summary>
-    /// 校验 HH:mm 时间文本。
-    /// </summary>
-    private static bool IsValidTimeText(string? value)
-    {
-        return TimeOnly.TryParseExact(value, "HH:mm", out _);
     }
 }

@@ -19,17 +19,21 @@ public sealed class CodexCredentialRefreshService
     private readonly AppDbContext _dbContext;
     private readonly ICodexOAuthClient _oauth;
     private readonly ProxyRequestMetadataCache _metadataCache;
+    /// <summary>split 双宿主：变更推送 Core（惰性解析，避免 配额服务→失效服务→设置服务→配额服务 的 DI 环）。</summary>
+    private readonly IServiceScopeFactory _corePushScopeFactory;
     private readonly ILogger<CodexCredentialRefreshService> _logger;
 
     public CodexCredentialRefreshService(
         AppDbContext dbContext,
         ICodexOAuthClient oauth,
         ProxyRequestMetadataCache metadataCache,
+        IServiceScopeFactory corePushScopeFactory,
         ILogger<CodexCredentialRefreshService> logger)
     {
         _dbContext = dbContext;
         _oauth = oauth;
         _metadataCache = metadataCache;
+        _corePushScopeFactory = corePushScopeFactory;
         _logger = logger;
     }
 
@@ -99,7 +103,9 @@ public sealed class CodexCredentialRefreshService
             }, cancellationToken);
 
             _metadataCache.InvalidateRouteTargets();
+            await PushToCoreAsyncAccountCredentials(CancellationToken.None);
             _metadataCache.InvalidateCodexAccounts();
+            await PushToCoreAsyncAccountCredentials(CancellationToken.None);
             _logger.LogInformation("Codex account {Id} token refreshed after upstream unauthorized", account.Id);
             return tokens.AccessToken;
         }
@@ -107,6 +113,21 @@ public sealed class CodexCredentialRefreshService
         {
             _logger.LogWarning(exception, "Unable to refresh Codex token for linked site {SiteId}", linkedSiteId);
             return null;
+        }
+    }
+
+    /// <summary>惰性解析 AdminCacheInvalidationService 推送变更到 Core（scoped，调用点建作用域）。</summary>
+    private async Task PushToCoreAsyncAccountCredentials(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var scope = _corePushScopeFactory.CreateScope();
+            await scope.ServiceProvider.GetRequiredService<AdminCacheInvalidationService>()
+                .InvalidateAccountCredentialsAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // 推送失败不影响主流程：下次写操作或启动推送会重试。
         }
     }
 }

@@ -1,31 +1,26 @@
 using AITool.Infrastructure.Proxy;
 using System.Net.Http.Headers;
+using System.Text;
+using System.Text.Json;
 using AITool.Application.Accounts;
-using AITool.Application.Codex;
-using AITool.Domain.Codex;
+using AITool.Application.Google;
+using AITool.Domain.Google;
 using AITool.Infrastructure.Common;
-using AITool.Infrastructure.Codex;
+using AITool.Infrastructure.Google;
 using AITool.Infrastructure.Persistence;
 using Microsoft.Extensions.Caching.Memory;
 
 namespace AITool.Admin.Services;
 
 /// <summary>
-/// Codex 额度主动查询实现（位于 Web 层，因依赖 ProxyRequestMetadataCache）。
+/// Google 账号额度主动查询实现（IAccountQuotaProvider，ProviderKey="google"）。
 /// <para>
-/// 端点为 chatgpt.com/backend-api/wham/usage（与 codex-patrol 一致）。
-/// AITool 自己持有 access_token（OAuth/导入后存在 CodexAccount），无需经 CPA 中转，直接请求。
-/// 上游只返回每个窗口的 used_percent（无 used/limit 绝对值），由 CodexUsageParser 分类为
-/// 5 小时窗口(18000s)与周窗口(604800s)。
+/// Antigravity：v1internal:fetchAvailableModels 返回每个模型的 quotaInfo.remainingFraction
+/// （对齐 gcli2api fetch_quota_info），换算为已用百分比窗口；tier/积分取登录时 loadCodeAssist 的存档。
 /// </para>
 /// </summary>
-public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvider
+public sealed class GoogleAccountQuotaService : IAccountQuotaProvider
 {
-    // wham/usage 端点（codex-patrol 同款）
-    private const string UsageUrl = "https://chatgpt.com/backend-api/wham/usage";
-    private const string UserAgent = "Codex Desktop/0.149.0-alpha.4.3 (Windows 10.0.19045; x86_64) unknown (Codex Desktop; 26.818.61809)";
-
-    /// <summary>结果缓存 TTL（防抖）。</summary>
     private static readonly TimeSpan ResultCacheTtl = TimeSpan.FromSeconds(30);
 
     private readonly HttpClient _httpClient;
@@ -34,20 +29,20 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
     /// <summary>split 双宿主：变更推送 Core（惰性解析，避免 配额服务→失效服务→设置服务→配额服务 的 DI 环）。</summary>
     private readonly IServiceScopeFactory _corePushScopeFactory;
     private readonly IMemoryCache _resultCache;
-    private readonly CodexCredentialRefreshService _credentialRefreshService;
-    private readonly ILogger<CodexQuotaService> _logger;
+    private readonly GoogleCredentialRefreshService _credentialRefreshService;
+    private readonly ILogger<GoogleAccountQuotaService> _logger;
 
     /// <summary>single-flight：同 accountId 并发只一次真实请求。KeyedAsyncLock 会在账号不再使用时回收锁条目。</summary>
     private static readonly KeyedAsyncLock Locks = new();
 
-    public CodexQuotaService(
+    public GoogleAccountQuotaService(
         HttpClient httpClient,
         AppDbContext dbContext,
         ProxyRequestMetadataCache metadataCache,
         IServiceScopeFactory corePushScopeFactory,
         IMemoryCache resultCache,
-        CodexCredentialRefreshService credentialRefreshService,
-        ILogger<CodexQuotaService> logger)
+        GoogleCredentialRefreshService credentialRefreshService,
+        ILogger<GoogleAccountQuotaService> logger)
     {
         _httpClient = httpClient;
         _dbContext = dbContext;
@@ -58,12 +53,32 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         _logger = logger;
     }
 
-    public string ProviderKey => "codex";
+    public string ProviderKey => "google";
+
+    /// <summary>额度查询结果（内部口径）。</summary>
+    private sealed record GoogleQuotaInfo
+    {
+        public bool Success { get; init; }
+        public string? Error { get; init; }
+        public string? PlanType { get; init; }
+        public string RawJson { get; init; } = string.Empty;
+        public DateTimeOffset CheckedAt { get; init; } = DateTimeOffset.UtcNow;
+        public IReadOnlyList<GoogleQuotaWindow> Windows { get; init; } = [];
+    }
+
+    private sealed record GoogleQuotaWindow
+    {
+        public string Id { get; init; } = string.Empty;
+        public string Label { get; init; } = string.Empty;
+        public double UsedPercent { get; init; }
+        public string ResetLabel { get; init; } = "N/A";
+        public DateTimeOffset? ResetAtUtc { get; init; }
+    }
 
     public async Task<IReadOnlyList<AccountQuotaTarget>> GetAccountsAsync(CancellationToken cancellationToken)
     {
-        var accounts = await _dbContext.CodexAccounts
-            .Where(a => !a.DisabledByFeatureToggle)
+        var accounts = await _dbContext.GoogleAccounts
+            .Where(a => !a.DisabledByFeatureToggle && !a.DisabledByUpstream)
             .OrderBy(a => a.LastQuotaCheckedAt)
             .ToListAsync(cancellationToken);
 
@@ -72,15 +87,22 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
     public AccountQuotaSnapshot? ParseCachedQuota(string rawJson)
     {
-        if (string.IsNullOrWhiteSpace(rawJson)) return null;
+        if (string.IsNullOrWhiteSpace(rawJson))
+        {
+            return null;
+        }
 
         try
         {
-            var (planType, windows) = CodexUsageParser.Parse(rawJson);
+            var windows = GoogleQuotaParser.Parse(rawJson);
+            if (windows is null)
+            {
+                return null;
+            }
+
             return new AccountQuotaSnapshot
             {
-                Success = windows.Count > 0,
-                PlanType = planType,
+                Success = true,
                 RawJson = rawJson,
                 Windows = windows.Select(ToQuotaWindow).ToList(),
             };
@@ -96,7 +118,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         bool forceRefresh,
         CancellationToken cancellationToken)
     {
-        var current = (await _dbContext.CodexAccounts
+        var current = (await _dbContext.GoogleAccounts
             .Where(a => a.Id == account.AccountId)
             .ToListAsync(cancellationToken))
             .FirstOrDefault();
@@ -111,7 +133,8 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
             };
         }
 
-        return ToQuotaSnapshot(await QueryAsync(current, forceRefresh, cancellationToken));
+        var info = await QueryAsync(current, forceRefresh, cancellationToken);
+        return ToQuotaSnapshot(info);
     }
 
     public async Task SetEnabledAsync(
@@ -122,7 +145,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
     {
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-        var current = (await client.Queryable<CodexAccount>()
+        var current = (await client.Queryable<GoogleAccount>()
             .Where(a => a.Id == account.AccountId)
             .ToListAsync(cancellationToken))
             .FirstOrDefault();
@@ -134,6 +157,8 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
             if (string.Equals(reason, "quota-recovered", StringComparison.OrdinalIgnoreCase))
             {
                 current.ManuallyDisabled = false;
+                current.IsQuotaCooling = false;
+                current.QuotaCoolingUntil = null;
             }
             if (string.Equals(reason, "feature-toggle-on", StringComparison.OrdinalIgnoreCase))
             {
@@ -150,12 +175,12 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         }
 
         await client.Updateable(current)
-            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled, x.DisabledByFeatureToggle })
+            .UpdateColumns(x => new { x.IsEnabled, x.ManuallyDisabled, x.DisabledByFeatureToggle, x.IsQuotaCooling, x.QuotaCoolingUntil })
             .ExecuteCommandAsync(cancellationToken);
         await SetLinkedSiteEnabledAsync(client, current.LinkedSiteId, enabled, cancellationToken);
         _metadataCache.InvalidateRouteTargets();
         await PushToCoreAsyncAccountCredentials(CancellationToken.None);
-        _metadataCache.InvalidateCodexAccounts();
+        _metadataCache.InvalidateGoogleAccounts();
         await PushToCoreAsyncAccountCredentials(CancellationToken.None);
     }
 
@@ -163,7 +188,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
     {
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
-        var accounts = await client.Queryable<CodexAccount>().ToListAsync(cancellationToken);
+        var accounts = await client.Queryable<GoogleAccount>().ToListAsync(cancellationToken);
 
         foreach (var account in accounts)
         {
@@ -176,7 +201,7 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
                     .ExecuteCommandAsync(cancellationToken);
                 await SetLinkedSiteEnabledAsync(client, account.LinkedSiteId, false, cancellationToken);
             }
-            else if (account.DisabledByFeatureToggle)
+            else if (account.DisabledByFeatureToggle && !account.DisabledByUpstream)
             {
                 account.IsEnabled = true;
                 account.DisabledByFeatureToggle = false;
@@ -189,52 +214,41 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
         _metadataCache.InvalidateRouteTargets();
         await PushToCoreAsyncAccountCredentials(CancellationToken.None);
-        _metadataCache.InvalidateCodexAccounts();
+        _metadataCache.InvalidateGoogleAccounts();
         await PushToCoreAsyncAccountCredentials(CancellationToken.None);
     }
 
-    /// <inheritdoc />
-    public async Task<CodexQuotaInfo> QueryAsync(CodexAccount account, bool forceRefresh, CancellationToken cancellationToken)
+    private async Task<GoogleQuotaInfo> QueryAsync(GoogleAccount account, bool forceRefresh, CancellationToken cancellationToken)
     {
-        var cacheKey = "codex-quota-" + account.Id.ToString("N");
-
-        // 防抖：非强制刷新走缓存
-        if (!forceRefresh && _resultCache.TryGetValue(cacheKey, out CodexQuotaInfo? cached) && cached != null)
+        var cacheKey = "google-quota-" + account.Id.ToString("N");
+        if (!forceRefresh && _resultCache.TryGetValue(cacheKey, out GoogleQuotaInfo? cached) && cached != null)
         {
             return cached;
         }
 
-        // single-flight
         using (await Locks.WaitAsync(account.Id.ToString("N"), cancellationToken))
         {
-            // 二次检查缓存（等待期间可能已被并发填充）
             if (!forceRefresh && _resultCache.TryGetValue(cacheKey, out cached) && cached != null)
             {
                 return cached;
             }
 
-            var info = await QueryUpstreamAsync(account, cancellationToken);
+            var info = await QueryUpstreamAsync(account, cancellationToken, allowTokenRefresh: true);
 
-            // 失败响应不覆盖上一次成功额度，避免“刷新时间已更新但额度窗口为空”。
             if (info.Success)
             {
-                // 持久化（用 CopyNew 独立连接写入）
                 try
                 {
                     using var writeClient = _dbContext.Client.CopyNew();
                     writeClient.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
                     account.LastQuotaRawJson = info.RawJson;
                     account.LastQuotaCheckedAt = DateTimeOffset.UtcNow;
-                    // 只更新本次变更的列：account 可能来自 30s 元数据缓存（旧快照），整行回写会把
-                    // 后台 token 刷新服务刚写入的 AccessToken/TokenExpiresAt 回滚成旧值。
                     await writeClient.Updateable(account)
                         .UpdateColumns(x => new { x.LastQuotaRawJson, x.LastQuotaCheckedAt })
                         .ExecuteCommandAsync(cancellationToken);
-                    // 额度快照已变更，失效账号列表缓存，避免巡检读到旧 LastQuotaCheckedAt 导致缓存策略误判。
-                    _metadataCache.InvalidateCodexAccounts();
+                    _metadataCache.InvalidateGoogleAccounts();
                     await PushToCoreAsyncAccountCredentials(CancellationToken.None);
 
-                    // 自动禁用判定：任一窗口使用百分比达到全局阈值时禁用（阈值用百分比 0-100 表达）
                     var runtime = await _metadataCache.GetRuntimeSettingsAsync(cancellationToken);
                     if (account.IsEnabled)
                     {
@@ -249,95 +263,87 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Persist codex quota result failed for account {Id}", account.Id);
+                    _logger.LogWarning(ex, "Persist google quota result failed for account {Id}", account.Id);
                 }
             }
 
-            // 写缓存（无论成功失败都缓存 30s，避免失败风暴）
             _resultCache.Set(cacheKey, info, ResultCacheTtl);
             return info;
         }
     }
 
-    private async Task<CodexQuotaInfo> QueryUpstreamAsync(
-        CodexAccount account,
-        CancellationToken ct,
-        bool allowTokenRefresh = true)
+    private async Task<GoogleQuotaInfo> QueryUpstreamAsync(GoogleAccount account, CancellationToken ct, bool allowTokenRefresh)
     {
         if (string.IsNullOrEmpty(account.AccessToken))
         {
-            return new CodexQuotaInfo { Success = false, Error = "账号无 access_token" };
+            return new GoogleQuotaInfo { Success = false, Error = "账号无 access_token" };
         }
 
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, UsageUrl);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", account.AccessToken);
-            request.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
-            request.Headers.TryAddWithoutValidation("Originator", "codex_cli_rs");
-            if (!string.IsNullOrEmpty(account.AccountId))
+            using var request = new HttpRequestMessage(
+                HttpMethod.Post,
+                $"{GoogleAccountKinds.GetBaseUrl(account.AccountKind)}/v1internal:fetchAvailableModels")
             {
-                request.Headers.TryAddWithoutValidation("Chatgpt-Account-Id", account.AccountId);
-            }
+                Content = new StringContent("{}", Encoding.UTF8, "application/json")
+            };
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", account.AccessToken);
+            request.Headers.TryAddWithoutValidation("User-Agent", GoogleAccountKinds.AntigravityUserAgent);
+            request.Headers.TryAddWithoutValidation("requestId", $"req-{Guid.NewGuid():N}");
+            request.Headers.TryAddWithoutValidation("requestType", "agent");
 
             using var response = await _httpClient.SendAsync(request, ct);
             var body = await response.Content.ReadAsStringAsync(ct);
 
-            var info = new CodexQuotaInfo { RawJson = body, CheckedAt = DateTimeOffset.UtcNow };
             if (!response.IsSuccessStatusCode)
             {
+                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    await _credentialRefreshService.DisableAsync(account.LinkedSiteId, "quota-403", ct);
+                }
+
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized && allowTokenRefresh)
                 {
-                    var refreshedAccessToken = await _credentialRefreshService.RefreshAsync(
-                        account.LinkedSiteId,
-                        account.AccessToken,
-                        ct);
-                    if (!string.IsNullOrWhiteSpace(refreshedAccessToken))
+                    var refreshed = await _credentialRefreshService.RefreshAsync(account.LinkedSiteId, account.AccessToken, ct);
+                    if (!string.IsNullOrWhiteSpace(refreshed))
                     {
-                        account.AccessToken = refreshedAccessToken;
-                        return await QueryUpstreamAsync(account, ct, false);
+                        account.AccessToken = refreshed;
+                        return await QueryUpstreamAsync(account, ct, allowTokenRefresh: false);
                     }
                 }
 
-                info.Success = false;
-                info.Error = $"上游返回 {(int)response.StatusCode}";
-                return info;
+                return new GoogleQuotaInfo { Success = false, Error = $"上游返回 {(int)response.StatusCode}", RawJson = body };
             }
 
-            // 用 codex-patrol 同款解析器分类窗口
-            var (planType, windows) = CodexUsageParser.Parse(body);
-            info.PlanType = planType;
-            info.Windows = windows.Select(w => new CodexQuotaWindow
+            var windows = GoogleQuotaParser.Parse(body);
+            return new GoogleQuotaInfo
             {
-                Id = w.Id,
-                Label = w.Label,
-                UsedPercent = w.UsedPercent,
-                ResetLabel = w.ResetLabel,
-                ResetAtUtc = w.ResetAtUtc,
-                LimitWindowSeconds = w.LimitWindowSeconds,
-            }).ToList();
-            info.FiveHourUsedPercent = info.Windows.FirstOrDefault(w => w.Id == "five-hour")?.UsedPercent;
-            info.WeeklyUsedPercent = info.Windows.FirstOrDefault(w => w.Id == "weekly")?.UsedPercent;
-            info.Success = true;
-            return info;
+                Success = true,
+                PlanType = account.SubscriptionTier,
+                RawJson = body,
+                Windows = (windows ?? []).Select(w => new GoogleQuotaWindow
+                {
+                    Id = w.Id,
+                    Label = w.Id,
+                    UsedPercent = w.UsedPercent,
+                    ResetLabel = w.ResetLabel,
+                    ResetAtUtc = w.ResetAtUtc,
+                }).ToList(),
+            };
         }
         catch (Exception ex)
         {
-            return new CodexQuotaInfo { Success = false, Error = ex.Message, CheckedAt = DateTimeOffset.UtcNow };
+            return new GoogleQuotaInfo { Success = false, Error = ex.Message };
         }
     }
 
-    /// <summary>
-    /// 获取用于自动禁用判定的已使用百分比。
-    /// 任一额度窗口达到阈值都应触发禁用，因此取所有窗口中的最大值。
-    /// </summary>
-    private static double? GetMaxUsedPercent(CodexQuotaInfo info)
+    /// <summary>自动禁用判定：取所有模型窗口的最大已用百分比。</summary>
+    private static double? GetMaxUsedPercent(GoogleQuotaInfo info)
         => info.Windows.Count == 0 ? null : info.Windows.Max(w => w.UsedPercent);
 
-    private static AccountQuotaTarget ToQuotaTarget(CodexAccount account) => new()
+    private static AccountQuotaTarget ToQuotaTarget(GoogleAccount account) => new()
     {
-        ProviderKey = "codex",
+        ProviderKey = "google",
         AccountId = account.Id,
         DisplayName = account.DisplayName,
         LinkedSiteId = account.LinkedSiteId,
@@ -345,12 +351,13 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         IsQuotaCooling = account.IsQuotaCooling,
         DisabledByFeatureToggle = account.DisabledByFeatureToggle,
         ManuallyDisabled = account.ManuallyDisabled,
+        DisabledByUpstream = account.DisabledByUpstream,
         TokenExpiresAt = account.TokenExpiresAt,
         LastQuotaCheckedAt = account.LastQuotaCheckedAt,
         LastQuotaRawJson = account.LastQuotaRawJson,
     };
 
-    private static AccountQuotaSnapshot ToQuotaSnapshot(CodexQuotaInfo info) => new()
+    private static AccountQuotaSnapshot ToQuotaSnapshot(GoogleQuotaInfo info) => new()
     {
         Success = info.Success,
         Error = info.Error,
@@ -360,24 +367,22 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
         Windows = info.Windows.Select(ToQuotaWindow).ToList(),
     };
 
-    private static AccountQuotaWindow ToQuotaWindow(CodexQuotaWindow window) => new()
+    private static AccountQuotaWindow ToQuotaWindow(GoogleQuotaWindow window) => new()
     {
         Id = window.Id,
         Label = window.Label,
         UsedPercent = window.UsedPercent,
         ResetLabel = window.ResetLabel,
         ResetAtUtc = window.ResetAtUtc,
-        LimitWindowSeconds = window.LimitWindowSeconds,
     };
 
-    private static AccountQuotaWindow ToQuotaWindow(CodexUsageParser.Window window) => new()
+    private static AccountQuotaWindow ToQuotaWindow(GoogleQuotaParser.Window window) => new()
     {
         Id = window.Id,
         Label = window.Label,
         UsedPercent = window.UsedPercent,
         ResetLabel = window.ResetLabel,
         ResetAtUtc = window.ResetAtUtc,
-        LimitWindowSeconds = window.LimitWindowSeconds,
     };
 
     private static async Task SetLinkedSiteEnabledAsync(
@@ -395,9 +400,8 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
             .ExecuteCommandAsync(cancellationToken);
     }
 
-    private async Task DisableAccountAsync(CodexAccount account, CancellationToken ct, string reason)
+    private async Task DisableAccountAsync(GoogleAccount account, CancellationToken ct, string reason)
     {
-        // 用 CopyNew 独立连接写入；只更新目标列，避免整行覆盖并发写入的其他字段。
         using var client = _dbContext.Client.CopyNew();
         client.Ado.ExecuteCommand("PRAGMA busy_timeout=5000;");
         account.IsEnabled = false;
@@ -414,9 +418,9 @@ public sealed class CodexQuotaService : ICodexQuotaService, IAccountQuotaProvide
 
         _metadataCache.InvalidateRouteTargets();
         await PushToCoreAsyncAccountCredentials(CancellationToken.None);
-        _metadataCache.InvalidateCodexAccounts();
+        _metadataCache.InvalidateGoogleAccounts();
         await PushToCoreAsyncAccountCredentials(CancellationToken.None);
-        _logger.LogWarning("Codex account {Id} auto-disabled: {Reason}", account.Id, reason);
+        _logger.LogWarning("Google account {Id} auto-disabled: {Reason}", account.Id, reason);
     }
 
     /// <summary>惰性解析 AdminCacheInvalidationService 推送变更到 Core（scoped，调用点建作用域）。</summary>

@@ -18,6 +18,8 @@
     <InternalsVisibleTo Include="AITool.ApplicationTests" />
     <InternalsVisibleTo Include="AITool.Core.IntegrationTests" />
     <InternalsVisibleTo Include="AITool.Admin.IntegrationTests" />
+    <InternalsVisibleTo Include="AITool.Admin" />
+    <InternalsVisibleTo Include="AITool.Core" />
   </ItemGroup>
 
   <ItemGroup>

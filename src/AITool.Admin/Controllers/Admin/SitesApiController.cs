@@ -1,9 +1,11 @@
-using AITool.Infrastructure.Proxy;
 using System.Text.Json;
 using AITool.Application.Common;
+using AITool.Application.Proxy;
 using AITool.Application.Sites;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
+using AITool.Application.Common;
 using AITool.Admin.Services;
 using Microsoft.AspNetCore.Mvc;
 
@@ -37,27 +39,25 @@ public sealed class SitesApiController : ControllerBase
     /// 站点级联删除工具。
     /// </summary>
     private readonly SiteCascadeDeleter _cascadeDeleter;
-    private readonly AdminCacheInvalidationService _adminCacheInvalidation;
 
     /// <summary>
     /// 初始化站点管理 API 控制器。
     /// </summary>
-    public SitesApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache, SiteCascadeDeleter cascadeDeleter, AdminCacheInvalidationService adminCacheInvalidation)
+    public SitesApiController(AppDbContext dbContext, ProxyRequestMetadataCache metadataCache, SiteCascadeDeleter cascadeDeleter)
     {
         _dbContext = dbContext;
         _metadataCache = metadataCache;
         _cascadeDeleter = cascadeDeleter;
-        _adminCacheInvalidation = adminCacheInvalidation;
     }
 
     /// <summary>
-    /// 获取站点列表（按名称排序，过滤托管站点）。
+    /// 获取站点列表（按名称排序，默认过滤托管站点，可传 includeManaged=true 包含 OAuth/托管站点）。
     /// </summary>
     [HttpGet]
-    public async Task<IActionResult> List(CancellationToken cancellationToken)
+    public async Task<IActionResult> List([FromQuery] bool includeManaged = false, CancellationToken cancellationToken = default)
     {
         var sites = await _dbContext.Sites
-            .Where(x => string.IsNullOrEmpty(x.ManagedSource))
+            .Where(x => includeManaged || string.IsNullOrEmpty(x.ManagedSource))
             .OrderBy(x => x.Name)
             .ToListAsync(cancellationToken);
 
@@ -101,7 +101,15 @@ public sealed class SitesApiController : ControllerBase
             endpointPathMode = SiteEndpointPathResolver.NormalizeMode(site.EndpointPathMode),
             supportsOpenAi = site.SupportsOpenAi,
             supportsAnthropic = site.SupportsAnthropic,
+            supportsResponses = ProxyProtocolResolver.SupportsResponses(
+                site.SupportsOpenAi,
+                site.SupportsAnthropic,
+                site.SupportsResponses,
+                site.ProtocolType),
             protocolType = site.ProtocolType,
+            clientEmulation = site.ClientEmulation,
+            extraHeadersJson = site.ExtraHeadersJson ?? string.Empty,
+            egressProxyUrl = site.EgressProxyUrl ?? string.Empty,
             isEnabled = site.IsEnabled,
             createdAt = site.CreatedAt,
             keys = siteKeys.Select(k => new
@@ -130,6 +138,10 @@ public sealed class SitesApiController : ControllerBase
         {
             return BadRequest(ApiResponse.Fail("站点密钥不能为空", "invalid_input"));
         }
+        if (!EgressProxyValidator.TryValidate(payload.EgressProxyUrl, out var createProxyError))
+        {
+            return BadRequest(ApiResponse.Fail(createProxyError, "invalid_egress_proxy"));
+        }
 
         var site = new Site
         {
@@ -137,9 +149,16 @@ public sealed class SitesApiController : ControllerBase
             BaseUrl = payload.BaseUrl.Trim(),
             EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(payload.EndpointPathMode),
             ApiKey = payload.ApiKey,
-            ProtocolType = ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic),
+            ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic, payload.SupportsResponses),
             SupportsOpenAi = payload.SupportsOpenAi,
             SupportsAnthropic = payload.SupportsAnthropic,
+            SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+                payload.SupportsOpenAi,
+                payload.SupportsAnthropic,
+                payload.SupportsResponses),
+            ClientEmulation = ClientEmulationConstants.Normalize(payload.ClientEmulation),
+            ExtraHeadersJson = string.IsNullOrWhiteSpace(payload.ExtraHeadersJson) ? null : payload.ExtraHeadersJson.Trim(),
+            EgressProxyUrl = string.IsNullOrWhiteSpace(payload.EgressProxyUrl) ? null : payload.EgressProxyUrl.Trim(),
             IsEnabled = payload.IsEnabled
         };
         _dbContext.Sites.Add(site);
@@ -154,7 +173,7 @@ public sealed class SitesApiController : ControllerBase
             IsEnabled = true
         });
         // SqlSugar 的 Add 是立即执行（扩展方法，同步 ExecuteCommand），无需 SaveChanges。
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok(new { id = site.Id }, "站点已创建"));
     }
@@ -168,6 +187,10 @@ public sealed class SitesApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(payload?.Name) || string.IsNullOrWhiteSpace(payload.BaseUrl))
         {
             return BadRequest(ApiResponse.Fail("站点名称和基础地址不能为空", "invalid_input"));
+        }
+        if (!EgressProxyValidator.TryValidate(payload.EgressProxyUrl, out var updateProxyError))
+        {
+            return BadRequest(ApiResponse.Fail(updateProxyError, "invalid_egress_proxy"));
         }
 
         var site = await _dbContext.Sites.InSingleAsync(id);
@@ -189,11 +212,18 @@ public sealed class SitesApiController : ControllerBase
         }
         site.SupportsOpenAi = payload.SupportsOpenAi;
         site.SupportsAnthropic = payload.SupportsAnthropic;
-        site.ProtocolType = ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic);
+        site.SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+            payload.SupportsOpenAi,
+            payload.SupportsAnthropic,
+            payload.SupportsResponses);
+        site.ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(payload.SupportsOpenAi, payload.SupportsAnthropic, site.SupportsResponses);
+        site.ClientEmulation = ClientEmulationConstants.Normalize(payload.ClientEmulation);
+        site.ExtraHeadersJson = string.IsNullOrWhiteSpace(payload.ExtraHeadersJson) ? null : payload.ExtraHeadersJson.Trim();
+        site.EgressProxyUrl = string.IsNullOrWhiteSpace(payload.EgressProxyUrl) ? null : payload.EgressProxyUrl.Trim();
         site.IsEnabled = payload.IsEnabled;
 
         await _dbContext.UpdateAsync(site, cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok("站点已更新"));
     }
@@ -212,7 +242,7 @@ public sealed class SitesApiController : ControllerBase
 
         site.IsEnabled = !site.IsEnabled;
         await _dbContext.UpdateAsync(site, cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok(new { isEnabled = site.IsEnabled }, $"站点已{(site.IsEnabled ? "启用" : "禁用")}"));
     }
@@ -273,7 +303,7 @@ public sealed class SitesApiController : ControllerBase
             IsEnabled = request.IsEnabled
         };
         _dbContext.SiteKeys.Add(key);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok(new { id = key.Id }, "密钥已添加"));
     }
@@ -310,7 +340,7 @@ public sealed class SitesApiController : ControllerBase
         key.Priority = request.Priority;
         key.IsEnabled = request.IsEnabled;
         await _dbContext.UpdateAsync(key, cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok("密钥已更新"));
     }
@@ -334,7 +364,7 @@ public sealed class SitesApiController : ControllerBase
         }
 
         await _dbContext.DeleteAsync(key, cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok("密钥已删除"));
     }
@@ -359,7 +389,7 @@ public sealed class SitesApiController : ControllerBase
 
         key.IsEnabled = !key.IsEnabled;
         await _dbContext.UpdateAsync(key, cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok(new { isEnabled = key.IsEnabled }, $"密钥已{(key.IsEnabled ? "启用" : "禁用")}"));
     }
@@ -415,7 +445,9 @@ public sealed class SitesApiController : ControllerBase
 
         await _cascadeDeleter.RemoveSitesAsync([id], cancellationToken);
         // SiteCascadeDeleter 内部用 RemoveRange（立即执行），无需额外 SaveChanges。
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        // 删站点会级联删除 SiteModelMappings，需同时失效模型元数据缓存，避免 /v1/models 短时残留。
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateModelMetadata();
 
         return Ok(ApiResponse.Ok("站点已删除"));
     }
@@ -444,7 +476,9 @@ public sealed class SitesApiController : ControllerBase
 
         var deletedCount = await _cascadeDeleter.RemoveSitesAsync(siteIds, cancellationToken);
         // SiteCascadeDeleter 内部用 RemoveRange（立即执行），无需额外 SaveChanges。
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        // 删站点会级联删除 SiteModelMappings，需同时失效模型元数据缓存，避免 /v1/models 短时残留。
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateModelMetadata();
 
         return Ok(ApiResponse.Ok(new { deletedCount }, $"已批量删除 {deletedCount} 个站点"));
     }
@@ -488,6 +522,14 @@ public sealed class SitesApiController : ControllerBase
                 apiKey = s.ApiKey,
                 supportsOpenAi = s.SupportsOpenAi,
                 supportsAnthropic = s.SupportsAnthropic,
+                supportsResponses = ProxyProtocolResolver.SupportsResponses(
+                    s.SupportsOpenAi,
+                    s.SupportsAnthropic,
+                    s.SupportsResponses,
+                    s.ProtocolType),
+                clientEmulation = s.ClientEmulation,
+                extraHeadersJson = s.ExtraHeadersJson,
+                egressProxyUrl = s.EgressProxyUrl,
                 keys = keysExport
             };
         });
@@ -520,9 +562,16 @@ public sealed class SitesApiController : ControllerBase
                 BaseUrl = item.BaseUrl,
                 EndpointPathMode = SiteEndpointPathResolver.NormalizeMode(item.EndpointPathMode),
                 ApiKey = item.ApiKey,
-                ProtocolType = ResolveSiteProtocolType(item.SupportsOpenAi, item.SupportsAnthropic),
+                ProtocolType = ProxyProtocolResolver.ResolveSiteProtocolType(item.SupportsOpenAi, item.SupportsAnthropic, item.SupportsResponses),
                 SupportsOpenAi = item.SupportsOpenAi,
                 SupportsAnthropic = item.SupportsAnthropic,
+                SupportsResponses = ProxyProtocolResolver.SupportsResponses(
+                    item.SupportsOpenAi,
+                    item.SupportsAnthropic,
+                    item.SupportsResponses),
+                ClientEmulation = ClientEmulationConstants.Normalize(item.ClientEmulation),
+                ExtraHeadersJson = string.IsNullOrWhiteSpace(item.ExtraHeadersJson) ? null : item.ExtraHeadersJson.Trim(),
+                EgressProxyUrl = string.IsNullOrWhiteSpace(item.EgressProxyUrl) ? null : item.EgressProxyUrl.Trim(),
                 IsEnabled = true
             };
             _dbContext.Sites.Add(site);
@@ -562,21 +611,9 @@ public sealed class SitesApiController : ControllerBase
         }
 
         // SqlSugar 的 Add 是立即执行（扩展方法，同步 ExecuteCommand），无需 SaveChanges。
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok(new { importedCount = created }, $"成功导入 {created} 个站点"));
-    }
-
-    /// <summary>
-    /// 根据站点能力推导协议类型（与 PageModel 中逻辑一致）。
-    /// </summary>
-    private static string ResolveSiteProtocolType(bool supportsOpenAi, bool supportsAnthropic)
-    {
-        if (!supportsOpenAi && !supportsAnthropic)
-        {
-            return "Responses";
-        }
-        return supportsAnthropic && !supportsOpenAi ? "Anthropic" : "OpenAI";
     }
 
     /// <summary>
@@ -604,7 +641,15 @@ public sealed class SitesApiController : ControllerBase
             keyCount,
             supportsOpenAi = site.SupportsOpenAi,
             supportsAnthropic = site.SupportsAnthropic,
+            supportsResponses = ProxyProtocolResolver.SupportsResponses(
+                site.SupportsOpenAi,
+                site.SupportsAnthropic,
+                site.SupportsResponses,
+                site.ProtocolType),
             protocolType = site.ProtocolType,
+            clientEmulation = site.ClientEmulation,
+            extraHeadersJson = site.ExtraHeadersJson,
+            egressProxyUrl = site.EgressProxyUrl,
             isEnabled = site.IsEnabled,
             createdAt = site.CreatedAt
         };
@@ -656,6 +701,22 @@ public sealed class SitePayload
     /// 是否支持 Anthropic 协议。
     /// </summary>
     public bool SupportsAnthropic { get; set; }
+    /// <summary>
+    /// 是否支持 OpenAI Responses 原生接口。
+    /// </summary>
+    public bool SupportsResponses { get; set; }
+    /// <summary>
+    /// 客户端特征模拟预设类型（None | OpenCode | ClaudeCode | CodexCli | Antigravity | Custom）。
+    /// </summary>
+    public string ClientEmulation { get; set; } = "None";
+    /// <summary>
+    /// 自定义请求头 JSON 字符串。
+    /// </summary>
+    public string? ExtraHeadersJson { get; set; }
+    /// <summary>
+    /// 站点专用出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
     /// <summary>
     /// 是否启用（仅创建时生效）。
     /// </summary>

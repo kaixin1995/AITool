@@ -1,4 +1,3 @@
-using AITool.Infrastructure.Proxy;
 using AITool.Domain.Models;
 using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
@@ -41,6 +40,7 @@ public sealed class ModelHealthApiController : ControllerBase
     /// 获取健康监控面板数据（监控模型列表 + 每个模型各站点的健康详情 + 48 段时间线）。
     /// </summary>
     /// <param name="range">时间范围：1d / 7d（默认）/ 30d。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
     [HttpGet]
     public async Task<IActionResult> GetDashboard([FromQuery] string? range, CancellationToken cancellationToken)
     {
@@ -114,7 +114,7 @@ public sealed class ModelHealthApiController : ControllerBase
             .Select(m => new
             {
                 modelLibraryItemId = m.ModelLibraryItemId,
-                displayName = models[m.ModelLibraryItemId].DisplayName
+                displayName = models[m.ModelLibraryItemId].ModelName
             })
             .OrderBy(m => m.displayName)
             .ToList();
@@ -122,8 +122,8 @@ public sealed class ModelHealthApiController : ControllerBase
         // 2. 可选模型（排除已监控的）。
         var availableModels = await _dbContext.ModelLibraryItems
             .Where(m => !monitoredModelIds.Contains(m.Id))
-            .OrderBy(m => m.DisplayName)
-            .Select(m => new { id = m.Id, displayName = m.DisplayName })
+            .OrderBy(m => m.ModelName)
+            .Select(m => new { id = m.Id, modelName = m.ModelName, displayName = m.ModelName })
             .ToListAsync(cancellationToken);
 
         // 3. 无监控模型时直接返回空 healthData。
@@ -281,7 +281,7 @@ public sealed class ModelHealthApiController : ControllerBase
             modelSummaries.Add(new
             {
                 modelLibraryItemId = modelId,
-                displayName = models[modelId].DisplayName,
+                displayName = models[modelId].ModelName,
                 siteCount,
                 healthySiteCount,
                 unhealthySiteCount,

@@ -4,6 +4,7 @@ using AITool.Domain.Proxy;
 using AITool.Domain.SiteCatalog;
 using AITool.Domain.Sites;
 using AITool.Infrastructure.Persistence;
+using AITool.Infrastructure.Proxy;
 using AITool.Application.Common;
 using AITool.Admin.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -35,6 +36,10 @@ public sealed class ModelsApiController : ControllerBase
     /// </summary>
     private readonly AdminCacheInvalidationService _adminCacheInvalidation;
     /// <summary>
+    /// 代理元数据缓存（本地失效）。
+    /// </summary>
+    private readonly ProxyRequestMetadataCache _metadataCache;
+    /// <summary>
     /// 模型并发限制器。
     /// </summary>
     private readonly ModelConcurrencyLimiter _concurrencyLimiter;
@@ -42,6 +47,10 @@ public sealed class ModelsApiController : ControllerBase
     /// 厂商模型目录服务（读取/保存 model-vendor-catalog.json）。
     /// </summary>
     private readonly ModelVendorCatalogService _vendorCatalogService;
+    /// <summary>
+    /// 模型价格服务（读取/保存 model-pricing.json，查询计价）。
+    /// </summary>
+    private readonly Application.Pricing.IModelPricingService _pricingService;
     /// <summary>
     /// 站点级联删除工具（复用空路由入口清理逻辑）。
     /// </summary>
@@ -53,14 +62,18 @@ public sealed class ModelsApiController : ControllerBase
     public ModelsApiController(
         AppDbContext dbContext,
         AdminCacheInvalidationService adminCacheInvalidation,
+        ProxyRequestMetadataCache metadataCache,
         ModelConcurrencyLimiter concurrencyLimiter,
         ModelVendorCatalogService vendorCatalogService,
+        Application.Pricing.IModelPricingService pricingService,
         SiteCascadeDeleter cascadeDeleter)
     {
         _dbContext = dbContext;
         _adminCacheInvalidation = adminCacheInvalidation;
+        _metadataCache = metadataCache;
         _concurrencyLimiter = concurrencyLimiter;
         _vendorCatalogService = vendorCatalogService;
+        _pricingService = pricingService;
         _cascadeDeleter = cascadeDeleter;
     }
 
@@ -91,7 +104,97 @@ public sealed class ModelsApiController : ControllerBase
     }
 
     /// <summary>
-    /// 更新站点模型映射的最大并发数。
+    /// 更新站点模型映射项配置（并发数、客户端特征模拟、自定义请求头、出口代理等）。
+    /// </summary>
+    [HttpPut("mappings/{mappingId:guid}")]
+    public async Task<IActionResult> UpdateMapping(
+        Guid mappingId,
+        [FromBody] UpdateMappingRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EgressProxyValidator.TryValidate(request.EgressProxyUrl, out var proxyError))
+        {
+            return BadRequest(ApiResponse.Fail(proxyError, "invalid_egress_proxy"));
+        }
+
+        var mapping = await _dbContext.SiteModelMappings.InSingleAsync(mappingId);
+        if (mapping is null)
+        {
+            return NotFound(ApiResponse.Fail("站点模型映射不存在", "mapping_not_found"));
+        }
+
+        var oldRemoteModelName = mapping.RemoteModelName;
+        var newRemoteModelName = string.IsNullOrWhiteSpace(request.RemoteModelName)
+            ? oldRemoteModelName
+            : request.RemoteModelName.Trim();
+
+        // 若修改了远程模型名，预检同站点下是否重名（避免撞唯一索引抛 500）
+        if (!string.Equals(newRemoteModelName, oldRemoteModelName, StringComparison.Ordinal))
+        {
+            var isDuplicate = await _dbContext.SiteModelMappings
+                .AnyAsync(m => m.SiteId == mapping.SiteId && m.RemoteModelName == newRemoteModelName && m.Id != mappingId, cancellationToken);
+            if (isDuplicate)
+            {
+                return Conflict(ApiResponse.Fail($"该站点下已存在名为 '{newRemoteModelName}' 的模型映射", "duplicate_remote_model_name"));
+            }
+
+            // 级联更新关联的路由规则中的 SiteModelName
+            await _dbContext.Client.Updateable<ProxyRouteRule>()
+                .SetColumns(r => r.SiteModelName == newRemoteModelName)
+                .Where(r => r.SiteId == mapping.SiteId && r.SiteModelName == oldRemoteModelName)
+                .ExecuteCommandAsync(cancellationToken);
+        }
+
+        mapping.RemoteModelName = newRemoteModelName;
+        mapping.IsEnabled = request.IsEnabled;
+        mapping.MaxConcurrency = Math.Max(0, request.MaxConcurrency);
+        mapping.ClientEmulation = ClientEmulationConstants.Normalize(request.ClientEmulation);
+        mapping.ExtraHeadersJson = string.IsNullOrWhiteSpace(request.ExtraHeadersJson) ? null : request.ExtraHeadersJson.Trim();
+        mapping.EgressProxyUrl = string.IsNullOrWhiteSpace(request.EgressProxyUrl) ? null : request.EgressProxyUrl.Trim();
+
+        await _dbContext.UpdateAsync(mapping, cancellationToken);
+
+        _metadataCache.InvalidateRouteTargets();
+        _metadataCache.InvalidateModelMetadata();
+
+        var siteKeyIds = await _dbContext.SiteKeys
+            .Where(k => k.SiteId == mapping.SiteId && k.IsEnabled)
+            .Select(k => k.Id)
+            .ToListAsync(cancellationToken);
+        if (siteKeyIds.Count > 0)
+        {
+            foreach (var keyId in siteKeyIds)
+            {
+                if (!string.Equals(newRemoteModelName, oldRemoteModelName, StringComparison.Ordinal))
+                {
+                    _concurrencyLimiter.UpdateLimit(keyId, oldRemoteModelName, 0, mapping.SiteId);
+                }
+                _concurrencyLimiter.UpdateLimit(keyId, mapping.RemoteModelName, mapping.MaxConcurrency, mapping.SiteId);
+            }
+        }
+        else
+        {
+            if (!string.Equals(newRemoteModelName, oldRemoteModelName, StringComparison.Ordinal))
+            {
+                _concurrencyLimiter.UpdateLimit(mapping.SiteId, oldRemoteModelName, 0);
+            }
+            _concurrencyLimiter.UpdateLimit(mapping.SiteId, mapping.RemoteModelName, mapping.MaxConcurrency);
+        }
+
+        return Ok(ApiResponse.Ok(new
+        {
+            mappingId = mapping.Id,
+            remoteModelName = mapping.RemoteModelName,
+            isEnabled = mapping.IsEnabled,
+            maxConcurrency = mapping.MaxConcurrency,
+            clientEmulation = mapping.ClientEmulation,
+            extraHeadersJson = mapping.ExtraHeadersJson,
+            egressProxyUrl = mapping.EgressProxyUrl
+        }, "站点模型映射已更新"));
+    }
+
+    /// <summary>
+    /// 更新站点模型映射的最大并发数（兼容老接口）。
     /// </summary>
     [HttpPut("mappings/{mappingId:guid}/concurrency")]
     public async Task<IActionResult> UpdateConcurrency(
@@ -108,11 +211,8 @@ public sealed class ModelsApiController : ControllerBase
         mapping.MaxConcurrency = Math.Max(0, request.MaxConcurrency);
         await _dbContext.UpdateAsync(mapping, cancellationToken);
 
-        // 配置保存后立即失效缓存并推送到 Core。
-        // MaxConcurrency 存在 SiteModelMappings 里，必须推 SiteModelMappings 类别（InvalidateModelMetadataAsync），
-        // 否则 Core 端 ModelConcurrencyLimiter 读不到新值，并发限制不生效。
-        await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        // 配置保存后立即失效缓存，并同步更新运行中的限制器状态，仅影响后续新请求。
+        _metadataCache.InvalidateRouteTargets();
         // 多 Key 场景：并发计数按 SiteKey 维度，需对站点每个启用的 Key 各同步一次运行时限制器，
         // 使调大上限后正在排队的请求能被立即唤醒。站点没有 SiteKey 时回退用 SiteId（兼容 Codex/老站点）。
         var siteKeyIds = await _dbContext.SiteKeys
@@ -123,7 +223,7 @@ public sealed class ModelsApiController : ControllerBase
         {
             foreach (var keyId in siteKeyIds)
             {
-                _concurrencyLimiter.UpdateLimit(keyId, mapping.RemoteModelName, mapping.MaxConcurrency);
+                _concurrencyLimiter.UpdateLimit(keyId, mapping.RemoteModelName, mapping.MaxConcurrency, mapping.SiteId);
             }
         }
         else
@@ -216,6 +316,8 @@ public sealed class ModelsApiController : ControllerBase
             DisplayName = string.IsNullOrWhiteSpace(payload.DisplayName) ? payload.ModelName.Trim() : payload.DisplayName.Trim(),
             OverrideReasoningEffort = (payload.OverrideReasoningEffort ?? string.Empty).Trim(),
             CompatibilityProfileId = payload.CompatibilityProfileId,
+            ClientEmulation = ClientEmulationConstants.Normalize(payload.ClientEmulation),
+            ExtraHeadersJson = string.IsNullOrWhiteSpace(payload.ExtraHeadersJson) ? null : payload.ExtraHeadersJson.Trim(),
             IsEnabled = payload.IsEnabled
         };
 
@@ -228,8 +330,8 @@ public sealed class ModelsApiController : ControllerBase
             return Ok(ApiResponse.Fail($"创建失败：{ex.Message}", "create_failed"));
         }
 
-        await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok(new { id = model.Id }, "模型已创建"));
     }
@@ -267,7 +369,10 @@ public sealed class ModelsApiController : ControllerBase
                     siteName = site.Name,
                     remoteModelName = mapping.RemoteModelName,
                     isEnabled = mapping.IsEnabled,
-                    maxConcurrency = mapping.MaxConcurrency
+                    maxConcurrency = mapping.MaxConcurrency,
+                    clientEmulation = mapping.ClientEmulation,
+                    extraHeadersJson = mapping.ExtraHeadersJson,
+                    egressProxyUrl = mapping.EgressProxyUrl
                 })
             .ToList();
 
@@ -293,6 +398,8 @@ public sealed class ModelsApiController : ControllerBase
             isEnabled = model.IsEnabled,
             overrideReasoningEffort = model.OverrideReasoningEffort,
             compatibilityProfileId = model.CompatibilityProfileId,
+            clientEmulation = model.ClientEmulation,
+            extraHeadersJson = model.ExtraHeadersJson,
             siteMappings,
             availableSites,
             availableProfiles = profiles
@@ -300,7 +407,7 @@ public sealed class ModelsApiController : ControllerBase
     }
 
     /// <summary>
-    /// 更新模型基础字段（名称、显示名、启用、思考等级覆盖、兼容规则集）。
+    /// 更新模型基础字段（名称、显示名、启用、思考等级覆盖、兼容规则集、客户端模拟）。
     /// </summary>
     [HttpPut("{id:guid}")]
     public async Task<IActionResult> Update(Guid id, [FromBody] ModelPayload payload, CancellationToken cancellationToken)
@@ -321,10 +428,12 @@ public sealed class ModelsApiController : ControllerBase
         model.IsEnabled = payload.IsEnabled;
         model.OverrideReasoningEffort = (payload.OverrideReasoningEffort ?? string.Empty).Trim();
         model.CompatibilityProfileId = payload.CompatibilityProfileId;
+        model.ClientEmulation = ClientEmulationConstants.Normalize(payload.ClientEmulation);
+        model.ExtraHeadersJson = string.IsNullOrWhiteSpace(payload.ExtraHeadersJson) ? null : payload.ExtraHeadersJson.Trim();
 
         await _dbContext.UpdateAsync(model, cancellationToken);
-        await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok("模型已更新"));
     }
@@ -343,8 +452,8 @@ public sealed class ModelsApiController : ControllerBase
 
         model.IsEnabled = !model.IsEnabled;
         await _dbContext.UpdateAsync(model, cancellationToken);
-        await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok(new { isEnabled = model.IsEnabled }, $"模型已{(model.IsEnabled ? "启用" : "禁用")}"));
     }
@@ -419,8 +528,8 @@ public sealed class ModelsApiController : ControllerBase
         await _cascadeDeleter.CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
 
         // 8. 失效缓存。
-        await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok(
             $"模型已删除，并清理了 {mappings.Count} 条站点关联、{affectedRules.Count} 条相关路由规则、{affectedMonitors.Count} 条健康监控，并解绑了 {affectedDetectionTasks.Count} 个检测任务"));
@@ -460,6 +569,57 @@ public sealed class ModelsApiController : ControllerBase
     }
 
     /// <summary>
+    /// 获取模型价格表（本地 JSON，不存在时从模板初始化）；条目附带按厂商规则解析的厂商名，便于前端分组过滤。
+    /// </summary>
+    [HttpGet("pricing")]
+    public async Task<IActionResult> GetPricing(CancellationToken cancellationToken)
+    {
+        var catalog = await _pricingService.GetCatalogAsync(cancellationToken);
+        var vendorCatalog = await _vendorCatalogService.GetOrCreateAsync(cancellationToken);
+        var view = new Application.Pricing.ModelPricingCatalog
+        {
+            UsdToCny = catalog.UsdToCny,
+            Models = catalog.Models.Select(entry => new Application.Pricing.ModelPriceEntry
+            {
+                Id = entry.Id,
+                DisplayName = entry.DisplayName,
+                VendorName = ModelVendorCatalogService.ResolveVendor(vendorCatalog, entry.Id).VendorName,
+                Input = entry.Input,
+                Output = entry.Output,
+                CacheRead = entry.CacheRead,
+                CacheWrite = entry.CacheWrite,
+                OffPeak = entry.OffPeak,
+                PeakWindows = entry.PeakWindows,
+                PeakTimeZoneOffsetMinutes = entry.PeakTimeZoneOffsetMinutes
+            }).ToList()
+        };
+        return Ok(view);
+    }
+
+    /// <summary>
+    /// 保存模型价格表（校验 + 写入 model-pricing.json + 立即刷新计价缓存）。
+    /// </summary>
+    [HttpPut("pricing")]
+    public async Task<IActionResult> SavePricing([FromBody] Application.Pricing.ModelPricingCatalog catalog, CancellationToken cancellationToken)
+    {
+        if (catalog is null)
+        {
+            return BadRequest(ApiResponse.Fail("价格数据不能为空", "empty_input"));
+        }
+
+        try
+        {
+            await _pricingService.SaveCatalogAsync(catalog, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            return Ok(ApiResponse.Fail($"保存失败：{ex.Message}", "save_failed"));
+        }
+
+        return Ok(ApiResponse.Ok("模型价格已保存"));
+    }
+
+    /// <summary>
     /// 为模型添加站点关联映射（已存在则更新启用状态，标记 LastStatus="manual"）。
     /// </summary>
     [HttpPost("{id:guid}/mappings")]
@@ -472,6 +632,10 @@ public sealed class ModelsApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(request.RemoteModelName))
         {
             return BadRequest(ApiResponse.Fail("请填写站点模型名", "remote_model_name_required"));
+        }
+        if (!EgressProxyValidator.TryValidate(request.EgressProxyUrl, out var addProxyError))
+        {
+            return BadRequest(ApiResponse.Fail(addProxyError, "invalid_egress_proxy"));
         }
 
         var model = await _dbContext.ModelLibraryItems.InSingleAsync(id);
@@ -499,6 +663,10 @@ public sealed class ModelsApiController : ControllerBase
         {
             existingMapping.ModelLibraryItemId = id;
             existingMapping.IsEnabled = request.IsEnabled;
+            existingMapping.MaxConcurrency = Math.Max(0, request.MaxConcurrency);
+            existingMapping.ClientEmulation = ClientEmulationConstants.Normalize(request.ClientEmulation);
+            existingMapping.ExtraHeadersJson = string.IsNullOrWhiteSpace(request.ExtraHeadersJson) ? null : request.ExtraHeadersJson.Trim();
+            existingMapping.EgressProxyUrl = string.IsNullOrWhiteSpace(request.EgressProxyUrl) ? null : request.EgressProxyUrl.Trim();
             existingMapping.LastStatus = "manual";
             await _dbContext.UpdateAsync(existingMapping, cancellationToken);
         }
@@ -509,13 +677,17 @@ public sealed class ModelsApiController : ControllerBase
                 SiteId = request.SiteId,
                 ModelLibraryItemId = id,
                 RemoteModelName = remoteModelName,
+                MaxConcurrency = Math.Max(0, request.MaxConcurrency),
+                ClientEmulation = ClientEmulationConstants.Normalize(request.ClientEmulation),
+                ExtraHeadersJson = string.IsNullOrWhiteSpace(request.ExtraHeadersJson) ? null : request.ExtraHeadersJson.Trim(),
+                EgressProxyUrl = string.IsNullOrWhiteSpace(request.EgressProxyUrl) ? null : request.EgressProxyUrl.Trim(),
                 LastStatus = "manual",
                 IsEnabled = request.IsEnabled
             });
         }
 
-        await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok("关联站点已添加"));
     }
@@ -557,11 +729,42 @@ public sealed class ModelsApiController : ControllerBase
         }
         await _cascadeDeleter.CleanupEmptyRouteEntriesAsync(affectedEntryNames, cancellationToken);
 
-        await _adminCacheInvalidation.InvalidateModelMetadataAsync(cancellationToken);
-        await _adminCacheInvalidation.InvalidateRouteTargetsAsync(cancellationToken);
+        _metadataCache.InvalidateModelMetadata();
+        _metadataCache.InvalidateRouteTargets();
 
         return Ok(ApiResponse.Ok($"站点关联已删除，并清理了 {affectedRules.Count} 条相关路由规则"));
     }
+}
+
+/// <summary>
+/// 更新站点模型映射项请求体。
+/// </summary>
+public sealed class UpdateMappingRequest
+{
+    /// <summary>
+    /// 站点上的远程模型名。
+    /// </summary>
+    public string? RemoteModelName { get; set; }
+    /// <summary>
+    /// 该映射是否启用。
+    /// </summary>
+    public bool IsEnabled { get; set; } = true;
+    /// <summary>
+    /// 最大并发数，0 表示不限制。
+    /// </summary>
+    public int MaxConcurrency { get; set; }
+    /// <summary>
+    /// 客户端特征模拟预设（None | OpenCode | ClaudeCode | CodexCli | Antigravity | Custom）。
+    /// </summary>
+    public string? ClientEmulation { get; set; }
+    /// <summary>
+    /// 自定义请求头 JSON。
+    /// </summary>
+    public string? ExtraHeadersJson { get; set; }
+    /// <summary>
+    /// 专属出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
 }
 
 /// <summary>
@@ -600,6 +803,14 @@ public sealed class ModelPayload
     /// 关联的兼容规则集 Id（可空）。
     /// </summary>
     public Guid? CompatibilityProfileId { get; set; }
+    /// <summary>
+    /// 模型维度的默认客户端特征模拟预设。
+    /// </summary>
+    public string? ClientEmulation { get; set; }
+    /// <summary>
+    /// 模型维度的默认自定义请求头 JSON。
+    /// </summary>
+    public string? ExtraHeadersJson { get; set; }
 }
 
 /// <summary>
@@ -619,6 +830,22 @@ public sealed class AddMappingRequest
     /// 该映射是否启用。
     /// </summary>
     public bool IsEnabled { get; set; } = true;
+    /// <summary>
+    /// 最大并发数，0 表示不限制。
+    /// </summary>
+    public int MaxConcurrency { get; set; }
+    /// <summary>
+    /// 客户端特征模拟预设。
+    /// </summary>
+    public string? ClientEmulation { get; set; }
+    /// <summary>
+    /// 自定义请求头 JSON。
+    /// </summary>
+    public string? ExtraHeadersJson { get; set; }
+    /// <summary>
+    /// 专属出口网络代理地址。
+    /// </summary>
+    public string? EgressProxyUrl { get; set; }
 }
 
 /// <summary>
